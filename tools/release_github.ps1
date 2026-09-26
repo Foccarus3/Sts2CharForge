@@ -1,11 +1,11 @@
 ﻿# 按规范把「整合包 + 更新包」发到 GitHub Releases（一条命令）
 #
 # 规范（和 README「发布到 GitHub Releases」+ docs\发布规范.md 一致）：
-#   · tag        = 程序版本号（V0.0.9，唯一来源：src\Sts2CharForge.App\Sts2CharForge.App.csproj 的 InformationalVersion）
-#   · Release 标题 = "Sts2CharForge V0.0.9"
+#   · tag        = 程序版本号（如 V0.0.10，唯一来源：src\Sts2CharForge.App\Sts2CharForge.App.csproj 的 InformationalVersion）
+#   · Release 标题 = "Sts2CharForge <版本号>"
 #   · 两个资产（文件名保持原样，方便玩家按名字认）：
-#        Sts2CharForge_整合包_V0.0.9.zip   全新安装：程序 + 环境包（Godot / 便携 dotnet）+ GDRE 工具 + 教程
-#        Sts2CharForge_更新包_V0.0.9.zip   只有程序文件 + 启动器（几十 MB，覆盖更新用）
+#        Sts2CharForge_整合包_<版本号>.zip   全新安装：程序 + 环境包（Godot / 便携 dotnet）+ GDRE 工具 + 教程
+#        Sts2CharForge_更新包_<版本号>.zip   只有程序文件 + 启动器（几十 MB，覆盖更新用）
 #   · Release 正文 = docs\RELEASE_NOTES_<版本>.md（没有就用一句模板兜底）
 #   · 发布前自检：两个 zip 都在 / 程序版本对得上 / 整合包里没有存档与游戏文件 / 更新包只有程序文件
 #
@@ -24,12 +24,12 @@ param(
     [string]$Repo = "",
     # 留空则用环境变量 GITHUB_TOKEN
     [string]$Token = "",
-    # 留空则用 csproj 里的版本号（V0.0.9）
+    # 留空则用 csproj 里的版本号（如 V0.0.10）
     [string]$Tag = "",
-    # 两个 zip 所在目录
-    [string]$Root = "D:\ds\s",
-    # 部署根目录（用来核对程序版本 / 打包内容）
-    [string]$App = "D:\ds\s\4",
+    # 两个 zip 所在目录（留空 = 仓库的上一级目录）
+    [string]$Root = "",
+    # 部署根目录（用来核对程序版本 / 打包内容）。留空自动解析：环境变量 STS2FORGE_APP → 仓库同级的 4 → 用户目录下的 Sts2CharForge
+    [string]$App = "",
     [string]$NotesFile = "",
     [switch]$Prerelease,
     # 只发小包（59.8 MB）：网络慢时先让 Release 可用，370 MB 的整合包以后再补
@@ -43,6 +43,16 @@ $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $T3 = Split-Path -Parent $PSScriptRoot
+
+# 路径默认值不写死本机位置：zip 目录 = 仓库的上一级；部署根目录 = 环境变量 STS2FORGE_APP → 仓库同级的 4 → 用户目录下的 Sts2CharForge
+if ([string]::IsNullOrWhiteSpace($Root)) { $Root = Split-Path -Parent $T3 }
+if ([string]::IsNullOrWhiteSpace($App)) {
+    if ($env:STS2FORGE_APP) { $App = $env:STS2FORGE_APP }
+    else {
+        $sibling = Join-Path (Split-Path -Parent $T3) '4'
+        if (Test-Path $sibling) { $App = $sibling } else { $App = Join-Path $env:USERPROFILE 'Sts2CharForge' }
+    }
+}
 
 function Step($t) { Write-Host ("=== " + $t) }
 function Fail($t) { Write-Host ("[失败] " + $t) -ForegroundColor Red; throw $t }

@@ -22,7 +22,7 @@ public static class ProfileFactory
 
     private static CharacterProfile SampleContent() => new()
     {
-        ModId = "SevenMod",
+        ModId = "ExampleMod",
         ModDisplayName = "七 (Seven)",
         Author = "your name",
         Version = "v1.0.0",

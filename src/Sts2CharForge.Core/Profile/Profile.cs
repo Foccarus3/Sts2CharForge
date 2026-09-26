@@ -1439,7 +1439,7 @@ public sealed class PathsSpec
     public string VanillaProject { get; set; } = "";
     /// <summary>
     /// 游戏 data 目录 / Godot / 安装目录的默认值一律**留空**：
-    /// 以前这里写死了开发机上的路径（`D:\download\...`），跟着程序集一起发给别人 ——
+    /// 以前这里写死了开发机上的路径，跟着程序集一起发给别人 ——
     /// 既暴露了无关的私人路径，换台电脑又全是错的。现在全部留空，靠
     /// <see cref="Generation.PathAutoDetect"/> 在程序启动时自动探测（注册表 Steam 路径 + 常见目录），
     /// 探不到再让用户选（「环境自检」页有选择按钮）。

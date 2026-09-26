@@ -30,6 +30,11 @@ obj/
 .vs/
 *.user
 
+# WPF 编译中间产物：MSBuild 会在项目旁边生成 <项目>_<随机串>_wpftmp.csproj，
+# 里面写着本机绝对路径（实测提交上去过 4 个），必须拦住。
+*_wpftmp.csproj
+*.wpftmp.*
+
 # 生成器默认输出目录（含用户生成的角色工程与上传的美术）
 自定义角色/
 _arttest/

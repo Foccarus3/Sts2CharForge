@@ -87,7 +87,7 @@ if (Test-Path $legacyUserData) {
 if (Test-Path $keep) {
     # 注意：不能写 Copy-Item $keep $userData —— 目标目录已存在时会把整个「自定义角色存档」
     # 再套一层复制进去（实测踩过：用户数据从 400 个文件变成 800 个，多出一层同名子目录）。
-    # 也不能逐个 Copy-Item 子项：目标子目录已存在时同样会套一层（SevenMod\SevenMod\…）。
+    # 也不能逐个 Copy-Item 子项：目标子目录已存在时同样会套一层（示例角色\示例角色\…）。
     # 用通配路径复制「里面的内容」，而且已有文件不覆盖，才不会套娃。
     New-Item -ItemType Directory -Force $userData | Out-Null
     foreach ($item in Get-ChildItem $keep -Force) {

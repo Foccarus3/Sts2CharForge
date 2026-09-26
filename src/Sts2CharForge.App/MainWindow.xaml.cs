@@ -2429,8 +2429,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	///
 	/// 唯一的打断：模组 ID 和当前存档文件名对不上时，问一次「要不要把存档名也改成 &lt;模组 ID&gt;.json」。
 	/// 同一个文件 + 同一个模组 ID 只问一次（答「否」= 本次运行不再问，仍然保存进原文件）。
-	/// 以前这个按钮弹 SaveFileDialog，很容易不小心把同一份配置存成「SparkleMod.json」和
-	/// 「SparkleMod-2.json」两份，后面生成工程 / 安装就开始互相打架。
+	/// 以前这个按钮弹 SaveFileDialog，很容易不小心把同一份配置存成「示例角色.json」和
+	/// 「示例角色-2.json」两份，后面生成工程 / 安装就开始互相打架。
 	/// </summary>
 	private bool SaveProfileInPlace()
 	{
@@ -2755,7 +2755,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						}
 						Naming naming = Naming.From(snapshot);
 						// 工程目录要用「生成结果里那个真实目录」，不能自己拼 OutputDir\ModId：
-						// 存档名和 ModId 不一样时（例：LeiGodMod_恢复.json / ModId=LeiGodMod）那个目录根本不存在，
+						// 存档名和 ModId 不一样时（例：示例角色_恢复.json / ModId=示例角色）那个目录根本不存在，
 						// dotnet 会报 MSB1009 项目文件不存在 → 界面显示「构建失败」（用户报的「构建无法生成」就是这个）。
 						BuildResult item = ModBuilder.Build(generationResult.ProjectRoot, naming.ModId, godotExe, installTo, progress.Report, dotnetExe);
 						return (Issues: generationResult.Issues, Build: item);
@@ -6167,7 +6167,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			var gen = ModGenerator.Generate(recSrc);
 			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot), gen.ProjectRoot);
 			// 关键回归测试：工程目录 = 存档名（不是 ModId）。以前构建流程自己拼 OutputDir\ModId，
-			// 存档名和 ModId 不一样时（LeiGodMod_恢复.json / ModId=LeiGodMod）会指向不存在的目录 →
+			// 存档名和 ModId 不一样时（示例角色_恢复.json / ModId=示例角色）会指向不存在的目录 →
 			// dotnet 报 MSB1009 → 界面「构建失败」（用户报的「构建无法生成」）。
 			recSrc.SaveName = "别的存档名";
 			Check("工程目录跟着存档文件名走（不是 ModId）",

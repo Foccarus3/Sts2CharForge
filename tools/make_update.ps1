@@ -10,15 +10,26 @@
 #
 # 用法： powershell -ExecutionPolicy Bypass -File tools\make_update.ps1
 param(
-    [string]$Root = "D:\ds\s\4",
+    # 部署根目录（本机安装目录）。留空自动解析：环境变量 STS2FORGE_APP → 仓库同级的 4 → 用户目录下的 Sts2CharForge
+    [string]$Root = "",
     # 空 = 按 csproj 里的版本号自动取名（Sts2CharForge_更新包_<V0.0.1>.zip）
-    [string]$Out  = ""
+    [string]$Out  = "",
+    # 额外要自检的字符串（比如你自己的下载目录）。脚本本身不写死任何本机路径
+    [string[]]$ExtraLeakNames = @()
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-if (-not (Test-Path $Root)) { throw "部署根目录不存在：$Root" }
+# 部署根目录：脚本里不写死任何本机绝对路径（公开仓库里不该有开发者的目录结构）
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    if ($env:STS2FORGE_APP) { $Root = $env:STS2FORGE_APP }
+    else {
+        $sibling = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '4'
+        if (Test-Path $sibling) { $Root = $sibling } else { $Root = Join-Path $env:USERPROFILE 'Sts2CharForge' }
+    }
+}
+if (-not (Test-Path $Root)) { throw "部署根目录不存在：$Root（用 -Root 指定，或设环境变量 STS2FORGE_APP）" }
 
 # 版本号：和启动器 / 程序包 zip / 整合包同一个来源（App 的 csproj）
 $Version = "V0.0.1"
@@ -27,7 +38,7 @@ if (Test-Path $csproj) {
     $m = [regex]::Match((Get-Content $csproj -Raw), '<InformationalVersion>\s*([^<\s]+)\s*</InformationalVersion>')
     if ($m.Success) { $Version = $m.Groups[1].Value }
 }
-if ([string]::IsNullOrWhiteSpace($Out)) { $Out = "D:\ds\s\Sts2CharForge_更新包_$Version.zip" }
+if ([string]::IsNullOrWhiteSpace($Out)) { $Out = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "Sts2CharForge_更新包_$Version.zip" }
 $launcherName = "启动 Sts2CharForge_$Version"
 $progName = "程序文件"
 Write-Host "版本号：$Version（更新包 $([System.IO.Path]::GetFileName($Out))，启动器 $launcherName.bat）"
@@ -36,9 +47,18 @@ $progDir = Join-Path $Root $progName
 if (-not (Test-Path (Join-Path $progDir "Sts2CharForge.exe"))) { throw "找不到程序：$progDir\Sts2CharForge.exe（先跑 tools\package_app.ps1 发布一份）" }
 
 # 「包里绝不能出现」的字符串：本机开发/打包目录 + 本机用户名（和整合包同一套规则）
+# 注意：**不写字面本机路径**，改成按脚本自身位置算出来（在别人机器上跑就按他的目录算）。
 $userName = Split-Path $env:USERPROFILE -Leaf
 $leakPatterns = New-Object System.Collections.Generic.List[string]
-foreach ($p in @('D:\ds', 'D:\download', '_packaging_keep', 'ds\s\t3', 't3\src')) { $leakPatterns.Add($p) }
+$devRoots = @(
+    (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+    (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)))
+    $Root
+    '_packaging_keep'
+    'ds\s\t3'
+    't3\src'
+)
+foreach ($p in ($devRoots + $ExtraLeakNames)) { if (-not [string]::IsNullOrWhiteSpace($p)) { $leakPatterns.Add($p) } }
 if ($userName) { $leakPatterns.Add("C:\Users\$userName") }
 $leakScanMaxBytes = 8MB
 

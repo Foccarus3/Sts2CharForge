@@ -1,14 +1,20 @@
 ﻿# 从解包工程自动生成「效果库」数据（Power 列表 + 中文/英文名 + 增益/减益类型）
 # 用法： powershell -ExecutionPolicy Bypass -File tools\build_power_catalog.ps1
-#       powershell -ExecutionPolicy Bypass -File tools\build_power_catalog.ps1 -Vanilla "D:\download\slay\1"
+#       powershell -ExecutionPolicy Bypass -File tools\build_power_catalog.ps1 -Vanilla "<你的解包工程目录>"
 # 输出： src\Sts2CharForge.Core\Data\powers_catalog.json
 
 param(
-    [string]$Vanilla = "D:\download\slay\1",
+    # 必填：你解包出来的游戏工程目录（该目录下应有 src\Core\Models\Powers）。
+    # 这里**不写死任何本机路径** —— 这是开发者自己的解包位置，不该出现在公开仓库里。
+    [string]$Vanilla = "",
     [string]$Out = "$PSScriptRoot\..\src\Sts2CharForge.Core\Data\powers_catalog.json"
 )
 
 $ErrorActionPreference = "Stop"
+
+if ([string]::IsNullOrWhiteSpace($Vanilla)) {
+    throw "请用 -Vanilla 指定解包后的游戏工程目录（例如 -Vanilla `"X:\某处\1`"），该目录下应有 src\Core\Models\Powers"
+}
 
 $powersDir = Join-Path $Vanilla "src\Core\Models\Powers"
 if (-not (Test-Path $powersDir)) { throw "找不到 Power 源码目录: $powersDir" }

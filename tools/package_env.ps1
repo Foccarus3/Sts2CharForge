@@ -7,9 +7,9 @@
 #     便携 SDK 里的 dotnet.exe 由「自动探测本机环境」按钮或「路径」页手工选中
 # 用法： powershell -ExecutionPolicy Bypass -File tools\package_env.ps1
 param(
-    [string]$Stage = "D:\ds\s\Sts2CharForge_环境包",
-    [string]$Zip = "D:\ds\s\Sts2CharForge_环境包_win-x64.zip",
-    [string]$GodotSrc = "D:\download\slay\godot\Godot_v4.5.1-stable_mono_win64",
+    [string]$Stage = "",            # 留空 = %TEMP%\Sts2CharForge_环境包
+    [string]$Zip = "",              # 留空 = 仓库同级的 Sts2CharForge_环境包_win-x64.zip
+    [string]$GodotSrc = "",         # 必填：Godot 4.5.1 mono 解压目录
     [string]$DotnetSrc = "C:\Program Files\dotnet",
     [string]$SdkVersion = "9.0.318",
     [string]$RuntimeVersion = "9.0.20",
@@ -18,6 +18,15 @@ param(
 
 $ErrorActionPreference = "Stop"
 function Step($t) { Write-Host "=== $t" }
+
+# 默认路径一律不写死本机位置（公开仓库里不该出现开发者的目录结构）：
+#   暂存目录 = %TEMP%\Sts2CharForge_环境包；输出 zip = 仓库的上一级目录
+$repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($Stage)) { $Stage = Join-Path $env:TEMP "Sts2CharForge_环境包" }
+if ([string]::IsNullOrWhiteSpace($Zip))   { $Zip   = Join-Path (Split-Path -Parent $repoRoot) "Sts2CharForge_环境包_win-x64.zip" }
+if ([string]::IsNullOrWhiteSpace($GodotSrc)) {
+    throw "请用 -GodotSrc 指定 Godot 4.5.1 mono 的解压目录（例如 -GodotSrc `"X:\某处\Godot_v4.5.1-stable_mono_win64`"）"
+}
 
 if (-not $SkipGodot -and -not (Test-Path $GodotSrc)) { throw "找不到 Godot 源目录：$GodotSrc" }
 if (-not (Test-Path (Join-Path $DotnetSrc "sdk\$SdkVersion"))) { throw "找不到 .NET SDK $SdkVersion：$DotnetSrc\sdk\$SdkVersion" }

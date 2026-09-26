@@ -1,5 +1,5 @@
 ﻿# 打「整合包」zip（发布用）
-#   把部署根目录（默认 D:\ds\s\4）整包压成一个 zip：程序文件 + 环境包（Godot / 便携 dotnet）+ 首次使用说明。
+#   把部署根目录（默认按脚本位置自动解析，也可用 -Root 或环境变量 STS2FORGE_APP 指定）整包压成一个 zip：程序文件 + 环境包（Godot / 便携 dotnet）+ 首次使用说明。
 #
 #   排除规则（和之前的整合包保持一致）：
 #     · 「自定义角色存档」下【只保留顶层 *.json 存档】，生成的角色工程（子目录）不进包：
@@ -13,15 +13,26 @@
 #
 # 用法： powershell -ExecutionPolicy Bypass -File tools\make_bundle.ps1
 param(
-    [string]$Root = "D:\ds\s\4",
+    # 部署根目录（本机安装目录）。留空自动解析：环境变量 STS2FORGE_APP → 仓库同级的 4 → 用户目录下的 Sts2CharForge
+    [string]$Root = "",
     # 空 = 按 csproj 里的版本号自动取名（Sts2CharForge_整合包_<V0.0.1>.zip）
-    [string]$Out  = ""
+    [string]$Out  = "",
+    # 额外要自检的字符串（比如你自己的下载目录）。脚本本身不写死任何本机路径
+    [string[]]$ExtraLeakNames = @()
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-if (-not (Test-Path $Root)) { throw "部署根目录不存在：$Root" }
+# 部署根目录：脚本里不写死任何本机绝对路径（公开仓库里不该有开发者的目录结构）
+if ([string]::IsNullOrWhiteSpace($Root)) {
+    if ($env:STS2FORGE_APP) { $Root = $env:STS2FORGE_APP }
+    else {
+        $sibling = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) '4'
+        if (Test-Path $sibling) { $Root = $sibling } else { $Root = Join-Path $env:USERPROFILE 'Sts2CharForge' }
+    }
+}
+if (-not (Test-Path $Root)) { throw "部署根目录不存在：$Root（用 -Root 指定，或设环境变量 STS2FORGE_APP）" }
 
 # 版本号：和启动器 / 程序包 zip 同一个来源（App 的 csproj）
 $Version = "V0.0.1"
@@ -30,7 +41,7 @@ if (Test-Path $csproj) {
     $m = [regex]::Match((Get-Content $csproj -Raw), '<InformationalVersion>\s*([^<\s]+)\s*</InformationalVersion>')
     if ($m.Success) { $Version = $m.Groups[1].Value }
 }
-if ([string]::IsNullOrWhiteSpace($Out)) { $Out = "D:\ds\s\Sts2CharForge_整合包_$Version.zip" }
+if ([string]::IsNullOrWhiteSpace($Out)) { $Out = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) "Sts2CharForge_整合包_$Version.zip" }
 Write-Host "版本号：$Version"
 
 $userDataName = "自定义角色存档"
@@ -43,15 +54,25 @@ $junk = [regex]'^(uicheck|envcheck|buildtest|newprofiletest|movedtest)_result\.t
 
 # 「包里绝不能出现」的字符串（打完逐条目扫：① 条目名全查；② 内容只查文本类文件 + 我们自己的程序集）
 # 为什么内容不全查：环境包里的 Godot / .NET SDK / 微软运行时 DLL 是第三方二进制，里面本来就有
-# 厂商自己的构建路径；而且短字符串在二进制里**会偶然撞上**（实测 "cwf" 在 CodePages.dll、
-# 甚至一张 PNG 的像素数据里都能命中，但整棵树里根本没有 C:\Users\ 这种形式）。
+# 厂商自己的构建路径；而且短字符串在二进制里**会偶然撞上**（实测：一个三字母的用户名在 CodePages.dll、
+# 甚至一张 PNG 的像素数据里都能命中，但整棵树里根本没有「用户目录」这种形状）。
 # 所以：本机路径按「盘符 + 具体目录」这种形态查；用户名只连同 \Users\ 一起查。
 $userName = Split-Path $env:USERPROFILE -Leaf
 $leakPatterns = New-Object System.Collections.Generic.List[string]
-# 只放「真会暴露位置」的：开发/打包用的目录、本机下载目录、打包临时区。
+# 只放「真会暴露位置」的：开发/打包用的目录、打包临时区。
+# 注意：**不写字面本机路径**（公开仓库里不该出现开发者自己的目录结构），
+# 改成按脚本自身位置算出来 —— 在别人机器上跑，算出来的就是他自己的目录。
+$devRoots = @(
+    (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))                    # …\s（仓库的上一级）
+    (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))) # …\ds（再上一级）
+    $Root
+    '_packaging_keep'
+    'ds\s\t3'
+    't3\src'
+)
+foreach ($p in ($devRoots + $ExtraLeakNames)) { if (-not [string]::IsNullOrWhiteSpace($p)) { $leakPatterns.Add($p) } }
 # 注意：不要把工具自己的临时目录前缀（forge_selftest / forge_buildtest）算进来 ——
 # 那只是自检用的 %TEMP% 子目录名，不含任何个人信息，但它是程序里的字符串字面量，会误报。
-foreach ($p in @('D:\ds', 'D:\download', '_packaging_keep', 'ds\s\t3', 't3\src')) { $leakPatterns.Add($p) }
 $userLeakPatterns = New-Object System.Collections.Generic.List[string]
 if ($userName) {
     $userLeakPatterns.Add("C:\Users\$userName")
