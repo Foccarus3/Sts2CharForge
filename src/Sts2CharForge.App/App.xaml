@@ -1,0 +1,344 @@
+<Application x:Class="Sts2CharForge.App.App"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:Sts2CharForge.App">
+    <Application.Resources>
+        <local:HexToBrushConverter x:Key="HexBrush"/>
+        <local:NotEmptyToVisibilityConverter x:Key="NotEmptyToVisibility"/>
+        <local:BoolToCollapsedConverter x:Key="BoolToCollapsed"/>
+        <local:EmptyToVisibilityConverter x:Key="EmptyToVisibility"/>
+        <local:MultiSelectModeConverter x:Key="MultiSelectMode"/>
+        <local:OkToBrushConverter x:Key="OkToBrush"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- 「多选」开关：外观与其他按钮一致，按下（开启）时高亮，一眼能看出开没开 -->
+        <Style x:Key="MultiToggle" TargetType="ToggleButton">
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Margin" Value="0,0,6,0"/>
+            <Setter Property="MinWidth" Value="56"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd" CornerRadius="2" BorderThickness="1"
+                                BorderBrush="#ADADAD" Background="#F5F5F5" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#EAF3FF"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#CFE4FF"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#2A6FB5"/>
+                                <Setter Property="FontWeight" Value="Bold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style TargetType="TextBlock" x:Key="Label">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="6,4,6,4"/>
+        </Style>
+        <Style TargetType="TextBox" x:Key="Field">
+            <Setter Property="Margin" Value="0,3,8,3"/>
+            <Setter Property="Padding" Value="4,3,4,3"/>
+        </Style>
+        <Style TargetType="ComboBox" x:Key="Pick">
+            <Setter Property="Margin" Value="0,3,8,3"/>
+        </Style>
+        <Style TargetType="CheckBox" x:Key="Check">
+            <Setter Property="Margin" Value="0,4,12,4"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+
+        <!-- 效果编辑面板的公共部分 -->
+        <DataTemplate x:Key="EffectCommon">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
+                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Pick}"
+                          ItemsSource="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
+
+                <TextBlock Grid.Row="1" Grid.Column="0" Text="数值" Style="{StaticResource Label}"/>
+                <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用对象（本条效果对谁生效）" Style="{StaticResource Label}"/>
+                <ComboBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Pick}"
+                          ItemsSource="{Binding TargetSides, RelativeSource={RelativeSource AncestorType=Window}}"
+                          SelectedItem="{Binding TargetSide}"/>
+
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"/>
+
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"/>
+                <local:SearchComboBox Grid.Row="5" Grid.Column="1"
+                                      SearchPath="Display"
+                                      ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      SelectedValuePath="Id" SelectedValue="{Binding PowerId}"
+                                      ToolTip="直接打字搜索（输入「下」只剩含「下」的项），点选项或按回车自动补全。">
+                    <local:SearchComboBox.ItemTemplate>
+                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                    </local:SearchComboBox.ItemTemplate>
+                </local:SearchComboBox>
+
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="目标卡（生成 / 变化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <local:SearchComboBox Grid.Row="6" Grid.Column="1"
+                                      SearchPath="Display"
+                                      ItemsSource="{Binding AllCards, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      SelectedValuePath="Id" SelectedValue="{Binding SpawnCardId, Mode=TwoWay}"
+                                      ToolTip="「生成卡牌」= 生成哪张卡；「变化卡牌」= 变成哪张卡（留空 = 随机变化）。直接打字搜索，点选项或按回车自动补全。">
+                    <local:SearchComboBox.ItemTemplate>
+                        <!-- 中文名 + 英文类名都留着（Display 里已经拼好了） -->
+                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                    </local:SearchComboBox.ItemTemplate>
+                </local:SearchComboBox>
+
+                <TextBlock Grid.Row="7" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <ComboBox Grid.Row="7" Grid.Column="1" Style="{StaticResource Pick}"
+                          ItemsSource="{Binding SpawnTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                          SelectedItem="{Binding SpawnTo}"/>
+
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="选牌方式（消耗 / 变化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <ComboBox Grid.Row="8" Grid.Column="1" Style="{StaticResource Pick}"
+                          ItemsSource="{Binding CardPickModes, RelativeSource={RelativeSource AncestorType=Window}}"
+                          SelectedItem="{Binding CardPick}"/>
+
+                <!-- 「从哪里选牌」：以前只有手牌，现在也能选抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种） -->
+                <TextBlock Grid.Row="10" Grid.Column="0" Text="从哪里选牌（消耗 / 变化用）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"/>
+                <ComboBox Grid.Row="10" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"
+                          ItemsSource="{Binding SelectPiles, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                          SelectedValue="{Binding SelectPile}"
+                          ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）。"/>
+
+                <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
+                    <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
+                    <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
+                    <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                        <CheckBox Content="概率生效" Style="{StaticResource Check}" IsChecked="{Binding ChanceEnabled}"
+                                  ToolTip="勾上以后，这条效果只有下面这个百分比的机会会真的执行；没掷中的话只跳过这一条，同一张牌 / 遗物 / 状态里的其它效果照常执行。"/>
+                        <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
+                                 IsEnabled="{Binding ChanceEnabled}"
+                                 Text="{Binding ChancePercent, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="%"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（1~100，只对「这一条效果」生效，其它效果不受影响）"/>
+                    </StackPanel>
+                    <!-- 本体「缓慢」专用：它的显示/生效数字不是层数（= 内部 SlowAmount×10，每打出一张牌 +10%），
+                         所以「施加 30 层缓慢」看不到 30。这里填 30 = 敌人当场受到伤害 +30%。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding IsSlowPower, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" Text="直接把「缓慢」设成" FontWeight="Bold"/>
+                        <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
+                                 Text="{Binding SlowPercent, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="%"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（本体「缓慢」显示/生效的数字不是层数：它按「本回合每打出一张牌 +10%」算，施加多少层都看不到那个数字。填 30 = 敌人当场受到伤害 +30%，持续到它下一次回合开始。0 = 不设置）"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </DataTemplate>
+
+        <!-- 一条效果自己的「条件选项」（卡牌用：可以选「不满足时这张牌打不出去」） -->
+        <DataTemplate x:Key="EffectConditionCard">
+            <GroupBox Header="条件选项（只对上面这一条效果生效）" Margin="0,8,0,0">
+                <Grid Margin="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="200"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding CardEffectConditions, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Kind}"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                             Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
+                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
+                    <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
+                             Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
+                             ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                             SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
+                             SearchPath="Display">
+                        <local:SearchComboBox.ItemTemplate>
+                            <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                        </local:SearchComboBox.ItemTemplate>
+                    </local:SearchComboBox>
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                              Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
+                              ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Target}"/>
+                    <CheckBox Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,6,0,0"
+                              Style="{StaticResource Check}"
+                              Content="条件不满足时这张牌打不出去（不勾 = 能打出，只是这条效果不生效）"
+                              IsChecked="{Binding Condition.UnplayableWhenUnmet}"/>
+                </Grid>
+            </GroupBox>
+        </DataTemplate>
+
+        <!-- 一条效果自己的「条件选项」（遗物 / 自定义状态用：不满足时只有这一条效果不生效） -->
+        <DataTemplate x:Key="EffectConditionPlain">
+            <GroupBox Header="条件选项（只对上面这一条效果生效）" Margin="0,8,0,0">
+                <Grid Margin="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="200"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding PlainEffectConditions, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Kind}"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                             Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
+                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
+                    <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
+                             Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
+                             ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                             SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
+                             SearchPath="Display">
+                        <local:SearchComboBox.ItemTemplate>
+                            <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                        </local:SearchComboBox.ItemTemplate>
+                    </local:SearchComboBox>
+
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                              Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
+                              ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Target}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,0,0" TextWrapping="Wrap"
+                               Foreground="#888" FontSize="11"
+                               Text="不满足时只有这一条效果不生效，其它效果照常执行。"/>
+                </Grid>
+            </GroupBox>
+        </DataTemplate>
+
+        <!-- 卡牌用：带「升级增量」+「升级后费用」+ X 费用卡牌的「= X」开关 -->
+        <DataTemplate x:Key="EffectEditorCard">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="升级增量" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding UpgradeAmount, UpdateSourceTrigger=PropertyChanged}"/>
+                    </Grid>
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="升级后费用" Style="{StaticResource Label}"
+                                   ToolTip="整张牌的设置（不是单条效果）：升级后花几点能量，留空 = 升级不改费用。例：2 费卡想升级成 1 费就填 1；1 费升 0 费就填 0。"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                 Text="{Binding SelectedCardUpgradeCost, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="整张牌的设置：升级后花几点能量。留空 = 升级不改费用。" />
+                    </Grid>
+                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Text="{Binding UpgradeCostHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                    <CheckBox Margin="6,4,0,0" Style="{StaticResource Check}"
+                              Content="数值 = X（这条效果的数值用 X）"
+                              IsChecked="{Binding AmountIsX}"
+                              ToolTip="只有勾了「X 费用」的卡牌用得到。X = 打出时消耗掉的能量（或额外资源量）。"/>
+                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
+                              Content="生效次数 = X（整条效果重复 X 遍）"
+                              IsChecked="{Binding TimesIsX}"
+                              ToolTip="本体亡灵契约师「挽歌」那种：召唤 X 次 / 生成 X 张。"/>
+                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
+                              Content="命中次数 / 对群数 = X"
+                              IsChecked="{Binding RepeatIsX}"
+                              ToolTip="本体铁甲战士「旋风斩」、储君「天际钻头」那种：命中 X 次 / 随机打 X 个敌人。"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <!-- 条件选项：每条效果各自一份（以前是整张牌一个条件，现在改成跟着效果走） -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionCard}"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DataTemplate>
+
+        <!-- 遗物用：不能升级，没有「升级增量」 -->
+        <DataTemplate x:Key="EffectEditorPlain">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DataTemplate>
+
+        <!-- 自定义状态（能力）的触发器用：没有升级/X，多了三个「= 本状态层数」开关 -->
+        <DataTemplate x:Key="EffectEditorPower">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
+                              Content="数值 = 本状态的层数"
+                              IsChecked="{Binding AmountIsStack}"
+                              ToolTip="本体恶魔形态那种：「每回合获得等于层数的力量」。勾上之后「数值」那一栏就不用了；不勾就用上面填的数字。"/>
+                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
+                              Content="生效次数 = 本状态的层数"
+                              IsChecked="{Binding TimesIsStack}"
+                              ToolTip="整条效果按层数重复执行：5 层 +「造成 2 点伤害」= 每次触发打 5 次（共 10 点，本体旋风斩那种多段）。勾上之后「生效次数」那一栏就不用了。层数很大时会执行很多次，注意别把层数堆到几百。"/>
+                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
+                              Content="命中次数 / 对群数 = 本状态的层数"
+                              IsChecked="{Binding RepeatIsStack}"
+                              ToolTip="只对「随机敌人」这类按次数挑目标的效果有意义：层数 = 挑几个目标。"/>
+                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Text="注意：层数本身不会让效果多跑几遍 —— 想让层数决定强度就勾「数值 = 层数」，想让层数决定次数就勾「生效次数 = 层数」。"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DataTemplate>
+
+        <!-- 药水用：和遗物一样，但保留底下的说明文字 -->
+        <DataTemplate x:Key="EffectEditorPotion">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
+                               Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DataTemplate>
+    </Application.Resources>
+</Application>

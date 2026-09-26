@@ -1,0 +1,27 @@
+﻿Microsoft Visual Studio Solution File, Format Version 12.00
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.Core", "src\Sts2CharForge.Core\Sts2CharForge.Core.csproj", "{11111111-2222-3333-4444-555555555551}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.Cli", "src\Sts2CharForge.Cli\Sts2CharForge.Cli.csproj", "{11111111-2222-3333-4444-555555555552}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.App", "src\Sts2CharForge.App\Sts2CharForge.App.csproj", "{11111111-2222-3333-4444-555555555553}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.Build.0 = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.ActiveCfg = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.Build.0 = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.Build.0 = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.ActiveCfg = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.Build.0 = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.Build.0 = Debug|AnyCPU
+		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.ActiveCfg = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.Build.0 = Release|AnyCPU
+	EndGlobalSection
+EndGlobal

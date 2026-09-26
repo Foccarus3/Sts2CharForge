@@ -1,0 +1,592 @@
+using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Profile;
+
+namespace Sts2CharForge.Core.Generation;
+
+public sealed record ValidationIssue(string Level, string Message)
+{
+    public bool IsError => Level == "错误";
+    public override string ToString() => $"[{Level}] {Message}";
+}
+
+/// <summary>生成前的配置校验：把"编译不过/进游戏会崩"的问题挡住。</summary>
+public static class ProfileValidator
+{
+    public static List<ValidationIssue> Validate(CharacterProfile p)
+    {
+        var issues = new List<ValidationIssue>();
+        var n = Naming.From(p);
+
+        if (!Naming.IsValidIdentifier(p.ModId))
+            issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）。"));
+
+        // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
+        if (EffectCatalog.Powers.Count == 0)
+            issues.Add(new("错误", "效果库为空：增益/减益列表读不到。请到「路径」页指定你本机的「本体工程目录」"
+                + "（解包后的原版工程，含 src/Core/Models/Powers）或「游戏 data 目录」（含 sts2.dll），"
+                + "然后点「构建 / 日志」页的「重新扫描效果库」。"));
+
+        // 自定义状态（能力牌用的「你自己的状态」）
+        for (int ci = 0; ci < p.CustomPowers.Count; ci++)
+        {
+            var cp = p.CustomPowers[ci];
+            if (!cp.Enabled) continue;
+            if (string.IsNullOrWhiteSpace(cp.Name))
+            {
+                issues.Add(new("错误", $"自定义状态 #{ci + 1} 还没填名字（名字就是游戏里显示的状态名）。"));
+                continue;
+            }
+            string who = $"自定义状态「{cp.Name}」";
+
+            if (!string.IsNullOrWhiteSpace(cp.ClassName) && !Naming.IsValidIdentifier(cp.ClassName))
+                issues.Add(new("错误", $"{who} 的英文类名不合法：{cp.ClassName}（只能是英文/数字，且以字母开头）。"));
+            if (cp.Type is not ("Buff" or "Debuff"))
+                issues.Add(new("错误", $"{who} 的类型只能是 Buff（增益）或 Debuff（减益）。"));
+            if (!string.IsNullOrWhiteSpace(cp.AmountColor) && !CardColorSpec.IsHex(cp.AmountColor))
+                issues.Add(new("错误", $"{who} 的层数颜色不是合法的 RRGGBB：{cp.AmountColor}"));
+            if (!string.IsNullOrWhiteSpace(cp.Icon) && !File.Exists(cp.Icon))
+                issues.Add(new("错误", $"{who} 的图标文件不存在：{cp.Icon}"));
+            if (cp.RemoveAtTurnEnd && cp.DecayPerTurn > 0)
+                issues.Add(new("警告", $"{who} 同时勾了「回合结束移除」和「每回合衰减」，衰减不会生效（直接移除）。"));
+            if (cp.Triggers.Count == 0)
+                issues.Add(new("警告", $"{who} 没配任何触发时机：这个状态挂上去也不会做事。"));
+
+            for (int k = 0; k < cp.Triggers.Count; k++)
+            {
+                var t = cp.Triggers[k];
+                var opt = PowerTriggers.Find(t.Kind);
+                if (opt is null)
+                {
+                    issues.Add(new("错误", $"{who} 的第 {k + 1} 个触发时机不认识：{t.Kind}。"));
+                    continue;
+                }
+                string when = opt.Display;
+                if (t.Effects.Count == 0)
+                    issues.Add(new("警告", $"{who}「{when}」下面没有效果，这一条等于没写。"));
+                // 「某个状态层数变化后」：选的状态要能找到（留空 = 任意状态，是合法的）
+                if (t.Kind == "PowerChanged" && !string.IsNullOrWhiteSpace(t.PowerId)
+                    && EffectCatalog.Powers.Count > 0 && !EffectCatalog.IsCustomPower(t.PowerId)
+                    && EffectCatalog.FindPower(t.PowerId) is null)
+                    issues.Add(new("警告", $"{who}「{when}」盯的状态找不到：{t.PowerId}"
+                        + "（可以选本体的状态类名，或「自定义状态」页里自己造的那个；留空 = 除自己以外任意状态变层数都触发）。"));
+
+                for (int j = 0; j < t.Effects.Count; j++)
+                {
+                    var e = t.Effects[j];
+                    // 「获得卡牌奖励」在「战斗胜利后」里走的是本体的战斗奖励（room.AddExtraReward），不需要 choiceContext
+                    bool roomReward = e.Kind == "CardReward" && t.Kind == "CombatVictory";
+                    if (!CustomPowerGen.TriggerHasChoiceContext(t.Kind) && CustomPowerGen.NeedsChoiceContext(e.Kind) && !roomReward)
+                        issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条是「{EffectCatalog.FindKind(e.Kind).Display}」，"
+                            + "而这个触发时机的本体钩子本身不给 choiceContext（例：敌人回合开始时 AfterSideTurnStart）——"
+                            + "生成时会照本体的做法自己造一个再跑，能用；如果游戏里没反应，看日志里这一条。"));
+                    // 「获得卡牌奖励」在「战斗胜利后」：说明它到底是怎么发的（挂进本场战斗的结算奖励里）
+                    if (roomReward)
+                        issues.Add(new("提示", $"{who}「{when}」里的「获得卡牌奖励」会挂进本场战斗的结算奖励里"
+                            + "（本体「王国资产」RoyaltiesPower.AfterCombatEnd 的做法）：打赢这场之后，奖励界面会多一条「选一张卡」，"
+                            + "N 选一，选中的直接进牌组；打输了不会给。"));
+                    if (e.Kind == "CardReward" && t.Kind != "CombatVictory")
+                        issues.Add(new("提示", $"{who}「{when}」里放了「获得卡牌奖励」：这个触发时机是在战斗中途，"
+                            + "生成时会在那一刻直接弹「N 选一」的选牌界面、选中就进牌组（想要「打赢后奖励界面多一条」就挂「战斗胜利后」）。"));
+                    if (!PowerTriggers.Supports(e.Kind))
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条效果是「{e.Kind}」，"
+                            + "这种效果需要卡牌上下文（选牌 / 结束回合），状态触发器里用不了。"
+                            + $"能用的是：{string.Join(" / ", PowerTriggers.SupportedEffectKinds)}。"));
+                    if (e.Kind == "ApplyPower" && string.IsNullOrWhiteSpace(e.PowerId))
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「施加增益/减益」还没选状态。"));
+                    else if (e.Kind == "ApplyPower" && EffectCatalog.Powers.Count > 0
+                             && !EffectCatalog.IsCustomPower(e.PowerId) && EffectCatalog.FindPower(e.PowerId) is null)
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条要施加的状态找不到：{e.PowerId}。"));
+                    // 每条效果自己的条件选项（能力/状态里的条件不支持「这张牌」类条件）
+                    ValidateCondition(issues, $"{who}「{when}」第 {j + 1} 条", e.Condition, "Power");
+                    if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
+                        issues.Add(new("警告", $"{who}「{when}」的「生成卡牌」没选目标卡，会生成小刀（Shiv）。"));
+                    if (e.AmountIsStack && e.Amount == 0 && e.Kind is "Damage" or "Block")
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条数值 = 层数，层数可能为 0，这条效果会打 0。"));
+                    // 「数值 = 本状态的层数」：用户报过「写了 30 层、游戏里只给 1 层」——
+                    // 勾上这个之后「数值」里填的数字是被忽略的（生成的是 base.Amount），不说清就会踩
+                    if (e.AmountIsStack && e.Amount != 0)
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条勾了「数值 = 本状态的层数」，"
+                            + $"「数值」里填的 {e.Amount:0.##} 不会生效（游戏里用的是这个状态的层数 base.Amount）。"
+                            + "想要固定数值就把那个勾去掉。"));
+                    // 本体里有些状态显示的数字根本不是层数（自己 override 了 DisplayAmount）：
+                    // 填多少层，状态栏那个数字都不会是你填的值（用户报过「30 层缓慢」）
+                    if (e.Kind == "ApplyPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
+                        issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
+                            + $"本体这个状态显示的数字不是层数 —— {amountNote}"
+                            + "（层数照旧记着，只是状态栏那个数字由它自己算，别按「显示 = 你填的层数」去读。）"));
+                    if (e.TimesIsStack && e.Times != 1)
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条勾了「生效次数 = 层数」，"
+                            + $"「生效次数」里填的 {e.Times} 会被忽略（层数说了算）。"));
+                    if (e.RepeatIsStack && e.RepeatCount != 1)
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条勾了「命中/对群数 = 层数」，"
+                            + $"「对群数」里填的 {e.RepeatCount} 会被忽略（层数说了算）。"));
+                    if ((e.TimesIsStack || e.RepeatIsStack) && cp.DecayPerTurn == 0 && !cp.RemoveAtTurnEnd)
+                        issues.Add(new("警告", $"{who}「{when}」按层数重复执行、而且这个状态不会衰减："
+                            + "层数越高执行次数越多（可能卡顿），建议配一点「每回合衰减」，或让卡牌只给少量层数。"));
+                    // 「获得卡牌奖励」按层数重复：层数是几，结算界面就多几条奖励（每条都是「N 选一」）
+                    if (roomReward && e.TimesIsStack)
+                        issues.Add(new("提示", $"{who}「{when}」的「获得卡牌奖励」勾了「生效次数 = 本状态的层数」："
+                            + "这个状态有几层，奖励界面就会多出几条「选一张卡」（每条都是 N 选一）。"
+                            + "只想要一条奖励就别勾那个，或者把卡牌给的层数控制在 1。"));
+                    // 「卡牌奖励」的 N 是「给几张让你选一张」，别和「生效次数」搞混
+                    if (roomReward && e.Times > 1)
+                        issues.Add(new("提示", $"{who}「{when}」的「获得卡牌奖励」生效次数是 {e.Times}："
+                            + "会加 {e.Times} 条「选一张卡」的奖励（每条给 {EffectCatalog.FindKind(e.Kind).Display} 里填的数量选一）。"));
+                }
+            }
+        }
+
+        // 先古之民的遗物选项替换
+        foreach (var talk in p.Ancients)
+        {
+            if (string.IsNullOrWhiteSpace(talk.AncientId)) continue;
+            var ancient = EffectCatalog.FindAncient(talk.AncientId);
+            string who = ancient?.Epithet ?? talk.AncientId;
+            var nm = Naming.From(p);
+            var usedFrom = new HashSet<string>(StringComparer.Ordinal);
+            for (int k = 0; k < talk.RelicReplacements.Count; k++)
+            {
+                var r = talk.RelicReplacements[k];
+                string rw = $"先古之民「{who}」的第 {k + 1} 条遗物替换";
+                string from = r.FromRelicId ?? "";
+                if (from.Length > 0 && !usedFrom.Add(from))
+                    issues.Add(new("警告", $"{rw}：「{from}」配了不止一次，生成时只留第一条。"));
+                if (from.Length == 0 && r.Slot < 1)
+                    issues.Add(new("警告", $"{rw}：还没选要替换掉哪个「原本的遗物」—— 不确定要换掉哪一个，这条不会生效。"));
+                if (from.Length > 0 && ancient is not null && ancient.RelicCandidateIds.Count > 0
+                    && !ancient.RelicCandidateIds.Contains(from, StringComparer.Ordinal))
+                    issues.Add(new("警告", $"{rw}：「{from}」不是这位先古之民原本会给的遗物 —— "
+                        + $"他每次只随机给 3 个选项，没抽到「{from}」的那一次不会替换（不会顶掉别的选项）。"));
+                if (string.IsNullOrWhiteSpace(r.RelicId))
+                {
+                    issues.Add(new("警告", $"{rw}还没选要换成什么遗物，生成时会跳过。"));
+                    continue;
+                }
+                if (from.Length > 0 && string.Equals(from, r.RelicId, StringComparison.Ordinal))
+                    issues.Add(new("提示", $"{rw}：原本的遗物和要换成的遗物是同一个（等于没改）。"));
+
+                bool isMine = p.Relics
+                    .Select((rel, i) => nm.RelicClassName(rel, i))
+                    .Any(cls => string.Equals(cls, r.RelicId, StringComparison.Ordinal));
+                bool isVanilla = AncientCatalog.VanillaRelics.Any(v => string.Equals(v.Id, r.RelicId, StringComparison.Ordinal));
+                if (!isMine && !isVanilla && AncientCatalog.VanillaRelics.Count > 0)
+                    issues.Add(new("错误", $"{rw}里要换成的遗物类名找不到：{r.RelicId}"
+                        + "（要么是你「遗物」页里自己做的，要么是本体的遗物类名）。"));
+                else if (isVanilla && ancient is not null && ancient.RelicCandidateIds.Count > 0
+                         && !ancient.RelicCandidateIds.Contains(r.RelicId, StringComparer.Ordinal))
+                    issues.Add(new("提示", $"{rw}：{r.RelicId} 不在本体这位先古之民原本的候选表里 —— "
+                        + "补丁仍然会把它塞进选项，只是风格上可能和这位先古之民不太搭。"));
+            }
+        }
+
+        // 卡池太小 → 直接拦住（池子得自己够抽，不够就报错，不会替你凑）
+        if (CSharpCodeGen.RewardPoolTooSmall(p))
+        {
+            issues.Add(new("错误", $"卡池里奖励能抽到的卡只有 {CSharpCodeGen.RewardPoolStatus(p)}，"
+                + $"至少要 {CSharpCodeGen.MinRewardPool} 张（Common / Uncommon / Rare）。"
+                + "本体发奖励时会「互不重复地抽 3 张」，抽不出来会直接抛异常 → 奖励界面不弹 → 死档。"
+                + "解决办法：把「加入卡池」的卡加到至少 3 张（Basic 不参与奖励；上限不限，越多奖励越丰富）。"));
+        }
+
+        // 本体状态改写：键要对得上、颜色要合法、图标文件要存在
+        for (int i = 0; i < p.VanillaPowerOverrides.Count; i++)
+        {
+            var o = p.VanillaPowerOverrides[i];
+            string who = $"本体状态改写 #{i + 1}";
+            if (!o.Enabled) continue;
+            if (string.IsNullOrWhiteSpace(o.PowerId))
+            {
+                issues.Add(new("错误", $"{who} 没有选要改的本体状态（在「本体状态改写」页里选一个，比如中毒）。"));
+                continue;
+            }
+            who = $"本体状态改写「{(string.IsNullOrWhiteSpace(o.VanillaName) ? o.PowerId : o.VanillaName)}」";
+
+            if (EffectCatalog.Powers.Count > 0 && EffectCatalog.FindPower(o.PowerId) is null)
+                issues.Add(new("错误", $"{who} 在本体状态列表里找不到（类名要对上本体，比如 PoisonPower）。"));
+            else
+            {
+                string slug = VanillaPowerGen.SlugOf(o);
+                string? titleKey = EffectCatalog.ZhLocText(slug + ".title");
+                bool renaming = !string.IsNullOrWhiteSpace(o.Name) && o.Name.Trim() != (o.VanillaName ?? "").Trim();
+                if (renaming && EffectCatalog.ZhPowerLoc.Count > 0 && titleKey is null)
+                    issues.Add(new("警告", $"{who} 要改名字，但本体的 powers 本地化表里没有 {slug}.title 这个键，"
+                        + "改名可能不生效（键名要跟本体的 Id.Entry 对上）。"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.BarColor))
+            {
+                if (!CardColorSpec.IsHex(o.BarColor))
+                    issues.Add(new("错误", $"{who} 的血条颜色不是合法的 RRGGBB：{o.BarColor}（例：66BF3C）。"));
+                else if (EffectCatalog.HealthBarNodeFor(o.PowerId) is null)
+                    issues.Add(new("警告", $"{who} 填了血条颜色，但本体血条上只有「中毒」那一截是按状态显示颜色的，"
+                        + "这个状态没有血条段，颜色不会有显示效果。"));
+            }
+
+            if (!string.IsNullOrWhiteSpace(o.AmountColor) && !CardColorSpec.IsHex(o.AmountColor))
+                issues.Add(new("错误", $"{who} 的层数颜色不是合法的 RRGGBB：{o.AmountColor}"));
+
+            if (!string.IsNullOrWhiteSpace(o.Icon) && !File.Exists(o.Icon))
+                issues.Add(new("错误", $"{who} 的图标文件不存在：{o.Icon}"));
+
+            if (!o.ChangesAnything)
+                issues.Add(new("警告", $"{who} 什么都没填（名字/描述/图标/颜色都空），生成时会跳过这一条。"));
+        }
+
+        // X 费用：本体 ResolveEnergyXValue() 在「不是 X 费用」的牌上会直接抛异常，
+        // 所以「效果用了 X 但费用不是 X」必须在这里挡住（生成代码里也做了兜底：X 按 0）。
+        for (int i = 0; i < p.Cards.Count; i++)
+        {
+            var c = p.Cards[i];
+            // 本体卡引用（打击 / 防御）：数值/效果/费用都由本体决定，不参与这些校验
+            if (c.IsVanillaCard) continue;
+            bool usesX = c.Effects.Any(e => e.UsesX);
+            // 升级后费用：X 费牌改不了、负数费用会被夹到 0，提前说清楚
+            if (c.UpgradeCost is { } upCost)
+            {
+                if (c.CostIsX)
+                    issues.Add(new("警告", $"卡牌「{c.Name}」是 X 费用牌，「升级后费用」填的 {upCost} 不会生效"
+                        + "（本体改费用的逻辑遇到 X 费牌会直接返回）。"));
+                else if (c.Cost < 0)
+                    issues.Add(new("警告", $"卡牌「{c.Name}」现在的费用是 {c.Cost}（负数 = 特殊牌），"
+                        + "本体的改费逻辑会把结果夹到 0，可能让这张牌变成能打出。"));
+                else if (upCost < 0)
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后费用」不能是负数：{upCost}。"));
+            }
+            if (usesX && !c.CostIsX && !c.StarCostIsX)
+                issues.Add(new("警告", $"卡牌「{c.Name}」的效果里勾了「= X」，但这张牌的费用不是 X（也没勾资源量 X）："
+                    + "X 会被当成 0，效果等于不生效。请到「费用」那一行勾上「X 费用」。"));
+            if (c.StarCostIsX && !c.Effects.Any(e => e.Kind == "ExtraResource" && e.Amount < 0))
+                issues.Add(new("警告", $"卡牌「{c.Name}」勾了「额外资源量费用为 X」，但效果里没有「花费额外资源量」（负数）这一条："
+                    + "牌面会比本体多显示一个资源量费用图标。"));
+            if (c.XPlusOnUpgrade && !c.CostIsX && !c.StarCostIsX)
+                issues.Add(new("警告", $"卡牌「{c.Name}」勾了「升级后 X +1」，但它的费用不是 X —— 这个勾选会被忽略。"));
+            if (c.Effects.Any(e => e.AmountIsX && e.UpgradeAmount != 0))
+                issues.Add(new("警告", $"卡牌「{c.Name}」有一条「数值 = X」的效果填了「升级增量」：X 的数值不能直接升级（会被忽略），"
+                    + "要升级请用卡牌上的「升级后 X +1」。"));
+        }
+
+        // 卡牌配色
+        if (!CardColorSpec.IsHex(p.Colors.DeckEntryColor))
+            issues.Add(new("错误", $"卡牌「牌堆底色」不是合法的十六进制颜色：{p.Colors.DeckEntryColor}（应为 RRGGBB 或 RRGGBBAA）。"));
+        if (!CardColorSpec.IsHex(p.Colors.EnergyOutlineColor))
+            issues.Add(new("错误", $"卡牌「能量描边色」不是合法的十六进制颜色：{p.Colors.EnergyOutlineColor}（应为 RRGGBB 或 RRGGBBAA）。"));
+        if (!string.IsNullOrWhiteSpace(p.Colors.CardFrameColor) && !CardColorSpec.IsHex(p.Colors.CardFrameColor))
+            issues.Add(new("错误", $"卡牌「边框颜色」不是合法的十六进制颜色：{p.Colors.CardFrameColor}（应为 RRGGBB，留空表示用边框材质）。"));
+        if (!string.IsNullOrWhiteSpace(p.Art.IconOutlineColor) && !CardColorSpec.IsHex(p.Art.IconOutlineColor))
+            issues.Add(new("错误", $"「头像描边颜色」不是合法的十六进制颜色：{p.Art.IconOutlineColor}（应为 RRGGBB，留空表示不自动生成描边）。"));
+        if (!string.IsNullOrWhiteSpace(p.Colors.CardFrame) && !CardColorSpec.Frames.Contains(p.Colors.CardFrame))
+            issues.Add(new("警告", $"卡牌边框「{p.Colors.CardFrame}」不在本体自带素材里（{string.Join(" / ", CardColorSpec.Frames)}），游戏里可能显示不出边框。"));
+        if (!Naming.IsValidIdentifier(p.CharacterClass))
+            issues.Add(new("错误", "角色英文类名必须是纯英文/数字且以字母开头（决定模型 ID 与所有资源文件名）。"));
+        if (string.IsNullOrWhiteSpace(p.DisplayName))
+            issues.Add(new("警告", "角色显示名为空，游戏里会显示成键名。"));
+        if (p.StartingHp <= 0 || p.StartingHp > 999)
+            issues.Add(new("错误", $"初始生命 {p.StartingHp} 不合理（建议 1~999）。"));
+        if (p.StartingGold < 0 || p.StartingGold > 9999)
+            issues.Add(new("错误", $"初始金币 {p.StartingGold} 不合理（建议 0~9999）。"));
+        if (!new[] { "Neutral", "Feminine", "Masculine" }.Contains(p.Gender))
+            issues.Add(new("错误", $"性别 {p.Gender} 非法（Neutral / Feminine / Masculine）。"));
+        if (!string.IsNullOrWhiteSpace(p.UnlockAfter) && !Naming.IsValidIdentifier(p.UnlockAfter))
+            issues.Add(new("错误", "前置角色必须填本体的角色类名（如 Silent / Defect / Ironclad）。"));
+
+        // 卡牌
+        var cardNames = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < p.Cards.Count; i++)
+        {
+            var c = p.Cards[i];
+            // 本体卡引用：只校验「类名是不是本体的英文类名」和初始份数，别的都不适用
+            if (c.IsVanillaCard)
+            {
+                string vcls = (c.ClassName ?? "").Trim();
+                if (!Naming.IsValidIdentifier(vcls))
+                    issues.Add(new("错误", $"本体卡「{c.Name}」没填本体英文类名（例如 StrikeIronclad / DefendIronclad）。"));
+                else if (EffectCatalog.Cards.Count > 0 && !EffectCatalog.Cards.Any(x => x.Id == vcls))
+                    issues.Add(new("警告", $"本体卡「{c.Name}」的类名「{vcls}」在本体卡牌表里找不到 —— 生成出来的初始卡组会引用一张不存在的卡"
+                        + "（要先在「构建 / 日志」页选好解包工程，工具才读得到本体卡牌表）。"));
+                if (c.InStartingDeck && c.StartingCopies is < 1 or > 10)
+                    issues.Add(new("警告", $"本体卡「{c.Name}」初始份数 {c.StartingCopies} 建议 1~10。"));
+                if (c.InCardPool)
+                    issues.Add(new("提示", $"本体卡「{c.Name}」不会进你自己的卡池（它属于本体的卡池），奖励里不会出现它 —— 只有初始卡组那几份。"));
+                continue;
+            }
+            string cls = n.CardClassName(p, c);
+            if (!cardNames.Add(cls))
+                issues.Add(new("错误", $"卡牌类名重复：{cls}（自定义卡牌的英文类名需唯一）。"));
+            // 类名不能和本体卡重名：本体的模型 ID 只按类名算（忽略命名空间），
+            // 自己定义一个 StrikeIronclad 会和本体撞 ID，模组加载时抛 DuplicateModelException。
+            if (EffectCatalog.Cards.Any(x => string.Equals(x.Id, cls, StringComparison.OrdinalIgnoreCase)))
+                issues.Add(new("错误", $"卡牌「{c.Name}」的英文类名「{cls}」和本体卡重名 —— 本体的模型 ID 只按类名算"
+                    + "（忽略命名空间），重名会让模组加载当场抛 DuplicateModelException。请改个自己的名字"
+                    + $"（比如你自己的前缀：My{cls}）。初始的打击 / 防御已经用不会撞名的 Strike / Defend 了。"));
+            // 初始打击 / 防御靠 CardTag 被本体的遗物认出来，漏标就等于那些遗物找不到这张牌
+            if ((string.Equals(cls, "Strike", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Strike"))
+                || (string.Equals(cls, "Defend", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Defend")))
+                issues.Add(new("警告", $"卡牌「{c.Name}」（{cls}）没有标本体卡标签 —— 本体那些「升级你的初始打击 / 防御」的"
+                    + "遗物 / 事件是按 CardTag 查牌的，漏标它们就找不到这张牌。到「卡牌」页的「本体卡标签」里勾上 Strike / Defend。"));
+            if (!EffectCatalog.CardTypes.Contains(c.CardType))
+                issues.Add(new("错误", $"卡牌「{c.Name}」类型非法：{c.CardType}"));
+            if (!EffectCatalog.CardRarities.Contains(c.Rarity))
+                issues.Add(new("错误", $"卡牌「{c.Name}」稀有度非法：{c.Rarity}"));
+            if (c.Cost is < 0 or > 5)
+                issues.Add(new("警告", $"卡牌「{c.Name}」费用 {c.Cost} 超出常规范围（0~5）。"));
+            if (c.InStartingDeck && c.StartingCopies is < 1 or > 10)
+                issues.Add(new("警告", $"卡牌「{c.Name}」初始份数 {c.StartingCopies} 建议 1~10。"));
+            ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: "Card");
+            AddDuplicateVarNotice(issues, $"卡牌「{c.Name}」", c.Effects);
+            // 老存档的「整张牌一个条件」也校验一下（打开后会自动搬到第一条效果上）
+            if (c.Condition is not null && !c.Condition.IsNone && c.Effects.Count > 0)
+                issues.Add(new("提示", $"卡牌「{c.Name}」用的是老版「整张牌一个条件」，已按老存档兼容处理；"
+                    + "界面上现在改成「每条效果各自一个条件」，重新打开这张牌就能改。"));
+            ValidateCondition(issues, $"卡牌「{c.Name}」", c.Condition, "Card");
+        }
+
+        // 遗物
+        var relicNames = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < p.Relics.Count; i++)
+        {
+            var r = p.Relics[i];
+            string cls = n.RelicClassName(r, i);
+            if (!relicNames.Add(cls)) issues.Add(new("错误", $"遗物类名重复：{cls}"));
+            if (!EffectCatalog.RelicRarities.Contains(r.Rarity))
+                issues.Add(new("错误", $"遗物「{r.Name}」稀有度非法：{r.Rarity}"));
+            if (!EffectCatalog.RelicTriggers.Any(t => t.Id == r.Trigger))
+                issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{r.Trigger}"));
+            ValidateEffects(issues, $"遗物「{r.Name}」", r.Effects, ctx: "Relic");
+            AddDuplicateVarNotice(issues, $"遗物「{r.Name}」", r.Effects);
+            ValidateCondition(issues, $"遗物「{r.Name}」（整只遗物的触发条件）", r.Condition, "Relic");
+
+            if (!CSharpCodeGen.HasContext(r.Trigger))
+            {
+                foreach (var e in r.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower"
+                                                       || (x.Kind == "MaxHp" && x.Amount < 0)))
+                {
+                    issues.Add(new("警告",
+                        $"遗物「{r.Name}」的「{EffectCatalog.FindKind(e.Kind).Display}」在「{EffectCatalog.RelicTriggers.First(t => t.Id == r.Trigger).Display}」缺少 choiceContext，生成时会被忽略。"));
+                }
+            }
+        }
+        if (p.Relics.Count(r => r.IsStartingRelic) > 3)
+            issues.Add(new("警告", "初始遗物超过 3 个，界面可能显示不下。"));
+
+        // 药水
+        var potionNames = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = 0; i < p.Potions.Count; i++)
+        {
+            var s = p.Potions[i];
+            string cls = n.PotionClassName(s, i);
+            if (!potionNames.Add(cls)) issues.Add(new("错误", $"药水类名重复：{cls}"));
+            if (!EffectCatalog.PotionRarities.Contains(s.Rarity))
+                issues.Add(new("错误", $"药水「{s.Name}」稀有度非法：{s.Rarity}"));
+            if (!EffectCatalog.PotionUsages.Contains(s.Usage))
+                issues.Add(new("错误", $"药水「{s.Name}」使用时机非法：{s.Usage}"));
+            if (!EffectCatalog.PotionTargets.Contains(s.TargetType))
+                issues.Add(new("错误", $"药水「{s.Name}」目标非法：{s.TargetType}"));
+            ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion");
+            AddDuplicateVarNotice(issues, $"药水「{s.Name}」", s.Effects);
+
+            if (s.Usage == "AnyTime" && s.Effects.Any(e => e.Kind is "Damage" or "Block" or "Draw" or "ApplyPower"))
+                issues.Add(new("警告", $"药水「{s.Name}」是「任意时机」，但含战斗内效果（伤害/格挡/抽牌/挂增益），战斗外会缺少战斗上下文；建议改「仅战斗中」。"));
+        }
+
+        // 初始卡组：本体卡引用（打击 / 防御）也是牌，所以「空不空」要看有没有任何放进初始卡组的牌
+        if (!p.Cards.Any(c => c.InStartingDeck))
+            issues.Add(new("警告", "初始卡组是空的：卡牌页里没有任何卡勾了「放进初始卡组」"
+                + "（默认那两条本体「打击 / 防御」被删掉了吗？）—— 开局会没有牌可打。"));
+        if (!p.Cards.Any(c => !c.IsVanillaCard))
+            issues.Add(new("提示", "还没有自己的卡牌：现在初始卡组只有本体的打击 / 防御（本体卡只做引用，不生成自己的卡类）。"));
+
+        // 安装目录：本体只认 <游戏目录>\mods（选成游戏目录 / data 目录时自动纠正，这里只提醒）
+        bool? looksLikeMods = PathAutoDetect.LooksLikeModsDir(p.Paths.InstallDir);
+        if (looksLikeMods == false)
+        {
+            string? mods = PathAutoDetect.FindModsDir(p.Paths.InstallDir) ?? PathAutoDetect.FindModsDir();
+            issues.Add(new("警告", $"安装目录看起来不是游戏的 mods 目录：{p.Paths.InstallDir}"
+                + (mods is null
+                    ? "（一般是 <游戏目录>\\mods，例如 ...\\steamapps\\common\\Slay the Spire 2\\mods）"
+                    : $"（已自动改成：{mods}）")));
+        }
+
+        // 路径
+        if (!Directory.Exists(p.Paths.VanillaProject))
+            issues.Add(new("错误", $"解包工程目录不存在：{p.Paths.VanillaProject}（占位美术与 spine 插件要从这里取）"));
+        if (!File.Exists(Path.Combine(p.Paths.GameDataDir, "sts2.dll")))
+            issues.Add(new("错误", $"游戏 data 目录里找不到 sts2.dll：{p.Paths.GameDataDir}"));
+        if (!File.Exists(p.Paths.GodotExe))
+            issues.Add(new("警告", $"Godot 可执行文件不存在：{p.Paths.GodotExe}（只影响导出 PCK）"));
+
+        return issues;
+    }
+
+    /// <summary>
+    /// 同一个模型里同种效果出现多次时提醒一句：动态变量会自动起别名（Damage2 这种）。
+    /// 为什么重要：本体 <c>DynamicVarSet</c> 用变量名当键，重名会直接抛异常，
+    /// 而且是在**构造卡牌**的时候抛（战斗一开始创建卡组就炸）→ 表现就是「抽不了牌、结束不了回合、
+    /// 战斗卡死在第一回合」。生成器已经自动处理了，这里只是让用户知道这件事。
+    /// </summary>
+    private static void AddDuplicateVarNotice(List<ValidationIssue> issues, string owner, IEnumerable<EffectSpec> effects)
+    {
+        var dups = CSharpCodeGen.VarKeysOf(effects)
+            .GroupBy(k => k, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (dups.Count == 0) return;
+        issues.Add(new("提示", $"{owner} 里有 {string.Join("、", dups.Select(g => $"「{g.Key}」×{g.Count()}"))} 条同种效果："
+            + "本体要求同种动态变量各自起名字（否则构造卡牌时会抛 DynamicVarSet 重名异常、整场战斗卡死），"
+            + "生成时已自动把第二个起成 " + string.Join("、", dups.Select(g => g.Key + "2")) + "，数值 / 描述都对得上，不用手动改。"));
+    }
+
+    private static void ValidateEffects(List<ValidationIssue> issues, string owner, IEnumerable<EffectSpec> effects,
+        string? potionTargetType = null, string ctx = "Card")
+    {
+        int index = 0;
+        foreach (var e in effects)
+        {
+            index++;
+            if (!EffectCatalog.EffectKinds.Any(k => k.Kind == e.Kind))
+            {
+                issues.Add(new("错误", $"{owner} 的效果种类非法：{e.Kind}"));
+                continue;
+            }
+            var kind = EffectCatalog.FindKind(e.Kind);
+            if (e.Amount < kind.Min || e.Amount > kind.Max)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
+            if (e.Kind == "ApplyPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
+            else if (e.Kind == "ApplyPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
+                issues.Add(new("错误", $"{owner} 的增益/减益未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));
+            // 本体里有些状态显示的数字不是层数（自己 override 了 PowerModel.DisplayAmount）：
+            // 填多少层状态栏都不会显示你填的值（用户报过「施加 30 层缓慢，游戏里只看到缓慢」）
+            if (e.Kind == "ApplyPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
+                issues.Add(new("提示", $"{owner} 施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
+                    + $"本体这个状态显示的数字不是层数 —— {amountNote}"
+                    + "（层数照旧记着，只是状态栏那个数字由它自己算。）"));
+            // 「直接把「缓慢」设成 N%」那几个坑
+            if (e.SlowPercent > 0)
+            {
+                if (e.Kind != "ApplyPower")
+                    issues.Add(new("警告", $"{owner} 填了「直接把「缓慢」设成 {e.SlowPercent:0.##}%」，"
+                        + $"但这条效果是「{EffectCatalog.FindKind(e.Kind).Display}」不是「施加增益/减益」—— 这个选项会被忽略。"));
+                else if (!e.IsSlowPower)
+                    issues.Add(new("警告", $"{owner} 填了「直接把「缓慢」设成 {e.SlowPercent:0.##}%」，"
+                        + $"但选的状态不是「缓慢」（{EffectCatalog.PowerName(e.PowerId)}）—— 这个选项会被忽略。"));
+                else
+                {
+                    if (e.SlowPercentEffective != e.SlowPercent)
+                        issues.Add(new("提示", $"{owner} 填的「缓慢」百分比 {e.SlowPercent:0.##}% 按 10% 一档折算成 "
+                            + $"{e.SlowPercentEffective}%（本体内部是整数档位：1 档 = 受到伤害 +10%）。"));
+                    if (e.NextTurn)
+                        issues.Add(new("警告", $"{owner} 勾了「下回合生效」+「直接把「缓慢」设成 {e.SlowPercentEffective}%」："
+                            + "「下回合生效」走的是延迟状态，这个百分比选项不会生效（会在下回合按层数正常施加）。"));
+                    issues.Add(new("提示", $"{owner} 施加「缓慢」时会按本体的做法只施加 1 层，然后把它的内部数值直接设成 "
+                        + $"受到伤害 +{e.SlowPercentEffective}%（本体「缓慢」显示/生效的数字不是层数 —— 它按「本回合每打出一张牌 +10%」算，"
+                        + "所以「施加 30 层」在游戏里看不到 30；另外它每次敌人回合开始会清零，这是本体机制）。"));
+                    if (!e.AmountIsStack && e.Amount != 1)
+                        issues.Add(new("提示", $"{owner} 那条「缓慢」的层数填的是 {e.Amount:0.##} —— 层数对「缓慢」没有作用，"
+                            + "生成时会忽略它、按本体的做法施加 1 层（真正生效的是上面那个百分比）。"));
+                }
+            }
+            if (e.NextTurn && !kind.SupportsNextTurn)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」不支持「下回合生效」。"));
+            // 「从哪里选牌」只有消耗 / 变化卡牌用得到；别的效果上填了会被忽略（界面里那一行也不显示）
+            if (!e.UsesSelectPile && e.SelectPile != "Hand")
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」填了「从哪里选牌 = {e.SelectPileZh}」，"
+                    + "但这个选项只有「消耗卡牌 / 变化卡牌」用得到 —— 这条会被忽略。"));
+            // 「从牌堆拿牌到手牌」：本体「搜寻 / 全息影像 / 挖掘」那种
+            if (e.Kind is "TakeFromDraw" or "TakeFromDiscard")
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」会弹一个选牌界面，"
+                    + $"从{(e.Kind == "TakeFromDraw" ? "抽牌堆" : "弃牌堆")}里自己挑 {Math.Max(1, (int)e.Amount)} 张拿到手牌"
+                    + "（本体「搜寻 / 全息影像 / 挖掘」的做法，界面提示语会一起生成）；那一摞里没牌时什么都不做。"));
+            if (!kind.NeedsTarget && e.TargetSide != "Self")
+                issues.Add(new("警告", $"{owner} 的「{kind.Display}」作用对象固定为自己，选项将被忽略。"));
+            if (e.RepeatCount is < 1 or > 20)
+                issues.Add(new("错误", $"{owner} 的重复次数 {e.RepeatCount} 超出范围（1~20）。"));
+            if (e.ChanceEnabled && e.ChancePercent is < 1 or > 100)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」概率 {e.ChancePercent} 超出范围（1~100，单位是 %）。"));
+            // 全局（牌组）类效果：直接改玩家的牌组、跨战斗永久生效，这类改动值得先提醒一句
+            if (CSharpCodeGen.IsGlobalCardEffect(e.Kind))
+            {
+                if (e.Kind is "AddCardGlobal" or "TransformCardGlobal" && string.IsNullOrWhiteSpace(e.SpawnCardId))
+                    issues.Add(new("警告", $"{owner} 的「{kind.Display}」没选目标卡，会按「小刀（Shiv）」处理"
+                        + (e.Kind == "TransformCardGlobal" ? "（变化类留空 = 随机变化，忽略这条）" : "") + "。"));
+                if (ctx == "Potion")
+                    issues.Add(new("警告", $"{owner} 的「{kind.Display}」是**改牌组**的效果（永久），药水一般用完就没了，"
+                        + "确认这是你想要的（建议用「任意时机」以外的药水也行，但请先备份存档试一次）。"));
+            }
+            if (e.Times is < 1 or > 20)
+                issues.Add(new("错误", $"{owner} 的生效次数 {e.Times} 超出范围（1~20）。"));
+
+            // 每条效果自己的条件选项
+            ValidateCondition(issues, $"{owner} 第 {index} 条「{kind.Display}」", e.Condition, ctx);
+
+            // 生成 / 消耗 / 变化卡牌
+            if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
+                issues.Add(new("警告", $"{owner} 的「生成卡牌」没填目标卡，将默认生成 Shiv（静默猎手的小刀）。"));
+            if (e.Kind is "ExhaustCard" or "TransformCard" && e.Amount is < 1 or > 9)
+                issues.Add(new("错误", $"{owner} 的「{(e.Kind == "ExhaustCard" ? "消耗卡牌" : "变化卡牌")}」张数 {e.Amount} 超出范围（1~9）。"));
+            if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
+                issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
+
+            // 药水：实际打谁由药水的「作用目标」决定，效果里的对象只影响描述，容易配出不一致
+            if (potionTargetType is not null)
+            {
+                string? want = potionTargetType switch
+                {
+                    "AnyEnemy" => "Enemy",
+                    "AllEnemies" => "AllEnemies",
+                    _ => "Self",
+                };
+                bool matters = e.Kind is "Damage" or "ApplyPower";
+                if (matters && e.TargetSide != want)
+                    issues.Add(new("警告", $"{owner} 的「{kind.Display}」效果对象是「{e.TargetSide}」，"
+                        + $"但药水作用目标是「{potionTargetType}」→ 实际执行按药水目标，描述也已按药水目标生成。"));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 一条「条件选项」的校验。ctx：Card / Relic / Power / Potion ——
+    /// 条件能不能用在这个地方、需不需要选状态 / 填数值。
+    /// </summary>
+    internal static void ValidateCondition(List<ValidationIssue> issues, string owner, ConditionSpec? cond, string ctx)
+    {
+        if (cond is null || cond.IsNone) return;
+
+        var opt = EffectCatalog.FindCondition(cond.Kind);
+        if (opt is null)
+        {
+            issues.Add(new("错误", $"{owner} 的条件不认识：{cond.Kind}。"));
+            return;
+        }
+        bool allowed = ctx switch
+        {
+            "Card" => opt.ForCard,
+            "Relic" => opt.ForRelic,
+            "Power" => opt.ForPower,
+            _ => false,
+        };
+        if (!allowed)
+        {
+            issues.Add(new("错误", ctx == "Potion"
+                ? $"{owner}：药水不支持条件选项（条件要用在卡牌 / 遗物 / 自定义状态上）。"
+                : $"{owner} 的条件「{opt.Display}」不能用在这里，请换一个。"));
+            return;
+        }
+        if (opt.NeedsPower && string.IsNullOrWhiteSpace(cond.PowerId))
+            issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」还没选状态。"));
+        else if (opt.NeedsPower && EffectCatalog.FindPower(cond.PowerId) is null && !EffectCatalog.IsCustomPower(cond.PowerId))
+            issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」里的状态找不到：{cond.PowerId}。"));
+        if (opt.NeedsAmount && cond.Amount <= 0)
+            issues.Add(new("警告", $"{owner} 的条件「{opt.Display}」填的数值是 {cond.Amount}，条件会永远不成立。"));
+        if (opt.NeedsTarget && !EffectCatalog.ConditionTargets.Any(t => t.Id == cond.Target))
+            issues.Add(new("错误", $"{owner} 的条件的「指向对象」非法：{cond.Target}。"));
+        // 「指定敌人」= 玩家给这张牌选的目标：只有写在效果里才知道结果
+        if (opt.NeedsTarget && string.Equals(cond.Target, "Enemy", StringComparison.OrdinalIgnoreCase))
+        {
+            if (cond.UnplayableWhenUnmet)
+                issues.Add(new("警告", $"{owner} 的条件指向对象是「指定敌人」，同时勾了「不满足时打不出去」——"
+                    + "打出前玩家还没选目标，这项判定做不了，已按「只包住这条效果」处理（想拦住打出请改用「任意一个敌人」）。"));
+            else
+                issues.Add(new("提示", $"{owner} 的条件指向对象是「指定敌人」：按你给这张牌选的那个目标判断，效果条生效；"
+                    + "（「不满足时打不出去」那种整张牌判定用不了这个对象。）"));
+        }
+    }
+}

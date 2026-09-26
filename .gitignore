@@ -1,0 +1,53 @@
+# ============================================================
+# 重要：本仓库绝不能提交任何《杀戮尖塔 2》的游戏内容
+# （美术/音频/场景/DLL/本地化文本）。下面这些路径都会产生这类文件。
+# ============================================================
+
+# 从玩家本机游戏目录复制来的依赖（sts2.dll / 0Harmony.dll 等）——版权属于游戏方
+libs/
+addons/
+
+# 生成出来的模组工程 / 打包产物（里面含本体派生资源）
+build/
+*.pck
+*.dll
+*.pdb
+!**/Sts2CharForge*/**/*.dll
+
+# 程序内置的效果库数据：由 tools/build_power_catalog.ps1 从你自己的解包工程生成，
+# 不随仓库发布（运行时从玩家本机文件读取）
+src/Sts2CharForge.Core/Data/powers_catalog.json
+
+# 注意：src/Sts2CharForge.Core/Assets/placeholder_character.png 是「本工具自己的」静态立绘占位图
+# （默认取自用户提供的 zwt.png，不是游戏素材），需要随仓库发布，因此**不**在这里忽略。
+# 如果不想发布这张图，删掉它、并在界面上传自己的立绘即可。
+
+# 构建输出 / IDE / 工具缓存
+bin/
+obj/
+.godot/
+.idea/
+.vs/
+*.user
+
+# 生成器默认输出目录（含用户生成的角色工程与上传的美术）
+自定义角色/
+_arttest/
+_verify/
+generated/
+
+# 本地路径配置与自检结果
+*.log
+uicheck_result.txt
+buildtest_result.txt
+crash_log.txt
+
+# 本机发布配置（token 绝不能进仓库；仓库地址每台机器可能不同）
+docs/release_token.txt
+docs/release_repo.txt
+# 本机的打包/暂存/素材目录（体积大或含隐私，绝不能进仓库）
+_app_out/
+_tmp/
+_packaging_keep/
+_art/
+*.zip

@@ -1,0 +1,40 @@
+# Sts2CharForge 启动帮助（由「启动 Sts2CharForge.bat」在找不到 exe 时调用）
+# 这个文件是 UTF-8 带 BOM 的 .ps1，中文不受本机代码页影响。
+param(
+    [string]$Here = "",
+    [string]$Reason = "exe-missing"
+)
+$ErrorActionPreference = "Continue"
+if (-not $Here) { $Here = $PSScriptRoot }
+if (-not $Here.EndsWith("\")) { $Here += "\" }
+
+$log = Join-Path $Here "启动失败日志.txt"
+try {
+    Add-Content -Path $log -Encoding UTF8 -Value ("[{0}] 启动失败：{1}  目录={2}" -f (Get-Date).ToString("yyyy-MM-dd HH:mm:ss"), $Reason, $Here)
+} catch { }
+
+Write-Host ""
+Write-Host "==================== 程序没能启动 ====================" -ForegroundColor Red
+Write-Host ""
+Write-Host "没找到「程序文件\Sts2CharForge.exe」。常见原因：" -ForegroundColor Yellow
+Write-Host "  1. 直接在压缩包里双击运行了启动器 —— 请先“全部解压”，再双击解压出来的启动器；"
+Write-Host "  2. 只解压了启动器，没有解压「程序文件」这个文件夹；"
+Write-Host "  3. 杀毒软件 / Windows 安全中心把 exe 当成威胁删掉了。"
+Write-Host ""
+Write-Host "如果 exe 确实在、双击 程序文件\Sts2CharForge.exe 也打不开，多半是系统拦截：" -ForegroundColor Yellow
+Write-Host "  右键 Sts2CharForge.exe → 属性 → 勾选“解除锁定”；出现“Windows 已保护你的电脑”时点"
+Write-Host "  “更多信息 → 仍要运行”。被杀毒隔离的，去杀毒软件里恢复并加白名单。"
+Write-Host ""
+Write-Host ("启动器所在目录：" + $Here) -ForegroundColor Gray
+Write-Host ("已把这次失败记到：" + $log) -ForegroundColor Gray
+Write-Host ""
+
+# 交互式运行时：打开所在目录方便对照，然后等按键；被脚本调用（stdin 被重定向）时直接结束，
+# 否则 ReadKey 会一直等下去（踩过：测试里卡了 10 分钟）。
+if ([Console]::IsInputRedirected) {
+    exit 1
+}
+try { Start-Process explorer.exe $Here } catch { }
+Write-Host "按任意键关闭本窗口…"
+try { $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown") } catch { Start-Sleep -Seconds 5 }
+exit 1

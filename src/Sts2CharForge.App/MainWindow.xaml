@@ -1,0 +1,1138 @@
+<Window x:Class="Sts2CharForge.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Sts2CharForge.App"
+        Title="Sts2CharForge —— 杀戮尖塔2 自定义角色生成器" Height="880" Width="1420"
+        Icon="waku.ico"
+        WindowStartupLocation="CenterScreen">
+    <DockPanel>
+
+        <Border DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
+            <StackPanel Orientation="Horizontal">
+                <Button Content="新建配置" Padding="10,4" Margin="2" Click="OnNewProfile"/>
+                <Button Content="打开配置…" Padding="10,4" Margin="2" Click="OnOpenProfile"/>
+                <Button Content="保存配置" Padding="10,4" Margin="2" Click="OnSaveProfile"
+                        ToolTip="直接保存进当前这个存档文件（不再弹路径选择）。若「模组 ID」和存档文件名不一样，会问一次要不要把存档名也改成 &lt;模组 ID&gt;.json；答「否」就仍然保存进原文件。想存成另一个文件请用「配置存档」页的「另存为新存档…」"/>
+                <Separator Margin="8,0"/>
+                <Button Content="① 一键生成 · 构建 · 安装" Padding="12,4" Margin="2" FontWeight="Bold"
+                        ToolTip="按当前配置重新生成工程 → 编译 → 导出 PCK → 安装到安装目录（后台执行，界面不会卡住）"
+                        Click="OnBuildInstall"/>
+                <Button Content="仅生成工程（不编译）" Padding="10,4" Margin="2"
+                        ToolTip="只把 C#/资源工程写到输出目录，方便用 Rider 打开查看" Click="OnGenerate"/>
+                <Separator Margin="8,0"/>
+                <TextBlock Text="安装目录：" VerticalAlignment="Center"/>
+                <TextBox Width="380" VerticalAlignment="Center" Padding="3"
+                         Text="{Binding Profile.Paths.InstallDir, UpdateSourceTrigger=PropertyChanged}"/>
+                <Button Content="选择…" Padding="8,4" Margin="4,0" Click="OnPickInstallDir"/>
+            </StackPanel>
+        </Border>
+
+        <StatusBar x:Name="MainStatusBar" DockPanel.Dock="Bottom">
+            <!-- 左下角：卡牌数量统计（攻击 / 技能 / 能力 + 总数），一直能看到，改完立刻更新 -->
+            <StatusBarItem>
+                <TextBlock Text="{Binding CardCountText}" Foreground="#333" FontWeight="SemiBold"/>
+            </StatusBarItem>
+            <Separator/>
+            <StatusBarItem><TextBlock Text="{Binding StatusText}"/></StatusBarItem>
+        </StatusBar>
+
+        <TabControl x:Name="MainTabs" Margin="6">
+
+            <!-- ============ 角色 ============ -->
+            <TabItem x:Name="RoleTab" Header="角色">
+                <ScrollViewer>
+                    <Grid Margin="10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="320"/>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="320"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="模组 ID" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.ModId, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="模组显示名" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="0" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding Profile.ModDisplayName, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="角色英文类名" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.CharacterClass, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="角色显示名" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="1" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding Profile.DisplayName, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Text="初始生命" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.StartingHp, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="2" Text="初始金币" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Row="2" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding Profile.StartingGold, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Text="性别" Style="{StaticResource Label}"/>
+                        <ComboBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding Genders}" SelectedItem="{Binding Profile.Gender}"/>
+                        <TextBlock Grid.Row="3" Grid.Column="2" Text="攻击/施法动画延迟" Style="{StaticResource Label}"/>
+                        <StackPanel Grid.Row="3" Grid.Column="3" Orientation="Horizontal">
+                            <TextBox Width="70" Style="{StaticResource Field}" Text="{Binding Profile.AttackAnimDelay, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Width="70" Style="{StaticResource Field}" Text="{Binding Profile.CastAnimDelay, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Text="作者 / 版本" Style="{StaticResource Label}"/>
+                        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal">
+                            <TextBox Width="140" Style="{StaticResource Field}" Text="{Binding Profile.Author, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBox Width="90" Style="{StaticResource Field}" Text="{Binding Profile.Version, UpdateSourceTrigger=PropertyChanged}"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Text="角色描述" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                        <TextBox Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="3" Height="60" AcceptsReturn="True" TextWrapping="Wrap"
+                                 Style="{StaticResource Field}" Text="{Binding Profile.Description, UpdateSourceTrigger=PropertyChanged}"/>
+
+                        <TextBlock Grid.Row="6" Grid.Column="0" Text="死亡描述文本" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                        <TextBox Grid.Row="6" Grid.Column="1" Grid.ColumnSpan="3" Height="44" AcceptsReturn="True" TextWrapping="Wrap"
+                                 Style="{StaticResource Field}" Text="{Binding Profile.DeathText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="死亡结算画面上、角色立绘下面那句带引号的话（例：被 X 打败了）。本体的那句是按遭遇/放弃/假胜利随机取的通用文案，没有「每个角色一句」的键 —— 工具会打补丁把它换成你写的这句（只对你的角色生效）。"/>
+
+                        <TextBlock Grid.Row="7" Grid.Column="0" Text="阵亡后台词" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                        <TextBox Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="3" Height="44" AcceptsReturn="True" TextWrapping="Wrap"
+                                 Style="{StaticResource Field}" Text="{Binding Profile.DeadBanterText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="自己阵亡的那一刻冒出的对话气泡（3 秒）。本体原本只有「角色名.banter.dead.endTurnPing」这个键，而它只在联机「回合结束 ping」时才会显示 —— 单人游戏永远看不到，所以工具额外在阵亡瞬间用它冒一个气泡。"/>
+
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="（和先古之民/建筑师的对话）" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                        <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="#888" Margin="4,0,0,0"
+                                   Text="已移到「先古之民」页：左边选先古之民（建筑师的对话也在那里），右边一段一段写。"/>
+
+                        <TextBlock Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
+                                   Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ============ 额外资源量 / 状态 ============ -->
+            <TabItem x:Name="ExtraResourceTab" Header="额外资源量/状态">
+                <ScrollViewer>
+                    <StackPanel Margin="14" DataContext="{Binding Profile.ExtraResource}">
+                        <TextBlock Text="额外资源量（和能量一样是个计数器，显示在血条下方、与状态同一行）"
+                                   FontSize="15" FontWeight="Bold" TextWrapping="Wrap"/>
+                        <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#777"
+                                   Text="说明：本体没有「自定义资源」这种扩展点，所以额外资源量做在本体已有的「资源计数器」上——位置是本体的，开启后会自动多一个隐藏的起始遗物来发放数量（它不占玩法位置）。图标和名字可以换成你自己的（见下面）。"/>
+                        <CheckBox Margin="0,14,0,0" Style="{StaticResource Check}"
+                                  Content="启用额外资源量" IsChecked="{Binding Enabled}"/>
+
+                        <TextBlock Margin="0,12,0,0" Text="初始数量（每场战斗开始时发放的数量）" Style="{StaticResource Label}"/>
+                        <TextBox Width="120" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                                 Text="{Binding Initial, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="0,2,0,0" Text="填 0 = 开场不发放（只靠卡牌/遗物/药水获得）" Foreground="#888"/>
+
+                        <CheckBox Margin="0,12,0,0" Style="{StaticResource Check}"
+                                  Content="跨战斗继承（下一场开场数量 = 初始数量 + 上一场结束时剩下的）"
+                                  IsChecked="{Binding CarryOver}"/>
+                        <TextBlock Margin="24,2,0,0" Text="不勾选：每场战斗开始都固定发放初始数量，战斗结束清空" Foreground="#888"/>
+
+                        <CheckBox Margin="0,12,0,0" Style="{StaticResource Check}"
+                                  Content="始终显示计数器（不勾选时只在数量大于 0 时显示）"
+                                  IsChecked="{Binding AlwaysShowCounter}"/>
+
+                        <TextBlock Margin="0,22,0,4" Text="显示名（中文名，留空 = 沿用本体的「辉星」）"
+                                   FontSize="15" FontWeight="Bold" TextWrapping="Wrap"/>
+                        <TextBox Width="220" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                                 TextChanged="OnExtraResourceNameChanged"
+                                 Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888"
+                                   Text="换了名字后：计数器下方、鼠标悬停提示、卡面描述（「获得 2 点××」）、条件说明（「拥有××至少 4 点」）都会用这个名字。建议 2~4 个字（计数器下那条比较窄）。"/>
+                        <CheckBox Margin="0,8,0,0" Style="{StaticResource Check}"
+                                  Content="在计数器下方显示名字（不勾选 = 只在鼠标悬停提示里显示）"
+                                  IsChecked="{Binding ShowName}"/>
+
+                        <TextBlock Margin="0,22,0,4" Text="自定义图标（留空 = 沿用本体的星星图标）"
+                                   FontSize="15" FontWeight="Bold" TextWrapping="Wrap"/>
+                        <DockPanel LastChildFill="True">
+                            <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0"
+                                    Click="OnPickExtraResourceIcon"/>
+                            <Button DockPanel.Dock="Left" Content="清除" Padding="10,3"
+                                    Click="OnClearExtraResourceIcon"/>
+                            <TextBox Style="{StaticResource Field}" IsReadOnly="True"
+                                     Text="{Binding Icon, Mode=OneWay}"/>
+                        </DockPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                            <Border Width="72" Height="72" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
+                                <Image Margin="2" Stretch="Uniform"
+                                       Source="{Binding ExtraResourceIconPreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                            </Border>
+                            <TextBlock Margin="10,0,0,0" TextWrapping="Wrap" Width="360" Foreground="#888"
+                                       Text="建议方形 PNG（128×128 或 256×256）带透明背景：本体的计数器是个 128×128 的方框，非方图会上下留白。换图之后本体星星的两层旋转光效会被隐藏。"/>
+                        </StackPanel>
+
+                        <TextBlock Margin="0,20,0,0" TextWrapping="Wrap" Foreground="#666"
+                                   Text="在「卡牌 / 遗物 / 药水」的效果里可以选「获得额外资源量」：正数 = 获得，负数 = 花费。卡牌上的花费会写成这张牌的额外资源量费用——当前数量不够时，本体自带的判定会让这张牌直接打不出去（卡面费用数字显示成红色）。"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ============ 卡牌 ============ -->
+            <TabItem Header="卡牌">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <GroupBox DockPanel.Dock="Top" Header="卡牌配色（整个角色生效）" Margin="0,0,0,8">
+                            <StackPanel DataContext="{Binding Profile.Colors}">
+                                <TextBlock Text="配色预设" Style="{StaticResource Label}"/>
+                                <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Name"
+                                          ItemsSource="{Binding PresetItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          SelectedItem="{Binding PresetSelection, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                <TextBlock Text="卡牌边框" Style="{StaticResource Label}"/>
+                                <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Name"
+                                          ItemsSource="{Binding FrameItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          SelectedItem="{Binding FrameSelection, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                <TextBlock Text="卡牌边框颜色（RRGGBB，留空 = 用上面的边框）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0"
+                                            BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding CardFrameColor, Converter={StaticResource HexBrush}}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding CardFrameColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <TextBlock Text="牌堆底色（RRGGBB）" Style="{StaticResource Label}"/>
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0"
+                                            BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding DeckEntryColor, Converter={StaticResource HexBrush}}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding DeckEntryColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <TextBlock Text="能量图标描边（RRGGBB）" Style="{StaticResource Label}"/>
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0"
+                                            BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding EnergyOutlineColor, Converter={StaticResource HexBrush}}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding EnergyOutlineColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="对应本体的卡池配色：边框材质 materials/cards/frames/&lt;框色&gt;_mat.tres、牌堆底色、能量图标描边。只影响外观配色。"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加卡牌" Padding="8,4" Margin="0,0,6,0" Click="OnAddCard"/>
+                            <Button Content="＋打击/防御" Padding="8,4" Margin="0,0,6,0" Click="OnAddVanillaBasics"
+                                    ToolTip="把初始卡组用的「打击 ×5 / 防御 ×5」补回列表最上面。它们是你自己的卡（英文类名固定 Strike / Defend，数值默认照抄本体），标了本体卡标签 Strike / Defend —— 本体那些「升级你的初始打击 / 防御」的遗物就是按这个标签认牌的"/>
+                            <Button Content="复制" Padding="8,4" Margin="0,0,6,0" Click="OnCopyCard"/>
+                            <Button Content="删除" Padding="8,4" Click="OnRemoveCard"/>
+                            <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                          IsChecked="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                            <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllCards"
+                                    Visibility="{Binding MultiSelectCards, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="选中列表里的全部卡牌"/>
+                            <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                    IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                        </WrapPanel>
+                        <ListBox x:Name="CardList" SelectionMode="{Binding MultiSelectCards, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Cards}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+
+                    <!-- 没选中卡牌时：收起属性/效果栏，只留一句提示 -->
+                    <TextBlock x:Name="CardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择卡牌"
+                               Visibility="{Binding SelectedItem, ElementName=CardList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <Grid x:Name="CardDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=CardList}"
+                          Visibility="{Binding SelectedItem, ElementName=CardList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      Padding="0,0,6,0">
+                        <StackPanel>
+                            <TextBlock Text="卡牌属性" FontWeight="Bold" Margin="0,0,0,6"/>
+                            <!-- 本体卡（打击 / 防御）：数值由本体决定，不能改 —— 只有「初始份数 / 作为初始牌」可用 -->
+                            <Border Background="#FFF8E1" BorderBrush="#F0D48A" BorderThickness="1" Padding="6" Margin="0,0,0,6"
+                                    Visibility="{Binding IsVanillaCard, Converter={StaticResource BoolToVis}}">
+                                <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontSize="11"
+                                           Text="这是本体卡（只做引用）：初始卡组里用它的本体英文类名，数值 / 效果 / 关键字都由本体决定，不能改。本体的模型 ID 只按类名算，自己再造一张同名的卡会让模组加载直接报 DuplicateModelException。可以改「初始份数」，也可以整条删掉。"/>
+                            </Border>
+                            <TextBlock Text="名称（中文，列表里显示用）" Style="{StaticResource Label}"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="英文类名（本体卡 = 本体英文类名，如 StrikeIronclad / DefendIronclad；自定义卡留空 = 自动生成 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="类型" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
+                            <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                            <TextBlock Text="费用" Style="{StaticResource Label}"/>
+                            <TextBox Style="{StaticResource Field}" IsEnabled="{Binding ValueEditable}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
+                            <CheckBox Content="X 费用（消耗全部能量，X = 消耗掉的能量）" Style="{StaticResource Check}"
+                                      IsEnabled="{Binding ValueEditable}"
+                                      IsChecked="{Binding CostIsX}"
+                                      ToolTip="本体储君「天际钻头」、亡灵契约师「挽歌」那种：构造函数费用写 0，本体用 HasEnergyCostX 表示，X 值用 ResolveEnergyXValue() 取。配合效果里的「= X」使用。"/>
+                            <CheckBox Content="额外资源量费用为 X（消耗全部额外资源量）" Style="{StaticResource Check}"
+                                      IsEnabled="{Binding ValueEditable}"
+                                      IsChecked="{Binding StarCostIsX}"
+                                      ToolTip="本体储君「星尘」那种：用 HasStarCostX 表示，X = 打出时消耗掉的额外资源量（ResolveStarXValue）。需要同时有一条「花费额外资源量」的负数效果。"/>
+                            <CheckBox Content="升级后 X +1（本体铁甲战士「倾泻 / Cascade」那样）" Style="{StaticResource Check}"
+                                      IsEnabled="{Binding ValueEditable}"
+                                      IsChecked="{Binding XPlusOnUpgrade}"/>
+                            <CheckBox Content="作为初始牌" Style="{StaticResource Check}" IsChecked="{Binding InStartingDeck}"/>
+                            <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
+                            <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
+                            <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding InCardPool}"/>
+                            <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                            <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
+                                <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>
+                                <CheckBox Content="虚无（回合末未打出则消耗）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Ethereal}"/>
+                                <CheckBox Content="固有（开局必在手牌）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Innate}"/>
+                                <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
+                                <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
+                                <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
+                            </WrapPanel>
+                            <TextBlock Text="本体卡标签（CardTag，别的模型按它查牌）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"
+                                       Text="初始的「打击 / 防御」就是靠 Strike / Defend 这两个标签被本体那些「升级你的初始打击 / 防御」的遗物认出来的（妮欧的护符、叶敷剂、大胶囊、幽灵种子…，有些还会再加「稀有度 = Basic」这一条）。给别的牌标上 Strike 还能吃到「完美打击」这类按打击牌算的加成。"/>
+                            <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
+                                <CheckBox Content="Strike（打击）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TagStrike}"
+                                          ToolTip="标成「打击」牌：升级初始打击的遗物、只对打击牌生效的卡牌都会认它"/>
+                                <CheckBox Content="Defend（防御）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TagDefend}"
+                                          ToolTip="标成「防御」牌（生成时会自动加上 GainsBlock = true，和本体的防御牌一样）"/>
+                                <CheckBox Content="Minion（仆从）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TagMinion}"
+                                          ToolTip="本体「仆从俯冲 / 仆从捐躯 / 仆从强击」那类牌用的标签。储君的商店遗物「维特鲁威仆从」会给带这个标签的牌双倍伤害与格挡"/>
+                                <CheckBox Content="OstyAttack（奥斯提的攻击）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TagOstyAttack}"
+                                          ToolTip="亡灵契约师那只骷髅随从「奥斯提」的攻击牌用的标签（碎骨 / 戳击 / 重压 / 榨取…）；本体多张牌按它计数"/>
+                                <CheckBox Content="Shiv（小刀）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TagShiv}"
+                                          ToolTip="静默猎手的小刀用的标签；精准 / 幻影之刃 / 刀刃陷阱 这些按它生效"/>
+                            </WrapPanel>
+                            <TextBlock Text="升级后的关键字（不变 / 升级后获得 / 升级后失去）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"
+                                       Text="本体就是这么做的：残影升级后获得「固有」、幻影升级后失去「虚无」、寒冰升级后失去「消耗」。升级后才生效，升级前不受影响。"/>
+                            <ItemsControl Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding UpgradeKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                                            <TextBlock Text="{Binding Zh}" Width="120" VerticalAlignment="Center"/>
+                                            <ComboBox Width="140" Style="{StaticResource Pick}"
+                                                      ItemsSource="{Binding KeywordUpgradeStates, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                      SelectedValue="{Binding State, Mode=TwoWay}"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" IsEnabled="{Binding ValueEditable}" Click="OnPickCardPortrait"/>
+                            <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
+                                <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                            </Border>
+                        </StackPanel>
+                        </ScrollViewer>
+
+                        <!-- 本体卡（打击 / 防御）没有效果可编：整列禁用（数值由本体决定） -->
+                        <DockPanel Grid.Column="2" IsEnabled="{Binding ValueEditable}">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=CardEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=CardEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                        IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <ListBox x:Name="CardEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="Display"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=CardEffectList}">
+                                    <!-- 条件选项跟着每条效果走（在效果编辑面板的最下面），不再挂整张牌 -->
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorCard}"/>
+                                </Border>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 遗物 ============ -->
+            <TabItem Header="遗物">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加遗物" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelic"/>
+                            <Button Content="删除" Padding="8,4" Click="OnRemoveRelic"/>
+                            <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                          IsChecked="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                            <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllRelics"
+                                    Visibility="{Binding MultiSelectRelics, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="选中列表里的全部遗物"/>
+                            <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoRelic"
+                                    IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
+                        </WrapPanel>
+                        <ListBox x:Name="RelicList" SelectionMode="{Binding MultiSelectRelics, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Relics}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+                    <TextBlock x:Name="RelicEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择遗物"
+                               Visibility="{Binding SelectedItem, ElementName=RelicList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <Grid x:Name="RelicDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=RelicList}"
+                          Visibility="{Binding SelectedItem, ElementName=RelicList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/></Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                        <StackPanel>
+                            <TextBlock Text="遗物属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                            <TextBlock Text="名称（中文）" Style="{StaticResource Label}"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="英文类名（留空 = 自动生成 &lt;角色类名&gt;Relic&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding RelicRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                            <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Trigger}"/>
+                            <CheckBox Content="作为初始遗物" Style="{StaticResource Check}" IsChecked="{Binding IsStartingRelic}"/>
+                            <CheckBox Content="加入遗物池（宝箱/精英/商店）" Style="{StaticResource Check}" IsChecked="{Binding InRelicPool}"/>
+                            <Button Content="上传遗物图标…（建议 256×256 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickRelicIcon"/>
+                            <Border BorderBrush="#DDD" BorderThickness="1" Height="130" Width="130" HorizontalAlignment="Left" Margin="6,4,0,0" Background="#FAFAFA">
+                                <Image Source="{Binding RelicIconPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                            </Border>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,8,0,0"
+                                       Text="提示：本体的遗物都靠「稀有度 + 触发时机 + 效果」组成；初始遗物请把稀有度设为 Starter，并勾选「作为初始遗物」。"/>
+                        </StackPanel>
+                        </ScrollViewer>
+                        <DockPanel Grid.Column="2">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=RelicEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=RelicEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoRelic"
+                                        IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <ListBox x:Name="RelicEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=RelicEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlain}"/>
+                                </Border>
+
+                                <!-- 条件选项：整只遗物的触发条件（不满足时整个遗物不触发）；每条效果自己的条件在效果栏里 -->
+                                <GroupBox x:Name="RelicConditionBox" Grid.Row="3" Header="条件选项（整只遗物：不满足时不触发）" Margin="0,8,0,0">
+                                    <Grid Margin="4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="160"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
+                                        <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                                                  ItemsSource="{Binding RelicConditions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                  SelectedValue="{Binding Condition.Kind}"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
+                                                   Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBox Grid.Row="1" Grid.Column="1" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                                                 Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
+                                                 Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <TextBlock Grid.Row="1" Grid.Column="2" Text="状态（增益 / 减益）" Style="{StaticResource Label}"
+                                                   Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
+                                        <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
+                                                 Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
+                                                 ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                 SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
+                                                 SearchPath="Display">
+                                            <local:SearchComboBox.ItemTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                            </local:SearchComboBox.ItemTemplate>
+                                        </local:SearchComboBox>
+                                        <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
+                                                   Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
+                                        <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                                                  Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
+                                                  ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                  SelectedValue="{Binding Condition.Target}"/>
+                                    </Grid>
+                                </GroupBox>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 药水 ============ -->
+            <TabItem Header="药水">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加药水" Padding="8,4" Margin="0,0,6,0" Click="OnAddPotion"/>
+                            <Button Content="删除" Padding="8,4" Click="OnRemovePotion"/>
+                            <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                          IsChecked="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                            <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllPotions"
+                                    Visibility="{Binding MultiSelectPotions, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="选中列表里的全部药水"/>
+                            <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoPotion"
+                                    IsEnabled="{Binding CanUndoPotion}" ToolTip="{Binding UndoPotionHint}"/>
+                        </WrapPanel>
+                        <ListBox x:Name="PotionList" SelectionMode="{Binding MultiSelectPotions, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Potions}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+                    <TextBlock x:Name="PotionEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择药水"
+                               Visibility="{Binding SelectedItem, ElementName=PotionList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <Grid x:Name="PotionDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=PotionList}"
+                          Visibility="{Binding SelectedItem, ElementName=PotionList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/></Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                        <StackPanel>
+                            <TextBlock Text="药水属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                            <TextBlock Text="名称（中文）" Style="{StaticResource Label}"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="英文类名（留空 = 自动生成 &lt;角色类名&gt;Potion&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                            <TextBlock Text="使用时机" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionUsages, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Usage}"/>
+                            <TextBlock Text="作用目标" Style="{StaticResource Label}"/>
+                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionTargets, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding TargetType}"/>
+                            <CheckBox Content="加入药水池" Style="{StaticResource Check}" IsChecked="{Binding InPotionPool}"/>
+                            <Button Content="上传药水图标…（建议 256×256 PNG，物品栏与弹窗都用它）" Padding="8,4" Margin="6,6,0,0"
+                                    HorizontalAlignment="Left" Click="OnPickPotionIcon"/>
+                            <Border BorderBrush="#DDD" BorderThickness="1" Height="130" Width="130" HorizontalAlignment="Left" Margin="6,4,0,0" Background="#FAFAFA">
+                                <Image Source="{Binding PotionIconPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                            </Border>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,8,0,0"
+                                       Text="提示：选「任意时机」时不要用造成伤害/抽牌/挂减益这类需要战斗的效果，生成时会被忽略。&#10;药水实际打谁由上面的「作用目标」决定，卡面描述会按它生成（效果里的「作用对象」对药水不起作用）。"/>
+                        </StackPanel>
+                        </ScrollViewer>
+                        <DockPanel Grid.Column="2">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=PotionEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=PotionEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoPotion"
+                                        IsEnabled="{Binding CanUndoPotion}" ToolTip="{Binding UndoPotionHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <ListBox x:Name="PotionEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=PotionEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotion}"/>
+                                </Border>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 先古之民 ============ -->
+            <TabItem x:Name="AncientTab" Header="先古之民">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="左边选一位先古之民，右边填和他的对话（槽位从本机解包工程读取）。"/>
+                        <TextBlock x:Name="AncientEmptyHint" DockPanel.Dock="Bottom" TextWrapping="Wrap" Foreground="#B00" Margin="0,6,0,0"
+                                   Visibility="{Binding AncientCatalogMissing, Converter={StaticResource BoolToVis}}"
+                                   Text="读不到先古之民列表：请到「构建 / 日志」页指定「解包后的原版工程目录」，然后回这里（列表会自动刷新）。"/>
+                        <ListBox x:Name="AncientList" ItemsSource="{Binding Ancients}" DisplayMemberPath="Display"
+                                 SelectionChanged="OnAncientSelectionChanged"/>
+                    </DockPanel>
+
+                    <TextBlock x:Name="AncientNoSelectHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请先选择左边的先古之民"
+                               Visibility="{Binding SelectedItem, ElementName=AncientList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
+                                  Visibility="{Binding SelectedItem, ElementName=AncientList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <StackPanel DataContext="{Binding SelectedItem, ElementName=AncientList}">
+                            <TextBlock Text="{Binding Display}" FontSize="15" FontWeight="Bold" TextWrapping="Wrap"/>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <Button Content="加一段对话" Padding="8,4" Margin="0,0,6,0" Click="OnAddAncientDialogue"/>
+                                <Button Content="删掉这一段" Padding="8,4" Click="OnRemoveAncientDialogue" Tag="{Binding ElementName=AncientDialogueList}"/>
+                            </StackPanel>
+
+                            <ListBox x:Name="AncientDialogueList" ItemsSource="{Binding Dialogues}" MaxHeight="120" Margin="0,0,0,8">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <Border BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,0,0,8"
+                                    DataContext="{Binding SelectedItem, ElementName=AncientDialogueList}">
+                                <StackPanel>
+                                    <TextBlock Text="这一段" FontWeight="Bold"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#888"
+                                               Text="{Binding SelectedItem.UnitHint, ElementName=AncientList}"/>
+                                    <Grid Margin="0,6,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Style="{StaticResource Label}"
+                                                   Text="{Binding SelectedItem.UnitFieldLabel, ElementName=AncientList}"/>
+                                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Margin="4,0,10,0"
+                                                 ToolTip="{Binding SelectedItem.UnitHint, ElementName=AncientList}"
+                                                 Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <CheckBox Grid.Column="2" Grid.ColumnSpan="2" Style="{StaticResource Check}"
+                                                  Content="说完加入重复池（以后每次到访都可能随机再说这段）"
+                                                  IsChecked="{Binding Repeating}"/>
+                                    </Grid>
+
+                                    <ItemsControl ItemsSource="{Binding Lines}" Margin="0,8,0,0">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,0,0,6">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="120"/><ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="120"/><ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <ComboBox Grid.Column="0" Style="{StaticResource Pick}" Margin="0,0,8,0"
+                                                              ItemsSource="{Binding SpeakerOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              DisplayMemberPath="Display" SelectedValuePath="Value"
+                                                              SelectedValue="{Binding AncientSpeaks}"/>
+                                                    <TextBox Grid.Column="1" Style="{StaticResource Field}" MinHeight="40"
+                                                             AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
+                                                             Text="{Binding Text, UpdateSourceTrigger=PropertyChanged}"/>
+                                                    <TextBox Grid.Column="2" Style="{StaticResource Field}" Margin="8,0,0,0"
+                                                             ToolTip="「下一句」按钮上的字（最后一句用不到）"
+                                                             Text="{Binding NextText, UpdateSourceTrigger=PropertyChanged}"/>
+                                                    <Button Grid.Column="3" Content="删这一句" Padding="6,2" Margin="6,0,0,0"
+                                                            Click="OnRemoveAncientLine"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <Button Content="加一句" Padding="8,4" HorizontalAlignment="Left" Margin="0,4,0,0" Click="OnAddAncientLine"/>
+                                </StackPanel>
+                            </Border>
+
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" Text="{Binding Hint}"/>
+
+                            <!-- 遗物替换：左边罗列他原本会给的遗物，右边是替换记录（记录要看得清、放得下） -->
+                            <GroupBox Header="把原本会给的遗物换成你要的" Margin="0,14,0,0">
+                                <Grid Margin="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" MinWidth="240"/>
+                                        <ColumnDefinition Width="10"/>
+                                        <ColumnDefinition Width="1.2*" MinWidth="280"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- 左：原本会给的遗物清单 -->
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="① 他原本会给的遗物（点一个）" FontWeight="Bold" FontSize="13"/>
+                                        <TextBlock TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,3,0,4"
+                                                   Text="本体每位先古之民会从这张候选表里筛选 → 洗牌 → 随机给你 3 个（有时第 3 个是「尘封古书」）。"/>
+                                        <TextBlock Margin="0,0,0,4" Foreground="#888" FontSize="11" TextWrapping="Wrap"
+                                                   Text="{Binding AncientOriginalRelicSummary, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                        <ListBox x:Name="AncientOriginalRelicList" MinHeight="180" MaxHeight="320"
+                                                 ItemsSource="{Binding AncientOriginalRelics, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                 DisplayMemberPath="Display"/>
+                                        <Button Content="② 替换掉选中的这个 →" Padding="8,5" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                                Click="OnReplaceSelectedOriginalRelic"
+                                                ToolTip="按选中的「原本的遗物」加一条替换记录（会出现在右边），然后再在右边选「换成哪个遗物」。"/>
+                                    </StackPanel>
+
+                                    <!-- 右：替换记录 + 明细 -->
+                                    <DockPanel Grid.Column="2">
+                                        <TextBlock DockPanel.Dock="Top" Text="③ 替换记录（这里能看到每条到底换什么）" FontWeight="Bold" FontSize="13"/>
+                                        <WrapPanel DockPanel.Dock="Top" Margin="0,4,0,6">
+                                            <Button Content="加一条" Padding="8,4" Margin="0,0,6,0" Click="OnAddAncientRelicReplace"/>
+                                            <Button Content="删掉这条" Padding="8,4" Click="OnRemoveAncientRelicReplace" Tag="{Binding ElementName=AncientRelicReplaceList}"/>
+                                        </WrapPanel>
+                                        <!-- 明细放在下面，列表给足高度：小窗口也看得见整条内容 -->
+                                        <Border x:Name="AncientRelicReplaceDetail" DockPanel.Dock="Bottom" BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,6,0,0"
+                                                DataContext="{Binding SelectedItem, ElementName=AncientRelicReplaceList}">
+                                            <StackPanel>
+                                                <TextBlock Text="原本的遗物（他原本会给的）" FontWeight="Bold"/>
+                                                <local:SearchComboBox Margin="0,4,0,0"
+                                                                      ItemsSource="{Binding AncientOriginalRelics, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      SelectedValuePath="Id" SelectedValue="{Binding FromRelicId, Mode=TwoWay}"
+                                                                      SearchPath="Display"
+                                                                      ToolTip="只能从他原本会给的遗物里挑（左边那个列表就是这些）。">
+                                                    <local:SearchComboBox.ItemTemplate>
+                                                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                                    </local:SearchComboBox.ItemTemplate>
+                                                </local:SearchComboBox>
+                                                <TextBlock Text="换成哪个遗物（本体的其它遗物 + 你自己做的）" FontWeight="Bold" Margin="0,8,0,0"/>
+                                                <local:SearchComboBox Margin="0,4,0,0"
+                                                                      ItemsSource="{Binding AncientRelicChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                      SelectedValuePath="Id" SelectedValue="{Binding RelicId, Mode=TwoWay}"
+                                                                      SearchPath="Display"
+                                                                      ToolTip="要换成你自己做的遗物，先在「遗物」页把它做出来，这里列表最后就是。">
+                                                    <local:SearchComboBox.ItemTemplate>
+                                                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                                    </local:SearchComboBox.ItemTemplate>
+                                                </local:SearchComboBox>
+                                                <TextBlock Margin="2,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#888"
+                                                           Text="{Binding StateText}"/>
+                                            </StackPanel>
+                                        </Border>
+                                        <ListBox x:Name="AncientRelicReplaceList" MinHeight="180" MaxHeight="320"
+                                                 ItemsSource="{Binding RelicReplacements}">
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Padding="6,4" Margin="0,1">
+                                                        <StackPanel>
+                                                            <TextBlock Text="{Binding FromDisplay}" TextWrapping="Wrap"/>
+                                                            <TextBlock Text="{Binding ToDisplay}" TextWrapping="Wrap" Margin="0,1,0,0"/>
+                                                            <TextBlock Text="{Binding StateText}" TextWrapping="Wrap" Margin="0,2,0,0"
+                                                                       FontSize="11"
+                                                                       Foreground="{Binding StateOk, Converter={StaticResource OkToBrush}}"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </DockPanel>
+                                </Grid>
+                            </GroupBox>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 本体状态改写 ============ -->
+            <TabItem x:Name="PowerOverrideTab" Header="本体状态改写">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" MinWidth="300"/><ColumnDefinition Width="10"/><ColumnDefinition Width="640" MinWidth="480"/>
+                    </Grid.ColumnDefinitions>
+
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="把本体某个状态（增益/减益，比如「中毒」）的名字、描述、图标、血条颜色、层数数字颜色改成你自己的。名字和描述走本地化表覆盖，图标和颜色走生成出来的补丁。注意：这是全局改动，本体其他角色身上的这个状态也会跟着变。"/>
+                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button Content="添加改写" Padding="10,4" Margin="0,0,6,0" Click="OnAddPowerOverride"/>
+                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemovePowerOverride"/>
+                            <TextBlock VerticalAlignment="Center" Foreground="#888"
+                                       Text="（同一个状态重复添加时，以最后一条为准）"/>
+                        </StackPanel>
+                        <ListBox x:Name="PowerOverrideList" ItemsSource="{Binding Profile.VanillaPowerOverrides}"
+                                 DisplayMemberPath="Display" SelectionChanged="OnPowerOverrideSelectionChanged"/>
+                    </DockPanel>
+
+                    <Border Grid.Column="2" x:Name="PowerOverrideDetail" BorderBrush="#DDD" BorderThickness="1" Padding="10">
+                        <ScrollViewer>
+                            <StackPanel>
+                                <TextBlock Text="要改哪个状态" FontWeight="Bold"/>
+                                <local:SearchComboBox Margin="0,4,0,0"
+                                                ItemsSource="{Binding PowerChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                SelectedValuePath="Id" SelectedValue="{Binding PowerId, Mode=TwoWay}"
+                                                SearchPath="Display"
+                                                ToolTip="可以打字搜索（比如输入「中毒」）；＋ = 增益，－ = 减益">
+                                    <local:SearchComboBox.ItemTemplate>
+                                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                    </local:SearchComboBox.ItemTemplate>
+                                </local:SearchComboBox>
+
+                                <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="换状态时会自动把这个状态的本体名字/描述填进来打底，图标和颜色会清空（避免把上一个状态的设置带过来）。"/>
+
+                                <CheckBox Margin="0,10,0,0" Style="{StaticResource Check}"
+                                          Content="启用这条改写" IsChecked="{Binding Enabled}"/>
+
+                                <TextBlock Margin="0,12,0,4" Text="新名字（留空 = 不改；填成和原名一样就等于没改）" FontWeight="Bold"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Button Content="把描述里的旧名字一起换成新名字" Padding="8,3" Margin="0,4,0,0"
+                                        HorizontalAlignment="Left" Click="OnRenameInDescription"/>
+                                <CheckBox Margin="0,4,0,0" Style="{StaticResource Check}"
+                                          Content="本体卡牌 / 遗物 / 药水描述里的旧名字也一起换掉（推荐）"
+                                          IsChecked="{Binding ReplaceInVanillaText}"
+                                          ToolTip="改名后，本体那些写着「施加 2 层中毒」的卡面描述也会一起变成新名字，不然卡面上还是旧名。"/>
+                                <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="{Binding VanillaTextHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+
+                                <TextBlock Margin="0,12,0,4" Text="新描述（留空 = 不改；{Amount} = 层数占位符）" FontWeight="Bold"/>
+                                <TextBox Style="{StaticResource Field}" MinHeight="90" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="本体描述里会出现这个名字（比如「将中毒层数减少1」），改名时建议一起改掉（下面那个勾选项连本体卡面的描述一起换）。"/>
+
+                                <TextBlock Margin="0,12,0,4" Text="图标（留空 = 用本体原图）" FontWeight="Bold"/>
+                                <DockPanel LastChildFill="True">
+                                    <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0"
+                                            Click="OnPickPowerIcon"/>
+                                    <Button DockPanel.Dock="Left" Content="清除" Padding="10,3" Click="OnClearPowerIcon"/>
+                                    <TextBox Style="{StaticResource Field}" IsReadOnly="True" Text="{Binding Icon, Mode=OneWay}"/>
+                                </DockPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Border Width="64" Height="64" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
+                                        <Image Margin="2" Stretch="Uniform"
+                                               Source="{Binding PowerIconPreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    </Border>
+                                    <TextBlock Margin="10,0,0,0" TextWrapping="Wrap" Width="330" Foreground="#888" FontSize="11"
+                                               Text="建议方形带透明 PNG（本体状态图标是 64×64 上下的方图，大图 256×256 也行）。同一张图会同时用在状态栏小图标和施加/闪烁特效的大图上。"/>
+                                </StackPanel>
+
+                                <TextBlock Margin="0,12,0,4" Text="血条颜色（RRGGBB，留空 = 不改）" FontWeight="Bold"/>
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0" BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding BarColor, Converter={StaticResource HexBrush}}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding BarColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <Button Content="用本体原色" Padding="8,3" Click="OnUseDefaultBarColor"/>
+                                    <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                               Text="{Binding BarColorHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </StackPanel>
+
+                                <TextBlock Margin="0,12,0,4" Text="层数数字颜色（RRGGBB，留空 = 本体默认）" FontWeight="Bold"/>
+                                <DockPanel>
+                                    <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0" BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding AmountColor, Converter={StaticResource HexBrush}}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding AmountColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                </DockPanel>
+
+                                <TextBlock Margin="0,14,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="名字/描述写在生成的 localization/zhs/powers.json 里（本体加载模组本地化表时会覆盖同名键）；图标和颜色由生成的 Harmony 补丁接管，补丁出问题只会记日志、不会让战斗崩。"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 自定义状态（能力牌用） ============ -->
+            <TabItem x:Name="CustomPowerTab" Header="自定义状态">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" MinWidth="280"/><ColumnDefinition Width="10"/><ColumnDefinition Width="640" MinWidth="480"/>
+                    </Grid.ColumnDefinitions>
+
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="自己造一个状态（本体没有的那种），给能力牌用：选「什么时候触发」+「触发时做什么」。生成时会写出一个 PowerModel 子类，名字/描述写进本地化表，图标和层数颜色走补丁。名字/描述/图标/颜色都是全局的（谁身上挂了这个状态就长这样）。"/>
+                        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                            <Button Content="添加状态" Padding="10,4" Margin="0,0,6,0" Click="OnAddCustomPower"/>
+                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemoveCustomPower"/>
+                            <TextBlock VerticalAlignment="Center" Foreground="#888" Text="（做好后在卡牌效果里选「施加增益/减益」→ 列表底部就是你造的状态）"/>
+                        </StackPanel>
+                        <ListBox x:Name="CustomPowerList" ItemsSource="{Binding Profile.CustomPowers}"
+                                 DisplayMemberPath="Display" SelectionChanged="OnCustomPowerSelectionChanged"/>
+                    </DockPanel>
+
+                    <Border Grid.Column="2" x:Name="CustomPowerDetail" BorderBrush="#DDD" BorderThickness="1" Padding="10">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Text="名字（游戏里显示的状态名）" FontWeight="Bold"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                <TextBlock Margin="0,10,0,4" Text="英文类名（留空自动生成）" FontWeight="Bold"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+
+                                <TextBlock Margin="0,10,0,4" Text="类型" FontWeight="Bold"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <ComboBox Width="140" Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding PowerTypes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              SelectedItem="{Binding Type}"/>
+                                    <CheckBox Margin="14,0,0,0" Style="{StaticResource Check}"
+                                              Content="只叠一层（重复施加只刷新，不叠加层数）" IsChecked="{Binding Single}"/>
+                                </StackPanel>
+
+                                <TextBlock Margin="0,10,0,4" Text="描述（留空 = 按触发时机自动写一句；{Amount} = 层数）" FontWeight="Bold"/>
+                                <TextBox Style="{StaticResource Field}" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"/>
+                                <Button Content="按触发时机重新生成描述" Padding="8,3" Margin="0,4,0,0" HorizontalAlignment="Left"
+                                        Click="OnAutoPowerDescription"/>
+                                <!-- 描述预览：跟着触发时机 + 触发时做什么实时变（以前改了什么这里都不动） -->
+                                <TextBlock Margin="2,4,0,0" TextWrapping="Wrap" Foreground="#666" FontSize="11"
+                                           Text="{Binding CustomPowerDescriptionHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+
+                                <TextBlock Margin="0,12,0,4" Text="图标（留空 = 本体占位图）" FontWeight="Bold"/>
+                                <DockPanel LastChildFill="True">
+                                    <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0"
+                                            Click="OnPickCustomPowerIcon"/>
+                                    <Button DockPanel.Dock="Left" Content="清除" Padding="10,3" Click="OnClearCustomPowerIcon"/>
+                                    <TextBox Style="{StaticResource Field}" IsReadOnly="True" Text="{Binding Icon, Mode=OneWay}"/>
+                                </DockPanel>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Border Width="64" Height="64" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
+                                        <Image Margin="2" Stretch="Uniform"
+                                               Source="{Binding CustomPowerIconPreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    </Border>
+                                    <StackPanel Margin="10,0,0,0" Width="330">
+                                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                                   Text="建议方形带透明 PNG（本体状态图标是 64×64 上下的方图）。"/>
+                                        <TextBlock Margin="0,6,0,0" Text="层数数字颜色（RRGGBB，留空 = 本体默认）" FontWeight="Bold"/>
+                                        <DockPanel Margin="0,2,0,0">
+                                            <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0" BorderBrush="#999" BorderThickness="1"
+                                                    Background="{Binding AmountColor, Converter={StaticResource HexBrush}}"/>
+                                            <TextBox Style="{StaticResource Field}" Text="{Binding AmountColor, UpdateSourceTrigger=PropertyChanged}"/>
+                                        </DockPanel>
+                                    </StackPanel>
+                                </StackPanel>
+
+                                <WrapPanel Margin="0,10,0,0">
+                                    <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="启用这个状态" IsChecked="{Binding Enabled}"/>
+                                    <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="回合结束时移除（临时状态）" IsChecked="{Binding RemoveAtTurnEnd}"/>
+                                    <TextBlock Text="每回合衰减" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Width="46" Style="{StaticResource Field}" Text="{Binding DecayPerTurn, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Text="层" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                                </WrapPanel>
+
+                                <TextBlock Margin="0,16,0,4" Text="触发时机（什么时候做事）" FontWeight="Bold" FontSize="14"/>
+                                <!-- 实时汇总：配了哪些时机、每个时机做什么 —— 改了效果这里立刻跟着变 -->
+                                <Border Background="#F5F7FA" BorderBrush="#DDE" BorderThickness="1" Padding="8,6" Margin="0,0,0,6">
+                                    <TextBlock TextWrapping="Wrap" Foreground="#333" FontSize="12"
+                                               Text="{Binding CustomTriggersSummary, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </Border>
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="110"/><RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="8"/><RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <ListBox x:Name="CustomTriggerList" Grid.Row="0" ItemsSource="{Binding Triggers}"
+                                             DisplayMemberPath="Display" SelectionChanged="OnCustomTriggerSelectionChanged"/>
+                                    <WrapPanel Grid.Row="1" Margin="0,6,0,0">
+                                        <Button Content="添加触发时机" Padding="8,4" Margin="0,0,6,0" Click="OnAddPowerTrigger"/>
+                                        <Button Content="删除触发时机" Padding="8,4" Click="OnRemovePowerTrigger"/>
+                                        <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#888"
+                                                   Text="同一个状态可以配好几个时机（比如「回合开始抽一张」+「回合结束获得格挡」）"/>
+                                    </WrapPanel>
+
+                                    <Border Grid.Row="3" BorderBrush="#DDD" BorderThickness="1" Padding="8"
+                                            DataContext="{Binding SelectedItem, ElementName=CustomTriggerList}">
+                                        <StackPanel>
+                                            <TextBlock Text="触发时机" FontWeight="Bold"/>
+                                            <ComboBox Style="{StaticResource Pick}"
+                                                      ItemsSource="{Binding TriggerOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Kind"
+                                                      SelectedValue="{Binding Kind}"/>
+                                            <TextBlock Margin="4,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                                       Text="{Binding TriggerHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                        Visibility="{Binding NeedsCardFilter, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="只对哪类牌生效" VerticalAlignment="Center"/>
+                                                <ComboBox Width="140" Margin="8,0,0,0" Style="{StaticResource Pick}"
+                                                          ItemsSource="{Binding CardFilters, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          SelectedItem="{Binding CardFilter}"/>
+                                                <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#888"
+                                                           Text="（只有「打出一张牌后」用得到）"/>
+                                            </StackPanel>
+                                            <!-- 「某个状态层数变化后」：只盯某一个状态（留空 = 除自己以外任意状态变层数都触发） -->
+                                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0"
+                                                        Visibility="{Binding NeedsPower, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="盯的对象" VerticalAlignment="Center"/>
+                                                <ComboBox Width="110" Margin="8,0,0,0" Style="{StaticResource Pick}"
+                                                          ItemsSource="{Binding WatchTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                          SelectedValue="{Binding PowerTarget}"
+                                                          ToolTip="盯谁身上的状态：自己（默认）/ 任意敌人。那个钩子没有「这张牌打的目标」，所以没有「指定敌人」这一档。"/>
+                                                <TextBlock Text="盯哪个状态" VerticalAlignment="Center" Margin="12,0,0,0"/>
+                                                <local:SearchComboBox Width="240" Margin="8,0,0,0"
+                                                          SearchPath="Display"
+                                                          ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          SelectedValuePath="Id" SelectedValue="{Binding PowerId}"
+                                                          ToolTip="可以直接打字搜索（和「增益 / 减益」下拉一样：输入「力」只剩含「力」的项，点选项或按回车自动补全）。留空 = 除自己以外任意状态变层数都触发。">
+                                                    <local:SearchComboBox.ItemTemplate>
+                                                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                                    </local:SearchComboBox.ItemTemplate>
+                                                </local:SearchComboBox>
+                                                <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#888"
+                                                           Text="（留空 = 除自己以外任意状态的层数变化都触发）"/>
+                                            </StackPanel>
+
+                                            <TextBlock Margin="0,10,0,4" Text="触发时做什么" FontWeight="Bold"/>
+                                            <ListBox x:Name="CustomEffectList" Height="110" ItemsSource="{Binding Effects}"
+                                                     DisplayMemberPath="Display"/>
+                                            <WrapPanel Margin="0,6,0,0">
+                                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect"
+                                                        Tag="{Binding ElementName=CustomEffectList}"/>
+                                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect"
+                                                        Tag="{Binding ElementName=CustomEffectList}"/>
+                                            </WrapPanel>
+                                            <Border BorderBrush="#EEE" BorderThickness="1" Padding="6" Margin="0,6,0,0"
+                                                    DataContext="{Binding SelectedItem, ElementName=CustomEffectList}">
+                                                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPower}"/>
+                                            </Border>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <TextBlock Margin="0,12,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="生成的东西：cs/Powers/&lt;类名&gt;.cs（按触发时机重写本体钩子）+ localization/zhs/powers.json 里的名字/描述 + 状态外观补丁（图标、层数颜色）。卡牌里用「施加增益/减益」选这个状态，能力牌就成了。"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 美术 ============ -->
+            <TabItem Header="美术资源">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="460"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" TextWrapping="Wrap" Foreground="#666"
+                                   Text="全部槽位用 PNG（需要透明通道就必须 PNG）。未上传的槽位默认生成中性占位图；勾上下面这项才用铁甲战士的素材占位 —— 战斗立绘 / 商店立绘 / 篝火立绘 / 选人背景会直接借用本体的 Spine 场景（游戏里就是铁甲战士本人），其余槽位用本体的图。"/>
+                        <CheckBox DockPanel.Dock="Top" Margin="0,0,0,6" FontWeight="Bold" Foreground="#B00"
+                                  Content="未上传的槽位用本体（铁甲战士）素材占位"
+                                  ToolTip="只为本地随手测试方便。勾上之后：战斗立绘 / 商店立绘 / 篝火立绘 / 选人背景直接用本体铁甲战士的场景（真 Spine 骨骼动画，能看到人），其余未上传的槽位（头像、选人立绘、地图标记等）用本体的图。发布模组前请关闭并提供自己的美术，否则模组里会带着本体美术资源。"
+                                  IsChecked="{Binding Profile.Art.UseVanillaPlaceholders}"/>
+                        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8" DataContext="{Binding Profile.Art}">
+                            <TextBlock Text="头像描边颜色（十六进制，自动生成描边）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <DockPanel>
+                                <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0"
+                                        BorderBrush="#999" BorderThickness="1"
+                                        Background="{Binding IconOutlineColor, Converter={StaticResource HexBrush}}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding IconOutlineColor, UpdateSourceTrigger=PropertyChanged}"/>
+                            </DockPanel>
+                            <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="例如 2A2A2A 或 #2A2A2A。填了就按这个颜色自动生成描边图（取头像的透明通道做剪影），不会再让你传描边 PNG。"/>
+                        </StackPanel>
+                        <ListBox x:Name="ArtList" ItemsSource="{Binding ArtSlots}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+                    <Border Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" Padding="10" DataContext="{Binding SelectedItem, ElementName=ArtList}">
+                        <StackPanel>
+                            <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="14"/>
+                            <TextBlock Text="{Binding Hint}" TextWrapping="Wrap" Foreground="#333" Margin="0,4,0,4"/>
+                            <TextBlock Text="{Binding Requirement}" TextWrapping="Wrap" Foreground="#0A7" Margin="0,0,0,8"/>
+                            <TextBlock Text="{Binding Path, TargetNullValue=（未上传，当前使用铁甲战士占位）}" TextWrapping="Wrap" Foreground="#888"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                <Button Content="上传图片…" Padding="10,4" Margin="0,0,8,0" Click="OnPickArt"/>
+                                <Button Content="清除（改用占位）" Padding="10,4" Click="OnClearArt"/>
+                                <Button Content="撤回清除" Padding="10,4" Margin="6,0,0,0" Click="OnUndoArt"
+                                        IsEnabled="{Binding CanUndoArt}" ToolTip="{Binding UndoArtHint}"/>
+                            </StackPanel>
+                            <Border Margin="0,12,0,0" BorderBrush="#DDD" BorderThickness="1" Height="340" Background="#FAFAFA">
+                                <Image Source="{Binding Preview}" Stretch="Uniform"/>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 配置存档 ============ -->
+            <TabItem x:Name="EnvTab" Header="环境自检">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <StackPanel Grid.Row="0">
+                        <TextBlock TextWrapping="Wrap" Foreground="#333"
+                                   Text="这里检查「这台电脑是否具备做模组的条件」。这一页只是提前告诉你缺什么，缺项也会在构建时以报错形式出现。"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,4,0,0"
+                                   Text="缺的是「路径」的项（比如 Godot、游戏 data 目录、解包工程目录），右边会长出一个「选择路径…」按钮：点一下直接选，不用跑去别的页手填。"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,8">
+                            <Button Content="重新检测" Padding="12,4" FontWeight="Bold" Click="OnRecheckEnv"/>
+                            <TextBlock x:Name="EnvSummary" Margin="12,0,0,0" VerticalAlignment="Center" FontWeight="Bold"/>
+                        </StackPanel>
+                    </StackPanel>
+                    <ListBox x:Name="EnvList" Grid.Row="1" ItemsSource="{Binding EnvItems}" HorizontalContentAlignment="Stretch">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="2,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding Display}" TextWrapping="Wrap" FontWeight="Bold"/>
+                                        <TextBlock Text="{Binding Fix}" TextWrapping="Wrap" Foreground="#B00" Margin="0,2,0,0"
+                                                   Visibility="{Binding Fix, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                        <TextBlock Text="{Binding Detail}" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                                   Visibility="{Binding IsOk, Converter={StaticResource BoolToCollapsed}}"/>
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                                        <Button Content="选择路径…" Padding="8,3" Margin="8,0,0,0"
+                                                Tag="{Binding Pick}" Click="OnPickEnvPath"
+                                                ToolTip="直接在这一页把这个路径选好"
+                                                Visibility="{Binding Pick, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                        <Button Content="打开下载页" Padding="8,3" Margin="8,0,0,0"
+                                                Tag="{Binding Url}" Click="OnOpenEnvUrl"
+                                                Visibility="{Binding Url, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                    </StackPanel>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </Grid>
+            </TabItem>
+
+            <TabItem Header="配置存档">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/><ColumnDefinition Width="10"/><ColumnDefinition Width="320"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="存档 = 根目录「自定义角色存档」文件夹里的一个 json 文件（老版本的「程序文件\自定义角色」会自动搬过来）。列表支持多选（Ctrl/Shift 或点「全选」）；选中后可载入、删除；「用当前配置覆盖该存档」会把界面上的配置写回选中的存档。"/>
+                        <ListBox x:Name="ProfileList" SelectionMode="{Binding MultiSelectProfiles, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profiles}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+                    <StackPanel Grid.Column="2">
+                        <TextBlock Text="存档操作" FontWeight="Bold" Margin="0,0,0,6"/>
+                        <Button Content="刷新列表" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnRefreshProfiles"/>
+                        <Button Content="载入选中存档" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnLoadSelectedProfile"/>
+                        <Button Content="用当前配置覆盖该存档" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnSaveProfileToFolder"/>
+                        <Button Content="另存为新存档…" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnSaveProfileAsNew"/>
+                        <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"
+                                      IsChecked="{Binding MultiSelectProfiles, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），下面会出现「全选」"/>
+                        <Button Content="全选" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnSelectAllProfiles"
+                                Visibility="{Binding MultiSelectProfiles, Converter={StaticResource BoolToVis}}"
+                                ToolTip="选中列表里的全部存档"/>
+                        <Button Content="删除选中存档" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnDeleteSelectedProfile"/>
+                        <Button Content="撤回删除" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnUndoProfile"
+                                IsEnabled="{Binding CanUndoProfile}" ToolTip="{Binding UndoProfileHint}"/>
+                        <Button Content="打开存档文件夹" Padding="8,4" HorizontalAlignment="Stretch" Click="OnOpenProfileFolder"/>
+                        <Button Content="从工程恢复存档…" Padding="8,4" Margin="0,8,0,0" HorizontalAlignment="Stretch" Click="OnRecoverProfileFromProject"
+                                ToolTip="存档被误覆盖时的救命功能：选一个以前生成出来的模组工程目录，工具会从里面的源码反推出存档（卡牌 / 遗物 / 药水 / 自定义状态 / 角色属性 / 名字全部找回），另存为「工程名_恢复.json」。"/>
+                        <TextBlock Text="{Binding ProfileFolder}" TextWrapping="Wrap" Foreground="#888" Margin="0,10,0,0"/>
+                        <TextBlock Text="提示：每次保存都会把旧内容自动备份到存档目录的「_备份」文件夹（最多留 30 份）。" TextWrapping="Wrap" Foreground="#888" Margin="0,6,0,0"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 构建 ============ -->
+            <TabItem x:Name="BuildTab" Header="构建 / 日志">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="150"/>
+                    </Grid.RowDefinitions>
+
+                    <GroupBox Grid.Row="0" Header="解包工程（唯一需要你手动指定的东西）" Margin="0,0,0,8">
+                        <StackPanel Margin="6">
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0" Text="解包后的原版工程目录" Style="{StaticResource Label}"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.Paths.VanillaProject, UpdateSourceTrigger=PropertyChanged}"
+                                         LostFocus="OnVanillaPathCommitted" KeyDown="OnVanillaPathKeyDown"
+                                         ToolTip="生成模组时的占位美术、场景模板、spine 插件都从这里取；「目标卡」下拉的中文名也从这里读。用 GDRE 解包自己的游戏本体即可，选完会自动重载。"/>
+                                <Button Grid.Column="2" Content="选择…" Padding="8,4" Click="OnPickVanilla"/>
+                            </Grid>
+                            <TextBlock x:Name="EnvStatusText" Margin="6,4,6,0" TextWrapping="Wrap" Foreground="#0A7"
+                                       Text="{Binding EnvStatusLine}"/>
+                            <TextBlock Margin="6,2,6,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="Godot / .NET / 游戏目录 / 安装目录都由程序自动识别（找不到时才需要处理，见「环境自检」页）。"/>
+                        </StackPanel>
+                    </GroupBox>
+
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="打开输出目录" Padding="10,4" Click="OnOpenOutput"/>
+                        <Button Content="导出日志…" Padding="10,4" Margin="6,0,0,0" Click="OnExportLog"
+                                ToolTip="把「日志」框里的内容存成 txt（构建失败时把这份发我，能直接看出卡在哪一步）。"/>
+                        <Button Content="复制日志" Padding="10,4" Margin="6,0,0,0" Click="OnCopyLog"
+                                ToolTip="把日志复制到剪贴板，直接粘贴给我。"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#0A7"
+                                   Text="{Binding CatalogStatus}"/>
+                    </StackPanel>
+
+                    <GroupBox Grid.Row="2" Header="校验结果" Margin="0,0,0,8">
+                        <ListBox x:Name="IssueList" ItemsSource="{Binding Issues}"/>
+                    </GroupBox>
+
+                    <GroupBox Grid.Row="3" Header="日志">
+                        <TextBox x:Name="LogBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap"
+                                 VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas"/>
+                    </GroupBox>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Sts2CharForge.Core</RootNamespace>
+    <AssemblyName>Sts2CharForge.Core</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 开发机本地的效果库数据（由 tools\build_power_catalog.ps1 从你自己的解包工程生成）。
+         这个文件不随仓库发布（见 .gitignore）：运行时程序会优先从玩家本机的游戏文件里读取，
+         所以发布版既不需要它、也不携带任何游戏文本。 -->
+    <EmbeddedResource Include="Data\powers_catalog.json" LogicalName="Sts2CharForge.Core.Data.powers_catalog.json"
+                      Condition="Exists('Data\powers_catalog.json')" />
+    <!-- 工具自带的静态立绘占位图（替代本体的 Spine 动画）。这是「本工具自己的」素材，
+         不是游戏素材；想换成自己的图直接替换 Assets\placeholder_character.png 即可。
+         只内嵌进程序集、不复制到输出目录 —— 这样发布版（单文件 exe）根目录不需要额外文件夹。 -->
+    <EmbeddedResource Include="Assets\placeholder_character.png"
+                      LogicalName="Sts2CharForge.Core.Assets.placeholder_character.png"
+                      Condition="Exists('Assets\placeholder_character.png')" />
+  </ItemGroup>
+
+</Project>

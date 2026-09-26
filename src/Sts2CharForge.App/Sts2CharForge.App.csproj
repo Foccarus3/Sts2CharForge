@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>Sts2CharForge.App</RootNamespace>
+    <AssemblyName>Sts2CharForge</AssemblyName>
+    <AssemblyTitle>Sts2CharForge 自定义角色生成器</AssemblyTitle>
+    <ApplicationIcon>waku.ico</ApplicationIcon>
+    <Product>Sts2CharForge</Product>
+    <FileVersion>1.0.0.0</FileVersion>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <!--
+      整合包的版本号（唯一来源）：启动器文件名、程序包 zip、整合包 zip 都从这一行读。
+      每次改动都往上加一位，例如 V0.0.1 → V0.0.2。
+    -->
+    <InformationalVersion>V0.0.9</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sts2CharForge.Core\Sts2CharForge.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 窗口/任务栏图标（同一个文件也作为 exe 图标） -->
+    <Resource Include="waku.ico" />
+  </ItemGroup>
+
+</Project>

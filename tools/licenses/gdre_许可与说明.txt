@@ -1,0 +1,50 @@
+﻿GDRE Tools（gdsdecomp）v2.5.0-beta.5 —— 许可与使用说明
+====================================================
+
+一、这是什么
+  官方发布包 GDRE_tools-v2.5.0-beta.5-windows.zip 原样收录，未做任何修改。
+  作者：bruvzg 等，项目地址：https://github.com/GDRETools/gdsdecomp
+  作用：解包 Godot 引擎游戏的 .pck（《杀戮尖塔 2》就是 Godot 做的），
+        用来得到「解包后的原版工程」，供本机制作/测试模组使用。
+
+二、许可（MIT）
+  MIT License
+
+  Copyright (c) 2019 bruvzg
+
+  Permission is hereby granted, free of charge, to any person obtaining a copy
+  of this software and associated documentation files (the "Software"), to deal
+  in the Software without restriction, including without limitation the rights
+  to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+  copies of the Software, and to permit persons to whom the Software is
+  furnished to do so, subject to the following conditions:
+
+  The above copyright notice and this permission notice shall be included in all
+  copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+  （GDRE 内含 Godot 引擎等第三方组件，各自许可见 gdsdecomp 仓库的 COPYRIGHT.txt。
+    官方发布包本身没有带许可文件，这里补上，方便你合规地转发给朋友。）
+
+三、重要提醒（请一定要看）
+  1. 《杀戮尖塔 2》的游戏文件（美术、文本、代码、pck）版权属于 Mega Crit Games。
+     GDRE 这个「工具」可以自由转发；但**解包出来的游戏素材不行**。
+  2. 解包结果只放在你自己电脑上，自己制作/测试模组用。
+     不要把解包工程、也不要带着原版美术的模组发出去。
+  3. 用它可以做出符合 Mega Crit 内容政策的模组：
+     可以自由做模组、可以接受玩家自愿捐赠；但禁止任何形式的变现
+     （付费墙、订阅、付费下载、目标式众筹，含以慈善为名的）。
+     也不要说你的模组与官方有关联。
+     政策原文：https://megacrit.com/content-policy/
+  4. 解包/反编译自己的游戏副本，可能违反游戏的最终用户许可协议（EULA）
+     与 Steam 的用户协议，这一条属于你与平台/发行商之间的约定，请自行判断。
+     本说明不构成法律意见。
+
+  本说明文件由 Sts2CharForge 打包时补充，仅为署名与提醒，未改动 GDRE 本体。

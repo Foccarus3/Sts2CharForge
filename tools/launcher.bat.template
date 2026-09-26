@@ -1,0 +1,58 @@
+@echo off
+rem ============================================================
+rem  Sts2CharForge launcher
+rem  Keep this file PURE ASCII: cmd.exe reads a .bat with the
+rem  *current* code page, so non-ASCII bytes here can break the
+rem  whole script on other machines (UTF-8 beta / English locale).
+rem  Chinese messages live in launcher_help.ps1 (UTF-8 with BOM).
+rem ============================================================
+setlocal
+set "HERE=%~dp0"
+rem HERE ends with a backslash: strip it before passing as an argument,
+rem otherwise the trailing \" escapes the closing quote and glues args together.
+set "HEREDIR=%HERE:~0,-1%"
+
+rem Find the folder that holds Sts2CharForge.exe next to this file.
+rem Do NOT hardcode the folder name (it is Chinese) - the wildcard search
+rem keeps working no matter where the package is extracted to.
+set "STARTED="
+for /d %%d in ("%HERE%*") do (
+  if exist "%%d\Sts2CharForge.exe" (
+    pushd "%%d"
+    start "" "Sts2CharForge.exe" %*
+    popd
+    set "STARTED=1"
+  )
+)
+
+if defined STARTED exit /b 0
+
+rem Not found: explain what to do. This is by far the most common failure -
+rem people run the launcher straight from a zip viewer without extracting.
+rem The Chinese explanation lives in launcher_help.ps1 (now inside the program
+rem folder); fall back to the old root copy for older layouts. If neither
+rem exists - usually because the program folder was never extracted - print a
+rem plain ASCII hint so the user is not left with a silently closing window.
+if exist "%HERE%launcher_help.ps1" (
+  powershell -NoProfile -ExecutionPolicy Bypass -File "%HERE%launcher_help.ps1" "%HEREDIR%" exe-missing
+  exit /b 1
+)
+for /d %%d in ("%HERE%*") do (
+  if exist "%%d\launcher_help.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%%d\launcher_help.ps1" "%HEREDIR%" exe-missing
+    exit /b 1
+  )
+)
+echo.
+echo ==================== Could not start ====================
+echo.
+echo Sts2CharForge.exe was not found next to this launcher.
+echo Please extract the WHOLE zip first, then run this .bat again
+echo (do not run it from inside the zip viewer).
+echo.
+echo Expected layout:
+echo   this folder\  <- the launcher .bat lives here
+echo     program files folder\Sts2CharForge.exe
+echo.
+pause
+exit /b 1
