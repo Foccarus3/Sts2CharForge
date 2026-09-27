@@ -50,6 +50,7 @@
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
@@ -103,6 +104,54 @@
 
                         <TextBlock Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
                                    Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
+
+                        <!-- ============ 召唤伙伴（角色级配置：一只宠物，不是列表） ============ -->
+                        <GroupBox x:Name="SummonBox" Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" Margin="0,14,0,0"
+                                  DataContext="{Binding Profile.Summon}">
+                            <GroupBox.Header>
+                                <TextBlock Text="召唤伙伴（类似亡灵缚者的奥斯提，但完全不需要补丁）" FontWeight="Bold"/>
+                            </GroupBox.Header>
+                            <StackPanel>
+                                <CheckBox x:Name="SummonEnabled" Style="{StaticResource Check}"
+                                          Content="启用召唤伙伴" IsChecked="{Binding Enabled}"
+                                          ToolTip="勾上以后：生成 cs/Pet.cs（宠物类 + 召唤命令）、写 monsters.json 的宠物名字；卡牌/遗物效果里选「召唤伙伴 / 伙伴攻击」才有效。"/>
+                                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#888"
+                                           Text="走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），模型由本体自动注册，所以不需要任何 Harmony 补丁。宠物每场战斗都要重新召唤 —— 本体的 PlayerCombatState 在战斗结束时会清空宠物，它不跨战斗、也不进存档。这一档不做替死 / 专属站位（那些才需要补丁）。"/>
+                                <Grid Margin="0,10,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="260"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="260"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="伙伴名字（宠物名牌）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                    <TextBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Grid.Row="0" Grid.Column="2" Text="伙伴英文类名（留空 = &lt;角色类名&gt;Pet）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                    <TextBox Grid.Row="0" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="召唤时的生命" Style="{StaticResource Label}"/>
+                                    <TextBox Grid.Row="1" Grid.Column="1" Width="90" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding Hp, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#888" VerticalAlignment="Center"
+                                               Text="这是没填血量时卡牌上「召唤伙伴」用的默认值（卡牌效果里也填了数值就按卡牌上的）。"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="伙伴图片（可空）" Style="{StaticResource Label}"/>
+                                    <DockPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" LastChildFill="True">
+                                        <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0" Click="OnPickPetImage"/>
+                                        <Button DockPanel.Dock="Left" Content="清除" Padding="10,3" Margin="0,0,6,0" Click="OnClearPetImage"/>
+                                        <TextBox Style="{StaticResource Field}" IsReadOnly="True" Text="{Binding Image, Mode=OneWay}"/>
+                                    </DockPanel>
+                                </Grid>
+                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                    <Border Width="72" Height="72" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
+                                        <Image Margin="2" Stretch="Uniform"
+                                               Source="{Binding PetImagePreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    </Border>
+                                    <TextBlock Margin="10,0,0,0" TextWrapping="Wrap" Width="560" Foreground="#888"
+                                               Text="建议竖版 PNG、带透明背景（越高越会被自动缩到约 220 像素高，底边贴地面线）。上传了就会生成 scenes/creature_visuals/&lt;宠物名&gt;.tscn 并让宠物用它；不传也能跑，宠物会用本体的占位图（一张静态 error.png）。"/>
+                                </StackPanel>
+                                <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#666"
+                                           Text="怎么让宠物上场：① 卡牌页新建一张牌，加一条效果选「召唤伙伴」（数值 0 = 用上面这个血量）；② 或者遗物页加一条「召唤伙伴」并把触发时机选成「战斗开始时」（= 本体 Byrdpip 的写法，每场战斗开场就召唤）。指挥它打人：卡牌效果里选「伙伴攻击」，伤害由宠物承担（它不在场时这张牌会跳过这一条，不会报错）。"/>
+                            </StackPanel>
+                        </GroupBox>
                     </Grid>
                 </ScrollViewer>
             </TabItem>
@@ -282,6 +331,23 @@
                                 <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
                                 <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
                             </WrapPanel>
+                            <TextBlock Text="自定义关键词（勾选这张牌用到的）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"
+                                       Text="到「自定义关键词」页里增删。勾上以后：这张牌描述的最前面会出现这个词，鼠标悬停在卡上能弹出它的说明 —— 和本体「消耗 / 虚无」那类关键词一样的观感（本体关键词是封闭枚举、模组加不了新值，所以走这套等价机制）。"/>
+                            <TextBlock Text="还没定义任何关键词：先到「自定义关键词」页添加。" Style="{StaticResource Label}" Foreground="#999" Margin="6,2,0,0"
+                                       Visibility="{Binding NoCustomKeywords, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                            <ItemsControl Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}"
+                                          ItemsSource="{Binding CustomKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="{Binding Name}"
+                                                  ToolTip="{Binding KeyHint}" IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                             <TextBlock Text="本体卡标签（CardTag，别的模型按它查牌）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"
                                        Text="初始的「打击 / 防御」就是靠 Strike / Defend 这两个标签被本体那些「升级你的初始打击 / 防御」的遗物认出来的（妮欧的护符、叶敷剂、大胶囊、幽灵种子…，有些还会再加「稀有度 = Basic」这一条）。给别的牌标上 Strike 还能吃到「完美打击」这类按打击牌算的加成。"/>
@@ -523,6 +589,91 @@
                         </DockPanel>
                     </Grid>
                 </Grid>
+            </TabItem>
+
+            <!-- ============ 自定义关键词 ============ -->
+            <TabItem x:Name="KeywordTab" Header="自定义关键词">
+                <DockPanel Margin="8">
+                    <!-- 最上面这一节：本体关键词改名（固定 7 行，不另开选项卡） -->
+                    <Border DockPanel.Dock="Top" BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,0,0,8">
+                        <StackPanel>
+                            <TextBlock Text="本体关键词改名（把本体那 7 个关键词的显示名改成你自己的）" FontWeight="Bold" TextWrapping="Wrap"/>
+                            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#666"
+                                       Text="留空 = 不改。改的是本体那 7 个关键词；改完后本体卡面上的金色词、以及本体卡牌描述里出现的旧名字都会跟着换。"/>
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="150"/><ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="10"/><ColumnDefinition Width="2*"/>
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Grid.Column="0" Text="本体关键词" FontWeight="Bold" Margin="0,0,0,2"/>
+                                <TextBlock Grid.Row="0" Grid.Column="1" Text="新显示名（留空 = 不改）" FontWeight="Bold" Margin="0,0,0,2"/>
+                                <TextBlock Grid.Row="0" Grid.Column="3" Text="新说明（留空 = 不改）" FontWeight="Bold" Margin="0,0,0,2"/>
+                                <ItemsControl Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="4"
+                                              x:Name="KeywordRenameTable"
+                                              ItemsSource="{Binding Profile.KeywordRenames}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,0,0,4">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="150"/><ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="10"/><ColumnDefinition Width="2*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0" VerticalAlignment="Center" TextWrapping="Wrap"
+                                                           Margin="0,0,8,0" Text="{Binding VanillaName}"/>
+                                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                                         Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                                <TextBox Grid.Column="3" Style="{StaticResource Field}"
+                                                         Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </Grid>
+                            <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="{Binding KeywordRenameHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <DockPanel Grid.Column="0">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加关键词" Padding="8,4" Margin="0,0,6,0" Click="OnAddKeyword"/>
+                                <Button Content="删除" Padding="8,4" Click="OnRemoveKeyword"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoKeyword"
+                                        IsEnabled="{Binding CanUndoKeyword}" ToolTip="{Binding UndoKeywordHint}"/>
+                            </WrapPanel>
+                            <ListBox x:Name="KeywordList" ItemsSource="{Binding Profile.CustomKeywords}" DisplayMemberPath="Display"/>
+                        </DockPanel>
+                        <TextBlock Grid.Column="2" FontSize="16" Foreground="#999"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Text="请选择关键词（没有就点左边的「添加关键词」）"
+                                   Visibility="{Binding SelectedItem, ElementName=KeywordList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                        <Grid x:Name="KeywordDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=KeywordList}"
+                              Visibility="{Binding SelectedItem, ElementName=KeywordList, Converter={StaticResource NotEmptyToVisibility}}">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="关键词属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                                    <TextBlock Text="名字（卡面上显示的那个词，例如「命定」）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Text="英文标识（本地化键，留空 = 自动用 KEYWORD_1…；不能和本体关键词撞名）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding Key, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock Text="说明（鼠标悬停在卡上时弹出的正文）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                    <TextBox Style="{StaticResource Field}" Height="120" AcceptsReturn="True" TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto" Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,10,0,0"
+                                               Text="用法：到「卡牌」页勾选哪张牌用这个词。生成时会自动：&#10;· 把名字拼在这张牌描述的最前面（和本体「消耗 / 虚无」一样的观感）；&#10;· 鼠标悬停在卡上时弹出「名字 + 说明」；&#10;· 把文案写进模组的 card_keywords.json（本体那张表，逐键合并，不动本体关键词）。&#10;本体的关键词是封闭枚举、模组加不了新值，所以走的是这套等价机制：不改本体、不需要补丁。"/>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Grid>
+                </DockPanel>
             </TabItem>
 
             <!-- ============ 先古之民 ============ -->

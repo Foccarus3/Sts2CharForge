@@ -61,7 +61,12 @@ public static class LocalizationGen
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
             // 老存档是「整张牌一个条件」，那个条件写在最后；新存档的条件跟着各自的效果走（Describe 里处理）
             string legacy = ConditionSuffix(c.Condition, isCard: true, p);
-            dict[$"{entry}.description"] = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
+            // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
+            string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
+            string cardBody = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
+            dict[$"{entry}.description"] = keywordText.Length == 0
+                ? cardBody
+                : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
         }
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
@@ -166,6 +171,23 @@ public static class LocalizationGen
             bits.Add("打出需要消耗它的牌时会扣除，数量不足时无法打出");
 
         dict["STAR_COUNT.description"] = $"{iconPrefix}{name}：{string.Join("；", bits)}。";
+        return JsonSerializer.Serialize(dict, JsonOpts);
+    }
+
+    /// <summary>
+    /// 自定义关键词的文案，写进本体的 <c>card_keywords</c> 表（同名文件逐键合并 → 只加自己的键，
+    /// 不影响本体那 8 个关键词）。键形如 <c>命定 → FATE.title / FATE.description</c>。
+    ///
+    /// 这个文件同时也是「本体关键词改名」的落点：<c>EXHAUST.title = 你的名字</c> 会盖掉本体那条，
+    /// 于是本体卡面上的金色词和悬停提示都变成你写的（本体 LocTable.MergeWith 的行为，不需要补丁）。
+    /// 两拨键合在一个文件里 —— 少了这个文件，改名就不生效。
+    /// </summary>
+    public static string KeywordsJson(CharacterProfile p)
+    {
+        var dict = KeywordGen.LocEntries(p);
+        // 本体关键词改名：只写用户真的改了的键（留空 / 和本体一样都不写，见 VanillaKeywordGen.LocEntries）
+        foreach (var kv in VanillaKeywordGen.LocEntries(p))
+            dict[kv.Key] = kv.Value;
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
 
@@ -349,6 +371,12 @@ public static class LocalizationGen
         _ => "对自己",
     };
 
+    /// <summary>
+    /// 召唤伙伴在卡面描述里的名字（用你在「角色」页填的名字；没填就用类名）。
+    /// 没启用召唤伙伴时也返回一个能读通的词 —— 校验器会另外报错拦住（卡牌引用了不存在的宠物）。
+    /// </summary>
+    private static string SummonName(CharacterProfile p) => PetGen.DisplayName(p);
+
     private static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
         Dictionary<EffectSpec, string>? varMap = null)
     {
@@ -440,6 +468,17 @@ public static class LocalizationGen
             "TransformCardGlobal" => (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
                 + $"{(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
+            // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要补丁）=====
+            // 数值 0 = 用「角色」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
+            "SummonPet" => (e.AmountIsX && isCard)
+                ? $"召唤{SummonName(p)}（{var} 点生命）。"
+                : e.Amount <= 0
+                    ? $"召唤{SummonName(p)}。"
+                    : $"召唤{SummonName(p)}（{var} 点生命）。",
+            // 伙伴攻击：attacker 是宠物，不是自己 —— 描述里必须写清楚是谁在打
+            "PetAttack" => e.TargetSide == "Self"
+                ? $"{SummonName(p)}攻击自己，造成 {var} 点伤害。"
+                : $"{repeat}{when}让{SummonName(p)}{target}造成 {var} 点伤害{hitSuffix}。",
             _ => "",
         };
         // 概率生效：写在这条效果后面（例：「造成 6 点伤害（50% 概率）。」）

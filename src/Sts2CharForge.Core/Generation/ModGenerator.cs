@@ -110,6 +110,19 @@ public static class ModGenerator
             Log($"  已生成额外资源量（初始 {profile.ExtraResource.Initial}，{(profile.ExtraResource.CarryOver ? "跨战斗继承" : "每场战斗重置")}）");
         }
 
+        // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
+        if (PetGen.IsActive(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Pet.cs"), PetGen.Source(profile));
+            // 名字写进本体的 monsters 表（逐键合并，只加我们自己的键）
+            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "zhs", "monsters.json"),
+                PetGen.MonstersJson(profile));
+            // 上传了宠物图 → 拷进工程 + 生成最小场景；没上传就什么都不做（回退本体的 error.png 占位）
+            PetGen.GenerateVisuals(profile, root, Log);
+            Log($"  已生成召唤伙伴：{PetGen.ClassNameOf(profile)}（「{PetGen.DisplayName(profile)}」，生命 {PetGen.BaseHp(profile)}）"
+                + (PetGen.HasImage(profile) ? "，视觉用你上传的图" : "，视觉沿用本体的占位图（可上传自己的 PNG）"));
+        }
+
         if (AncientPatchGen.HasDialogues(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "AncientDialoguePatch.cs"), AncientPatchGen.Source(profile));
@@ -193,6 +206,14 @@ public static class ModGenerator
         if (vanillaText.Count > 0)
             Log($"  本体状态改名：顺带覆盖了 {vanillaText.Count} 条本体本地化条目"
                 + $"（卡牌 {vanillaText.Count(t => t.Table == "cards")} / 遗物 {vanillaText.Count(t => t.Table == "relics")} / 药水 {vanillaText.Count(t => t.Table == "potions")}）");
+        // 本体关键词改名：同样要把本体卡面描述里写着的旧关键词名（比如「消耗」两个字）换掉
+        var keywordText = VanillaKeywordGen.KeywordTextReplacements(profile).ToList();
+        if (keywordText.Count > 0)
+        {
+            vanillaText.AddRange(keywordText);
+            Log($"  本体关键词改名：顺带覆盖了 {keywordText.Count} 条本体本地化条目"
+                + $"（卡牌 {keywordText.Count(t => t.Table == "cards")} / 遗物 {keywordText.Count(t => t.Table == "relics")} / 药水 {keywordText.Count(t => t.Table == "potions")}）");
+        }
 
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "characters.json"), LocalizationGen.CharactersJson(profile));
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "cards.json"),
@@ -209,7 +230,15 @@ public static class ModGenerator
         string hoverTips = LocalizationGen.StaticHoverTipsJson(profile);
         if (hoverTips.Contains("STAR_COUNT", StringComparison.Ordinal))
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "static_hover_tips.json"), hoverTips);
-        Log("  本地化：characters / cards / relics / potions / ancients" + (needPowersLoc ? " / powers" : ""));
+        // 自定义关键词 / 本体关键词改名：都写进本体的 card_keywords 表（逐键合并）。
+        // 有关键词改名时也必须写这个文件 —— 不生成的话，改的名字在游戏里根本不生效。
+        bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile);
+        if (needKeywordsLoc)
+            ProjectFilesGen.WriteText(Path.Combine(locRoot, "card_keywords.json"), LocalizationGen.KeywordsJson(profile));
+        Log("  本地化：characters / cards / relics / potions / ancients"
+            + (needPowersLoc ? " / powers" : "")
+            + (needKeywordsLoc ? " / card_keywords（自定义关键词 / 本体关键词改名）" : "")
+            + (PetGen.IsActive(profile) ? " / monsters（召唤伙伴的名字）" : ""));
 
         ArtGenerator.Generate(profile, root, Log);
         ProjectFilesGen.CopyLocalDependencies(profile, root, Log);

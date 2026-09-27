@@ -20,6 +20,51 @@ public static class ProfileValidator
         if (!Naming.IsValidIdentifier(p.ModId))
             issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）。"));
 
+        // 自定义关键词：名字 / 英文标识（本地化键）合法性、撞本体、重名、被卡牌引用却不存在
+        var keywordMap = KeywordGen.All(p);
+        var seenKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (int ki = 0; ki < keywordMap.Count; ki++)
+        {
+            var (spec, key) = keywordMap[ki];
+            string who = $"自定义关键词 #{ki + 1}";
+            if (string.IsNullOrWhiteSpace(spec.Name))
+                issues.Add(new("错误", $"{who} 还没填名字（名字就是卡面上显示的那个词）。"));
+            else
+                who = $"自定义关键词「{spec.Name.Trim()}」";
+
+            if (string.IsNullOrWhiteSpace(spec.Key))
+                issues.Add(new("警告", $"{who} 没填英文标识，生成时会自动用 {key} 当本地化键（不影响游戏内显示）。"));
+            else if (KeywordGen.IsReservedKey(spec.Key))
+                issues.Add(new("错误", $"{who} 的英文标识「{spec.Key.Trim()}」和本体关键词撞名"
+                    + "（NONE / EXHAUST / ETHEREAL / INNATE / UNPLAYABLE / RETAIN / SLY / ETERNAL 是本体占用的），换一个。"));
+            else if (!string.Equals(key, Naming.Slug(spec.Key.Trim()), StringComparison.OrdinalIgnoreCase))
+                issues.Add(new("警告", $"{who} 的英文标识会规范成 {key}（只能是英文/数字/下划线）。"));
+
+            if (seenKeys.TryGetValue(key, out var first))
+                issues.Add(new("错误", $"{who} 的英文标识和「{first}」重复（都是 {key}），本地化键会互相覆盖。"));
+            else
+                seenKeys[key] = string.IsNullOrWhiteSpace(spec.Name) ? key : spec.Name.Trim();
+
+            if (string.IsNullOrWhiteSpace(spec.Description))
+                issues.Add(new("警告", $"{who} 没写说明：鼠标悬停在用到它的卡上会弹出一个空面板。"));
+        }
+        foreach (var card in p.Cards)
+        {
+            if (card is null) continue;
+            foreach (string r in card.CustomKeywordList)
+                if (KeywordGen.Find(p, r) is null)
+                    issues.Add(new("错误", $"卡牌「{card.Name}」引用了不存在的自定义关键词：{r}"
+                        + "（可能已经被删掉了，去「卡牌」页取消勾选，或到「自定义关键词」页把它加回来）。"));
+        }
+
+        // 本体关键词改名：id 必须是那 7 个之一、名字不能带富文本标记、不能和别的本体关键词撞名
+        ValidateVanillaKeywordRenames(issues, p);
+
+        // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
+        // 为什么要在这里拦：卡牌 / 遗物上的「召唤伙伴 / 伙伴攻击」生成出来的代码会引用宠物类，
+        // 没启用召唤物的话那个类根本不存在 → dotnet 直接报 CS0103，而用户看不懂。
+        ValidateSummon(issues, p);
+
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
             issues.Add(new("错误", "效果库为空：增益/减益列表读不到。请到「路径」页指定你本机的「本体工程目录」"
@@ -416,6 +461,175 @@ public static class ProfileValidator
 
         return issues;
     }
+
+    /// <summary>
+    /// 本体关键词改名的校验：id 合法、名字里没有富文本标记、不和其他本体关键词撞名。
+    ///
+    /// 为什么这几条必须拦住（不是洁癖）：
+    ///   · 撞名：两个关键词显示成同一个词（本体「消耗」被改成「虚无」，而「虚无」本来就是另一个关键词），
+    ///     玩家在卡面上根本分不出这两条 —— 生成出来的卡面自相矛盾，我们不如在生成前直接报错。
+    ///   · 富文本标记：本体卡面文字是 <c>CardKeywordExtensions.GetCardText()</c> 拼的
+    ///     <c>[gold]&lt;title&gt;[/gold]</c>，名字里再带一个 <c>[</c> 或 <c>]</c> 会把标签解析坏
+    ///     （整张卡面文字错位 / 显示成原始标记）。
+    ///   · id：只剩 7 个正式关键词（NONE / PERIOD 不是关键词，是占位键，改了没有意义）。
+    ///
+    /// 撞车判定用的是「最终显示名」：没改的关键词按本体原文算，改了按新名字算。
+    /// </summary>
+    private static void ValidateVanillaKeywordRenames(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        if (p.KeywordRenames is null || p.KeywordRenames.Count == 0) return;
+
+        for (int i = 0; i < p.KeywordRenames.Count; i++)
+        {
+            var r = p.KeywordRenames[i];
+            if (r is null) continue;
+            string id = (r.KeywordId ?? "").Trim();
+            if (id.Length == 0 && !r.ChangesAnything) continue;      // 空行（没有这一条）不算错
+
+            string who = $"本体关键词改名「{id}」";
+            var entry = VanillaKeywordCatalog.ById(id);
+            if (entry is null)
+            {
+                issues.Add(new("错误", $"本体关键词改名的 #{i + 1} 条的枚举名「{id}」不是本体关键词"
+                    + "（只能是 EXHAUST / ETHEREAL / INNATE / UNPLAYABLE / RETAIN / SLY / ETERNAL 这 7 个）。"));
+                continue;
+            }
+            who = $"本体关键词「{entry.VanillaName}」的改名";
+
+            string name = (r.Name ?? "").Trim();
+            if (name.Length > 0 && (name.Contains('[') || name.Contains(']')))
+                issues.Add(new("错误", $"{who} 的新名字里有 [ 或 ]：本体卡面是按 [gold]名字[/gold] 拼的，"
+                    + "名字里再带方括号会把卡面文字解析坏。请去掉方括号。"));
+
+            string desc = (r.Description ?? "").Trim();
+            if (desc.Length > 0 && desc.Contains('[') && !desc.Contains("[/"))
+                issues.Add(new("警告", $"{who} 的新说明里有个 [ 但没有配对的 [/…]："
+                    + "说明支持 [gold]…[/gold] 这类富文本，写错了会原样显示出来。"));
+
+            // 同一行重复出现（手写 JSON / 老存档）：以最后一条为准，这里只提示
+            if (p.KeywordRenames.Take(i).Any(x => x is not null
+                    && string.Equals((x.KeywordId ?? "").Trim(), id, StringComparison.OrdinalIgnoreCase)
+                    && x.ChangesAnything))
+                issues.Add(new("警告", $"{who} 出现了多行，生成时以最后一行填的内容为准。"));
+
+            // 改成和原名一模一样 = 白写一条（不报错，只提醒）
+            if (name.Length > 0 && string.Equals(name, VanillaKeywordGen.VanillaTitleOf(entry.Id), StringComparison.Ordinal))
+                issues.Add(new("警告", $"{who} 的新名字和本体原名一样，等于没改。"));
+        }
+
+        // 撞车判定必须**独立扫一遍全部 7 个关键词**（不是在上面那个循环里顺手做）：
+        // 上面循环对「什么都没填」的关键词会跳过 —— 而撞车恰恰常常出在
+        // 「有人把 A 改成了 B 的本体名（B 本身一个字没改）」这种组合上，
+        // 跳过 B 就永远查不出来（自检里就是这么发现的）。
+        var finalNames = new Dictionary<string, string>(StringComparer.Ordinal);   // 生效名 → 先出现的枚举名
+        foreach (var entry in VanillaKeywordCatalog.All)
+        {
+            string finalName = VanillaKeywordGen.EffectiveNameOf(p, entry.Id);
+            if (finalName.Length == 0) continue;
+            if (finalNames.TryGetValue(finalName, out string? firstId))
+            {
+                issues.Add(new("错误", $"本体关键词改名的名字撞车了：「{firstId}」和「{entry.Id}」"
+                    + $"在游戏里都会显示成「{finalName}」，玩家分不清这两条。给它们其中一个换一个名字。"));
+                continue;
+            }
+            finalNames[finalName] = entry.Id;
+        }
+    }
+
+    /// <summary>
+    /// 召唤伙伴的校验：启用了就把类名 / 名字 / 血量 / 图片查一遍；
+    /// 没启用而卡牌 / 遗物 / 药水却用了「召唤伙伴 / 伙伴攻击」→ 报错拦住（否则生成出来的牌会引用不存在的宠物类）。
+    ///
+    /// 这一档**不需要**任何 Harmony 补丁：走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），
+    /// 所以这里校验的都是「游戏里能不能正常显示」的东西，不是补丁条件。
+    /// </summary>
+    private static void ValidateSummon(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        bool hasSummonEffect = false;
+        void Scan(string owner, IEnumerable<EffectSpec> effects, bool forPotion)
+        {
+            int i = 0;
+            foreach (var e in effects)
+            {
+                i++;
+                if (e.Kind == "SummonPet")
+                {
+                    hasSummonEffect = true;
+                    if (forPotion)
+                        issues.Add(new("错误", $"{owner} 的第 {i} 条是「召唤伙伴」，但**药水不支持**"
+                            + "（用户要求这一档只支持卡牌 + 遗物触发）—— 请改用卡牌或遗物。"));
+                    else if (e.Amount is < 0 or > 999)
+                        issues.Add(new("错误", $"{owner} 的第 {i} 条「召唤伙伴」生命 {e.Amount} 超出范围（0~999；0 = 用「角色」页配置的血量）。"));
+                }
+                else if (e.Kind == "PetAttack")
+                {
+                    hasSummonEffect = true;
+                    if (forPotion)
+                        issues.Add(new("错误", $"{owner} 的第 {i} 条是「伙伴攻击」，但**药水不支持**"
+                            + "（药水没有「玩家选中的目标」，宠物该打谁说不清）—— 请改用卡牌。"));
+                    else if (e.Amount <= 0)
+                        issues.Add(new("错误", $"{owner} 的第 {i} 条「伙伴攻击」伤害要大于 0（现在填的是 {e.Amount}）。"));
+                }
+            }
+        }
+        foreach (var c in p.Cards) if (c is not null) Scan($"卡牌「{c.Name}」", c.Effects, forPotion: false);
+        foreach (var r in p.Relics)
+        {
+            if (r is null) continue;
+            Scan($"遗物「{r.Name}」", r.Effects, forPotion: false);
+            // 「伙伴攻击」必须挂在卡牌上：遗物没有「玩家选中的目标」
+            if (r.Effects.Any(e => e.Kind == "PetAttack"))
+                issues.Add(new("错误", $"遗物「{r.Name}」里放了「伙伴攻击」—— 遗物没有「玩家选中的目标」，"
+                    + "宠物该打谁说不清。请把它放到卡牌上（遗物只支持「召唤伙伴」）。"));
+        }
+        foreach (var s in p.Potions) if (s is not null) Scan($"药水「{s.Name}」", s.Effects, forPotion: true);
+
+        if (p.Summon is not { Enabled: true })
+        {
+            if (hasSummonEffect)
+                issues.Add(new("错误", "有卡牌 / 遗物用了「召唤伙伴」或「伙伴攻击」，但「角色」页的「启用召唤伙伴」没勾 —— "
+                    + "生成出来的代码会引用一个不存在的宠物类（dotnet 直接报 CS0103）。"
+                    + "去「角色」页勾上「启用召唤伙伴」并填好名字 / 血量，或者把这些效果删掉。"));
+            return;
+        }
+
+        string who = "召唤伙伴";
+        if (!string.IsNullOrWhiteSpace(p.Summon.ClassName) && !Naming.IsValidIdentifier(p.Summon.ClassName))
+            issues.Add(new("错误", $"{who}的英文类名不合法：{p.Summon.ClassName}（只能是英文/数字，且以字母开头）。"));
+        else
+        {
+            // 本体的 ModelDb 只按**类名**算模型 ID（忽略命名空间），和本体怪物撞名会抛 DuplicateModelException
+            string cls = PetGen.ClassNameOf(p);
+            if (EffectCatalog.VanillaMonsterNames.Contains(cls))
+                issues.Add(new("错误", $"{who}的类名「{cls}」和本体怪物重名 —— 本体的模型 ID 只按类名算，"
+                    + "撞名会让模组加载当场失败（DuplicateModelException）。换一个类名。"));
+        }
+        if (string.IsNullOrWhiteSpace(p.Summon.Name))
+            issues.Add(new("警告", $"{who}还没填中文名：生成时会用类名「{PetGen.ClassNameOf(p)}」当宠物名牌（游戏里看着像英文变量名）。"));
+        if (PetGen.BaseHp(p) <= 0 || p.Summon.Hp <= 0)
+            issues.Add(new("错误", $"{who}的生命要大于 0（现在填的是 {p.Summon.Hp}）—— 血量 ≤ 0 的宠物一上场就是死的。"));
+        if (!string.IsNullOrWhiteSpace(p.Summon.Image) && !File.Exists(p.Summon.Image))
+            issues.Add(new("错误", $"{who}的图片文件不存在：{p.Summon.Image}"));
+        if (string.IsNullOrWhiteSpace(p.Summon.Image))
+            issues.Add(new("提示", $"{who}没上传图片：宠物会用本体的占位图（一张静态 error.png）显示，"
+                + "能正常上场 / 攻击 / 死亡，只是长得不好看。上传一张 PNG 就会自动生成宠物场景。"));
+        // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）
+        bool anyCardOrRelicSummons = p.Cards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
+            || p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet"));
+        if (!anyCardOrRelicSummons)
+            issues.Add(new("提示", $"{who}已启用，但没有任何卡牌 / 遗物在「召唤」它"
+                + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」）—— 游戏里它永远不会上场。"));
+        if (p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger)))
+            issues.Add(new("警告", "有遗物在「" + string.Join(" / ", p.Relics
+                    .Where(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger))
+                    .Select(r => r.Name)) + "」上配了「召唤伙伴」，但那个触发时机的本体钩子拿不到 choiceContext"
+                + "（只有「战斗开始时 / 每回合开始时 / 每回合结束时 / 受到伤害时」有）→ 生成时会被忽略。"
+                + "想要「战斗开始时召唤伙伴」，请把触发时机改成「战斗开始时」。"));
+    }
+
+    /// <summary>这个遗物触发时机的本体钩子有没有 choiceContext（没有的话召唤伙伴实现不了）。</summary>
+    private static bool RelicTriggerLacksContext(string? trigger) =>
+        trigger is "CombatVictory" or "GoldGained";
 
     /// <summary>
     /// 同一个模型里同种效果出现多次时提醒一句：动态变量会自动起别名（Damage2 这种）。

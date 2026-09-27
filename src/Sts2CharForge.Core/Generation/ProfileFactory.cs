@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Text.Json;
 using Sts2CharForge.Core.Profile;
 
@@ -285,6 +286,22 @@ public static class ProfileFactory
     /// </summary>
     public static CharacterProfile Normalize(CharacterProfile p)
     {
+        // 自定义关键词：卡牌上的引用统一成「当前的本地化键」（用户改过英文标识后，老引用要跟着走）
+        KeywordGen.Normalize(p);
+
+        // 本体关键词改名：界面上是固定 7 行的表格，读老存档（或手写 JSON）时把缺的行补齐
+        EnsureKeywordRenameRows(p);
+
+        // 召唤伙伴：宠物类名 / 中文名的兜底规整（手写 JSON、从老工程回读都可能两个都空着）
+        p.Summon ??= new SummonSpec();
+        {
+            // 没填类名 → 生成时本来就是 <角色类名>Pet，但宠物名牌要有个像样的名字，
+            // 所以把「名字」在载入时补成最终会用的那个（而不是让卡面写着 MyCharacterPet）
+            if (string.IsNullOrWhiteSpace(p.Summon.Name))
+                p.Summon.Name = PetGen.ClassNameOf(p);
+            if (p.Summon.Hp <= 0) p.Summon.Hp = 8;   // 新建存档的默认血量；≤0 的宠物一上场就是死的
+        }
+
         foreach (var card in p.Cards)
         {
             if (card.Condition is null || card.Condition.IsNone) continue;
@@ -332,5 +349,31 @@ public static class ProfileFactory
         // 无论新旧存档：打击 / 防御都排在卡牌列表最上面（只重排、不新增）
         MoveVanillaBasicsToTop(p);
         return p;
+    }
+
+    /// <summary>
+    /// 「本体关键词改名」在界面上是**固定 7 行**的表格（本体关键词是封闭枚举，不能增删），
+    /// 所以载入存档后要把缺的行补齐：按 <see cref="VanillaKeywordCatalog.All"/> 的顺序
+    /// 每条关键词一个 <see cref="VanillaKeywordRenameSpec"/>，已经有的（用户填过的）原样保留。
+    ///
+    /// 为什么要补齐而不是「有才显示」：表格必须始终是 7 行 —— 否则用户会以为本体只有自己填过的那几个关键词；
+    /// 而且校验器判「名字撞车」要能拿到全部 7 个关键词的最终显示名。
+    /// 原先下标的脏数据（重复 / 不认识的枚举名）也顺手清掉，免得表格里出现看不懂的行。
+    /// </summary>
+    public static void EnsureKeywordRenameRows(CharacterProfile p)
+    {
+        p.KeywordRenames ??= new ObservableCollection<VanillaKeywordRenameSpec>();
+        var mine = p.KeywordRenames.Where(r => r is not null).ToList();
+        p.KeywordRenames.Clear();
+        foreach (var entry in VanillaKeywordCatalog.All)
+        {
+            // 同一个枚举名有多行时以最后一行填的为准（和生成逻辑一致）
+            var hit = mine.LastOrDefault(r => string.Equals((r.KeywordId ?? "").Trim(), entry.Id, StringComparison.OrdinalIgnoreCase));
+            if (hit is null)
+                hit = new VanillaKeywordRenameSpec { KeywordId = entry.Id };
+            else if (string.IsNullOrWhiteSpace(hit.VanillaName))
+                hit.VanillaName = entry.VanillaName;
+            p.KeywordRenames.Add(hit);
+        }
     }
 }

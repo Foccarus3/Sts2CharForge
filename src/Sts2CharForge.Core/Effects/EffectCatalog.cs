@@ -84,6 +84,19 @@ public static class EffectCatalog
     public static string? ZhLocText(string? key) =>
         key is not null && ZhPowerLoc.TryGetValue(key, out string? v) ? v : null;
 
+    /// <summary>
+    /// 本机读到的本体 <c>localization/zhs/card_keywords.json</c>（键 → 中文，如 <c>EXHAUST.title</c> → 消耗）。
+    /// 「本体关键词改名」用它做两件事：① 界面上显示原名/原说明当参考；② 判断「和本体一样 = 没改」，
+    /// 免得把没改的键也写进我们的表里（那会把本体的空文本/别的内容覆盖成空串）。
+    /// 读不到（没解包工程、pck 里没有这个文件）时是空表，那时退回 <see cref="Profile.VanillaKeywordCatalog"/> 的内置兜底文本。
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> VanillaKeywordLoc { get; private set; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>本体 card_keywords 表里这一键的文本（没有就返回 null）。</summary>
+    public static string? VanillaKeywordText(string? key) =>
+        key is not null && VanillaKeywordLoc.TryGetValue(key, out string? v) ? v : null;
+
     private static void RememberZhPowerLoc(Dictionary<string, string>? map)
     {
         if (map is { Count: > 0 }) ZhPowerLoc = map;
@@ -96,6 +109,23 @@ public static class EffectCatalog
         new Dictionary<string, string>(StringComparer.Ordinal);
     public static IReadOnlyDictionary<string, string> ZhPotionLoc { get; private set; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 【只给自检用】额外塞几条「本体卡牌文案」进 <see cref="ZhCardLoc"/>，返回原来的表以便还原。
+    ///
+    /// 为什么需要：卡面描述的「旧名 → 新名」替换依赖本机解包工程里的 cards.json，
+    /// 而开发机 / CI 上不一定读得到 —— 读不到时那条链路就永远是 0 条替换项，
+    /// 自检也就等于没验。塞几条合成的键（绝不和本体撞名）就能把
+    /// 「替换 + 合并进生成出来的 cards.json」整条链路验死。
+    /// </summary>
+    public static IReadOnlyDictionary<string, string> InjectCardLocForTest(IEnumerable<KeyValuePair<string, string>> extra)
+    {
+        var old = ZhCardLoc;
+        var map = new Dictionary<string, string>(ZhCardLoc, StringComparer.Ordinal);
+        foreach (var kv in extra) map[kv.Key] = kv.Value;
+        ZhCardLoc = map;
+        return old;
+    }
 
     /// <summary>
     /// 把本体卡牌 / 遗物 / 药水的中文表也读进来。
@@ -112,6 +142,11 @@ public static class EffectCatalog
         if (cards.Count > 0) ZhCardLoc = cards;
         if (relics.Count > 0) ZhRelicLoc = relics;
         if (potions.Count > 0) ZhPotionLoc = potions;
+
+        // 本体关键词的中文表（改名 / 旧名替换都要用）。pck 里有这个文件，解包工程里也有。
+        var keywords = ReadLocalization(Path.Combine(vanillaProjectDir ?? "", "localization/zhs/card_keywords.json"));
+        if (keywords.Count == 0) keywords = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/card_keywords.json") ?? keywords;
+        if (keywords.Count > 0) VanillaKeywordLoc = keywords;
     }
 
     // ==================== 状态改名后的「显示名」 ====================
@@ -343,6 +378,20 @@ public static class EffectCatalog
     }
 
     /// <summary>
+    /// 「召唤伙伴」时不能用的怪物类名。
+    ///
+    /// 为什么只写死这几个、不去扫玩家机器上的文件：本体的 <c>ModelDb</c> 只按**类名**算模型 ID（忽略命名空间），
+    /// 和本体怪物重名会在注册时抛 <c>DuplicateModelException</c>（模组加载当场失败）。
+    /// 宠物多半叫 <c>&lt;角色类名&gt;Pet</c>，真正会撞的就是官方的两只宠物（Osty / Byrdpip）和几个通用词，
+    /// 所以这里只挡这些 —— 少一处「换台电脑就读不到」的环境依赖。
+    /// </summary>
+    public static IReadOnlyCollection<string> VanillaMonsterNames { get; } =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            "Osty", "Byrdpip", "ByrdonisEgg", "BattleFriend", "Pet", "Minion", "Familiar",
+        };
+
+    /// <summary>
     /// 从玩家自己的游戏文件里加载效果库：优先用解包工程（有中英文名 + 增益/减益分类），
     /// 读不到就退回内置数据（发布版不含该文件，所以正常会走第一条）。
     /// 这样本工具不携带任何游戏文本。
@@ -483,6 +532,15 @@ public static class EffectCatalog
         // 挂在「战斗胜利后」（状态 / 遗物）时走本体的战斗奖励：room.AddExtraReward(new CardReward(...))，
         // 打赢后结算界面多一条「选一张卡」；挂在其它时机（战斗中）就是当场弹选牌界面。
         new EffectKindOption("CardReward",          "获得卡牌奖励（N 选一）", "张", 1, 5, false, false),
+        // ===== 召唤伙伴（第一档：完全不需要 Harmony 补丁）=====
+        // 走本体的通用宠物 API（PlayerCmd.AddPet<T>，Byrdpip / Pael's Legion 就是这么用的），
+        // 所以只要有一个 MonsterModel 子类就能上场。用法见「角色」页的「召唤伙伴」分组。
+        // 数值 = 0 时有特殊含义（用「角色」页里配置的血量），所以下限是 0。
+        new EffectKindOption("SummonPet",   "召唤伙伴", "点生命", 0, 999, false, false),
+        // 伙伴攻击：attacker 是宠物（DamageCmd.Attack(n).FromMonster(pet.Monster)），
+        // 目标沿用卡牌的「作用对象」。宠物不在场时这张牌会跳过这一条（不报错）。
+        // 只支持卡牌 —— 遗物没有「玩家选中的目标」，宠物该打谁说不清。
+        new EffectKindOption("PetAttack",   "伙伴攻击", "点", 0, 999, true, true),
     };
 
     /// <summary>「生成卡牌」的放置位置。</summary>

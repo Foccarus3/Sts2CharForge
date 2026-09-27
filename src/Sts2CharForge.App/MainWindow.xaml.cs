@@ -57,6 +57,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	private CharacterProfile _profile = ProfileFactory.Sample();
 
+	/// <summary>
+	/// 「本体关键词改名」那 7 行当前挂过 PropertyChanged 的实例。
+	/// 换存档时要先摘掉旧的（<see cref="EnsureKeywordRenameRows"/>），否则同一个对象被订阅多次，
+	/// 界面会重复刷新，自检里的行为也会变得看不明白。
+	/// </summary>
+	private readonly List<VanillaKeywordRenameSpec> _keywordRenameHooked = new();
+
 	private string? _currentProfilePath;
 
 	/// <summary>
@@ -85,6 +92,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private readonly Stack<UndoEntry> _relicUndo = new Stack<UndoEntry>();
 
 	private readonly Stack<UndoEntry> _potionUndo = new Stack<UndoEntry>();
+	private readonly Stack<UndoEntry> _keywordUndo = new Stack<UndoEntry>();
 
 	private readonly Stack<UndoEntry> _artUndo = new Stack<UndoEntry>();
 
@@ -200,10 +208,39 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			_profile = value;
 			HookProfileColors();
+			// 「本体关键词改名」是固定 7 行的表格：换存档时把缺的行补齐并接上事件
+			EnsureKeywordRenameRows();
 			Raise("Profile");
 			Raise("PresetSelection");
 			Raise("FrameSelection");
 		}
+	}
+
+	/// <summary>
+	/// 本体关键词改名：把 7 行补齐（本体关键词是封闭枚举，不能增删），并监听每一行 ——
+	/// 改了名字/说明之后要刷新那一节下面的实时说明（否则界面上那句「会把 N 条文案换掉」永远不动）。
+	/// 每次换存档都会重新挂钩，所以老的处理器会先全部摘掉，避免重复订阅（重复订阅只是多跑几次，不致命，
+	/// 但会让自检里的计数和实际不符）。
+	/// </summary>
+	private void EnsureKeywordRenameRows()
+	{
+		foreach (var old in _keywordRenameHooked)
+			old.PropertyChanged -= OnKeywordRenameChanged;
+		_keywordRenameHooked.Clear();
+
+		ProfileFactory.EnsureKeywordRenameRows(_profile);
+		foreach (var row in _profile.KeywordRenames)
+		{
+			row.PropertyChanged += OnKeywordRenameChanged;
+			_keywordRenameHooked.Add(row);
+		}
+		Raise("KeywordRenameHint");
+	}
+
+	private void OnKeywordRenameChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		// 改名字/说明都要重算那句提示（换关键词时 Specification 也会同时通知 VanillaName）
+		Raise("KeywordRenameHint");
 	}
 
 	public IReadOnlyList<string> Genders { get; } = new string[3] { "Neutral", "Feminine", "Masculine" };
@@ -394,6 +431,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 
+	/// <summary>
+	/// 召唤伙伴的图片预览（「角色」页里的「召唤伙伴」分组）。
+	/// 和额外资源量图标一样用 LoadPreview：路径空 / 文件不在 / 不是图片都返回 null（界面显示空框）。
+	/// </summary>
+	public ImageSource? PetImagePreview => LoadPreview(_profile.Summon?.Image);
+
 	public ImageSource? ExtraResourceIconPreview
 	{
 		get
@@ -477,9 +520,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	/// <summary>
+	/// 「本体关键词改名」那一节下面那句实时说明：改了哪些关键词、旧名字会在多少条本体文案里被替掉。
+	/// 和「本体状态改写」的 <see cref="VanillaTextHint"/> 一个套路 —— 文案替换这一步依赖本机的本体中文表，
+	/// 读不到就如实说（改名本身照样生效：键是我们按枚举名写死的）。
+	/// </summary>
+	public string KeywordRenameHint
+	{
+		get
+		{
+			var renames = VanillaKeywordGen.Active(Profile);
+			if (renames.Count == 0)
+			{
+				return "（这 7 行都留空 = 不改，游戏里还是本体原来的「消耗 / 虚无 / …」。）";
+			}
+			string who = string.Join("、", renames.Select((VanillaKeywordRenameSpec r) =>
+				$"{VanillaKeywordCatalog.VanillaNameOf(r.KeywordId)}→{(string.IsNullOrWhiteSpace(r.Name) ? VanillaKeywordCatalog.VanillaNameOf(r.KeywordId) : r.Name.Trim())}"));
+			int num = VanillaKeywordGen.KeywordTextReplacements(Profile).Count();
+			string tail = num > 0
+				? $"会把本体 {num} 条卡牌/遗物/药水文案里的旧名字一起换掉。"
+				: (VanillaKeywordGen.CanReadVanillaKeywordText
+					? "本体的卡牌/遗物/药水描述里没出现旧名字，不用额外替换。"
+					: "⚠ 本机没读到本体卡牌中文表（要有「解包后的原版工程」目录），卡面描述里的旧名字换不了；关键词本身的名字仍会换。");
+			return $"已改：{who}。{tail}";
+		}
+	}
+
 	public IReadOnlyList<string> PowerTypes { get; } = new string[2] { "Buff", "Debuff" };
-
-
 	public IReadOnlyList<string> CardFilters => PowerTriggers.CardFilters;
 
 	public IReadOnlyList<PowerTriggerOption> TriggerOptions => PowerTriggers.All;
@@ -702,6 +769,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public string UndoPotionHint => HintOf(_potionUndo);
 
+	/// <summary>自定义关键词的撤回状态（和药水同一个套路）。</summary>
+	public bool CanUndoKeyword => _keywordUndo.Count > 0;
+
+	public string UndoKeywordHint => HintOf(_keywordUndo);
+
+	/// <summary>
+	/// 「卡牌」页里「自定义关键词」的勾选行：当前选中的卡 × 全部关键词。
+	/// 勾上 = 把这条关键词写进这张卡的 KeywordIds（生成时描述开头会出现它、悬停卡面能看到说明）。
+	/// </summary>
+	public IReadOnlyList<CustomKeywordRow> CustomKeywordRows
+	{
+		get
+		{
+			if (!(CardList?.SelectedItem is CardSpec card)) return Array.Empty<CustomKeywordRow>();
+			return KeywordGen.All(_profile).Select(k => new CustomKeywordRow(card, k.Spec, k.Key)).ToList();
+		}
+	}
+
+	/// <summary>有没有自定义关键词（「卡牌」页的空态提示用）。</summary>
+	public bool HasCustomKeywords => _profile.CustomKeywords.Count > 0;
+
+	public bool NoCustomKeywords => _profile.CustomKeywords.Count == 0;
+
 	public string UndoArtHint => HintOf(_artUndo);
 
 	public string UndoProfileHint => HintOf(_profileUndo);
@@ -792,6 +882,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		PresetItems = CardColorSpec.Presets.Select((CardColorSpec.Preset pz) => new PresetItem(pz, pz.Name)).Append(_customPreset).ToList();
 		FrameItems = CardColorSpec.Frames.Select((string f) => new FrameItem(f, f)).Append(_customFrame).ToList();
 		HookProfileColors();
+		// 启动时那份配置也要先把「本体关键词改名」的 7 行补齐（Profile 的 setter 只在换存档时跑）
+		EnsureKeywordRenameRows();
 		RecheckEnvironment();
 		string text = MigrateLegacyProfileFolder();
 		NormalizeOutputDir();
@@ -819,12 +911,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		CardDetail.DataContext = CardList.SelectedItem;
 		RelicDetail.DataContext = RelicList.SelectedItem;
 		PotionDetail.DataContext = PotionList.SelectedItem;
+		KeywordDetail.DataContext = KeywordList.SelectedItem;
+		Raise("CustomKeywordRows");
+		Raise("HasCustomKeywords");
+		Raise("NoCustomKeywords");
 		Raise("SelectedCardUpgradeCost");
 		Raise("UpgradeCostHint");
 		Raise("UpgradeKeywordRows");
 		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
 		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Relics"));
 		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
+		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
@@ -1541,6 +1638,30 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			VanillaPowerOverrides = { o }
 		};
+	}
+
+	/// <summary>校验 / 文本替换的单元测试用：拿一份只有一条「本体关键词改名」的最小配置。</summary>
+	private static CharacterProfile ProfileWithKeywordRename(string keywordId, string name, string description)
+	{
+		return new CharacterProfile
+		{
+			KeywordRenames = { new VanillaKeywordRenameSpec { KeywordId = keywordId, Name = name, Description = description } }
+		};
+	}
+
+	/// <summary>
+	/// 自检里查「本体关键词改名」校验用的配置：带上当前这份配置的环境路径（解包工程 / 游戏目录），
+	/// 否则校验器会先报「解包工程目录不存在」那两条，第一条错误就不是我们要断言的那条了。
+	/// </summary>
+	private CharacterProfile RenameCheckProfile()
+	{
+		CharacterProfile p = ProfileFactory.Sample();
+		p.Paths.VanillaProject = Profile.Paths.VanillaProject;
+		p.Paths.GameDataDir = Profile.Paths.GameDataDir;
+		p.Paths.GodotExe = Profile.Paths.GodotExe;
+		p.Paths.OutputDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_kwrename");
+		p.KeywordRenames.Clear();
+		return p;
 	}
 
 	private static ImageSource? LoadPreview(string? path)
@@ -3060,11 +3181,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("CanUndoCard");
 		Raise("CanUndoRelic");
 		Raise("CanUndoPotion");
+		Raise("CanUndoKeyword");
 		Raise("CanUndoArt");
 		Raise("CanUndoProfile");
 		Raise("UndoCardHint");
 		Raise("UndoRelicHint");
 		Raise("UndoPotionHint");
+		Raise("UndoKeywordHint");
 		Raise("UndoArtHint");
 		Raise("UndoProfileHint");
 	}
@@ -3091,6 +3214,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private void OnUndoPotion(object sender, RoutedEventArgs e)
 	{
 		UndoLast(_potionUndo);
+	}
+
+	private void OnUndoKeyword(object sender, RoutedEventArgs e)
+	{
+		UndoLast(_keywordUndo);
 	}
 
 	private void OnUndoArt(object sender, RoutedEventArgs e)
@@ -3374,6 +3502,61 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	private void OnAddKeyword(object sender, RoutedEventArgs e)
+	{
+		_profile.CustomKeywords.Add(new CustomKeywordSpec { Name = "新关键词" });
+		SyncDetail();
+		KeywordList.SelectedIndex = _profile.CustomKeywords.Count - 1;
+		SetStatus("已添加关键词：填好名字和说明，然后到「卡牌」页勾选哪张牌用它。");
+	}
+
+	private void OnRemoveKeyword(object sender, RoutedEventArgs e)
+	{
+		List<CustomKeywordSpec> picked = SelectedOf<CustomKeywordSpec>(KeywordList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的关键词（没有就点左边的「添加关键词」）。");
+			return;
+		}
+		string what = picked.Count == 1 ? "关键词「" + picked[0].Name + "」" : $"选中的 {picked.Count} 条关键词";
+		if (ConfirmDelete(what))
+		{
+			// 卡牌上的引用一起清掉：否则生成前校验会报「引用了不存在的关键词」，用户还得逐张去取消勾选。
+			// 注意「撤回删除」只恢复关键词本身，卡牌上的勾选要重新点。
+			int cleaned = ClearKeywordRefs(picked);
+			int value = RemoveManyWithUndo(_profile.CustomKeywords, picked, _keywordUndo, "关键词", delegate
+			{
+				KeywordList.SelectedItem = picked[0];
+			});
+			SyncDetail();
+			SetStatus($"已删除 {value} 条关键词" + (cleaned > 0 ? $"（同时取消了 {cleaned} 张卡上的引用）" : "")
+				+ "（可点「撤回删除」恢复关键词，卡牌上的勾选要重新点）");
+		}
+	}
+
+	/// <summary>删除关键词时，把卡牌上对它的引用一并去掉（本地化键和中文名两种写法都清）。</summary>
+	private int ClearKeywordRefs(List<CustomKeywordSpec> removed)
+	{
+		var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var item in KeywordGen.All(_profile))
+		{
+			if (!removed.Contains(item.Spec)) continue;
+			keys.Add(item.Key);
+			keys.Add((item.Spec.Name ?? "").Trim());
+		}
+		int cleaned = 0;
+		foreach (var card in _profile.Cards)
+		{
+			var kept = card.CustomKeywordList.Where(x => !keys.Contains(x.Trim())).ToList();
+			if (kept.Count != card.KeywordIds.Count)
+			{
+				card.KeywordIds = kept;
+				cleaned++;
+			}
+		}
+		return cleaned;
+	}
+
 	private ListBox? ListFromTag(object sender)
 	{
 		return (sender as FrameworkElement)?.Tag as ListBox;
@@ -3546,6 +3729,49 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		});
 		SetStatus("额外资源量图标已清除（计数器会继续用本体的星星图标），可点「撤回」恢复。");
 		PersistArtChange("额外资源量图标已清除（计数器会继续用本体的星星图标），可点「撤回」恢复");
+	}
+
+	/// <summary>
+	/// 「角色」页「召唤伙伴」里的宠物图片（可空）。
+	/// 选择 / 清除都写进 Profile.Summon.Image，并立刻静默保存 —— 和美术槽位的做法一致。
+	/// </summary>
+	private void OnPickPetImage(object sender, RoutedEventArgs e)
+	{
+		OpenFileDialog openFileDialog = new OpenFileDialog
+		{
+			Filter = "图片 (*.png)|*.png|所有文件 (*.*)|*.*"
+		};
+		if (!openFileDialog.ShowDialog(this).GetValueOrDefault()) return;
+		Profile.Summon ??= new SummonSpec();
+		string old = Profile.Summon.Image;
+		Profile.Summon.Image = openFileDialog.FileName;
+		Raise("PetImagePreview");
+		PushUndo(_artUndo, "召唤伙伴图片", delegate
+		{
+			Profile.Summon.Image = old;
+			Raise("PetImagePreview");
+		});
+		SetStatus("召唤伙伴图片已选择：" + openFileDialog.FileName + "（生成时会拷进模组并生成宠物场景）");
+		PersistArtChange("召唤伙伴图片已选择：" + openFileDialog.FileName);
+	}
+
+	private void OnClearPetImage(object sender, RoutedEventArgs e)
+	{
+		if (string.IsNullOrWhiteSpace(Profile.Summon?.Image))
+		{
+			SetStatus("还没有选过召唤伙伴图片。");
+			return;
+		}
+		string old = Profile.Summon.Image;
+		Profile.Summon.Image = null;
+		Raise("PetImagePreview");
+		PushUndo(_artUndo, "召唤伙伴图片", delegate
+		{
+			Profile.Summon.Image = old;
+			Raise("PetImagePreview");
+		});
+		SetStatus("召唤伙伴图片已清除（宠物会用本体的占位图），可点「撤回」恢复。");
+		PersistArtChange("召唤伙伴图片已清除（宠物会用本体的占位图），可点「撤回」恢复");
 	}
 
 	private void OnPickArt(object sender, RoutedEventArgs e)
@@ -4144,6 +4370,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("卡牌列表绑定到 Profile.Cards", CardList.ItemsSource == Profile.Cards);
 		Check("遗物列表绑定到 Profile.Relics", RelicList.ItemsSource == Profile.Relics);
 		Check("药水列表绑定到 Profile.Potions", PotionList.ItemsSource == Profile.Potions);
+		Check("关键词列表绑定到 Profile.CustomKeywords", KeywordList.ItemsSource == Profile.CustomKeywords);
 		Check("美术槽位已建立（7 个上传槽位 + 描边颜色输入）", ArtSlots.Count == 7, $"{ArtSlots.Count} 个");
 		try
 		{
@@ -4817,12 +5044,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		int num9 = -1;
 		int num10 = -1;
 		int num11 = -1;
+		int numKw = -1;
 		for (int num12 = 0; num12 < MainTabs.Items.Count; num12++)
 		{
 			if (MainTabs.Items[num12] is TabItem tabItem2)
 			{
 				switch ((tabItem2.Header as string) ?? "")
 				{
+				case "自定义关键词":
+					numKw = num12;
+					break;
 				case "先古之民":
 					num7 = num12;
 					break;
@@ -4841,7 +5072,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				}
 			}
 		}
-		Check("「先古之民」→「本体状态改写」→「自定义状态」→「美术资源」按顺序排", num8 >= 0 && num7 == num8 + 1 && num10 == num7 + 1 && num11 == num10 + 1 && num9 == num11 + 1, $"药水={num8} / 先古之民={num7} / 本体状态改写={num10} / 自定义状态={num11} / 美术={num9}");
+		Check("「药水」→「自定义关键词」→「先古之民」→「本体状态改写」→「自定义状态」→「美术资源」按顺序排", num8 >= 0 && numKw == num8 + 1 && num7 == numKw + 1 && num10 == num7 + 1 && num11 == num10 + 1 && num9 == num11 + 1, $"药水={num8} / 关键词={numKw} / 先古之民={num7} / 本体状态改写={num10} / 自定义状态={num11} / 美术={num9}");
 		Check("目录里包含建筑师（本体没给他写过通用对话，靠补丁注入）", EffectCatalog.Ancients.Any((AncientEntry a) => a.Id == "THE_ARCHITECT"), "有 THE_ARCHITECT");
 		SelectTabRoot("角色");
 		List<TextBox> list9 = new List<TextBox>();
@@ -6164,8 +6395,133 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			recVictory.Effects.Add(new EffectSpec { Kind = "CardReward", Amount = 3m, TargetSide = "Self" });
 			recPower.Triggers.Add(recVictory);
 			recSrc.CustomPowers.Add(recPower);
+			// 自定义关键词：一条自己填英文标识、一条留空（走自动键 KEYWORD_2），都挂在第一张自有卡上
+			recSrc.CustomKeywords.Add(new CustomKeywordSpec
+			{
+				Name = "命定",
+				Key = "FATE",
+				Description = "打出后，本回合每打出一张牌就抽一张。",
+			});
+			recSrc.CustomKeywords.Add(new CustomKeywordSpec
+			{
+				Name = "回响",
+				Description = "第二条关键词（没填英文标识，走自动键）。",
+			});
+			// 本体关键词改名（这一节和「自定义关键词」共用同一张 card_keywords 表）：
+			// 一条改名、一条**只改说明**（只改说明时表里只有 description 键 —— 回读不能把它丢了）
+			recSrc.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "献祭" });
+			recSrc.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "INNATE", Description = "开局就在手里。" });
+			srcOwn[0].KeywordIds = new List<string> { "FATE", "回响" };
 			var gen = ModGenerator.Generate(recSrc);
 			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot), gen.ProjectRoot);
+			// ===== 自定义关键词：本地化表 / 悬停说明 / 卡面描述，三处产物都要有 =====
+			string kwLocPath = Path.Combine(gen.ProjectRoot, recSrc.ModId, "localization", "zhs", "card_keywords.json");
+			Check("自定义关键词：生成了 card_keywords.json（写进本体那张表）", File.Exists(kwLocPath), kwLocPath);
+			string kwLoc = File.Exists(kwLocPath) ? File.ReadAllText(kwLocPath, Encoding.UTF8) : "";
+			Check("自定义关键词：表里有 FATE.title = 命定 和说明",
+				kwLoc.Contains("\"FATE.title\": \"命定\"") && kwLoc.Contains("FATE.description"), kwLoc.Replace("\r", "").Replace("\n", " "));
+			Check("自定义关键词：没填英文标识的那条自动用 KEYWORD_2",
+				kwLoc.Contains("KEYWORD_2.title") && kwLoc.Contains("\"KEYWORD_2.title\": \"回响\""), "KEYWORD_2.title = 回响");
+			string kwCardFile = Path.Combine(gen.ProjectRoot, "cs", "Cards",
+				Naming.From(recSrc).CardClassName(recSrc, srcOwn[0]) + ".cs");
+			string kwCardSrc = File.Exists(kwCardFile) ? File.ReadAllText(kwCardFile, Encoding.UTF8) : "";
+			Check("自定义关键词：卡牌生成了悬停说明（读本体 card_keywords 表）",
+				kwCardSrc.Contains("LocString(\"card_keywords\", \"FATE.title\")")
+				&& kwCardSrc.Contains("LocString(\"card_keywords\", \"KEYWORD_2.description\")"), "两条都在");
+			string kwCardsLoc = File.ReadAllText(Path.Combine(gen.ProjectRoot, recSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+			Check("自定义关键词：卡面描述最前面是 [gold]命定[/gold]。",
+				kwCardsLoc.Contains("[gold]命定[/gold]。"), "描述里有");
+			Check("自定义关键词：两条都按引用顺序拼进卡面描述（一行一个）",
+				kwCardsLoc.Contains("[gold]命定[/gold]。\\n[gold]回响[/gold]。"), "命定 → 回响");
+			// ===== 本体关键词改名：写进本体 card_keywords 表 + 旧名字全文替换 =====
+			Check("本体关键词改名：EXHAUST.title 写成了新名字（本体卡面上的金色词会跟着变）",
+				kwLoc.Contains("\"EXHAUST.title\": \"献祭\""), "EXHAUST.title = 献祭");
+			Check("本体关键词改名：没动 PERIOD（那是标点占位键，不是关键词）",
+				!kwLoc.Contains("PERIOD"), "表里没有 PERIOD");
+			// 没改的关键词一个键都不许写：写了「虚无」就等于凭空覆盖本体那条（说明也会一起被清空）
+			Check("本体关键词改名：没改的其它关键词不会被写进表里（虚无 / 固有 / 保留 / 奇巧 / 永恒 / 不能被打出）",
+				!kwLoc.Contains("ETHEREAL.") && !kwLoc.Contains("INNATE.") && !kwLoc.Contains("RETAIN.")
+				&& !kwLoc.Contains("SLY.") && !kwLoc.Contains("ETERNAL.") && !kwLoc.Contains("UNPLAYABLE."),
+				"只有 EXHAUST 那几个键");
+			Check("本体关键词改名：只填名字（说明留空）时不会把本体说明覆盖成空串",
+				!kwLoc.Contains("\"EXHAUST.description\""), "没写 description 键");
+			{
+				// 旧名字全文替换：本体卡牌/遗物/药水描述里写着的「消耗」要换成「献祭」。
+				// 本机不一定读得到本体中文表，所以这里先往表里塞一条**合成**条目
+				// （只加一个绝不和本体撞的键），把「替换 + 合并进 cards.json」这条链路验死。
+				IReadOnlyDictionary<string, string> oldCardLoc = EffectCatalog.InjectCardLocForTest(
+					new[] { new KeyValuePair<string, string>("UICHECK_KEYWORD_TEXT_1.description", "消耗 1 张牌。") });
+				try
+				{
+					var cardTable = EffectCatalog.ZhCardLoc;
+					List<(string Table, string Key, string Text)> kwText =
+						VanillaKeywordGen.KeywordTextReplacements(recSrc).ToList();
+					Check("本体关键词改名：本体卡面描述里的旧名字会被换掉（消耗 → 献祭）",
+						kwText.Any((r) => r.Table == "cards" && r.Key == "UICHECK_KEYWORD_TEXT_1.description"
+							&& r.Text.Contains("献祭") && !r.Text.Contains("消耗")),
+						$"{kwText.Count} 条替换项");
+					Check("本体关键词改名：替换项只覆盖本体本来就有那个键的条目（不会给我们的自定义卡造键）",
+						kwText.All((r) => cardTable.ContainsKey(r.Key)), "键都在本体表里");
+					Check("本体关键词改名：没填名字（只改说明）的关键词不产生替换项",
+						VanillaKeywordGen.KeywordTextReplacements(ProfileWithKeywordRename("EXHAUST", "", "只改说明")).Count() == 0,
+						"没改名 → 不替换");
+					Check("本体关键词改名：新名字和本体原名一样时也不产生替换项",
+						VanillaKeywordGen.KeywordTextReplacements(ProfileWithKeywordRename("EXHAUST", "消耗", "")).Count() == 0,
+						"等于没改 → 不替换");
+					var kwTextGen2 = ModGenerator.Generate(recSrc);
+					string kwCards2 = File.ReadAllText(Path.Combine(kwTextGen2.ProjectRoot, recSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+					Check("本体关键词改名：替换项真的合进了生成的 cards.json",
+						kwCards2.Contains("献祭 1 张牌。"), "cards.json 里已是新名字");
+				}
+				finally
+				{
+					EffectCatalog.InjectCardLocForTest(oldCardLoc);
+				}
+			}
+			// 校验：id 非法 / 名字带富文本标记 / 和别的本体关键词撞名 → 都必须是错误
+			// 注意：这几份配置要带上「环境路径」，否则校验器还会报「解包工程目录不存在」那两条，
+			// 第一条错误就不是我们要查的那条了。
+			CharacterProfile badRename = RenameCheckProfile();
+			badRename.KeywordRenames.Clear();
+			badRename.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "NOT_A_KEYWORD", Name = "随便" });
+			Check("本体关键词改名：枚举名不是那 7 个之一 → 错误",
+				ProfileValidator.Validate(badRename).Any((ValidationIssue i) => i.IsError && i.Message.Contains("不是本体关键词")),
+				ProfileValidator.Validate(badRename).First((ValidationIssue i) => i.IsError).Message);
+			CharacterProfile badRich = RenameCheckProfile();
+			badRich.KeywordRenames.Clear();
+			badRich.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "[gold]烧掉[/gold]" });
+			Check("本体关键词改名：新名字里带 [ ] 富文本标记 → 错误（会把卡面 [gold]…[/gold] 解析坏）",
+				ProfileValidator.Validate(badRich).Any((ValidationIssue i) => i.IsError && i.Message.Contains("方括号")),
+				ProfileValidator.Validate(badRich).First((ValidationIssue i) => i.IsError).Message);
+			CharacterProfile badClash = RenameCheckProfile();
+			badClash.KeywordRenames.Clear();
+			badClash.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "虚无" });   // 和本体「虚无」撞名
+			ProfileFactory.EnsureKeywordRenameRows(badClash);
+			Check("本体关键词改名：新名字和另一个本体关键词撞车 → 错误（玩家分不清这两条）",
+				ProfileValidator.Validate(badClash).Any((ValidationIssue i) => i.IsError && i.Message.Contains("撞车")),
+				ProfileValidator.Validate(badClash).FirstOrDefault((ValidationIssue i) => i.IsError)?.Message ?? "(没有错误)");
+			CharacterProfile dupRename = RenameCheckProfile();
+			dupRename.KeywordRenames.Clear();
+			dupRename.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "燃烧" });
+			dupRename.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "ETHEREAL", Name = "燃烧" });
+			ProfileFactory.EnsureKeywordRenameRows(dupRename);
+			Check("本体关键词改名：两条改成同一个新名字也会被撞车检查拦住",
+				ProfileValidator.Validate(dupRename).Any((ValidationIssue i) => i.IsError && i.Message.Contains("撞车")),
+				ProfileValidator.Validate(dupRename).FirstOrDefault((ValidationIssue i) => i.IsError)?.Message ?? "(没有错误)");
+			CharacterProfile goodRename = RenameCheckProfile();
+			goodRename.KeywordRenames.Clear();
+			goodRename.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "献祭", Description = "打出后进入献祭堆。" });
+			ProfileFactory.EnsureKeywordRenameRows(goodRename);
+			Check("本体关键词改名：合法改名不会被校验器拦（改成「献祭」→ 不撞车、没富文本）",
+				!ProfileValidator.Validate(goodRename).Any((ValidationIssue i) => i.IsError && i.Message.Contains("本体关键词")),
+				string.Join(" | ", ProfileValidator.Validate(goodRename).Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message)));
+			// 「自定义关键词」页最上面那一节：表格必须一直有那 7 行，而且绑到存档上
+			Check("本体关键词改名：界面上是固定 7 行（本体关键词是封闭枚举，不能增删）",
+				KeywordRenameTable != null && Profile.KeywordRenames.Count == VanillaKeywordCatalog.All.Count,
+				KeywordRenameTable is null ? "没找到表格" : $"{Profile.KeywordRenames.Count} 行");
+			Check("本体关键词改名：表格绑的是 Profile.KeywordRenames",
+				KeywordRenameTable != null && ReferenceEquals(KeywordRenameTable.ItemsSource, Profile.KeywordRenames),
+				KeywordRenameTable?.ItemsSource?.GetType().Name ?? "(没绑)");
 			// 关键回归测试：工程目录 = 存档名（不是 ModId）。以前构建流程自己拼 OutputDir\ModId，
 			// 存档名和 ModId 不一样时（示例角色_恢复.json / ModId=示例角色）会指向不存在的目录 →
 			// dotnet 报 MSB1009 → 界面「构建失败」（用户报的「构建无法生成」）。
@@ -6179,6 +6535,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("存档名≠ModId 时生成目录 = ProjectRootOf 算出来的目录",
 				gen2.Success && gen2.ProjectRoot == ModGenerator.ProjectRootOf(recSrc), gen2.ProjectRoot);
 			var rec = ProjectRecovery.FromProject(gen.ProjectRoot);
+			// 回读时会按 7 行本体关键词补齐（见 ProfileFactory.EnsureKeywordRenameRows）：
+			// 恢复出来的存档里这 7 行要都在，界面表格才不会少行
+			ProfileFactory.EnsureKeywordRenameRows(rec.Profile);
 			Check("从工程恢复：没认出来的语句为 0", !rec.HasUnparsed, rec.Unparsed.FirstOrDefault() ?? "全部认出来了");
 			Check("从工程恢复：卡牌张数一致", rec.Profile.Cards.Count == recSrc.Cards.Count, $"{rec.Profile.Cards.Count} / {recSrc.Cards.Count}");
 			Check("从工程恢复：初始的打击 / 防御也找回来了（含 CardTag 标签），并且排在最上面",
@@ -6188,6 +6547,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			List<CardSpec> recOwn = rec.Profile.Cards.Where((CardSpec c) => !c.IsVanillaCard).ToList();
 			Check("从工程恢复：卡名一致（中文名从本地化表读回来）",
 				recOwn[0].Name == srcOwn[0].Name, recOwn[0].Name);
+			Check("从工程恢复：自定义关键词找回来了（名字 / 说明 / 英文标识 / 自动键）",
+				rec.Profile.CustomKeywords.Count == 2
+				&& rec.Profile.CustomKeywords.Any((CustomKeywordSpec k) => k.Key == "FATE" && k.Name == "命定" && k.Description.Contains("抽一张"))
+				&& rec.Profile.CustomKeywords.Any((CustomKeywordSpec k) => k.Key == "KEYWORD_2" && k.Name == "回响"),
+				string.Join(" · ", rec.Profile.CustomKeywords.Select((CustomKeywordSpec k) => k.Display)));
+			Check("从工程恢复：卡牌上的关键词引用找回来了",
+				recOwn[0].CustomKeywordList.Contains("FATE") && recOwn[0].CustomKeywordList.Contains("KEYWORD_2"),
+				string.Join("·", recOwn[0].CustomKeywordList));
+			// 本体关键词改名：在「自定义关键词」页最上面那一节填的 7 行，也要能从工程读回来
+			// （以前这里把本体那 7 个键直接 continue 丢掉 → 恢复后改名静默消失，再生成卡面就变回「消耗」）
+			Check("从工程恢复：本体关键词改名（消耗 → 献祭）找回来了",
+				rec.Profile.KeywordRenames.Any((VanillaKeywordRenameSpec r) => r.KeywordId == "EXHAUST" && r.Name == "献祭"),
+				string.Join(" · ", rec.Profile.KeywordRenames.Where((VanillaKeywordRenameSpec r) => r.ChangesAnything).Select((VanillaKeywordRenameSpec r) => r.Display)));
+			Check("从工程恢复：只改了说明的关键词（固有）也找回来了",
+				rec.Profile.KeywordRenames.Any((VanillaKeywordRenameSpec r) => r.KeywordId == "INNATE" && r.Description == "开局就在手里。"),
+				string.Join(" · ", rec.Profile.KeywordRenames.Where((VanillaKeywordRenameSpec r) => r.ChangesAnything).Select((VanillaKeywordRenameSpec r) => r.Display)));
+			Check("从工程恢复：没改的关键词不会凭空变出一条改名（虚无 / 保留 … 都还是空的）",
+				rec.Profile.KeywordRenames.Count((VanillaKeywordRenameSpec r) => r.ChangesAnything) == 2,
+				$"改了 {rec.Profile.KeywordRenames.Count((VanillaKeywordRenameSpec r) => r.ChangesAnything)} 条");
 			Check("从工程恢复：费用 / 类型 / 稀有度一致",
 				recOwn[0].Cost == srcOwn[0].Cost && recOwn[0].CardType == srcOwn[0].CardType
 				&& recOwn[0].Rarity == srcOwn[0].Rarity,
@@ -6235,6 +6613,208 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		finally
 		{
 			try { Directory.Delete(recRoot, true); } catch { }
+		}
+
+		SelectTabRoot("角色");
+		// ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
+		// 先把「角色」页上那个分组的绑定 / 勾选查一遍（界面没接上就等于这个功能在界面上不存在）
+		Check("「角色」页有「启用召唤伙伴」勾选框（召唤物是角色级配置，不另开选项卡）",
+			SummonEnabled != null && BindingOperations.GetBinding(SummonEnabled, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.Path?.Path == "Enabled",
+			SummonEnabled is null ? "没找到勾选框" : (BindingOperations.GetBinding(SummonEnabled, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.Path?.Path ?? "(没绑定)"));
+		Check("召唤伙伴分组的 DataContext 指向 Profile.Summon（单对象，不是列表）",
+			SummonBox != null && BindingOperations.GetBinding(SummonBox, FrameworkElement.DataContextProperty)?.Path?.Path == "Profile.Summon",
+			SummonBox is null ? "没找到分组" : (BindingOperations.GetBinding(SummonBox, FrameworkElement.DataContextProperty)?.Path?.Path ?? "(没绑定)"));
+		{
+			// 三个字段都要能双向编辑到 Profile.Summon 上
+			List<TextBox> petBoxes = new List<TextBox>();
+			CollectTextBoxes((RoleTab.Content as DependencyObject) ?? this, petBoxes);
+			List<string> petPaths = petBoxes.Select((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path ?? "").ToList();
+			Check("召唤伙伴分组里有「名字 / 英文类名 / 生命」三个输入框",
+				petPaths.Contains("Name") && petPaths.Contains("ClassName") && petPaths.Contains("Hp"),
+				string.Join(" / ", petPaths.Where((string p) => p is "Name" or "ClassName" or "Hp")));
+			// 注：SummonBox 的内容不参与 CollectTextBoxes 吗？参与 —— 它是 RoleTab 的子树，所以上面这三条查的就是它。
+			try
+			{
+				bool oldEnabled = Profile.Summon.Enabled;
+				string oldName = Profile.Summon.Name;
+				int oldHp = Profile.Summon.Hp;
+				Profile.Summon.Enabled = true;
+				Profile.Summon.Name = "测试伙伴";
+				Profile.Summon.Hp = 12;
+				UpdateLayout();
+				Check("改召唤伙伴的名字 / 生命后，宠物类名按「角色类名 + Pet」自动推出来",
+					PetGen.ClassNameOf(Profile) == Profile.CharacterClass + "Pet"
+					&& PetGen.DisplayName(Profile) == "测试伙伴" && PetGen.BaseHp(Profile) == 12,
+					$"{PetGen.ClassNameOf(Profile)} / {PetGen.DisplayName(Profile)} / {PetGen.BaseHp(Profile)}");
+				Profile.Summon.Enabled = false;
+				CardSpec petOffCard = new CardSpec { Name = "激活检查", ClassName = "UiCheckPetOff", Cost = 1 };
+				petOffCard.Effects.Clear();
+				petOffCard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self" });
+				string disabledCard = CSharpCodeGen.CardSource(Profile, petOffCard, 0);
+				Check("即使没勾「启用召唤伙伴」，卡牌代码也照常生成（拦住生成的是校验器，不是让代码炸掉）",
+					disabledCard.Contains("Cmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
+				// 校验器要能拦住「用了召唤效果但没启用召唤伙伴」—— 所以先把这张牌挂进配置里
+				Profile.Cards.Add(petOffCard);
+				var petOffIssues = ProfileValidator.Validate(Profile);
+				string petOffErrors = string.Join(" | ", petOffIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message));
+				Check("没启用召唤伙伴时校验器会报错拦住（否则生成的牌会引用不存在的宠物类 → CS0103）",
+					petOffIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("召唤伙伴")),
+					petOffErrors.Length > 0 ? petOffErrors : "(没有错误)");
+				Profile.Cards.Remove(petOffCard);
+				Profile.Summon.Enabled = oldEnabled;
+				Profile.Summon.Name = oldName;
+				Profile.Summon.Hp = oldHp;
+			}
+			finally
+			{
+				Profile.Summon.Enabled = false;
+			}
+		}
+
+		// ===== 召唤伙伴：端到端（生成 → 产物 → 回读）=====
+		string petRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_pet_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+		try
+		{
+			CharacterProfile petSrc = ProfileFactory.Sample();
+			petSrc.Paths.OutputDir = petRoot;
+			// 生成要用解包工程（占位美术 / 场景），和上面「从工程恢复」那段一样
+			petSrc.Paths.VanillaProject = Profile.Paths.VanillaProject;
+			petSrc.Paths.GameDataDir = Profile.Paths.GameDataDir;
+			petSrc.SaveName = "召唤伙伴自检";
+			petSrc.Summon.Enabled = true;
+			petSrc.Summon.ClassName = "UiCheckPet";
+			petSrc.Summon.Name = "小石头";
+			petSrc.Summon.Hp = 9;
+			petSrc.Summon.Image = null;      // 故意不传图：走「本体占位图」那条路
+			List<CardSpec> petOwn = petSrc.Cards.Where((CardSpec c) => !c.IsVanillaCard).ToList();
+			CardSpec petSummonCard = new CardSpec { Name = "召唤小石头", ClassName = "UiCheckPetSummon", CardType = "Skill", Cost = 1, InCardPool = true };
+			petSummonCard.Effects.Clear();
+			petSummonCard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self" });   // 0 = 用配置的 9 点生命
+			petSrc.Cards.Add(petSummonCard);
+			CardSpec petAttackCard = new CardSpec { Name = "小石头撞击", ClassName = "UiCheckPetAttack", CardType = "Attack", Cost = 1, InCardPool = true };
+			petAttackCard.Effects.Clear();
+			petAttackCard.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 7m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+			petSrc.Cards.Add(petAttackCard);
+			// 遗物「战斗开始时召唤」= 本体 Byrdpip 的写法
+			RelicSpec petRelic = new RelicSpec { Name = "会召唤的遗物", ClassName = "UiCheckPetRelic", Trigger = "CombatStart", IsStartingRelic = true };
+			petRelic.Effects.Clear();
+			petRelic.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 12m, TargetSide = "Self" });
+			petSrc.Relics.Add(petRelic);
+
+			var petGen = ModGenerator.Generate(petSrc);
+			Check("（准备）带召唤伙伴的配置能生成工程", petGen.Success && Directory.Exists(petGen.ProjectRoot),
+				string.Join(" | ", petGen.Issues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message)));
+
+			// ① cs/Pet.cs：宠物类 + 召唤命令助手
+			string petCsPath = Path.Combine(petGen.ProjectRoot, "cs", "Pet.cs");
+			Check("召唤伙伴：生成了 cs/Pet.cs", File.Exists(petCsPath), petCsPath);
+			string petCs = File.Exists(petCsPath) ? File.ReadAllText(petCsPath, Encoding.UTF8) : "";
+			Check("召唤伙伴：cs/Pet.cs 里有 public sealed class UiCheckPet : MonsterModel（本体靠扫描子类自动注册）",
+				petCs.Contains("public sealed class UiCheckPet : MonsterModel"), "有宠物类");
+			Check("召唤伙伴：cs/Pet.cs 里有 PlayerCmd.AddPet<UiCheckPet>（本体通用宠物 API，不用 OstyCmd）",
+				petCs.Contains("PlayerCmd.AddPet<UiCheckPet>(player)"), "用了通用 API");
+			Check("召唤伙伴：宠物类写了回血自循环的 NOTHING_MOVE（宠物没有自主回合，照抄本体 Osty）",
+				petCs.Contains("NOTHING_MOVE"), "有 NOTHING_MOVE");
+			Check("召唤伙伴：召唤命令里有 SetMaxHp（本体造宠物时给的是初始生命随机值）",
+				petCs.Contains("CreatureCmd.SetMaxHp(pet, hp)"), "有 SetMaxHp");
+			Check("召唤伙伴：没上传图片时不 override VisualsPath（回退本体的 fallback 占位图）",
+				!petCs.Contains("VisualsPath =>") && petCs.Contains("creature_visuals/"), "用占位图");
+			Check("召唤伙伴：宠物生命 = 配置里的 9", petCs.Contains("private const int BaseHp = 9;"), "BaseHp = 9");
+
+			// ② monsters.json：宠物名牌
+			string petLocPath = Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "monsters.json");
+			Check("召唤伙伴：生成了 monsters.json", File.Exists(petLocPath), petLocPath);
+			string petLoc = File.Exists(petLocPath) ? File.ReadAllText(petLocPath, Encoding.UTF8) : "";
+			Check("召唤伙伴：monsters.json 里有 UI_CHECK_PET.name = 小石头（本体怪物名字的键格式）",
+				petLoc.Contains("\"UI_CHECK_PET.name\": \"小石头\""), petLoc.Replace("\r", "").Replace("\n", " "));
+
+			// ③ 召唤牌
+			string petSummonSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetSummon.cs"), Encoding.UTF8);
+			Check("召唤卡：生成的代码里出现召唤调用（UiCheckPetCmd.Summon）",
+				petSummonSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
+			Check("召唤卡：数值填 0 时用配置里的血量（9m），不是 0",
+				petSummonSrc.Contains(", 9m);"), "用配置血量");
+			Check("召唤卡：不需要额外查宠物（Summon 内部自己找），所以不声明 __pet",
+				!petSummonSrc.Contains("Creature? __pet"), "没有多余局部变量");
+			Check("召唤卡：仍然有「战斗状态不为 null」的守卫（关闭括号要对上，缺一个就编译不过）",
+				petSummonSrc.Contains("if (base.Owner.PlayerCombatState is not null)"), "有守卫");
+			string petSummonLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+			Check("召唤卡：卡面描述里写着宠物名字（召唤小石头。）", petSummonLoc.Contains("召唤小石头。"), "描述里有宠物名");
+
+			// ④ 伙伴攻击牌
+			string petAtkSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetAttack.cs"), Encoding.UTF8);
+			Check("伙伴攻击卡：生成的代码里出现 .FromMonster(（attacker 是宠物，不是玩家）",
+				petAtkSrc.Contains(".FromMonster(__pet.Monster)"), "有 FromMonster");
+			Check("伙伴攻击卡：单体目标写在 FromMonster 前面（FromMonster 内部会 TargetingAllOpponents，后写会抛异常）",
+				petAtkSrc.IndexOf(".Targeting(cardPlay.Target)", StringComparison.Ordinal) < petAtkSrc.IndexOf(".FromMonster(__pet.Monster)", StringComparison.Ordinal),
+				"顺序对");
+			Check("伙伴攻击卡：打之前先判宠物在不在场（不在就跳过，不让整张牌报错）",
+				petAtkSrc.Contains("if (__pet is not null)"), "有守卫");
+			Check("伙伴攻击卡：伤害走我们自己的动态变量 PetDamage（不是兜底的 Value）",
+				petAtkSrc.Contains("new DynamicVar(\"PetDamage\", 7m)") && petAtkSrc.Contains("base.DynamicVars[\"PetDamage\"].BaseValue"), "用 PetDamage");
+			Check("伙伴攻击卡：TargetType 是 AnyEnemy（要玩家选目标）", petAtkSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			string petAtkLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+			Check("伙伴攻击卡：卡面描述里写着「让小石头…造成伤害」", petAtkLoc.Contains("让小石头"), "描述里有宠物名");
+
+			// ⑤ 遗物触发（战斗开始时召唤）
+			string petRelicSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Relics", "UiCheckPetRelic.cs"), Encoding.UTF8);
+			Check("遗物触发：战斗开始时也能召唤伙伴（本体 Byrdpip 的写法）",
+				petRelicSrc.Contains("BeforeSideTurnStart") && petRelicSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner,"), "有召唤");
+			Check("遗物触发：遗物上的召唤支持自定义血量（12m）",
+				System.Text.RegularExpressions.Regex.IsMatch(petRelicSrc, @"base\.DynamicVars\[""PetHp""\]\.BaseValue\);"),
+				"12m");
+
+			// ⑥ 药水：两条都不支持 —— 但必须留一行注释，不能静默丢掉
+			PotionSpec petPotion = new PotionSpec { Name = "召唤药水", ClassName = "UiCheckPetPotion", Rarity = "Common" };
+			petPotion.Effects.Clear();
+			petPotion.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 5m, TargetSide = "Self" });
+			petPotion.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 5m, TargetSide = "AnyEnemy" });
+			petSrc.Potions.Add(petPotion);
+			Check("药水：召唤伙伴 / 伙伴攻击都不支持，但生成的代码里留了说明注释（不静默丢）",
+				CSharpCodeGen.PotionSource(petSrc, petPotion, 0).Contains("药水不支持"),
+				"有注释");
+			Check("药水：校验器对药水里的「召唤伙伴 / 伙伴攻击」直接报错",
+				ProfileValidator.Validate(petSrc).Count((ValidationIssue i) => i.IsError && i.Message.Contains("药水不支持")) >= 2,
+				string.Join(" | ", ProfileValidator.Validate(petSrc).Where((ValidationIssue i) => i.IsError && i.Message.Contains("药水不支持")).Select((ValidationIssue i) => i.Message)));
+			petSrc.Potions.Remove(petPotion);
+
+			// ⑦ 回读
+			var petRec = ProjectRecovery.FromProject(petGen.ProjectRoot);
+			Check("从工程恢复：召唤伙伴的配置找回来了（启用 / 类名 / 名字 / 生命）",
+				petRec.Profile.Summon.Enabled && petRec.Profile.Summon.ClassName == "UiCheckPet"
+				&& petRec.Profile.Summon.Name == "小石头" && petRec.Profile.Summon.Hp == 9,
+				petRec.Profile.Summon.Display);
+			Check("从工程恢复：卡牌上的「召唤伙伴」效果找回来了（数值 0 = 用配置血量）",
+				petRec.Profile.Cards.Any((CardSpec c) => c.ClassName == "UiCheckPetSummon"
+					&& c.Effects.Count == 1 && c.Effects[0].Kind == "SummonPet" && c.Effects[0].Amount == 0m),
+				string.Join(" · ", petRec.Profile.Cards.Where((CardSpec c) => c.ClassName == "UiCheckPetSummon")
+					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Display)));
+			Check("从工程恢复：卡牌上的「伙伴攻击」效果找回来了（伤害 7 + 升级 3）",
+				petRec.Profile.Cards.Any((CardSpec c) => c.ClassName == "UiCheckPetAttack"
+					&& c.Effects.Count == 1 && c.Effects[0].Kind == "PetAttack" && c.Effects[0].Amount == 7m
+					&& c.Effects[0].UpgradeAmount == 3m && c.Effects[0].TargetSide == "Enemy"),
+				string.Join(" · ", petRec.Profile.Cards.Where((CardSpec c) => c.ClassName == "UiCheckPetAttack")
+					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Display)));
+			Check("从工程恢复：遗物上的「召唤伙伴」效果找回来了（12 点生命）",
+				petRec.Profile.Relics.Any((RelicSpec r) => r.Effects.Any((EffectSpec e) => e.Kind == "SummonPet" && e.Amount == 12m)),
+				string.Join(" · ", petRec.Profile.Relics.SelectMany((RelicSpec r) => r.Effects).Select((EffectSpec e) => e.Display)));
+			Check("从工程恢复：没认出来的语句为 0（宠物相关的生成代码都认得）", !petRec.HasUnparsed,
+				petRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+
+			// ⑧ 启用开关的实际效果：不启用就不生成 cs/Pet.cs
+			petSrc.Summon.Enabled = false;
+			var petGen2 = ModGenerator.Generate(petSrc);
+			Check("没启用召唤伙伴时不会生成 cs/Pet.cs（但卡牌还引用着它 → 由校验器报错拦住，生成会被中止）",
+				!petGen2.Success || !File.Exists(Path.Combine(petGen2.ProjectRoot, "cs", "Pet.cs")),
+				petGen2.Success ? "生成成功但没写 Pet.cs" : "生成被校验拦住了");
+		}
+		catch (Exception ex)
+		{
+			Check("召唤伙伴（整体）", ok: false, ex.GetType().Name + ": " + ex.Message + "  @" + string.Join(" | ", (ex.StackTrace ?? "").Split('\n').Take(4).Select((string s) => s.Trim())));
+		}
+		finally
+		{
+			try { Directory.Delete(petRoot, true); } catch { }
 		}
 
 		// ===== 动态变量重名（本体 DynamicVarSet 会直接抛异常 → 战斗卡死在第一回合：抽不了牌、结束不了回合）=====
@@ -8278,6 +8858,59 @@ public sealed class KeywordUpgradeRow : INotifyPropertyChanged
 			if (string.Equals(_card.UpgradeKeywords.Get(_field), value, StringComparison.Ordinal)) return;
 			_card.UpgradeKeywords.Set(_field, value);
 			Raise("State");
+		}
+	}
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// 「卡牌」页里「自定义关键词」的一行：一张卡 × 一条关键词。
+/// 勾选写入这张卡的 KeywordIds（存本地化键；生成时卡面描述开头 + 悬停说明都按它来）。
+/// </summary>
+public sealed class CustomKeywordRow : INotifyPropertyChanged
+{
+	private readonly CardSpec _card;
+
+	private readonly CustomKeywordSpec _spec;
+
+	private readonly string _key;
+
+	public CustomKeywordRow(CardSpec card, CustomKeywordSpec spec, string key)
+	{
+		_card = card;
+		_spec = spec;
+		_key = key;
+	}
+
+	public string Name => string.IsNullOrWhiteSpace(_spec.Name) ? _key : _spec.Name.Trim();
+
+	public string KeyHint => _key;
+
+	public bool IsChecked
+	{
+		get => _card.CustomKeywordList.Any(x =>
+			string.Equals(x, _key, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(x, (_spec.Name ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+		set
+		{
+			var list = new List<string>(_card.CustomKeywordList);
+			string name = (_spec.Name ?? "").Trim();
+			if (value)
+			{
+				// 统一存「本地化键」，和生成代码里的 LocString 键保持一致
+				list.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+				if (!list.Any(x => string.Equals(x, _key, StringComparison.OrdinalIgnoreCase))) list.Add(_key);
+			}
+			else
+			{
+				list.RemoveAll(x => string.Equals(x, _key, StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+			}
+			_card.KeywordIds = list;
+			Raise(nameof(IsChecked));
 		}
 	}
 

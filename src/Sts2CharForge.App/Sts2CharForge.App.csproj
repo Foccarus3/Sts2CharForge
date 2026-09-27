@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -16,9 +16,10 @@
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
     <!--
       整合包的版本号（唯一来源）：启动器文件名、程序包 zip、整合包 zip 都从这一行读。
-      每次改动都往上加一位，例如 V0.0.1 → V0.0.2。
+      节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …）；
+      **只有用户明确说「发布」时才一次性跳到 V0.2.0**（tools\release_all.ps1 -Version V0.2.0）。
     -->
-    <InformationalVersion>V0.1.0</InformationalVersion>
+    <InformationalVersion>V0.1.2</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

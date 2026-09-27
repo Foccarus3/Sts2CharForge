@@ -50,6 +50,8 @@ public static class ProjectRecovery
         p.CustomPowers.Clear();
         p.VanillaPowerOverrides.Clear();
         p.Ancients.Clear();
+        p.CustomKeywords.Clear();
+        p.KeywordRenames.Clear();
 
         string cs = Path.Combine(projectDir, "cs");
         if (!Directory.Exists(cs)) throw new DirectoryNotFoundException("工程里没有 cs 目录，可能选错目录了：" + projectDir);
@@ -122,6 +124,12 @@ public static class ProjectRecovery
 
         // ---- 状态名 → 类名（条件文案里写的是中文名，得反查回去） ----
         var nameToPowerId = BuildPowerNameMap(p);
+
+        // ---- 自定义关键词（要在卡牌之前：卡牌会引用它们） ----
+        ParseCustomKeywords(projectDir, modId, p);
+
+        // ---- 召唤伙伴（也要在卡牌之前：这里只是把配置拿回来，卡牌的效果回读不依赖它） ----
+        ParseSummon(projectDir, cs, p, result);
 
         // ---- 卡牌 ----
         foreach (string file in Sorted(Directory.GetFiles(Path.Combine(cs, "Cards"), "*.cs")))
@@ -269,6 +277,8 @@ public static class ProjectRecovery
         foreach (var cp in p.CustomPowers) cp.Icon = Move(cp.Icon);
         foreach (var r in p.Relics) r.Icon = Move(r.Icon);
         foreach (var s in p.Potions) s.Icon = Move(s.Icon);
+        // 召唤伙伴的宠物图也是「工程目录删了就没了」的素材，一起搬到存档旁边
+        if (p.Summon is not null) p.Summon.Image = Move(p.Summon.Image);
         if (copied > 0) result.Notes.Add($"素材 {copied} 个已复制到「{dir}」（配置里已指向这里）");
     }
 
@@ -277,6 +287,8 @@ public static class ProjectRecovery
         // 只借用「环境路径 / 素材路径」这些工程里反推不出来的东西
         return new CharacterProfile
         {
+            // 召唤伙伴的宠物图路径借过来（工程里只能反推出「有没有」，反推不出用户原来选的是哪张图）
+            Summon = new SummonSpec { Image = t.Summon?.Image },
             Paths = new PathsSpec
             {
                 VanillaProject = t.Paths.VanillaProject,
@@ -333,6 +345,13 @@ public static class ProjectRecovery
         ParseEffects(card.Effects, BodyOf(text, "OnPlay"), vars, nameToPowerId, EffectCtx.Card, result, cls);
         ParseUpgrade(card, vars, text, result, cls);
         ParseKeywords(card, text);
+        // 自定义关键词：生成的 ExtraHoverTips 里写的是 new LocString("card_keywords", "<KEY>.title")
+        var keywordRefs = Regex.Matches(text, @"LocString\(""card_keywords"", ""([^""]+)\.title""\)")
+            .Select(m => m.Groups[1].Value)
+            .Where(x => !KeywordGen.IsReservedKey(x))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (keywordRefs.Count > 0) card.KeywordIds = keywordRefs;
 
         string starCost = Match(text, @"CanonicalStarCost => (\d+)");
         if (starCost is not null)
@@ -357,9 +376,15 @@ public static class ProjectRecovery
     {
         var list = new List<Var>();
         string block = BlockAfter(text, "CanonicalVars =>");
+        // 召唤伙伴 / 伙伴攻击：生成的是**带名字的普通 DynamicVar**（new DynamicVar("PetDamage", 6m)），
+        // 名字是我们自己起的，所以先把它们捞出来（否则会被下面的数字正则当成「名字不是数字」而漏掉）
+        foreach (Match m in Regex.Matches(block, @"new DynamicVar\(""(\w+)"",\s*(-?[\d.]+)m?\)"))
+            list.Add(new Var("DynamicVar", m.Groups[1].Value,
+                decimal.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), false, false));
         foreach (Match m in Regex.Matches(block, @"new (\w+)Var(<(\w+)>)?\((-?[\d.]+)m?[^)]*\)"))
         {
             string kind = m.Groups[1].Value;
+            if (kind == "Dynamic") continue;   // 上面那条已经处理过带名字的 DynamicVar
             string? power = m.Groups[3].Success ? m.Groups[3].Value : null;
             decimal amount = decimal.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
             list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy"));
@@ -433,6 +458,36 @@ public static class ProjectRecovery
             // 选牌 / 变化的前置语句（真正的动作在后面的 foreach + await 里）
             if (line.StartsWith("var toTransform") || line.StartsWith("var toExhaust") || line.StartsWith("var pick")) continue;
 
+            // 召唤伙伴：生成的是 `<X>Cmd.Summon(choiceContext, base.Owner, <血量>); // CET:PetHp=…`
+            //
+            // 两种情况：① 数值留空 → 直接写「角色」页配置的血量常量，标记是 CET:PetHp=configured，
+            //             恢复成数值 0（保真：用户在界面上看到的就是留空）；
+            //           ② 填了数值 → 走动态变量（base.DynamicVars["PetHp"].BaseValue），
+            //             这样升级增量也能跟着回来。
+            // 为什么要那个注释标记：两种情况的调用长得一模一样（配置血量是多少就写多少 m），
+            // 不标记就分不清「留空用配置」和「填了同样的数字」。
+            if (line.Contains("Cmd.Summon(choiceContext, base.Owner,"))
+            {
+                var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self" };
+                if (!line.Contains("CET:PetHp=configured"))
+                {
+                    string arg = ArgAt(line, 2);
+                    // 填了数值时生成的是 base.DynamicVars["PetHp"].BaseValue → 按**名字**去 CanonicalVars
+                    // 里取那个值（这样升级增量也能跟着回来）。按名字查而不是按顺序捞：
+                    // 顺序捞会被别的效果把变量吃掉（PetHp 只有一个，名字是唯一的）。
+                    string? varName = Match(arg, @"base\.DynamicVars\[""(\w+)""\]");
+                    Var? hit = varName is null
+                        ? null
+                        : vars.FirstOrDefault(v => v.Kind == "DynamicVar"
+                            && string.Equals(v.PowerId, varName, StringComparison.Ordinal));
+                    if (hit is not null) e.Amount = hit.Amount;
+                    else FillExpr(e, arg);
+                }
+                ApplyLoop(e, frames);
+                into.Add(e);   // 没有「效果级条件」（宠物守卫不是条件）
+                continue;
+            }
+
             // 攻击链：多行
             if (line.StartsWith("await DamageCmd.Attack(", StringComparison.Ordinal))
             {
@@ -444,7 +499,10 @@ public static class ProjectRecovery
                     chain.Append(' ').Append(line);
                 }
                 string ch = chain.ToString();
-                var e = new EffectSpec { Kind = "Damage", TargetSide = "Enemy" };
+                // 「伙伴攻击」也是 DamageCmd.Attack 链，区别只在 attacker 是宠物（.FromMonster(...)）。
+                // 目标解析和下面普通伤害完全一样，所以这里分一次流就行。
+                bool fromMonster = ch.Contains(".FromMonster(");
+                var e = new EffectSpec { Kind = fromMonster ? "PetAttack" : "Damage", TargetSide = "Enemy" };
                 if (ch.Contains(".TargetingAllOpponents")) e.TargetSide = "AllEnemies";
                 else if (ch.Contains(".TargetingRandomOpponents"))
                 {
@@ -463,7 +521,8 @@ public static class ProjectRecovery
                     if (hits == "x") e.RepeatIsX = true;
                     else e.RepeatCount = Math.Max(1, (int)Dec(hits, @"([\d.]+)", 1));
                 }
-                FillAmount(e, NextVar(vars, ref varIdx, "Damage"), nameToPowerId);
+                // 变量：普通伤害是 DamageVar，伙伴攻击是我们自己起的 PetDamage（都在 CanonicalVars 里）
+                FillAmount(e, NextVar(vars, ref varIdx, fromMonster ? "PetDamage" : "Damage"), nameToPowerId);
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -696,6 +755,22 @@ public static class ProjectRecovery
                 result.Unparsed.Add($"{where}: {line}");
         }
 
+        // 兜底：按「召唤命令」再扫一遍（注释里带 <c>&lt;T&gt;</c> 之类的泛型括号时，
+        // 逐行匹配可能整行都没落进上面的分支，那样就会静默丢掉一条「召唤伙伴」效果）
+        if (ctx != EffectCtx.Potion)
+        {
+            foreach (var raw in lines)
+            {
+                string l = raw.Trim();
+                if (l.Length == 0 || l.StartsWith("//")) continue;
+                if (!l.Contains("Cmd.Summon(choiceContext, base.Owner,")) continue;
+                if (into.Any(x => x.Kind == "SummonPet")) continue;   // 上面已经认出来了，别重复加
+                var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self" };
+                if (!l.Contains("CET:PetHp=configured")) FillExpr(e, ArgAt(l, 2));
+                into.Add(e);
+            }
+        }
+
         static bool Chosen(string text) => text.Contains("CardSelectCmd.FromHand");
     }
 
@@ -739,6 +814,8 @@ public static class ProjectRecovery
                 "Cards" => v.IsCards,
                 "Energy" => v.IsEnergy,
                 "Stars" => v.Kind == "Stars",
+                // 伙伴攻击：生成时用的是我们自己起名的普通 DynamicVar "PetDamage"（不是 DamageVar）
+                "PetDamage" => v.Kind == "DynamicVar" && string.Equals(v.PowerId, "PetDamage", StringComparison.Ordinal),
                 _ when kind.StartsWith("Power:") => v.Kind == "Power" && string.Equals(v.PowerId, kind[6..], StringComparison.Ordinal),
                 _ => false,
             };
@@ -825,10 +902,17 @@ public static class ProjectRecovery
         return null;
     }
 
+    /// <summary>
+    /// 这个效果在生成代码里有没有「动态变量」（决定 OnUpgrade 的升级增量能不能按变量名对回效果）。
+    /// PetAttack 用 PetDamage（新 DynamicVar）；SummonPet 数值 &gt; 0 时也有 PetHp，数值 0 时没有
+    /// （所以和生成侧的 <c>CSharpCodeGen.HasNoDynamicVar</c> 保持一致）。
+    /// </summary>
     private static bool HasVar(EffectSpec e) => e.Kind switch
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false,
         "ApplyPower" => true,
+        "PetAttack" => true,
+        "SummonPet" => e.Amount > 0,
         _ => false,
     };
 
@@ -839,6 +923,8 @@ public static class ProjectRecovery
         "Cards" => "Cards",
         "Energy" => "Energy",
         "Power" => v.PowerId ?? "Power",     // PowerVar<T> 的变量名就是 T（和生成器一致）
+        // 带名字的普通 DynamicVar：变量名就是我们起的那个（召唤伙伴的 PetHp / PetDamage）
+        "DynamicVar" => v.PowerId ?? "Value",
         _ => v.Kind,
     };
 
@@ -991,6 +1077,129 @@ public static class ProjectRecovery
         var vars = ParseVars(text);
         ParseEffects(potion.Effects, BodyOf(text, "OnUse"), vars, nameToPowerId, EffectCtx.Potion, result, cls);
         return potion;
+    }
+
+    /// <summary>
+    /// 回读自定义关键词 + 本体关键词改名：文案都来自模组工程里那份 <c>card_keywords.json</c>，
+    /// 卡牌引用了哪些关键词由 <see cref="ParseCard"/> 按生成的
+    /// <c>LocString("card_keywords","&lt;KEY&gt;.title")</c> 反查。
+    ///
+    /// 本体那 7 个关键词的键不是自定义关键词，却是**改名的落点**：
+    /// 以前这里只扫 <c>.title</c> 键、而且把本体键直接 continue 丢掉，于是
+    /// ① 只改了说明（名字留空）的条目在表里只有 <c>.description</c> 一个键 → 整条丢失；
+    /// ② 改了名字的条目从工程恢复后静默消失，再生成一次卡面就变回本体的「消耗」。
+    /// 现在按「键前缀」归并两种文案一起读，并把和本体原文相同的当没改（不然每恢复一次就多一堆空行）。
+    /// </summary>
+    private static void ParseCustomKeywords(string projectDir, string modId, CharacterProfile p)
+    {
+        string locDir = Path.Combine(projectDir, modId, "localization");
+        if (!Directory.Exists(locDir)) return;
+        foreach (string file in Directory.GetFiles(locDir, "card_keywords.json", SearchOption.AllDirectories))
+        {
+            // 先把这份表里「某个键」的两种文案收成 <键前缀> → (标题, 说明)。
+            // 为什么要按前缀先归并、而不是只扫 .title：**只改了说明**（名字留空）的改名条目
+            // 生成的表里只有 `<ID>.description` 一个键 —— 只扫 .title 会把它整条丢掉
+            // （用户改了关键词说明，从工程恢复后说明消失了，再生成卡面又变回本体那句）。
+            var byKey = new Dictionary<string, (string Title, string Desc)>(StringComparer.Ordinal);
+            foreach (var kv in Json.ReadDict(file))
+            {
+                int dot = kv.Key.LastIndexOf('.');
+                if (dot <= 0) continue;
+                string prefix = kv.Key[..dot];
+                string field = kv.Key[(dot + 1)..];
+                if (field is not ("title" or "description")) continue;
+                byKey.TryGetValue(prefix, out var cur);
+                byKey[prefix] = field == "title" ? (kv.Value ?? "", cur.Desc ?? "") : (cur.Title ?? "", kv.Value ?? "");
+            }
+
+            foreach (var (key, text) in byKey)
+            {
+                string title = (text.Title ?? "").Trim();
+                string desc = (text.Desc ?? "").Trim();
+
+                // 本体关键词（那 7 个）：不是自定义关键词，而是「本体关键词改名」
+                var vanilla = VanillaKeywordCatalog.ById(key);
+                if (vanilla is not null)
+                {
+                    bool renamed = title.Length > 0
+                                   && !string.Equals(title, VanillaKeywordGen.VanillaTitleOf(vanilla.Id), StringComparison.Ordinal);
+                    bool descChanged = desc.Length > 0
+                                       && !string.Equals(desc, VanillaKeywordGen.VanillaDescriptionOf(vanilla.Id), StringComparison.Ordinal);
+                    if (!renamed && !descChanged) continue;              // 和本体一样 = 等于没改
+
+                    var row = p.KeywordRenames.FirstOrDefault(x =>
+                        string.Equals((x.KeywordId ?? "").Trim(), vanilla.Id, StringComparison.OrdinalIgnoreCase));
+                    if (row is null)
+                    {
+                        row = new VanillaKeywordRenameSpec { KeywordId = vanilla.Id };
+                        p.KeywordRenames.Add(row);
+                    }
+                    if (renamed) row.Name = title;
+                    if (descChanged) row.Description = desc;
+                    continue;
+                }
+
+                if (KeywordGen.IsReservedKey(key)) continue;             // 剩下的保留键（NONE / PERIOD）不是关键词
+                if (p.CustomKeywords.Any(k => string.Equals(k.Key, key, StringComparison.OrdinalIgnoreCase))) continue;
+                p.CustomKeywords.Add(new CustomKeywordSpec
+                {
+                    Key = key,
+                    Name = text.Title ?? "",
+                    Description = text.Desc ?? "",
+                });
+            }
+        }
+    }
+
+    /// <summary>
+    /// 回读召唤伙伴：配置来自 <c>cs/Pet.cs</c>（类名 / 血量常量 / VisualsPath）+ 模组工程里那份
+    /// <c>monsters.json</c>（中文名）。
+    ///
+    /// 为什么必须回读：**不同步改这里就会静默丢配置** —— 用户从工程恢复存档时，
+    /// 召唤物的名字 / 血量 / 图片全没了，而卡牌上的「召唤伙伴」效果却还在，一生成就报错。
+    /// </summary>
+    private static void ParseSummon(string projectDir, string cs, CharacterProfile p, RecoveryResult result)
+    {
+        string file = Path.Combine(cs, "Pet.cs");
+        if (!File.Exists(file)) return;
+        string text = File.ReadAllText(file, Encoding.UTF8);
+
+        string cls = Match(text, @"public sealed class (\w+) : MonsterModel") ?? "";
+        if (cls.Length == 0)
+        {
+            result.Unparsed.Add("cs/Pet.cs 里找不到 `public sealed class X : MonsterModel`（宠物类名没恢复）");
+            return;
+        }
+        p.Summon ??= new SummonSpec();
+        p.Summon.Enabled = true;
+        p.Summon.ClassName = cls;
+        p.Summon.Hp = Int(text: text, pattern: @"private const int BaseHp = (\d+);", fallback: 8);
+
+        // 中文名在本体的 monsters 表里（我们只写自己那一个键）
+        string entry = EffectCatalog.SlugFor(cls);
+        string locDir = Path.Combine(projectDir, p.ModId, "localization");
+        if (Directory.Exists(locDir))
+        {
+            foreach (string f in Directory.GetFiles(locDir, "monsters.json", SearchOption.AllDirectories))
+            {
+                var dict = Json.ReadDict(f);
+                if (dict.TryGetValue(entry + ".name", out string? name) && !string.IsNullOrWhiteSpace(name))
+                {
+                    p.Summon.Name = name;
+                    break;
+                }
+            }
+        }
+        if (string.IsNullOrWhiteSpace(p.Summon.Name)) p.Summon.Name = cls;
+
+        // 宠物图片：生成时放在 images/monsters/<entry 小写>.png
+        string png = Path.Combine(projectDir, "images", "monsters", entry.ToLowerInvariant() + ".png");
+        if (File.Exists(png)) p.Summon.Image = png;
+
+        bool hasScene = File.Exists(Path.Combine(projectDir, "scenes", "creature_visuals",
+            entry.ToLowerInvariant() + ".tscn"));
+        result.Notes.Add($"召唤伙伴：{p.Summon.Name}（{cls}，生命 {p.Summon.Hp}）"
+            + (hasScene ? "，有自定义视觉场景" : "，视觉用本体占位图"));
     }
 
     private static CustomPowerSpec ParseCustomPower(string file, CharacterProfile profile, LocTables loc, RecoveryResult result)

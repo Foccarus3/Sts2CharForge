@@ -1,4 +1,4 @@
-﻿# 一条命令走完一次发布：升版本号 → 发布程序 → 打「整合包 + 更新包」→ 发到 GitHub Releases
+# 一条命令走完一次发布：升版本号 → 发布程序 → 打「整合包 + 更新包」→ 发到 GitHub Releases
 #
 # 为什么要有这个脚本：以前这四步是手敲四条命令、顺序还不能错（比如必须先 package_app
 # 再 make_update，否则更新包里是旧程序），发布时容易漏一步。这里把它们串起来并在每步后校验。
@@ -11,6 +11,8 @@
 #   · 版本变更只出现在两处：csproj 的 InformationalVersion，以及 docs\RELEASE_NOTES_<版本>.md
 #     （后者只作为 GitHub Release 正文，不进 README）。
 #   · 启动器文件名里的版本号由打包脚本自动拼，同样不需要写进文档。
+#   · 版本号节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …），
+#     **只有用户明确说「发布」时才一次性跳到 V0.2.0**（发布时用 -Version V0.2.0，别用 -Bump patch）。
 #
 # 用法（最常用）：
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1

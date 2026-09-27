@@ -43,6 +43,9 @@ public sealed class CharacterProfile
     /// <summary>额外资源量/状态（血条下方的第二个计数器）</summary>
     public ExtraResourceSpec ExtraResource { get; set; } = new();
 
+    /// <summary>召唤伙伴（类似本体亡灵缚者的奥斯提，但完全不改本体、不需要 Harmony 补丁）</summary>
+    public SummonSpec Summon { get; set; } = new();
+
     /// <summary>和先古之民（达弗 / 妮欧 / 建筑师 …）的对话</summary>
     public ObservableCollection<AncientTalkSpec> Ancients { get; set; } = new();
 
@@ -94,6 +97,22 @@ public sealed class CharacterProfile
     public ObservableCollection<CardSpec> Cards { get; set; } = new();
     public ObservableCollection<RelicSpec> Relics { get; set; } = new();
     public ObservableCollection<PotionSpec> Potions { get; set; } = new();
+    /// <summary>
+    /// 自定义关键词（见 <see cref="CustomKeywordSpec"/>）。
+    /// 本体的 CardKeyword 是**封闭枚举**、模组无法扩展，所以这里不走关键字机制，
+    /// 而是「本地化词条 + 卡牌悬停说明」，观感与本体关键词一致。
+    /// </summary>
+    public ObservableCollection<CustomKeywordSpec> CustomKeywords { get; set; } = new();
+
+    /// <summary>
+    /// 本体那 7 个关键词的**显示名 / 说明覆盖**（见 <see cref="VanillaKeywordRenameSpec"/>）。
+    /// 和「自定义关键词」的区别：那个是**新增**关键词，这个是**改名**——
+    /// 往我们的 localization/zhs/card_keywords.json 里写 EXHAUST.title = 你的名字，
+    /// 本体 LocTable.MergeWith 会逐键盖掉本体那条，于是本体卡面上那个金色词、以及悬停提示都跟着变。
+    /// 固定 7 条（<see cref="VanillaKeywordCatalog.All"/> 的顺序）。
+    /// </summary>
+    public ObservableCollection<VanillaKeywordRenameSpec> KeywordRenames { get; set; } = new();
+
     public ArtSpec Art { get; set; } = new();
     /// <summary>卡牌配色（整个角色生效：边框 / 牌堆底色 / 能量描边）</summary>
     public CardColorSpec Colors { get; set; } = new();
@@ -297,6 +316,13 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public bool UsesX => AmountIsX || TimesIsX || RepeatIsX;
 
+    /// <summary>
+    /// 这条效果是「召唤伙伴 / 伙伴攻击」（做的是宠物，不是自己 / 敌人）。
+    /// 界面列表里不要把 TargetSide 显示成「→ 自己」误导人；生成代码时「宠物在不在场」的守卫也按它判断。
+    /// </summary>
+    [JsonIgnore]
+    public bool PetAction => Kind is "SummonPet" or "PetAttack";
+
     /// <summary>GenerateCard 用：生成的卡放到哪 —— 对应的 PileType 名字。</summary>
     [JsonIgnore]
     public string SpawnToPile => SpawnTo switch
@@ -356,11 +382,16 @@ public sealed class EffectSpec : SpecBase
                 "TransformCardGlobal" => "变化卡牌（全局）",
                 "RemoveCardGlobal" => "删除卡牌（全局）",
                 "CardReward" => "获得卡牌奖励",
+                // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」
+                "SummonPet" => $"召唤伙伴{(Amount > 0 ? $"{Amount:0.##} 点生命" : "（用配置的血量）")}",
+                "PetAttack" => $"伙伴攻击 {Amount:0.##}",
                 _ => Kind,
             };
             return $"{when}{kind} {(AmountIsX ? "X" : Amount.ToString("0.##"))}{(UpgradeAmount != 0 && !AmountIsX ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
-                 + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText} → {side}{extra}"
+                 + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
+                 // 召唤 / 伙伴攻击打的是宠物，没有「作用对象」这一说 —— 加了这个尾巴会让人以为「→ 自己」是给宠物加血
+                 + (PetAction ? "" : $" → {side}") + extra
                  + (Condition.IsNone ? "" : $"  ｜ 条件：{Condition.DisplayShort}");
         }
     }
@@ -505,6 +536,25 @@ public sealed class CardSpec : SpecBase
         Raise(nameof(TagStrike)); Raise(nameof(TagDefend)); Raise(nameof(TagMinion));
         Raise(nameof(TagOstyAttack)); Raise(nameof(TagShiv));
     }
+
+    // ===== 自定义关键词（生成器自己的概念，不是本体的 CardKeyword）=====
+    private List<string> _keywordIds = new();
+
+    /// <summary>
+    /// 这张牌引用了哪些自定义关键词（存 <see cref="CustomKeywordSpec.Key"/>，大小写不敏感）。
+    /// 生成时：描述开头会拼上这些关键词的 [gold]名称[/gold]（和本体关键词一样的观感），
+    /// 并给这张牌生成对应的悬停说明。
+    /// </summary>
+    public List<string> KeywordIds
+    {
+        get => _keywordIds;
+        set { if (Set(ref _keywordIds, value ?? new List<string>())) Raise(nameof(CustomKeywordList)); }
+    }
+
+    /// <summary>去掉空值/重复后的引用列表（读老存档、手写 JSON 时兜底）。</summary>
+    [JsonIgnore]
+    public List<string> CustomKeywordList =>
+        KeywordIds.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
 
     // ===== 卡牌关键字（本体 CardKeyword，会在卡面上显示为关键字标签）=====
     /// <summary>消耗 Exhaust：打出后进消耗堆，本场战斗不再回来</summary>
@@ -1269,6 +1319,157 @@ public sealed class PotionSpec : SpecBase
 }
 
 /// <summary>
+/// 一条「自定义关键词」。
+///
+/// 为什么要这么做：本体的关键词是 <c>CardKeyword</c> **封闭枚举**（消耗 / 虚无 / 固有 / 保留 / 奇巧 /
+/// 不能被打出 / 永恒），模组既不能加枚举成员、也没有任何注册 API。但本体的悬停提示本身是通用的：
+/// <c>CardModel/RelicModel/PotionModel.ExtraHoverTips</c> 是虚属性，可以塞任意
+/// <c>new HoverTip(new LocString(表, 键), new LocString(表, 键))</c>，而本地化表是按「同名文件、逐键合并」
+/// 加载的（模组可以往本体的 <c>card_keywords</c> 表里加自己的键）。
+///
+/// 所以一条自定义关键词由三部分组成（生成时自动产出）：
+/// ① 本地化：模组工程里 <c>localization/&lt;语言&gt;/card_keywords.json</c> 的
+///    <c>&lt;KEY&gt;.title</c> / <c>&lt;KEY&gt;.description</c>；
+/// ② 悬停说明：引用它的卡牌生成 <c>ExtraHoverTips</c>，悬停卡牌时显示「名称 + 说明」；
+/// ③ 卡面文字：描述开头自动拼 <c>[gold]名称[/gold]。</c>（和本体 <c>GetCardText()</c> 的观感一致）。
+///
+/// 全程不改本体、不需要 Harmony 补丁。
+/// </summary>
+public sealed class CustomKeywordSpec : SpecBase
+{
+    private string _name = "新关键词";
+    private string _key = "";
+    private string _description = "";
+
+    /// <summary>卡面上显示的名字（本体关键词也是中文，例如「消耗」「虚无」）。</summary>
+    public string Name { get => _name; set => Set(ref _name, value); }
+
+    /// <summary>
+    /// 英文标识：本地化键的前缀（<c>&lt;KEY&gt;.title</c>）。留空时生成器按序号自动补（<c>KEYWORD_1</c>…）。
+    /// 只能用 ASCII 字母/数字/下划线，且不能与本体那 8 个关键词的键撞名。
+    /// </summary>
+    public string Key { get => _key; set => Set(ref _key, value); }
+
+    /// <summary>鼠标悬停在卡牌上时显示的说明文字（可以写多行）。</summary>
+    public string Description { get => _description; set => Set(ref _description, value); }
+
+    [JsonIgnore]
+    public string Display => string.IsNullOrWhiteSpace(Key) ? Name : $"{Name}  ｜ {Key}";
+}
+
+/// <summary>
+/// 本体关键词清单（枚举名 + 本体中文名/说明）。界面下拉、校验、旧名全文替换都靠它。
+///
+/// 为什么要写死这份清单：本体的 <c>CardKeyword</c> 是**封闭枚举**，文案在
+/// <c>localization/zhs/card_keywords.json</c>（键 = <c>StringHelper.Slugify(枚举名)</c>）。
+/// 枚举一共有 7 个正式关键词（另有 <c>NONE</c> 与 <c>PERIOD</c> 两个非关键词的占位键），
+/// 模组既读不到枚举清单、也不该为了显示 7 行去反射游戏 dll，所以顺序和枚举名在这里固定下来。
+/// <see cref="Vanilla"/> 只是**兜底**：本机读得到本体 <c>card_keywords.json</c> 时一律以那份为准
+/// （见 <c>EffectCatalog.VanillaKeywordLoc</c>），读不到也能把界面/替换跑起来。
+/// </summary>
+public static class VanillaKeywordCatalog
+{
+    /// <summary>本体关键词一条：枚举名 + 本体中文名（+ 本体中文说明，读不到就是空串）。</summary>
+    public sealed record Entry(string Id, string VanillaName, string VanillaDescription);
+
+    /// <summary>本体那 7 个关键词（顺序固定，界面表格就按这个顺序排）。</summary>
+    public static readonly IReadOnlyList<Entry> All = new[]
+    {
+        new Entry("EXHAUST",    "消耗",       "打出后进入消耗堆，本场战斗内不再回到牌堆。"),
+        new Entry("ETHEREAL",   "虚无",       "若这张牌在你的回合结束时仍在手牌中，将其消耗。"),
+        new Entry("INNATE",     "固有",       "战斗开始时，这张牌必定在你的起始手牌中。"),
+        new Entry("UNPLAYABLE", "不能被打出", "这张牌不能被打出。"),
+        new Entry("RETAIN",     "保留",       "回合结束时，这张牌不会被弃掉。"),
+        new Entry("SLY",        "奇巧",       "若这张牌因弃牌离开手牌，则免费打出。"),
+        new Entry("ETERNAL",    "永恒",       "这张牌不能被消耗（消耗效果对它无效）。"),
+    };
+
+    /// <summary>这个 id 是不是那 7 个之一（大小写不敏感，读手写 JSON 时兜底）。</summary>
+    public static bool IsKnown(string? id) => ById(id) is not null;
+
+    /// <summary>按枚举名查一条（大小写不敏感）。</summary>
+    public static Entry? ById(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id)) return null;
+        string want = id.Trim();
+        foreach (var e in All)
+            if (string.Equals(e.Id, want, StringComparison.OrdinalIgnoreCase)) return e;
+        return null;
+    }
+
+    /// <summary>本体中文名（不知道这个 id 就原样返回）。</summary>
+    public static string VanillaNameOf(string? id) => ById(id)?.VanillaName ?? (id ?? "").Trim();
+}
+
+/// <summary>
+/// 一条「本体关键词改名」：把本体某个关键词（消耗 / 虚无 / 固有 / 保留 / 奇巧 / 不能被打出 / 永恒）
+/// 在游戏里显示的**名字**（和悬停提示里的**说明**）换成你自己的。
+///
+/// 机制（本体自己支持的，不需要任何 Harmony 补丁）：
+///   本体加载本地化时会把模组的 <c>localization/&lt;语言&gt;/card_keywords.json</c> **逐键合并**进本体那张表
+///   （<c>LocTable.MergeWith</c>，模组的键盖本体的），所以只要写 <c>EXHAUST.title = 你的名字</c> 就生效。
+///   卡面文字是本体 <c>CardKeywordExtensions.GetCardText()</c> 拼的 <c>[gold]&lt;本地化 title&gt;[/gold]。</c>，
+///   改了 title 卡面上那个金色词自动跟着变；本体卡牌**描述正文**里写着的旧中文名（比如「消耗」两个字）
+///   属于纯文本，另外由 <c>VanillaKeywordGen.KeywordTextReplacements</c> 覆盖本体表里那些键来换掉。
+///
+/// 注意：这是**全局**改动 —— 本体其他角色的卡上出现的同一个关键词也会跟着改名。
+/// </summary>
+public sealed class VanillaKeywordRenameSpec : SpecBase
+{
+    private string _keywordId = "";
+    private string _vanillaName = "";
+    private string _name = "";
+    private string _description = "";
+
+    /// <summary>本体枚举名（EXHAUST / ETHEREAL / INNATE / UNPLAYABLE / RETAIN / SLY / ETERNAL）。</summary>
+    public string KeywordId
+    {
+        get => _keywordId;
+        set
+        {
+            if (!Set(ref _keywordId, (value ?? "").Trim())) return;
+            // 名字只是界面上的参考文本（生成完全不读它），换关键词时跟着换一下更直观
+            _vanillaName = VanillaKeywordCatalog.VanillaNameOf(_keywordId);
+            Raise(nameof(VanillaName));
+            Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>这个关键词在本体里的原名（只用于界面显示「原名 → 新名」，不参与生成）。</summary>
+    public string VanillaName
+    {
+        get => _vanillaName.Length > 0 ? _vanillaName : VanillaKeywordCatalog.VanillaNameOf(_keywordId);
+        set => Set(ref _vanillaName, value ?? "");
+    }
+
+    /// <summary>新显示名（留空 = 不改名）。</summary>
+    public string Name { get => _name; set => Set(ref _name, value ?? ""); }
+
+    /// <summary>新说明（留空 = 不改说明；可以和本体原文一样，那样等于没改）。</summary>
+    public string Description { get => _description; set => Set(ref _description, value ?? ""); }
+
+    /// <summary>这条到底改了什么（都空 = 没改，生成时跳过）。</summary>
+    [JsonIgnore]
+    public bool ChangesAnything => !string.IsNullOrWhiteSpace(Name) || !string.IsNullOrWhiteSpace(Description);
+
+    /// <summary>列表 / 表格里显示的一行。</summary>
+    [JsonIgnore]
+    public string Display
+    {
+        get
+        {
+            string from = VanillaName;
+            string to = string.IsNullOrWhiteSpace(Name) ? from : Name.Trim();
+            var tags = new List<string>();
+            if (!string.IsNullOrWhiteSpace(Name)) tags.Add("改名");
+            if (!string.IsNullOrWhiteSpace(Description)) tags.Add("改说明");
+            string tail = tags.Count == 0 ? "（还没填要改什么）" : "（" + string.Join(" / ", tags) + "）";
+            return $"{from} → {to}　{tail}";
+        }
+    }
+}
+
+/// <summary>
 /// 卡牌配色：本体就是卡池上的三个字段（边框材质 / 牌堆底色 / 能量图标描边），对整个角色的所有卡生效。
 /// </summary>
 public sealed class CardColorSpec : SpecBase
@@ -1431,6 +1632,59 @@ public sealed class ExtraResourceSpec
     /// <summary>是否在计数器下方显示名字（关掉就只在悬停提示里显示）。</summary>
     public bool ShowName { get; set; } = true;
 }
+/// <summary>
+/// 召唤伙伴（奥斯提式的基础伙伴，**第一档：不需要任何 Harmony 补丁**）。
+///
+/// 为什么不用补丁也能做出来：本体有一套**通用**的宠物 API
+/// （<c>PlayerCmd.AddPet&lt;T&gt;(player)</c>，Byrdpip / Pael's Legion 就是这么用的），
+/// 而模组里的 <c>MonsterModel</c> 子类会被本体自动扫进 <c>ModelDb</c>（按类名注册，不需要自己注册）。
+/// 所以只要产出「一个怪物类 + 一句召唤命令 + 一张召唤卡 / 一个战斗开始触发的遗物」，宠物就能上场。
+///
+/// 这个档位**不做**的事（那些才需要补丁，见设计文档第二档）：
+///   · 替主人挨打（<c>DieForYouPower</c> 那种伤害重定向）；
+///   · 专属站位 / 随血量缩放（本体的 <c>NCombatRoom.PositionPlayersAndPets</c> 里是
+///     <c>Character is Necrobinder</c> + <c>is Osty</c> 双特判）；
+///   · 跨战斗保留（<c>PlayerCombatState.AfterCombatEnd()</c> 会 <c>_pets.Clear()</c>，战斗结束宠物就没了）。
+/// 也就是说：宠物**每场战斗都要重新召唤**，这是本体的机制，不是缺陷。
+/// </summary>
+public sealed class SummonSpec : SpecBase
+{
+    private bool _enabled;
+    private string _className = "";
+    private string _name = "";
+    private int _hp = 8;
+    private string? _image;
+
+    /// <summary>不勾选就完全不生成宠物相关代码（用到召唤效果时校验器会报错拦住）。</summary>
+    public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
+
+    /// <summary>英文类名（<c>MonsterModel</c> 子类的名字）。留空自动用 <c>&lt;角色类名&gt;Pet</c>。
+    /// 本体的 <c>ModelDb</c> 只按<b>类名</b>算模型 ID（忽略命名空间），所以不能和本体的怪物重名。</summary>
+    public string ClassName { get => _className; set => Set(ref _className, value); }
+
+    /// <summary>中文名：显示在宠物名牌上（写进 <c>localization/zhs/monsters.json</c> 的 <c>&lt;ENTRY&gt;.name</c>）。</summary>
+    public string Name { get => _name; set => Set(ref _name, value); }
+
+    /// <summary>召唤时的生命值（同时作为它的最小 / 最大初始生命）。没有配置血量的召唤卡就用这个数。</summary>
+    public int Hp { get => _hp; set => Set(ref _hp, value); }
+
+    /// <summary>
+    /// 宠物图片：本机 PNG 路径（可空）。
+    /// 上传了就复制进工程、生成一个最小的 <c>scenes/creature_visuals/&lt;entry&gt;.tscn</c> 并 override
+    /// <c>VisualsPath</c>；没上传就不生成场景，宠物走本体的 <c>creature_visuals/fallback</c> 占位
+    /// （一张静态 error.png，能正常显示、能打、能死）。
+    /// </summary>
+    public string? Image { get => _image; set => Set(ref _image, value); }
+
+    [JsonIgnore]
+    public string Display =>
+        (Enabled ? "" : "[停用] ")
+        + $"召唤伙伴：{(string.IsNullOrWhiteSpace(Name) ? "(还没起名)" : Name.Trim())}"
+        + $"  ｜ 生命 {Hp}"
+        + $"{(string.IsNullOrWhiteSpace(ClassName) ? " ｜ 类名自动" : " ｜ " + ClassName.Trim())}"
+        + (string.IsNullOrWhiteSpace(Image) ? "" : " ｜ 有自定义图片");
+}
+
 public sealed class PathsSpec
 {
     /// <summary>解包后的原版工程目录。默认**留空**：这是唯一需要用户自己指定的路径，
