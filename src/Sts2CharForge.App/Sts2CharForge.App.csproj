@@ -18,7 +18,7 @@
       整合包的版本号（唯一来源）：启动器文件名、程序包 zip、整合包 zip 都从这一行读。
       每次改动都往上加一位，例如 V0.0.1 → V0.0.2。
     -->
-    <InformationalVersion>V0.0.10</InformationalVersion>
+    <InformationalVersion>V0.1.0</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 

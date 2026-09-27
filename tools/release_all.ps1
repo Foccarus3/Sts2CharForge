@@ -6,6 +6,12 @@
 # 版本号仍然只有一个来源：src\Sts2CharForge.App\Sts2CharForge.App.csproj 里的 <InformationalVersion>。
 # 本脚本只负责「改那一个地方」，启动器名 / zip 名 / 窗口标题 / GitHub tag 全都会跟着变。
 #
+# 约定（用户要求，别再改回去）：
+#   · README.md 与 使用说明.txt **只讲功能与用法**，不写版本号、不写更新记录。
+#   · 版本变更只出现在两处：csproj 的 InformationalVersion，以及 docs\RELEASE_NOTES_<版本>.md
+#     （后者只作为 GitHub Release 正文，不进 README）。
+#   · 启动器文件名里的版本号由打包脚本自动拼，同样不需要写进文档。
+#
 # 用法（最常用）：
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1
 #       → 把 V0.0.9 升成 V0.0.10，重新发布程序、打两个包、发 GitHub Release
