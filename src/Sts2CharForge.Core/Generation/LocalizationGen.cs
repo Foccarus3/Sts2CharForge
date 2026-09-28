@@ -385,6 +385,31 @@ public static class LocalizationGen
         return want.Length > 0 ? want : "伙伴";
     }
 
+    /// <summary>
+    /// 「伙伴攻击（按生命值算）」的卡面描述。
+    /// **绝不能写死数字** —— 伤害是打出时按那只宠物当时的最大/当前/已损失生命算出来的，
+    /// 所以只写 <c>{变量名:diff()}</c> 让本体去算（升级增量也会跟着显示）。
+    /// 后半句写明伤害等于宠物的哪个生命值（照本体「重压 Crush / 榨取」那类牌的写法）。
+    /// </summary>
+    private static string PetCalcDamageText(CharacterProfile p, EffectSpec e, string var, string repeat,
+        string when, string target, string hitSuffix, string which)
+    {
+        string who = SummonName(p, e);
+        return $"{repeat}{when}让[gold]{who}[/gold]{target}造成{var}点伤害{hitSuffix}。\n"
+             + $"此伤害等于[gold]{who}[/gold]的{which}。";
+    }
+
+    /// <summary>「牺牲伙伴」的卡面描述：先写「若伙伴存活」，再写收益（格挡 / 伤害）。</summary>
+    private static string PetSacrificeText(CharacterProfile p, EffectSpec e, string var)
+    {
+        string who = SummonName(p, e);
+        bool block = e.PetSacrificeGain != "Damage";
+        string pay = block
+            ? $"然后你获得{var}点[gold]格挡[/gold]。"
+            : $"然后它对指定敌人造成{var}点伤害。";
+        return $"若[gold]{who}[/gold]存活：它死去，{pay}";
+    }
+
     private static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
         Dictionary<EffectSpec, string>? varMap = null)
     {
@@ -487,6 +512,19 @@ public static class LocalizationGen
             "PetAttack" => e.TargetSide == "Self"
                 ? $"{SummonName(p, e)}攻击自己，造成 {var} 点伤害。"
                 : $"{repeat}{when}让{SummonName(p, e)}{target}造成 {var} 点伤害{hitSuffix}。",
+            // ===== 新增的那批宠物效果 =====
+            // 三个「按生命值算的伙伴攻击」：**绝不能写死数字**（伤害是打出时按宠物当时的最大/当前/已损失
+            // 生命算出来的），只写 {CalculatedDamage:diff()} 让本体去算，升级增量也会跟着显示。
+            "PetDamageByMaxHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "最大生命值"),
+            "PetDamageByCurHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "当前生命值"),
+            "PetDamageByMissingHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "已损失的生命值"),
+            "PetHeal" => $"{repeat}让[gold]{SummonName(p, e)}[/gold]回复 {var} 点生命。",
+            "PetLoseHp" => $"让[gold]{SummonName(p, e)}[/gold]失去 {var} 点生命。",
+            "PetGainMaxHp" => $"[gold]{SummonName(p, e)}[/gold]的最大生命值增加 {var} 点（同时回复等量生命）。",
+            "PetApplyPower" => $"[gold]{SummonName(p, e)}[/gold]获得 {var} 层{PowerNameFor(p, e.PowerId)}。",
+            "PetGuardOn" => $"[gold]{SummonName(p, e)}[/gold]开始替你承受攻击伤害。",
+            "PetGuardOff" => $"[gold]{SummonName(p, e)}[/gold]不再替你承受攻击伤害。",
+            "PetSacrifice" => PetSacrificeText(p, e, var),
             _ => "",
         };
         // 概率生效：写在这条效果后面（例：「造成 6 点伤害（50% 概率）。」）

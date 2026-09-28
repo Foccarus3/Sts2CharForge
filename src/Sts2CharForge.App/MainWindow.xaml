@@ -5,6 +5,13 @@
         Title="Sts2CharForge —— 杀戮尖塔2 自定义角色生成器" Height="880" Width="1420"
         Icon="waku.ico"
         WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <!-- 「召唤物卡牌」页的列表：Profile.Cards 的**过滤视图**（只显示勾了「这是召唤物卡」的）。
+             用 CollectionViewSource 而不是另建一份集合 —— 保证两页里是**同一批对象**
+             （在「卡牌」页改名字 / 数值，「召唤物卡牌」页立刻就是新的；不是副本）。
+             过滤谓词在 MainWindow.xaml.cs 里挂（切换勾选 / 增删卡后会刷新它）。 -->
+        <CollectionViewSource x:Key="PetCardsView" Source="{Binding Profile.Cards}"/>
+    </Window.Resources>
     <DockPanel>
 
         <Border DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
@@ -183,6 +190,95 @@
                 </Grid>
             </TabItem>
 
+            <!-- ============ 召唤物卡牌（列表 + 专属效果栏；位置紧跟「召唤物」之后） ============ -->
+            <TabItem x:Name="PetCardTab" Header="召唤物卡牌">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="这里只列「卡牌」页里勾了「这是召唤物卡」的那些牌（和那一页是**同一批对象**，改哪边都一样）。右边的效果栏是专属的：效果种类下拉只列宠物类效果。"/>
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加召唤物卡" Padding="8,4" Margin="0,0,6,0" Click="OnAddPetCard"
+                                    ToolTip="加一张新卡并自动勾上「这是召唤物卡」，直接出现在这个列表里。"/>
+                            <Button Content="删除" Padding="8,4" Margin="0,0,6,0" Click="OnRemoveCard"/>
+                            <Button Content="撤回删除" Padding="8,4" Click="OnUndoCard"
+                                    IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                            <Button Content="刷新列表" Padding="8,4" Margin="6,0,0,0" Click="OnRefreshPetCards"
+                                    ToolTip="在「卡牌」页改了「这是召唤物卡」勾选之后，点一下这里同步列表（勾选变化会自动同步，这个按钮是保险）。"/>
+                        </WrapPanel>
+                        <ListBox x:Name="PetCardList" ItemsSource="{Binding Source={StaticResource PetCardsView}}"
+                                 DisplayMemberPath="Display"/>
+                    </DockPanel>
+
+                    <TextBlock x:Name="PetCardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Text="还没有召唤物卡：先点左边的「添加召唤物卡」，或者到「卡牌」页把某张牌勾上「这是召唤物卡」"
+                               Visibility="{Binding SelectedItem, ElementName=PetCardList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <Grid x:Name="PetCardDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=PetCardList}"
+                          Visibility="{Binding SelectedItem, ElementName=PetCardList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                            <StackPanel>
+                                <TextBlock Text="召唤物卡属性" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <TextBlock Text="名称（中文，列表里显示用）" Style="{StaticResource Label}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="英文类名（留空 = 自动生成 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="类型" Style="{StaticResource Label}"/>
+                                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
+                                <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
+                                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                                <TextBlock Text="费用" Style="{StaticResource Label}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
+                                <CheckBox Content="这是召唤物卡（出现在本页）" Style="{StaticResource Check}" IsChecked="{Binding IsPetCard}"
+                                          ToolTip="勾上以后这张牌会出现在「召唤物卡牌」页；取消勾选就从这一页消失（牌本身还在「卡牌」页）。这只影响界面归类，不影响生成。"/>
+                                <CheckBox Content="作为初始牌" Style="{StaticResource Check}" IsChecked="{Binding InStartingDeck}"/>
+                                <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
+                                <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
+                                <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsChecked="{Binding InCardPool}"/>
+                                <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                                <WrapPanel Margin="6,0,0,0">
+                                    <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>
+                                    <CheckBox Content="虚无（回合末未打出则消耗）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Ethereal}"/>
+                                    <CheckBox Content="固有（开局必在手牌）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Innate}"/>
+                                    <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
+                                    <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
+                                    <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
+                                </WrapPanel>
+                                <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           Text="卡面和其他卡牌共用：在「卡牌」页给这张牌上传卡面（两页是同一张牌，图上一次就够）。"/>
+                                <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickPetCardPortrait"/>
+                                <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
+                                    <Image Source="{Binding PetCardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                </Border>
+                            </StackPanel>
+                        </ScrollViewer>
+
+                        <DockPanel Grid.Column="2">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=PetCardEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=PetCardEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                        IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <ListBox x:Name="PetCardEffectList" Grid.Row="0" ItemsSource="{Binding Effects}" DisplayMemberPath="Display"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=PetCardEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPetCard}"/>
+                                </Border>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
             <!-- ============ 额外资源量 / 状态 ============ -->
             <TabItem x:Name="ExtraResourceTab" Header="额外资源量/状态">
                 <ScrollViewer>
@@ -349,6 +445,9 @@
                             <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
                             <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
                             <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding InCardPool}"/>
+                            <!-- 「召唤物卡牌」选项卡的归类标记：勾上以后这张牌会出现在那一页（效果栏只列宠物类效果） -->
+                            <CheckBox Content="这是召唤物卡（出现在「召唤物卡牌」页）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding IsPetCard}"
+                                      ToolTip="勾上以后这张牌会出现在「召唤物卡牌」选项卡里，那一页的效果栏只列宠物类效果（召唤伙伴 / 伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人挨打…）。只是界面归类，不影响生成。"/>
                             <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
                                 <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>

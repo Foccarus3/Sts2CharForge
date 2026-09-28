@@ -557,15 +557,16 @@ public static class ProfileValidator
         void CheckPetRef(string owner, EffectSpec e, int i)
         {
             hasSummonEffect = true;
+            string kindZh = EffectCatalog.FindKind(e.Kind).Display;
             if (string.IsNullOrWhiteSpace(e.PetSummon))
             {
                 // 老存档（上一版只有一只召唤物）没有这个字段：生成时自动用第一只，行为和以前一致
                 if (enabled.Count > 0)
-                    issues.Add(new("提示", $"{owner} 的第 {i} 条「{(e.Kind == "SummonPet" ? "召唤伙伴" : "伙伴攻击")}」"
+                    issues.Add(new("提示", $"{owner} 的第 {i} 条「{kindZh}」"
                         + $"没选召唤物，生成时会用第一只启用的「{enabled[0].Name}」"
                         + "（老存档就是这样，重新在效果里选一次更清楚）。"));
                 else
-                    issues.Add(new("错误", $"{owner} 的第 {i} 条「{(e.Kind == "SummonPet" ? "召唤伙伴" : "伙伴攻击")}」"
+                    issues.Add(new("错误", $"{owner} 的第 {i} 条「{kindZh}」"
                         + "没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」。"));
                 return;
             }
@@ -587,6 +588,7 @@ public static class ProfileValidator
             foreach (var e in effects)
             {
                 i++;
+                string kindZh = EffectCatalog.FindKind(e.Kind).Display;
                 if (e.Kind == "SummonPet")
                 {
                     if (forPotion)
@@ -611,24 +613,91 @@ public static class ProfileValidator
                         CheckPetRef(owner, e, i);
                     }
                 }
+                else if (EffectCatalog.IsPetKind(e.Kind))
+                {
+                    // ===== 新增的那批宠物效果（都要选「召唤物（哪一只）」，宠物不在场时安全跳过）=====
+                    if (forPotion)
+                    {
+                        issues.Add(new("错误", $"{owner} 的第 {i} 条是「{kindZh}」，但**药水不支持**"
+                            + "（这一档的宠物效果只做在卡牌上）—— 请改用召唤物卡牌。"));
+                    }
+                    else
+                    {
+                        CheckPetRef(owner, e, i);
+                        // 「按生命值算的伙伴攻击」的数值是**升级加值**（基础是 0）：负数和超大值都拦掉。
+                        if (e.Kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+                            && e.Amount is < 0 or > 999)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「{kindZh}」的数值 {e.Amount} 超出范围"
+                                + "（-999~999；这是升级后额外加的那点伤害，伤害本身按伙伴的生命值算）。"));
+                        if (e.Kind == "PetHeal" && e.Amount <= 0)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「治疗伙伴」的治疗量要大于 0（现在填的是 {e.Amount}）。"));
+                        if (e.Kind == "PetLoseHp" && e.Amount <= 0)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「伙伴失去生命」的失去量要大于 0（现在填的是 {e.Amount}）。"));
+                        if (e.Kind == "PetGainMaxHp" && e.Amount <= 0)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「伙伴最大生命 +N」的 N 要大于 0（现在填的是 {e.Amount}）。"));
+                        if (e.Kind == "PetApplyPower" && string.IsNullOrWhiteSpace(e.PowerId))
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「给伙伴施加状态」没有选「增益 / 减益」"
+                                + "—— 到效果栏里选一个本体状态（例：力量 / 格挡 / 中毒）。"));
+                        if (e.Kind == "PetSacrifice")
+                        {
+                            string formula = e.PetSacrificeFormula;
+                            if (formula is not ("Fixed" or "MaxHp" or "CurHp"))
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的收益公式不合法（{formula}）："
+                                    + "只能是「固定 N / 最大生命 × 倍率 / 当前生命」。"));
+                            else if (formula == "Fixed" && e.Amount <= 0)
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」选了「固定 N」，但 N 要大于 0（现在填的是 {e.Amount}）。"));
+                            else if (formula == "MaxHp" && e.PetSacrificeMultiplier <= 0)
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的倍率要大于 0（现在填的是 {e.PetSacrificeMultiplier}）。"));
+                            if (e.PetSacrificeGain == "Damage" && e.TargetSide == "Self")
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的收益是伤害，但「作用对象」选的是自己"
+                                    + "—— 请把作用对象改成「单体敌人」或「全体敌人」。"));
+                            // 按生命值算的收益（MaxHp / CurHp）没有可升级的变量：那个计算变量的名字是本体
+                            // 固定死的，升级只能抬 CalculationBase，而「按生命值算」的基础值是 0 —— 所以这里的
+                            // 升级增量生成时会**静默丢掉**（与其让用户以为加了，不如直接拦住）。
+                            if ((formula is "MaxHp" or "CurHp") && e.UpgradeAmount != 0)
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的收益公式是「{e.PetSacrificeFormulaZh}」"
+                                    + "，它没有可以升级的数值（收益完全跟着伙伴的生命值走）—— 请把「升级增量」清成 0"
+                                    + "，或者把公式改成「固定 N」。"));
+                        }
+                    }
+                }
             }
         }
-        foreach (var c in p.Cards) if (c is not null) Scan($"卡牌「{c.Name}」", c.Effects, forPotion: false);
+        foreach (var c in p.Cards)
+        {
+            if (c is null) continue;
+            Scan($"卡牌「{c.Name}」", c.Effects, forPotion: false);
+            // 一张牌最多一条「按生命值算」的宠物效果：本体的计算变量名是**固定**的
+            // （DynamicVars.CalculatedDamage / CalculatedBlock / CalculationBase 都是按名字取的），
+            // 两条会互相覆盖那个 CalculationBase → 数字对不上，而且回读也分不清哪条是哪条。
+            var calcs = c.Effects.Where(CSharpCodeGen.CanonicalVarNeedsPetCmd).ToList();
+            if (calcs.Count > 1)
+                issues.Add(new("错误", $"卡牌「{c.Name}」里有 {calcs.Count} 条「按生命值算」的宠物效果"
+                    + $"（{string.Join("、", calcs.Select(x => EffectCatalog.FindKind(x.Kind).Display))}）"
+                    + "—— 本体的计算变量名是固定的（CalculatedDamage / CalculatedBlock / CalculationBase 按名字取），"
+                    + "一张牌只能有一条。请把其余的挪到另一张卡上。"));
+        }
         foreach (var r in p.Relics)
         {
             if (r is null) continue;
             Scan($"遗物「{r.Name}」", r.Effects, forPotion: false);
             // 「伙伴攻击」必须挂在卡牌上：遗物没有「玩家选中的目标」
+            // 新增的那批宠物效果同理（这一档只做在召唤物卡牌上，见 CSharpCodeGen.EmitRelicEffectOnce）。
             if (r.Effects.Any(e => e.Kind == "PetAttack"))
                 issues.Add(new("错误", $"遗物「{r.Name}」里放了「伙伴攻击」—— 遗物没有「玩家选中的目标」，"
                     + "宠物该打谁说不清。请把它放到卡牌上（遗物只支持「召唤伙伴」）。"));
+            var relicPetFx = r.Effects.Where(e => EffectCatalog.IsPetKind(e.Kind) && e.Kind != "SummonPet").ToList();
+            if (relicPetFx.Count > 0)
+                issues.Add(new("错误", $"遗物「{r.Name}」里放了宠物效果"
+                    + $"（{string.Join("、", relicPetFx.Select(e => EffectCatalog.FindKind(e.Kind).Display).Distinct())}）"
+                    + "—— 这一档的宠物效果只做在卡牌上（遗物只支持「召唤伙伴」）。"));
         }
         foreach (var s in p.Potions) if (s is not null) Scan($"药水「{s.Name}」", s.Effects, forPotion: true);
 
         if (enabled.Count == 0)
         {
             if (hasSummonEffect)
-                issues.Add(new("错误", "有卡牌 / 遗物用了「召唤伙伴」或「伙伴攻击」，但「召唤物」页里一只都没启用 —— "
+                issues.Add(new("错误", "有卡牌 / 遗物用了「召唤伙伴」「伙伴攻击」或其它宠物效果，但「召唤物」页里一只都没启用 —— "
                     + "生成出来的代码会引用一个不存在的宠物类（dotnet 直接报 CS0103）。"
                     + "去「召唤物」页添加一只并勾上「启用」、填好名字 / 血量，或者把这些效果删掉。"));
             // 「有停用的召唤物但没人用」也提醒一句：用户可能以为停用=不生成但效果还能用

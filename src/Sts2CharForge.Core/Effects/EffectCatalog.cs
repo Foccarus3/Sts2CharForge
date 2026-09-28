@@ -551,7 +551,52 @@ public static class EffectCatalog
         // 目标沿用卡牌的「作用对象」。宠物不在场时这张牌会跳过这一条（不报错）。
         // 只支持卡牌 —— 遗物没有「玩家选中的目标」，宠物该打谁说不清。
         new EffectKindOption("PetAttack",   "伙伴攻击", "点", 0, 999, true, true),
+        // ===== 新增的那批宠物效果（都要先选「召唤物（哪一只）」，宠物不在场时安全跳过）=====
+        // 三个「按生命值算的伙伴攻击」用的都是**本体自己的计算变量三件套**：
+        //   CalculationBaseVar(0) + ExtraDamageVar(1) + CalculatedDamageVar(ValueProp.Move).WithMultiplier(…)
+        // 少了任何一件，本体 CalculatedVar.GetExtraVar() 会直接抛 KeyNotFoundException。
+        // 倍率 lambda 必须是**静态**的（CalculatedVar.cs:50-53 判 multiplierCalc.Target is AbstractModel 就抛异常），
+        // 所以生成的是 delegate(CardModel card, Creature? _) { … }，里头只用参数 card，绝不捕获实例。
+        new EffectKindOption("PetDamageByMaxHp",     "伙伴攻击（按最大生命值）",   "点", -999, 999, false, true),
+        new EffectKindOption("PetDamageByCurHp",     "伙伴攻击（按当前生命值）",   "点", -999, 999, false, true),
+        new EffectKindOption("PetDamageByMissingHp", "伙伴攻击（按已损失生命值）", "点", -999, 999, false, true),
+        // 治疗 / 失去生命 / 最大生命：分别走 HealVar / HpLossVar / MaxHpVar（和普通版本同一套变量）。
+        new EffectKindOption("PetHeal",     "治疗伙伴",     "点", 0, 999, false, false),
+        new EffectKindOption("PetLoseHp",   "伙伴失去生命", "点", 0, 999, false, false),
+        // 注意：本体的 GainMaxHp 内部最后会 Heal 等量 → 当前生命也跟着涨（卡面描述里写明了）。
+        new EffectKindOption("PetGainMaxHp", "伙伴最大生命 +N", "点", 1, 999, false, false),
+        // 牺牲伙伴：收益类型（格挡 / 伤害）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
+        // 生成顺序不能反：**先算收益、再杀宠物**（宠物死了就取不到生命值）。
+        new EffectKindOption("PetSacrifice", "牺牲伙伴换收益", "点", 0, 999, false, true),
+        // 给伙伴施加状态：复用现有的「增益 / 减益」下拉（PowerId）+ 层数（Amount）。
+        new EffectKindOption("PetApplyPower", "给伙伴施加状态", "层", 1, 99, false, false),
+        // 替主人挨打 开 / 关：用我们自己的共用守卫类 ForgePetGuardianPower（不是本体的 DieForYouPower）。
+        new EffectKindOption("PetGuardOn",  "伙伴替主人挨打（开）", "—", 0, 0, false, false),
+        new EffectKindOption("PetGuardOff", "取消伙伴替主人挨打（关）", "—", 0, 0, false, false),
     };
+
+    /// <summary>
+    /// 「召唤物卡牌」选项卡里那个**专属效果栏**的下拉候选：只列宠物类效果。
+    ///
+    /// 为什么要单独一份：那个页面的效果编辑器用的是专属模板（<c>EffectEditorPetCard</c>），
+    /// 它的效果种类下拉只该出现「做宠物的事」的那些效果，免得用户在一张召唤物卡上
+    /// 选了「获得金币」这种和宠物毫无关系的东西。
+    /// 从 <see cref="EffectKinds"/> 里按名字筛出来，**顺序和主注册表完全一致**（不会两处漂移）。
+    /// </summary>
+    private static readonly HashSet<string> PetKindIds = new(StringComparer.Ordinal)
+    {
+        "SummonPet", "PetAttack",
+        "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp",
+        "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetSacrifice", "PetApplyPower",
+        "PetGuardOn", "PetGuardOff",
+    };
+
+    /// <summary>宠物类效果（「召唤物卡牌」页的专属效果栏专用）。</summary>
+    public static IReadOnlyList<EffectKindOption> PetEffectKinds { get; } =
+        EffectKinds.Where(k => PetKindIds.Contains(k.Kind)).ToList();
+
+    /// <summary>这个效果种类是不是「宠物类效果」（和 <c>EffectSpec.IsPetEffect</c> 的名单保持一致）。</summary>
+    public static bool IsPetKind(string? kind) => kind is not null && PetKindIds.Contains(kind);
 
     /// <summary>「生成卡牌」的放置位置。</summary>
     public static IReadOnlyList<string> SpawnTargets { get; } = new[] { "Hand", "Draw", "Discard" };

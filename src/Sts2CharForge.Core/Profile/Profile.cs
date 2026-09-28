@@ -182,6 +182,13 @@ public sealed class EffectSpec : SpecBase
             {
                 Raise(nameof(Display));
                 Raise(nameof(UsesSelectPile));
+                // 换效果种类会让「这条效果做的是不是宠物」跟着变 —— 界面上的「召唤物（哪一只）」下拉、
+                // 列表里的中文名、牺牲伙伴的「倍率」栏都按它显示，不通知的话界面会停在旧状态。
+                Raise(nameof(PetAction));
+                Raise(nameof(IsPetEffect));
+                Raise(nameof(PetKindZh));
+                Raise(nameof(PetSacrificeUsesMultiplier));
+                Raise(nameof(PetSacrificeFormulaZh));
             }
         }
     }
@@ -337,7 +344,22 @@ public sealed class EffectSpec : SpecBase
     /// 界面列表里不要把 TargetSide 显示成「→ 自己」误导人；生成代码时「宠物在不在场」的守卫也按它判断。
     /// </summary>
     [JsonIgnore]
-    public bool PetAction => Kind is "SummonPet" or "PetAttack";
+    public bool PetAction => Kind is "SummonPet" or "PetAttack" || IsPetEffect;
+
+    /// <summary>
+    /// 这条效果是**新增的那批宠物效果**（做的是宠物，不是自己 / 敌人）：
+    /// 伙伴攻击（按生命值算）/ 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 / 牺牲伙伴 / 给伙伴施加状态 / 伙伴替主人挨打 开·关。
+    ///
+    /// 和 <see cref="PetAction"/> 的区别只在于**要不要先找到宠物**：
+    ///   · <c>SummonPet</c> 不需要（Summon 内部自己找）；
+    ///   · 这一批（还有 <c>PetAttack</c>）都需要 —— 宠物不在场时整条效果安全跳过（生成 <c>if (__pet is not null)</c>）。
+    /// 两个属性都要覆盖这 10 个新 Kind，否则界面上的「召唤物（哪一只）」下拉不会显示。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsPetEffect => Kind is
+        "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+        or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower"
+        or "PetGuardOn" or "PetGuardOff";
 
     private string? _petSummon;
 
@@ -354,6 +376,71 @@ public sealed class EffectSpec : SpecBase
         get => _petSummon;
         set { if (Set(ref _petSummon, value)) Raise(nameof(Display)); }
     }
+
+    // ===== 牺牲伙伴（PetSacrifice）：收益类型 + 收益公式 =====
+    private string _petSacrificeGain = "Block";
+    private string _petSacrificeFormula = "MaxHp";
+    private decimal _petSacrificeMultiplier = 3m;
+
+    /// <summary>
+    /// 「牺牲伙伴」的收益类型：<c>Block</c>（格挡）/ <c>Damage</c>（伤害）。
+    /// 两种都是「先算收益、再杀宠物」（顺序不能反：宠物死了就取不到生命值）。
+    /// </summary>
+    public string PetSacrificeGain
+    {
+        get => _petSacrificeGain;
+        set { if (Set(ref _petSacrificeGain, NormalizeGain(value))) Raise(nameof(Display)); }
+    }
+
+    /// <summary>
+    /// 「牺牲伙伴」的收益公式：<c>Fixed</c>（固定 <see cref="Amount"/>）/
+    /// <c>MaxHp</c>（最大生命 × <see cref="PetSacrificeMultiplier"/>）/
+    /// <c>CurHp</c>（当前生命）。
+    ///
+    /// 为什么要有这个下拉：本体的格挡计算变量有两套 —— 固定值走普通 <c>BlockVar</c> /
+    /// <c>DamageVar</c>；按生命值算必须走 <c>CalculatedBlockVar</c> / <c>CalculatedDamageVar</c>
+    /// 的「计算三件套」（CalculationBase + CalculationExtra/ExtraDamage + Calculated*），
+    /// 不然本体在 <c>CalculatedVar.GetExtraVar()</c> 处直接 <c>KeyNotFoundException</c>。
+    /// </summary>
+    public string PetSacrificeFormula
+    {
+        get => _petSacrificeFormula;
+        set { if (Set(ref _petSacrificeFormula, NormalizeFormula(value))) Raise(nameof(Display)); }
+    }
+
+    /// <summary>「牺牲伙伴」按最大生命算时的倍率（默认 3）。</summary>
+    public decimal PetSacrificeMultiplier
+    {
+        get => _petSacrificeMultiplier;
+        set { if (Set(ref _petSacrificeMultiplier, value)) Raise(nameof(Display)); }
+    }
+
+    private static string NormalizeGain(string? v) =>
+        string.Equals(v?.Trim(), "Damage", StringComparison.OrdinalIgnoreCase) ? "Damage" : "Block";
+
+    private static string NormalizeFormula(string? v) => v?.Trim() switch
+    {
+        "Fixed" => "Fixed",
+        "CurHp" => "CurHp",
+        _ => "MaxHp",
+    };
+
+    /// <summary>「牺牲伙伴」收益的中文（列表里显示）。</summary>
+    [JsonIgnore]
+    public string PetSacrificeGainZh => PetSacrificeGain == "Damage" ? "伤害" : "格挡";
+
+    /// <summary>「牺牲伙伴」收益公式的中文短说明（列表 / 界面提示用）。</summary>
+    [JsonIgnore]
+    public string PetSacrificeFormulaZh => PetSacrificeFormula switch
+    {
+        "Fixed" => $"固定 {Amount:0.##}",
+        "CurHp" => "等于伙伴的当前生命值",
+        _ => $"最大生命 × {PetSacrificeMultiplier:0.##}",
+    };
+
+    /// <summary>要不要显示「倍率」那一栏（只有「最大生命 × 倍率」这条公式用得到）。</summary>
+    [JsonIgnore]
+    public bool PetSacrificeUsesMultiplier => Kind == "PetSacrifice" && PetSacrificeFormula == "MaxHp";
 
     /// <summary>GenerateCard 用：生成的卡放到哪 —— 对应的 PileType 名字。</summary>
     [JsonIgnore]
@@ -374,6 +461,33 @@ public sealed class EffectSpec : SpecBase
     /// </summary>
     [JsonIgnore]
     public string DisplayPlain => UpgradeAmount == 0 ? Display : Display.Replace($"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）", "");
+
+    /// <summary>
+    /// 新增的那批宠物效果在界面列表里的中文名（不是这批就返回 null，走原来的 Kind 回退）。
+    /// 「伙伴」两个字在列表里用**选中的那只召唤物的类名**代替（Profile 层拿不到中文名，
+    /// 那要读召唤物列表；卡面描述由 <c>LocalizationGen</c> 换成真正的中文名）。
+    /// </summary>
+    [JsonIgnore]
+    public string? PetKindZh
+    {
+        get
+        {
+            string who = PetSummonTag.Length > 0 ? PetSummonTag : "伙伴";
+            return Kind switch
+            {
+                "PetDamageByMaxHp" => $"{who}攻击（按最大生命值）",
+                "PetDamageByCurHp" => $"{who}攻击（按当前生命值）",
+                "PetDamageByMissingHp" => $"{who}攻击（按已损失的生命值）",
+                "PetHeal" => $"治疗{who}",
+                "PetLoseHp" => $"{who}失去生命",
+                "PetGainMaxHp" => $"{who}最大生命",
+                "PetApplyPower" => $"给{who}施加 {PowerId ?? "?"}",
+                "PetGuardOn" => $"{who}替主人挨打（开）",
+                "PetGuardOff" => $"{who}替主人挨打（关）",
+                _ => null,
+            };
+        }
+    }
 
     [JsonIgnore]
     public string Display
@@ -420,11 +534,16 @@ public sealed class EffectSpec : SpecBase
                 "SummonPet" => $"召唤{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}"
                     + (Amount > 0 ? $"{Amount:0.##} 点生命" : "（用配置的血量）"),
                 "PetAttack" => $"{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}攻击 {Amount:0.##}",
-                _ => Kind,
+                // ===== 新增的那批宠物效果 =====
+                // 「牺牲伙伴」的收益公式要写出来（固定 N / 最大生命 × 倍率 / 当前生命），否则界面上只看得到 Kind 名。
+                "PetSacrifice" => $"{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}牺牲换{PetSacrificeGainZh}（{PetSacrificeFormulaZh}）",
+                _ => PetKindZh ?? Kind,
             };
             // 召唤 / 伙伴攻击：kind 文案里已经写过数值了（「召唤小七 12 点生命」「小七攻击 6」），
             // 行尾再统一追加一次 Amount 会变成「… 12 点生命 12」—— 用户实测报过「多打了一个数值」。
-            string amountPart = PetAction ? "" : $" {(AmountIsX ? "X" : Amount.ToString("0.##"))}";
+            // 牺牲伙伴的数值已经写在公式说明里（固定 3 / 最大生命 × 3），同理不重复追加。
+            string amountPart = PetAction && Kind != "PetHeal" && Kind != "PetLoseHp" && Kind != "PetGainMaxHp"
+                ? "" : $" {(AmountIsX ? "X" : Amount.ToString("0.##"))}";
             return $"{when}{kind}{amountPart}{(UpgradeAmount != 0 && !AmountIsX ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
@@ -526,6 +645,26 @@ public sealed class CardSpec : SpecBase
     /// <summary>界面用：这张牌的数值 / 效果能不能改（本体卡不能，见 <see cref="IsVanillaCard"/>）。</summary>
     [JsonIgnore]
     public bool ValueEditable => !IsVanillaCard;
+
+    private bool _isPetCard;
+
+    /// <summary>
+    /// 「这是召唤物卡」：勾上以后这张牌会出现在「召唤物卡牌」选项卡里（左边那张列表只列勾了的），
+    /// 那边的效果栏是**专属效果模板** —— 效果种类下拉只列宠物类效果（召唤伙伴 / 伙伴攻击 /
+    /// 按生命值算的伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人挨打…）。
+    ///
+    /// 注意：这只是一个「归类」标记（存档字段 + 界面筛选），**不影响生成** ——
+    /// 一张没勾的牌照样可以用 «召唤伙伴 / 伙伴攻击»（老存档里的牌就是那样）。
+    /// </summary>
+    public bool IsPetCard
+    {
+        get => _isPetCard;
+        set { if (Set(ref _isPetCard, value)) { Raise(nameof(Display)); Raise(nameof(PetCardBadge)); } }
+    }
+
+    /// <summary>列表行尾那个「召唤物卡」标记（没勾就空）。</summary>
+    [JsonIgnore]
+    public string PetCardBadge => IsPetCard ? " ｜ 召唤物卡" : "";
 
     private List<string> _tags = new();
 
@@ -640,6 +779,7 @@ public sealed class CardSpec : SpecBase
         : $"{Name}  ｜ {CardType} / {Rarity} / {(CostIsX ? "X" : Cost.ToString())} 费{(StarCostIsX ? " + 资源量X" : "")}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
           + (KeywordList.Count > 0 ? " ｜ " + string.Join("·", KeywordList) : "")
           + (UpgradeKeywords.Any ? " ｜ " + UpgradeKeywords.Display : "")
+          + PetCardBadge
           + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort);
 }
 

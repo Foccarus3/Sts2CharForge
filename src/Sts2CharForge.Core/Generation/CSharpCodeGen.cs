@@ -1303,7 +1303,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     // ==================== 动态变量 ====================
-    internal static string VarNameOf(EffectSpec e) => e.Kind switch
+    // 注意：这两个是 public —— 界面的自检（--uicheck）会直接调它们核对变量名（App 看不到 internal）。
+    public static string VarNameOf(EffectSpec e) => e.Kind switch
     {
         "Damage" => "Damage",
         "Block" => "Block",
@@ -1326,6 +1327,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
         //   · PetAttack → PetDamage：宠物这一击的伤害
         "SummonPet" => "PetHp",
         "PetAttack" => "PetDamage",
+        // ===== 新增的那批宠物效果 =====
+        // 「按生命值算的伙伴攻击」三个 Kind 各自一个变量名：一来卡面描述里的 {名字:diff()} 读得懂，
+        // 二来回读时**按变量名**就能直接认出是哪一种倍率（比去猜 lambda 里的表达式稳得多）。
+        "PetDamageByMaxHp" => "PetMaxHpDamage",
+        "PetDamageByCurHp" => "PetCurHpDamage",
+        "PetDamageByMissingHp" => "PetMissingHpDamage",
+        "PetHeal" => "PetHeal",
+        "PetLoseHp" => "PetHpLoss",
+        "PetGainMaxHp" => "PetMaxHp",
+        // 牺牲伙伴：收益是格挡还是伤害各一套名字（同一张牌上两条牺牲也能靠别名区分）
+        "PetSacrifice" => e.PetSacrificeGain == "Damage" ? "PetSacrificeDamage" : "PetSacrificeBlock",
+        "PetApplyPower" => "PetPower" + (e.PowerId ?? ""),
         _ => "Value",
     };
 
@@ -1340,7 +1353,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "MaxHp" => "MaxHp",
         "Gold" => "Gold",
         "ExtraResource" => "Stars",
-        // 本体没有 PetHp / PetDamage 这两个属性，只能走索引器（见 VarAccess）
+        // 本体没有 PetHp / PetDamage / PetMaxHpDamage … 这些属性，只能走索引器（见 VarAccess）
+        "SummonPet" or "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+            or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower" => "Value",
         _ => "Value",
     };
 
@@ -1372,7 +1387,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>某个效果在它所属模型里的变量名（没登记就退回默认名）。</summary>
-    internal static string VarNameOf(EffectSpec e, Dictionary<EffectSpec, string>? map) =>
+    public static string VarNameOf(EffectSpec e, Dictionary<EffectSpec, string>? map) =>
         map is not null && map.TryGetValue(e, out string? name) ? name : VarNameOf(e);
 
     /// <summary>
@@ -1438,11 +1453,167 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // （名字是 PetHp / PetDamage，卡面描述里的 {…:diff()} 与升级增量都按它走）
             "SummonPet" => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
             "PetAttack" => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
+            // ===== 新增的那批宠物效果 =====
+            // 「按生命值算的伙伴攻击」：必须用本体的**计算三件套**（见 CalcDamageVars），
+            // 缺任何一件都会在 CalculatedVar.GetExtraVar() 处抛 KeyNotFoundException。
+            "PetDamageByMaxHp" => CalcDamageVars(PetHpExpr("MaxHp")),
+            "PetDamageByCurHp" => CalcDamageVars(PetHpExpr("CurrentHp")),
+            "PetDamageByMissingHp" => CalcDamageVars(PetHpExpr("MissingHp")),
+            "PetHeal" => $"new HealVar({prefix}{Lit.Dec(e.Amount)})",
+            "PetLoseHp" => $"new HpLossVar({prefix}{Lit.Dec(e.Amount)})",
+            "PetGainMaxHp" => $"new MaxHpVar({prefix}{Lit.Dec(e.Amount)})",
+            "PetSacrifice" => PetSacrificeVarDecl(e, name),
+            // 给伙伴施加状态：和普通「施加增益/减益」同名会撞（DynamicVarSet 按名字去重，重名直接抛异常），
+            // 所以这里的变量名是 PetPower<PowerId>（回读也按这个名字把数值配回去）。
+            "PetApplyPower" => $"new PowerVar<{e.PowerId}>({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
             // 兜底：不认识的种类也用**唯一别名**（不能写死 "Value"，否则两条这种效果就会撞名 →
             // 本体 DynamicVarSet 抛 duplicate key 'Value' → 开新局直接崩（黑屏））
             _ => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
         };
     }
+
+    // ==================== 宠物效果（新增的那批）的动态变量 ====================
+
+    /// <summary>
+    /// 「伙伴的生命值」在**倍率 lambda 里**的写法（lambda 的第二参数就是那只宠物）。
+    ///
+    /// 为什么用 <c>pet</c> 这个名字：生成出来的 lambda 形如
+    /// <c>delegate(CardModel card, Creature? _) { Creature? pet = &lt;Pet&gt;Cmd.Get(card.Owner); return (pet != null) ? pet.MaxHp : 0; }</c>，
+    /// 三处（最大生命 / 当前生命 / 已损失）只有最后那个 <c>return</c> 表达式不同 —— 回读时也是按它区分三种 Kind。
+    /// </summary>
+    internal static string PetHpExpr(string mode) => mode switch
+    {
+        "CurrentHp" => "(decimal)pet.CurrentHp",
+        "MissingHp" => "(decimal)(pet.MaxHp - pet.CurrentHp)",
+        _ => "(decimal)pet.MaxHp",
+    };
+
+    /// <summary>三个「按生命值算的伙伴攻击」用的计算三件套：CalculationBase + ExtraDamage + CalculatedDamage。</summary>
+    internal static string CalcDamageVars(string petValueExpr) =>
+        "new CalculationBaseVar(0m), new ExtraDamageVar(1m), "
+        + "new CalculatedDamageVar(ValueProp.Move).WithMultiplier(" + PetMultiplierLambda(petValueExpr) + ")";
+
+    /// <summary>牺牲伙伴按生命值算格挡时的计算三件套：CalculationBase + CalculationExtra + CalculatedBlock。</summary>
+    internal static string CalcBlockVars(string petValueExpr) =>
+        "new CalculationBaseVar(0m), new CalculationExtraVar(1m), "
+        + "new CalculatedBlockVar(ValueProp.Move).WithMultiplier(" + PetMultiplierLambda(petValueExpr) + ")";
+
+    /// <summary>
+    /// 倍率 lambda。**必须是静态的**：本体 <c>CalculatedVar.cs:50-53</c> 一发现
+    /// <c>multiplierCalc.Target is AbstractModel</c> 就抛 <c>InvalidOperationException("Multiplier calc must be static!")</c>；
+    /// 写成匿名方法 <c>delegate(CardModel card, Creature? _)</c> 就不会捕获实例（<c>this</c>）→ Target 是 null。
+    /// 里面只用参数 <paramref name="petValueExpr"/> 里的 <c>card</c>（那只宠物用 <c>&lt;Pet&gt;Cmd.Get(card.Owner)</c> 查），
+    /// **绝不能**捕获任何局部变量 / 字段。
+    /// </summary>
+    internal static string PetMultiplierLambda(string petValueExpr) =>
+        "delegate(CardModel card, Creature? _) { "
+        + "Creature? pet = " + PetCmdExpr + ".Get(card.Owner); "
+        + "return (pet != null) ? " + petValueExpr + " : 0; }";
+
+    /// <summary>
+    /// 倍率 lambda 里的宠物类名占位。写进 CanonicalVars 那一刻并不知道是哪只，
+    /// 所以先写占位符，最后用 <see cref="PatchPetPlaceholder"/> 按**这条效果自己的**召唤物替换
+    /// （一张牌可以指多只宠物，所以必须逐条替换，不能全文替换）。
+    /// </summary>
+    internal const string PetCmdPlaceholder = "__PETCMD__";
+
+    private const string PetCmdExpr = PetCmdPlaceholder;
+
+    /// <summary>把占位符换成真正的那只宠物的命令助手（<c>&lt;Pet&gt;Cmd</c>）。</summary>
+    internal static string PatchPetPlaceholder(string code, string? petClassName)
+    {
+        if (!code.Contains(PetCmdPlaceholder, StringComparison.Ordinal)) return code;
+        string cmd = string.IsNullOrWhiteSpace(petClassName) ? "" : petClassName.Trim() + "Cmd";
+        return code.Replace(PetCmdPlaceholder, cmd.Length == 0 ? "PetCmd" : cmd);
+    }
+
+    /// <summary>牺牲伙伴的收益变量：固定值走普通 BlockVar / DamageVar，按生命值算走计算三件套。</summary>
+    private static string PetSacrificeVarDecl(EffectSpec e, string name)
+    {
+        bool block = e.PetSacrificeGain != "Damage";
+        if (e.PetSacrificeFormula == "Fixed")
+            return block
+                ? $"new BlockVar({Lit.Str(name)}, {Lit.Dec(e.Amount)}, ValueProp.Move)"
+                : $"new DamageVar({Lit.Str(name)}, {Lit.Dec(e.Amount)}, ValueProp.Move)";
+        string petExpr = e.PetSacrificeFormula == "CurHp"
+            ? PetHpExpr("CurrentHp")
+            : "(decimal)pet.MaxHp * " + Lit.Dec(e.PetSacrificeMultiplier);
+        return block ? CalcBlockVars(petExpr) : CalcDamageVars(petExpr);
+    }
+
+    /// <summary>
+    /// 这条效果「按生命值算收益」时用的是哪一套计算变量 —— 固定值返回 null。
+    /// 生成时写进注释标记（<c>// CET:PetFormula=…</c>），回读时照着认回来，
+    /// 不用去猜 lambda 里的表达式（宠物类名 / 公式都能认，宠物死了也照样认得出）。
+    /// </summary>
+    public static string? PetFormula(EffectSpec e)    {
+        if (e.Kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp")
+            return PetFormulaOfKind(e.Kind);
+        if (e.Kind != "PetSacrifice") return null;
+        return e.PetSacrificeFormula switch
+        {
+            "Fixed" => "fixed",
+            "CurHp" => "curhp",
+            _ => "maxhp",
+        };
+    }
+
+    private static string PetFormulaOfKind(string kind) => kind switch
+    {
+        "PetDamageByCurHp" => "curhp",
+        "PetDamageByMissingHp" => "missinghp",
+        _ => "maxhp",
+    };
+
+    /// <summary>
+    /// 这条效果的生成代码标记（回读用）。写在这条效果的**第一行**上（单行，回读好抓）。
+    ///
+    /// 为什么要标记：三个「按生命值算的伙伴攻击」的生成代码几乎一模一样（只有倍率 lambda 里
+    /// <c>pet.MaxHp</c> / <c>pet.CurrentHp</c> / <c>pet.MaxHp - pet.CurrentHp</c> 不同），
+    /// 「牺牲伙伴」的收益公式（固定 / 最大生命×倍率 / 当前生命）也藏在 CanonicalVars 里 ——
+    /// 回读时**不同步改就会静默丢配置**（本项目最容易踩的坑），所以生成时直接把这些信息写进注释。
+    /// </summary>
+    public static string MarkerText(EffectSpec e)
+    {        string? formula = PetFormula(e);
+        string kind = KindMarker(e);
+        if (formula is null)
+            // 给伙伴施加状态：把 PowerId 也写进标记（回读时不用去猜 Apply<T> 里的 T；
+            // 下回合生效时会写成 ForgeDelayed<T>，也只认我们标记里的这个）
+            return e.Kind == "PetApplyPower" && !string.IsNullOrWhiteSpace(e.PowerId)
+                ? $"{kind} CET:PetPower={e.PowerId!.Trim()}"
+                : kind;
+        string mul = e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "MaxHp"
+            ? " CET:PetMul=" + Lit.Dec(e.PetSacrificeMultiplier)
+            : "";
+        return $"{kind} CET:PetFormula={formula}{mul}";
+    }
+
+    /// <summary>回读用的效果种类标记名（几种变体各自一个，回读时一对一还原）。</summary>
+    internal static string KindMarker(EffectSpec e) => e.Kind switch
+    {
+        "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp" => "PetCalcAttack",
+        "PetSacrifice" => e.PetSacrificeGain == "Damage" ? "PetSacrificeDamage" : "PetSacrificeBlock",
+        _ => e.Kind,
+    };
+
+    /// <summary>把这些效果里「按生命值算收益」的那条找出来（一张牌最多一条：本体的计算变量名是固定的）。</summary>
+    internal static EffectSpec? CalculatedPetEffect(IEnumerable<EffectSpec> effects) =>
+        effects.FirstOrDefault(x => PetFormula(x) is not null);
+
+    /// <summary>这个效果的 CanonicalVars 声明里会不会出现宠物命令（&lt;Pet&gt;Cmd）—— 只有「按生命值算」的那几种会。</summary>
+    internal static bool CanonicalVarNeedsPetCmd(EffectSpec e) => PetFormula(e) is not null;
+
+    /// <summary>
+    /// 这条效果「需要**已经召唤出来**的那只宠物」：宠物不在场时它整条跳过（生成 <c>if (__pet is not null)</c>），
+    /// 而且整张牌跟着打不出去 / 描红框。
+    ///
+    /// <c>SummonPet</c> **不算** —— 它自己就会召（没有也能打，Summon 内部新建一只）。
+    /// </summary>
+    internal static bool NeedsExistingPet(EffectSpec e) =>
+        e.Kind is "PetAttack"
+            or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+            or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower"
+            or "PetGuardOn" or "PetGuardOff";
 
     /// <summary>
     /// 把「对某个生物做一件事」按作用对象展开（格挡 / 回复生命 / 失去生命 / 最大生命 现在支持打敌人）。
@@ -1493,9 +1664,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
     }
 
+    /// <summary>
+    /// 这套「伙伴攻击」打的是**敌人**（attacker 是宠物），所以卡牌要变成需要选目标的那种。
+    /// 三个按生命值算的伙伴攻击同样如此（Targeting(cardPlay.Target) / TargetingAllOpponents）。
+    /// </summary>
+    internal static bool PetAttackKind(string kind) =>
+        kind is "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp";
+
     private static bool NeedsTargetNullCheck(CardSpec c) =>
         c.Effects.Any(e => e.TargetSide == "Enemy"
-            && e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "PetAttack");
+            && (e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+                || PetAttackKind(e.Kind)
+                || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage")));
 
     // ==================== 卡牌 ====================
     /// <summary>
@@ -1521,8 +1701,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
         var cardVars = VarNamesOf(c.Effects);
-        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, cardVars)},");
+        // 「按生命值算」的宠物效果：倍率 lambda 里要写 <Pet>Cmd.Get(card.Owner)，但 CanonicalVars
+        // 声明那一刻还不知道是哪只（一张牌可以同时指向两只不同的宠物）→ 先写占位符，
+        // 这里按**每条效果自己的**召唤物逐个替换（不能全文替换，否则多只宠物会串）。
+        bool needsPetCmd = c.Effects.Any(x => !HasNoDynamicVar(x) && CanonicalVarNeedsPetCmd(x));
+        bool anyPetCmdMissing = false;
+        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x)))
+        {
+            string decl = VarDeclaration(e, cardVars);
+            if (decl.Contains(PetCmdPlaceholder, StringComparison.Ordinal))
+            {
+                string? petCls = PetGen.Resolve(p, e.PetSummon)?.ClassName;
+                anyPetCmdMissing |= petCls is null;
+                decl = PatchPetPlaceholder(decl, petCls);
+            }
+            w.Line($"    {decl},");
+        }
         w.Line("];");
+        if (needsPetCmd && anyPetCmdMissing)
+            w.Line("// ⚠ 上面这条「按生命值算」的宠物效果没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」"
+                + "（校验器会把这种配置拦住，不会真的生成出来）");
 
         // 本体卡标签（CardTag）：行为无关的元数据，别的模型拿它查牌。
         // 最关键的就是 Strike / Defend —— 本体那些「升级你的初始打击 / 防御」「只对打击牌生效」的
@@ -1580,6 +1778,23 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 老存档用的是「整张牌一个条件」（c.Condition），也一起算进来（只能有一个 IsPlayable，所以必须合并写）。
         var gateConds = new List<string>();
         var glowConds = new List<string>();
+        // 「召唤物卡牌」：一张卡只要有「需要已召唤宠物」的效果（SummonPet 不算 —— 它自己会召），
+        // 就生成两句守卫：没伙伴时这张牌打不出去 + 描红框提示（本体 Osty 的牌就是这么做的：
+        // BoneShards / Poke / Sacrifice … 全是 ShouldGlowRedInternal => base.Owner.IsOstyMissing）。
+        // 这里的「有没有伙伴」= <Pet>Cmd.Get(base.Owner) != null（Get 会判活，死了也算没有）。
+        var petNeeds = new List<string>();
+        foreach (var e in c.Effects)
+        {
+            if (!NeedsExistingPet(e)) continue;
+            var def = PetGen.Resolve(p, e.PetSummon);
+            if (def is null) continue;   // 校验器会拦住（找不到召唤物），这里不生成取不到的类名
+            string need = $"{def.ClassName}Cmd.Get(base.Owner) != null";
+            if (!petNeeds.Contains(need, StringComparer.Ordinal)) petNeeds.Add(need);
+        }
+        // 条件都用「满足才算数」的写法（c.Condition 生成出来的就是「满足」表达式），
+        // 所以伙伴守卫也用 != null，一起 && 起来即可：没伙伴 → 打不出去 / 描红框。
+        gateConds.AddRange(petNeeds);
+        glowConds.AddRange(petNeeds);
         // 「指定敌人」这种条件要等玩家选了目标才知道结果，写不进 IsPlayable / 描金边（那时还没选目标）。
         // 这类条件只在效果那一层生效（包住对应的效果）。
         static bool NeedsPlayTarget(ConditionSpec? c) =>
@@ -1619,6 +1834,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 条件都满足时给牌描金边（本体「取回 / 死亡之门」就是这么提示玩家的）
             w.Line($"protected override bool ShouldGlowGoldInternal => {string.Join(" && ", glowConds.Select(x => $"({x})"))};");
         }
+        // 缺伙伴时描红框提示（本体的 Osty 牌全是这个写法：base.Owner.IsOstyMissing）
+        if (petNeeds.Count > 0)
+            w.Line($"protected override bool ShouldGlowRedInternal => {string.Join(" || ", petNeeds.Select(x => $"!({x})"))};");
 
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
         // 自定义关键词也走这一段（文本来自我们写进本体 card_keywords 表的键）
@@ -1664,10 +1882,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 攻击者不存在的话 AttackCommand 直接抛 InvalidOperationException。
         // 现在是**列表**：一张牌的效果可以分别指向不同的召唤物，所以按「这张牌用到的每一只」各查一次，
         // 变量名按宠物类名取（__<宠物类名首字母小写>）。
-        // 注意：只有「伙伴攻击」才需要这个变量；纯召唤牌不声明它（否则生成代码里会留一个没用到的局部变量，
-        // 白挨一条编译警告）。
+        // 注意：只有「需要已经召唤出来的那只」的效果才需要这个变量（见 NeedsExistingPet）；
+        // 纯召唤牌不声明它（否则生成代码里会留一个没用到的局部变量，白挨一条编译警告）。
         var petLookup = new Dictionary<string, string>(StringComparer.Ordinal);      // 宠物类名 → 局部变量名
-        foreach (var e in c.Effects.Where(x => x.Kind == "PetAttack"))
+        foreach (var e in c.Effects.Where(NeedsExistingPet))
         {
             var def = PetGen.Resolve(p, e.PetSummon);
             if (def is null || petLookup.ContainsKey(def.ClassName)) continue;
@@ -1697,7 +1915,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             string? cond = EffectConditionGuard(e, CondCtx.Card, inOnPlay: true, chanceSlices: cardChanceSlices);
             bool hasGuard = cond is not null;
-            string? petVar = e.Kind == "PetAttack" && PetGen.Resolve(p, e.PetSummon) is { } pd
+            // 需要「已经召唤出来的那只」的效果（伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人挨打…）：
+            // 宠物不在场时**安全跳过这一条**（不抛异常，也不让整张牌失败）。
+            // 变量在 OnPlay 开头就查好了（每个用到的那只各一次），这里只判空。
+            string? petVar = NeedsExistingPet(e) && PetGen.Resolve(p, e.PetSummon) is { } pd
                 ? petLookup.GetValueOrDefault(pd.ClassName)
                 : null;
             bool petGuard = petVar is not null;
@@ -1726,8 +1947,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             w.Line()
              .Open("protected override void OnUpgrade()");
+            // 「按生命值算」的宠物效果（三个伙伴攻击 / 牺牲伙伴）的升级增量要写到 **CalculationBase** 上：
+            // 它们的 CanonicalVars 里那个 CalculatedDamage/CalculatedBlock 是**固定名字**的（本体的
+            // DynamicVars.CalculatedDamage 是按名字取的），升级只能抬 CalculationBase（框架会自动重算预览）。
+            // 一张牌最多一条这种效果（校验器会拦住第二条），但求稳还是把增量**累加**起来写一次。
+            decimal calcBaseDelta = 0m;
             foreach (var e in upgradeable)
+            {
+                if (CanonicalVarNeedsPetCmd(e)) { calcBaseDelta += e.UpgradeAmount; continue; }
                 w.Line($"base.DynamicVars[{Lit.Str(VarNameOf(e, cardVars))}].UpgradeValueBy({Lit.Dec(e.UpgradeAmount)});");
+            }
+            if (calcBaseDelta != 0m)
+                w.Line($"base.DynamicVars.CalculationBase.UpgradeValueBy({Lit.Dec(calcBaseDelta)});"
+                    + "   // 「按生命值算」的宠物效果：升级加的是固定加值（最大生命/当前生命那部分照旧跟着宠物走）");
             if (costChange)
             {
                 // 改费用用的是本体自己的办法：OnUpgrade 里调用 EnergyCost.UpgradeBy(增量)
@@ -1749,8 +1981,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         // 能打敌人的效果（伤害 / 状态 / 格挡 / 回血 / 掉血 / 最大生命）决定这张牌的 TargetType
         // 「伙伴攻击」同理：打的是敌人（attacker 是宠物），卡牌也要变成需要选目标的那种。
+        // 「牺牲伙伴」收益是伤害时同理（生成的是 .Targeting(cardPlay.Target)），收益是格挡时不算。
         static bool HitsEnemy(EffectSpec e) =>
-            e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "PetAttack";
+            e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            || PetAttackKind(e.Kind)
+            || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
         if (c.Effects.Any(e => HitsEnemy(e) && e.TargetSide == "Enemy")) return "AnyEnemy";
         if (c.Effects.Any(e => HitsEnemy(e) && e.TargetSide == "AllEnemies")) return "AllEnemies";
@@ -1919,6 +2154,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 本体的 DynamicVarSet 会直接抛 DynamicVarSet contains duplicate key 'Value'
         //（发生在构造卡牌时 → 开新局就崩、黑屏，实测踩过）。
         or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "CardReward"
+        // 「伙伴替主人挨打」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
+        // 否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)（两条就撞名 → 开新局崩）
+        or "PetGuardOn" or "PetGuardOff"
         // 额外资源量：只有「正数获得」才声明变量（花费走 CanonicalStarCost，不占变量）
         || (e.Kind == "ExtraResource" && e.Amount <= 0)
         // 召唤伙伴：数值填 0 = 用「召唤物」页配置的血量（生成时直接读那只的常量，不声明变量）。
@@ -1973,7 +2211,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static void EmitCardEffect(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, string? effectComment = null) =>
-        EmitRepeated(w, e, x => EmitCardEffectOnce(x, p, e, useX, varMap, petVar, effectComment), useX);
+        EmitRepeated(w, e, x =>
+        {
+            // 宠物类效果：在这条效果的**第一行**写一行标记（单行，回读按它认种类与公式，见 MarkerText）
+            if (IsPetKindForMarker(e.Kind))
+                x.Line($"// CET:PetEffect={MarkerText(e)}");
+            EmitCardEffectOnce(x, p, e, useX, varMap, petVar, effectComment);
+        }, useX);
+
+    /// <summary>要不要写 <c>// CET:PetEffect=…</c> 标记（新增的那批宠物效果都要，SummonPet / PetAttack 保持原样）。</summary>
+    internal static bool IsPetKindForMarker(string kind) =>
+        kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+            or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower"
+            or "PetGuardOn" or "PetGuardOff";
 
     private static void EmitCardEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, string? effectComment = null)
@@ -2033,6 +2283,42 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "PetAttack":
                 EmitPetAttack(w, e, p, petVar ?? "__pet", amt, useX);
+                break;
+
+            // ===== 新增的那批宠物效果（都要「已经召唤出来的那只」，外面已经包了 if (pet != null)）=====
+            // 三个按生命值算的伙伴攻击：用本体攻击链 + 计算变量三件套；attacker 换成宠物。
+            case "PetDamageByMaxHp":
+            case "PetDamageByCurHp":
+            case "PetDamageByMissingHp":
+                EmitPetCalculatedAttack(w, e, p, petVar ?? "__pet", useX);
+                break;
+
+            case "PetHeal":
+                EmitPetHeal(w, e, petVar ?? "__pet", amt);
+                break;
+
+            case "PetLoseHp":
+                EmitPetLoseHp(w, e, petVar ?? "__pet", amt);
+                break;
+
+            case "PetGainMaxHp":
+                EmitPetGainMaxHp(w, e, petVar ?? "__pet", amt);
+                break;
+
+            case "PetSacrifice":
+                EmitPetSacrifice(w, e, p, petVar ?? "__pet", varMap, useX);
+                break;
+
+            case "PetApplyPower":
+                EmitPetApplyPower(w, e, petVar ?? "__pet", amt);
+                break;
+
+            case "PetGuardOn":
+                EmitPetGuard(w, p, petVar ?? "__pet", on: true);
+                break;
+
+            case "PetGuardOff":
+                EmitPetGuard(w, p, petVar ?? "__pet", on: false);
                 break;
 
             case "Block":
@@ -2319,6 +2605,200 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
     }
 
+    // ==================== 新增的那批宠物效果（不需要任何补丁） ====================
+    //
+    // 共同点：都要求「宠物已经召唤出来且活着」—— 调用处外面已经包了 if (pet != null)，
+    // 所以这里不再重复判空（也**不能**再写一行 `Creature? pet = …`：那会和外面的同名变量冲突 → CS0136）。
+    // 「需要已召唤宠物」的整张牌还会生成 IsPlayable / ShouldGlowRedInternal（见 CardSource）。
+
+    /// <summary>
+    /// 三个「按生命值算的伙伴攻击」：<c>DamageCmd.Attack(base.DynamicVars.CalculatedDamage)</c>。
+    ///
+    /// 为什么传 CalculatedDamageVar 而不是先算出数字：走这条路本体的 ModifyDamage / 力量 / 虚弱 /
+    /// 附魔都会照常作用在**宠物**身上（Attacker 已经被 FromPetAttacker 换成宠物）。
+    /// 为什么不用 <c>.FromCard(this, cardPlay)</c> 之后直接 Attacker？—— FromCard 会把 Attacker 设成玩家，
+    /// 必须再用 FromPetAttacker 盖掉，次序不能反（本体 AttackCommand.cs:216-223 校验 Attacker 已设置就抛）。
+    /// </summary>
+    private static void EmitPetCalculatedAttack(CodeWriter w, EffectSpec e, CharacterProfile p, string petVar, bool useX)
+    {
+        var def = PetGen.Resolve(p, e.PetSummon);
+        if (def is null)
+        {
+            w.Line($"// ⚠ 这条「{EffectCatalog.FindKind(e.Kind).Display}」没有可用的召唤物{PetMissingHint(e.PetSummon)}"
+                + "：到「召唤物」页添加一只并勾上「启用」");
+            return;
+        }
+
+        string formulaZh = e.Kind switch
+        {
+            "PetDamageByCurHp" => "当前生命值",
+            "PetDamageByMissingHp" => "已损失的生命值",
+            _ => "最大生命值",
+        };
+        string hits = RepeatExpr(e, useX);
+        bool multi = (useX && e.RepeatIsX) || e.RepeatCount > 1;
+        w.Line($"// 伤害 = 伙伴{def.DisplayName}的{formulaZh}（由 CalculatedDamage 这个计算变量在本体里算）");
+
+        switch (e.TargetSide)
+        {
+            case "AllEnemies":
+                w.Line("await DamageCmd.Attack(base.DynamicVars.CalculatedDamage)")
+                 .Indent().Line(".FromCard(this, cardPlay)          // 来源 = 这张牌（攻击历史与 hook 都正常）")
+                 .Line(".TargetingAllOpponents(base.CombatState)")
+                 .Line($".FromPetAttacker({petVar})          // 攻击者换成{def.DisplayName}")
+                 .Line(".WithAttackerAnim(\"Attack\", 0.3f)");
+                if (multi) w.Line($".WithHitCount({hits})");
+                w.Line(".WithHitFx(\"vfx/vfx_attack_blunt\", null, \"blunt_attack.mp3\")")
+                 .Line(".Execute(choiceContext);").Dedent().Line();
+                break;
+
+            case "RandomEnemies":
+                w.Line("await DamageCmd.Attack(base.DynamicVars.CalculatedDamage)")
+                 .Indent().Line(".FromCard(this, cardPlay)")
+                 .Line($".TargetingRandomOpponents(base.CombatState, allowDuplicates: {(e.AllowDuplicates ? "true" : "false")})")
+                 .Line($".FromPetAttacker({petVar})")
+                 .Line(".WithAttackerAnim(\"Attack\", 0.3f)")
+                 .Line($".WithHitCount({hits})")
+                 .Line(".WithHitFx(\"vfx/vfx_attack_blunt\", null, \"blunt_attack.mp3\")")
+                 .Line(".Execute(choiceContext);").Dedent().Line();
+                break;
+
+            default:
+                w.Line("await DamageCmd.Attack(base.DynamicVars.CalculatedDamage)")
+                 .Indent().Line(".FromCard(this, cardPlay)")
+                 .Line(".Targeting(cardPlay.Target)")
+                 .Line($".FromPetAttacker({petVar})");
+                if (multi) w.Line($".WithHitCount({hits})");
+                w.Line(".WithAttackerAnim(\"Attack\", 0.3f)")
+                 .Line(".WithHitFx(\"vfx/vfx_attack_blunt\", null, \"blunt_attack.mp3\")")
+                 .Line(".Execute(choiceContext);").Dedent().Line();
+                break;
+        }
+    }
+
+    /// <summary>治疗伙伴：<c>CreatureCmd.Heal(pet, Heal.BaseValue)</c>（升级增量照常生效）。</summary>
+    private static void EmitPetHeal(CodeWriter w, EffectSpec e, string petVar, string amt)
+    {
+        _ = e;
+        w.Line($"await CreatureCmd.Heal({petVar}, base.DynamicVars.Heal.BaseValue);");
+    }
+
+    /// <summary>
+    /// 伙伴失去生命：走 <c>CreatureCmd.Damage</c> + <c>ValueProp.Unblockable | Unpowered | Move</c>
+    /// （本体 <c>DamageProps.cardHpLoss</c> 就是这个组合）—— 不吃格挡、不吃力量，dealer 是主人、来源是这张牌。
+    /// </summary>
+    private static void EmitPetLoseHp(CodeWriter w, EffectSpec e, string petVar, string amt)
+    {
+        _ = e;
+        w.Line($"await CreatureCmd.Damage(choiceContext, {petVar}, base.DynamicVars.HpLoss.BaseValue,")
+         .Indent().Line("ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move,   // 本体 DamageProps.cardHpLoss")
+         .Line("base.Owner.Creature, this, cardPlay);").Dedent();
+    }
+
+    /// <summary>
+    /// 伙伴最大生命 +N。注意本体 <c>GainMaxHp</c> 内部最后会 <c>Heal</c> 等量 ——
+    /// 所以**当前生命也会跟着涨**（卡面描述里写明了，免得玩家以为只加上限）。
+    /// </summary>
+    private static void EmitPetGainMaxHp(CodeWriter w, EffectSpec e, string petVar, string amt)
+    {
+        _ = e;
+        w.Line($"await CreatureCmd.GainMaxHp({petVar}, base.DynamicVars.MaxHp.BaseValue);"
+            + "   // 本体内部最后会 Heal 等量：当前生命同时回复");
+    }
+
+    /// <summary>
+    /// 牺牲伙伴：**先算收益、再杀宠物**（顺序绝不能反 —— 宠物死了就取不到它的生命值，
+    /// 而且 CalculatedBlock/CalculatedDamage 是在宠物身上算的）。
+    /// 收益是格挡：<c>CreatureCmd.GainBlock(主人, 收益, …)</c>；
+    /// 收益是伤害：先把收益算成数字存下来，再 <c>CreatureCmd.Kill</c>，最后用 <c>DamageCmd.Attack(数字)</c> 打出去。
+    /// </summary>
+    private static void EmitPetSacrifice(CodeWriter w, EffectSpec e, CharacterProfile p, string petVar,
+        Dictionary<EffectSpec, string>? varMap, bool useX)
+    {
+        var def = PetGen.Resolve(p, e.PetSummon);
+        if (def is null)
+        {
+            w.Line($"// ⚠ 这条「牺牲伙伴」没有可用的召唤物{PetMissingHint(e.PetSummon)}"
+                + "：到「召唤物」页添加一只并勾上「启用」");
+            return;
+        }
+
+        bool block = e.PetSacrificeGain != "Damage";
+        string what = block ? "格挡" : "伤害";
+        string valZh = e.PetSacrificeFormula switch
+        {
+            "Fixed" => $"固定 {e.Amount:0.##} 点",
+            "CurHp" => $"等于{def.DisplayName}的当前生命值",
+            _ => $"等于{def.DisplayName}的最大生命 × {e.PetSacrificeMultiplier:0.##}",
+        };
+        w.Line($"// 牺牲{def.DisplayName}换{what}：收益 {valZh}（先算收益、再杀宠物 —— 顺序反了就取不到生命值）");
+
+        // 收益是固定值时不需要计算变量（普通 BlockVar / DamageVar），直接读变量值即可。
+        bool fixedFormula = e.PetSacrificeFormula == "Fixed";
+        string gainExpr = fixedFormula
+            ? "base.DynamicVars[" + Lit.Str(VarNameOf(e, varMap)) + "].BaseValue"
+            : (block
+                ? "base.DynamicVars.CalculatedBlock.Calculate(cardPlay.Target)"
+                : "base.DynamicVars.CalculatedDamage.Calculate(cardPlay.Target)");
+
+        if (block)
+        {
+            w.Line($"decimal gain = {gainExpr};");
+            w.Line($"await CreatureCmd.Kill({petVar});");
+            w.Line("await CreatureCmd.GainBlock(base.Owner.Creature, gain, "
+                + (fixedFormula ? "ValueProp.Move" : "base.DynamicVars.CalculatedBlock.Props") + ", cardPlay);");
+        }
+        else
+        {
+            w.Line($"decimal dmg = {gainExpr};");
+            w.Line($"await CreatureCmd.Kill({petVar});");
+            w.Line("await DamageCmd.Attack(dmg)")
+             .Indent().Line(".FromCard(this, cardPlay)")
+             .Line(".Targeting(cardPlay.Target)")
+             .Line(".WithHitFx(\"vfx/vfx_attack_blunt\", null, \"blunt_attack.mp3\")")
+             .Line(".Execute(choiceContext);").Dedent();
+        }
+    }
+
+    /// <summary>
+    /// 给伙伴施加状态：<c>PowerCmd.Apply&lt;{PowerId}&gt;(choiceContext, pet, 层数, base.Owner.Creature, this)</c>。
+    /// 下回合生效时走现有的「延迟状态」类（<c>ForgeDelayed&lt;PowerId&gt;</c>）挂在宠物身上，
+    /// 那个类自己的钩子里会把真正的状态施加到**它的主人**（也就是这只宠物）上 —— 和普通「下回合生效」一致。
+    /// </summary>
+    private static void EmitPetApplyPower(CodeWriter w, EffectSpec e, string petVar, string amt)
+    {
+        _ = amt;
+        // 数值**不**用外面传来的表达式：PetApplyPower 的变量名是 PetPower<PowerId>（不是本体的属性），
+        // 这里按名字取 —— 回读也照这一行把数值配回去（升级增量同样生效）。
+        string calc = $"base.DynamicVars[{Lit.Str(VarNameOf(e))}].BaseValue";
+        if (e.NextTurn)
+        {
+            w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e)}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
+            return;
+        }
+        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
+    }
+
+    /// <summary>
+    /// 伙伴替主人挨打 开 / 关：用我们**自己的共用守卫类** <c>ForgePetGuardianPower</c>
+    /// （不是本体的 DieForYouPower —— 那个是 Osty 专用；多只宠物共用这一个类、由它自己仲裁谁承担）。
+    ///
+    /// 这里不再判 <c>HasPower&lt;T&gt;()</c>：宠物已经判活（外面那层 <c>if (pet != null)</c>），
+    /// 一只活着的宠物要么已经挂着守卫（PowerStackType.Single 重复 Apply 不会多一个实例），
+    /// 要么没挂 —— 直接 Apply / Remove 都是对的，而且生成的代码短一半。
+    /// 关的时候用 <c>PowerCmd.Remove&lt;T&gt;(Creature)</c>（本体签名，核实过：<c>PowerCmd.cs:282</c>）。
+    /// </summary>
+    private static void EmitPetGuard(CodeWriter w, CharacterProfile p, string petVar, bool on)
+    {
+        string power = PetGen.GuardianPowerClassName;
+        if (on)
+            w.Line($"await PowerCmd.Apply<{power}>(choiceContext, {petVar}, 1m, null, null);"
+                + "   // 共用守卫：多只都挂时由它自己仲裁（列表里第一只活着的承担）");
+        else
+            w.Line($"await PowerCmd.Remove<{power}>({petVar});"
+                + "   // 取消替主人挨打：多只都挂着时只摘这一只，剩下那只（若有）继续承担");
+    }
+
     // ==================== 下回合生效的延迟 Power ====================
     internal static string DelayedPowerClassName(EffectSpec e) => "ForgeDelayed" + (e.PowerId ?? "Power");
 
@@ -2578,8 +3058,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             // 「伙伴攻击」只能用在卡牌上：遗物没有「玩家选中的目标」，宠物该打谁说不清，所以不静默丢掉。
+            // 新增的那批宠物效果（治疗/失去生命/最大生命/牺牲/施加状态/守卫开关）技术上只要拿到 Player
+            // 就能做，但**本档只支持卡牌**（用户要求召唤物卡牌这一档只做卡牌）—— 一并给一句说明，不静默丢。
             case "PetAttack":
-                Warn(w, e, "（遗物没有「玩家选中的目标」，宠物该打谁说不清 —— 请把「伙伴攻击」放到卡牌上）");
+            case "PetDamageByMaxHp":
+            case "PetDamageByCurHp":
+            case "PetDamageByMissingHp":
+            case "PetHeal":
+            case "PetLoseHp":
+            case "PetGainMaxHp":
+            case "PetSacrifice":
+            case "PetApplyPower":
+            case "PetGuardOn":
+            case "PetGuardOff":
+                Warn(w, e, "（遗物没有「玩家选中的目标」，而且这一档的宠物效果只支持卡牌 —— 请把它放到召唤物卡牌上）");
                 break;
 
             case "Block":
@@ -2880,7 +3372,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "PetAttack":
-                Warn(w, e, "（「伙伴攻击」只支持卡牌 —— 药水没有「玩家选中的目标」，宠物该打谁说不清）");
+            case "PetDamageByMaxHp":
+            case "PetDamageByCurHp":
+            case "PetDamageByMissingHp":
+            case "PetHeal":
+            case "PetLoseHp":
+            case "PetGainMaxHp":
+            case "PetSacrifice":
+            case "PetApplyPower":
+            case "PetGuardOn":
+            case "PetGuardOff":
+                Warn(w, e, "（这一档的宠物效果只支持卡牌 —— 药水没有「玩家选中的目标」，请改用召唤物卡牌）");
                 break;
         }
     }

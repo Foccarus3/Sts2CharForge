@@ -181,7 +181,15 @@ public static class PetGen
     /// 只看卡牌：遗物上的「伙伴攻击」本来就生成不了（没有玩家选中的目标，生成时会被忽略）。
     /// </summary>
     public static bool UsesAttackExtension(CharacterProfile p) =>
-        IsActive(p) && p.Cards.Any(c => c.Effects.Any(e => e.Kind == "PetAttack"));
+        IsActive(p) && p.Cards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)));
+
+    /// <summary>
+    /// 哪些效果是「由宠物发起攻击」（都会生成 <c>.FromPetAttacker(...)</c>）。
+    /// 注意：新增任何一种宠物攻击效果时，**必须**往这里加 —— 漏了会让 UsesAttackExtension 少生成
+    /// <c>cs/PetAttackExtensions.cs</c>，生成的卡引用不存在的扩展方法 → CS1061（踩过一次）。
+    /// </summary>
+    public static bool IsAttackKind(string? kind) =>
+        kind is "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp";
 
     // ==================== 视觉 ====================
 

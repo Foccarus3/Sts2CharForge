@@ -376,6 +376,10 @@ public static class ProjectRecovery
         }
 
         ParseCardCondition(card, text, nameToPowerId, result, cls);
+        // 「召唤物卡牌」标记：这张牌里有任何宠物类效果（除「召唤伙伴」—— 那只是召出来，不算「宠物做的事」）
+        // 就认为它是召唤物卡。老工程里没这个标记（那时还没有这个字段），所以按内容推断，
+        // 免得恢复出来的卡在「召唤物卡牌」页里看不到。
+        card.IsPetCard = card.Effects.Any(e => EffectCatalog.IsPetKind(e.Kind) && e.Kind != "SummonPet");
         return card;
 
         static void p_xPlus(CardSpec c) => c.XPlusOnUpgrade = true;
@@ -383,6 +387,26 @@ public static class ProjectRecovery
 
     /// <summary>CanonicalVars 里声明的数值变量（顺序 = 效果顺序）。</summary>
     private sealed record Var(string Kind, string? PowerId, decimal Amount, bool IsCards, bool IsEnergy);
+
+    /// <summary>
+    /// 这个变量是「按生命值算」的宠物效果留下来的计算变量（CalculationBase / CalculationExtra / ExtraDamage / CalculatedBlock）。
+    ///
+    /// 为什么要单独挑出来：那几条效果在 CanonicalVars 里会多出 2~3 个条目，
+    /// 而 <see cref="ParseEffects"/> 是按顺序（<see cref="NextVar"/>）把变量配给效果的 ——
+    /// 不挑出来的话，后面所有效果的变量都会错位一格（数值全串到别的效果上）。
+    /// </summary>
+    private static bool IsCalcVar(Var v) => v.Kind is
+        "CalculationBase" or "CalculationExtra" or "ExtraDamage" or "CalculatedBlock" or "CalculatedDamage";
+
+    /// <summary>按名字找计算变量的值（取出后就从 <paramref name="vars"/> 里删掉，免得被别的效果按顺序捡走）。</summary>
+    private static decimal? TakeCalcVar(List<Var> vars, string kind)
+    {
+        int at = vars.FindIndex(v => string.Equals(v.Kind, kind, StringComparison.Ordinal));
+        if (at < 0) return null;
+        decimal value = vars[at].Amount;
+        vars.RemoveAt(at);
+        return value;
+    }
 
     private static List<Var> ParseVars(string text)
     {
@@ -413,6 +437,20 @@ public static class ProjectRecovery
         IReadOnlyList<string>? petClassNames = null)
     {
         petClassNames ??= Array.Empty<string>();
+        // 「按生命值算」的宠物效果（三个伙伴攻击 / 牺牲伙伴）会往 CanonicalVars 里多写 2~3 个计算变量，
+        // 那些变量**不能**按顺序参与 NextVar（否则后面所有效果的数值全错位）。
+        // 这里先把它们整组摘出来（同一条效果会连着写 CalculationBase + ExtraDamage + CalculatedDamage），
+        // 剩下的变量顺序就和「普通效果」一一对应了。
+        var calcVars = new List<Var>();
+        {
+            var rest = new List<Var>(vars.Count);
+            foreach (var v in vars)
+            {
+                if (IsCalcVar(v)) { calcVars.Add(v); continue; }
+                rest.Add(v);
+            }
+            vars = rest;
+        }
         var lines = body.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
         var frames = new List<Block>();          // 当前所在的块（循环 / 条件），按嵌套顺序
         int varIdx = 0;
@@ -424,11 +462,92 @@ public static class ProjectRecovery
         string? LoopTop() => frames.LastOrDefault(f => f.IsLoop)?.Count;
         ConditionSpec? CondTop() => frames.LastOrDefault(f => f.Cond is not null)?.Cond;
 
+        // 新增的那批宠物效果：生成时会写一行 `// CET:PetEffect=<Kind> CET:PetFormula=…`，
+        // 这里先记下来，等真正那条语句出现时再按它还原（见 PetEffectFromMarker）。
+        string? pendingPetMarker = null;
+        int pendingPetMultiplier = 0;
+
         // 收尾：把「每条效果自己的条件」带上（生成器是用一层 if 包的）
         void Done(EffectSpec e)
         {
             e.Condition = CondTop() ?? new ConditionSpec();
             into.Add(e);
+            pendingPetMarker = null;
+        }
+
+        // 「按生命值算」的宠物攻击 / 牺牲伙伴的收益：都用 `base.DynamicVars.CalculatedDamage` /
+        // `CalculatedBlock` 取（本体那两个计算变量是固定名字的），所以这里按名字从 calcVars 里捞。
+        decimal CalcAmount(string kind) => TakeCalcVar(calcVars, kind) ?? 0m;
+
+        // 牺牲伙伴那条效果里的宠物（`await CreatureCmd.Kill(__uiCheckPet);`）。
+        // 生成时机：收益是伤害时 Kill 在 Attack **之前**；收益是格挡时 Kill 在 GainBlock **之前**（当前行之后）。
+        // 所以两个方向各扫几行（只在这个效果的邻域里找，不会串到别的效果上）。
+        string? KillPetVar()
+        {
+            for (int k = i - 1; k >= 0 && k >= i - 6; k--)
+            {
+                string? v = Match(lines[k].Trim(), @"CreatureCmd\.Kill\((\w+)\)");
+                if (v is not null) return v;
+            }
+            for (int k = i; k < lines.Count && k <= i + 8; k++)
+            {
+                string? v = Match(lines[k].Trim(), @"CreatureCmd\.Kill\((\w+)\)");
+                if (v is not null) return v;
+            }
+            return null;
+        }
+
+        // 新增的那批宠物效果：按标记注释还原（标记里带着种类 + 公式 + 倍率，见 CSharpCodeGen.MarkerText）。
+        // 返回 null 表示这条语句认不出来（调用处会记进 Unparsed，不静默丢）。
+        EffectSpec? PetEffectFromMarker(string? petVarName, out string? why)
+        {
+            why = null;
+            if (pendingPetMarker is null)
+            {
+                why = "（生成的代码里没写 // CET:PetEffect= 标记）";
+                return null;
+            }
+            string kindId = Match(pendingPetMarker, @"CET:PetEffect=(\w+)") ?? "";
+            string formula = Match(pendingPetMarker, @"CET:PetFormula=(\w+)") ?? "";
+            var e = new EffectSpec();
+            switch (kindId)
+            {
+                case "PetCalcAttack":
+                    e.Kind = formula switch
+                    {
+                        "curhp" => "PetDamageByCurHp",
+                        "missinghp" => "PetDamageByMissingHp",
+                        _ => "PetDamageByMaxHp",
+                    };
+                    e.Amount = CalcAmount("CalculationBase");
+                    break;
+                case "PetSacrificeBlock":
+                case "PetSacrificeDamage":
+                    e.Kind = "PetSacrifice";
+                    e.PetSacrificeGain = kindId == "PetSacrificeDamage" ? "Damage" : "Block";
+                    e.PetSacrificeFormula = formula switch
+                    {
+                        "fixed" => "Fixed",
+                        "curhp" => "CurHp",
+                        _ => "MaxHp",
+                    };
+                    if (pendingPetMultiplier > 0) e.PetSacrificeMultiplier = pendingPetMultiplier;
+                    break;
+                case "PetHeal": e.Kind = "PetHeal"; break;
+                case "PetLoseHp": e.Kind = "PetLoseHp"; break;
+                case "PetGainMaxHp": e.Kind = "PetGainMaxHp"; break;
+                case "PetApplyPower":
+                    e.Kind = "PetApplyPower";
+                    e.PowerId = Match(pendingPetMarker, @"CET:PetPower=(\w+)");
+                    break;
+                case "PetGuardOn": e.Kind = "PetGuardOn"; break;
+                case "PetGuardOff": e.Kind = "PetGuardOff"; break;
+                default:
+                    why = $"(认不出来的宠物效果标记「{kindId}」)";
+                    return null;
+            }
+            if (petVarName is not null) e.PetSummon = PetClassOfVar(petVarName, petClassNames);
+            return e;
         }
 
         while (i < lines.Count)
@@ -436,7 +555,17 @@ public static class ProjectRecovery
             string raw = lines[i];
             string line = raw.Trim();
             i++;
-            if (line.Length == 0 || line.StartsWith("//")) continue;
+            if (line.Length == 0) continue;
+            if (line.StartsWith("//"))
+            {
+                string? mk = Match(line, @"CET:PetEffect=(\w+)");
+                if (mk is not null)
+                {
+                    pendingPetMarker = line;
+                    pendingPetMultiplier = (int)Dec(line, @"CET:PetMul=([\d.]+)", 0);
+                }
+                continue;
+            }
 
             if (line == "{") continue;
             if (line.EndsWith("{"))
@@ -469,6 +598,8 @@ public static class ProjectRecovery
             if (line.StartsWith("List<Creature> foes")) { randomFoes = true; foesRemoved = false; continue; }
             if (line.StartsWith("ArgumentNullException")) continue;
             if (line.StartsWith("int x = ")) continue;
+            // 牺牲伙伴的收益暂存（真正的动作是后面的 Kill + GainBlock / DamageCmd.Attack）
+            if (line.StartsWith("decimal gain = ") || line.StartsWith("decimal dmg = ")) continue;
             // 选牌 / 变化的前置语句（真正的动作在后面的 foreach + await 里）
             if (line.StartsWith("var toTransform") || line.StartsWith("var toExhaust") || line.StartsWith("var pick")) continue;
 
@@ -515,6 +646,49 @@ public static class ProjectRecovery
                     chain.Append(' ').Append(line);
                 }
                 string ch = chain.ToString();
+                // 「按生命值算」的伙伴攻击（我们新加的那三种）：生成时在这条效果的第一行写了标记，
+                // 而且伤害取自固定名字的 base.DynamicVars.CalculatedDamage —— 必须**先**分流，
+                // 否则下面会把它当成普通 PetAttack（数值取不到，配置静默丢一半）。
+                if (pendingPetMarker is not null && ch.Contains("CalculatedDamage"))
+                {
+                    string? petVar0 = Match(ch, @"\.FromPetAttacker\((\w+)\)");
+                    var calc = PetEffectFromMarker(petVar0, out string? why0);
+                    if (calc is null) { result.Unparsed.Add($"{where}: {line} {why0}"); pendingPetMarker = null; continue; }
+                    if (ch.Contains(".TargetingAllOpponents")) calc.TargetSide = "AllEnemies";
+                    else if (ch.Contains(".TargetingRandomOpponents"))
+                    {
+                        calc.TargetSide = "RandomEnemies";
+                        calc.AllowDuplicates = ch.Contains("allowDuplicates: true");
+                    }
+                    string hits0 = Match(ch, @"\.WithHitCount\(([^)]*)\)") ?? "1";
+                    if (calc.TargetSide == "RandomEnemies")
+                    {
+                        if (hits0 == "x") calc.RepeatIsX = true;
+                        else if (hits0 == "hits") calc.RepeatCount = hitsLiteral;
+                        else calc.RepeatCount = Math.Max(1, (int)Dec(hits0, @"([\d.]+)", 1));
+                    }
+                    else
+                    {
+                        if (hits0 == "x") calc.RepeatIsX = true;
+                        else calc.RepeatCount = Math.Max(1, (int)Dec(hits0, @"([\d.]+)", 1));
+                    }
+                    ApplyLoop(calc, frames);
+                    Done(calc);
+                    continue;
+                }
+                // 牺牲伙伴（收益是**伤害**）：先 decimal dmg = …（上面已跳过）、Kill，然后 DamageCmd.Attack(dmg)
+                if (pendingPetMarker is not null && ch.Contains("DamageCmd.Attack(dmg)"))
+                {
+                    var sac = PetEffectFromMarker(KillPetVar(), out string? why1);
+                    if (sac is null) { result.Unparsed.Add($"{where}: {line} {why1}"); pendingPetMarker = null; continue; }
+                    if (sac.PetSacrificeFormula == "Fixed")
+                        FillAmount(sac, NextVar(vars, ref varIdx, "Damage"), nameToPowerId);
+                    else sac.Amount = CalcAmount("CalculationBase");
+                    sac.TargetSide = ch.Contains(".TargetingAllOpponents") ? "AllEnemies" : "Enemy";
+                    ApplyLoop(sac, frames);
+                    Done(sac);
+                    continue;
+                }
                 // 「伙伴攻击」也是 DamageCmd.Attack 链，区别只在攻击者被换成了宠物。
                 // 现在是 `.FromPetAttacker(__<宠物类名>)`（老工程里是 .FromMonster(pet.Monster)）——
                 // 两种都认，目标解析和下面普通伤害完全一样，所以这里分一次流就行。
@@ -619,6 +793,62 @@ public static class ProjectRecovery
                 continue;
             }
 
+            // ===== 新增的那批宠物效果（生成时带 // CET:PetEffect= 标记，按标记还原）=====
+            // 治疗伙伴 / 伙伴最大生命：目标参数是宠物局部变量（__xxx）→ 和普通「回复生命 / 最大生命」区分开。
+            if (line.StartsWith("await CreatureCmd.Heal(", StringComparison.Ordinal)
+                && PetClassOfVar(ArgAt(line, 0), petClassNames) is not null)
+            {
+                var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyHeal);
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyHeal}"); pendingPetMarker = null; continue; }
+                e.Amount = TakeCalcVar(calcVars, "Heal") ?? 0m;
+                Done(e);
+                continue;
+            }
+
+            if (line.StartsWith("await CreatureCmd.GainMaxHp(", StringComparison.Ordinal)
+                && PetClassOfVar(ArgAt(line, 0), petClassNames) is not null)
+            {
+                var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyMax);
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyMax}"); pendingPetMarker = null; continue; }
+                e.Amount = TakeCalcVar(calcVars, "MaxHp") ?? 0m;
+                Done(e);
+                continue;
+            }
+
+            // 伙伴失去生命：`CreatureCmd.Damage(choiceContext, __pet, …)` —— 目标第 3 个参数是宠物。
+            if (line.StartsWith("await CreatureCmd.Damage(", StringComparison.Ordinal)
+                && ArgAt(line, 1).StartsWith("__", StringComparison.Ordinal))
+            {
+                var e = PetEffectFromMarker(ArgAt(line, 1), out string? whyLoss);
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyLoss}"); pendingPetMarker = null; continue; }
+                e.Amount = TakeCalcVar(calcVars, "HpLoss") ?? 0m;
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 牺牲伙伴（收益是格挡）：`CreatureCmd.Kill(__pet)` 是这条效果独有的语句。
+            if (line.Contains("CreatureCmd.Kill(__"))
+            {
+                var e = PetEffectFromMarker(Match(line, @"CreatureCmd\.Kill\((\w+)\)"), out string? whySac);
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whySac}"); pendingPetMarker = null; continue; }
+                if (e.PetSacrificeFormula == "Fixed")
+                    FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                else e.Amount = CalcAmount("CalculationBase");
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 替主人挨打（关）：`await PowerCmd.Remove<ForgePetGuardianPower>(__pet);`
+            if (line.Contains($"PowerCmd.Remove<{PetGen.GuardianPowerClassName}>("))
+            {
+                var e = PetEffectFromMarker(Match(line, @"PowerCmd\.Remove<\w+>\((\w+)\)"), out string? whyOff);
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyOff}"); pendingPetMarker = null; continue; }
+                Done(e);
+                continue;
+            }
+
             if (line.StartsWith("await CreatureCmd.Heal(", StringComparison.Ordinal))
             {
                 var e = new EffectSpec { Kind = "Heal" };
@@ -662,6 +892,27 @@ public static class ProjectRecovery
                 string args = m.Groups[2].Value;
                 var parts = SplitArgs(args);
                 string target = parts.Count > 1 ? parts[1].Trim() : "";
+
+                // ===== 新增的那批宠物效果：给伙伴施加状态 / 替主人挨打（开）=====
+                // 目标参数是宠物局部变量（__xxx）而不是 base.Owner.Creature / cardPlay.Target / foe。
+                if (PetClassOfVar(target, petClassNames) is not null)
+                {
+                    var pe = PetEffectFromMarker(target, out string? whyApply);
+                    if (pe is null) { result.Unparsed.Add($"{where}: {line} {whyApply}"); pendingPetMarker = null; continue; }
+                    // 给伙伴施加状态：数值按**名字**去 CanonicalVars 里取（生成时写的就是
+                    // base.DynamicVars["PetPower<PowerId>"].BaseValue，升级增量也按这个名字对回去）
+                    if (pe.Kind == "PetApplyPower")
+                    {
+                        string? vn = Match(line, @"base\.DynamicVars\[""(\w+)""\]");
+                        int at = vn is null ? -1 : vars.FindIndex(v => v.Kind == "Power"
+                            && string.Equals(v.PowerId, vn, StringComparison.Ordinal));
+                        if (at >= 0) { pe.Amount = vars[at].Amount; vars.RemoveAt(at); }
+                    }
+                    ApplyLoop(pe, frames);
+                    Done(pe);
+                    continue;
+                }
+
                 var e = new EffectSpec { Kind = "ApplyPower", PowerId = power };
                 if (power == "ForgeExtraTurnPower")
                 {
@@ -919,6 +1170,12 @@ public static class ProjectRecovery
 
     private static EffectSpec? EffectByVarName(CardSpec card, List<Var> vars, string name)
     {
+        // 「按生命值算」的宠物效果：升级增量生成时写在 CalculationBase 上
+        // （那个计算变量的名字是本体固定死的，改不了），所以按名字特判一下，
+        // 配给这张牌里**第一条**这种效果（生成侧也是这么累加的）。
+        if (name == "CalculationBase")
+            return card.Effects.FirstOrDefault(e => IsCalcPetKindName(e.Kind) && CSharpCodeGen.CanonicalVarNeedsPetCmd(e));
+
         // 变量名和效果一一对应：按 CanonicalVars 里的顺序数第几个变量，就是第几个「带变量的效果」
         int index = 0;
         foreach (var v in vars)
@@ -945,6 +1202,10 @@ public static class ProjectRecovery
         "ApplyPower" => true,
         "PetAttack" => true,
         "SummonPet" => e.Amount > 0,
+        // 新增的那批宠物效果：除了两条「替主人挨打」开关，其余都在 CanonicalVars 里有变量
+        // （和生成侧的 CSharpCodeGen.HasNoDynamicVar 保持一致）
+        "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+            or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower" => true,
         _ => false,
     };
 
@@ -959,6 +1220,15 @@ public static class ProjectRecovery
         "DynamicVar" => v.PowerId ?? "Value",
         _ => v.Kind,
     };
+
+    /// <summary>
+    /// 「按生命值算」的宠物效果在 Generated 代码里的**升级落点**：
+    /// 那几个计算变量（CalculatedDamage / CalculatedBlock）的名字是本体固定死的，
+    /// 升级增量写在 <c>CalculationBase</c> 上（见 CSharpCodeGen 的 OnUpgrade 生成）。
+    /// 所以回读时把 <c>CalculationBase</c> 的增量配给那张牌里第一条这种效果。
+    /// </summary>
+    private static bool IsCalcPetKindName(string kind) =>
+        kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp" or "PetSacrifice";
 
     private static void ParseKeywords(CardSpec card, string text)
     {
