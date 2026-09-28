@@ -90,7 +90,7 @@ public static class CSharpCodeGen
         for (int i = 0; i < p.Relics.Count; i++)
             if (p.Relics[i].IsStartingRelic) relics.Add($"ModelDb.Relic<{n.RelicClassName(p.Relics[i], i)}>()");
         // 额外资源量：加一个隐藏的起始遗物，负责开场发放初始数量 / 记录跨战斗继承
-        if (p.ExtraResource.Enabled) relics.Add("ModelDb.Relic<ExtraResourceRelic>()");
+        if (p.ExtraResource.Enabled) relics.Add($"ModelDb.Relic<{n.ExtraResourceRelicClass}>()");
         // 不再给「没有自定义起始遗物」的角色兜底塞本体燃烧之血（用户要求：不用考虑是否携带初始遗物）
 
         var w = new CodeWriter();
@@ -191,7 +191,7 @@ public static class CSharpCodeGen
          .Line("/// 本体没有自定义资源的扩展点，所以它复用本体的「星星」资源（PlayerCombatState.Stars）。")
          .Line("/// 这个遗物是起始遗物，只负责开场发放数量 / 记录跨战斗继承，不占用遗物栏的玩法位置。")
          .Line("/// </summary>")
-         .Open("public sealed class ExtraResourceRelic : RelicModel")
+         .Open($"public sealed class {n.ExtraResourceRelicClass} : RelicModel")
          .Line("public override RelicRarity Rarity => RelicRarity.Starter;")
          .Line()
          .Line($"/// <summary>每场战斗开始时发放的初始数量。</summary>")
@@ -937,7 +937,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     // 文本取自本体的 powers 本地化表：本体状态改写后我们覆盖了同名的键，所以弹出来的就是新名字 + 新描述。
 
     /// <summary>把这条效果用到的状态写成 HoverTipFactory.FromPower&lt;X&gt;(N) 调用（没有就返回空）。</summary>
-    internal static List<string> HoverTipsOf(IEnumerable<EffectSpec> effects, bool isCard = false)
+    internal static List<string> HoverTipsOf(IEnumerable<EffectSpec> effects, bool isCard = false,
+        CharacterProfile? owner = null)
     {
         var list = new List<string>();
         var all = effects as IList<EffectSpec> ?? effects.ToList();
@@ -945,7 +946,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             if (e.Kind == "ApplyPower" && !string.IsNullOrWhiteSpace(e.PowerId))
             {
-                string type = e.NextTurn ? DelayedPowerClassName(e) : e.PowerId!.Trim();
+                string type = e.NextTurn ? DelayedPowerClassName(e, owner) : e.PowerId!.Trim();
                 // 「数值 = 层数 / X」时数量说不准，就不写数量（本体自己也有不写数量的写法）
                 string amount = (e.AmountIsX || e.AmountIsStack || e.Amount <= 0)
                     ? ""
@@ -981,11 +982,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 因为卡面上关键词也是排在描述最前面的。
     /// </param>
     internal static string HoverTipsOverride(IEnumerable<EffectSpec> effects, bool isPublic, bool isCard = false,
-        IEnumerable<string>? extraTips = null)
+        IEnumerable<string>? extraTips = null, CharacterProfile? owner = null)
     {
         var tips = new List<string>();
         if (extraTips is not null) tips.AddRange(extraTips);
-        tips.AddRange(HoverTipsOf(effects, isCard));
+        tips.AddRange(HoverTipsOf(effects, isCard, owner));
         tips = tips.Distinct(StringComparer.Ordinal).ToList();
         if (tips.Count == 0) return "";
         string access = isPublic ? "public override" : "protected override";
@@ -1243,7 +1244,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             w.Line();
             w.Line("    // 额外资源量的载体（隐藏起始遗物）：必须在池里，否则本体查 Pool 会抛异常");
-            w.Line("    ModelDb.Relic<ExtraResourceRelic>(),");
+            w.Line($"    ModelDb.Relic<{Naming.From(p).ExtraResourceRelicClass}>(),");
         }
         w.Line("];").Close()
          .Line()
@@ -1857,7 +1858,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
         // 自定义关键词也走这一段（文本来自我们写进本体 card_keywords 表的键）
         w.Raw(HoverTipsOverride(c.Effects, isPublic: false, isCard: true,
-            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList)));
+            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList), owner: p));
 
         w.Line()
          .Line($"public {cls}() : base({(c.CostIsX ? 0 : c.Cost)}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
@@ -2404,7 +2405,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "ExtraTurn":
-                w.Line("await PowerCmd.Apply<ForgeExtraTurnPower>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, this);");
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, this);");
                 break;
 
             case "GenerateCard":
@@ -2475,7 +2476,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "PetApplyPower":
-                EmitPetApplyPower(w, e, petVar ?? "__pet", amt);
+                EmitPetApplyPower(w, p, e, petVar ?? "__pet", amt);
                 break;
 
             case "PetGuardOn":
@@ -2558,7 +2559,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "ApplyPower":
                 if (e.NextTurn)
                 {
-                    w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
+                    w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
                     break;
                 }
                 switch (e.TargetSide)
@@ -2966,7 +2967,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 下回合生效时走现有的「延迟状态」类（<c>ForgeDelayed&lt;PowerId&gt;</c>）挂在宠物身上，
     /// 那个类自己的钩子里会把真正的状态施加到**它的主人**（也就是这只宠物）上 —— 和普通「下回合生效」一致。
     /// </summary>
-    private static void EmitPetApplyPower(CodeWriter w, EffectSpec e, string petVar, string amt)
+    private static void EmitPetApplyPower(CodeWriter w, CharacterProfile p, EffectSpec e, string petVar, string amt)
     {
         _ = amt;
         // 数值**不**用外面传来的表达式：PetApplyPower 的变量名是 PetPower<PowerId>（不是本体的属性），
@@ -2974,7 +2975,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string calc = $"base.DynamicVars[{Lit.Str(VarNameOf(e))}].BaseValue";
         if (e.NextTurn)
         {
-            w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e)}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
+            w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
             return;
         }
         w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
@@ -2991,7 +2992,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitPetGuard(CodeWriter w, CharacterProfile p, string petVar, bool on)
     {
-        string power = PetGen.GuardianPowerClassName;
+        string power = Naming.From(p).GuardianPowerClass;
         if (on)
             w.Line($"await PowerCmd.Apply<{power}>(choiceContext, {petVar}, 1m, null, null);"
                 + "   // 共用守卫：多只都挂时由它自己仲裁（列表里第一只活着的承担）");
@@ -3001,7 +3002,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     // ==================== 下回合生效的延迟 Power ====================
-    internal static string DelayedPowerClassName(EffectSpec e) => "ForgeDelayed" + (e.PowerId ?? "Power");
+    internal static string DelayedPowerClassName(EffectSpec e, CharacterProfile? owner = null) =>
+        owner is null ? Naming.AmbientDelayedPowerClass(e) : Naming.From(owner).DelayedPowerClass(e);
 
     public static IEnumerable<EffectSpec> CollectDelayedEffects(CharacterProfile p)
     {
@@ -3026,7 +3028,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         foreach (var e in CollectDelayedEffects(p))
         {
             string power = e.PowerId ?? "WeakPower";
-            string cls = DelayedPowerClassName(e);
+            string cls = n.DelayedPowerClass(e);
             bool toSelf = e.TargetSide == "Self";
 
             w.Line($"/// <summary>下回合开始时{(toSelf ? "给自己" : "给所有敌人")}施加 {power}。</summary>")
@@ -3091,7 +3093,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line("];");
 
         // 鼠标悬停遗物描述里的状态 → 弹出那条说明（自定义状态 / 被改写的本体状态都有）
-        w.Raw(HoverTipsOverride(r.Effects, isPublic: false));
+        w.Raw(HoverTipsOverride(r.Effects, isPublic: false, owner: p));
 
         // 条件选项：「每场战斗只触发一次」需要一个标记（本体「百年积木」的做法）
         bool hasCond = r.Condition is not null && !r.Condition.IsNone;
@@ -3201,7 +3203,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ExtraTurn":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，额外回合无法实现）"); break; }
-                w.Line("await PowerCmd.Apply<ForgeExtraTurnPower>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
                 break;
 
             case "GenerateCard":
@@ -3362,7 +3364,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "ApplyPower":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，施加增益/减益无法实现）"); break; }
                 if (e.NextTurn)
-                    w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                    w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 else if (e.TargetSide == "Self")
                 {
                     w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
@@ -3406,12 +3408,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line();
 
         // 鼠标悬停药水描述里的状态 → 弹出那条说明（药水的 ExtraHoverTips 基类是 public）
-        w.Raw(HoverTipsOverride(s.Effects, isPublic: true));
+        w.Raw(HoverTipsOverride(s.Effects, isPublic: true, owner: p));
 
         w.Line()
          .Open("protected override async Task OnUse(PlayerChoiceContext choiceContext, Creature? target)");
 
-        foreach (var e in s.Effects) EmitPotionEffect(w, e, s.TargetType, potionVars);
+        foreach (var e in s.Effects) EmitPotionEffect(w, p, e, s.TargetType, potionVars);
 
         w.Close().Close();
         return w.ToString();
@@ -3430,7 +3432,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Line("// <auto-generated> 额外回合用的 Power </auto-generated>")
             .Line($"namespace {n.Namespace};")
             .Line()
-            .Open("public sealed class ForgeExtraTurnPower : PowerModel")
+            .Open($"public sealed class {n.ExtraTurnPowerClass} : PowerModel")
             .Line("public override PowerType Type => PowerType.Buff;")
             .Line()
             .Line("public override PowerStackType StackType => PowerStackType.Counter;")
@@ -3446,8 +3448,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .ToString();
     }
 
-    private static void EmitPotionEffect(CodeWriter w, EffectSpec e, string potionTarget, Dictionary<EffectSpec, string>? varMap = null) =>
-        EmitRepeated(w, e, x => EmitPotionEffectOnce(x, e, potionTarget, varMap));
+    private static void EmitPotionEffect(CodeWriter w, CharacterProfile p, EffectSpec e, string potionTarget,
+        Dictionary<EffectSpec, string>? varMap = null) =>
+        EmitRepeated(w, e, x => EmitPotionEffectOnce(x, p, e, potionTarget, varMap));
 
     /// <summary>药水：按「药水作用目标」展开（自己 / 指定敌人 / 全体敌人）。</summary>
     private static void EmitPotionPerCreature(CodeWriter w, string potionTarget, string allEnemies, Func<string, string> body)
@@ -3466,7 +3469,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line(body("base.Owner.Creature"));
     }
 
-    private static void EmitPotionEffectOnce(CodeWriter w, EffectSpec e, string potionTarget, Dictionary<EffectSpec, string>? varMap = null)
+    private static void EmitPotionEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, string potionTarget,
+        Dictionary<EffectSpec, string>? varMap = null)
     {
         string amt = VarAccess(e, varMap);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用）
@@ -3479,7 +3483,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "ExtraTurn":
-                w.Line("await PowerCmd.Apply<ForgeExtraTurnPower>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
                 break;
 
             case "GenerateCard":

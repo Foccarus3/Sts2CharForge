@@ -89,7 +89,7 @@ public static class LocalizationGen
         if (p.ExtraResource.Enabled)
         {
             var x = p.ExtraResource;
-            string entry = Naming.EntryOf("ExtraResourceRelic");
+            string entry = Naming.EntryOf(Naming.From(p).ExtraResourceRelicClass);
             string res = ResourceName(p);
             dict[$"{entry}.title"] = res;
             dict[$"{entry}.description"] = x.CarryOver
@@ -262,7 +262,7 @@ public static class LocalizationGen
         var dict = new Dictionary<string, string>();
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p))
         {
-            string entry = Naming.EntryOf(CSharpCodeGen.DelayedPowerClassName(e));
+            string entry = Naming.EntryOf(CSharpCodeGen.DelayedPowerClassName(e, p));
             string powerName = EffectCatalog.PowerName(e.PowerId);
             bool toSelf = e.TargetSide == "Self";
             dict[$"{entry}.title"] = $"下回合：{powerName}";

@@ -437,7 +437,7 @@ public static class CustomPowerGen
                 break;
 
             case "ExtraTurn":
-                w.Line("await PowerCmd.Apply<ForgeExtraTurnPower>(choiceContext, base.Owner, 1m, base.Owner, null);");
+                w.Line($"await PowerCmd.Apply<{Naming.AmbientExtraTurnPowerClass}>(choiceContext, base.Owner, 1m, base.Owner, null);");
                 break;
 
             case "GenerateCard":

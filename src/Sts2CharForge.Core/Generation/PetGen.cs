@@ -127,18 +127,23 @@ public static class PetGen
     public static IReadOnlyList<PetDef> All(CharacterProfile p) => Enabled(p).Select(s => DefOf(p, s)).ToList();
 
     /// <summary>
-    /// 「替主人承伤」**所有召唤物共用**的守卫 Power 类名（全局唯一、不和本体状态撞名）。
+    /// 「替主人承伤」**所有召唤物共用**的守卫 Power 类名（每个模组一个，见 <see cref="Naming.GuardianPowerClass"/>）。
     ///
-    /// 为什么必须是**同一个类型**：仲裁要跨宠物识别「谁也有守卫」，而 <c>Creature.HasPower&lt;T&gt;()</c>
-    /// 只认同一类型（<c>Creature.cs:561-564</c> 就是 <c>_powers.Any(p =&gt; p is T)</c>）——
-    /// 每只一个类的话，A 身上的守卫查不出 B 身上有没有守卫。共用之后生成代码也更少。
+    /// 为什么必须带角色类名前缀：本体的 ModelDb 只用**类名**算模型 ID（忽略命名空间），
+    /// 两个模组各自的宠物守卫都叫 <c>ForgePetGuardianPower</c> 就会在加载时抛
+    /// <c>DuplicateModelException</c>，装在一起游戏起不来（用户实测报过）。
+    ///
+    /// 为什么必须是**同一个类型**（同一模组内）：仲裁要跨宠物识别「谁也有守卫」，而
+    /// <c>Creature.HasPower&lt;T&gt;()</c> 只认同一类型（<c>Creature.cs:561-564</c> 就是
+    /// <c>_powers.Any(p =&gt; p is T)</c>）—— 每只一个类的话，A 身上的守卫查不出 B 身上有没有守卫。
+    /// 共用之后生成代码也更少。
     /// </summary>
-    public const string GuardianPowerClassName = GuardianPowerPrefix + "Power";
+    public const string GuardianPowerSuffix = GuardianPowerPrefix + "Power";
 
     /// <summary>
     /// 上一版「每只召唤物一个守卫 Power 类」的类名（<c>ForgePetGuardian&lt;宠物类名&gt;</c>）。
     /// **只有回读老工程时还认它**（<see cref="ProjectRecovery"/>）；新生成代码一律用
-    /// <see cref="GuardianPowerClassName"/>。
+    /// <see cref="Naming.GuardianPowerClass"/>。
     /// </summary>
     public static string LegacyGuardianPowerClassOf(string petClassName) => GuardianPowerPrefix + petClassName;
 
@@ -358,11 +363,12 @@ position = Vector2(2, -{spriteH + 60})
          .Line($"namespace {n.Namespace};")
          .Line();
 
+        string powerClass = n.GuardianPowerClass;
         foreach (var d in defs) EmitPetClass(w, d);
-        foreach (var d in defs) EmitSummonCmd(w, d);
+        foreach (var d in defs) EmitSummonCmd(w, d, powerClass);
         // 守卫 Power **只生成一个共用类**（勾了几只都用它）：仲裁要跨宠物查「谁也有守卫」，
         // 而 Creature.HasPower<T>() 只认同一类型 —— 每只一个类的话互相查不出来。
-        if (defs.Any(x => x.Guardian)) EmitGuardianPower(w, defs);
+        if (defs.Any(x => x.Guardian)) EmitGuardianPower(w, defs, powerClass);
         EmitPetLayout(w, defs);
         return w.ToString();
     }
@@ -464,7 +470,7 @@ position = Vector2(2, -{spriteH + 60})
     }
 
     /// <summary>一只召唤物的 <c>&lt;X&gt;Cmd</c>：查询 + 召唤（含站位 / 血条 / 可选守卫 Power）。</summary>
-    private static void EmitSummonCmd(CodeWriter w, PetDef d)
+    private static void EmitSummonCmd(CodeWriter w, PetDef d, string guardianPowerClass)
     {
         string cmd = d.ClassName + "Cmd";
         string petVar = VarOf(d.ClassName);
@@ -526,7 +532,7 @@ position = Vector2(2, -{spriteH + 60})
         if (d.Guardian)
         {
             // 勾了几只都用同一个守卫类；真正由谁承担由守卫自己仲裁（见 EmitGuardianPower）
-            string power = GuardianPowerClassName;
+            string power = guardianPowerClass;
             w.Line()
              .Line("// 替主人承伤：挂守卫（照本体 DieForYouPower 写）。")
              .Line("// 多只都勾了这个选项时挂的是**同一个**守卫类，谁真正承担由守卫钩子里自己仲裁（列表里第一只活着的）。")
@@ -559,9 +565,9 @@ position = Vector2(2, -{spriteH + 60})
     /// 活着且挂了守卫的」才把自己换上去，其它守卫一律放行 —— 行为完全确定，不依赖监听顺序；
     /// 第一只死了（<c>IsAlive</c> 为 false）之后下一只自动接手。
     /// </summary>
-    private static void EmitGuardianPower(CodeWriter w, IReadOnlyList<PetDef> defs)
+    private static void EmitGuardianPower(CodeWriter w, IReadOnlyList<PetDef> defs, string powerClass)
     {
-        string power = GuardianPowerClassName;
+        string power = powerClass;
         List<PetDef> guarded = defs.Where(x => x.Guardian).ToList();
         string who = string.Join("、", guarded.Select(d => d.DisplayName));
 

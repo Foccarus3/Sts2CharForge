@@ -5695,8 +5695,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("继承关掉时不会把余量带过去", CSharpCodeGen.ExtraResourceSource(WithCarryOver(characterProfile8, carryOver: false)).Contains("CarryOver = false"), "CarryOver = false");
 		string text15 = CSharpCodeGen.CharacterSource(characterProfile8);
 		Check("角色上开了「始终显示资源计数器」", text15.Contains("ShouldAlwaysShowStarCounter => true"));
-		Check("额外资源量的遗物挂进了起始遗物列表", text15.Contains("ModelDb.Relic<ExtraResourceRelic>()"));
-		Check("额外资源量的遗物也挂进了遗物池（否则选人界面查 Pool 会抛异常）", CSharpCodeGen.RelicPoolSource(characterProfile8).Contains("ModelDb.Relic<ExtraResourceRelic>()"), "在池里");
+		Check("额外资源量的遗物挂进了起始遗物列表", text15.Contains($"ModelDb.Relic<{Naming.From(characterProfile8).ExtraResourceRelicClass}>()"));
+		Check("额外资源量的遗物也挂进了遗物池（否则选人界面查 Pool 会抛异常）", CSharpCodeGen.RelicPoolSource(characterProfile8).Contains($"ModelDb.Relic<{Naming.From(characterProfile8).ExtraResourceRelicClass}>()"), "在池里");
 		Check("不启用额外资源量时遗物池里没有那个隐藏遗物", !CSharpCodeGen.RelicPoolSource(ProfileFactory.Sample()).Contains("ExtraResourceRelic"), "干净");
 		CharacterProfile characterProfile9 = ProfileFactory.Sample();
 		characterProfile9.ExtraResource.Enabled = false;
@@ -5837,9 +5837,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				inlineIconSize is { } isz2 ? $"{isz2.W}×{isz2.H}" : "文件不存在");
 			// 额外资源量那个隐藏起始遗物也在遗物栏里显示：图标路径是本体规则 relic_atlas.sprites/<entry>.tres，
 			// 图集里没有就回退到 images/relics/<entry>.png —— 不写这个文件，遗物栏就是紫色 missing_power
-			string relicIconPath = Path.Combine(generationResult.ProjectRoot, "images", "relics", "extra_resource_relic.png");
+			string relicIconPath = Path.Combine(generationResult.ProjectRoot, "images", "relics",
+				Naming.EntryOf(Naming.From(characterProfile10).ExtraResourceRelicClass).ToLowerInvariant() + ".png");
 			Check("额外资源量的隐藏遗物也有图标文件（不然遗物栏显示 missing_power 并报 Missing sprite）",
-				File.Exists(relicIconPath), File.Exists(relicIconPath) ? "images/relics/extra_resource_relic.png" : "没找到");
+				File.Exists(relicIconPath), File.Exists(relicIconPath) ? Path.GetFileName(relicIconPath) : "没找到");
 			// 自定义状态图标：本体 PowerModel.Icon 走 power_atlas.sprites/<entry>.tres，
 			// 图集里没有就回退 images/powers/<entry>.png（BigIcon 也直接读这个）→ 两份都要在
 			string powerIconPath = Path.Combine(generationResult.ProjectRoot, "images", "powers",
@@ -5964,7 +5965,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		});
 		characterProfile15.Cards.Add(cardSpec14);
 		Check("卡面描述用自定义名字（需要 2 点血怒）", LocalizationGen.CardsJson(characterProfile15).Contains("需要 2 点血怒。"), "需要 2 点血怒。");
-		Check("那个隐藏遗物的名字也用自定义名字", LocalizationGen.RelicsJson(characterProfile15).Contains("\"EXTRA_RESOURCE_RELIC.title\": \"血怒\""), "EXTRA_RESOURCE_RELIC.title = 血怒");
+		Check("那个隐藏遗物的名字也用自定义名字", LocalizationGen.RelicsJson(characterProfile15).Contains($"\"{Naming.EntryOf(Naming.From(characterProfile15).ExtraResourceRelicClass)}.title\": \"血怒\""), "隐藏遗物名 = 血怒");
 		Check("悬停提示覆盖表用自定义名字", LocalizationGen.StaticHoverTipsJson(characterProfile15).Contains("\"STAR_COUNT.title\": \"血怒\""), "STAR_COUNT.title = 血怒");
 		// 用户报过「额外资源量的描述有误」：以前只有上传了图标才覆盖描述，没传图标时悬停显示的是
 		// 本体的「你当前的辉星…储君的部分卡牌…」——说的完全是别的角色的资源。现在启用了就覆盖。
@@ -6287,19 +6288,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("生成的防御卡带 CardTag.Defend 和 GainsBlock = true（和本体防御牌一样）",
 			basicsDefendSrc.Contains("CanonicalTags => new HashSet<CardTag> { CardTag.Defend }") && basicsDefendSrc.Contains("public override bool GainsBlock => true;"), "有标签 + GainsBlock");
 		string basicsChar = CSharpCodeGen.CharacterSource(basics);
+		// 打击 / 防御生成出来的类名带角色类名前缀（<角色>Strike / <角色>Defend）—— 避免和别的模组撞模型 ID
+		string basicsCharClass = Naming.From(basics).CharClass;
+		string bStrike = basicsCharClass + "Strike", bDefend = basicsCharClass + "Defend";
 		string deckPart = basicsChar.Length > 0 ? basicsChar.Substring(basicsChar.IndexOf("StartingDeck", StringComparison.Ordinal)) : "";
-		int strikeAt = deckPart.IndexOf("ModelDb.Card<Strike>(),", StringComparison.Ordinal);
-		int defendAt = deckPart.IndexOf("ModelDb.Card<Defend>(),", StringComparison.Ordinal);
-		int firstOwnAt = deckPart.IndexOf("ModelDb.Card<Seven", StringComparison.Ordinal);
+		int strikeAt = deckPart.IndexOf($"ModelDb.Card<{bStrike}>(),", StringComparison.Ordinal);
+		int defendAt = deckPart.IndexOf($"ModelDb.Card<{bDefend}>(),", StringComparison.Ordinal);
+		int firstOwnAt = -1;
+		foreach (System.Text.RegularExpressions.Match mm in System.Text.RegularExpressions.Regex.Matches(deckPart, @"ModelDb\.Card<(\w+)>\(\)"))
+		{
+			string cn = mm.Groups[1].Value;
+			if (cn == bStrike || cn == bDefend) continue;
+			firstOwnAt = mm.Index;
+			break;
+		}
 		Check("生成的初始卡组里正好 5 张打击 + 5 张防御，而且排在最前面",
-			System.Text.RegularExpressions.Regex.Matches(basicsChar, "ModelDb\\.Card<Strike>\\(\\)").Count == 5
-			&& System.Text.RegularExpressions.Regex.Matches(basicsChar, "ModelDb\\.Card<Defend>\\(\\)").Count == 5
+			System.Text.RegularExpressions.Regex.Matches(basicsChar, "ModelDb\\.Card<" + bStrike + ">\\(\\)").Count == 5
+			&& System.Text.RegularExpressions.Regex.Matches(basicsChar, "ModelDb\\.Card<" + bDefend + ">\\(\\)").Count == 5
 			&& strikeAt >= 0 && defendAt > strikeAt && firstOwnAt > defendAt, $"打击@{strikeAt} 防御@{defendAt} 首张自有牌@{firstOwnAt}");
 		string basicsPool = CSharpCodeGen.CardPoolSource(basics);
 		Check("打击 / 防御在卡池里（本体那些按标签查牌的遗物是从角色卡池里找牌的）",
-			basicsPool.Contains("ModelDb.Card<Strike>()") && basicsPool.Contains("ModelDb.Card<Defend>()"), "在池子里");
+			basicsPool.Contains($"ModelDb.Card<{bStrike}>()") && basicsPool.Contains($"ModelDb.Card<{bDefend}>()"), "在池子里");
 		Check("但不进奖励 / 商店（稀有度是 Basic，本体抽奖励只在 Common/Uncommon/Rare 里挑）",
-			!basicsPool.Contains("RemoveAll(c => c.Id == ModelDb.Card<Strike>().Id")   // 不再靠卡池排除（排除会害本体按标签查牌时崩）
+			!basicsPool.Contains($"RemoveAll(c => c.Id == ModelDb.Card<{bStrike}>().Id")   // 不再靠卡池排除（排除会害本体按标签查牌时崩）
 			&& basics.Cards.First((CardSpec c) => c.ClassName == "Strike").Rarity == "Basic"
 			&& basics.Cards.First((CardSpec c) => c.ClassName == "Defend").Rarity == "Basic"
 			&& !CSharpCodeGen.RewardEligibleCards(basics).Any((CardSpec c) => c.ClassName is "Strike" or "Defend"), "靠 Basic 稀有度排除");
@@ -6337,7 +6348,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))) == "SevenCard1",
 			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))));
 		Check("迁移后生成的初始卡组和以前完全一样（5 打击 + 5 防御）",
-			System.Text.RegularExpressions.Regex.Matches(CSharpCodeGen.CharacterSource(legacyBasics), "ModelDb\\.Card<Strike>\\(\\)").Count == 5, "5 张");
+			System.Text.RegularExpressions.Regex.Matches(CSharpCodeGen.CharacterSource(legacyBasics),
+				"ModelDb\\.Card<" + Naming.From(legacyBasics).CharClass + "Strike>\\(\\)").Count == 5, "5 张");
 		ProfileFactory.Normalize(legacyBasics);
 		Check("再读一次不会重复添加初始牌", legacyBasics.Cards.Count((CardSpec c) => c.ClassName is "Strike" or "Defend") == 2, $"{legacyBasics.Cards.Count((CardSpec c) => c.ClassName is "Strike" or "Defend")} 条");
 		// 老存档里的「本体卡引用」行（IsVanillaCard）→ 自动转成你自己的 Strike / Defend（标签 / 数值 / 稀有度都对上）
@@ -6354,7 +6366,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			$"{convStrike.ClassName} ×{convStrike.StartingCopies} 标签={string.Join("+", convStrike.TagList)} 数值={convStrike.Effects[0].Amount}");
 		Check("转完之后初始卡组引用的是你自己的卡（不再引用本体的 StrikeIronclad）",
 			!CSharpCodeGen.CharacterSource(legacyRef).Contains("StrikeIronclad")
-			&& System.Text.RegularExpressions.Regex.Matches(CSharpCodeGen.CharacterSource(legacyRef), "ModelDb\\.Card<Strike>\\(\\)").Count == 4, "4 张自己的打击");
+			&& System.Text.RegularExpressions.Regex.Matches(CSharpCodeGen.CharacterSource(legacyRef),
+				"ModelDb\\.Card<" + Naming.From(legacyRef).CharClass + "Strike>\\(\\)").Count == 4, "4 张自己的打击");
 		// 类名撞本体要拦住（否则模组加载时抛 DuplicateModelException）
 		CharacterProfile clash = ProfileFactory.Sample();
 		clash.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend")).ClassName = "PommelStrike";
@@ -7126,6 +7139,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			CharacterProfile petSrc = ProfileFactory.Sample();
+			// 「替主人承伤」守卫 Power 的类名带角色类名前缀（<角色>ForgePetGuardianPower）—— 断言按它算
+			string guardName = Naming.From(petSrc).GuardianPowerClass;
 			petSrc.Paths.OutputDir = petRoot;
 			// 生成要用解包工程（占位美术 / 场景），和上面「从工程恢复」那段一样
 			petSrc.Paths.VanillaProject = Profile.Paths.VanillaProject;
@@ -7223,18 +7238,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 			// ①-c 可选④：替主人承伤（共用守卫 Power，照抄 DieForYouPower + 自己仲裁）
 			Check("替主人承伤：勾了几只都只生成**一个共用**的守卫 Power 类（不是每只一个 —— Creature.HasPower<T>() 只认同一类型，仲裁要跨宠物认人）",
-				petCs.Contains("public sealed class ForgePetGuardianPower : PowerModel")
+				petCs.Contains($"public sealed class {guardName} : PowerModel")
 				&& !petCs.Contains("public sealed class ForgePetGuardianUiCheckPet")
 				&& !petCs.Contains("public sealed class ForgePetGuardianUiCheckPet2")
-				&& petCs.Split("public sealed class ForgePetGuardianPower : PowerModel").Length - 1 == 1, "共用一个守卫类");
+				&& petCs.Split($"public sealed class {guardName} : PowerModel").Length - 1 == 1, "共用一个守卫类");
 			Check("替主人承伤：守卫里有我们自己写的仲裁（宠物列表里第一只活着且挂了守卫的才承担，它死后下一只自动接手）",
-				petCs.Contains("FirstOrDefault(p => p.IsAlive && p.HasPower<ForgePetGuardianPower>())")
+				petCs.Contains($"FirstOrDefault(p => p.IsAlive && p.HasPower<{guardName}>())")
 				&& petCs.Contains("if (current is not null && !ReferenceEquals(current, base.Owner)) return target;"), "有仲裁");
 			Check("替主人承伤：两只勾了的召唤物，召唤命令里都挂同一个守卫",
-				petCs.Contains("if (!__uiCheckPet.HasPower<ForgePetGuardianPower>())")
-				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);")
-				&& petCs.Contains("if (!__uiCheckPet2.HasPower<ForgePetGuardianPower>())")
-				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet2, 1m, null, null);"), "两只都挂了");
+				petCs.Contains($"if (!__uiCheckPet.HasPower<{guardName}>())")
+				&& petCs.Contains($"await PowerCmd.Apply<{guardName}>(choiceContext, __uiCheckPet, 1m, null, null);")
+				&& petCs.Contains($"if (!__uiCheckPet2.HasPower<{guardName}>())")
+				&& petCs.Contains($"await PowerCmd.Apply<{guardName}>(choiceContext, __uiCheckPet2, 1m, null, null);"), "两只都挂了");
 			Check("替主人承伤：守卫只吸「可格挡的攻击伤害」（中毒 / 失去生命照旧打在主人身上）",
 				petCs.Contains("if (!props.IsPoweredAttack()) return target;")
 				&& petCs.Contains("public override Creature ModifyUnblockedDamageTarget(Creature target, decimal amount, ValueProp props, Creature? dealer)"), "有判定");
@@ -7441,7 +7456,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("两只都勾「替主人承伤」时生成照常成功（校验器不再拦），且 Pet.cs 里只有一个共用守卫类",
 				petGen3.Success && File.Exists(Path.Combine(petGen3.ProjectRoot, "cs", "Pet.cs"))
 				&& File.ReadAllText(Path.Combine(petGen3.ProjectRoot, "cs", "Pet.cs"), Encoding.UTF8)
-					.Split("public sealed class ForgePetGuardianPower : PowerModel").Length - 1 == 1,
+					.Split($"public sealed class {guardName} : PowerModel").Length - 1 == 1,
 				string.Join(" | ", petGen3.Issues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
 			petSrc.Summons[1].TakesDamageForOwner = false;
 
@@ -7575,9 +7590,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("新效果「给伙伴施加状态」：PowerCmd.Apply<StrengthPower>(choiceContext, pet, …)（数值走 PetPowerStrengthPower 变量）",
 					miscSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, __uiCheckPet, base.DynamicVars[\"PetPowerStrengthPower\"].BaseValue,"), "施加状态对");
 				Check("新效果「伙伴替主人承伤（开）」：PowerCmd.Apply<ForgePetGuardianPower>（我们自己的共用守卫类，不是本体 DieForYouPower）",
-					miscSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);"), "守卫开对");
+					miscSrc.Contains($"await PowerCmd.Apply<{guardName}>(choiceContext, __uiCheckPet, 1m, null, null);"), "守卫开对");
 				Check("新效果「取消伙伴替主人承伤（关）」：PowerCmd.Remove<ForgePetGuardianPower>(pet)（本体签名 PowerCmd.cs:282）",
-					miscSrc.Contains("await PowerCmd.Remove<ForgePetGuardianPower>(__uiCheckPet);"), "守卫关对");
+					miscSrc.Contains($"await PowerCmd.Remove<{guardName}>(__uiCheckPet);"), "守卫关对");
 				Check("新效果：两条「替主人承伤」开关**不声明**动态变量（否则会多出 DynamicVar(\"Value\")，两条就撞名 → 开新局崩）",
 					!miscSrc.Contains("new DynamicVar(\"Value\", 0m)"), "没有多余变量");
 
@@ -7648,8 +7663,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& allSrc.Contains("UiCheckPet2Cmd.Summon(choiceContext, base.Owner,")
 					&& allSrc.Contains("await CreatureCmd.Heal(__uiCheckPet, base.DynamicVars.Heal.BaseValue);")
 					&& allSrc.Contains("await CreatureCmd.Heal(__uiCheckPet2, base.DynamicVars.Heal.BaseValue);")
-					&& allSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);")
-					&& allSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet2, 1m, null, null);"),
+					&& allSrc.Contains($"await PowerCmd.Apply<{guardName}>(choiceContext, __uiCheckPet, 1m, null, null);")
+					&& allSrc.Contains($"await PowerCmd.Apply<{guardName}>(choiceContext, __uiCheckPet2, 1m, null, null);"),
 					"两只各来一遍");
 				Check("「全部召唤物」：每一份展开都写一行 // CET:PetAll= 标记（回读靠它把多份合并回一条）",
 					allSrc.Split(new[] { "// CET:PetAll=" }, StringSplitOptions.None).Length - 1 == 6,
@@ -7741,6 +7756,58 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("生成后自检：这一整批卡 + 遗物 + 药水都没有「引用未声明的动态变量」（否则游戏里牌组界面会打不开）",
 					!petGenNew.Issues.Any(i => i.Message.Contains("没有声明")),
 					string.Join(" ｜ ", petGenNew.Issues.Where(i => i.Message.Contains("没有声明")).Select(i => i.Message)));
+
+				// —— 多模组共存：生成器自己起的固定类名必须带角色类名前缀 ——
+				// 本体的 ModelDb 只按**类名**注册模型（忽略命名空间），两个模组各有一个 class Strike /
+				// class ForgeExtraTurnPower 就抛 DuplicateModelException，表现是**游戏直接起不来**
+				//（用户实测：「mods 里有不同存档构建的角色模组时游戏打不开」）。
+				{
+					var multi = ProfileFactory.Sample();
+					multi.CharacterClass = "Mmod";
+					multi.ModId = "MmodMod";
+					var nm = Naming.From(multi);
+					Check("多模组共存：生成器自己的固定类名全部带角色类名前缀（Strike / Defend / 额外资源量遗物 / Forge* Power）",
+						nm.CardClassName(multi, new CardSpec { ClassName = "Strike" }) == "MmodStrike"
+						&& nm.CardClassName(multi, new CardSpec { ClassName = "Defend" }) == "MmodDefend"
+						&& nm.ExtraResourceRelicClass == "MmodExtraResourceRelic"
+						&& nm.ExtraTurnPowerClass == "MmodForgeExtraTurnPower"
+						&& nm.GuardianPowerClass == "MmodForgePetGuardianPower"
+						&& nm.DelayedPowerClass(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower" }) == "MmodForgeDelayedWeakPower",
+						$"{nm.CardClassName(multi, new CardSpec { ClassName = "Strike" })} / {nm.ExtraResourceRelicClass} / {nm.ExtraTurnPowerClass} / {nm.GuardianPowerClass}");
+					multi.ExtraResource.Enabled = true;
+					string multiDeck = CSharpCodeGen.CharacterSource(multi);
+					Check("多模组共存：初始卡组引用的是带前缀的类（ModelDb.Card<MmodStrike>()），遗物同理",
+						multiDeck.Contains($"ModelDb.Relic<{nm.ExtraResourceRelicClass}>()")
+						&& CSharpCodeGen.ExtraResourceSource(multi).Contains($"public sealed class {nm.ExtraResourceRelicClass} : RelicModel")
+						&& CSharpCodeGen.CardSource(multi, new CardSpec { ClassName = "Strike", Name = "打击" }, 0)
+							.Contains("public sealed class MmodStrike : CardModel"),
+						"初始卡组 / 遗物 / 卡类都带前缀");
+					// 手填的英文类名**不**加前缀（那是用户自己的命名，改了会让他的素材 / 存档引用错位）
+					Check("多模组共存：用户手填的英文类名保持原样（不加前缀）",
+						nm.CardClassName(multi, new CardSpec { ClassName = "MmodCrush" }) == "MmodCrush"
+						&& nm.RelicClassName(new RelicSpec { ClassName = "MmodCharm" }, 0) == "MmodCharm", "手填的不动");
+				}
+				// 多模组撞车检查：同一个存档目录里**另一个存档**的工程有同名模型类时，必须警告
+				{
+					string tmp = Path.Combine(Path.GetTempPath(), "forge_multimod_" + Guid.NewGuid().ToString("N")[..8]);
+					Directory.CreateDirectory(Path.Combine(tmp, "ModB", "cs", "Cards"));
+					File.WriteAllText(Path.Combine(tmp, "ModB", "cs", "Cards", "MmodStrike.cs"),
+						"namespace B;\npublic sealed class MmodStrike : CardModel { }", new UTF8Encoding(false));
+					File.WriteAllText(Path.Combine(tmp, "ModB", "cs", "Mmod.cs"),
+						"namespace B;\npublic sealed class Mmod : CharacterModel { }", new UTF8Encoding(false));
+					var multiClash = ProfileFactory.Sample();
+					multiClash.CharacterClass = "Mmod";
+					multiClash.ModId = "MmodMod";
+					multiClash.Paths.OutputDir = tmp;
+					var multiClashIssues = ProfileValidator.Validate(multiClash);
+					Check("多模组撞车检查：别的存档工程里有同名模型类时给警告（并说清是哪条路会炸）",
+						multiClashIssues.Any(i => !i.IsError && i.Message.Contains("撞了") && i.Message.Contains("MmodStrike")),
+						string.Join(" ｜ ", multiClashIssues.Where(i => i.Message.Contains("撞了")).Select(i => i.Message)));
+					Check("多模组撞车检查：撞车的警告里带上另一个存档的目录名（ModB）",
+						multiClashIssues.Any(i => i.Message.Contains("「ModB」")),
+						string.Join(" ｜ ", multiClashIssues.Where(i => i.Message.Contains("ModB")).Select(i => i.Message)));
+					try { Directory.Delete(tmp, true); } catch { /* 清理失败无所谓 */ }
+				}
 				Check("从工程恢复：「全部召唤物」的多份展开合并回**一条**效果（PetSummon = \"*\"，不会变成好几条）",
 					Rec("UiCheckPetAll")?.Effects.Count == 3
 					&& Rec("UiCheckPetAll")?.Effects.All(e => PetGen.IsAll(e.PetSummon)) == true
@@ -8949,7 +9016,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Rarity = "Common",
 				InCardPool = true,
 				Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Enemy", NextTurn = true } },
-			}, 1).Contains("FromPower<ForgeDelayedWeakPower>("), "延迟状态");
+			}, 1).Contains($"FromPower<{Naming.From(hoverProbe).DelayedPowerClass(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower" })}>("), "延迟状态");
 		Check("没提到任何状态的卡不会生成那一段（不写多余代码）",
 			!CSharpCodeGen.CardSource(hoverProbe, new CardSpec
 			{

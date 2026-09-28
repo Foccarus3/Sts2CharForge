@@ -21,12 +21,67 @@ public sealed record Naming(
         string charEntry = Slug(charClass);
         string charSlug = charEntry.ToLowerInvariant();
         string modId = string.IsNullOrWhiteSpace(p.ModId) ? charClass + "Mod" : p.ModId.Trim();
+        _currentCharClass = charClass;      // 见 CurrentCharClass 的说明
         return new Naming(Pascal(modId), modId, charClass, charEntry, charSlug, charSlug, charSlug,
             charClass + "CardPool", charClass + "RelicPool", charClass + "PotionPool");
     }
 
+    private static string _currentCharClass = "";
+
+    /// <summary>
+    /// 「当前正在生成哪个角色」—— <see cref="From"/> 每调用一次就更新一次。
+    ///
+    /// **只给极少数拿不到 <c>CharacterProfile</c> 的深层 emitter 当兜底**用
+    /// （<see cref="CustomPowerGen"/> 的自定义状态钩子链里那条「额外获得一个回合」）：
+    /// 那条链一路传的是 CodeWriter / EffectSpec，为它把 profile 穿 4 层不划算。
+    /// 为什么可以这么用：生成是单线程的，而且**每个生成文件的入口第一句都是 <c>Naming.From(profile)</c>**
+    /// （CharacterSource / CardSource / RelicSource / PotionSource / ExtraResourceSource / CustomPowerGen.Source …），
+    /// 所以同一个文件内读到的永远是它自己那个角色。
+    /// 能拿到 profile 的地方**一律显式传**，不要读这个兜底值。
+    /// </summary>
+    public static string CurrentCharClass => _currentCharClass;
+
+    /// <summary>「额外获得一个回合」的 Power 类名（兜底用当前角色，见 <see cref="CurrentCharClass"/>）。</summary>
+    public static string AmbientExtraTurnPowerClass => _currentCharClass + "ForgeExtraTurnPower";
+
+    /// <summary>「下回合生效」的延迟 Power 类名（兜底用当前角色）。</summary>
+    public static string AmbientDelayedPowerClass(EffectSpec e) => _currentCharClass + DelayedPowerSuffix(e);
+
     public string CardClassName(CardSpec c, int index) =>
-        IsValidIdentifier(c.ClassName) ? c.ClassName.Trim() : CharClass + "Card" + (index + 1).ToString();
+        IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
+
+    /// <summary>
+    /// 卡牌实际**生成出来的类名**。
+    ///
+    /// 只有一处特殊处理：初始的「打击 / 防御」（配置里类名固定写成 Strike / Defend）要加**角色类名前缀**
+    /// （<c>SparkleStrike</c> / <c>SparkleDefend</c>）—— 本体的 ModelDb 只用**类名**算模型 ID（忽略命名空间），
+    /// 两个模组各自都定义一个 <c>class Strike</c> 就会在加载时抛
+    /// <c>DuplicateModelException: conflict in mod content names</c>，装在一起游戏直接起不来
+    /// （用户实测报过：「mods 里有不同存档构建的角色模组时游戏打不开」）。
+    /// </summary>
+    public string EmittedCardClass(string profileClassName) =>
+        IsBasicCardName(profileClassName) ? CharClass + profileClassName.Trim() : profileClassName.Trim();
+
+    /// <summary>配置里的类名是不是「初始打击 / 防御」（这两张牌的类名是固定约定）。</summary>
+    public static bool IsBasicCardName(string? className) =>
+        string.Equals(className?.Trim(), "Strike", StringComparison.OrdinalIgnoreCase)
+        || string.Equals(className?.Trim(), "Defend", StringComparison.OrdinalIgnoreCase);
+
+    // ===== 生成器自己起的固定名字：一律带角色类名前缀，避免两个模组撞模型 ID（原因见 EmittedCardClass）=====
+    /// <summary>「额外资源量」的隐藏承载遗物（每个模组必须有自己的一份）。</summary>
+    public string ExtraResourceRelicClass => CharClass + "ExtraResourceRelic";
+
+    /// <summary>「额外获得一个回合」用的 Power。</summary>
+    public string ExtraTurnPowerClass => CharClass + "ForgeExtraTurnPower";
+
+    /// <summary>「下回合生效」用的延迟 Power（<c>&lt;角色&gt;ForgeDelayed&lt;状态&gt;</c>）。</summary>
+    public string DelayedPowerClass(EffectSpec e) => CharClass + DelayedPowerSuffix(e);
+
+    /// <summary>延迟 Power 的固定后半段（回读时按它认「下回合生效」）。</summary>
+    public static string DelayedPowerSuffix(EffectSpec e) => "ForgeDelayed" + (e.PowerId ?? "Power");
+
+    /// <summary>「替主人承伤」共用的守卫 Power（所有召唤物共用一个类，所以只能有一个）。</summary>
+    public string GuardianPowerClass => CharClass + "ForgePetGuardianPower";
 
     /// <summary>
     /// 卡牌类名（没填类名时，按「这是第几张自有卡」自动编号）。
@@ -36,7 +91,7 @@ public sealed record Naming(
     /// </summary>
     public string CardClassName(CharacterProfile p, CardSpec c)
     {
-        if (IsValidIdentifier(c.ClassName)) return c.ClassName.Trim();
+        if (IsValidIdentifier(c.ClassName)) return EmittedCardClass(c.ClassName!.Trim());
         int own = 0;
         foreach (var x in p.Cards)
         {

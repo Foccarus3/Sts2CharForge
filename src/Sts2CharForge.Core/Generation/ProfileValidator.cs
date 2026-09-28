@@ -363,10 +363,12 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"卡牌「{c.Name}」的英文类名「{cls}」和本体卡重名 —— 本体的模型 ID 只按类名算"
                     + "（忽略命名空间），重名会让模组加载当场抛 DuplicateModelException。请改个自己的名字"
                     + $"（比如你自己的前缀：My{cls}）。初始的打击 / 防御已经用不会撞名的 Strike / Defend 了。"));
-            // 初始打击 / 防御靠 CardTag 被本体的遗物认出来，漏标就等于那些遗物找不到这张牌
-            if ((string.Equals(cls, "Strike", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Strike"))
-                || (string.Equals(cls, "Defend", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Defend")))
-                issues.Add(new("警告", $"卡牌「{c.Name}」（{cls}）没有标本体卡标签 —— 本体那些「升级你的初始打击 / 防御」的"
+            // 初始打击 / 防御靠 CardTag 被本体的遗物认出来，漏标就等于那些遗物找不到这张牌。
+            // 注意：这里比的是**配置里的类名**（Strike / Defend）—— 生成出来的类名带了角色类名前缀（<角色>Strike）。
+            bool isBasicCard = Naming.IsBasicCardName(c.ClassName);
+            if ((isBasicCard && string.Equals(c.ClassName!.Trim(), "Strike", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Strike"))
+                || (isBasicCard && string.Equals(c.ClassName!.Trim(), "Defend", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Defend")))
+                issues.Add(new("警告", $"卡牌「{c.Name}」（{c.ClassName}）没有标本体卡标签 —— 本体那些「升级你的初始打击 / 防御」的"
                     + "遗物 / 事件是按 CardTag 查牌的，漏标它们就找不到这张牌。到「卡牌」页的「本体卡标签」里勾上 Strike / Defend。"));
             if (!EffectCatalog.CardTypes.Contains(c.CardType))
                 issues.Add(new("错误", $"卡牌「{c.Name}」类型非法：{c.CardType}"));
@@ -459,7 +461,88 @@ public static class ProfileValidator
         if (!File.Exists(p.Paths.GodotExe))
             issues.Add(new("警告", $"Godot 可执行文件不存在：{p.Paths.GodotExe}（只影响导出 PCK）"));
 
+        // 多个模组装在一起会不会撞车（本体的模型 ID 只按类名算 —— 撞了游戏直接起不来）。
+        // 这一步要读磁盘上别的存档工程，任何意外（路径怪、文件被占、读取失败）都绝不能影响正常校验。
+        try { CheckMultiModConflicts(issues, p, n); } catch { /* 读不到就不报，宁可漏报 */ }
+
         return issues;
+    }
+
+    /// <summary>
+    /// 「mods 里放了多个存档生成的模组」时的撞车检查。
+    ///
+    /// 为什么必须有这一步：本体的 <c>ModelDb</c> 只用**类名**算模型 ID（**忽略命名空间**），
+    /// 同一个类名注册两次就抛 <c>DuplicateModelException: conflict in mod content names</c>，
+    /// 表现是**游戏直接起不来**（用户实测报过「mods 里有不同存档构建的角色模组时游戏打不开」）。
+    ///
+    /// 这里扫「同一个存档目录下别的存档生成的工程」，把和本配置**重名的模型类**找出来 ——
+    /// 生成器自己起的固定名字（打击 / 防御、额外资源量遗物、Forge* 那几个 Power）已经带上角色类名前缀，
+    /// 所以剩下的撞名基本都是「两个存档用了同一个角色类名」或「手填了同一个英文类名」。
+    /// 只报**警告**（不拦生成）：用户可能只想装其中一个，或者正要删掉另一个。
+    /// </summary>
+    private static void CheckMultiModConflicts(List<ValidationIssue> issues, CharacterProfile p, Naming n)
+    {
+        string outDir = p.Paths.OutputDir;
+        if (string.IsNullOrWhiteSpace(outDir) || !Directory.Exists(outDir)) return;
+
+        // 本配置会注册的全部模型类名
+        var mine = new SortedSet<string>(StringComparer.Ordinal);
+        foreach (var c in p.Cards)
+            if (c is not null && !c.IsVanillaCard) mine.Add(n.CardClassName(p, c));
+        for (int i = 0; i < p.Relics.Count; i++)
+            if (p.Relics[i] is not null) mine.Add(n.RelicClassName(p.Relics[i], i));
+        for (int i = 0; i < p.Potions.Count; i++)
+            if (p.Potions[i] is not null) mine.Add(n.PotionClassName(p.Potions[i], i));
+        foreach (var cp in CustomPowerGen.Active(p))
+            mine.Add(CustomPowerGen.ClassNameOf(p, cp, p.CustomPowers.IndexOf(cp)));
+        mine.Add(n.CharClass);
+        mine.Add(n.CardPoolClass);
+        mine.Add(n.RelicPoolClass);
+        mine.Add(n.PotionPoolClass);
+        if (p.ExtraResource.Enabled) mine.Add(n.ExtraResourceRelicClass);
+        if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
+        foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
+        if (PetGen.IsActive(p))
+        {
+            foreach (var d in PetGen.All(p)) mine.Add(d.ClassName);
+            if (PetGen.Enabled(p).Any(s => s.TakesDamageForOwner)) mine.Add(n.GuardianPowerClass);
+        }
+
+        string myRoot;
+        try { myRoot = Path.GetFullPath(Path.Combine(outDir, n.ModId)); }
+        catch { return; }
+
+        foreach (string dir in Directory.GetDirectories(outDir))
+        {
+            string cs = Path.Combine(dir, "cs");
+            if (!Directory.Exists(cs)) continue;
+            string otherRoot;
+            try { otherRoot = Path.GetFullPath(dir); }
+            catch { continue; }
+            if (string.Equals(otherRoot, myRoot, StringComparison.OrdinalIgnoreCase)) continue;  // 自己
+
+            var hits = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (string f in Directory.EnumerateFiles(cs, "*.cs", SearchOption.AllDirectories))
+            {
+                string text;
+                try { text = File.ReadAllText(f); } catch { continue; }
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                             text, @"(?m)^public\s+(?:sealed\s+|abstract\s+|partial\s+)*class\s+(\w+)\s*:\s*[\w<>\.]*(?:Model|Power)\b"))
+                {
+                    string cls = m.Groups[1].Value;
+                    if (mine.Contains(cls)) hits.Add(cls);
+                }
+            }
+            if (hits.Count == 0) continue;
+
+            string other = Path.GetFileName(dir);
+            issues.Add(new("警告", $"「{other}」这个存档生成的模组和本配置**撞了 {hits.Count} 个类名**"
+                + $"（{string.Join("、", hits.Take(6))}{(hits.Count > 6 ? " …" : "")}）—— "
+                + "本体的模型 ID 只用类名算（忽略命名空间），两个模组同时装进 mods 会抛 "
+                + "DuplicateModelException，**游戏直接起不来**。"
+                + "要同时装两个模组：把其中一个存档的「角色类名」改掉（例：S1Mod 的角色类名从 Seven 改成 S1）、"
+                + "别手填和别人一样的英文类名，然后重新生成两边；只想装一个的话忽略这条即可。"));
+        }
     }
 
     /// <summary>

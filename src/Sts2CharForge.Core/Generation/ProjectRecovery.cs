@@ -143,9 +143,12 @@ public static class ProjectRecovery
         // ---- 卡牌 ----
         foreach (string file in Sorted(Directory.GetFiles(Path.Combine(cs, "Cards"), "*.cs")))
         {
+            // 卡池 / 初始卡组里写的是**生成时的类名**（打击 / 防御带角色类名前缀：<角色>Strike），
+            // 而配置里存的是去掉前缀的 Strike —— 这两处一律按生成时的类名去对。
+            string emitted = Path.GetFileNameWithoutExtension(file);
             var card = ParseCard(file, p, loc, nameToPowerId, result);
-            card.InCardPool = !removedFromPool.Contains(card.ClassName);
-            if (starting.TryGetValue(card.ClassName, out int copies))
+            card.InCardPool = !removedFromPool.Contains(emitted);
+            if (starting.TryGetValue(emitted, out int copies))
             {
                 card.InStartingDeck = true;
                 card.StartingCopies = copies;
@@ -159,7 +162,8 @@ public static class ProjectRecovery
         {
             foreach (string file in Sorted(Directory.GetFiles(relicDir, "*.cs")))
             {
-                if (Path.GetFileName(file) == "ExtraResourceRelic.cs") continue;
+                // 额外资源量的载体遗物（<角色类>ExtraResourceRelic）不是用户配置的遗物，跳过
+                if (Path.GetFileName(file).EndsWith("ExtraResourceRelic.cs", StringComparison.Ordinal)) continue;
                 var relic = ParseRelic(file, p, loc, nameToPowerId, result);
                 relic.IsStartingRelic = startingRelics.Contains(relic.ClassName);
                 p.Relics.Add(relic);
@@ -180,7 +184,13 @@ public static class ProjectRecovery
         // 所以上面那轮扫不到 —— 这里补成「本体卡引用」条目（只在初始卡组里用本体的英文类名，不生成自己的类）。
         foreach (var kv in starting)
         {
+            // 已有同名条目的（自有卡或被别的路径加过）→ 不重复加
             if (p.Cards.Any(c => string.Equals(c.ClassName, kv.Key, StringComparison.Ordinal))) continue;
+            // **必须是本体真的有的卡 id** 才算「本体卡引用」。
+            // 为什么要这一条：用户自己的打击 / 防御生成出来是带角色类名前缀的（<角色>Strike / <角色>Defend），
+            // 初始卡组里写的也是 <角色>Strike —— 不加判断的话这里会把它们又当成一条「本体卡引用」加一份，
+            // 回读出来的牌数变多、界面里多出两条重复的初始卡（实测踩过）。
+            if (EffectCatalog.Cards.All(x => !string.Equals(x.Id, kv.Key, StringComparison.Ordinal))) continue;
             p.Cards.Add(new CardSpec
             {
                 Name = EffectCatalog.Cards.FirstOrDefault(x => x.Id == kv.Key)?.Zh ?? kv.Key,
@@ -334,8 +344,17 @@ public static class ProjectRecovery
         Dictionary<string, string> nameToPowerId, RecoveryResult result)
     {
         string cls = Path.GetFileNameWithoutExtension(file);
+        string emitted = cls;      // 生成时的类名（本地化键、卡池、初始卡组都按它找）
+        // 生成器给「初始打击 / 防御」加了角色类名前缀（<角色类>Strike / <角色类>Defend）——
+        // 因为本体的 ModelDb 只按**类名**注册模型，两个模组各自一个 class Strike 会撞车、游戏起不来。
+        // 回读时把前缀摘掉：配置里仍然是 Strike / Defend（界面上这两张牌固定排在列表最上面）。
+        {
+            string cc = Naming.From(profile).CharClass;
+            if (cls.Equals(cc + "Strike", StringComparison.OrdinalIgnoreCase)) cls = "Strike";
+            else if (cls.Equals(cc + "Defend", StringComparison.OrdinalIgnoreCase)) cls = "Defend";
+        }
         string text = File.ReadAllText(file, Encoding.UTF8);
-        string entry = EffectCatalog.SlugFor(cls);
+        string entry = EffectCatalog.SlugFor(emitted);
         var card = new CardSpec
         {
             ClassName = cls,
@@ -918,7 +937,8 @@ public static class ProjectRecovery
             }
 
             // 替主人承伤（关）：`await PowerCmd.Remove<ForgePetGuardianPower>(__pet);`
-            if (line.Contains($"PowerCmd.Remove<{PetGen.GuardianPowerClassName}>("))
+            if (line.Contains($"PowerCmd.Remove<") && line.Contains(PetGen.GuardianPowerSuffix)
+                && line.Contains(">("))
             {
                 var e = PetEffectFromMarker(Match(line, @"PowerCmd\.Remove<\w+>\((\w+)\)"), out string? whyOff);
                 if (e is null) { result.Unparsed.Add($"{where}: {line} {whyOff}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
@@ -994,7 +1014,7 @@ public static class ProjectRecovery
                 }
 
                 var e = new EffectSpec { Kind = "ApplyPower", PowerId = power };
-                if (power == "ForgeExtraTurnPower")
+                if (power.EndsWith("ForgeExtraTurnPower", StringComparison.Ordinal))
                 {
                     e.Kind = "ExtraTurn";
                     e.PowerId = null;
@@ -1003,9 +1023,9 @@ public static class ProjectRecovery
                     continue;
                 }
                 if (power == "BlockNextTurnPower") { e.Kind = "Block"; e.NextTurn = true; }
-                else if (power == "DrawCardsNextTurnPower" || power.StartsWith("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
-                else if (power == "EnergyNextTurnPower" || power.StartsWith("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
-                else if (power.StartsWith("ForgeDelayed", StringComparison.Ordinal)) { e.NextTurn = true; }
+                else if (power == "DrawCardsNextTurnPower" || power.Contains("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
+                else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
+                else if (power.Contains("ForgeDelayed", StringComparison.Ordinal)) { e.NextTurn = true; }
 
                 if (e.Kind == "ApplyPower")
                 {
@@ -1657,7 +1677,7 @@ public static class ProjectRecovery
                 cmdBody = nextCls > cmdAt ? text.Substring(cmdAt, nextCls - cmdAt) : text.Substring(cmdAt);
             }
             spec.TakesDamageForOwner =
-                cmdBody.Contains("PowerCmd.Apply<" + PetGen.GuardianPowerClassName + ">")
+                (cmdBody.Contains("PowerCmd.Apply<") && cmdBody.Contains(PetGen.GuardianPowerSuffix + ">"))
                 || text.Contains("PowerCmd.Apply<" + PetGen.LegacyGuardianPowerClassOf(cls) + ">");
 
             string entry = EffectCatalog.SlugFor(cls);

@@ -946,7 +946,7 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         // 图标路径是本体规则 res://images/atlases/relic_atlas.sprites/<entry>.tres →
         // 图集里没有这个精灵，AtlasResourceLoader 会回退到 res://images/relics/<entry>.png。
         // 不给这个文件，遗物栏那个格子就是 missing_power（紫色占位）+ 日志里 Missing sprite 'extra_resource_relic'。
-        string relicEntry = Naming.EntryOf("ExtraResourceRelic").ToLowerInvariant();
+        string relicEntry = Naming.EntryOf(Naming.From(p).ExtraResourceRelicClass).ToLowerInvariant();
         string relicDst = Path.Combine(projectRoot, "images/relics", relicEntry + ".png");
         Directory.CreateDirectory(Path.GetDirectoryName(relicDst)!);
         File.Copy(src, relicDst, overwrite: true);
