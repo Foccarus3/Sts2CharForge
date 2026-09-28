@@ -1348,8 +1348,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         _ => "Value",
     };
 
-    internal static string VarPropertyOf(EffectSpec e) => e.Kind switch
-    {
+    internal static string VarPropertyOf(EffectSpec e) => e.Kind switch    {
         "Damage" => "Damage",
         "Block" => "Block",
         "Draw" => "Cards",
@@ -1607,7 +1606,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         effects.FirstOrDefault(x => PetFormula(x) is not null);
 
     /// <summary>这个效果的 CanonicalVars 声明里会不会出现宠物命令（&lt;Pet&gt;Cmd）—— 只有「按生命值算」的那几种会。</summary>
-    internal static bool CanonicalVarNeedsPetCmd(EffectSpec e) => PetFormula(e) is not null;
+    /// <remarks>
+    /// <c>"fixed"</c>（牺牲伙伴选「固定 N」）**不算**：那种收益声明的是普通 BlockVar / DamageVar
+    /// （<c>new BlockVar("PetSacrificeBlock", 6m, …)</c>），既没有宠物命令、也**没有 CalculationBase** ——
+    /// 把它算成「按生命值算」会让升级增量被写到 <c>base.DynamicVars.CalculationBase.UpgradeValueBy(…)</c> 上，
+    /// 而那个变量根本没声明 → 本体的 DynamicVars 按名字取 → 抛 KeyNotFoundException。
+    /// 这个异常发生在「卡牌被升级 / 牌组界面预览升级」时，表现是**牌组界面一片空白打不开**
+    /// （用户实测报过：牺牲伙伴固定伤害 + 升级增量的卡，一开牌组就看不到牌）。
+    /// </remarks>
+    internal static bool CanonicalVarNeedsPetCmd(EffectSpec e) => PetFormula(e) is not null and not "fixed";
 
     /// <summary>
     /// 这条效果「需要**已经召唤出来**的那只宠物」：宠物不在场时它整条跳过（生成 <c>if (__pet is not null)</c>），
@@ -2289,6 +2296,92 @@ public static class ExtraResourceEnergyCounterDiagPatch
         PetFormula(e) is not null and not "fixed"
             ? (e.Kind == "PetSacrifice" && e.PetSacrificeGain != "Damage" ? "CalculatedBlock" : "CalculatedDamage")
             : VarNameOf(e, map);
+
+    /// <summary>
+    /// 生成后自检：这份源码里有没有「引用了、但 CanonicalVars 里没声明」的动态变量。
+    /// 返回缺失的变量名（空列表 = 没问题；**认不出来的变量类型会跳过整张卡的自检**，宁可漏报不误报）。
+    ///
+    /// 为什么必须查：本体的 <c>DynamicVars</c> 是**按名字取**的，取不到就抛 <c>KeyNotFoundException</c>。
+    /// 这个异常发生在「卡牌被升级 / 牌组界面预览升级（『查看升级』）/ 卡面渲染」时，
+    /// 表现是**牌组界面整个打不开、一片空白**（用户实测报过：牺牲伙伴选「固定 N」又填了升级增量，
+    /// 升级增量被写到没声明的 CalculationBase 上，一开牌组就看不到牌）。
+    /// 只有游戏里才会暴露，所以生成完就自己查一遍，把它当成生成错误拦住。
+    /// </summary>
+    public static IReadOnlyList<string> MissingDynamicVars(string source)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(source, @"CanonicalVars\s*=>\s*\[(.*?)\];",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        var declared = new HashSet<string>(StringComparer.Ordinal);
+        if (m.Success)
+        {
+            foreach (string item in SplitTopLevel(m.Groups[1].Value))
+            {
+                string s = item.Trim();
+                if (s.Length == 0) continue;
+                // 1) 起了名字的（new DynamicVar("PetHp", 0m) / new BlockVar("PetSacrificeBlock", 6m, …)）
+                var named = System.Text.RegularExpressions.Regex.Match(s, "\"([^\"]+)\"");
+                if (named.Success) { declared.Add(named.Groups[1].Value); continue; }
+                // 2) 没起名字的：按变量类型的默认键名（和本体一致）
+                var ty = System.Text.RegularExpressions.Regex.Match(s, @"new\s+([A-Za-z0-9_]+)");
+                if (!ty.Success) continue;
+                string tn = ty.Groups[1].Value;
+                if (tn == "PowerVar")
+                {
+                    var pw = System.Text.RegularExpressions.Regex.Match(s, @"PowerVar<(\w+)>");
+                    if (!pw.Success) return Array.Empty<string>();      // 认不出来 → 放弃这张卡的检查
+                    declared.Add(pw.Groups[1].Value);
+                    continue;
+                }
+                string? def = tn switch
+                {
+                    "DamageVar" => "Damage",
+                    "BlockVar" => "Block",
+                    "CardsVar" => "Cards",
+                    "EnergyVar" => "Energy",
+                    "HealVar" => "Heal",
+                    "HpLossVar" => "HpLoss",
+                    "MaxHpVar" => "MaxHp",
+                    "GoldVar" => "Gold",
+                    "StarsVar" => "Stars",
+                    "CalculationBaseVar" => "CalculationBase",
+                    "CalculationExtraVar" => "CalculationExtra",
+                    "ExtraDamageVar" => "ExtraDamage",
+                    "CalculatedDamageVar" => "CalculatedDamage",
+                    "CalculatedBlockVar" => "CalculatedBlock",
+                    _ => null,
+                };
+                if (def is null) return Array.Empty<string>();          // 认不出来 → 放弃这张卡的检查
+                declared.Add(def);
+            }
+        }
+
+        var refs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (System.Text.RegularExpressions.Match r in System.Text.RegularExpressions.Regex.Matches(
+                     source, @"base\.DynamicVars\.([A-Za-z0-9_]+)"))
+            refs.Add(r.Groups[1].Value);
+        foreach (System.Text.RegularExpressions.Match r in System.Text.RegularExpressions.Regex.Matches(
+                     source, @"base\.DynamicVars\[""([^""]+)""\]"))
+            refs.Add(r.Groups[1].Value);
+        return refs.Where(x => !declared.Contains(x)).OrderBy(x => x, StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>按**顶层**逗号切分（跳过括号 / 方括号里的逗号）—— 用来拆 CanonicalVars 的每一项。</summary>
+    private static IEnumerable<string> SplitTopLevel(string s)
+    {
+        int depth = 0, start = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c is '(' or '[' or '<') depth++;
+            else if (c is ')' or ']' or '>') depth--;
+            else if (c == ',' && depth <= 0)
+            {
+                yield return s.Substring(start, i - start);
+                start = i + 1;
+            }
+        }
+        if (start < s.Length) yield return s.Substring(start);
+    }
 
     /// <summary>要不要写 <c>// CET:PetEffect=…</c> 标记（新增的那批宠物效果都要，SummonPet / PetAttack 保持原样）。</summary>
     internal static bool IsPetKindForMarker(string kind) =>

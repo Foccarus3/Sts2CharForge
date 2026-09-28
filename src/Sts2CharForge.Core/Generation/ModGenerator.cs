@@ -63,13 +63,22 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, "Patches.cs"), PatchesGen.PatchesSource(profile));
 
+        // 「引用了没声明的动态变量」的生成后自检（说明见下面那段）
+        var varProblems = new List<string>();
+        void AuditVars(string modelName, string src)
+        {
+            var missingVars = CSharpCodeGen.MissingDynamicVars(src);
+            if (missingVars.Count > 0) varProblems.Add($"{modelName} → " + string.Join("、", missingVars));
+        }
+
         for (int i = 0; i < profile.Cards.Count; i++)
         {
             // 本体卡引用（打击 / 防御）没有自己的类、没有自己的本地化，只有初始卡组里那一行
             if (profile.Cards[i].IsVanillaCard) continue;
             string cardCls = n.CardClassName(profile, profile.Cards[i]);
-            ProjectFilesGen.WriteText(Path.Combine(cs, "Cards", cardCls + ".cs"),
-                CSharpCodeGen.CardSource(profile, profile.Cards[i], i));
+            string cardSrc = CSharpCodeGen.CardSource(profile, profile.Cards[i], i);
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Cards", cardCls + ".cs"), cardSrc);
+            AuditVars(cardCls, cardSrc);
         }
 
         // ===== 生成后自检：卡池 / 初始卡组里引用的卡类，必须有对应的 cs/Cards/*.cs =====
@@ -91,12 +100,32 @@ public static class ModGenerator
                     + "到「卡牌」页给它们填上各自的英文类名再生成。"));
             }
         }
+
+        // ===== 生成后自检：有没有「引用了、但 CanonicalVars 里没声明」的动态变量 =====
+        // 本体的 DynamicVars 按名字取，取不到就抛 KeyNotFoundException —— 而且只在游戏里炸：
+        // 表现是**牌组界面打不开、一片空白**（用户实测报过）。这种错编译期看不出来，所以生成后自己查。
+        // AuditVars 在上面写卡牌文件时已经把每张卡的源码喂进来了（遗物 / 药水同理）。
+        if (varProblems.Count > 0)
+        {
+            issues.Add(new Generation.ValidationIssue("错误", "生成出来的模型里引用了**没有声明**的动态变量"
+                + "（本体的 DynamicVars 按名字取，取不到会在游戏里抛 KeyNotFoundException —— "
+                + "表现是牌组界面打不开 / 卡面显示不出来）：" + string.Join("；", varProblems)
+                + "。这是生成器的 bug，请把这条信息发给我。"));
+        }
         for (int i = 0; i < profile.Relics.Count; i++)
-            ProjectFilesGen.WriteText(Path.Combine(cs, "Relics", n.RelicClassName(profile.Relics[i], i) + ".cs"),
-                CSharpCodeGen.RelicSource(profile, profile.Relics[i], i));
+        {
+            string relicCls = n.RelicClassName(profile.Relics[i], i);
+            string relicSrc = CSharpCodeGen.RelicSource(profile, profile.Relics[i], i);
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Relics", relicCls + ".cs"), relicSrc);
+            AuditVars(relicCls, relicSrc);
+        }
         for (int i = 0; i < profile.Potions.Count; i++)
-            ProjectFilesGen.WriteText(Path.Combine(cs, "Potions", n.PotionClassName(profile.Potions[i], i) + ".cs"),
-                CSharpCodeGen.PotionSource(profile, profile.Potions[i], i));
+        {
+            string potionCls = n.PotionClassName(profile.Potions[i], i);
+            string potionSrc = CSharpCodeGen.PotionSource(profile, profile.Potions[i], i);
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Potions", potionCls + ".cs"), potionSrc);
+            AuditVars(potionCls, potionSrc);
+        }
 
         if (CSharpCodeGen.UsesExtraTurn(profile))
         {

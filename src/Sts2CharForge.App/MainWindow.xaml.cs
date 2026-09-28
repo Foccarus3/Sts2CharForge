@@ -7609,6 +7609,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("新效果「牺牲伙伴（最大生命×倍率）」标记里带倍率（回读要能还原 3 倍）",
 					sacBlockSrc.Contains("CET:PetMul=3m"), "倍率标记在");
 
+				// —— 牺牲伙伴选「固定 N」又填了升级增量 ——
+				// 用户实测报过：这种卡一开牌组就是一片空白（牌组界面打不开）。原因：升级增量被写到
+				// base.DynamicVars.CalculationBase.UpgradeValueBy(3m)，而「固定 N」声明的是普通
+				// BlockVar("PetSacrificeBlock")，**没有 CalculationBase** → 本体按名字取 → KeyNotFoundException
+				// （牌组界面的「查看升级」要造升级预览，就炸在这里）。
+				CardSpec sacUp = new CardSpec { Name = "献身升级", ClassName = "UiCheckPetNewSacUp", CardType = "Skill", Cost = 1, InCardPool = true };
+				sacUp.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "Self", PetSummon = "UiCheckPet", PetSacrificeGain = "Block", PetSacrificeFormula = "Fixed", Amount = 6m, UpgradeAmount = 3m });
+				string sacUpSrc = CSharpCodeGen.CardSource(petSrc, sacUp, 0);
+				Check("牺牲伙伴（固定 N）+ 升级增量：升级写在**它自己的**变量上（base.DynamicVars[\"PetSacrificeBlock\"]），不再写到没声明的 CalculationBase",
+					sacUpSrc.Contains("base.DynamicVars[\"PetSacrificeBlock\"].UpgradeValueBy(3m);")
+					&& !sacUpSrc.Contains("CalculationBase"), "升级落点对");
+				Check("生成后自检（MissingDynamicVars）：牺牲伙伴固定值的卡「引用的变量全都声明了」",
+					CSharpCodeGen.MissingDynamicVars(sacUpSrc).Count == 0,
+					string.Join(",", CSharpCodeGen.MissingDynamicVars(sacUpSrc)));
+				Check("生成后自检（MissingDynamicVars）：能抓出「引用未声明变量」这种会让牌组界面打不开的代码",
+					CSharpCodeGen.MissingDynamicVars("public sealed class X : CardModel {\n"
+						+ "protected override IEnumerable<DynamicVar> CanonicalVars => [ new BlockVar(\"PetSacrificeBlock\", 6m, ValueProp.Move) ];\n"
+						+ "protected override void OnUpgrade() { base.DynamicVars.CalculationBase.UpgradeValueBy(3m); }\n}")
+						.SequenceEqual(new[] { "CalculationBase" }),
+					string.Join(",", CSharpCodeGen.MissingDynamicVars("public sealed class X : CardModel {\n"
+						+ "protected override IEnumerable<DynamicVar> CanonicalVars => [ new BlockVar(\"PetSacrificeBlock\", 6m, ValueProp.Move) ];\n"
+						+ "protected override void OnUpgrade() { base.DynamicVars.CalculationBase.UpgradeValueBy(3m); }\n}")));
+				Check("生成后自检（MissingDynamicVars）：正常卡（声明了 Damage/Block2 等）不误报",
+					CSharpCodeGen.MissingDynamicVars(CSharpCodeGen.CardSource(petSrc, newMax, 0)).Count == 0
+					&& CSharpCodeGen.MissingDynamicVars("CanonicalVars => [ new DamageVar(6m, ValueProp.Move), new DamageVar(\"Damage2\", 6m, ValueProp.Move) ];\n"
+						+ "void F() { _ = base.DynamicVars.Damage.BaseValue; _ = base.DynamicVars[\"Damage2\"].BaseValue; }").Count == 0,
+					"不误报");
+
 				// —— 「全部召唤物」：一条效果按**每一只启用的召唤物**逐只展开（用户要求：下拉加「全选」）——
 				CardSpec allPet = new CardSpec { Name = "全体出动", ClassName = "UiCheckPetAll", CardType = "Skill", Cost = 1, InCardPool = true };
 				allPet.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self", PetSummon = PetGen.AllId });
@@ -7672,6 +7700,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				petSrc.Cards.Add(sacBlock);
 				petSrc.Cards.Add(sacDmg);
 				petSrc.Cards.Add(sacCur);
+				petSrc.Cards.Add(sacUp);
 				var petGenNew = ModGenerator.Generate(petSrc);
 				var petRecNew = ProjectRecovery.FromProject(petGenNew.ProjectRoot);
 				CardSpec? Rec(string cls) => petRecNew.Profile.Cards.FirstOrDefault(c => c.ClassName == cls);
@@ -7702,6 +7731,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					Rec("UiCheckPetNewSacCur")?.Effects.Count == 1
 					&& Rec("UiCheckPetNewSacCur")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "CurHp") == true,
 					string.Join(" · ", Rec("UiCheckPetNewSacCur")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeFormula) ?? Array.Empty<string>()));
+				Check("从工程恢复：牺牲伙伴（固定 N + 升级增量）找回来了，而且升级增量落在它自己身上",
+					Rec("UiCheckPetNewSacUp")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacUp")?.Effects[0].Kind == "PetSacrifice"
+					&& Rec("UiCheckPetNewSacUp")?.Effects[0].PetSacrificeFormula == "Fixed"
+					&& Rec("UiCheckPetNewSacUp")?.Effects[0].Amount == 6m
+					&& Rec("UiCheckPetNewSacUp")?.Effects[0].UpgradeAmount == 3m,
+					string.Join(" · ", Rec("UiCheckPetNewSacUp")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeFormula + "/" + e.Amount + "/升级" + e.UpgradeAmount) ?? Array.Empty<string>()));
+				Check("生成后自检：这一整批卡 + 遗物 + 药水都没有「引用未声明的动态变量」（否则游戏里牌组界面会打不开）",
+					!petGenNew.Issues.Any(i => i.Message.Contains("没有声明")),
+					string.Join(" ｜ ", petGenNew.Issues.Where(i => i.Message.Contains("没有声明")).Select(i => i.Message)));
 				Check("从工程恢复：「全部召唤物」的多份展开合并回**一条**效果（PetSummon = \"*\"，不会变成好几条）",
 					Rec("UiCheckPetAll")?.Effects.Count == 3
 					&& Rec("UiCheckPetAll")?.Effects.All(e => PetGen.IsAll(e.PetSummon)) == true
