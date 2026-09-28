@@ -380,10 +380,6 @@ public static class ProjectRecovery
         }
 
         ParseCardCondition(card, text, nameToPowerId, result, cls);
-        // 「召唤物卡牌」标记：这张牌里有任何宠物类效果（除「召唤伙伴」—— 那只是召出来，不算「宠物做的事」）
-        // 就认为它是召唤物卡。老工程里没这个标记（那时还没有这个字段），所以按内容推断，
-        // 免得恢复出来的卡在「召唤物卡牌」页里看不到。
-        card.IsPetCard = card.Effects.Any(e => EffectCatalog.IsPetKind(e.Kind) && e.Kind != "SummonPet");
         return card;
 
         static void p_xPlus(CardSpec c) => c.XPlusOnUpgrade = true;

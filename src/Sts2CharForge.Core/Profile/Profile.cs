@@ -665,26 +665,6 @@ public sealed class CardSpec : SpecBase
     [JsonIgnore]
     public bool ValueEditable => !IsVanillaCard;
 
-    private bool _isPetCard;
-
-    /// <summary>
-    /// 「这是召唤物卡」：勾上以后这张牌会出现在「召唤物卡牌」选项卡里（左边那张列表只列勾了的），
-    /// 那边的效果栏是**专属效果模板** —— 效果种类下拉只列宠物类效果（召唤伙伴 / 伙伴攻击 /
-    /// 按生命值算的伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人承伤…）。
-    ///
-    /// 注意：这只是一个「归类」标记（存档字段 + 界面筛选），**不影响生成** ——
-    /// 一张没勾的牌照样可以用 «召唤伙伴 / 伙伴攻击»（老存档里的牌就是那样）。
-    /// </summary>
-    public bool IsPetCard
-    {
-        get => _isPetCard;
-        set { if (Set(ref _isPetCard, value)) { Raise(nameof(Display)); Raise(nameof(PetCardBadge)); } }
-    }
-
-    /// <summary>列表行尾那个「召唤物卡」标记（没勾就空）。</summary>
-    [JsonIgnore]
-    public string PetCardBadge => IsPetCard ? " ｜ 召唤物卡" : "";
-
     private List<string> _tags = new();
 
     /// <summary>
@@ -798,7 +778,6 @@ public sealed class CardSpec : SpecBase
         : $"{Name}  ｜ {CardType} / {Rarity} / {(CostIsX ? "X" : Cost.ToString())} 费{(StarCostIsX ? " + 资源量X" : "")}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
           + (KeywordList.Count > 0 ? " ｜ " + string.Join("·", KeywordList) : "")
           + (UpgradeKeywords.Any ? " ｜ " + UpgradeKeywords.Display : "")
-          + PetCardBadge
           + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort);
 }
 

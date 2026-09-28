@@ -623,7 +623,7 @@ public static class ProfileValidator
                     if (forPotion)
                     {
                         issues.Add(new("错误", $"{owner} 的第 {i} 条是「{kindZh}」，但**药水不支持**"
-                            + "（这一档的宠物效果只做在卡牌上）—— 请改用召唤物卡牌。"));
+                            + "（这一档的宠物效果只做在卡牌上）—— 请改用卡牌。"));
                     }
                     else
                     {
@@ -686,7 +686,7 @@ public static class ProfileValidator
             if (r is null) continue;
             Scan($"遗物「{r.Name}」", r.Effects, forPotion: false);
             // 「伙伴攻击」必须挂在卡牌上：遗物没有「玩家选中的目标」
-            // 新增的那批宠物效果同理（这一档只做在召唤物卡牌上，见 CSharpCodeGen.EmitRelicEffectOnce）。
+            // 新增的那批宠物效果同理（这一档只做在卡牌上，见 CSharpCodeGen.EmitRelicEffectOnce）。
             if (r.Effects.Any(e => e.Kind == "PetAttack"))
                 issues.Add(new("错误", $"遗物「{r.Name}」里放了「伙伴攻击」—— 遗物没有「玩家选中的目标」，"
                     + "宠物该打谁说不清。请把它放到卡牌上（遗物只支持「召唤伙伴」）。"));

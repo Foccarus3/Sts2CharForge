@@ -576,12 +576,15 @@ public static class EffectCatalog
     };
 
     /// <summary>
-    /// 「召唤物卡牌」选项卡里那个**专属效果栏**的下拉候选：只列宠物类效果。
+    /// 「哪些效果种类是宠物类效果」这份名单（现在**只为记录 / 校验用** ——
+    /// 界面上已经没有专属效果栏了：原先那个「召唤物卡牌」选项卡已按用户要求整页删除，
+    /// 12 个宠物效果就在「卡牌」页的「效果种类」下拉（全量 <see cref="EffectKinds"/>）里选）。
     ///
-    /// 为什么要单独一份：那个页面的效果编辑器用的是专属模板（<c>EffectEditorPetCard</c>），
-    /// 它的效果种类下拉只该出现「做宠物的事」的那些效果，免得用户在一张召唤物卡上
-    /// 选了「获得金币」这种和宠物毫无关系的东西。
-    /// 从 <see cref="EffectKinds"/> 里按名字筛出来，**顺序和主注册表完全一致**（不会两处漂移）。
+    /// 这份名单仍然有价值：校验器按它给「这一档只支持卡牌 / 必须先选召唤物」之类提示，
+    /// 生成端（<c>CSharpCodeGen.IsPetKindForMarker</c>、<c>EffectSpec.IsPetEffect</c>）也按同一份
+    /// 事实判断，以后要加界面提示 / 快捷筛选时还能直接用。
+    ///
+    /// 顺序与主注册表 <see cref="EffectKinds"/> 完全一致（不会两处漂移）。
     /// </summary>
     private static readonly HashSet<string> PetKindIds = new(StringComparer.Ordinal)
     {
@@ -591,7 +594,13 @@ public static class EffectCatalog
         "PetGuardOn", "PetGuardOff",
     };
 
-    /// <summary>宠物类效果（「召唤物卡牌」页的专属效果栏专用）。</summary>
+    /// <summary>
+    /// 宠物类效果（从 <see cref="EffectKinds"/> 里按 <see cref="PetKindIds"/> 筛出来的那份名单）。
+    ///
+    /// 界面不再有专属效果栏，所以它现在**只为记录 / 校验用**（自检拿它证明「12 个宠物效果
+    /// 仍然全都在全量 Kinds 里、在「卡牌」页选得到」）；保留它是为了「哪些是宠物效果」这个事实
+    /// 只有一处定义，别的代码 / 以后的功能都能复用。
+    /// </summary>
     public static IReadOnlyList<EffectKindOption> PetEffectKinds { get; } =
         EffectKinds.Where(k => PetKindIds.Contains(k.Kind)).ToList();
 

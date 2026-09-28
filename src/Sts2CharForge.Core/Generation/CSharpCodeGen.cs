@@ -1784,7 +1784,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 老存档用的是「整张牌一个条件」（c.Condition），也一起算进来（只能有一个 IsPlayable，所以必须合并写）。
         var gateConds = new List<string>();
         var glowConds = new List<string>();
-        // 「召唤物卡牌」：一张卡只要有「需要已召唤宠物」的效果（SummonPet 不算 —— 它自己会召），
+        // 宠物类效果：一张卡只要有「需要已召唤宠物」的效果（SummonPet 不算 —— 它自己会召），
         // 就生成两句守卫：没伙伴时这张牌打不出去 + 描红框提示（本体 Osty 的牌就是这么做的：
         // BoneShards / Poke / Sacrifice … 全是 ShouldGlowRedInternal => base.Owner.IsOstyMissing）。
         // 这里的「有没有伙伴」= <Pet>Cmd.Get(base.Owner) != null（Get 会判活，死了也算没有）。
@@ -3065,7 +3065,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 「伙伴攻击」只能用在卡牌上：遗物没有「玩家选中的目标」，宠物该打谁说不清，所以不静默丢掉。
             // 新增的那批宠物效果（治疗/失去生命/最大生命/牺牲/施加状态/守卫开关）技术上只要拿到 Player
-            // 就能做，但**本档只支持卡牌**（用户要求召唤物卡牌这一档只做卡牌）—— 一并给一句说明，不静默丢。
+            // 就能做，但**本档只支持卡牌**（用户要求宠物类效果这一档只做卡牌）—— 一并给一句说明，不静默丢。
             case "PetAttack":
             case "PetDamageByMaxHp":
             case "PetDamageByCurHp":
@@ -3077,7 +3077,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "PetApplyPower":
             case "PetGuardOn":
             case "PetGuardOff":
-                Warn(w, e, "（遗物没有「玩家选中的目标」，而且这一档的宠物效果只支持卡牌 —— 请把它放到召唤物卡牌上）");
+                Warn(w, e, "（遗物没有「玩家选中的目标」，而且这一档的宠物效果只支持卡牌 —— 请把它放到卡牌上）");
                 break;
 
             case "Block":
@@ -3388,7 +3388,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "PetApplyPower":
             case "PetGuardOn":
             case "PetGuardOff":
-                Warn(w, e, "（这一档的宠物效果只支持卡牌 —— 药水没有「玩家选中的目标」，请改用召唤物卡牌）");
+                Warn(w, e, "（这一档的宠物效果只支持卡牌 —— 药水没有「玩家选中的目标」，请改用卡牌）");
                 break;
         }
     }

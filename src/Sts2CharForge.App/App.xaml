@@ -47,18 +47,6 @@
         <Style TargetType="ComboBox" x:Key="Pick">
             <Setter Property="Margin" Value="0,3,8,3"/>
         </Style>
-        <!-- 「效果种类」下拉的候选：默认是全量 Kinds；
-             挂在 EffectScope.Pet=True 的效果栏里（「召唤物卡牌」页）时换成 PetKindChoices
-             —— 那一页只该列宠物类效果（用户要求），加上这张卡已经在用的种类是为了
-             不让 TwoWay 的 SelectedValue 因为「候选里没有当前值」而被写回 null。 -->
-        <Style TargetType="ComboBox" x:Key="PickKinds" BasedOn="{StaticResource Pick}">
-            <Setter Property="ItemsSource" Value="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"/>
-            <Style.Triggers>
-                <DataTrigger Binding="{Binding Path=(local:EffectScope.Pet), RelativeSource={RelativeSource AncestorType=ContentControl}}" Value="True">
-                    <Setter Property="ItemsSource" Value="{Binding PetKindChoices, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                </DataTrigger>
-            </Style.Triggers>
-        </Style>
         <Style TargetType="CheckBox" x:Key="Check">
             <Setter Property="Margin" Value="0,4,12,4"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -80,7 +68,12 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
-                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource PickKinds}"
+                <!-- 「效果种类」下拉：全量 Kinds（宠物类效果也在这里面 —— 12 个宠物效果都能直接选，
+                     选到宠物效果时下面那个「召唤物（哪一只）」下拉会出现）。
+                     以前这里走 PickKinds 样式 + EffectScope.Pet 附加属性，会让「召唤物卡牌」页
+                     收窄成只列宠物类效果；那一页已删除，收窄机制一并不再有。 -->
+                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Pick}"
+                          ItemsSource="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"
                           DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="数值" Style="{StaticResource Label}"/>
@@ -178,7 +171,7 @@
                                    Text="（本体「缓慢」显示/生效的数字不是层数：它按「本回合每打出一张牌 +10%」算，施加多少层都看不到那个数字。填 30 = 敌人当场受到伤害 +30%，持续到它下一次回合开始。0 = 不设置）"/>
                     </StackPanel>
                     <!-- 「牺牲伙伴」专用：收益类型（格挡 / 伤害）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
-                         放在这里（而不是各模板里）是因为「召唤物卡牌」页和「卡牌」页共用 EffectCommon。 -->
+                         放在这里（而不是各模板里）是因为「卡牌 / 遗物 / 药水 / 自定义状态」共用 EffectCommon。 -->
                     <TextBlock Grid.Row="12" Grid.Column="0" Text="牺牲伙伴：收益" Style="{StaticResource Label}" MinWidth="96"
                                Visibility="{Binding IsPetSacrifice, Converter={StaticResource BoolToVis}}"/>
                     <StackPanel Grid.Row="12" Grid.Column="1" Orientation="Horizontal"
@@ -402,42 +395,6 @@
                     </Grid>
                     <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
                                Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
-                </StackPanel>
-            </ScrollViewer>
-        </DataTemplate>
-
-        <!-- 「召唤物卡牌」选项卡的**专属效果模板**：
-             和卡牌版一样有「升级增量 / 升级后费用 / = X」这些卡牌专属的东西，
-             但效果种类下拉换成了 **PetKinds**（只列宠物类效果：召唤伙伴 / 伙伴攻击 /
-             按生命值算的伙伴攻击 / 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 / 牺牲伙伴 /
-             给伙伴施加状态 / 伙伴替主人承伤 开·关）。
-             底下的「召唤物（哪一只）」下拉用的是 PetSummonsCard（只列已启用的召唤物）。 -->
-        <DataTemplate x:Key="EffectEditorPetCard">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="升级增量" Style="{StaticResource Label}"/>
-                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding UpgradeAmount, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-                    <Grid Margin="0,4,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="升级后费用" Style="{StaticResource Label}"
-                                   ToolTip="整张牌的设置（不是单条效果）：升级后花几点能量，留空 = 升级不改费用。"/>
-                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
-                                 Text="{Binding SelectedCardUpgradeCost, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
-                    </Grid>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"
-                                    local:EffectScope.Pet="True"/>
-                    <!-- 「召唤物（哪一只）」下拉**不用在这里再加一份** —— 上面的 EffectCommon 里已经有了。
-                         以前这里又加了一个，界面上就出现两个同样的下拉（用户报过）。 -->
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionCard}"/>
-                    <!-- 效果种类下拉只列宠物类效果 —— 这一行是自检用的标记（界面上看不见） -->
-                    <TextBlock Text="专属效果栏（只列宠物类效果）" Visibility="Collapsed"/>
                 </StackPanel>
             </ScrollViewer>
         </DataTemplate>
