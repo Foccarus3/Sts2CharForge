@@ -421,16 +421,8 @@
                                  Text="{Binding SelectedCardUpgradeCost, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
-                    <!-- 「召唤物（哪一只）」：只列已启用的召唤物；存的是宠物类名（稳定标识），显示的是中文名 -->
-                    <Grid Margin="0,6,0,0">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
-                                  ItemsSource="{Binding PetSummonsCard, RelativeSource={RelativeSource AncestorType=Window}}"
-                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                  SelectedValue="{Binding PetSummon}"
-                                  ToolTip="这条效果作用在**哪一只**召唤物上。留空 = 用「召唤物」页里第一只启用的（老存档就是这样）。"/>
-                    </Grid>
+                    <!-- 「召唤物（哪一只）」下拉**不用在这里再加一份** —— 上面的 EffectCommon 里已经有了。
+                         以前这里又加了一个，界面上就出现两个同样的下拉（用户报过）。 -->
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionCard}"/>
                     <!-- 效果种类下拉只列宠物类效果 —— 这一行是自检用的标记（界面上看不见） -->
                     <TextBlock Text="专属效果栏（只列宠物类效果）" Visibility="Collapsed"/>

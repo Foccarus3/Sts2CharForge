@@ -6,11 +6,11 @@
         Icon="waku.ico"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
-        <!-- 「召唤物卡牌」页的列表：Profile.Cards 的**过滤视图**（只显示勾了「这是召唤物卡」的）。
-             用 CollectionViewSource 而不是另建一份集合 —— 保证两页里是**同一批对象**
-             （在「卡牌」页改名字 / 数值，「召唤物卡牌」页立刻就是新的；不是副本）。
-             过滤谓词在 MainWindow.xaml.cs 里挂（切换勾选 / 增删卡后会刷新它）。 -->
-        <CollectionViewSource x:Key="PetCardsView" Source="{Binding Profile.Cards}"/>
+        <!-- 说明：「召唤物卡牌」页的列表**不在资源里声明** CollectionViewSource ——
+             过滤谓词是挂在**视图对象**上的，而换存档时视图会被重建、谓词随之丢失，
+             结果这一页会把全部卡牌都列出来（用户报过）。
+             现在由 MainWindow.InitPetCardView() 每次换存档时按当前 Profile.Cards 重建过滤视图，
+             两页仍然是**同一批对象**（在「卡牌」页改数值，这一页立刻是新值）。 -->
     </Window.Resources>
     <DockPanel>
 
@@ -208,8 +208,9 @@
                             <Button Content="刷新列表" Padding="8,4" Margin="6,0,0,0" Click="OnRefreshPetCards"
                                     ToolTip="在「卡牌」页改了「这是召唤物卡」勾选之后，点一下这里同步列表（勾选变化会自动同步，这个按钮是保险）。"/>
                         </WrapPanel>
-                        <ListBox x:Name="PetCardList" ItemsSource="{Binding Source={StaticResource PetCardsView}}"
-                                 DisplayMemberPath="Display"/>
+                        <!-- ItemsSource 由代码接管（InitPetCardView 里给当前 profile 建过滤视图）：
+                             换存档时视图要重建，光靠 XAML 那个静态资源会把全部卡牌都列出来。 -->
+                        <ListBox x:Name="PetCardList" DisplayMemberPath="Display"/>
                     </DockPanel>
 
                     <TextBlock x:Name="PetCardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"

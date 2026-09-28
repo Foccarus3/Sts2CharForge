@@ -493,41 +493,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
-	/// <summary>「召唤物卡牌」页的过滤视图（只显示 IsPetCard 的卡）。在构造 / Loaded 时挂过滤谓词。</summary>
+	/// <summary>「召唤物卡牌」页的过滤视图（只显示 IsPetCard 的卡）。</summary>
 	private ICollectionView? _petCardsView;
 
+	/// <summary>这个过滤视图当前绑的是哪一份 profile。换存档要重建视图，否则过滤谓词会丢。</summary>
+	private CharacterProfile? _petCardsBoundProfile;
+
 	/// <summary>
-	/// 把 <c>PetCardsView</c> 这个 CollectionViewSource 与 <c>PetCardList</c> 接起来，并挂过滤谓词。
+	/// 把「召唤物卡牌」页的列表接上**当前 profile** 的过滤视图（只显示勾了「这是召唤物卡」的卡）。
 	///
-	/// 为什么走 CollectionViewSource 而不是另建一份 ObservableCollection：
-	/// 那样两页里就是**同一批对象**（在「卡牌」页改数值，这里立刻是新值），不会出现「副本」。
-	/// 过滤只看 <see cref="CardSpec.IsPetCard"/>：勾了就在这一页，取消勾选就消失（牌本身还在「卡牌」页）。
+	/// 为什么每次换存档都要重建：过滤谓词是挂在**视图对象**上的，而换存档会把 <c>Profile</c> 换成新对象、
+	/// 视图跟着重建 —— 这时旧视图上的谓词就没了，于是这一页会把**全部卡牌**都列出来
+	/// （用户报过：一打开生成器就看到所有卡都在「召唤物卡牌」里）。
+	/// 用 CollectionViewSource 而不是另建一份集合，是为了两页里是**同一批对象**（改哪边都一样）。
 	/// </summary>
 	private void InitPetCardView()
 	{
-		try
-		{
-			if (PetCardList is null) return;
-			var cvs = TryFindResource("PetCardsView") as CollectionViewSource;
-			if (cvs is null) return;
-			_petCardsView = cvs.View;
-			_petCardsView.Filter = (object o) => o is CardSpec c && c.IsPetCard;
-			PetCardList.ItemsSource = _petCardsView;
-		}
-		catch
-		{
-			// 找不到资源也不能让整个窗口崩：列表空着，别的地方照常能用
-		}
+		if (PetCardList is null) return;
+		if (_petCardsView is not null && ReferenceEquals(_petCardsBoundProfile, Profile)) return;
+		_petCardsBoundProfile = Profile;
+		var cvs = new CollectionViewSource { Source = Profile.Cards };
+		cvs.Filter += (object sender, FilterEventArgs e) => e.Accepted = e.Item is CardSpec c && c.IsPetCard;
+		_petCardsView = cvs.View;
+		PetCardList.ItemsSource = _petCardsView;
 	}
 
-	/// <summary>刷新「召唤物卡牌」列表（勾选状态 / 增删卡之后调用）。</summary>
+	/// <summary>刷新「召唤物卡牌」列表（勾选状态 / 增删卡 / 换存档之后调用）。</summary>
 	private void RefreshPetCards()
 	{
-		if (_petCardsView is null)
-		{
-			InitPetCardView();
-			if (_petCardsView is null) return;
-		}
+		InitPetCardView();
+		if (_petCardsView is null) return;
 		_petCardsView.Refresh();
 		Raise("PetCardPortraitPreview");
 	}
@@ -1103,6 +1098,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		// 「召唤物卡牌」页：列表是 Profile.Cards 的过滤视图，这里只重指右侧详情
+		// （换存档时 Profile 会换成新对象，过滤视图必须重建，否则谓词丢失 → 这一页会列出全部卡牌）
+		InitPetCardView();
 		PetCardDetail.DataContext = PetCardList?.SelectedItem;
 		PetCardEffectList?.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		Raise("PetCardPortraitPreview");

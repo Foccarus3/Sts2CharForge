@@ -405,7 +405,15 @@ public sealed class EffectSpec : SpecBase
     public string PetSacrificeFormula
     {
         get => _petSacrificeFormula;
-        set { if (Set(ref _petSacrificeFormula, NormalizeFormula(value))) Raise(nameof(Display)); }
+        set
+        {
+            if (!Set(ref _petSacrificeFormula, NormalizeFormula(value))) return;
+            Raise(nameof(Display));
+            // 换公式要通知界面：只有「最大生命 × 倍率」才显示倍率那一栏、说明文字也跟着变。
+            // （以前只 Raise 了 Display，于是切到「固定 N」后倍率栏还赖在界面上 —— 用户报过。）
+            Raise(nameof(PetSacrificeUsesMultiplier));
+            Raise(nameof(PetSacrificeFormulaZh));
+        }
     }
 
     /// <summary>「牺牲伙伴」按最大生命算时的倍率（默认 3）。</summary>
