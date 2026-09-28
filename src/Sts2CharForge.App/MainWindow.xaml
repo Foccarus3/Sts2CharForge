@@ -159,9 +159,9 @@
                                        Text="本体的奥斯提是 150~250，默认 110。"/>
                             <CheckBox Style="{StaticResource Check}" Content="替主人挨打（守卫：主人受可格挡攻击时改由它承担）"
                                       IsChecked="{Binding TakesDamageForOwner}"
-                                      ToolTip="挂一个照本体 DieForYouPower 写的守卫状态：主人的**可格挡攻击伤害**改由它承担；中毒 / 失去生命这类穿盾伤害照旧打在主人身上。整个存档只能勾一只 —— 本体的伤害重定向是链式遍历，两只同时勾会让伤害最终归谁不可预期。"/>
+                                      ToolTip="挂一个照本体 DieForYouPower 写的守卫状态：主人的**可格挡攻击伤害**改由它承担；中毒 / 失去生命这类穿盾伤害照旧打在主人身上。可以给多只召唤物都勾上 —— 实际挨打的是召唤物列表里**第一只活着的**，它死后自动换下一只。本体的伤害重定向是链式遍历，所以由生成代码自己仲裁，行为是确定的（不依赖本体的监听顺序）。"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,2,0,0"
-                                       Text="「替主人挨打」整个存档只能勾一只（校验器会拦住）：本体的伤害重定向 Hook.ModifyUnblockedDamageTarget 是链式遍历，第二个重定向者看到的已经是第一个换过的目标，伤害归属会变得不可预期。"/>
+                                       Text="「替主人挨打」可以勾多只（不再是错误，校验器只给一句提示）：挨打的是召唤物列表里第一只活着的，它死后自动换下一只。本体的伤害重定向 Hook.ModifyUnblockedDamageTarget 是链式遍历，直接靠本体排会变成「谁先监听谁生效」，所以我们生成一个共用的守卫类、在钩子里自己仲裁。"/>
                             <TextBlock Text="宠物图片（可空）" Style="{StaticResource Label}"/>
                             <DockPanel LastChildFill="True">
                                 <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0" Click="OnPickSummonImage"/>

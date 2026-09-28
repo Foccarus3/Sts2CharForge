@@ -1185,7 +1185,8 @@ public static class ProjectRecovery
 
     /// <summary>
     /// 回读召唤物：配置来自 <c>cs/Pet.cs</c>（**每一只**一个 <c>MonsterModel</c> 子类：类名 /
-    /// 血量常量 <c>BaseHp</c> / 站位常量 <c>StandDistance</c> / 是否挂了守卫 Power）+ 模组工程里那份
+    /// 血量常量 <c>BaseHp</c> / 站位常量 <c>StandDistance</c> / 是否挂了守卫 Power —— 守卫是所有宠物
+    /// **共用**的一个类，所以按「这一只的召唤命令里有没有挂它」逐只判定）+ 模组工程里那份
     /// <c>monsters.json</c>（中文名）。
     ///
     /// 为什么必须回读：**不同步改这里就会静默丢配置** —— 用户从工程恢复存档时，
@@ -1237,14 +1238,28 @@ public static class ProjectRecovery
                 Hp = Int(text: body, pattern: @"private const int BaseHp = (\d+);", fallback: 8),
                 // 站位：生成的是 `private const float StandDistance = 110f;`
                 StandDistance = (int)Dec(body, @"private const float StandDistance = ([\d.]+)f", SummonSpec.DefaultStandDistance),
-                // 「替主人挨打」：守卫 Power 的类名 = 前缀 + 宠物类名。要查**整个文件**，不能只查这一只的类体：
-                // 真正引用它的语句（HasPower<ForgePetGuardianXxx>() / PowerCmd.Apply<...>）写在**后面的命令助手类**里，
-                // 类体只到下一个 `: MonsterModel` 声明为止 —— 只查类体的话永远查不到，勾选会被静默丢掉
-                //（回读的宠物就永远不会替主人挨打；自检里「替主人挨打的勾选找回来了」那条会红）。
-                // 后缀 `>` 保证不会把 ForgePetGuardianPet 和 ForgePetGuardianPet2 弄混。
-                TakesDamageForOwner = text.Contains(PetGen.GuardianPowerPrefix + cls + ">"),
             };
             if (spec.StandDistance <= 0) spec.StandDistance = SummonSpec.DefaultStandDistance;
+
+            // 「替主人挨打」：现在**所有勾选的召唤物共用同一个守卫类**（PetGen.GuardianPowerClassName），
+            // 判定落在「**这一只自己的召唤命令**里有没有**施加**共用守卫」上 ——
+            //   · 不能只查整个文件：那样每只都会读到别只挂的那一行、全部被勾上；
+            //   · 不能只查宠物类体：施加语句写在后面的命令助手类里，永远查不到 → 勾选被静默丢掉；
+            //   · 也不能只找 `<守卫类>` 这个名字：守卫类自己的仲裁代码里也有
+            //     `HasPower<ForgePetGuardianPower>()`，而「列表里最后一只宠物」的命令助手正好在**同一个**
+            //     区段里（它后面没有第二个命令助手类了）→ 会被误判成勾了。所以这里认的是 **PowerCmd.Apply<T>**。
+            // 另外兼容上一版生成的工程：那时是「每只一个守卫类」`ForgePetGuardian<宠物类名>`，
+            // 那种类名只出现在这一只的挂载语句里，所以全文 Contains 就够（这里也含老格式的 Apply）。
+            int cmdAt = text.IndexOf("public static class " + cls + "Cmd", StringComparison.Ordinal);
+            string cmdBody = "";
+            if (cmdAt >= 0)
+            {
+                int nextCls = text.IndexOf("public static class ", cmdAt + 1, StringComparison.Ordinal);
+                cmdBody = nextCls > cmdAt ? text.Substring(cmdAt, nextCls - cmdAt) : text.Substring(cmdAt);
+            }
+            spec.TakesDamageForOwner =
+                cmdBody.Contains("PowerCmd.Apply<" + PetGen.GuardianPowerClassName + ">")
+                || text.Contains("PowerCmd.Apply<" + PetGen.LegacyGuardianPowerClassOf(cls) + ">");
 
             string entry = EffectCatalog.SlugFor(cls);
             spec.Name = names.GetValueOrDefault(entry + ".name", cls);

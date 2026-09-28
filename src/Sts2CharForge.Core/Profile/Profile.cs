@@ -1727,13 +1727,14 @@ public sealed class SummonSpec : SpecBase
 
     /// <summary>
     /// 替主人挨打：勾上以后召唤时给它挂一个守卫 Power（照本体 <c>DieForYouPower</c> 写），
-    /// 主人受到的**可格挡攻击伤害**改由它承担；它死了以后战斗结束不会把它挪走
-    /// （<c>ShouldCreatureBeRemovedFromCombatAfterDeath</c>）。
+    /// 主人受到的**可格挡攻击伤害**改由它承担；它死后本体默认就会把它从战斗里移除
+    /// （不覆写 <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c>）。
     ///
-    /// 为什么整个存档**只能勾一只**：本体的 <c>Hook.ModifyUnblockedDamageTarget</c> 是**链式遍历**
-    /// （<c>creature = item.ModifyUnblockedDamageTarget(creature, …)</c>），同时存在两个重定向者时
-    /// 第二个看到的「target」已经是第一个换过的生物了，伤害最终归谁完全不可预期
-    /// （本体自己也只有 <c>DieForYouPower</c> 这一款）。校验器会拦住这种配置。
+    /// 为什么**可以勾多只**：本体的 <c>Hook.ModifyUnblockedDamageTarget</c> 是**链式遍历**
+    /// （<c>creature = item.ModifyUnblockedDamageTarget(creature, …)</c>），而本体 DieForYouPower 看到
+    /// target 已经不是主人就直接放行 —— 直接靠本体排的话，生效的是「本体监听顺序里的第一只」，不可控。
+    /// 所以所有勾了的召唤物共用一个守卫类，钩子里自己仲裁：**只有宠物列表里第一只活着且挂了守卫的**
+    /// 才承担，它死后下一只自动接手。校验器只给提示，不拦生成。
     /// </summary>
     public bool TakesDamageForOwner { get => _takesDamageForOwner; set => Set(ref _takesDamageForOwner, value); }
 

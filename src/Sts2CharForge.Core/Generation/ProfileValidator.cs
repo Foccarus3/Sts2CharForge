@@ -689,17 +689,20 @@ public static class ProfileValidator
                     + "能正常上场 / 攻击 / 死亡，只是长得不好看。上传一张 PNG 就会自动生成宠物场景。"));
         }
 
-        // ===== 「替主人挨打」全局唯一 =====
+        // ===== 「替主人挨打」：可以勾多只，由生成代码自己仲裁 =====
         // 本体的 Hook.ModifyUnblockedDamageTarget 是**链式遍历**（Hook.cs:2057-2065）：
         //     creature = item.ModifyUnblockedDamageTarget(creature, …)
-        // 第二个重定向者看到的「target」已经是第一个换过的生物了 —— 结果就是两只宠物互相把伤害推来推去，
-        // 或者第一只永远吸不到刀。本体自己也只有 DieForYouPower 这一款（AbstractModel.cs:1693 的注释）。
+        // 而本体 DieForYouPower 第一句是 `if (target != Owner.PetOwner?.Creature) return target;` ——
+        // 两只都挂守卫时，链上第一只改完目标之后，第二只看到的已经不是主人、直接放行，
+        // 于是「谁真正挨打」取决于本体不可控的监听顺序。我们的生成代码给所有勾选的宠物挂**同一个**守卫类，
+        // 并在钩子里自己仲裁（只有宠物列表里第一只活着且挂着守卫的才承担，它死后下一只自动接手），
+        // 所以这里**不再是错误**，只是把实际生效规则讲清楚。
         var guardians = enabled.Where(s => s.TakesDamageForOwner).ToList();
         if (guardians.Count > 1)
-            issues.Add(new("错误", $"有 {guardians.Count} 只召唤物同时勾了「替主人挨打」（"
-                + string.Join("、", guardians.Select(s => $"「{(string.IsNullOrWhiteSpace(s.Name) ? PetGen.ClassNameOf(p, s) : s.Name.Trim())}」"))
-                + "）—— 整个存档只能勾一只。本体的伤害重定向是链式遍历，两个重定向者会让伤害最终归属不可预期"
-                + "（本体自己也只有「替死」这一款）。取消掉多余的，只留一只。"));
+            issues.Add(new("提示", $"有 {guardians.Count} 只召唤物勾了「替主人挨打」（"
+                + string.Join("、", guardians.Select(s => $"「{PetGen.DisplayNameOf(s, PetGen.ClassNameOf(p, s))}」"))
+                + "）：挨打的是召唤物列表里第一只活着的，它死后会自动换下一只。"
+                + "本体的伤害重定向是链式遍历，所以由生成代码自己仲裁，行为是确定的。"));
         else if (guardians.Count == 1)
             issues.Add(new("提示", $"「{PetGen.DisplayNameOf(guardians[0], PetGen.ClassNameOf(p, guardians[0]))}」会在主人受可格挡攻击时替主人挨打"
                 + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
