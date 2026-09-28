@@ -7636,12 +7636,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				// 装不下两只各不相同的数字 → 这一档改成**内联**读每只自己的生命值。
 				CardSpec allMiss = new CardSpec { Name = "全体绝境", ClassName = "UiCheckPetAllMiss", CardType = "Attack", Cost = 2, InCardPool = true };
 				allMiss.Effects.Add(new EffectSpec { Kind = "PetDamageByMissingHp", Amount = 0m, UpgradeAmount = 4m, TargetSide = "Enemy", PetSummon = PetGen.AllId });
+				// 同一张牌上再加一条**有升级增量**的伙伴攻击：回读时升级增量必须落在它自己身上
+				// （按 CanonicalVars 的顺序对效果 —— 内联的那条不占变量，错位就会把 3 加到计算攻击上）
+				allMiss.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 7m, UpgradeAmount = 3m, TargetSide = "Enemy", PetSummon = PetGen.AllId });
 				string allMissSrc = CSharpCodeGen.CardSource(petSrc, allMiss, 0);
 				Check("「全部召唤物」+按生命值算：走**内联**计算（每只各自的 MaxHp - CurrentHp），不碰固定名字的 CalculatedDamage",
 					allMissSrc.Contains("(decimal)(__uiCheckPet.MaxHp - __uiCheckPet.CurrentHp)")
 					&& allMissSrc.Contains("(decimal)(__uiCheckPet2.MaxHp - __uiCheckPet2.CurrentHp)")
 					&& !allMissSrc.Contains("CalculatedDamage")
 					&& !allMissSrc.Contains("CalculationBase"), "内联计算");
+				Check("「全部召唤物」：同一条「伙伴攻击」也给每只各来一次（FromPetAttacker 两只各一处，共用同一个 PetDamage 变量）",
+					allMissSrc.Contains(".FromPetAttacker(__uiCheckPet)")
+					&& allMissSrc.Contains(".FromPetAttacker(__uiCheckPet2)")
+					&& allMissSrc.Split(new[] { "new DynamicVar(\"PetDamage\", 7m)" }, StringSplitOptions.None).Length - 1 == 1, "两只各一处");
 				Check("「全部召唤物」+按生命值算：升级增量内联成 (base.IsUpgraded ? 4m : 0m)（没有 CalculationBase 可抬）",
 					allMissSrc.Contains("(base.IsUpgraded ? 4m : 0m)")
 					&& !allMissSrc.Contains("CalculationBase.UpgradeValueBy"), "升级内联");
@@ -7702,12 +7709,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& Rec("UiCheckPetAll")?.Effects[1].Amount == 5m
 					&& Rec("UiCheckPetAll")?.Effects[1].UpgradeAmount == 2m,
 					string.Join(" · ", Rec("UiCheckPetAll")?.Effects.Select(e => e.Kind + "/" + (e.PetSummon ?? "?") + "/" + e.Amount) ?? Array.Empty<string>()));
-				Check("从工程恢复：「全部召唤物」+按生命值算 也合并回一条（内联的升级增量 4 也读回来了）",
-					Rec("UiCheckPetAllMiss")?.Effects.Count == 1
+				Check("从工程恢复：「全部召唤物」+按生命值算 也合并回一条（内联的升级增量 4 落回 UpgradeAmount）",
+					Rec("UiCheckPetAllMiss")?.Effects.Count == 2
 					&& Rec("UiCheckPetAllMiss")?.Effects[0].Kind == "PetDamageByMissingHp"
 					&& PetGen.IsAll(Rec("UiCheckPetAllMiss")?.Effects[0].PetSummon)
-					&& Rec("UiCheckPetAllMiss")?.Effects[0].Amount == 4m,
-					string.Join(" · ", Rec("UiCheckPetAllMiss")?.Effects.Select(e => e.Kind + "/" + (e.PetSummon ?? "?") + "/" + e.Amount) ?? Array.Empty<string>()));
+					&& Rec("UiCheckPetAllMiss")?.Effects[0].UpgradeAmount == 4m
+					&& Rec("UiCheckPetAllMiss")?.Effects[1].Kind == "PetAttack"
+					&& Rec("UiCheckPetAllMiss")?.Effects[1].Amount == 7m
+					&& Rec("UiCheckPetAllMiss")?.Effects[1].UpgradeAmount == 3m,
+					string.Join(" · ", Rec("UiCheckPetAllMiss")?.Effects.Select(e => e.Kind + "/" + (e.PetSummon ?? "?") + "/数量" + e.Amount + "/升级" + e.UpgradeAmount) ?? Array.Empty<string>()));
 				Check("从工程恢复：「全部召唤物」+牺牲伙伴（最大生命×3）也合并回一条",
 					Rec("UiCheckPetAllSac")?.Effects.Count == 1
 					&& Rec("UiCheckPetAllSac")?.Effects[0].Kind == "PetSacrifice"

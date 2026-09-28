@@ -707,12 +707,14 @@ public static class ProjectRecovery
                         calc.TargetSide = "RandomEnemies";
                         calc.AllowDuplicates = ch.Contains("allowDuplicates: true");
                     }
-                    // 数值 = 升级增量：走计算变量时从 CalculationBase 捞；
-                    // 「全部召唤物」是内联写法（(decimal)__pet.MaxHp + (base.IsUpgraded ? N : 0m)），
-                    // 没有 CalculationBase 可捞，所以直接把这个 N 读回来。
+                    // 数值 = 升级增量：走计算变量时从 CalculationBase 捞（基础值恒为 0，真正的增量由
+                    // OnUpgrade 那段认回来）；「全部召唤物」是内联写法
+                    // （(decimal)__pet.MaxHp + (base.IsUpgraded ? N : 0m)），没有 CalculationBase 可捞，
+                    // 所以直接把这个 N 读回 **UpgradeAmount**（和走计算变量时落在同一个字段上，否则
+                    // 「生成 → 回读 → 再生成」会把升级增量丢掉）。
                     calc.Amount = CalcAmount("CalculationBase");
                     if (calc.Amount == 0m)
-                        calc.Amount = Dec(ch, @"base\.IsUpgraded \? (-?[\d.]+)m? : 0m", 0);
+                        calc.UpgradeAmount = Dec(ch, @"base\.IsUpgraded \? (-?[\d.]+)m? : 0m", 0);
                     string hits0 = Match(ch, @"\.WithHitCount\(([^)]*)\)") ?? "1";
                     if (calc.TargetSide == "RandomEnemies")
                     {
@@ -1279,7 +1281,11 @@ public static class ProjectRecovery
     /// PetAttack 用 PetDamage（新 DynamicVar）；SummonPet 数值 &gt; 0 时也有 PetHp，数值 0 时没有
     /// （所以和生成侧的 <c>CSharpCodeGen.HasNoDynamicVar</c> 保持一致）。
     /// </summary>
-    private static bool HasVar(EffectSpec e) => e.Kind switch
+    private static bool HasVar(EffectSpec e) =>
+        // 「全部召唤物」+「按生命值算收益」：生成侧走内联计算，**不声明**动态变量
+        // （见 CSharpCodeGen.IsAllPetsInlineCalc / HasNoDynamicVar）—— 这里必须一起排除，
+        // 否则 CanonicalVars 的变量和「有变量的效果」会错位一格，升级增量会加到别的效果上。
+        CSharpCodeGen.IsAllPetsInlineCalc(e) ? false : e.Kind switch
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false,
         "ApplyPower" => true,
