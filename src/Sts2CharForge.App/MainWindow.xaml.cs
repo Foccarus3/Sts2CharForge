@@ -934,6 +934,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			SyncDetail();
 		};
+		// 「自定义关键词」和「召唤物」两个列表也必须接上 —— 详情是「换选中项 → 重新指向新对象」，
+		// 漏了这两行时详情会**卡在第一次选中的那条上**：在第二条里打字会写进第一条、
+		// 图片预览一直显示上一只（用户实测报过：「第一个输入框打不进字、第二个的内容跑到第一个」）。
+		KeywordList.SelectionChanged += delegate
+		{
+			SyncDetail();
+		};
+		SummonList.SelectionChanged += delegate
+		{
+			SyncDetail();
+		};
 		SetStatus(text ?? "就绪。填好配置 → 「① 生成工程」→「② 一键构建 + 安装」。");
 	}
 
@@ -4459,6 +4470,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		return characterProfile;
 	}
 
+	/// <summary>
+	/// 本体 <c>StringHelper.Slugify</c> 的等价实现 —— <b>只在自检里当参照物</b>（不参与生成，生成走
+	/// <see cref="Naming.Slug"/>）。本体就是这三步：连续大写的驼峰插下划线 → 转大写 → 滤掉 <c>[^A-Z0-9_]</c>。
+	/// 第一个正则里那个 <c>\G(?!^)</c> 分支是关键：连续大写时**每个**大写字母前面都要插下划线
+	/// （<c>AIPet → A_I_PET</c>），只写 <c>([A-Za-z0-9])([A-Z])</c> 会漏掉后面那几个。
+	/// </summary>
+	private static string VanillaSlugify(string txt)
+	{
+		string text = System.Text.RegularExpressions.Regex.Replace(txt.Trim(), "([A-Za-z0-9]|\\G(?!^))([A-Z])", "$1_$2");
+		string input = System.Text.RegularExpressions.Regex.Replace(text.ToUpperInvariant(), "\\s+", "_");
+		return System.Text.RegularExpressions.Regex.Replace(input, "[^A-Z0-9_]", "");
+	}
+
+	/// <summary>自检用的样例：常规驼峰 + 连续大写（连续大写是踩过的坑）。</summary>
+	private static readonly string[] SlugSamples =
+		new string[8] { "XiaoQi", "XiaoQI", "MyPetAI", "AIPet", "SparklePet2", "SevenCard1", "WeakPower", "UiCheckPet2" };
+
 	public string SelfTest()
 	{
 		StringBuilder sb = _selfTestLog;
@@ -4482,6 +4510,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("窗口标题里带版本号", Title.Contains(AppVersion.Current, StringComparison.Ordinal), Title);
 		Check("Power 效果库非空（增益+减益）", AllPowers.Count > 0, $"{AllPowers.Count} 项 / {EffectCatalog.CatalogStatus}");
 		Check("效果种类选项非空", Kinds.Count > 0, $"{Kinds.Count} 项");
+		// 本地化键的算法必须和本体 StringHelper.Slugify 一致（连续大写是踩过的坑：键对不上 → LocException）
+		{
+			var slugBad = new List<string>();
+			var slugRows = new List<string>();
+			foreach (string s in SlugSamples)
+			{
+				string ours = Naming.Slug(s);
+				slugRows.Add(s + "→" + ours);
+				if (!string.Equals(ours, VanillaSlugify(s), StringComparison.Ordinal))
+					slugBad.Add(s + "：我们=" + ours + " / 本体=" + VanillaSlugify(s));
+			}
+			Check("本地化键：Naming.Slug 与本体 StringHelper.Slugify 完全一致（连续大写 XiaoQI → XIAO_Q_I、AIPet → A_I_PET）",
+				slugBad.Count == 0, string.Join(" ｜ ", slugRows));
+		}
 		Check("卡牌列表绑定到 Profile.Cards", CardList.ItemsSource == Profile.Cards);
 		Check("遗物列表绑定到 Profile.Relics", RelicList.ItemsSource == Profile.Relics);
 		Check("药水列表绑定到 Profile.Potions", PotionList.ItemsSource == Profile.Potions);
@@ -6938,25 +6980,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("召唤物：两只的生命各自独立（9 / 15）",
 				petCs.Contains("private const int BaseHp = 9;") && petCs.Contains("private const int BaseHp = 15;"), "BaseHp 9 / 15");
 
-			// ①-a bug①：站位（覆写 AfterCreatureAddedToCombat，不再用本体的 主人X+20）
-			Check("bug①站位：宠物类覆写了 AfterCreatureAddedToCombat（本体摆位在这个钩子之前跑，改完不会被抢回去）",
+			// ①-a 站位 / 血条（bug：多只宠物时血条只剩最后一只；本体摆位会把全体叠回主人身上）
+			Check("站位：宠物类覆写了 AfterCreatureAddedToCombat（本体摆位在这个钩子之前跑，改完不会被抢回去）",
 				petCs.Contains("public override Task AfterCreatureAddedToCombat(Creature creature)")
-				&& petCs.Contains("room?.GetCreatureNode(base.Creature.PetOwner?.Creature)"), "有站位钩子");
-			Check("bug①站位：站位距离是**每只自己的配置值**（140 / 90），不是全局写死",
-				petCs.Contains("private const float StandDistance = 140f;") && petCs.Contains("private const float StandDistance = 90f;"),
-				"两只各自的距离");
-			Check("bug①站位：算上了半个包围盒宽（不然有一半身子压在主人身上）",
-				petCs.Contains("me.Visuals.Bounds.Size.X * 0.5f"), "有半宽");
-			Check("bug①站位：钩子只处理自己那一只（钩子是广播给战斗里所有模型的）",
-				petCs.Contains("if (creature != base.Creature) return Task.CompletedTask;"), "有自卫");
-			Check("bug①站位：本体摆位用的那个 20 像素偏移没有出现在我们的宠物代码里（不再用默认摆位）",
+				&& petCs.Contains("ForgePetLayout.RelayoutAll(creature.PetOwner);"), "有站位钩子");
+			Check("站位：**同一主人的任何伙伴进场**都把全体重排一遍（不再只管自己那一只 —— 本体 AddCreature 会把该玩家所有宠物叠回主人身上）",
+				petCs.Contains("if (creature.PetOwner is not null && ReferenceEquals(creature.PetOwner, base.Creature.PetOwner))")
+				&& !petCs.Contains("if (creature != base.Creature) return Task.CompletedTask;"), "判的是「同一主人」");
+			Check("站位：站位距离是**每只自己的配置值**（140 / 90），不是全局写死",
+				petCs.Contains("private const float StandDistance = 140f;") && petCs.Contains("private const float StandDistance = 90f;")
+				&& petCs.Contains("[typeof(UiCheckPet)] = 140f,") && petCs.Contains("[typeof(UiCheckPet2)] = 90f,"),
+				"两只各自的距离（常量 + ForgePetLayout._dist）");
+			Check("站位：算上了半个包围盒宽（不然有一半身子压在主人身上）",
+				petCs.Contains("node.Visuals.Bounds.Size.X * 0.5f"), "有半宽");
+			Check("站位：本体摆位用的那个「主人 X − 20」偏移没有出现在摆位代码里（20 只作为 _dist 查不到时的兜底）",
 				!petCs.Contains("- 20f"), "干净");
 
-			// ①-b bug②：血条（覆写 IsHealthBarVisible + 召唤后手动 SetCreatureIsInteractable）
+			// ①-b bug②：血条（覆写 IsHealthBarVisible + 召唤后 ForgePetLayout.RelayoutAll 重开全体血条）
 			Check("bug②血条：宠物类覆写了 IsHealthBarVisible（照本体 Osty）",
 				petCs.Contains("public override bool IsHealthBarVisible => base.Creature.IsAlive;"), "有覆写");
-			Check("bug②血条：召唤后手动 SetCreatureIsInteractable(pet, on: true)（本体 AddCreature 会对非 Osty 宠物关掉交互）",
-				petCs.Contains("SetCreatureIsInteractable(__uiCheckPet, on: true)"), "有补开");
+			Check("bug②血条：召唤后调 ForgePetLayout.RelayoutAll 把**全体**血条重新开回来（本体 AddCreature 会把该玩家所有宠物的交互关掉 → 血条只剩最后一只）",
+				petCs.Contains("internal static class ForgePetLayout")
+				&& petCs.Contains("room.SetCreatureIsInteractable(pet, on: true);"), "有共用助手 + 重开血条");
 
 			// ①-c 可选④：替主人挨打（守卫 Power，照抄 DieForYouPower）
 			Check("替主人挨打：只给勾了那只生成守卫 Power 类（照抄本体 DieForYouPower）",
@@ -6968,12 +7013,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("替主人挨打：目标不是自己主人就放过、自己死了就放过",
 				petCs.Contains("if (target != base.Owner.PetOwner?.Creature) return target;")
 				&& petCs.Contains("if (base.Owner.IsDead) return target;"), "有守卫");
-			Check("替主人挨打：死了不从战斗里挪走、主人死了也不摘状态（照抄本体）",
-				petCs.Contains("public override bool ShouldCreatureBeRemovedFromCombatAfterDeath(Creature creature)")
-				&& petCs.Contains("public override bool ShouldPowerBeRemovedAfterOwnerDeath()"), "有覆写");
+			Check("替主人挨打：关掉状态图标（IsVisibleInternal => false）—— 不关的话本体要去 powers 表查 title/description，模组没这张表 → 名字显示成原始键名 + 图标退回 missing_power.png",
+				petCs.Contains("protected override bool IsVisibleInternal => false;"), "有覆写");
+			Check("替主人挨打：**不**覆写 ShouldCreatureBeRemovedFromCombatAfterDeath / ShouldPowerBeRemovedAfterOwnerDeath（那两个是 Osty「留尸等复活」的语义：会让尸体不消失、每次召唤都新建一只、越堆越多）",
+				!petCs.Contains("ShouldCreatureBeRemovedFromCombatAfterDeath")
+				&& !petCs.Contains("ShouldPowerBeRemovedAfterOwnerDeath"), "两个都不在生成结果里");
+			Check("替主人挨打：保留 ShouldAllowHitting（自己死了以后不再接受攻击，本体 DieForYouPower 的写法）",
+				petCs.Contains("public override bool ShouldAllowHitting(Creature creature)"), "还在");
 			Check("替主人挨打：召唤时挂上去（PowerCmd.Apply，本体 OstyCmd 的做法），并且先查一次防重复",
 				petCs.Contains("if (!__uiCheckPet.HasPower<ForgePetGuardianUiCheckPet>())")
 				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianUiCheckPet>(choiceContext, __uiCheckPet, 1m, null, null);"), "有挂载");
+
+			// ①-e bug④/⑤：死亡语义 + 召唤命令（Get 判活 + 每个分支都重排全体）
+			Check("召唤命令：Get 扫列表**判活**（player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is X && p.IsAlive)），不再用 GetPet<T>() —— 它会返回已经死掉的那只，于是每次召唤都新建一只",
+				petCs.Contains("return player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is UiCheckPet && p.IsAlive);")
+				&& petCs.Contains("return player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is UiCheckPet2 && p.IsAlive);")
+				&& !petCs.Contains("GetPet<"), "两只都改成判活");
+			int petCmd2At = petCs.IndexOf("public static class UiCheckPet2Cmd", StringComparison.Ordinal);
+			string petCmd1Body = petCmd2At > 0 ? petCs.Substring(0, petCmd2At) : "";
+			string petCmd2Body = petCmd2At > 0 ? petCs.Substring(petCmd2At) : "";
+			int relayout1 = petCmd1Body.Split("ForgePetLayout.RelayoutAll(player);").Length - 1;
+			int relayout2 = petCmd2Body.Split("ForgePetLayout.RelayoutAll(player);").Length - 1;
+			Check("召唤命令：每只宠物的召唤命令里都有 ForgePetLayout.RelayoutAll(player)（「已存在→加血」和「新建」两个分支各一次 → 每只 2 处）",
+				petCmd2At > 0 && relayout1 == 2 && relayout2 == 2, $"UiCheckPetCmd={relayout1} / UiCheckPet2Cmd={relayout2}");
 
 			// ①-d bug③：攻击不生效 —— 不再用 FromMonster，改成 FromCard + FromPetAttacker（扩展方法）
 			string petExtPath = Path.Combine(petGen.ProjectRoot, "cs", "PetAttackExtensions.cs");
@@ -6994,6 +7056,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("召唤物：monsters.json 里两只的名字都有（本体怪物名字的键格式）",
 				petLoc.Contains("\"UI_CHECK_PET.name\": \"小石头\"") && petLoc.Contains("\"UI_CHECK_PET2.name\": \"小铁块\""),
 				petLoc.Replace("\r", "").Replace("\n", " "));
+			// 键必须是**本体算法**算出来的 <ENTRY>.name：本体 MonsterModel.Title 读的就是 Id.Entry，
+			// 而 Id.Entry = StringHelper.Slugify(类名)。我们的 Naming.Slug 差一个字符，本体就查不到这个名字；
+			// 更糟的是非中文语言下 LocTable 查不到键会直接抛 LocException（宠物节点初始化中断）。
+			var petKeyDefs = PetGen.All(petSrc);
+			Check("召唤物：monsters.json 每个键 = 用本体算法算出来的 <ENTRY>.name（两只召唤物逐个核对）",
+				petKeyDefs.Count == 2 && petKeyDefs.All((PetGen.PetDef pd) =>
+					string.Equals(Naming.Slug(pd.ClassName), VanillaSlugify(pd.ClassName), StringComparison.Ordinal)
+					&& petLoc.Contains("\"" + VanillaSlugify(pd.ClassName) + ".name\":", StringComparison.Ordinal)),
+				string.Join(" / ", petKeyDefs.Select((PetGen.PetDef pd) =>
+					pd.ClassName + " → 我们=" + Naming.Slug(pd.ClassName) + " / 本体=" + VanillaSlugify(pd.ClassName))));
+			// 中英文两份内容相同：模组本地化只合并「当前语言」的同名表（ModManager.cs:966-979 + LocManager.cs:468），
+			// 英文会话下缺 <ENTRY>.name 会让 LocTable 抛 LocException —— 显示中文名总比崩好。
+			string petLocEngPath = Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "eng", "monsters.json");
+			Check("召唤物：monsters.json 同时写了 eng 一份（内容与 zhs 相同）",
+				File.Exists(petLocEngPath)
+				&& string.Equals(File.ReadAllText(petLocEngPath, Encoding.UTF8), petLoc, StringComparison.Ordinal),
+				petLocEngPath);
 
 			// ③ 召唤牌：只召唤它自己那只
 			string petSummonSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetSummon.cs"), Encoding.UTF8);

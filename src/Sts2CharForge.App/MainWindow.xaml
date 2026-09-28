@@ -156,7 +156,7 @@
                             <TextBlock Text="站位距离（摆在主人右边多远，单位像素）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                             <TextBox Width="120" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StandDistance, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,2,0,0"
-                                       Text="本体给非 Osty 宠物写死的站位是「主人 X + 20」，几乎叠在主人身上（用户实测报过）。生成时会在宠物的 AfterCreatureAddedToCombat 钩子里自己摆位（那个钩子在本体摆位**之后**跑，所以不会被抢回去）。本体的奥斯提是 150~250，默认 110。"/>
+                                       Text="本体的奥斯提是 150~250，默认 110。"/>
                             <CheckBox Style="{StaticResource Check}" Content="替主人挨打（守卫：主人受可格挡攻击时改由它承担）"
                                       IsChecked="{Binding TakesDamageForOwner}"
                                       ToolTip="挂一个照本体 DieForYouPower 写的守卫状态：主人的**可格挡攻击伤害**改由它承担；中毒 / 失去生命这类穿盾伤害照旧打在主人身上。整个存档只能勾一只 —— 本体的伤害重定向是链式遍历，两只同时勾会让伤害最终归谁不可预期。"/>

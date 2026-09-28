@@ -422,7 +422,10 @@ public sealed class EffectSpec : SpecBase
                 "PetAttack" => $"{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}攻击 {Amount:0.##}",
                 _ => Kind,
             };
-            return $"{when}{kind} {(AmountIsX ? "X" : Amount.ToString("0.##"))}{(UpgradeAmount != 0 && !AmountIsX ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
+            // 召唤 / 伙伴攻击：kind 文案里已经写过数值了（「召唤小七 12 点生命」「小七攻击 6」），
+            // 行尾再统一追加一次 Amount 会变成「… 12 点生命 12」—— 用户实测报过「多打了一个数值」。
+            string amountPart = PetAction ? "" : $" {(AmountIsX ? "X" : Amount.ToString("0.##"))}";
+            return $"{when}{kind}{amountPart}{(UpgradeAmount != 0 && !AmountIsX ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
                  // 召唤 / 伙伴攻击打的是宠物，没有「作用对象」这一说 —— 加了这个尾巴会让人以为「→ 自己」是给宠物加血

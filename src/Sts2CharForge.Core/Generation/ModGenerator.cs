@@ -115,9 +115,13 @@ public static class ModGenerator
         {
             var pets = PetGen.All(profile);
             ProjectFilesGen.WriteText(Path.Combine(cs, "Pet.cs"), PetGen.Source(profile));
-            // 名字写进本体的 monsters 表（逐键合并，只加我们自己的键）；多只召唤物都在同一张表里
-            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "zhs", "monsters.json"),
-                PetGen.MonstersJson(profile));
+            // 名字写进本体的 monsters 表（逐键合并，只加我们自己的键）；多只召唤物都在同一张表里。
+            // **中英文两份都要写**（内容相同）：模组本地化只合并「当前语言」的同名表
+            //（ModManager.cs:966-979 + LocManager.cs:468），非中文语言下缺 <ENTRY>.name 会让
+            // LocTable 抛 LocException、宠物节点初始化中断 —— 英文会话里显示中文名，总比崩好。
+            string petMonsters = PetGen.MonstersJson(profile);
+            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "zhs", "monsters.json"), petMonsters);
+            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "eng", "monsters.json"), petMonsters);
             // 有「伙伴攻击」卡 → 生成「把攻击者换成宠物」的扩展方法（不需要补丁，见 PetGen.AttackExtensionsSource）
             if (PetGen.UsesAttackExtension(profile))
             {

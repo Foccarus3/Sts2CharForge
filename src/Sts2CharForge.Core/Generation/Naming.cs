@@ -71,15 +71,25 @@ public sealed record Naming(
         return char.ToUpperInvariant(s[0]) + s[1..];
     }
 
-    /// <summary>驼峰转大写下划线（WeakPower -> WEAK_POWER），与游戏 StringHelper.Slugify 一致。</summary>
+    /// <summary>
+    /// 驼峰转大写下划线（WeakPower -> WEAK_POWER），与本体 <c>StringHelper.Slugify</c> 完全一致。
+    ///
+    /// 本体的实现是 <c>Regex.Replace(txt, "([A-Za-z0-9]|\G(?!^))([A-Z])", "$1_$2")</c> 再大写、再滤掉
+    /// 非 <c>[A-Z0-9_]</c>。那个 <c>\G(?!^)</c> 分支的效果就是：**连续大写时，每个大写字母前面都插一个下划线**
+    /// （前一个字符刚刚被上一次匹配吃掉，也仍然算「前一个是字母/数字」）。
+    /// 以前这里多了一个「前一个字符不能是大写」的条件，于是连续大写的名字和本体不等价：
+    /// 本体 <c>AIPet</c> → <c>A_I_PET</c>、<c>XiaoQI</c> → <c>XIAO_Q_I</c>，我们只会得到 <c>AIPET</c> / <c>XIAOQI</c> ——
+    /// 生成的本地化键和本体算出来的键对不上，非中文语言下 <c>LocTable</c> 直接抛 <c>LocException</c>。
+    /// 改完之后「常规驼峰命名」的键**一个都没变**（SevenCard1 → SEVEN_CARD1），只修掉连续大写的缺键坑。
+    /// </summary>
     public static string Slug(string className)
     {
         var sb = new System.Text.StringBuilder();
         for (int i = 0; i < className.Length; i++)
         {
             char c = className[i];
-            if (i > 0 && char.IsUpper(c) &&
-                (char.IsLetterOrDigit(className[i - 1]) && !char.IsUpper(className[i - 1]) || char.IsDigit(className[i - 1])))
+            // 本体条件：i > 0 && 当前字符 [A-Z] && 前一个字符 [A-Za-z0-9]（连续大写时也成立 → 每个大写前都插）
+            if (i > 0 && char.IsUpper(c) && char.IsLetterOrDigit(className[i - 1]))
                 sb.Append('_');
             sb.Append(char.ToUpperInvariant(c));
         }

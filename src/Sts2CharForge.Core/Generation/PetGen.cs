@@ -20,10 +20,13 @@ namespace Sts2CharForge.Core.Generation;
 ///   · 注册：本体 <c>ModelDb</c> 会扫模组程序集里的 <c>AbstractModel</c> 子类，**只要 public 无参构造函数**；
 ///   · 回合：宠物没有自主回合，照抄 <c>Osty</c> 的自循环 <c>NOTHING_MOVE</c>（空操作），
 ///           实际靠玩家出「伙伴攻击」卡驱动；
-///   · 站位：覆写 <c>AfterCreatureAddedToCombat</c>（见 <see cref="SummonSpec"/> 的注释：本体把非 Osty 宠物
-///           摆在主人 X+20，太近）；
-///   · 血条：覆写 <c>IsHealthBarVisible</c> + 召唤后手动 <c>SetCreatureIsInteractable(pet, true)</c>
-///           （本体 <c>NCombatRoom.AddCreature</c> 会对非 Osty 宠物关掉交互，战斗中召唤的宠物因此永远没血条）；
+///   · 站位 / 血条：覆写 <c>AfterCreatureAddedToCombat</c> + 共用助手 <c>ForgePetLayout.RelayoutAll</c>
+///           （本体 <c>NCombatRoom.AddCreature</c>:569-575 在任何一只宠物进场时会把该玩家的**所有**宠物
+///           重排成「主人 X−20 + 均分」并全部 <c>ToggleIsInteractable(false)</c> —— 血条就是这个开关，
+///           所以必须每次进场后把**全体**重新摆位 + 重新开血条，不然多只宠物会叠在一起、血条只剩最后一只）；
+///   · 死亡：不覆写 <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c>（默认 = 死完淡出 → 释放节点 →
+///           从 <c>PlayerCombatState._pets</c> 摘掉），守卫 Power 也不覆写 <c>ShouldPowerBeRemovedAfterOwnerDeath</c>
+///           —— 那两个是 Osty「留尸等复活」的语义，覆写成 false 会让尸体不消失、每次召唤都新建一只；
 ///   · 打人：先走正常卡牌路径，再用 <c>FromPetAttacker</c> 扩展方法把攻击者换成宠物（见 PetAttackExtensions）。
 /// </summary>
 public static class PetGen
@@ -288,6 +291,7 @@ position = Vector2(2, -{spriteH + 60})
         foreach (var d in defs) EmitPetClass(w, d);
         foreach (var d in defs) EmitSummonCmd(w, d);
         foreach (var d in defs.Where(x => x.Guardian)) EmitGuardianPower(w, d);
+        EmitPetLayout(w, defs);
         return w.ToString();
     }
 
@@ -312,7 +316,11 @@ position = Vector2(2, -{spriteH + 60})
          .Line($"/// <summary>召唤时的生命（「召唤物」页里配置的 {d.Hp}）。</summary>")
          .Line($"private const int BaseHp = {d.Hp};")
          .Line()
-         .Line("/// <summary>站位距离：摆在「主人 X + 这个距离」处（「召唤物」页里配置的）。</summary>")
+         .Line("/// <summary>")
+         .Line("/// 站位距离：摆在「主人 X + 这个距离」处（「召唤物」页里配置的）。")
+         .Line("/// 实际摆位在 ForgePetLayout._dist 里用同一个值；这个常量同时是「从工程恢复存档」")
+         .Line("/// （ProjectRecovery.ParseSummon）读回站位的锚点，别删、别改名。")
+         .Line("/// </summary>")
          .Line($"private const float StandDistance = {Lit.Float(d.StandDistance)};")
          .Line()
          .Line("public override int MinInitialHp => BaseHp;")
@@ -331,24 +339,23 @@ position = Vector2(2, -{spriteH + 60})
          .Line("public override bool IsHealthBarVisible => base.Creature.IsAlive;")
          .Line()
          .Line("/// <summary>")
-         .Line("/// 自己决定站哪儿（本体的默认摆位是给「敌方小怪」用的）。")
+         .Line("/// 站位 / 血条：**同一主人的任何伙伴进场** → 把全体重新摆位 + 重新开血条。")
          .Line("///")
-         .Line("/// 为什么在钩子里改位置就够、不会被本体抢回去：本体的 CreatureCmd.Add 顺序是")
-         .Line("///   combatState.AddCreature → CombatManager.AddCreature → NCombatRoom.AddCreature（摆位）")
+         .Line("/// 为什么不能只管自己：本体 NCombatRoom.AddCreature（Core/Nodes/Rooms/NCombatRoom.cs:569-575）在**任何**")
+         .Line("/// 一只宠物进场时，会把该玩家的**所有**宠物重排成「主人 X−20 + 均分」，并且对每一只都")
+         .Line("/// ToggleIsInteractable(false) —— 而血条（整个 state display）就是靠这个开关显示的")
+         .Line("///（NCreature.cs:559-565）。所以只处理刚进场那一只的话，先来的宠物会被重新叠到一起、血条全灭")
+         .Line("///（用户实测：多只宠物时血条只剩最后一只）。")
+         .Line("///")
+         .Line("/// 为什么在钩子里改就够、不会被本体抢回去：本体的 CreatureCmd.Add 顺序是")
+         .Line("///   combatState.AddCreature → CombatManager.AddCreature → NCombatRoom.AddCreature（摆位 + 关血条）")
          .Line("///   → await CombatManager.AfterCreatureAdded → await Hook.AfterCreatureAddedToCombat（这里）")
-         .Line("/// 也就是「摆位在前、这个钩子在后」，钩子里改完就是最终位置。")
-         .Line("/// 本体给非 Osty 宠物写的是 主人.X − 20 + 半个包围盒宽（单只时 ≈ 主人.X + 20），几乎叠在主人身上。")
+         .Line("/// 也就是「摆位 / 关血条在前、这个钩子在后」，钩子里改完就是最终位置。")
+         .Line("/// 钩子是广播给战斗里**所有模型**的，所以这里判「同一主人的伙伴」而不是「我自己」。")
          .Line("/// </summary>")
          .Open("public override Task AfterCreatureAddedToCombat(Creature creature)")
-         .Line("// 钩子是广播给战斗里所有模型的，只处理自己这一只")
-         .Line("if (creature != base.Creature) return Task.CompletedTask;")
-         .Line("MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom? room = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;")
-         .Line("MegaCrit.Sts2.Core.Nodes.Combat.NCreature? me = room?.GetCreatureNode(base.Creature);")
-         .Line("MegaCrit.Sts2.Core.Nodes.Combat.NCreature? owner = room?.GetCreatureNode(base.Creature.PetOwner?.Creature);")
-         .Line("if (me is null || owner is null) return Task.CompletedTask;")
-         .Line()
-         .Line("// +半个包围盒宽：本体的 Position 是节点原点（贴图底边中点），不减这一半会有一半身子压在主人身上")
-         .Line("me.Position = new Vector2(owner.Position.X + StandDistance + me.Visuals.Bounds.Size.X * 0.5f, owner.Position.Y - 25f);")
+         .Line("if (creature.PetOwner is not null && ReferenceEquals(creature.PetOwner, base.Creature.PetOwner))")
+         .Line("    ForgePetLayout.RelayoutAll(creature.PetOwner);")
          .Line("return Task.CompletedTask;")
          .Close();
 
@@ -400,9 +407,11 @@ position = Vector2(2, -{spriteH + 60})
          .Open($"public static class {cmd}")
          .Line("/// <summary>已召唤的、还活着的宠物（没召唤过 / 已经死了 → null）。</summary>")
          .Open("public static Creature? Get(Player player)")
-         .Line("// PlayerCombatState.GetPet<T>() 就是本体自己的查法（Pets 里第一个躺着的同类型宠物）")
-         .Line($"Creature? pet = player.PlayerCombatState?.GetPet<{d.ClassName}>();")
-         .Line("return pet is { IsAlive: true } ? pet : null;")
+         .Line("// 为什么不用本体 PlayerCombatState 自带的「按类型取第一只宠物」查法：那个**不看死活**")
+         .Line("// （本体 PlayerCombatState.cs:255-258）。刚死、还没被摘掉的那只躺着，Get 就会永远返回它 →")
+         .Line("// Summon 以为「已经有一只活着的」→ 每次召唤都新建一只，宠物越堆越多（用户实测）。")
+         .Line("// 这里自己扫列表判活：只会拿到真正还能打的那只。")
+         .Line($"return player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is {d.ClassName} && p.IsAlive);")
          .Close()
          .Line()
          .Line("/// <summary>")
@@ -419,8 +428,9 @@ position = Vector2(2, -{spriteH + 60})
          .Line("await CreatureCmd.GainMaxHp(alive, hp);")
          .Line("// 顺手回满：GainMaxHp 只抬上限，当前生命不会跟着涨，玩家会觉得「加了上限却还是在残血」")
          .Line("await CreatureCmd.Heal(alive, Math.Max(0m, alive.MaxHp - alive.CurrentHp));")
-         .Line("// 血条也照开一次：万一它是「上一只死了、这一只刚复活」之类的路径进来的")
-         .Line("MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.SetCreatureIsInteractable(alive, on: true);")
+         .Line("// 血条 / 站位也照修一次：本体 AddCreature 会把该玩家**所有**宠物重排 + 关掉交互（血条），")
+         .Line("// 这只即使是「上一只死了、这一只刚复活」之类的路径进来的，也要把自己的血条要回来。")
+         .Line("ForgePetLayout.RelayoutAll(player);")
          .Line("return alive;")
          .Close()
          .Line()
@@ -434,11 +444,12 @@ position = Vector2(2, -{spriteH + 60})
          .Line($"await CreatureCmd.SetMaxHp({petVar}, hp);")
          .Line($"await CreatureCmd.Heal({petVar}, Math.Max(0m, hp - {petVar}.CurrentHp));")
          .Line()
-         .Line("// 血条：本体 NCombatRoom.AddCreature 对非 Osty 宠物无条件 ToggleIsInteractable(false)，")
-         .Line("// 而 NCreature._Ready 只在建节点那一刻按 IsHealthBarVisible 设过一次 ——")
-         .Line("// 战斗中召唤出来的宠物因此永远看不到血条（用户实测）。这里补开一次就正常了。")
+         .Line("// 站位 + 血条：本体 NCombatRoom.AddCreature 对**该玩家的所有宠物**重排位置并无条件")
+         .Line("// ToggleIsInteractable(false)（那一句对所有非 Osty 宠物都执行），而 NCreature._Ready 只在建节点那一刻")
+         .Line("// 按 IsHealthBarVisible 设过一次 —— 战斗中召唤出来的宠物因此永远看不到血条（用户实测）。")
+         .Line("// 这里让 ForgePetLayout 把**全体**重新摆位 + 重新开血条：多只宠物不会再叠在一起、血条也不会只剩最后一只。")
          .Line("// SetCreatureIsInteractable 是本体公开 API（本体 ReattachPower 就是这么用的），不是补丁。")
-         .Line($"MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance?.SetCreatureIsInteractable({petVar}, on: true);");
+         .Line("ForgePetLayout.RelayoutAll(player);");;
 
         if (d.Guardian)
         {
@@ -473,16 +484,28 @@ position = Vector2(2, -{spriteH + 60})
          .Line($"/// 「替主人挨打」：{d.DisplayName}挡在主人前面（照抄本体 DieForYouPower）。")
          .Line("///")
          .Line("/// 只吸「可格挡的攻击伤害」（ValueProp.IsPoweredAttack()）—— 中毒、失去生命这类穿盾伤害照旧打在主人身上，")
-         .Line("/// 否则宠物会变成无敌护盾。它自己死了以后战斗结束也不会被挪走")
-         .Line("///（ShouldCreatureBeRemovedFromCombatAfterDeath），但宠物本来就不跨战斗。")
+         .Line("/// 否则宠物会变成无敌护盾。")
+         .Line("///")
+         .Line("/// 为什么不显示状态图标（IsVisibleInternal => false）：宠物身上那个图标要去本体的 powers 表查")
+         .Line("/// title / description，模组里没有这张表（也没必要为它造一份）—— 于是名字显示成原始键名、")
+         .Line("/// 图标退回 missing_power.png（用户实测）。关掉之后本体根本不建这个图标节点，也就不会去查表；")
+         .Line("/// 钩子（ModifyUnblockedDamageTarget / ShouldAllowHitting）照样会被调用，功能不受影响。")
+         .Line("///")
+         .Line("/// 为什么不覆写本体 PowerModel 那两个「宠物死了不从战斗里移除 / 主人死了也不摘状态」的重载：")
+         .Line("/// 它们是 Osty「留尸等复活」的语义（本体 DieForYouPower / ReattachPower 那套）。**默认值**才是我们要的：")
+         .Line("/// 宠物死完淡出 → 释放节点 → PlayerCombatState.OnPetDied 里从 _pets 摘掉 → 召唤命令的 Get 立刻返回 null，")
+         .Line("/// 于是一次召唤只对应一只活宠物。覆写成 false 就会出现「尸体不消失 + 每次召唤都新建一只」越堆越多（用户实测）。")
          .Line("/// </summary>")
          .Open($"public sealed class {power} : PowerModel")
          .Line("public override PowerType Type => PowerType.Buff;")
          .Line()
          .Line("public override PowerStackType StackType => PowerStackType.Single;")
          .Line()
-         .Line("/// <summary>它身上不需要飘一个状态图标（本体 DieForYouPower 也是关掉的）。</summary>")
+         .Line("/// <summary>它身上不需要飘一个状态图标（本体 DieForYouPower 也是关掉的），也就不用查 powers 表。</summary>")
          .Line("public override bool ShouldPlayVfx => false;")
+         .Line()
+         .Line("/// <summary>本体不建这个状态的图标节点（不查 powers 表的 title/description、不会缺图标）。</summary>")
+         .Line("protected override bool IsVisibleInternal => false;")
          .Line()
          .Line("/// <summary>把打在主人身上的可格挡攻击伤害改到自己身上。</summary>")
          .Open("public override Creature ModifyUnblockedDamageTarget(Creature target, decimal amount, ValueProp props, Creature? dealer)")
@@ -499,18 +522,68 @@ position = Vector2(2, -{spriteH + 60})
          .Open("public override bool ShouldAllowHitting(Creature creature)")
          .Line("return creature.IsAlive;")
          .Close()
+         .Close()
+         .Line();
+    }
+
+    /// <summary>
+    /// 全部召唤物**共用**的布局助手 <c>ForgePetLayout</c>（写进同一个 <c>cs/Pet.cs</c>）。
+    ///
+    /// 为什么必须共用一份、而且要「重排全体」：本体 <c>NCombatRoom.AddCreature</c>（569-575）在**任何**一只
+    /// 宠物进场时，会把该玩家的所有宠物重排成「主人 X−20 + 均分」，并且对每一只都
+    /// <c>ToggleIsInteractable(false)</c> —— 血条（整个 state display）就是这个开关（<c>NCreature.cs:559-565</c>）。
+    /// 所以每只宠物自己的 <c>AfterCreatureAddedToCombat</c> 只管自己的话：先来的会被叠回主人身上、血条全灭
+    /// （用户实测：多只宠物时血条只剩最后一只）。这里一次把全体摆好、把全体血条开回来。
+    ///
+    /// 站位距离表 <c>_dist</c> 的键是**宠物类**（生成时按每只自己的「站位距离」配置填），
+    /// 而不是每只类里的 <c>StandDistance</c> 常量 —— 常量那两个还留着，但它们同时是
+    /// 「从工程恢复存档」的读取锚点（见 <c>ProjectRecovery.ParseSummon</c>），不能删。
+    /// </summary>
+    private static void EmitPetLayout(CodeWriter w, IReadOnlyList<PetDef> defs)
+    {
+        w.Line("/// <summary>")
+         .Line("/// 所有伙伴共用的布局助手：把所有伙伴重新摆位 + 重新开血条。")
+         .Line("///")
+         .Line("/// 本体 NCombatRoom.AddCreature（Core/Nodes/Rooms/NCombatRoom.cs:569-575）在**任何**一只宠物进场时，")
+         .Line("/// 都会把该玩家的所有宠物重排位置并全部 ToggleIsInteractable(false)（血条 = 整个 state display，")
+         .Line("/// NCreature.cs:559-565），所以每次进场之后都得自己把**全体**重新摆好、把血条开回来。")
+         .Line("/// 幂等：随便调，重复调没有副作用。")
+         .Line("/// </summary>")
+         .Open("internal static class ForgePetLayout")
+         .Line("/// <summary>每只召唤物自己的站位距离（生成时按配置填进来）。</summary>")
+         .Line("private static readonly Dictionary<Type, float> _dist = new()")
+         .Line("{");
+        w.Indent();
+        foreach (var d in defs) w.Line($"[typeof({d.ClassName})] = {Lit.Float(d.StandDistance)},");
+        w.Dedent();
+        w.Line("};")
          .Line()
-         .Line("/// <summary>自己死了也不从战斗里挪走（主人还活着）。</summary>")
-         .Open("public override bool ShouldCreatureBeRemovedFromCombatAfterDeath(Creature creature)")
-         .Line("if (creature != base.Owner) return true;")
-         .Line("return false;")
-         .Close()
+         .Line("/// <summary>把所有伙伴重新摆位 + 重新开血条。幂等，随便调。</summary>")
+         .Open("public static void RelayoutAll(Player owner)")
+         .Line("// NCombatRoom 在 MegaCrit.Sts2.Core.Nodes.Rooms，生成的 GlobalUsings.cs 里**没有**这个命名空间 ——")
+         .Line("// 一定要写全限定名，不然 CS0246。")
+         .Line("MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom? room = MegaCrit.Sts2.Core.Nodes.Rooms.NCombatRoom.Instance;")
+         .Line("if (room is null) return;   // 不在战斗房间（菜单 / 结算界面）→ 什么都不用做")
          .Line()
-         .Line("/// <summary>主人死了这个状态也不摘（本体 DieForYouPower 的写法）。</summary>")
-         .Open("public override bool ShouldPowerBeRemovedAfterOwnerDeath()")
-         .Line("return false;")
-         .Close()
-         .Close()
+         .Line("// 主人自己的节点：所有宠物的位置都以它为基准（本体摆位也是拿它算的）")
+         .Line("NCreature? me = room.GetCreatureNode(owner.Creature);")
+         .Line("if (me is null) return;")
+         .Line()
+         .Line("// PlayerCombatState.Pets 里可能有已经死掉的（死亡那一帧还没被摘掉）→ 只摆活着的")
+         .Open("foreach (Creature pet in owner.PlayerCombatState?.Pets ?? (IReadOnlyList<Creature>)Array.Empty<Creature>())")
+         .Line("if (!pet.IsAlive) continue;")
+         .Line("NCreature? node = room.GetCreatureNode(pet);")
+         .Line("if (node is null) continue;   // 节点还没建出来（正常不会）")
+         .Line()
+         .Line("// 每只自己的距离；表里没有的（手写的宠物类）退回本体那个 20")
+         .Line("float d = (pet.Monster is not null && _dist.TryGetValue(pet.Monster.GetType(), out float v)) ? v : 20f;")
+         .Line("// +半个包围盒宽：本体的 Position 是节点原点（贴图底边中点），不加这一半会有一半身子压在主人身上")
+         .Line("node.Position = new Vector2(me.Position.X + d + node.Visuals.Bounds.Size.X * 0.5f, me.Position.Y - 25f);")
+         .Line("// 血条真正靠这一句回来：本体 AddCreature 会把该玩家所有宠物的交互（= 血条显示）全部关掉")
+         .Line("room.SetCreatureIsInteractable(pet, on: true);")
+         .Close()   // foreach
+         .Close()   // RelayoutAll
+         .Close()   // class ForgePetLayout
          .Line();
     }
 

@@ -484,14 +484,22 @@ public static class EffectCatalog
         return map;
     }
 
-    /// <summary>WeakPower -> WEAK_POWER（与游戏本地化键一致）。</summary>
+    /// <summary>
+    /// WeakPower -> WEAK_POWER（与游戏本地化键一致）。
+    ///
+    /// 必须和生成的本地化键用**同一套算法**（<see cref="Naming.Slug"/>）：两边只要差一个字符，
+    /// 「从工程恢复存档」就会查不到 <c>&lt;ENTRY&gt;.name</c> / <c>.title</c>，把名字静默丢成类名。
+    /// 原来这里多了一个「前一个字符不能是大写」的条件，连续大写时和本体 StringHelper.Slugify 不等价
+    /// （本体 AIPet → A_I_PET，旧算法只会给 AIPET），现在按本体那套条件走。
+    /// </summary>
     private static string Slugify(string className)
     {
         var sb = new StringBuilder(className.Length + 8);
         for (int i = 0; i < className.Length; i++)
         {
             char c = className[i];
-            if (i > 0 && char.IsUpper(c) && (char.IsLower(className[i - 1]) || char.IsDigit(className[i - 1]))) sb.Append('_');
+            // 本体条件（StringHelper.Slugify 的正则 ([A-Za-z0-9]|\G(?!^))([A-Z])）：i > 0、当前 [A-Z]、前一个 [A-Za-z0-9]
+            if (i > 0 && char.IsUpper(c) && char.IsLetterOrDigit(className[i - 1])) sb.Append('_');
             sb.Append(char.ToUpperInvariant(c));
         }
         return sb.ToString();

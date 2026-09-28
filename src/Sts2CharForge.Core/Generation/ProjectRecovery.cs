@@ -1237,8 +1237,12 @@ public static class ProjectRecovery
                 Hp = Int(text: body, pattern: @"private const int BaseHp = (\d+);", fallback: 8),
                 // 站位：生成的是 `private const float StandDistance = 110f;`
                 StandDistance = (int)Dec(body, @"private const float StandDistance = ([\d.]+)f", SummonSpec.DefaultStandDistance),
-                // 「替主人挨打」：生成时会在这一只的类体里挂守卫 Power（类名 = 前缀 + 宠物类名）
-                TakesDamageForOwner = body.Contains(PetGen.GuardianPowerPrefix + cls + ">"),
+                // 「替主人挨打」：守卫 Power 的类名 = 前缀 + 宠物类名。要查**整个文件**，不能只查这一只的类体：
+                // 真正引用它的语句（HasPower<ForgePetGuardianXxx>() / PowerCmd.Apply<...>）写在**后面的命令助手类**里，
+                // 类体只到下一个 `: MonsterModel` 声明为止 —— 只查类体的话永远查不到，勾选会被静默丢掉
+                //（回读的宠物就永远不会替主人挨打；自检里「替主人挨打的勾选找回来了」那条会红）。
+                // 后缀 `>` 保证不会把 ForgePetGuardianPet 和 ForgePetGuardianPet2 弄混。
+                TakesDamageForOwner = text.Contains(PetGen.GuardianPowerPrefix + cls + ">"),
             };
             if (spec.StandDistance <= 0) spec.StandDistance = SummonSpec.DefaultStandDistance;
 
