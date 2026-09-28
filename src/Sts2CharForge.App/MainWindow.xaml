@@ -145,7 +145,7 @@
                         <StackPanel>
                             <TextBlock Text="召唤物属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
-                                       Text="走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），模型由本体自动注册，所以不需要任何 Harmony 补丁。宠物每场战斗都要重新召唤 —— 本体的 PlayerCombatState 在战斗结束时会清空宠物，它不跨战斗、也不进存档。这里可以配多只，同一场战斗里都在场：卡牌 / 遗物的效果里选「召唤伙伴 / 伙伴攻击」时会让你挑是哪一只。"/>
+                                       Text="走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），模型由本体自动注册，所以不需要任何 Harmony 补丁。宠物每场战斗都要重新召唤 —— 本体的 PlayerCombatState 在战斗结束时会清空宠物，它不跨战斗、也不进存档。这里可以配多只，同一场战斗里都在场：卡牌 / 遗物的效果里选「召唤伙伴 / 伙伴攻击」时会让你挑是哪一只，下拉里那条「★ 全部召唤物」= 这条效果对**每一只启用的**各算一次（每只自己判在不在场，不在场的自动跳过）。"/>
                             <CheckBox Style="{StaticResource Check}" Content="启用这只召唤物"
                                       IsChecked="{Binding Enabled}"
                                       ToolTip="勾上以后：生成它的 MonsterModel 子类 + 召唤命令、写 monsters.json 里它的名字；效果里的「召唤物」下拉才会列出它。"/>
@@ -179,7 +179,7 @@
                                            Text="建议竖版 PNG、带透明背景（越高越会被自动缩到约 220 像素高，底边贴地面线）。上传了就会生成 scenes/creature_visuals/&lt;召唤物 entry&gt;.tscn 并让它用它；不传也能跑，它会用本体的占位图（一张静态 error.png）。"/>
                             </StackPanel>
                             <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#666"
-                                       Text="怎么让它上场：① 卡牌页新建一张牌，加一条效果选「召唤伙伴」（数值 0 = 用上面这个血量），并在「召唤物（哪一只）」里选中它；② 或者遗物页加一条「召唤伙伴」并把触发时机选成「战斗开始时」（= 本体 Byrdpip 的写法，每场战斗开场就召唤）。指挥它打人：卡牌效果里选「伙伴攻击」并选中同一只，伤害由它承担（它不在场时这张牌会跳过这一条，不会报错）。"/>
+                                       Text="怎么让它上场：① 卡牌页新建一张牌，加一条效果选「召唤伙伴」（数值 0 = 用上面这个血量），并在「召唤物（哪一只）」里选中它；② 或者遗物页加一条「召唤伙伴」并把触发时机选成「战斗开始时」（= 本体 Byrdpip 的写法，每场战斗开场就召唤）。指挥它打人：卡牌效果里选「伙伴攻击」并选中同一只，伤害由它承担（它不在场时这张牌会跳过这一条，不会报错）。想让一条效果对每只都生效（例：开场把三只全召出来、或让每只都替你承伤），在「召唤物（哪一只）」里选「★ 全部召唤物」即可 —— 生成时会按每只各写一份代码。"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>

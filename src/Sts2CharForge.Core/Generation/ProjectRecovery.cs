@@ -473,6 +473,12 @@ public static class ProjectRecovery
         string? pendingPetMarker = null;
         int pendingPetMultiplier = 0;
 
+        // 「全部召唤物」（PetGen.AllId）：生成时会把一条效果按宠物**逐只展开**成 N 份代码，
+        // 每份前面写一行 `// CET:PetAll=<组号>`（同一组共用组号）。回读时把同组的第 2..N 份丢掉，
+        // 只留第一份并把 PetSummon 设成 "*" —— 这样「生成 → 回读」才是一条进、一条出。
+        string? pendingPetAllGroup = null;
+        var allPetGroups = new HashSet<string>(StringComparer.Ordinal);
+
         // 牺牲伙伴生成的是「先算收益 → CreatureCmd.Kill(宠物) → 再 GainBlock / Attack」，
         // 收益那一句既可能是前面的 `decimal gain/dmg = …`（已跳过）也可能是后面的动作行。
         // 所以看到 Kill 时**只记住宠物**，等收益动作行出现时再拼成一条效果 ——
@@ -483,6 +489,22 @@ public static class ProjectRecovery
         void Done(EffectSpec e)
         {
             e.Condition = CondTop() ?? new ConditionSpec();
+            if (pendingPetAllGroup is not null)
+            {
+                string grp = pendingPetAllGroup;
+                pendingPetAllGroup = null;      // 每次收尾都清掉：下一个效果要重新出现标记才算同一组
+                // 只有宠物类效果才认这个组号（组号是宠物展开时写的；万一漏到普通效果上，
+                // 也不能把「造成伤害」这种效果标成「全部召唤物」，更不能因为「同组已见过」把它丢掉）
+                if (EffectCatalog.IsPetKind(e.Kind))
+                {
+                    if (!allPetGroups.Add(grp))
+                    {
+                        pendingPetMarker = null;    // 同一组的第 2..N 份（同一条效果的逐只展开）→ 丢掉
+                        return;
+                    }
+                    e.PetSummon = PetGen.AllId;
+                }
+            }
             into.Add(e);
             pendingPetMarker = null;
         }
@@ -576,6 +598,9 @@ public static class ProjectRecovery
                     pendingPetMarker = line;
                     pendingPetMultiplier = (int)Dec(line, @"CET:PetMul=([\d.]+)", 0);
                 }
+                // 「全部召唤物」的组号（生成器在每一份展开代码前都写一遍）
+                string? allGrp = Match(line, @"CET:PetAll=(\w+)");
+                if (allGrp is not null) pendingPetAllGroup = allGrp;
                 continue;
             }
 
@@ -643,6 +668,15 @@ public static class ProjectRecovery
                     else FillExpr(e, arg);
                 }
                 ApplyLoop(e, frames);
+                // 「全部召唤物」的召唤：组号可能写在**上一行的注释**里（卡牌：单独一行 // CET:PetAll=…）
+                // 也可能挂在**这一行末尾**（遗物：和宠物指令同一行的注释）。
+                string? sumGrp = Match(line, @"CET:PetAll=(\w+)") ?? pendingPetAllGroup;
+                pendingPetAllGroup = null;
+                if (sumGrp is not null)
+                {
+                    if (!allPetGroups.Add(sumGrp)) continue;
+                    e.PetSummon = PetGen.AllId;
+                }
                 into.Add(e);   // 没有「效果级条件」（宠物守卫不是条件）
                 continue;
             }
@@ -661,17 +695,24 @@ public static class ProjectRecovery
                 // 「按生命值算」的伙伴攻击（我们新加的那三种）：生成时在这条效果的第一行写了标记，
                 // 而且伤害取自固定名字的 base.DynamicVars.CalculatedDamage —— 必须**先**分流，
                 // 否则下面会把它当成普通 PetAttack（数值取不到，配置静默丢一半）。
-                if (pendingPetMarker is not null && ch.Contains("CalculatedDamage"))
+                if (pendingPetMarker is not null
+                    && (ch.Contains("CalculatedDamage") || Match(ch, @"\(decimal\)\(?__\w") is not null))
                 {
                     string? petVar0 = Match(ch, @"\.FromPetAttacker\((\w+)\)");
                     var calc = PetEffectFromMarker(petVar0, out string? why0);
-                    if (calc is null) { result.Unparsed.Add($"{where}: {line} {why0}"); pendingPetMarker = null; continue; }
+                    if (calc is null) { result.Unparsed.Add($"{where}: {line} {why0}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                     if (ch.Contains(".TargetingAllOpponents")) calc.TargetSide = "AllEnemies";
                     else if (ch.Contains(".TargetingRandomOpponents"))
                     {
                         calc.TargetSide = "RandomEnemies";
                         calc.AllowDuplicates = ch.Contains("allowDuplicates: true");
                     }
+                    // 数值 = 升级增量：走计算变量时从 CalculationBase 捞；
+                    // 「全部召唤物」是内联写法（(decimal)__pet.MaxHp + (base.IsUpgraded ? N : 0m)），
+                    // 没有 CalculationBase 可捞，所以直接把这个 N 读回来。
+                    calc.Amount = CalcAmount("CalculationBase");
+                    if (calc.Amount == 0m)
+                        calc.Amount = Dec(ch, @"base\.IsUpgraded \? (-?[\d.]+)m? : 0m", 0);
                     string hits0 = Match(ch, @"\.WithHitCount\(([^)]*)\)") ?? "1";
                     if (calc.TargetSide == "RandomEnemies")
                     {
@@ -694,7 +735,7 @@ public static class ProjectRecovery
                     string killed = KillPetVar() ?? sacKillPet ?? "";
                     sacKillPet = null;
                     var sac = PetEffectFromMarker(killed, out string? why1);
-                    if (sac is null) { result.Unparsed.Add($"{where}: {line} {why1}"); pendingPetMarker = null; continue; }
+                    if (sac is null) { result.Unparsed.Add($"{where}: {line} {why1}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                     if (sac.PetSacrificeFormula == "Fixed")
                         FillAmount(sac, NextVar(vars, ref varIdx, "Damage"), nameToPowerId);
                     else sac.Amount = CalcAmount("CalculationBase");
@@ -751,7 +792,7 @@ public static class ProjectRecovery
                     string? killed = sacKillPet;
                     sacKillPet = null;
                     var sacBlock = PetEffectFromMarker(killed, out string? whySacBlock);
-                    if (sacBlock is null) { result.Unparsed.Add($"{where}: {line} {whySacBlock}"); pendingPetMarker = null; continue; }
+                    if (sacBlock is null) { result.Unparsed.Add($"{where}: {line} {whySacBlock}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                     if (sacBlock.PetSacrificeFormula == "Fixed")
                         FillAmount(sacBlock, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
                     else sacBlock.Amount = CalcAmount("CalculationBase");
@@ -828,7 +869,7 @@ public static class ProjectRecovery
                 && PetClassOfVar(ArgAt(line, 0), petClassNames) is not null)
             {
                 var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyHeal);
-                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyHeal}"); pendingPetMarker = null; continue; }
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyHeal}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                 // 数值在 CanonicalVars 里（HealVar）→ 按**种类**从 vars 里取（取出即删，
                 // 免得被后面别的效果按顺序捡走）。注意不能去 calcVars 里找：那里只有计算三件套。
                 e.Amount = TakeCalcVar(vars, "Heal") ?? 0m;
@@ -840,7 +881,7 @@ public static class ProjectRecovery
                 && PetClassOfVar(ArgAt(line, 0), petClassNames) is not null)
             {
                 var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyMax);
-                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyMax}"); pendingPetMarker = null; continue; }
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyMax}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                 e.Amount = TakeCalcVar(vars, "MaxHp") ?? 0m;
                 Done(e);
                 continue;
@@ -859,7 +900,7 @@ public static class ProjectRecovery
             {
                 string petArg = Match(line, @"await CreatureCmd\.Damage\(choiceContext, (\w+),") ?? "";
                 var e = PetEffectFromMarker(petArg, out string? whyLoss);
-                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyLoss}"); pendingPetMarker = null; continue; }
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyLoss}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                 e.Amount = TakeCalcVar(vars, "HpLoss") ?? 0m;
                 ApplyLoop(e, frames);
                 Done(e);
@@ -878,7 +919,7 @@ public static class ProjectRecovery
             if (line.Contains($"PowerCmd.Remove<{PetGen.GuardianPowerClassName}>("))
             {
                 var e = PetEffectFromMarker(Match(line, @"PowerCmd\.Remove<\w+>\((\w+)\)"), out string? whyOff);
-                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyOff}"); pendingPetMarker = null; continue; }
+                if (e is null) { result.Unparsed.Add($"{where}: {line} {whyOff}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                 Done(e);
                 continue;
             }
@@ -932,7 +973,7 @@ public static class ProjectRecovery
                 if (PetClassOfVar(target, petClassNames) is not null)
                 {
                     var pe = PetEffectFromMarker(target, out string? whyApply);
-                    if (pe is null) { result.Unparsed.Add($"{where}: {line} {whyApply}"); pendingPetMarker = null; continue; }
+                    if (pe is null) { result.Unparsed.Add($"{where}: {line} {whyApply}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
                     // 给伙伴施加状态：数值按**名字**去 CanonicalVars 里取（生成时写的就是
                     // base.DynamicVars["PetPower<PowerId>"].BaseValue，升级增量也按这个名字对回去）
                     if (pe.Kind == "PetApplyPower")
@@ -1083,7 +1124,8 @@ public static class ProjectRecovery
                 string? cls2 = Match(l, @"(\w+)Cmd\.Summon\(choiceContext");
                 bool configured = l.Contains("CET:PetHp=configured");
                 if (into.Any(x => x.Kind == "SummonPet"
-                        && string.Equals(x.PetSummon ?? "", cls2 ?? "", StringComparison.Ordinal)
+                        && (string.Equals(x.PetSummon ?? "", cls2 ?? "", StringComparison.Ordinal)
+                            || PetGen.IsAll(x.PetSummon))     // 「全部召唤物」：这一行就是它逐只展开出来的
                         && (x.Amount <= 0m) == configured)) continue;
                 var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self", PetSummon = cls2 };
                 if (!configured) FillExpr(e, ArgAt(l, 2));
@@ -1340,9 +1382,23 @@ public static class ProjectRecovery
     {
         if (string.IsNullOrWhiteSpace(expr)) return null;
         var rest = expr.Split("&&", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(x => !Regex.IsMatch(x, @"^\(?\s*\w+Cmd\.Get\(base\.Owner\)\s*!=\s*null\s*\)?$"))
+            .Where(x => !IsPetGuardOnly(x))
             .ToList();
         return rest.Count == 0 ? null : string.Join(" && ", rest);
+    }
+
+    /// <summary>
+    /// 这一项是不是「纯粹的一只 / 多只宠物守卫」：
+    /// <c>(A != null)</c>（单只）或 <c>(A != null || B != null)</c>（「全部召唤物」生成的是或运算形式）。
+    /// 括号可能套了好几层（IsPlayable 的表达式外面本来就有一层），所以前后都按 <c>\(*</c> / <c>\)*</c> 收。
+    /// </summary>
+    private static bool IsPetGuardOnly(string item)
+    {
+        string s = item.Trim();
+        if (s.Length == 0) return false;
+        foreach (string part in s.Split("||", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (!Regex.IsMatch(part, @"^\(*\s*\w+Cmd\.Get\(base\.Owner\)\s*!=\s*null\s*\)*$")) return false;
+        return true;
     }
 
     /// <summary>把条件说明文字反推成 ConditionSpec。</summary>

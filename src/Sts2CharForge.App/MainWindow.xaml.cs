@@ -3119,41 +3119,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			SetStatus("这是本体卡（只做引用），不能复制 —— 想要更多份请直接改它的「初始份数」。");
 			return;
 		}
-		CardSpec cardSpec2 = new CardSpec
-		{
-			Name = cardSpec.Name + "·改",
-			ClassName = "",
-			CardType = cardSpec.CardType,
-			Rarity = cardSpec.Rarity,
-			Cost = cardSpec.Cost,
-			InStartingDeck = cardSpec.InStartingDeck,
-			StartingCopies = cardSpec.StartingCopies,
-			InCardPool = cardSpec.InCardPool
-		};
-		foreach (EffectSpec effect in cardSpec.Effects)
-		{
-			cardSpec2.Effects.Add(CloneEffect(effect));
-		}
+		CardSpec cardSpec2 = DeepCloneCard(cardSpec);
+		cardSpec2.Name = cardSpec.Name + "·改";
+		cardSpec2.ClassName = "";     // 留空 = 自动编号（照抄类名会和原卡撞模型 ID → 模组加载失败）
 		_profile.Cards.Add(cardSpec2);
 		SyncDetail();
 		CardList.SelectedItem = cardSpec2;
+		SetStatus($"已复制「{cardSpec.Name}」→「{cardSpec2.Name}」：自定义关键词 / 卡牌关键字 / 标签 / 效果（含数值、升级增量、召唤物、概率、条件）/ 升级后关键字 全部照抄。");
 	}
 
-	private static EffectSpec CloneEffect(EffectSpec e)
-	{
-		return new EffectSpec
-		{
-			Kind = e.Kind,
-			Amount = e.Amount,
-			UpgradeAmount = e.UpgradeAmount,
-			TargetSide = e.TargetSide,
-			RepeatCount = e.RepeatCount,
-			Times = e.Times,
-			AllowDuplicates = e.AllowDuplicates,
-			NextTurn = e.NextTurn,
-			PowerId = e.PowerId
-		};
-	}
+	/// <summary>
+	/// 整张卡片的**深拷贝**（JSON 往返，和存档 / 工程回读用的是同一套字段）。
+	///
+	/// 为什么不能手写 <c>new CardSpec { … }</c>（上一版就是这么写的）：手写**一定会漏字段**。
+	/// 用户实测漏掉的：勾选的自定义关键词（KeywordIds）、卡牌关键字（消耗/虚无/固有/保留/不可打出/奇巧）、
+	/// 标签（Tags）、升级后关键字（UpgradeKeywords），以及效果上除 Kind/Amount 以外的一切
+	/// （「召唤物（哪一只）」、牺牲伙伴的收益/公式/倍率、概率生效、条件…）——
+	/// 结果复制出来的牌只是长得像，实际配置完全不是同一张。
+	/// 走 JSON 往返还有一个好处：以后给 CardSpec / EffectSpec 加字段，这里**不需要改**，不会再漏。
+	/// </summary>
+	private static CardSpec DeepCloneCard(CardSpec src) =>
+		System.Text.Json.JsonSerializer.Deserialize<CardSpec>(
+			System.Text.Json.JsonSerializer.Serialize(src, ProfileFactory.JsonOpts),
+			ProfileFactory.JsonOpts) ?? new CardSpec();
 
 	private bool ConfirmDelete(string what)
 	{
@@ -3662,22 +3650,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			SetStatus("请先在左边选中要编辑的条目。");
 			return;
 		}
-		EffectSpec effectSpec = ((obj is CardSpec)
-			? new EffectSpec
-			{
-				Kind = "Damage",
-				Amount = 6m,
-				UpgradeAmount = 3m,
-				TargetSide = "Enemy",
-				AllowDuplicates = true,
-			}
-			: new EffectSpec
-			{
-				Kind = "Damage",
-				Amount = 6m,
-				TargetSide = "Enemy",
-				AllowDuplicates = true
-			});
+		// 新效果的数值 / 升级增量一律默认 0（用户要求）：以前卡牌上默认「伤害 6 / 升级 +3」，
+		// 用户只是想加一条别的效果时，先得把这两个数字清掉，很容易漏 → 生成出莫名其妙的数值。
+		// 默认 0 之后：选好「效果种类」再自己填，填漏了校验器也会提示（例：伤害要大于 0）。
+		EffectSpec effectSpec = new EffectSpec
+		{
+			Kind = "Damage",
+			Amount = 0m,
+			UpgradeAmount = 0m,
+			TargetSide = "Enemy",
+			AllowDuplicates = true,
+		};
 		list.Add(effectSpec);
 		SyncDetail();
 		listBox.SelectedItem = effectSpec;
@@ -4616,6 +4599,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("添加效果生效", cardSpec.Effects.Count == count2 + 1, $"{count2} → {cardSpec.Effects.Count}");
 		ObservableCollection<EffectSpec> effects = cardSpec.Effects;
 		Check("新效果默认勾选「允许重复选中同一个敌人」", effects[effects.Count - 1].AllowDuplicates);
+		Check("新效果「数值」默认 0（用户要求：以前默认 6，加别的效果时得先清掉，容易漏）",
+			effects[effects.Count - 1].Amount == 0m, effects[effects.Count - 1].Amount.ToString());
+		Check("新效果「升级增量」默认 0（用户要求：以前是 +3）",
+			effects[effects.Count - 1].UpgradeAmount == 0m, effects[effects.Count - 1].UpgradeAmount.ToString());
 		CardEffectList.SelectedIndex = cardSpec.Effects.Count - 1;
 		OnRemoveEffect(sender, new RoutedEventArgs());
 		Check("删除效果生效", cardSpec.Effects.Count == count2, $"{cardSpec.Effects.Count}");
@@ -4633,6 +4620,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("卡牌删除可撤回（数量恢复）", Profile.Cards.Count == count3 + 1, $"{Profile.Cards.Count}");
 		OnRemoveCard(this, new RoutedEventArgs());
 		_cardUndo.Clear();
+
+		// 复制卡牌必须是**整卡深拷贝**：用户实测「复制后勾选的关键词没跟着走、效果也不一样」——
+		// 原因是上一版手写 new CardSpec { … } + 手写 CloneEffect，漏了一大半字段。
+		{
+			CardSpec copySrc = new CardSpec
+			{
+				Name = "复制源", ClassName = "UiCheckCopySrc", CardType = "Power", Rarity = "Rare",
+				Cost = 2, InCardPool = true, Exhausts = true, Retain = true,
+			};
+			copySrc.KeywordIds.Add("UiCheckCopyKw");
+			copySrc.Tags.Add("Strike");
+			copySrc.UpgradeKeywords.Set("Innate", KeywordUpgradeSpec.Add);
+			copySrc.Effects.Add(new EffectSpec
+			{
+				Kind = "PetHeal", Amount = 7m, UpgradeAmount = 2m, TargetSide = "Self",
+				PetSummon = "UiCheckPet", ChanceEnabled = true, ChancePercent = 40m,
+			});
+			Profile.Cards.Add(copySrc);
+			CardList.SelectedItem = copySrc;
+			int beforeCopy = Profile.Cards.Count;
+			OnCopyCard(this, new RoutedEventArgs());
+			Check("复制卡牌：列表多一张", Profile.Cards.Count == beforeCopy + 1, $"{beforeCopy} → {Profile.Cards.Count}");
+			CardSpec copyDst = Profile.Cards[Profile.Cards.Count - 1];
+			Check("复制卡牌：名字加「·改」、类名清空（留空 = 自动编号，照抄会撞模型 ID）",
+				copyDst.Name == "复制源·改" && copyDst.ClassName.Length == 0,
+				copyDst.Name + " / 类名=" + (copyDst.ClassName.Length == 0 ? "(空)" : copyDst.ClassName));
+			Check("复制卡牌：勾选的自定义关键词跟着复制（用户报过漏掉这个）",
+				copyDst.CustomKeywordList.Contains("UiCheckCopyKw"),
+				string.Join("·", copyDst.CustomKeywordList));
+			Check("复制卡牌：卡牌关键字 / 标签 / 升级后关键字 / 类型 / 稀有度 / 费用 / 入池 全部照抄",
+				copyDst.Exhausts && copyDst.Retain && copyDst.TagList.Contains("Strike")
+				&& copyDst.UpgradeKeywords.Get("Innate") == KeywordUpgradeSpec.Add
+				&& copyDst.CardType == "Power" && copyDst.Rarity == "Rare" && copyDst.Cost == 2 && copyDst.InCardPool,
+				$"消耗={copyDst.Exhausts} 保留={copyDst.Retain} 标签={string.Join("·", copyDst.TagList)} "
+				+ $"升级后固有={copyDst.UpgradeKeywords.Get("Innate")} {copyDst.CardType}/{copyDst.Rarity}/{copyDst.Cost}费");
+			Check("复制卡牌：效果整条照抄（种类 / 数值 / 升级增量 / 召唤物 / 概率）",
+				copyDst.Effects.Count == 1 && copyDst.Effects[0].Kind == "PetHeal"
+				&& copyDst.Effects[0].Amount == 7m && copyDst.Effects[0].UpgradeAmount == 2m
+				&& copyDst.Effects[0].PetSummon == "UiCheckPet"
+				&& copyDst.Effects[0].ChanceEnabled && copyDst.Effects[0].ChancePercent == 40m,
+				copyDst.Effects.Count == 0 ? "(没有效果)" : copyDst.Effects[0].Display);
+			Check("复制卡牌：效果是**新对象**（改副本不会连带改原卡）",
+				copyDst.Effects.Count == 1 && !ReferenceEquals(copyDst.Effects[0], copySrc.Effects[0]),
+				"深拷贝");
+			Profile.Cards.Remove(copyDst);
+			Profile.Cards.Remove(copySrc);
+			Check("复制卡牌测试用的两张卡已清理", !Profile.Cards.Contains(copySrc) && !Profile.Cards.Contains(copyDst));
+		}
 		RelicList.SelectedIndex = 0;
 		RelicSpec relicSpec = (RelicSpec)RelicList.SelectedItem;
 		Button sender2 = new Button
@@ -5037,7 +5072,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		if (cardSpec3.Effects.Count == count8 + 1)
 		{
 			ObservableCollection<EffectSpec> effects6 = cardSpec3.Effects;
-			ok5 = ((effects6[effects6.Count - 1].UpgradeAmount == 3m) ? 1 : 0);
+			ok5 = ((effects6[effects6.Count - 1].UpgradeAmount == 0m) ? 1 : 0);
 		}
 		else
 		{
@@ -5047,7 +5082,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		defaultInterpolatedStringHandler.AppendLiteral("升级增量=");
 		ObservableCollection<EffectSpec> effects7 = cardSpec3.Effects;
 		defaultInterpolatedStringHandler.AppendFormatted(effects7[effects7.Count - 1].UpgradeAmount);
-		Check("卡牌页「添加效果」的新效果仍然带升级增量（卡牌能升级）", (byte)ok5 != 0, defaultInterpolatedStringHandler.ToStringAndClear());
+		Check("卡牌页「添加效果」的新效果「升级增量」默认是 0（用户要求：加完自己填）", (byte)ok5 != 0, defaultInterpolatedStringHandler.ToStringAndClear());
 		OnRemoveEffect(sender6, new RoutedEventArgs());
 		_cardUndo.Clear();
 		Check("先古之民目录读到了（从解包工程）", EffectCatalog.Ancients.Count > 0, AncientCatalog.CatalogStatus);
@@ -7026,11 +7061,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						&& PetGen.DisplayNameOf(probe, PetGen.ClassNameOf(Profile, probe)) == "测试伙伴"
 						&& PetGen.HpOf(probe) == 12 && PetGen.StandDistanceOf(probe) == 130,
 						$"{PetGen.ClassNameOf(Profile, probe)} / {PetGen.HpOf(probe)} / {PetGen.StandDistanceOf(probe)}");
-					// 「哪一只」下拉的候选只列已启用的召唤物
+					// 「哪一只」下拉的候选 = 第一条「全部召唤物」+ 各只已启用的召唤物
 					RaisePetSummonChoices();
-					Check("「召唤物（哪一只）」下拉的候选只列已启用的召唤物",
-						PetSummonsCard.Count == PetGen.Enabled(Profile).Count && PetSummonsCard.All((PetGen.PetChoice c) => c.Id.Length > 0),
+					Check("「召唤物（哪一只）」下拉的候选 = 「全部召唤物」+ 各只已启用的召唤物",
+						PetSummonsCard.Count == PetGen.Enabled(Profile).Count + 1
+						&& PetSummonsCard[0].Id == PetGen.AllId
+						&& PetSummonsCard.Skip(1).All((PetGen.PetChoice c) => c.Id.Length > 0),
 						string.Join(" / ", PetSummonsCard.Select((PetGen.PetChoice c) => c.Display)));
+					Check("「全部召唤物」那一项的文案看得懂（★ 全部召唤物…）",
+						PetGen.IsAll(PetGen.AllId) && PetGen.Choices(Profile)[0].Display.StartsWith("★ 全部召唤物"),
+						PetGen.Choices(Profile)[0].Display);
+					Check("「全部召唤物」不是真的宠物标识（Resolve 认不出来、ResolveMany 返回全部）",
+						PetGen.Resolve(Profile, PetGen.AllId) is null
+						&& PetGen.ResolveMany(Profile, PetGen.AllId).Count == PetGen.Enabled(Profile).Count,
+						$"Resolve=null / ResolveMany={PetGen.ResolveMany(Profile, PetGen.AllId).Count} 只");
 					// 停用后候选里就没有它了
 					probe.Enabled = false;
 					RaisePetSummonChoices();
@@ -7469,8 +7513,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					maxSrc.Contains("if (__uiCheckPet is not null)"), "有跳过守卫");
 				Check("新效果：升级增量写在 CalculationBase 上（「按生命值算」的 CalculatedDamage 名字是本体固定死的）",
 					maxSrc.Contains("base.DynamicVars.CalculationBase.UpgradeValueBy(3m);"), "升级落点对");
-				Check("新效果：卡面描述用 {CalculatedDamage…} 占位，**没有写死数字**（伤害按宠物生命值算）",
+				// 卡面描述里的 {名字:diff()} 必须是 CanonicalVars 里**真实声明**的那个键。
+				// 用户实测报过（截图）：三种「按生命值算」的伙伴攻击 + 牺牲伙伴的收益，卡面上直接原样印出
+				// {PetMissingHpDamage:diff()} —— 因为描述用的是我们的内部名字，而声明的是本体的
+				// CalculatedDamage / CalculatedBlock（名字对不上，本体在 DynamicVars 里找不到 → 原样显示）。
+				Check("卡面描述用 {CalculatedDamage…} 占位，**没有写死数字**（伤害按宠物生命值算）",
 					LocalizationGen.CardsJson(petSrc).Length >= 0 && CSharpCodeGen.MarkerText(newMax.Effects[0]).Contains("CET:PetFormula=maxhp"), "标记在");
+				Check("卡面描述里的变量名 = 真正声明的那个（CalculatedDamage），不是内部名字",
+					CSharpCodeGen.DisplayVarNameOf(newMax.Effects[0]) == "CalculatedDamage"
+					&& CSharpCodeGen.VarNameOf(newMax.Effects[0]) == "PetMaxHpDamage",
+					CSharpCodeGen.DisplayVarNameOf(newMax.Effects[0]) + "（内部名字 " + CSharpCodeGen.VarNameOf(newMax.Effects[0]) + "）");
 
 				// —— 按当前生命 / 已损失生命：变量名 + 公式标记要能区分 ——
 				CardSpec newCur = new CardSpec { Name = "榨取", ClassName = "UiCheckPetNewCur", CardType = "Attack", Cost = 1, InCardPool = true };
@@ -7488,6 +7540,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("新效果：当前生命 / 已损失生命的倍率表达式各自正确（pet.CurrentHp / pet.MaxHp - pet.CurrentHp）",
 					curSrc.Contains("(decimal)pet.CurrentHp") && missSrc.Contains("(decimal)(pet.MaxHp - pet.CurrentHp)")
 					&& !curSrc.Contains("pet.MaxHp - pet.CurrentHp"), "两个公式对");
+				Check("卡面描述的变量名（三种按生命值算）= 真正声明的 CalculatedDamage，**不是**内部名字（否则卡面原样印出 {PetMissingHpDamage:diff()}）",
+					CSharpCodeGen.DisplayVarNameOf(newMax.Effects[0]) == "CalculatedDamage"
+					&& CSharpCodeGen.DisplayVarNameOf(newCur.Effects[0]) == "CalculatedDamage"
+					&& CSharpCodeGen.DisplayVarNameOf(newMiss.Effects[0]) == "CalculatedDamage",
+					CSharpCodeGen.DisplayVarNameOf(newMax.Effects[0]) + " / " + CSharpCodeGen.DisplayVarNameOf(newCur.Effects[0])
+					+ " / " + CSharpCodeGen.DisplayVarNameOf(newMiss.Effects[0]));
 				Check("新效果：全部敌人 / 随机敌人各自走 TargetingAllOpponents / TargetingRandomOpponents（FromPetAttacker 在后）",
 					curSrc.Contains(".TargetingAllOpponents(base.CombatState)")
 					&& missSrc.Contains(".TargetingRandomOpponents(base.CombatState, allowDuplicates: true)"), "目标对");
@@ -7551,7 +7609,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("新效果「牺牲伙伴（最大生命×倍率）」标记里带倍率（回读要能还原 3 倍）",
 					sacBlockSrc.Contains("CET:PetMul=3m"), "倍率标记在");
 
+				// —— 「全部召唤物」：一条效果按**每一只启用的召唤物**逐只展开（用户要求：下拉加「全选」）——
+				CardSpec allPet = new CardSpec { Name = "全体出动", ClassName = "UiCheckPetAll", CardType = "Skill", Cost = 1, InCardPool = true };
+				allPet.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self", PetSummon = PetGen.AllId });
+				allPet.Effects.Add(new EffectSpec { Kind = "PetHeal", Amount = 5m, UpgradeAmount = 2m, TargetSide = "Self", PetSummon = PetGen.AllId });
+				allPet.Effects.Add(new EffectSpec { Kind = "PetGuardOn", TargetSide = "Self", PetSummon = PetGen.AllId });
+				string allSrc = CSharpCodeGen.CardSource(petSrc, allPet, 0);
+				Check("「全部召唤物」：一条效果按每只宠物各展开一份代码（本例 2 只 → 两次召唤 / 两次治疗 / 两次挂守卫）",
+					allSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner,")
+					&& allSrc.Contains("UiCheckPet2Cmd.Summon(choiceContext, base.Owner,")
+					&& allSrc.Contains("await CreatureCmd.Heal(__uiCheckPet, base.DynamicVars.Heal.BaseValue);")
+					&& allSrc.Contains("await CreatureCmd.Heal(__uiCheckPet2, base.DynamicVars.Heal.BaseValue);")
+					&& allSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);")
+					&& allSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet2, 1m, null, null);"),
+					"两只各来一遍");
+				Check("「全部召唤物」：每一份展开都写一行 // CET:PetAll= 标记（回读靠它把多份合并回一条）",
+					allSrc.Split(new[] { "// CET:PetAll=" }, StringSplitOptions.None).Length - 1 == 6,
+					(allSrc.Split(new[] { "// CET:PetAll=" }, StringSplitOptions.None).Length - 1) + " 行标记（3 条效果 × 2 只 = 6）");
+				Check("「全部召唤物」：每只**各自**判在不在场（不在场的那只整段跳过，不会抛异常）",
+					allSrc.Contains("if (__uiCheckPet is not null)") && allSrc.Contains("if (__uiCheckPet2 is not null)"), "两只各一层守卫");
+				Check("「全部召唤物」：整张牌的「缺伙伴就打不出去 / 描红框」用「任意一只在场」的或运算",
+					allSrc.Contains("UiCheckPetCmd.Get(base.Owner) != null || UiCheckPet2Cmd.Get(base.Owner) != null"),
+					"或运算在");
+
+				// 「全部召唤物」+「按生命值算」：一张牌只有一套固定名字的计算变量（CalculatedDamage），
+				// 装不下两只各不相同的数字 → 这一档改成**内联**读每只自己的生命值。
+				CardSpec allMiss = new CardSpec { Name = "全体绝境", ClassName = "UiCheckPetAllMiss", CardType = "Attack", Cost = 2, InCardPool = true };
+				allMiss.Effects.Add(new EffectSpec { Kind = "PetDamageByMissingHp", Amount = 0m, UpgradeAmount = 4m, TargetSide = "Enemy", PetSummon = PetGen.AllId });
+				string allMissSrc = CSharpCodeGen.CardSource(petSrc, allMiss, 0);
+				Check("「全部召唤物」+按生命值算：走**内联**计算（每只各自的 MaxHp - CurrentHp），不碰固定名字的 CalculatedDamage",
+					allMissSrc.Contains("(decimal)(__uiCheckPet.MaxHp - __uiCheckPet.CurrentHp)")
+					&& allMissSrc.Contains("(decimal)(__uiCheckPet2.MaxHp - __uiCheckPet2.CurrentHp)")
+					&& !allMissSrc.Contains("CalculatedDamage")
+					&& !allMissSrc.Contains("CalculationBase"), "内联计算");
+				Check("「全部召唤物」+按生命值算：升级增量内联成 (base.IsUpgraded ? 4m : 0m)（没有 CalculationBase 可抬）",
+					allMissSrc.Contains("(base.IsUpgraded ? 4m : 0m)")
+					&& !allMissSrc.Contains("CalculationBase.UpgradeValueBy"), "升级内联");
+
+				CardSpec allSac = new CardSpec { Name = "全体献身", ClassName = "UiCheckPetAllSac", CardType = "Skill", Cost = 2, InCardPool = true };
+				allSac.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "Self", PetSummon = PetGen.AllId, PetSacrificeGain = "Block", PetSacrificeFormula = "MaxHp", PetSacrificeMultiplier = 3m });
+				string allSacSrc = CSharpCodeGen.CardSource(petSrc, allSac, 0);
+				Check("「全部召唤物」+牺牲伙伴（按生命值算收益）：每只各自「先算收益再杀自己」（Kill 各自一份）",
+					allSacSrc.Contains("(decimal)__uiCheckPet.MaxHp * 3m") && allSacSrc.Contains("(decimal)__uiCheckPet2.MaxHp * 3m")
+					&& allSacSrc.Contains("await CreatureCmd.Kill(__uiCheckPet);") && allSacSrc.Contains("await CreatureCmd.Kill(__uiCheckPet2);")
+					&& !allSacSrc.Contains("CalculatedBlock"), "两只各自牺牲");
+
 				// —— 生成 → 回读一致性：把这一批卡都加进配置重新生成工程，再回读 ——
+				petSrc.Cards.Add(allPet);
+				petSrc.Cards.Add(allMiss);
+				petSrc.Cards.Add(allSac);
 				petSrc.Cards.Add(newMax);
 				petSrc.Cards.Add(newCur);
 				petSrc.Cards.Add(newMiss);
@@ -7589,6 +7695,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					Rec("UiCheckPetNewSacCur")?.Effects.Count == 1
 					&& Rec("UiCheckPetNewSacCur")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "CurHp") == true,
 					string.Join(" · ", Rec("UiCheckPetNewSacCur")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeFormula) ?? Array.Empty<string>()));
+				Check("从工程恢复：「全部召唤物」的多份展开合并回**一条**效果（PetSummon = \"*\"，不会变成好几条）",
+					Rec("UiCheckPetAll")?.Effects.Count == 3
+					&& Rec("UiCheckPetAll")?.Effects.All(e => PetGen.IsAll(e.PetSummon)) == true
+					&& Rec("UiCheckPetAll")?.Effects.Select(e => e.Kind).SequenceEqual(new[] { "SummonPet", "PetHeal", "PetGuardOn" }) == true
+					&& Rec("UiCheckPetAll")?.Effects[1].Amount == 5m
+					&& Rec("UiCheckPetAll")?.Effects[1].UpgradeAmount == 2m,
+					string.Join(" · ", Rec("UiCheckPetAll")?.Effects.Select(e => e.Kind + "/" + (e.PetSummon ?? "?") + "/" + e.Amount) ?? Array.Empty<string>()));
+				Check("从工程恢复：「全部召唤物」+按生命值算 也合并回一条（内联的升级增量 4 也读回来了）",
+					Rec("UiCheckPetAllMiss")?.Effects.Count == 1
+					&& Rec("UiCheckPetAllMiss")?.Effects[0].Kind == "PetDamageByMissingHp"
+					&& PetGen.IsAll(Rec("UiCheckPetAllMiss")?.Effects[0].PetSummon)
+					&& Rec("UiCheckPetAllMiss")?.Effects[0].Amount == 4m,
+					string.Join(" · ", Rec("UiCheckPetAllMiss")?.Effects.Select(e => e.Kind + "/" + (e.PetSummon ?? "?") + "/" + e.Amount) ?? Array.Empty<string>()));
+				Check("从工程恢复：「全部召唤物」+牺牲伙伴（最大生命×3）也合并回一条",
+					Rec("UiCheckPetAllSac")?.Effects.Count == 1
+					&& Rec("UiCheckPetAllSac")?.Effects[0].Kind == "PetSacrifice"
+					&& PetGen.IsAll(Rec("UiCheckPetAllSac")?.Effects[0].PetSummon)
+					&& Rec("UiCheckPetAllSac")?.Effects[0].PetSacrificeGain == "Block"
+					&& Rec("UiCheckPetAllSac")?.Effects[0].PetSacrificeMultiplier == 3m,
+					string.Join(" · ", Rec("UiCheckPetAllSac")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeGain + "/" + (e.PetSummon ?? "?")) ?? Array.Empty<string>()));
 				Check("从工程恢复：这一批宠物效果**一条都没漏**（没认出来的语句为 0）", !petRecNew.HasUnparsed,
 					petRecNew.Unparsed.Count == 0 ? "全部认出来了" : $"{petRecNew.Unparsed.Count} 条：" + string.Join(" ｜ ", petRecNew.Unparsed.Take(3)));
 				//（原先这里还有一条「召唤物卡牌标记 IsPetCard 按内容推回来」的断言 —— 那一页和那个字段都已删除。）
@@ -7632,10 +7758,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 				// —— 卡面描述（写死数字 = 玩家看到的是错的，所以这里逐句核对）——
 				string newLoc = LocalizationGen.CardsJson(petSrc);
-				Check("卡面描述：按生命值算的伙伴攻击写的是 {…:diff()} 占位 + 「此伤害等于伙伴的最大生命值」，**没有写死数字**",
+				Check("卡面描述：按生命值算的伙伴攻击写的是 {CalculatedDamage:diff()} 占位 + 「此伤害等于伙伴的最大生命值」，**没有写死数字**、也**没有印出内部变量名**",
 					newLoc.Contains("此伤害等于[gold]小石头[/gold]的最大生命值。")
 					&& newLoc.Contains("此伤害等于[gold]小石头[/gold]的当前生命值。")
-					&& newLoc.Contains("此伤害等于[gold]小石头[/gold]的已损失的生命值。"), "描述对");
+					&& newLoc.Contains("此伤害等于[gold]小石头[/gold]的已损失的生命值。")
+					&& newLoc.Contains("{CalculatedDamage:diff()}")
+					&& !newLoc.Contains("PetMaxHpDamage") && !newLoc.Contains("PetCurHpDamage")
+					&& !newLoc.Contains("PetMissingHpDamage"),
+					"有 CalculatedDamage=" + newLoc.Contains("{CalculatedDamage:diff()}")
+					+ " 内部名残留=" + (newLoc.Contains("PetMaxHpDamage") || newLoc.Contains("PetCurHpDamage") || newLoc.Contains("PetMissingHpDamage")));
 				// 六条各自的**实际文案**都放进 detail：FAIL 时一眼看得出是哪一条不对
 				//（以前 detail 只有「描述对」三个字，看不出哪条错，白跑一轮）。
 				{
@@ -7656,9 +7787,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						missing.Count == 0 ? string.Join(" ｜ ", wantTexts.Select((w) => w.Text))
 							: "缺 / 不符：" + string.Join(" ｜ ", missing));
 				}
-				Check("卡面描述：牺牲伙伴写着「若…存活：它死去，然后你获得…格挡 / 造成…伤害」",
-					newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后你获得{PetSacrificeBlock:diff()}点[gold]格挡[/gold]。")
-					&& newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后它对指定敌人造成{PetSacrificeDamage:diff()}点伤害。"), "描述对");
+				Check("卡面描述：牺牲伙伴写着「若…存活：它死去，然后你获得…格挡 / 造成…伤害」"
+					+ "（按生命值算的收益用真正声明的 CalculatedBlock —— 用内部名字会在卡面印出 {PetSacrificeBlock:diff()}）",
+					newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后你获得{CalculatedBlock:diff()}点[gold]格挡[/gold]。")
+					&& newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后它对指定敌人造成{PetSacrificeDamage:diff()}点伤害。"),
+					"C# 里的声明：" + (CSharpCodeGen.DisplayVarNameOf(sacBlock.Effects[0]) + " / " + CSharpCodeGen.DisplayVarNameOf(sacDmg.Effects[0]))
+					+ " ｜ 描述里有 CalculatedBlock=" + newLoc.Contains("{CalculatedBlock:diff()}")
+					+ " 有 PetSacrificeDamage=" + newLoc.Contains("{PetSacrificeDamage:diff()}")
+					+ " 有内部名 PetSacrificeBlock=" + newLoc.Contains("PetSacrificeBlock"));
 				Check("PetAction / IsPetEffect 覆盖了那 10 个新 Kind（否则「召唤物（哪一只）」下拉不会显示）",
 					new[] { "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp", "PetHeal", "PetLoseHp",
 						"PetGainMaxHp", "PetSacrifice", "PetApplyPower", "PetGuardOn", "PetGuardOff" }

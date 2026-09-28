@@ -167,13 +167,53 @@ public static class PetGen
         return null;
     }
 
+    /// <summary>
+    /// 「召唤物（哪一只）」下拉里那一项**「全部召唤物」**的稳定标识（存进 <see cref="EffectSpec.PetSummon"/>）。
+    ///
+    /// 为什么用 <c>*</c>：宠物标识是英文类名（<see cref="Naming.IsValidIdentifier"/> 不允许 <c>*</c>），
+    /// 所以它永远不可能和真的召唤物撞标识。
+    ///
+    /// 语义：这条效果对**每一只启用的召唤物各来一遍**（生成时按宠物逐只展开成多份代码，
+    /// 每只自己判「在不在场」，不在场的那只自动跳过）—— 不是运行时的动态遍历，
+    /// 所以「哪几只」在生成时就定死了，和界面上「召唤物」页里勾了启用的那几只完全一致。
+    /// </summary>
+    public const string AllId = "*";
+
+    /// <summary>这个标识是不是「全部召唤物」（见 <see cref="AllId"/>）。</summary>
+    public static bool IsAll(string? id) => string.Equals((id ?? "").Trim(), AllId, StringComparison.Ordinal);
+
+    /// <summary>
+    /// 这条效果要作用在**哪几只**召唤物上：
+    ///   · <c>"*"</c>（全部）→ 所有启用的召唤物（按列表顺序）；
+    ///   · 留空（老存档）→ 第一只启用的（行为和上一版单只召唤物一致）；
+    ///   · 其它 → 那一只（找不到就是空列表，校验器会拦住）。
+    /// </summary>
+    public static IReadOnlyList<PetDef> ResolveMany(CharacterProfile p, string? id)
+    {
+        var all = All(p);
+        if (all.Count == 0) return Array.Empty<PetDef>();
+        if (IsAll(id)) return all;
+        var one = Resolve(p, id);
+        return one is null ? Array.Empty<PetDef>() : new[] { one };
+    }
+
     /// <summary>界面上「召唤物」下拉里的一行：SelectedValue 用 <see cref="Id"/>（稳定标识）。</summary>
     public sealed record PetChoice(string Id, string Name, string Display);
 
-    /// <summary>效果编辑器下拉用的候选（按列表顺序）。</summary>
-    public static IReadOnlyList<PetChoice> Choices(CharacterProfile p) =>
-        All(p).Select(d => new PetChoice(d.Id, d.DisplayName,
-            d.DisplayName + "（" + d.Id + " ｜ 生命 " + d.Hp + "）")).ToList();
+    /// <summary>「全部召唤物」在下拉里的显示文案（<see cref="Choices"/> 里第一条）。</summary>
+    public const string AllChoiceDisplay = "★ 全部召唤物（每一只各来一次）";
+
+    /// <summary>效果编辑器下拉用的候选：第一条固定是「全部召唤物」，后面按列表顺序排各只。</summary>
+    public static IReadOnlyList<PetChoice> Choices(CharacterProfile p)
+    {
+        var list = new List<PetChoice>
+        {
+            new(AllId, "全部召唤物", AllChoiceDisplay + "（共 " + All(p).Count + " 只）"),
+        };
+        list.AddRange(All(p).Select(d => new PetChoice(d.Id, d.DisplayName,
+            d.DisplayName + "（" + d.Id + " ｜ 生命 " + d.Hp + "）")));
+        return list;
+    }
 
     /// <summary>
     /// 这个配置有没有任何「伙伴攻击」效果（有就说明要用扩展方法 FromPetAttacker，

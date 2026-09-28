@@ -558,6 +558,14 @@ public static class ProfileValidator
         {
             hasSummonEffect = true;
             string kindZh = EffectCatalog.FindKind(e.Kind).Display;
+            // 「全部召唤物」：对**每一只启用的**各来一遍 —— 只要有一只启用就是合法配置
+            if (PetGen.IsAll(e.PetSummon))
+            {
+                if (enabled.Count == 0)
+                    issues.Add(new("错误", $"{owner} 的第 {i} 条「{kindZh}」选了「全部召唤物」，"
+                        + "但「召唤物」页里一只都没启用：到「召唤物」页添加一只并勾上「启用」。"));
+                return;
+            }
             if (string.IsNullOrWhiteSpace(e.PetSummon))
             {
                 // 老存档（上一版只有一只召唤物）没有这个字段：生成时自动用第一只，行为和以前一致
@@ -674,7 +682,8 @@ public static class ProfileValidator
             // 一张牌最多一条「按生命值算」的宠物效果：本体的计算变量名是**固定**的
             // （DynamicVars.CalculatedDamage / CalculatedBlock / CalculationBase 都是按名字取的），
             // 两条会互相覆盖那个 CalculationBase → 数字对不上，而且回读也分不清哪条是哪条。
-            var calcs = c.Effects.Where(CSharpCodeGen.CanonicalVarNeedsPetCmd).ToList();
+            // 「全部召唤物」那一档不算在内：它走的是内联计算（每只各自算），根本不碰这些固定名字的变量。
+            var calcs = c.Effects.Where(x => CSharpCodeGen.CanonicalVarNeedsPetCmd(x) && !PetGen.IsAll(x.PetSummon)).ToList();
             if (calcs.Count > 1)
                 issues.Add(new("错误", $"卡牌「{c.Name}」里有 {calcs.Count} 条「按生命值算」的宠物效果"
                     + $"（{string.Join("、", calcs.Select(x => EffectCatalog.FindKind(x.Kind).Display))}）"

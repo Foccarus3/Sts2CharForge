@@ -386,6 +386,13 @@ public static class LocalizationGen
     }
 
     /// <summary>
+    /// 卡面描述里那只召唤物的称呼：选了「全部召唤物」时是「全部 N 只召唤物」，
+    /// 否则就是那一只的名字（<see cref="SummonName"/>）。
+    /// </summary>
+    private static string SummonNameOrAll(CharacterProfile p, EffectSpec e) =>
+        PetGen.IsAll(e.PetSummon) ? $"全部 {PetGen.All(p).Count} 只召唤物" : SummonName(p, e);
+
+    /// <summary>
     /// 「伙伴攻击（按生命值算）」的卡面描述。
     /// **绝不能写死数字** —— 伤害是打出时按那只宠物当时的最大/当前/已损失生命算出来的，
     /// 所以只写 <c>{变量名:diff()}</c> 让本体去算（升级增量也会跟着显示）。
@@ -394,7 +401,12 @@ public static class LocalizationGen
     private static string PetCalcDamageText(CharacterProfile p, EffectSpec e, string var, string repeat,
         string when, string target, string hitSuffix, string which)
     {
-        string who = SummonName(p, e);
+        string who = SummonNameOrAll(p, e);
+        // 「全部召唤物」：每只各自按自己的生命值算，数字个个不同 —— 卡面没法只显示一个数，
+        // 所以写清「各自算、卡面不显示具体数值」，而不是硬塞一个会误导人的数字。
+        if (PetGen.IsAll(e.PetSummon))
+            return $"{repeat}{when}让[gold]{who}[/gold]{target}造成伤害{hitSuffix}。\n"
+                 + $"每只的伤害各自按它自己的{which}算（每只数字都不同，卡面不显示具体数值）。";
         return $"{repeat}{when}让[gold]{who}[/gold]{target}造成{var}点伤害{hitSuffix}。\n"
              + $"此伤害等于[gold]{who}[/gold]的{which}。";
     }
@@ -404,6 +416,21 @@ public static class LocalizationGen
     {
         string who = SummonName(p, e);
         bool block = e.PetSacrificeGain != "Damage";
+        if (PetGen.IsAll(e.PetSummon))
+        {
+            // 「全部召唤物」：每只各自牺牲一次，收益也各自算一遍（有几只活着就算几次）
+            string per = e.PetSacrificeFormula switch
+            {
+                "Fixed" => block ? $"你就获得 {var} 点[gold]格挡[/gold]" : $"它就对指定敌人造成 {var} 点伤害",
+                "CurHp" => block
+                    ? "你就获得等同于它当前生命值的[gold]格挡[/gold]"
+                    : "它就对指定敌人造成等同于它当前生命值的伤害",
+                _ => block
+                    ? $"你就获得等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的[gold]格挡[/gold]"
+                    : $"它就对指定敌人造成等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的伤害",
+            };
+            return $"[gold]{SummonNameOrAll(p, e)}[/gold]各自牺牲：每死去一只，{per}。";
+        }
         string pay = block
             ? $"然后你获得{var}点[gold]格挡[/gold]。"
             : $"然后它对指定敌人造成{var}点伤害。";
@@ -413,8 +440,11 @@ public static class LocalizationGen
     private static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
         Dictionary<EffectSpec, string>? varMap = null)
     {
-        // 「数值 = X」的卡牌：描述里写 X，而不是那个用不上的固定数值
-        string var = e.AmountIsX && isCard ? "X" : "{" + CSharpCodeGen.VarNameOf(e, varMap) + ":diff()}";
+        // 「数值 = X」的卡牌：描述里写 X，而不是那个用不上的固定数值。
+        // 变量名必须用 DisplayVarNameOf（= CanonicalVars 里真实声明的那个键）：三个「按生命值算」的
+        // 伙伴攻击 / 牺牲伙伴声明的是本体的 CalculatedDamage / CalculatedBlock，直接用 VarNameOf 的
+        // 内部名字会让卡面原样印出 {PetMissingHpDamage:diff()}（用户实测截图报过）。
+        string var = e.AmountIsX && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}";
         string when = e.NextTurn ? "下回合开始时，" : "";
         int times = Math.Max(1, e.Times);
         string repeat = e.TimesIsX && isCard ? "重复 X 次：" : times > 1 ? $"重复 {times} 次：" : "";
@@ -504,26 +534,28 @@ public static class LocalizationGen
             // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
             // 数值 0 = 用「召唤物」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
             "SummonPet" => (e.AmountIsX && isCard)
-                ? $"召唤{SummonName(p, e)}（{var} 点生命）。"
+                ? $"召唤{SummonNameOrAll(p, e)}（{var} 点生命）。"
                 : e.Amount <= 0
-                    ? $"召唤{SummonName(p, e)}。"
-                    : $"召唤{SummonName(p, e)}（{var} 点生命）。",
+                    ? (PetGen.IsAll(e.PetSummon)
+                        ? $"召唤{SummonNameOrAll(p, e)}（各自按「召唤物」页里配置的血量）。"
+                        : $"召唤{SummonName(p, e)}。")
+                    : $"召唤{SummonNameOrAll(p, e)}（{var} 点生命）。",
             // 伙伴攻击：attacker 是宠物，不是自己 —— 描述里必须写清楚是哪只在打
             "PetAttack" => e.TargetSide == "Self"
-                ? $"{SummonName(p, e)}攻击自己，造成 {var} 点伤害。"
-                : $"{repeat}{when}让{SummonName(p, e)}{target}造成 {var} 点伤害{hitSuffix}。",
+                ? $"{SummonNameOrAll(p, e)}攻击自己，造成 {var} 点伤害。"
+                : $"{repeat}{when}让{SummonNameOrAll(p, e)}{target}造成 {var} 点伤害{hitSuffix}。",
             // ===== 新增的那批宠物效果 =====
             // 三个「按生命值算的伙伴攻击」：**绝不能写死数字**（伤害是打出时按宠物当时的最大/当前/已损失
             // 生命算出来的），只写 {CalculatedDamage:diff()} 让本体去算，升级增量也会跟着显示。
             "PetDamageByMaxHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "最大生命值"),
             "PetDamageByCurHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "当前生命值"),
             "PetDamageByMissingHp" => PetCalcDamageText(p, e, var, repeat, when, target, hitSuffix, "已损失的生命值"),
-            "PetHeal" => $"{repeat}让[gold]{SummonName(p, e)}[/gold]回复 {var} 点生命。",
-            "PetLoseHp" => $"让[gold]{SummonName(p, e)}[/gold]失去 {var} 点生命。",
-            "PetGainMaxHp" => $"[gold]{SummonName(p, e)}[/gold]的最大生命值增加 {var} 点（同时回复等量生命）。",
-            "PetApplyPower" => $"[gold]{SummonName(p, e)}[/gold]获得 {var} 层{PowerNameFor(p, e.PowerId)}。",
-            "PetGuardOn" => $"[gold]{SummonName(p, e)}[/gold]开始替主人承伤（主人受到可格挡的攻击伤害时，改由它承担）。",
-            "PetGuardOff" => $"[gold]{SummonName(p, e)}[/gold]不再替主人承伤。",
+            "PetHeal" => $"{repeat}让[gold]{SummonNameOrAll(p, e)}[/gold]回复 {var} 点生命。",
+            "PetLoseHp" => $"让[gold]{SummonNameOrAll(p, e)}[/gold]失去 {var} 点生命。",
+            "PetGainMaxHp" => $"[gold]{SummonNameOrAll(p, e)}[/gold]的最大生命值增加 {var} 点（同时回复等量生命）。",
+            "PetApplyPower" => $"[gold]{SummonNameOrAll(p, e)}[/gold]获得 {var} 层{PowerNameFor(p, e.PowerId)}。",
+            "PetGuardOn" => $"[gold]{SummonNameOrAll(p, e)}[/gold]开始替主人承伤（主人受到可格挡的攻击伤害时，改由它承担）。",
+            "PetGuardOff" => $"[gold]{SummonNameOrAll(p, e)}[/gold]不再替主人承伤。",
             "PetSacrifice" => PetSacrificeText(p, e, var),
             _ => "",
         };
