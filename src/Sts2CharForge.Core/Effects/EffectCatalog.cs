@@ -532,12 +532,14 @@ public static class EffectCatalog
         // 挂在「战斗胜利后」（状态 / 遗物）时走本体的战斗奖励：room.AddExtraReward(new CardReward(...))，
         // 打赢后结算界面多一条「选一张卡」；挂在其它时机（战斗中）就是当场弹选牌界面。
         new EffectKindOption("CardReward",          "获得卡牌奖励（N 选一）", "张", 1, 5, false, false),
-        // ===== 召唤伙伴（第一档：完全不需要 Harmony 补丁）=====
+        // ===== 召唤伙伴（完全不需要 Harmony 补丁）=====
         // 走本体的通用宠物 API（PlayerCmd.AddPet<T>，Byrdpip / Pael's Legion 就是这么用的），
-        // 所以只要有一个 MonsterModel 子类就能上场。用法见「角色」页的「召唤伙伴」分组。
-        // 数值 = 0 时有特殊含义（用「角色」页里配置的血量），所以下限是 0。
+        // 所以只要有一个 MonsterModel 子类就能上场。用法见「召唤物」页（列表 + 详情）。
+        // 数值 = 0 时有特殊含义（用那一只召唤物自己配置的血量），所以下限是 0。
         new EffectKindOption("SummonPet",   "召唤伙伴", "点生命", 0, 999, false, false),
-        // 伙伴攻击：attacker 是宠物（DamageCmd.Attack(n).FromMonster(pet.Monster)），
+        // 伙伴攻击：attacker 是宠物 —— 生成时先走正常卡牌路径（FromCard + Targeting），
+        // 再用扩展方法 FromPetAttacker 把攻击者换成宠物（**不能用 FromMonster**：
+        // 那会把来源标成 Monster，GetPossibleTargets() 在 _sourceType == Monster 时硬编码返回玩家自己人）。
         // 目标沿用卡牌的「作用对象」。宠物不在场时这张牌会跳过这一条（不报错）。
         // 只支持卡牌 —— 遗物没有「玩家选中的目标」，宠物该打谁说不清。
         new EffectKindOption("PetAttack",   "伙伴攻击", "点", 0, 999, true, true),

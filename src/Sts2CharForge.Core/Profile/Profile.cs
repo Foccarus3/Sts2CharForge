@@ -43,8 +43,20 @@ public sealed class CharacterProfile
     /// <summary>额外资源量/状态（血条下方的第二个计数器）</summary>
     public ExtraResourceSpec ExtraResource { get; set; } = new();
 
-    /// <summary>召唤伙伴（类似本体亡灵缚者的奥斯提，但完全不改本体、不需要 Harmony 补丁）</summary>
-    public SummonSpec Summon { get; set; } = new();
+    /// <summary>
+    /// 召唤物列表（类似本体亡灵缚者的奥斯提，但完全不改本体、不需要 Harmony 补丁）。
+    /// 可以同时配多只、同一场战斗里都在场（每只一个自己的 <c>MonsterModel</c> 子类 + 一套召唤命令）。
+    /// </summary>
+    public ObservableCollection<SummonSpec> Summons { get; set; } = new();
+
+    /// <summary>
+    /// [旧字段·只为读老存档] 老版只能配**一只**召唤伙伴，就存在这个单对象里。
+    /// 打开老存档时由 <c>ProfileFactory.Normalize</c> 把它（勾了启用而且填了名字才搬）搬进
+    /// <see cref="Summons"/> 并把这里置成 null；生成 / 界面一律只看 <see cref="Summons"/>。
+    /// 为什么要保留这个属性：老存档（以及用户手写的 JSON）里还有 <c>"Summon": { ... }</c> 这一段，
+    /// 直接删掉属性的话那段配置会被静默丢弃（用户的宠物名字 / 血量 / 图片全没了）。
+    /// </summary>
+    public SummonSpec? Summon { get; set; }
 
     /// <summary>和先古之民（达弗 / 妮欧 / 建筑师 …）的对话</summary>
     public ObservableCollection<AncientTalkSpec> Ancients { get; set; } = new();
@@ -198,9 +210,13 @@ public sealed class EffectSpec : SpecBase
         set { if (Set(ref _chancePercent, value)) Raise(nameof(Display)); }
     }
 
-    /// <summary>界面上 / 描述里的「（N% 概率）」（没勾就空）。</summary>
+    /// <summary>列表 / 描述里那句「（N% 概率）」（没勾就空）。</summary>
     [JsonIgnore]
     public string ChanceText => ChanceEnabled ? $"（{ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}% 概率）" : "";
+
+    /// <summary>「召唤 / 伙伴攻击」这条效果指向的召唤物（类名；留空 = 还没选）。</summary>
+    [JsonIgnore]
+    public string PetSummonTag => (PetSummon ?? "").Trim();
     /// <summary>本条效果对谁生效：Self / Enemy / AllEnemies / RandomEnemies</summary>
     public string TargetSide { get => _targetSide; set => Set(ref _targetSide, value); }
     public int RepeatCount { get => _repeatCount; set => Set(ref _repeatCount, value); }
@@ -323,6 +339,22 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public bool PetAction => Kind is "SummonPet" or "PetAttack";
 
+    private string? _petSummon;
+
+    /// <summary>
+    /// 「召唤伙伴 / 伙伴攻击」指的是**哪一只**召唤物：存它的**稳定标识**（<c>SummonSpec.ClassName</c>，
+    /// 也就是宠物 <c>MonsterModel</c> 子类的类名），界面上的下拉显示的是它的中文名。
+    ///
+    /// 为什么用类名而不是中文名：中文名可以随时改（改完老存档不该失效），而类名决定模型 ID，
+    /// 本来就不能随便改（改了等于换了一只）。留空 = 老存档迁移前的写法，生成时自动挑第一只启用的召唤物，
+    /// 校验器会提醒一句。
+    /// </summary>
+    public string? PetSummon
+    {
+        get => _petSummon;
+        set { if (Set(ref _petSummon, value)) Raise(nameof(Display)); }
+    }
+
     /// <summary>GenerateCard 用：生成的卡放到哪 —— 对应的 PileType 名字。</summary>
     [JsonIgnore]
     public string SpawnToPile => SpawnTo switch
@@ -382,9 +414,12 @@ public sealed class EffectSpec : SpecBase
                 "TransformCardGlobal" => "变化卡牌（全局）",
                 "RemoveCardGlobal" => "删除卡牌（全局）",
                 "CardReward" => "获得卡牌奖励",
-                // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」
-                "SummonPet" => $"召唤伙伴{(Amount > 0 ? $"{Amount:0.##} 点生命" : "（用配置的血量）")}",
-                "PetAttack" => $"伙伴攻击 {Amount:0.##}",
+                // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」。
+                // 这里写的是选中那只召唤物的**类名**（Profile 层拿不到中文名 —— 那要读召唤物列表，
+                // 由 LocalizationGen / 界面负责翻译成中文名）。
+                "SummonPet" => $"召唤{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}"
+                    + (Amount > 0 ? $"{Amount:0.##} 点生命" : "（用配置的血量）"),
+                "PetAttack" => $"{(PetSummonTag.Length > 0 ? PetSummonTag : "伙伴")}攻击 {Amount:0.##}",
                 _ => Kind,
             };
             return $"{when}{kind} {(AmountIsX ? "X" : Amount.ToString("0.##"))}{(UpgradeAmount != 0 && !AmountIsX ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
@@ -1633,39 +1668,50 @@ public sealed class ExtraResourceSpec
     public bool ShowName { get; set; } = true;
 }
 /// <summary>
-/// 召唤伙伴（奥斯提式的基础伙伴，**第一档：不需要任何 Harmony 补丁**）。
+/// 召唤物（奥斯提式的基础伙伴）。
 ///
-/// 为什么不用补丁也能做出来：本体有一套**通用**的宠物 API
-/// （<c>PlayerCmd.AddPet&lt;T&gt;(player)</c>，Byrdpip / Pael's Legion 就是这么用的），
-/// 而模组里的 <c>MonsterModel</c> 子类会被本体自动扫进 <c>ModelDb</c>（按类名注册，不需要自己注册）。
-/// 所以只要产出「一个怪物类 + 一句召唤命令 + 一张召唤卡 / 一个战斗开始触发的遗物」，宠物就能上场。
-///
-/// 这个档位**不做**的事（那些才需要补丁，见设计文档第二档）：
-///   · 替主人挨打（<c>DieForYouPower</c> 那种伤害重定向）；
-///   · 专属站位 / 随血量缩放（本体的 <c>NCombatRoom.PositionPlayersAndPets</c> 里是
-///     <c>Character is Necrobinder</c> + <c>is Osty</c> 双特判）；
-///   · 跨战斗保留（<c>PlayerCombatState.AfterCombatEnd()</c> 会 <c>_pets.Clear()</c>，战斗结束宠物就没了）。
-/// 也就是说：宠物**每场战斗都要重新召唤**，这是本体的机制，不是缺陷。
+/// 走的是什么机制（都在本体的公开 API 上，**不需要任何 Harmony 补丁**）：
+///   · 上场：<c>PlayerCmd.AddPet&lt;T&gt;(player)</c>（本体 Byrdpip / Pael's Legion 就是这么用的）；
+///   · 生成类：模组里的 <c>MonsterModel</c> 子类会被本体自动扫进 <c>ModelDb</c>（按类名注册）；
+///   · 站位：覆写 <c>AfterCreatureAddedToCombat</c> —— 本体的 <c>CreatureCmd.Add</c> 顺序是
+///     「加进战斗 → 摆位 → 跑 AfterCreatureAddedToCombat 钩子」，所以在钩子里改位置不会被抢回去
+///     （本体的 <c>NCombatRoom.AddCreature</c> 把非 Osty 的宠物摆在主人 X+20 处，离得太近了）；
+///   · 血条：本体的 <c>NCombatRoom.AddCreature</c> 对非 Osty 宠物无条件 <c>ToggleIsInteractable(false)</c>，
+///     而 <c>NCreature._Ready</c> 只在建节点时按 <c>IsHealthBarVisible</c> 设一次 ——
+///     战斗中召唤的宠物因此永远没血条，必须召唤后自己 <c>SetCreatureIsInteractable(pet, true)</c>；
+///   · 指挥它打人：先走正常卡牌路径（<c>FromCard</c> + <c>Targeting</c>），再用扩展方法
+///     <c>FromPetAttacker</c> 把攻击者换成宠物 —— 本体 <c>AttackCommand</c> 的 <c>FromMonster</c> 会把来源标成
+///     Monster（于是 <c>GetPossibleTargets()</c> 硬编码返回「玩家自己人」），还会强制
+///     <c>TargetingAllOpponents</c>（先把 <c>_combatState</c> 设上），和 <c>Targeting</c> 互相冲突，用不了。
+/// 仍然不做的事：跨战斗保留（<c>PlayerCombatState.AfterCombatEnd()</c> 会清空宠物，
+/// 宠物每场战斗都要重新召唤，这是本体机制）。
 /// </summary>
 public sealed class SummonSpec : SpecBase
 {
-    private bool _enabled;
+    private bool _enabled = true;
     private string _className = "";
     private string _name = "";
     private int _hp = 8;
     private string? _image;
+    private bool _takesDamageForOwner;
+    private int _standDistance = DefaultStandDistance;
 
-    /// <summary>不勾选就完全不生成宠物相关代码（用到召唤效果时校验器会报错拦住）。</summary>
+    /// <summary>默认站位距离（主人 X + 110）。本体的奥斯提是 150~250，所以 110 比它近、比本体的 20 远得多。</summary>
+    public const int DefaultStandDistance = 110;
+
+    /// <summary>不勾选就完全不生成这只召唤物的代码（用到它的效果会被校验器报错拦住）。</summary>
     public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }
 
-    /// <summary>英文类名（<c>MonsterModel</c> 子类的名字）。留空自动用 <c>&lt;角色类名&gt;Pet</c>。
-    /// 本体的 <c>ModelDb</c> 只按<b>类名</b>算模型 ID（忽略命名空间），所以不能和本体的怪物重名。</summary>
+    /// <summary>英文类名（<c>MonsterModel</c> 子类的名字）。留空自动用 <c>&lt;角色类名&gt;Pet</c>（多只时按序号）。
+    /// 本体的 <c>ModelDb</c> 只按<b>类名</b>算模型 ID（忽略命名空间），所以不能和本体的怪物重名、也不能互相重名。</summary>
     public string ClassName { get => _className; set => Set(ref _className, value); }
 
     /// <summary>中文名：显示在宠物名牌上（写进 <c>localization/zhs/monsters.json</c> 的 <c>&lt;ENTRY&gt;.name</c>）。</summary>
     public string Name { get => _name; set => Set(ref _name, value); }
 
-    /// <summary>召唤时的生命值（同时作为它的最小 / 最大初始生命）。没有配置血量的召唤卡就用这个数。</summary>
+    /// <summary>召唤时的生命值（同时作为它的最小 / 最大初始生命）。没有配置血量的召唤卡就用这个数。
+    /// 必须 &gt; 0 —— 血量 ≤ 0 的宠物一上场就是死的，而死的宠物打不出任何伤害
+    /// （<c>AttackCommand.Execute</c> 开头就 <c>if (Attacker.IsDead) return this;</c> 静默早退）。</summary>
     public int Hp { get => _hp; set => Set(ref _hp, value); }
 
     /// <summary>
@@ -1676,12 +1722,41 @@ public sealed class SummonSpec : SpecBase
     /// </summary>
     public string? Image { get => _image; set => Set(ref _image, value); }
 
+    /// <summary>
+    /// 替主人挨打：勾上以后召唤时给它挂一个守卫 Power（照本体 <c>DieForYouPower</c> 写），
+    /// 主人受到的**可格挡攻击伤害**改由它承担；它死了以后战斗结束不会把它挪走
+    /// （<c>ShouldCreatureBeRemovedFromCombatAfterDeath</c>）。
+    ///
+    /// 为什么整个存档**只能勾一只**：本体的 <c>Hook.ModifyUnblockedDamageTarget</c> 是**链式遍历**
+    /// （<c>creature = item.ModifyUnblockedDamageTarget(creature, …)</c>），同时存在两个重定向者时
+    /// 第二个看到的「target」已经是第一个换过的生物了，伤害最终归谁完全不可预期
+    /// （本体自己也只有 <c>DieForYouPower</c> 这一款）。校验器会拦住这种配置。
+    /// </summary>
+    public bool TakesDamageForOwner { get => _takesDamageForOwner; set => Set(ref _takesDamageForOwner, value); }
+
+    /// <summary>
+    /// 站位距离：召唤时摆在「主人 X + 这个距离」处（越大越靠右、离主人越远；Y 固定比主人高 25 像素）。
+    /// 本体对非 Osty 宠物硬编码成主人 X+20，看起来像叠在主人身上，所以这里自己摆。
+    /// 本体的奥斯提是 150~250，默认给 110。
+    /// </summary>
+    public int StandDistance
+    {
+        get => _standDistance;
+        set { if (Set(ref _standDistance, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>界面上「站位距离」用的合法范围（太近会叠在主人身上，太远会跑出画面）。</summary>
+    public const int MinStandDistance = 20;
+    public const int MaxStandDistance = 600;
+
     [JsonIgnore]
     public string Display =>
         (Enabled ? "" : "[停用] ")
-        + $"召唤伙伴：{(string.IsNullOrWhiteSpace(Name) ? "(还没起名)" : Name.Trim())}"
+        + $"召唤物：{(string.IsNullOrWhiteSpace(Name) ? "(还没起名)" : Name.Trim())}"
         + $"  ｜ 生命 {Hp}"
-        + $"{(string.IsNullOrWhiteSpace(ClassName) ? " ｜ 类名自动" : " ｜ " + ClassName.Trim())}"
+        + (string.IsNullOrWhiteSpace(ClassName) ? " ｜ 类名自动" : " ｜ " + ClassName.Trim())
+        + $" ｜ 站位 {StandDistance}"
+        + (TakesDamageForOwner ? " ｜ 替主人挨打" : "")
         + (string.IsNullOrWhiteSpace(Image) ? "" : " ｜ 有自定义图片");
 }
 

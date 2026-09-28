@@ -60,7 +60,7 @@ public static class ProfileValidator
         // 本体关键词改名：id 必须是那 7 个之一、名字不能带富文本标记、不能和别的本体关键词撞名
         ValidateVanillaKeywordRenames(issues, p);
 
-        // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
+        // ===== 召唤物（列表；本体的通用宠物 API，不需要 Harmony 补丁）=====
         // 为什么要在这里拦：卡牌 / 遗物上的「召唤伙伴 / 伙伴攻击」生成出来的代码会引用宠物类，
         // 没启用召唤物的话那个类根本不存在 → dotnet 直接报 CS0103，而用户看不懂。
         ValidateSummon(issues, p);
@@ -537,15 +537,50 @@ public static class ProfileValidator
     }
 
     /// <summary>
-    /// 召唤伙伴的校验：启用了就把类名 / 名字 / 血量 / 图片查一遍；
+    /// 召唤物的校验：启用了就把每只的类名 / 名字 / 血量 / 站位 / 图片查一遍；
     /// 没启用而卡牌 / 遗物 / 药水却用了「召唤伙伴 / 伙伴攻击」→ 报错拦住（否则生成出来的牌会引用不存在的宠物类）。
+    /// 另外拦住两件**只有校验器能拦**的事：
+    ///   · 列表里两只召唤物用了同一个类名（本体模型 ID 只按类名算 → DuplicateModelException）；
+    ///   · 有两只同时勾了「替主人挨打」（本体 Hook.ModifyUnblockedDamageTarget 是链式遍历，两个重定向者
+    ///     会让伤害最终归谁完全不可预期）；
+    ///   · 效果上选的召唤物不存在 / 没启用（生成出来的代码会引用一个不存在的类 → CS0103）。
     ///
     /// 这一档**不需要**任何 Harmony 补丁：走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），
-    /// 所以这里校验的都是「游戏里能不能正常显示」的东西，不是补丁条件。
+    /// 所以这里校验的都是「游戏里能不能正常显示 / 能不能编过」的东西，不是补丁条件。
     /// </summary>
     private static void ValidateSummon(List<ValidationIssue> issues, CharacterProfile p)
     {
+        var enabled = PetGen.Enabled(p);
         bool hasSummonEffect = false;
+
+        // 效果上的召唤物引用：必须能在「已启用的召唤物」里找到
+        void CheckPetRef(string owner, EffectSpec e, int i)
+        {
+            hasSummonEffect = true;
+            if (string.IsNullOrWhiteSpace(e.PetSummon))
+            {
+                // 老存档（上一版只有一只召唤物）没有这个字段：生成时自动用第一只，行为和以前一致
+                if (enabled.Count > 0)
+                    issues.Add(new("提示", $"{owner} 的第 {i} 条「{(e.Kind == "SummonPet" ? "召唤伙伴" : "伙伴攻击")}」"
+                        + $"没选召唤物，生成时会用第一只启用的「{enabled[0].Name}」"
+                        + "（老存档就是这样，重新在效果里选一次更清楚）。"));
+                else
+                    issues.Add(new("错误", $"{owner} 的第 {i} 条「{(e.Kind == "SummonPet" ? "召唤伙伴" : "伙伴攻击")}」"
+                        + "没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」。"));
+                return;
+            }
+            string want = e.PetSummon!.Trim();
+            if (PetGen.Resolve(p, want) is null)
+            {
+                bool existsButDisabled = p.Summons.Any(s => s is not null && !s.Enabled
+                    && string.Equals((s.ClassName ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase));
+                issues.Add(new("错误", $"{owner} 的第 {i} 条引用的召唤物「{want}」"
+                    + (existsButDisabled
+                        ? "已经被停用了（到「召唤物」页把它勾回「启用」，或在这条效果里换一只）。"
+                        : "找不到（可能已经被删掉了，到「召唤物」页把它加回来，或在这条效果里换一只）。")));
+            }
+        }
+
         void Scan(string owner, IEnumerable<EffectSpec> effects, bool forPotion)
         {
             int i = 0;
@@ -554,21 +589,27 @@ public static class ProfileValidator
                 i++;
                 if (e.Kind == "SummonPet")
                 {
-                    hasSummonEffect = true;
                     if (forPotion)
                         issues.Add(new("错误", $"{owner} 的第 {i} 条是「召唤伙伴」，但**药水不支持**"
                             + "（用户要求这一档只支持卡牌 + 遗物触发）—— 请改用卡牌或遗物。"));
-                    else if (e.Amount is < 0 or > 999)
-                        issues.Add(new("错误", $"{owner} 的第 {i} 条「召唤伙伴」生命 {e.Amount} 超出范围（0~999；0 = 用「角色」页配置的血量）。"));
+                    else
+                    {
+                        if (e.Amount is < 0 or > 999)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「召唤伙伴」生命 {e.Amount} 超出范围（0~999；0 = 用「召唤物」页配置的血量）。"));
+                        CheckPetRef(owner, e, i);
+                    }
                 }
                 else if (e.Kind == "PetAttack")
                 {
-                    hasSummonEffect = true;
                     if (forPotion)
                         issues.Add(new("错误", $"{owner} 的第 {i} 条是「伙伴攻击」，但**药水不支持**"
                             + "（药水没有「玩家选中的目标」，宠物该打谁说不清）—— 请改用卡牌。"));
-                    else if (e.Amount <= 0)
-                        issues.Add(new("错误", $"{owner} 的第 {i} 条「伙伴攻击」伤害要大于 0（现在填的是 {e.Amount}）。"));
+                    else
+                    {
+                        if (e.Amount <= 0)
+                            issues.Add(new("错误", $"{owner} 的第 {i} 条「伙伴攻击」伤害要大于 0（现在填的是 {e.Amount}）。"));
+                        CheckPetRef(owner, e, i);
+                    }
                 }
             }
         }
@@ -584,41 +625,91 @@ public static class ProfileValidator
         }
         foreach (var s in p.Potions) if (s is not null) Scan($"药水「{s.Name}」", s.Effects, forPotion: true);
 
-        if (p.Summon is not { Enabled: true })
+        if (enabled.Count == 0)
         {
             if (hasSummonEffect)
-                issues.Add(new("错误", "有卡牌 / 遗物用了「召唤伙伴」或「伙伴攻击」，但「角色」页的「启用召唤伙伴」没勾 —— "
+                issues.Add(new("错误", "有卡牌 / 遗物用了「召唤伙伴」或「伙伴攻击」，但「召唤物」页里一只都没启用 —— "
                     + "生成出来的代码会引用一个不存在的宠物类（dotnet 直接报 CS0103）。"
-                    + "去「角色」页勾上「启用召唤伙伴」并填好名字 / 血量，或者把这些效果删掉。"));
+                    + "去「召唤物」页添加一只并勾上「启用」、填好名字 / 血量，或者把这些效果删掉。"));
+            // 「有停用的召唤物但没人用」也提醒一句：用户可能以为停用=不生成但效果还能用
+            foreach (var off in p.Summons.Where(s => s is { Enabled: false }))
+                issues.Add(new("提示", $"召唤物「{(string.IsNullOrWhiteSpace(off.Name) ? (string.IsNullOrWhiteSpace(off.ClassName) ? "(还没起名)" : off.ClassName.Trim()) : off.Name.Trim())}」"
+                    + "没有勾「启用」，不会生成对应代码。"));
             return;
         }
 
-        string who = "召唤伙伴";
-        if (!string.IsNullOrWhiteSpace(p.Summon.ClassName) && !Naming.IsValidIdentifier(p.Summon.ClassName))
-            issues.Add(new("错误", $"{who}的英文类名不合法：{p.Summon.ClassName}（只能是英文/数字，且以字母开头）。"));
-        else
+        // ===== 每只逐条查 =====
+        var seenClass = new Dictionary<string, string>(StringComparer.Ordinal);
+        var seenName = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var s in enabled)
         {
-            // 本体的 ModelDb 只按**类名**算模型 ID（忽略命名空间），和本体怪物撞名会抛 DuplicateModelException
-            string cls = PetGen.ClassNameOf(p);
-            if (EffectCatalog.VanillaMonsterNames.Contains(cls))
-                issues.Add(new("错误", $"{who}的类名「{cls}」和本体怪物重名 —— 本体的模型 ID 只按类名算，"
-                    + "撞名会让模组加载当场失败（DuplicateModelException）。换一个类名。"));
+            string who = $"召唤物「{(string.IsNullOrWhiteSpace(s.Name) ? "(还没起名)" : s.Name.Trim())}」";
+            string cls = PetGen.ClassNameOf(p, s);
+
+            if (!string.IsNullOrWhiteSpace(s.ClassName) && !Naming.IsValidIdentifier(s.ClassName))
+                issues.Add(new("错误", $"{who} 的英文类名不合法：{s.ClassName}（只能是英文/数字，且以字母开头）。"));
+            else
+            {
+                // 本体的 ModelDb 只按**类名**算模型 ID（忽略命名空间），和本体怪物撞名会抛 DuplicateModelException
+                if (EffectCatalog.VanillaMonsterNames.Contains(cls))
+                    issues.Add(new("错误", $"{who} 的类名「{cls}」和本体怪物重名 —— 本体的模型 ID 只按类名算，"
+                        + "撞名会让模组加载当场失败（DuplicateModelException）。换一个类名。"));
+                // 列表内也不能重名：两只同名的话第二只在 ModelDb 里注册不上（同样抛 DuplicateModelException）
+                if (seenClass.TryGetValue(cls, out string? firstCls))
+                    issues.Add(new("错误", $"{who} 的类名「{cls}」和「{firstCls}」重复 —— 两只召唤物不能有同一个类名"
+                        + "（本体按类名注册模型，重名会让模组加载当场失败）。"));
+                else
+                    seenClass[cls] = who;
+            }
+
+            if (string.IsNullOrWhiteSpace(s.Name))
+                issues.Add(new("警告", $"有一只召唤物还没填中文名：生成时会用类名「{cls}」当宠物名牌（游戏里看着像英文变量名）。"));
+
+            string display = PetGen.DisplayNameOf(s, cls);
+            if (seenName.TryGetValue(display, out string? firstNm))
+                issues.Add(new("警告", $"召唤物「{display}」和「{firstNm}」的中文名一样 —— 游戏里两只长得同名，"
+                    + "分不清哪张卡召唤的是哪只（界面上的「召唤物」下拉能靠类名区分，但卡面描述只写名字）。"));
+            else
+                seenName[display] = display;
+
+            if (s.Hp <= 0)
+                issues.Add(new("错误", $"{who} 的生命要大于 0（现在填的是 {s.Hp}）—— 血量 ≤ 0 的宠物一上场就是死的，"
+                    + "而且死的宠物打不出任何伤害（本体 AttackCommand.Execute 会静默早退）。"));
+            else if (s.Hp > 999)
+                issues.Add(new("警告", $"{who} 的生命 {s.Hp} 超出常规范围（建议 1~999）。"));
+
+            if (s.StandDistance < SummonSpec.MinStandDistance || s.StandDistance > SummonSpec.MaxStandDistance)
+                issues.Add(new("警告", $"{who} 的站位距离 {s.StandDistance} 超出建议范围（{SummonSpec.MinStandDistance}~{SummonSpec.MaxStandDistance}），"
+                    + $"生成时会夹到范围内的值（现在会按 {PetGen.StandDistanceOf(s)} 生成）。"));
+
+            if (!string.IsNullOrWhiteSpace(s.Image) && !File.Exists(s.Image))
+                issues.Add(new("错误", $"{who} 的图片文件不存在：{s.Image}"));
+            if (string.IsNullOrWhiteSpace(s.Image))
+                issues.Add(new("提示", $"{who}没上传图片：会用本体的占位图（一张静态 error.png）显示，"
+                    + "能正常上场 / 攻击 / 死亡，只是长得不好看。上传一张 PNG 就会自动生成宠物场景。"));
         }
-        if (string.IsNullOrWhiteSpace(p.Summon.Name))
-            issues.Add(new("警告", $"{who}还没填中文名：生成时会用类名「{PetGen.ClassNameOf(p)}」当宠物名牌（游戏里看着像英文变量名）。"));
-        if (PetGen.BaseHp(p) <= 0 || p.Summon.Hp <= 0)
-            issues.Add(new("错误", $"{who}的生命要大于 0（现在填的是 {p.Summon.Hp}）—— 血量 ≤ 0 的宠物一上场就是死的。"));
-        if (!string.IsNullOrWhiteSpace(p.Summon.Image) && !File.Exists(p.Summon.Image))
-            issues.Add(new("错误", $"{who}的图片文件不存在：{p.Summon.Image}"));
-        if (string.IsNullOrWhiteSpace(p.Summon.Image))
-            issues.Add(new("提示", $"{who}没上传图片：宠物会用本体的占位图（一张静态 error.png）显示，"
-                + "能正常上场 / 攻击 / 死亡，只是长得不好看。上传一张 PNG 就会自动生成宠物场景。"));
+
+        // ===== 「替主人挨打」全局唯一 =====
+        // 本体的 Hook.ModifyUnblockedDamageTarget 是**链式遍历**（Hook.cs:2057-2065）：
+        //     creature = item.ModifyUnblockedDamageTarget(creature, …)
+        // 第二个重定向者看到的「target」已经是第一个换过的生物了 —— 结果就是两只宠物互相把伤害推来推去，
+        // 或者第一只永远吸不到刀。本体自己也只有 DieForYouPower 这一款（AbstractModel.cs:1693 的注释）。
+        var guardians = enabled.Where(s => s.TakesDamageForOwner).ToList();
+        if (guardians.Count > 1)
+            issues.Add(new("错误", $"有 {guardians.Count} 只召唤物同时勾了「替主人挨打」（"
+                + string.Join("、", guardians.Select(s => $"「{(string.IsNullOrWhiteSpace(s.Name) ? PetGen.ClassNameOf(p, s) : s.Name.Trim())}」"))
+                + "）—— 整个存档只能勾一只。本体的伤害重定向是链式遍历，两个重定向者会让伤害最终归属不可预期"
+                + "（本体自己也只有「替死」这一款）。取消掉多余的，只留一只。"));
+        else if (guardians.Count == 1)
+            issues.Add(new("提示", $"「{PetGen.DisplayNameOf(guardians[0], PetGen.ClassNameOf(p, guardians[0]))}」会在主人受可格挡攻击时替主人挨打"
+                + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
+
         // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）
         bool anyCardOrRelicSummons = p.Cards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
             || p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet"));
         if (!anyCardOrRelicSummons)
-            issues.Add(new("提示", $"{who}已启用，但没有任何卡牌 / 遗物在「召唤」它"
-                + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」）—— 游戏里它永远不会上场。"));
+            issues.Add(new("提示", $"召唤物已启用（{enabled.Count} 只），但没有任何卡牌 / 遗物在「召唤」它们"
+                + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」）—— 游戏里永远不会上场。"));
         if (p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger)))
             issues.Add(new("警告", "有遗物在「" + string.Join(" / ", p.Relics
                     .Where(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger))

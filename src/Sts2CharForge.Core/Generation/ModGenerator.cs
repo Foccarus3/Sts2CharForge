@@ -55,7 +55,7 @@ public static class ModGenerator
         Log("  工程文件（project.godot / csproj / sln / 清单 / 导出预设 / 构建脚本）");
 
         string cs = Path.Combine(root, "cs");
-        ProjectFilesGen.WriteText(Path.Combine(cs, "GlobalUsings.cs"), CSharpCodeGen.GlobalUsings());
+        ProjectFilesGen.WriteText(Path.Combine(cs, "GlobalUsings.cs"), CSharpCodeGen.GlobalUsings(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.CharClass + ".cs"), CSharpCodeGen.CharacterSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.CardPoolClass + ".cs"), CSharpCodeGen.CardPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.RelicPoolClass + ".cs"), CSharpCodeGen.RelicPoolSource(profile));
@@ -110,17 +110,25 @@ public static class ModGenerator
             Log($"  已生成额外资源量（初始 {profile.ExtraResource.Initial}，{(profile.ExtraResource.CarryOver ? "跨战斗继承" : "每场战斗重置")}）");
         }
 
-        // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
+        // ===== 召唤物（本体的通用宠物 API，不需要 Harmony 补丁）=====
         if (PetGen.IsActive(profile))
         {
+            var pets = PetGen.All(profile);
             ProjectFilesGen.WriteText(Path.Combine(cs, "Pet.cs"), PetGen.Source(profile));
-            // 名字写进本体的 monsters 表（逐键合并，只加我们自己的键）
+            // 名字写进本体的 monsters 表（逐键合并，只加我们自己的键）；多只召唤物都在同一张表里
             ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "zhs", "monsters.json"),
                 PetGen.MonstersJson(profile));
+            // 有「伙伴攻击」卡 → 生成「把攻击者换成宠物」的扩展方法（不需要补丁，见 PetGen.AttackExtensionsSource）
+            if (PetGen.UsesAttackExtension(profile))
+            {
+                ProjectFilesGen.WriteText(Path.Combine(cs, "PetAttackExtensions.cs"), PetGen.AttackExtensionsSource());
+            }
             // 上传了宠物图 → 拷进工程 + 生成最小场景；没上传就什么都不做（回退本体的 error.png 占位）
             PetGen.GenerateVisuals(profile, root, Log);
-            Log($"  已生成召唤伙伴：{PetGen.ClassNameOf(profile)}（「{PetGen.DisplayName(profile)}」，生命 {PetGen.BaseHp(profile)}）"
-                + (PetGen.HasImage(profile) ? "，视觉用你上传的图" : "，视觉沿用本体的占位图（可上传自己的 PNG）"));
+            Log($"  已生成召唤物 {pets.Count} 只：" + string.Join("、", pets.Select(d =>
+                    $"{d.ClassName}（「{d.DisplayName}」，生命 {d.Hp}，站位 {d.StandDistance}"
+                    + (d.Guardian ? "，替主人挨打" : "") + "）"))
+                + (pets.Any(d => d.HasImage) ? "，视觉用你上传的图" : "，视觉沿用本体的占位图（可上传自己的 PNG）"));
         }
 
         if (AncientPatchGen.HasDialogues(profile))
@@ -238,7 +246,7 @@ public static class ModGenerator
         Log("  本地化：characters / cards / relics / potions / ancients"
             + (needPowersLoc ? " / powers" : "")
             + (needKeywordsLoc ? " / card_keywords（自定义关键词 / 本体关键词改名）" : "")
-            + (PetGen.IsActive(profile) ? " / monsters（召唤伙伴的名字）" : ""));
+            + (PetGen.IsActive(profile) ? " / monsters（召唤物的名字）" : ""));
 
         ArtGenerator.Generate(profile, root, Log);
         ProjectFilesGen.CopyLocalDependencies(profile, root, Log);

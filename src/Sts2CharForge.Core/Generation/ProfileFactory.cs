@@ -292,15 +292,8 @@ public static class ProfileFactory
         // 本体关键词改名：界面上是固定 7 行的表格，读老存档（或手写 JSON）时把缺的行补齐
         EnsureKeywordRenameRows(p);
 
-        // 召唤伙伴：宠物类名 / 中文名的兜底规整（手写 JSON、从老工程回读都可能两个都空着）
-        p.Summon ??= new SummonSpec();
-        {
-            // 没填类名 → 生成时本来就是 <角色类名>Pet，但宠物名牌要有个像样的名字，
-            // 所以把「名字」在载入时补成最终会用的那个（而不是让卡面写着 MyCharacterPet）
-            if (string.IsNullOrWhiteSpace(p.Summon.Name))
-                p.Summon.Name = PetGen.ClassNameOf(p);
-            if (p.Summon.Hp <= 0) p.Summon.Hp = 8;   // 新建存档的默认血量；≤0 的宠物一上场就是死的
-        }
+        // 召唤物：老存档只能配一只（存在单个 Summon 对象里）→ 搬进列表；新存档就把每只的字段兜底规整
+        NormalizeSummons(p);
 
         foreach (var card in p.Cards)
         {
@@ -349,6 +342,44 @@ public static class ProfileFactory
         // 无论新旧存档：打击 / 防御都排在卡牌列表最上面（只重排、不新增）
         MoveVanillaBasicsToTop(p);
         return p;
+    }
+
+    /// <summary>
+    /// 召唤物列表的载入规整：
+    ///   1) **老存档迁移**：上一版只能配**一只**召唤伙伴，存在单个 <see cref="CharacterProfile.Summon"/> 对象里。
+    ///      这里把它搬进 <see cref="CharacterProfile.Summons"/>（列表第 1 条），然后把老字段置成 null。
+    ///      为什么只搬「勾了启用而且填了名字」的：老存档里那个对象是 new 出来的默认值也没意义，
+    ///      全空的搬过来只会在「召唤物」页里凭空多一条空记录。
+    ///   2) 每只的字段兜底：中文名没填就用最终会用的类名（否则宠物名牌上是英文变量名）、
+    ///      血量 ≤ 0 按 8（新建存档的默认值；≤ 0 的宠物一上场就是死的）。
+    ///
+    /// 注意迁移的顺序：类名要按「在列表里的位置」推（留空时第一只叫 &lt;角色类名&gt;Pet、第二只 Pet2），
+    /// 所以先按「排在现有条目之后」把老那条的名字算好，再把它加进列表 —— 顺序反了会和生成时算出来的名字对不上。
+    /// </summary>
+    public static void NormalizeSummons(CharacterProfile p)
+    {
+        p.Summons ??= new ObservableCollection<SummonSpec>();
+        foreach (var s in p.Summons.Where(x => x is not null).ToList())
+        {
+            if (string.IsNullOrWhiteSpace(s.Name)) s.Name = PetGen.ClassNameOf(p, s);
+            if (s.Hp <= 0) s.Hp = 8;
+            if (s.StandDistance <= 0) s.StandDistance = SummonSpec.DefaultStandDistance;
+        }
+
+        var legacy = p.Summon;
+        p.Summon = null;                 // 老字段读完就清掉：留着会让「生成 / 界面」两边各有一套数据
+        if (legacy is null) return;
+        bool meaningful = legacy.Enabled
+            || !string.IsNullOrWhiteSpace(legacy.ClassName)
+            || !string.IsNullOrWhiteSpace(legacy.Name)
+            || !string.IsNullOrWhiteSpace(legacy.Image);
+        if (!meaningful) return;
+
+        legacy.Enabled = true;           // 老存档有内容就当作启用（上一版默认也是不勾就不生成，这里只搬有内容的）
+        if (string.IsNullOrWhiteSpace(legacy.Name)) legacy.Name = PetGen.ClassNameOf(p, legacy);
+        if (legacy.Hp <= 0) legacy.Hp = 8;
+        if (legacy.StandDistance <= 0) legacy.StandDistance = SummonSpec.DefaultStandDistance;
+        p.Summons.Add(legacy);           // 加在列表最后（类名按位置推，所以上面先把名字算好）
     }
 
     /// <summary>

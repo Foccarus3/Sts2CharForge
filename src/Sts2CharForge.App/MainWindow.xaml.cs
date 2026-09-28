@@ -92,6 +92,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private readonly Stack<UndoEntry> _relicUndo = new Stack<UndoEntry>();
 
 	private readonly Stack<UndoEntry> _potionUndo = new Stack<UndoEntry>();
+	/// <summary>「召唤物」页删除条目的撤回栈（和药水 / 关键词同一个套路）。</summary>
+	private readonly Stack<UndoEntry> _summonUndo = new Stack<UndoEntry>();
 	private readonly Stack<UndoEntry> _keywordUndo = new Stack<UndoEntry>();
 
 	private readonly Stack<UndoEntry> _artUndo = new Stack<UndoEntry>();
@@ -107,6 +109,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private bool _multiSelectRelics;
 
 	private bool _multiSelectPotions;
+	private bool _multiSelectSummons;
 
 	private bool _multiSelectProfiles;
 
@@ -432,10 +435,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 
 	/// <summary>
-	/// 召唤伙伴的图片预览（「角色」页里的「召唤伙伴」分组）。
+	/// 「召唤物」页右侧那只召唤物的图片预览。
 	/// 和额外资源量图标一样用 LoadPreview：路径空 / 文件不在 / 不是图片都返回 null（界面显示空框）。
 	/// </summary>
-	public ImageSource? PetImagePreview => LoadPreview(_profile.Summon?.Image);
+	public ImageSource? SelectedSummonImagePreview => LoadPreview((SummonList?.SelectedItem as SummonSpec)?.Image);
+
+	/// <summary>
+	/// 效果编辑器「召唤物（哪一只）」下拉的候选：只列**已启用**的召唤物。
+	/// SelectedValue 用的是召唤物的**稳定标识**（宠物类名，见 <see cref="PetGen.PetChoice.Id"/>），
+	/// 显示的是中文名 —— 中文名可以随时改，改了老存档（存的是类名）不该失效。
+	/// </summary>
+	public IReadOnlyList<PetGen.PetChoice> PetSummonsCard => PetGen.Choices(Profile);
+
+	/// <summary>遗物 / 自定义状态 / 药水的效果编辑器用同一份候选（模板分开只为让自检能分别查）。</summary>
+	public IReadOnlyList<PetGen.PetChoice> PetSummonsPlain => PetGen.Choices(Profile);
 
 	public ImageSource? ExtraResourceIconPreview
 	{
@@ -774,6 +787,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public string UndoKeywordHint => HintOf(_keywordUndo);
 
+	/// <summary>召唤物的撤回状态（和药水同一个套路）。</summary>
+	public bool CanUndoSummon => _summonUndo.Count > 0;
+
+	public string UndoSummonHint => HintOf(_summonUndo);
+
 	/// <summary>
 	/// 「卡牌」页里「自定义关键词」的勾选行：当前选中的卡 × 全部关键词。
 	/// 勾上 = 把这条关键词写进这张卡的 KeywordIds（生成时描述开头会出现它、悬停卡面能看到说明）。
@@ -832,6 +850,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			_multiSelectPotions = value;
 			Raise("MultiSelectPotions");
+		}
+	}
+
+	public bool MultiSelectSummons
+	{
+		get
+		{
+			return _multiSelectSummons;
+		}
+		set
+		{
+			_multiSelectSummons = value;
+			Raise("MultiSelectSummons");
 		}
 	}
 
@@ -918,15 +949,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("SelectedCardUpgradeCost");
 		Raise("UpgradeCostHint");
 		Raise("UpgradeKeywordRows");
+		// 召唤物：图片预览 + 效果编辑器「召唤物（哪一只）」下拉的候选（只列已启用的）
+		Raise("SelectedSummonImagePreview");
+		RaisePetSummonChoices();
 		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
 		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Relics"));
 		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
+		SummonList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Summons"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		Raise("CardPortraitPreview");
 		Raise("RelicIconPreview");
+	}
+
+	/// <summary>
+	/// 刷新「召唤物（哪一只）」下拉的候选。改了召唤物列表（增删 / 启用开关 / 改名字 / 改类名）之后必须调用 ——
+	/// 这个候选是**算出来的**（只列已启用的），不重新通知的话界面上的下拉还是旧的候选。
+	/// </summary>
+	private void RaisePetSummonChoices()
+	{
+		Raise("PetSummonsCard");
+		Raise("PetSummonsPlain");
 	}
 
 	private void OnPickPotionIcon(object sender, RoutedEventArgs e)
@@ -3182,12 +3227,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("CanUndoRelic");
 		Raise("CanUndoPotion");
 		Raise("CanUndoKeyword");
+		Raise("CanUndoSummon");
 		Raise("CanUndoArt");
 		Raise("CanUndoProfile");
 		Raise("UndoCardHint");
 		Raise("UndoRelicHint");
 		Raise("UndoPotionHint");
 		Raise("UndoKeywordHint");
+		Raise("UndoSummonHint");
 		Raise("UndoArtHint");
 		Raise("UndoProfileHint");
 	}
@@ -3214,6 +3261,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private void OnUndoPotion(object sender, RoutedEventArgs e)
 	{
 		UndoLast(_potionUndo);
+	}
+
+	private void OnUndoSummon(object sender, RoutedEventArgs e)
+	{
+		UndoLast(_summonUndo);
 	}
 
 	private void OnUndoKeyword(object sender, RoutedEventArgs e)
@@ -3732,47 +3784,110 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 	/// <summary>
-	/// 「角色」页「召唤伙伴」里的宠物图片（可空）。
-	/// 选择 / 清除都写进 Profile.Summon.Image，并立刻静默保存 —— 和美术槽位的做法一致。
+	/// 「召唤物」页里选中那只的宠物图片（可空）。
+	/// 选择 / 清除都写进 <c>SummonList.SelectedItem.Image</c>，并立刻静默保存 —— 和美术槽位的做法一致。
 	/// </summary>
-	private void OnPickPetImage(object sender, RoutedEventArgs e)
+	private void OnPickSummonImage(object sender, RoutedEventArgs e)
 	{
+		if (!(SummonList.SelectedItem is SummonSpec summon))
+		{
+			SetStatus("请先在左边选中一只召唤物，再给它选图片。");
+			return;
+		}
 		OpenFileDialog openFileDialog = new OpenFileDialog
 		{
 			Filter = "图片 (*.png)|*.png|所有文件 (*.*)|*.*"
 		};
 		if (!openFileDialog.ShowDialog(this).GetValueOrDefault()) return;
-		Profile.Summon ??= new SummonSpec();
-		string old = Profile.Summon.Image;
-		Profile.Summon.Image = openFileDialog.FileName;
-		Raise("PetImagePreview");
-		PushUndo(_artUndo, "召唤伙伴图片", delegate
+		string old = summon.Image;
+		summon.Image = openFileDialog.FileName;
+		Raise("SelectedSummonImagePreview");
+		SummonList.Items.Refresh();
+		PushUndo(_artUndo, "召唤物图片", delegate
 		{
-			Profile.Summon.Image = old;
-			Raise("PetImagePreview");
+			summon.Image = old;
+			Raise("SelectedSummonImagePreview");
 		});
-		SetStatus("召唤伙伴图片已选择：" + openFileDialog.FileName + "（生成时会拷进模组并生成宠物场景）");
-		PersistArtChange("召唤伙伴图片已选择：" + openFileDialog.FileName);
+		SetStatus($"「{summon.Name}」的图片已选择：{openFileDialog.FileName}（生成时会拷进模组并生成它的场景）");
+		PersistArtChange("召唤物图片已选择：" + openFileDialog.FileName);
 	}
 
-	private void OnClearPetImage(object sender, RoutedEventArgs e)
+	private void OnClearSummonImage(object sender, RoutedEventArgs e)
 	{
-		if (string.IsNullOrWhiteSpace(Profile.Summon?.Image))
+		if (!(SummonList.SelectedItem is SummonSpec summon))
 		{
-			SetStatus("还没有选过召唤伙伴图片。");
+			SetStatus("请先在左边选中一只召唤物。");
 			return;
 		}
-		string old = Profile.Summon.Image;
-		Profile.Summon.Image = null;
-		Raise("PetImagePreview");
-		PushUndo(_artUndo, "召唤伙伴图片", delegate
+		if (string.IsNullOrWhiteSpace(summon.Image))
 		{
-			Profile.Summon.Image = old;
-			Raise("PetImagePreview");
+			SetStatus("这只召唤物还没有选过图片。");
+			return;
+		}
+		string old = summon.Image;
+		summon.Image = null;
+		Raise("SelectedSummonImagePreview");
+		SummonList.Items.Refresh();
+		PushUndo(_artUndo, "召唤物图片", delegate
+		{
+			summon.Image = old;
+			Raise("SelectedSummonImagePreview");
 		});
-		SetStatus("召唤伙伴图片已清除（宠物会用本体的占位图），可点「撤回」恢复。");
-		PersistArtChange("召唤伙伴图片已清除（宠物会用本体的占位图），可点「撤回」恢复");
+		SetStatus($"「{summon.Name}」的图片已清除（它会用本体的占位图），可点「撤回」恢复。");
+		PersistArtChange("召唤物图片已清除（会用本体占位图）");
 	}
+
+	/// <summary>添加一只召唤物：新条目的英文类名留空，生成时自动按位置推（第一只 &lt;角色类名&gt;Pet、第二只 Pet2…）。</summary>
+	private void OnAddSummon(object sender, RoutedEventArgs e)
+	{
+		_profile.Summons.Add(new SummonSpec { Name = "新召唤物", Hp = 8 });
+		SyncDetail();
+		SummonList.SelectedIndex = _profile.Summons.Count - 1;
+		SetStatus("已添加一只召唤物。填好名字 / 生命，然后到卡牌或遗物的效果里选「召唤伙伴」并挑中它。");
+	}
+
+	private void OnRemoveSummon(object sender, RoutedEventArgs e)
+	{
+		List<SummonSpec> picked = SelectedOf<SummonSpec>(SummonList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的召唤物（可 Ctrl/Shift 多选，或点「全选」）。");
+			return;
+		}
+		string what = picked.Count == 1
+			? "召唤物「" + (string.IsNullOrWhiteSpace(picked[0].Name) ? PetGen.ClassNameOf(_profile, picked[0]) : picked[0].Name) + "」"
+			: $"选中的 {picked.Count} 只召唤物";
+		// 有卡牌 / 遗物还在引用它时先提醒一句：删掉之后那些效果会变成「引用不存在的召唤物」，
+		// 生成前校验会报错拦住（不会静默生成出编译不过的代码，但用户得知道要去改效果）。
+		int refs = CountSummonRefs(picked);
+		if (refs > 0)
+			SetStatus($"注意：还有 {refs} 条效果在引用它（卡牌 / 遗物），删除后要重新选一只召唤物。");
+		if (!ConfirmDelete(what + (refs > 0 ? $"\n\n还有 {refs} 条效果在引用它，删掉之后那些效果要重新选一只召唤物。" : ""))) return;
+		int value = RemoveManyWithUndo(_profile.Summons, picked, _summonUndo, "召唤物", delegate
+		{
+			SummonList.SelectedItem = picked[0];
+		});
+		SyncDetail();
+		SetStatus($"已删除 {value} 只召唤物（可点「撤回删除」恢复）" + (refs > 0 ? $"；有 {refs} 条效果还引用着它，记得去重新选一只。" : ""));
+	}
+
+	/// <summary>
+	/// 有多少条效果（卡牌 + 遗物）正指向这几只召唤物（用于删除前的提醒）。
+	/// 用 <see cref="PetGen.Resolve"/> 判：它会把「没选（老存档）」算成第一只启用 —— 和生成时一致。
+	/// </summary>
+	private int CountSummonRefs(List<SummonSpec> picked)
+	{
+		int n = 0;
+		foreach (var e in _profile.Cards.SelectMany(c => c.Effects).Concat(_profile.Relics.SelectMany(r => r.Effects)))
+		{
+			if (!e.PetAction) continue;
+			var def = PetGen.Resolve(_profile, e.PetSummon);
+			if (def is not null && picked.Any(s => ReferenceEquals(s, def.Spec))) n++;
+		}
+		return n;
+	}
+
+	private void OnSelectAllSummons(object sender, RoutedEventArgs e) => SelectAll(SummonList, "召唤物");
 
 	private void OnPickArt(object sender, RoutedEventArgs e)
 	{
@@ -5045,6 +5160,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		int num10 = -1;
 		int num11 = -1;
 		int numKw = -1;
+		int numSummon = -1;
 		for (int num12 = 0; num12 < MainTabs.Items.Count; num12++)
 		{
 			if (MainTabs.Items[num12] is TabItem tabItem2)
@@ -5069,9 +5185,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				case "自定义状态":
 					num11 = num12;
 					break;
+				case "召唤物":
+					numSummon = num12;
+					break;
 				}
 			}
 		}
+		// 注意：这一串下标是**绝对**的，加了「召唤物」（紧跟「角色」，下标 1）之后全部 +1。
+		// 只更新数字、不删断言 —— 顺序一旦被改乱（比如把「召唤物」插到最后）这里就会红。
+		Check("「召唤物」是第 2 个选项卡（紧跟「角色」，下标 1）", numSummon == 1, $"召唤物={numSummon}");
 		Check("「药水」→「自定义关键词」→「先古之民」→「本体状态改写」→「自定义状态」→「美术资源」按顺序排", num8 >= 0 && numKw == num8 + 1 && num7 == numKw + 1 && num10 == num7 + 1 && num11 == num10 + 1 && num9 == num11 + 1, $"药水={num8} / 关键词={numKw} / 先古之民={num7} / 本体状态改写={num10} / 自定义状态={num11} / 美术={num9}");
 		Check("目录里包含建筑师（本体没给他写过通用对话，靠补丁注入）", EffectCatalog.Ancients.Any((AncientEntry a) => a.Id == "THE_ARCHITECT"), "有 THE_ARCHITECT");
 		SelectTabRoot("角色");
@@ -5406,6 +5528,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		int num14 = -1;
 		int num15 = -1;
 		int num16 = -1;
+		int numPet = -1;
 		for (int num17 = 0; num17 < MainTabs.Items.Count; num17++)
 		{
 			if (MainTabs.Items[num17] is TabItem tabItem3)
@@ -5421,11 +5544,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				case "卡牌":
 					num16 = num17;
 					break;
+				case "召唤物":
+					numPet = num17;
+					break;
 				}
 			}
 		}
 		Check("有「额外资源量/状态」选项卡", num15 >= 0, $"下标={num15}");
-		Check("「额外资源量/状态」排在「角色」和「卡牌」之间（下标 角色<额外<卡牌）", num14 >= 0 && num15 == num14 + 1 && num16 == num15 + 1, $"角色={num14} / 额外={num15} / 卡牌={num16}");
+		// 注意：加了「召唤物」（下标 1）之后，这一串的绝对数字也全部 +1 —— 只更新数字、不删断言。
+		Check("「角色」→「召唤物」→「额外资源量/状态」→「卡牌」按顺序排（下标依次 +1）",
+			num14 == 0 && numPet == 1 && num15 == 2 && num16 == 3,
+			$"角色={num14} / 召唤物={numPet} / 额外={num15} / 卡牌={num16}");
 		DependencyObject root13 = SelectTabRoot("额外资源量/状态");
 		List<CheckBox> list20 = new List<CheckBox>();
 		CollectCheckBoxes(root13, list20);
@@ -6615,63 +6744,125 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			try { Directory.Delete(recRoot, true); } catch { }
 		}
 
-		SelectTabRoot("角色");
-		// ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要 Harmony 补丁）=====
-		// 先把「角色」页上那个分组的绑定 / 勾选查一遍（界面没接上就等于这个功能在界面上不存在）
-		Check("「角色」页有「启用召唤伙伴」勾选框（召唤物是角色级配置，不另开选项卡）",
-			SummonEnabled != null && BindingOperations.GetBinding(SummonEnabled, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.Path?.Path == "Enabled",
-			SummonEnabled is null ? "没找到勾选框" : (BindingOperations.GetBinding(SummonEnabled, System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.Path?.Path ?? "(没绑定)"));
-		Check("召唤伙伴分组的 DataContext 指向 Profile.Summon（单对象，不是列表）",
-			SummonBox != null && BindingOperations.GetBinding(SummonBox, FrameworkElement.DataContextProperty)?.Path?.Path == "Profile.Summon",
-			SummonBox is null ? "没找到分组" : (BindingOperations.GetBinding(SummonBox, FrameworkElement.DataContextProperty)?.Path?.Path ?? "(没绑定)"));
+		// ===== 召唤物（列表 + 独立选项卡；本体的通用宠物 API，不需要 Harmony 补丁）=====
+		// ① 界面接线：选项卡位置 / 列表绑定 / 详情里的字段 / 效果编辑器的「召唤物」下拉
 		{
-			// 三个字段都要能双向编辑到 Profile.Summon 上
-			List<TextBox> petBoxes = new List<TextBox>();
-			CollectTextBoxes((RoleTab.Content as DependencyObject) ?? this, petBoxes);
-			List<string> petPaths = petBoxes.Select((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path ?? "").ToList();
-			Check("召唤伙伴分组里有「名字 / 英文类名 / 生命」三个输入框",
-				petPaths.Contains("Name") && petPaths.Contains("ClassName") && petPaths.Contains("Hp"),
-				string.Join(" / ", petPaths.Where((string p) => p is "Name" or "ClassName" or "Hp")));
-			// 注：SummonBox 的内容不参与 CollectTextBoxes 吗？参与 —— 它是 RoleTab 的子树，所以上面这三条查的就是它。
+			TabItem summonTabItem = FindTab("召唤物");
+			Check("有「召唤物」选项卡", summonTabItem != null, summonTabItem is null ? "没找到" : "找到了");
+			int idxRole = -1, idxSummon = -1, idxExtra = -1;
+			for (int ti = 0; ti < MainTabs.Items.Count; ti++)
+			{
+				if (!(MainTabs.Items[ti] is TabItem t)) continue;
+				switch ((t.Header as string) ?? "")
+				{
+					case "角色": idxRole = ti; break;
+					case "召唤物": idxSummon = ti; break;
+					case "额外资源量/状态": idxExtra = ti; break;
+				}
+			}
+			Check("「召唤物」紧跟「角色」之后（第 2 个选项卡）",
+				idxRole == 0 && idxSummon == 1 && idxExtra == 2, $"角色={idxRole} / 召唤物={idxSummon} / 额外资源量={idxExtra}");
+			Check("召唤物列表绑定到 Profile.Summons（列表，不是单对象）",
+				SummonList != null && BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Summons",
+				SummonList is null ? "没找到列表" : (BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "(没绑定)"));
+			DependencyObject summonRoot = SummonTab.Content as DependencyObject;
+			List<string> summonTexts = TextsIn(summonRoot);
+			Check("召唤物页有「添加召唤物 / 删除 / 撤回删除」按钮",
+				summonTexts.Contains("添加召唤物") && summonTexts.Contains("删除") && summonTexts.Contains("撤回删除"), "控件在");
+			Check("召唤物页有「启用 / 名字 / 英文类名 / 生命 / 站位距离 / 替主人挨打」",
+				summonTexts.Any((string t) => t.Contains("启用这只召唤物")) && summonTexts.Any((string t) => t.Contains("名字（宠物名牌）"))
+				&& summonTexts.Any((string t) => t.Contains("英文类名")) && summonTexts.Any((string t) => t.Contains("召唤时的生命"))
+				&& summonTexts.Any((string t) => t.Contains("站位距离")) && summonTexts.Any((string t) => t.Contains("替主人挨打")),
+				string.Join(" / ", summonTexts.Where((string t) => t.Contains("召唤") || t.Contains("站位") || t.Contains("挨打")).Take(6)));
+			Check("召唤物页写明了「替主人挨打只能勾一只」的原因（本体伤害重定向是链式遍历）",
+				summonTexts.Any((string t) => t.Contains("整个存档只能勾一只")), "有说明");
+			// 详情里的输入框要双向绑定到「选中的那一只」上（数据源是列表的 SelectedItem）
+			{
+				var summonDetail = SummonTab.Content as DependencyObject;
+				List<TextBox> summonBoxes = new List<TextBox>();
+				CollectTextBoxes(summonDetail, summonBoxes);
+				List<string> summonPaths = summonBoxes.Select((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path ?? "").ToList();
+				Check("召唤物详情里有「名字 / 英文类名 / 生命 / 站位距离」四个输入框",
+					summonPaths.Contains("Name") && summonPaths.Contains("ClassName") && summonPaths.Contains("Hp") && summonPaths.Contains("StandDistance"),
+					string.Join(" / ", summonPaths.Where((string p) => p is "Name" or "ClassName" or "Hp" or "StandDistance")));
+				// 效果编辑器里的「召唤物（哪一只）」下拉：卡牌 / 遗物两处都要有
+				// （用 SelectTabRoot 切页再收文字 —— 顺手也保证这两个页本身能正常选中）
+				Check("效果编辑器有「召唤物（哪一只）」下拉（卡牌页）",
+					TextsIn(SelectTabRoot("卡牌")).Contains("召唤物（哪一只）"), "下拉在");
+				Check("效果编辑器有「召唤物（哪一只）」下拉（遗物页）",
+					TextsIn(SelectTabRoot("遗物")).Contains("召唤物（哪一只）"), "下拉在");
+			}
+			// 勾选框 / 字段都要能双向编辑到「列表里选中的那一只」上
+			bool oldEnabled2 = false, oldGuard = false;
+			string oldName2 = "", oldCls2 = "";
+			int oldHp2 = 0, oldDist = 0;
 			try
 			{
-				bool oldEnabled = Profile.Summon.Enabled;
-				string oldName = Profile.Summon.Name;
-				int oldHp = Profile.Summon.Hp;
-				Profile.Summon.Enabled = true;
-				Profile.Summon.Name = "测试伙伴";
-				Profile.Summon.Hp = 12;
+				SummonList.SelectedIndex = 0;
 				UpdateLayout();
-				Check("改召唤伙伴的名字 / 生命后，宠物类名按「角色类名 + Pet」自动推出来",
-					PetGen.ClassNameOf(Profile) == Profile.CharacterClass + "Pet"
-					&& PetGen.DisplayName(Profile) == "测试伙伴" && PetGen.BaseHp(Profile) == 12,
-					$"{PetGen.ClassNameOf(Profile)} / {PetGen.DisplayName(Profile)} / {PetGen.BaseHp(Profile)}");
-				Profile.Summon.Enabled = false;
-				CardSpec petOffCard = new CardSpec { Name = "激活检查", ClassName = "UiCheckPetOff", Cost = 1 };
-				petOffCard.Effects.Clear();
-				petOffCard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self" });
-				string disabledCard = CSharpCodeGen.CardSource(Profile, petOffCard, 0);
-				Check("即使没勾「启用召唤伙伴」，卡牌代码也照常生成（拦住生成的是校验器，不是让代码炸掉）",
-					disabledCard.Contains("Cmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
-				// 校验器要能拦住「用了召唤效果但没启用召唤伙伴」—— 所以先把这张牌挂进配置里
-				Profile.Cards.Add(petOffCard);
-				var petOffIssues = ProfileValidator.Validate(Profile);
-				string petOffErrors = string.Join(" | ", petOffIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message));
-				Check("没启用召唤伙伴时校验器会报错拦住（否则生成的牌会引用不存在的宠物类 → CS0103）",
-					petOffIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("召唤伙伴")),
-					petOffErrors.Length > 0 ? petOffErrors : "(没有错误)");
-				Profile.Cards.Remove(petOffCard);
-				Profile.Summon.Enabled = oldEnabled;
-				Profile.Summon.Name = oldName;
-				Profile.Summon.Hp = oldHp;
+				var probe = SummonList.SelectedItem as SummonSpec;
+				Check("召唤物列表里已经有一条第 1 只（示例 / 迁移出来的）", probe is not null, probe?.Display ?? "(空列表)");
+				if (probe is not null)
+				{
+					oldEnabled2 = probe.Enabled; oldGuard = probe.TakesDamageForOwner;
+					oldName2 = probe.Name; oldCls2 = probe.ClassName;
+					oldHp2 = probe.Hp; oldDist = probe.StandDistance;
+					probe.Enabled = true;
+					probe.Name = "测试伙伴";
+					probe.Hp = 12;
+					probe.StandDistance = 130;
+					probe.ClassName = "";
+					UpdateLayout();
+					Check("类名留空时按位置自动推（第 1 只 = <角色类名>Pet）",
+						PetGen.ClassNameOf(Profile, probe) == Profile.CharacterClass + "Pet"
+						&& PetGen.DisplayNameOf(probe, PetGen.ClassNameOf(Profile, probe)) == "测试伙伴"
+						&& PetGen.HpOf(probe) == 12 && PetGen.StandDistanceOf(probe) == 130,
+						$"{PetGen.ClassNameOf(Profile, probe)} / {PetGen.HpOf(probe)} / {PetGen.StandDistanceOf(probe)}");
+					// 「哪一只」下拉的候选只列已启用的召唤物
+					RaisePetSummonChoices();
+					Check("「召唤物（哪一只）」下拉的候选只列已启用的召唤物",
+						PetSummonsCard.Count == PetGen.Enabled(Profile).Count && PetSummonsCard.All((PetGen.PetChoice c) => c.Id.Length > 0),
+						string.Join(" / ", PetSummonsCard.Select((PetGen.PetChoice c) => c.Display)));
+					// 停用后候选里就没有它了
+					probe.Enabled = false;
+					RaisePetSummonChoices();
+					Check("把召唤物停用后「哪一只」下拉里就看不到它了",
+						!PetSummonsCard.Any((PetGen.PetChoice c) => c.Id == PetGen.ClassNameOf(Profile, probe)),
+						string.Join(" / ", PetSummonsCard.Select((PetGen.PetChoice c) => c.Display)));
+					// 效果引用了一只「停用的」召唤物 → 校验器要报错拦住
+					CardSpec petOffCard = new CardSpec { Name = "激活检查", ClassName = "UiCheckPetOff", Cost = 1 };
+					petOffCard.Effects.Clear();
+					petOffCard.Effects.Add(new EffectSpec
+					{
+						Kind = "SummonPet", Amount = 0m, TargetSide = "Self",
+						PetSummon = PetGen.ClassNameOf(Profile, probe),
+					});
+					string disabledCard = CSharpCodeGen.CardSource(Profile, petOffCard, 0);
+					Check("即使召唤物被停用，卡牌代码也照常生成（拦住生成的是校验器，不是让代码炸掉）",
+						disabledCard.Contains("Cmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
+					Profile.Cards.Add(petOffCard);
+					var petOffIssues = ProfileValidator.Validate(Profile);
+					string petOffErrors = string.Join(" | ", petOffIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message));
+					Check("引用了「停用的召唤物」时校验器会报错拦住（否则生成的牌会引用不存在的宠物类 → CS0103）",
+						petOffIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("已经被停用")),
+						petOffErrors.Length > 0 ? petOffErrors : "(没有错误)");
+					Profile.Cards.Remove(petOffCard);
+				}
 			}
 			finally
 			{
-				Profile.Summon.Enabled = false;
+				var restore = SummonList.SelectedItem as SummonSpec;
+				if (restore is not null)
+				{
+					restore.Enabled = oldEnabled2; restore.TakesDamageForOwner = oldGuard;
+					restore.Name = oldName2; restore.ClassName = oldCls2;
+					restore.Hp = oldHp2; restore.StandDistance = oldDist;
+				}
+				RaisePetSummonChoices();
 			}
 		}
 
-		// ===== 召唤伙伴：端到端（生成 → 产物 → 回读）=====
+		// ===== 召唤物：端到端（两只同时在场 → 生成 → 产物 → 回读 → 校验拦截）=====
 		string petRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_pet_" + Guid.NewGuid().ToString("N").Substring(0, 8));
 		try
 		{
@@ -6680,95 +6871,187 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			// 生成要用解包工程（占位美术 / 场景），和上面「从工程恢复」那段一样
 			petSrc.Paths.VanillaProject = Profile.Paths.VanillaProject;
 			petSrc.Paths.GameDataDir = Profile.Paths.GameDataDir;
-			petSrc.SaveName = "召唤伙伴自检";
-			petSrc.Summon.Enabled = true;
-			petSrc.Summon.ClassName = "UiCheckPet";
-			petSrc.Summon.Name = "小石头";
-			petSrc.Summon.Hp = 9;
-			petSrc.Summon.Image = null;      // 故意不传图：走「本体占位图」那条路
+			petSrc.SaveName = "召唤物自检";
+			// 两只召唤物：第一只带「替主人挨打」、第二只不带，且两只的站位距离不同
+			petSrc.Summons.Clear();
+			petSrc.Summons.Add(new SummonSpec
+			{
+				Enabled = true, ClassName = "UiCheckPet", Name = "小石头", Hp = 9,
+				Image = null, TakesDamageForOwner = true, StandDistance = 140,
+			});
+			petSrc.Summons.Add(new SummonSpec
+			{
+				Enabled = true, ClassName = "UiCheckPet2", Name = "小铁块", Hp = 15,
+				Image = null, TakesDamageForOwner = false, StandDistance = 90,
+			});
 			List<CardSpec> petOwn = petSrc.Cards.Where((CardSpec c) => !c.IsVanillaCard).ToList();
 			CardSpec petSummonCard = new CardSpec { Name = "召唤小石头", ClassName = "UiCheckPetSummon", CardType = "Skill", Cost = 1, InCardPool = true };
 			petSummonCard.Effects.Clear();
-			petSummonCard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self" });   // 0 = 用配置的 9 点生命
+			petSummonCard.Effects.Add(new EffectSpec
+			{
+				Kind = "SummonPet", Amount = 0m, TargetSide = "Self", PetSummon = "UiCheckPet",
+			});   // 0 = 用配置的 9 点生命
 			petSrc.Cards.Add(petSummonCard);
 			CardSpec petAttackCard = new CardSpec { Name = "小石头撞击", ClassName = "UiCheckPetAttack", CardType = "Attack", Cost = 1, InCardPool = true };
 			petAttackCard.Effects.Clear();
-			petAttackCard.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 7m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+			petAttackCard.Effects.Add(new EffectSpec
+			{
+				Kind = "PetAttack", Amount = 7m, UpgradeAmount = 3m, TargetSide = "Enemy", PetSummon = "UiCheckPet",
+			});
 			petSrc.Cards.Add(petAttackCard);
+			// 第二只也有自己的攻击卡：验证同一张牌 / 不同牌能分别指向不同的召唤物
+			CardSpec petAttackCard2 = new CardSpec { Name = "小铁块撞击", ClassName = "UiCheckPetAttack2", CardType = "Attack", Cost = 1, InCardPool = true };
+			petAttackCard2.Effects.Clear();
+			petAttackCard2.Effects.Add(new EffectSpec
+			{
+				Kind = "PetAttack", Amount = 5m, TargetSide = "AllEnemies", PetSummon = "UiCheckPet2",
+			});
+			petSrc.Cards.Add(petAttackCard2);
 			// 遗物「战斗开始时召唤」= 本体 Byrdpip 的写法
 			RelicSpec petRelic = new RelicSpec { Name = "会召唤的遗物", ClassName = "UiCheckPetRelic", Trigger = "CombatStart", IsStartingRelic = true };
 			petRelic.Effects.Clear();
-			petRelic.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 12m, TargetSide = "Self" });
+			petRelic.Effects.Add(new EffectSpec
+			{
+				Kind = "SummonPet", Amount = 12m, TargetSide = "Self", PetSummon = "UiCheckPet2",
+			});
 			petSrc.Relics.Add(petRelic);
 
 			var petGen = ModGenerator.Generate(petSrc);
-			Check("（准备）带召唤伙伴的配置能生成工程", petGen.Success && Directory.Exists(petGen.ProjectRoot),
+			Check("（准备）带两只召唤物的配置能生成工程", petGen.Success && Directory.Exists(petGen.ProjectRoot),
 				string.Join(" | ", petGen.Issues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message)));
 
-			// ① cs/Pet.cs：宠物类 + 召唤命令助手
+			// ① cs/Pet.cs：两只宠物类 + 两个命令助手 + 一个守卫 Power
 			string petCsPath = Path.Combine(petGen.ProjectRoot, "cs", "Pet.cs");
-			Check("召唤伙伴：生成了 cs/Pet.cs", File.Exists(petCsPath), petCsPath);
+			Check("召唤物：生成了 cs/Pet.cs", File.Exists(petCsPath), petCsPath);
 			string petCs = File.Exists(petCsPath) ? File.ReadAllText(petCsPath, Encoding.UTF8) : "";
-			Check("召唤伙伴：cs/Pet.cs 里有 public sealed class UiCheckPet : MonsterModel（本体靠扫描子类自动注册）",
-				petCs.Contains("public sealed class UiCheckPet : MonsterModel"), "有宠物类");
-			Check("召唤伙伴：cs/Pet.cs 里有 PlayerCmd.AddPet<UiCheckPet>（本体通用宠物 API，不用 OstyCmd）",
-				petCs.Contains("PlayerCmd.AddPet<UiCheckPet>(player)"), "用了通用 API");
-			Check("召唤伙伴：宠物类写了回血自循环的 NOTHING_MOVE（宠物没有自主回合，照抄本体 Osty）",
+			Check("召唤物：两只都生在同一个 cs/Pet.cs 里（各一个 MonsterModel 子类，本体靠扫描子类自动注册）",
+				petCs.Contains("public sealed class UiCheckPet : MonsterModel") && petCs.Contains("public sealed class UiCheckPet2 : MonsterModel"),
+				"两个宠物类");
+			Check("召唤物：第二只也有自己的命令助手（PlayerCmd.AddPet<UiCheckPet2>）",
+				petCs.Contains("PlayerCmd.AddPet<UiCheckPet2>(player)"), "用了通用 API");
+			Check("召唤物：宠物类写了空操作自循环的 NOTHING_MOVE（宠物没有自主回合，照抄本体 Osty）",
 				petCs.Contains("NOTHING_MOVE"), "有 NOTHING_MOVE");
-			Check("召唤伙伴：召唤命令里有 SetMaxHp（本体造宠物时给的是初始生命随机值）",
-				petCs.Contains("CreatureCmd.SetMaxHp(pet, hp)"), "有 SetMaxHp");
-			Check("召唤伙伴：没上传图片时不 override VisualsPath（回退本体的 fallback 占位图）",
+			Check("召唤物：召唤命令里有 SetMaxHp（本体造宠物时给的是初始生命随机值）",
+				petCs.Contains("CreatureCmd.SetMaxHp(__uiCheckPet, hp)"), "有 SetMaxHp");
+			Check("召唤物：没上传图片时不 override VisualsPath（回退本体的 fallback 占位图）",
 				!petCs.Contains("VisualsPath =>") && petCs.Contains("creature_visuals/"), "用占位图");
-			Check("召唤伙伴：宠物生命 = 配置里的 9", petCs.Contains("private const int BaseHp = 9;"), "BaseHp = 9");
+			Check("召唤物：两只的生命各自独立（9 / 15）",
+				petCs.Contains("private const int BaseHp = 9;") && petCs.Contains("private const int BaseHp = 15;"), "BaseHp 9 / 15");
 
-			// ② monsters.json：宠物名牌
+			// ①-a bug①：站位（覆写 AfterCreatureAddedToCombat，不再用本体的 主人X+20）
+			Check("bug①站位：宠物类覆写了 AfterCreatureAddedToCombat（本体摆位在这个钩子之前跑，改完不会被抢回去）",
+				petCs.Contains("public override Task AfterCreatureAddedToCombat(Creature creature)")
+				&& petCs.Contains("room?.GetCreatureNode(base.Creature.PetOwner?.Creature)"), "有站位钩子");
+			Check("bug①站位：站位距离是**每只自己的配置值**（140 / 90），不是全局写死",
+				petCs.Contains("private const float StandDistance = 140f;") && petCs.Contains("private const float StandDistance = 90f;"),
+				"两只各自的距离");
+			Check("bug①站位：算上了半个包围盒宽（不然有一半身子压在主人身上）",
+				petCs.Contains("me.Visuals.Bounds.Size.X * 0.5f"), "有半宽");
+			Check("bug①站位：钩子只处理自己那一只（钩子是广播给战斗里所有模型的）",
+				petCs.Contains("if (creature != base.Creature) return Task.CompletedTask;"), "有自卫");
+			Check("bug①站位：本体摆位用的那个 20 像素偏移没有出现在我们的宠物代码里（不再用默认摆位）",
+				!petCs.Contains("- 20f"), "干净");
+
+			// ①-b bug②：血条（覆写 IsHealthBarVisible + 召唤后手动 SetCreatureIsInteractable）
+			Check("bug②血条：宠物类覆写了 IsHealthBarVisible（照本体 Osty）",
+				petCs.Contains("public override bool IsHealthBarVisible => base.Creature.IsAlive;"), "有覆写");
+			Check("bug②血条：召唤后手动 SetCreatureIsInteractable(pet, on: true)（本体 AddCreature 会对非 Osty 宠物关掉交互）",
+				petCs.Contains("SetCreatureIsInteractable(__uiCheckPet, on: true)"), "有补开");
+
+			// ①-c 可选④：替主人挨打（守卫 Power，照抄 DieForYouPower）
+			Check("替主人挨打：只给勾了那只生成守卫 Power 类（照抄本体 DieForYouPower）",
+				petCs.Contains("public sealed class ForgePetGuardianUiCheckPet : PowerModel")
+				&& !petCs.Contains("public sealed class ForgePetGuardianUiCheckPet2"), "只有第一只有");
+			Check("替主人挨打：守卫只吸「可格挡的攻击伤害」（中毒 / 失去生命照旧打在主人身上）",
+				petCs.Contains("if (!props.IsPoweredAttack()) return target;")
+				&& petCs.Contains("public override Creature ModifyUnblockedDamageTarget(Creature target, decimal amount, ValueProp props, Creature? dealer)"), "有判定");
+			Check("替主人挨打：目标不是自己主人就放过、自己死了就放过",
+				petCs.Contains("if (target != base.Owner.PetOwner?.Creature) return target;")
+				&& petCs.Contains("if (base.Owner.IsDead) return target;"), "有守卫");
+			Check("替主人挨打：死了不从战斗里挪走、主人死了也不摘状态（照抄本体）",
+				petCs.Contains("public override bool ShouldCreatureBeRemovedFromCombatAfterDeath(Creature creature)")
+				&& petCs.Contains("public override bool ShouldPowerBeRemovedAfterOwnerDeath()"), "有覆写");
+			Check("替主人挨打：召唤时挂上去（PowerCmd.Apply，本体 OstyCmd 的做法），并且先查一次防重复",
+				petCs.Contains("if (!__uiCheckPet.HasPower<ForgePetGuardianUiCheckPet>())")
+				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianUiCheckPet>(choiceContext, __uiCheckPet, 1m, null, null);"), "有挂载");
+
+			// ①-d bug③：攻击不生效 —— 不再用 FromMonster，改成 FromCard + FromPetAttacker（扩展方法）
+			string petExtPath = Path.Combine(petGen.ProjectRoot, "cs", "PetAttackExtensions.cs");
+			Check("bug③攻击：生成了 cs/PetAttackExtensions.cs（把攻击者换成宠物的扩展方法）", File.Exists(petExtPath), petExtPath);
+			string petExt = File.Exists(petExtPath) ? File.ReadAllText(petExtPath, Encoding.UTF8) : "";
+			Check("bug③攻击：扩展方法用反射设 AttackCommand.Attacker 的 private setter（不是 Harmony 补丁）",
+				petExt.Contains("public static AttackCommand FromPetAttacker(this AttackCommand command, Creature pet)")
+				&& petExt.Contains("typeof(AttackCommand).GetProperty(\"Attacker\",")
+				&& petExt.Contains("System.Reflection.BindingFlags.NonPublic")
+				&& !petExt.Contains("Harmony"), "反射方案");
+			Check("bug③攻击：没有生成任何 Harmony 补丁", !Directory.GetFiles(Path.Combine(petGen.ProjectRoot, "cs"), "*.cs", SearchOption.AllDirectories)
+				.Any((string f) => File.ReadAllText(f, Encoding.UTF8).Contains("HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.Builders.AttackCommand)")), "没有攻击补丁");
+
+			// ② monsters.json：两只的名字都在
 			string petLocPath = Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "monsters.json");
-			Check("召唤伙伴：生成了 monsters.json", File.Exists(petLocPath), petLocPath);
+			Check("召唤物：生成了 monsters.json", File.Exists(petLocPath), petLocPath);
 			string petLoc = File.Exists(petLocPath) ? File.ReadAllText(petLocPath, Encoding.UTF8) : "";
-			Check("召唤伙伴：monsters.json 里有 UI_CHECK_PET.name = 小石头（本体怪物名字的键格式）",
-				petLoc.Contains("\"UI_CHECK_PET.name\": \"小石头\""), petLoc.Replace("\r", "").Replace("\n", " "));
+			Check("召唤物：monsters.json 里两只的名字都有（本体怪物名字的键格式）",
+				petLoc.Contains("\"UI_CHECK_PET.name\": \"小石头\"") && petLoc.Contains("\"UI_CHECK_PET2.name\": \"小铁块\""),
+				petLoc.Replace("\r", "").Replace("\n", " "));
 
-			// ③ 召唤牌
+			// ③ 召唤牌：只召唤它自己那只
 			string petSummonSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetSummon.cs"), Encoding.UTF8);
 			Check("召唤卡：生成的代码里出现召唤调用（UiCheckPetCmd.Summon）",
 				petSummonSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
-			Check("召唤卡：数值填 0 时用配置里的血量（9m），不是 0",
-				petSummonSrc.Contains(", 9m);"), "用配置血量");
-			Check("召唤卡：不需要额外查宠物（Summon 内部自己找），所以不声明 __pet",
-				!petSummonSrc.Contains("Creature? __pet"), "没有多余局部变量");
+			Check("召唤卡：数值填 0 时用**那只自己的**血量（9m），不是 0、也不是别的召唤物的血量",
+				petSummonSrc.Contains(", 9m);") && !petSummonSrc.Contains(", 15m);"), "用配置血量");
+			Check("召唤卡：不需要额外查宠物（Summon 内部自己找），所以不声明查询变量",
+				!petSummonSrc.Contains("Creature? __uiCheckPet"), "没有多余局部变量");
 			Check("召唤卡：仍然有「战斗状态不为 null」的守卫（关闭括号要对上，缺一个就编译不过）",
 				petSummonSrc.Contains("if (base.Owner.PlayerCombatState is not null)"), "有守卫");
 			string petSummonLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
-			Check("召唤卡：卡面描述里写着宠物名字（召唤小石头。）", petSummonLoc.Contains("召唤小石头。"), "描述里有宠物名");
+			Check("召唤卡：卡面描述里写着那只的名字（召唤小石头。）", petSummonLoc.Contains("召唤小石头。"), "描述里有名字");
 
-			// ④ 伙伴攻击牌
+			// ④ 伙伴攻击牌（单体：FromCard + Targeting + FromPetAttacker）
 			string petAtkSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetAttack.cs"), Encoding.UTF8);
-			Check("伙伴攻击卡：生成的代码里出现 .FromMonster(（attacker 是宠物，不是玩家）",
-				petAtkSrc.Contains(".FromMonster(__pet.Monster)"), "有 FromMonster");
-			Check("伙伴攻击卡：单体目标写在 FromMonster 前面（FromMonster 内部会 TargetingAllOpponents，后写会抛异常）",
-				petAtkSrc.IndexOf(".Targeting(cardPlay.Target)", StringComparison.Ordinal) < petAtkSrc.IndexOf(".FromMonster(__pet.Monster)", StringComparison.Ordinal),
+			Check("bug③攻击：生成的代码不再用 .FromMonster(（那会把来源标成 Monster → 去打玩家自己人、还和 Targeting 冲突）",
+				!petAtkSrc.Contains(".FromMonster("), "没有 FromMonster");
+			Check("bug③攻击：先走正常卡牌路径（FromCard），再把攻击者换成宠物（FromPetAttacker）",
+				petAtkSrc.Contains(".FromCard(this, cardPlay)")
+				&& petAtkSrc.Contains(".FromPetAttacker(__uiCheckPet)"), "FromCard + FromPetAttacker");
+			Check("bug③攻击：FromCard 在前、FromPetAttacker 在后（FromCard 会校验 Attacker 必须为空）",
+				petAtkSrc.IndexOf(".FromCard(this, cardPlay)", StringComparison.Ordinal) < petAtkSrc.IndexOf(".FromPetAttacker(__uiCheckPet)", StringComparison.Ordinal),
 				"顺序对");
-			Check("伙伴攻击卡：打之前先判宠物在不在场（不在就跳过，不让整张牌报错）",
-				petAtkSrc.Contains("if (__pet is not null)"), "有守卫");
-			Check("伙伴攻击卡：伤害走我们自己的动态变量 PetDamage（不是兜底的 Value）",
+			Check("bug③攻击：单体目标仍然用 .Targeting(cardPlay.Target)（现在和 FromCard 不冲突了）",
+				petAtkSrc.Contains(".Targeting(cardPlay.Target)"), "有 Targeting");
+			Check("bug③攻击：给宠物播自己的攻击动画（没有该动画就退化成不动，无副作用）",
+				petAtkSrc.Contains(".WithAttackerAnim(\"Attack\", 0.3f)"), "有动画");
+			Check("bug③攻击：打之前先判宠物在不在场（不在就跳过，不让整张牌报错）",
+				petAtkSrc.Contains("if (__uiCheckPet is not null)"), "有守卫");
+			Check("bug③攻击：伤害走我们自己的动态变量 PetDamage（不是兜底的 Value）",
 				petAtkSrc.Contains("new DynamicVar(\"PetDamage\", 7m)") && petAtkSrc.Contains("base.DynamicVars[\"PetDamage\"].BaseValue"), "用 PetDamage");
 			Check("伙伴攻击卡：TargetType 是 AnyEnemy（要玩家选目标）", petAtkSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
 			string petAtkLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
-			Check("伙伴攻击卡：卡面描述里写着「让小石头…造成伤害」", petAtkLoc.Contains("让小石头"), "描述里有宠物名");
+			Check("伙伴攻击卡：卡面描述里写着「让小石头…造成伤害」", petAtkLoc.Contains("让小石头"), "描述里有名字");
 
-			// ⑤ 遗物触发（战斗开始时召唤）
+			// ④-b 第二只的全体攻击卡：换了一只 → 局部变量名也不同、TargetSide 走 TargetingAllOpponents
+			string petAtk2Src = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Cards", "UiCheckPetAttack2.cs"), Encoding.UTF8);
+			Check("第二只召唤物的攻击卡用的是它自己的查询变量和命令（__uiCheckPet2 / UiCheckPet2Cmd）",
+				petAtk2Src.Contains("Creature? __uiCheckPet2 = UiCheckPet2Cmd.Get(base.Owner);")
+				&& petAtk2Src.Contains(".FromPetAttacker(__uiCheckPet2)")
+				&& petAtk2Src.Contains("if (__uiCheckPet2 is not null)"), "用第二只");
+			Check("第二只召唤物的全体攻击卡走 .TargetingAllOpponents(base.CombatState)（攻击者已经换成宠物）",
+				petAtk2Src.Contains(".TargetingAllOpponents(base.CombatState)"), "全体目标");
+
+			// ⑤ 遗物触发（战斗开始时召唤第二只，血量 12）
 			string petRelicSrc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, "cs", "Relics", "UiCheckPetRelic.cs"), Encoding.UTF8);
-			Check("遗物触发：战斗开始时也能召唤伙伴（本体 Byrdpip 的写法）",
-				petRelicSrc.Contains("BeforeSideTurnStart") && petRelicSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner,"), "有召唤");
-			Check("遗物触发：遗物上的召唤支持自定义血量（12m）",
+			Check("遗物触发：战斗开始时也能召唤（本体 Byrdpip 的写法），而且召唤的是指定的那一只",
+				petRelicSrc.Contains("BeforeSideTurnStart") && petRelicSrc.Contains("UiCheckPet2Cmd.Summon(choiceContext, base.Owner,"), "有召唤");
+			Check("遗物触发：遗物上的召唤支持自定义血量（PetHp 动态变量）",
 				System.Text.RegularExpressions.Regex.IsMatch(petRelicSrc, @"base\.DynamicVars\[""PetHp""\]\.BaseValue\);"),
 				"12m");
 
 			// ⑥ 药水：两条都不支持 —— 但必须留一行注释，不能静默丢掉
 			PotionSpec petPotion = new PotionSpec { Name = "召唤药水", ClassName = "UiCheckPetPotion", Rarity = "Common" };
 			petPotion.Effects.Clear();
-			petPotion.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 5m, TargetSide = "Self" });
-			petPotion.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 5m, TargetSide = "AnyEnemy" });
+			petPotion.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 5m, TargetSide = "Self", PetSummon = "UiCheckPet" });
+			petPotion.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 5m, TargetSide = "AnyEnemy", PetSummon = "UiCheckPet" });
 			petSrc.Potions.Add(petPotion);
 			Check("药水：召唤伙伴 / 伙伴攻击都不支持，但生成的代码里留了说明注释（不静默丢）",
 				CSharpCodeGen.PotionSource(petSrc, petPotion, 0).Contains("药水不支持"),
@@ -6778,39 +7061,108 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				string.Join(" | ", ProfileValidator.Validate(petSrc).Where((ValidationIssue i) => i.IsError && i.Message.Contains("药水不支持")).Select((ValidationIssue i) => i.Message)));
 			petSrc.Potions.Remove(petPotion);
 
-			// ⑦ 回读
+			// ⑦ 回读：列表 / 顺序 / 站位 / 守卫 / 「哪一只」都要回来
 			var petRec = ProjectRecovery.FromProject(petGen.ProjectRoot);
-			Check("从工程恢复：召唤伙伴的配置找回来了（启用 / 类名 / 名字 / 生命）",
-				petRec.Profile.Summon.Enabled && petRec.Profile.Summon.ClassName == "UiCheckPet"
-				&& petRec.Profile.Summon.Name == "小石头" && petRec.Profile.Summon.Hp == 9,
-				petRec.Profile.Summon.Display);
-			Check("从工程恢复：卡牌上的「召唤伙伴」效果找回来了（数值 0 = 用配置血量）",
+			Check("从工程恢复：召唤物列表找回来了（两只、顺序一致、启用 / 类名 / 名字 / 生命）",
+				petRec.Profile.Summons.Count == 2
+				&& petRec.Profile.Summons[0].Enabled && petRec.Profile.Summons[0].ClassName == "UiCheckPet"
+				&& petRec.Profile.Summons[0].Name == "小石头" && petRec.Profile.Summons[0].Hp == 9
+				&& petRec.Profile.Summons[1].ClassName == "UiCheckPet2"
+				&& petRec.Profile.Summons[1].Name == "小铁块" && petRec.Profile.Summons[1].Hp == 15,
+				string.Join(" · ", petRec.Profile.Summons.Select((SummonSpec s) => s.Display)));
+			Check("从工程恢复：站位距离找回来了（每只各自的 140 / 90）",
+				petRec.Profile.Summons[0].StandDistance == 140 && petRec.Profile.Summons[1].StandDistance == 90,
+				$"{petRec.Profile.Summons[0].StandDistance} / {petRec.Profile.Summons[1].StandDistance}");
+			Check("从工程恢复：「替主人挨打」的勾选找回来了（只有第一只）",
+				petRec.Profile.Summons[0].TakesDamageForOwner && !petRec.Profile.Summons[1].TakesDamageForOwner,
+				$"{petRec.Profile.Summons[0].TakesDamageForOwner} / {petRec.Profile.Summons[1].TakesDamageForOwner}");
+			Check("从工程恢复：卡牌上的「召唤伙伴」效果找回来了（数值 0 = 用配置血量，而且知道是哪一只）",
 				petRec.Profile.Cards.Any((CardSpec c) => c.ClassName == "UiCheckPetSummon"
-					&& c.Effects.Count == 1 && c.Effects[0].Kind == "SummonPet" && c.Effects[0].Amount == 0m),
+					&& c.Effects.Count == 1 && c.Effects[0].Kind == "SummonPet" && c.Effects[0].Amount == 0m
+					&& c.Effects[0].PetSummon == "UiCheckPet"),
 				string.Join(" · ", petRec.Profile.Cards.Where((CardSpec c) => c.ClassName == "UiCheckPetSummon")
-					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Display)));
-			Check("从工程恢复：卡牌上的「伙伴攻击」效果找回来了（伤害 7 + 升级 3）",
+					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Kind + "/" + (e.PetSummon ?? "?"))));
+			Check("从工程恢复：卡牌上的「伙伴攻击」效果找回来了（伤害 7 + 升级 3 + 指向第一只）",
 				petRec.Profile.Cards.Any((CardSpec c) => c.ClassName == "UiCheckPetAttack"
 					&& c.Effects.Count == 1 && c.Effects[0].Kind == "PetAttack" && c.Effects[0].Amount == 7m
-					&& c.Effects[0].UpgradeAmount == 3m && c.Effects[0].TargetSide == "Enemy"),
+					&& c.Effects[0].UpgradeAmount == 3m && c.Effects[0].TargetSide == "Enemy"
+					&& c.Effects[0].PetSummon == "UiCheckPet"),
 				string.Join(" · ", petRec.Profile.Cards.Where((CardSpec c) => c.ClassName == "UiCheckPetAttack")
-					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Display)));
-			Check("从工程恢复：遗物上的「召唤伙伴」效果找回来了（12 点生命）",
-				petRec.Profile.Relics.Any((RelicSpec r) => r.Effects.Any((EffectSpec e) => e.Kind == "SummonPet" && e.Amount == 12m)),
-				string.Join(" · ", petRec.Profile.Relics.SelectMany((RelicSpec r) => r.Effects).Select((EffectSpec e) => e.Display)));
-			Check("从工程恢复：没认出来的语句为 0（宠物相关的生成代码都认得）", !petRec.HasUnparsed,
+					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Kind + "/" + (e.PetSummon ?? "?"))));
+			Check("从工程恢复：第二只的攻击卡也指向第二只（列表里不同召唤物不会串）",
+				petRec.Profile.Cards.Any((CardSpec c) => c.ClassName == "UiCheckPetAttack2"
+					&& c.Effects.Count == 1 && c.Effects[0].Kind == "PetAttack" && c.Effects[0].Amount == 5m
+					&& c.Effects[0].TargetSide == "AllEnemies" && c.Effects[0].PetSummon == "UiCheckPet2"),
+				string.Join(" · ", petRec.Profile.Cards.Where((CardSpec c) => c.ClassName == "UiCheckPetAttack2")
+					.SelectMany((CardSpec c) => c.Effects).Select((EffectSpec e) => e.Kind + "/" + (e.PetSummon ?? "?"))));
+			Check("从工程恢复：遗物上的「召唤伙伴」效果找回来了（12 点生命 + 指向第二只）",
+				petRec.Profile.Relics.Any((RelicSpec r) => r.Effects.Any((EffectSpec e) => e.Kind == "SummonPet"
+					&& e.Amount == 12m && e.PetSummon == "UiCheckPet2")),
+				string.Join(" · ", petRec.Profile.Relics.SelectMany((RelicSpec r) => r.Effects).Select((EffectSpec e) => e.Kind + "/" + (e.PetSummon ?? "?"))));
+			Check("从工程恢复：没认出来的语句为 0（召唤物相关的生成代码都认得）", !petRec.HasUnparsed,
 				petRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
 
-			// ⑧ 启用开关的实际效果：不启用就不生成 cs/Pet.cs
-			petSrc.Summon.Enabled = false;
+			// ⑧ 校验拦截：全部停用 → 不生成 cs/Pet.cs（卡牌还引用着 → 校验器报错拦住）
+			foreach (var s in petSrc.Summons) s.Enabled = false;
 			var petGen2 = ModGenerator.Generate(petSrc);
-			Check("没启用召唤伙伴时不会生成 cs/Pet.cs（但卡牌还引用着它 → 由校验器报错拦住，生成会被中止）",
+			Check("全部召唤物停用后不会生成 cs/Pet.cs（但卡牌还引用着它们 → 由校验器报错拦住，生成会被中止）",
 				!petGen2.Success || !File.Exists(Path.Combine(petGen2.ProjectRoot, "cs", "Pet.cs")),
 				petGen2.Success ? "生成成功但没写 Pet.cs" : "生成被校验拦住了");
+			foreach (var s in petSrc.Summons) s.Enabled = true;
+
+			// ⑨ 校验拦截：同时勾两只「替主人挨打」必须报错（本体伤害重定向是链式遍历）
+			petSrc.Summons[1].TakesDamageForOwner = true;
+			var petGuardIssues = ProfileValidator.Validate(petSrc);
+			Check("同时有两只召唤物勾了「替主人挨打」时校验器报错拦住（本体 Hook.ModifyUnblockedDamageTarget 是链式遍历，两个重定向者会让伤害归属不可预期）",
+				petGuardIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能勾一只")),
+				string.Join(" | ", petGuardIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
+			petSrc.Summons[1].TakesDamageForOwner = false;
+
+			// ⑩ 校验拦截：两只召唤物的类名重名
+			petSrc.Summons[1].ClassName = "UiCheckPet";
+			var petDupIssues = ProfileValidator.Validate(petSrc);
+			Check("两只召唤物用了同一个英文类名时校验器报错拦住（本体按类名注册模型 → DuplicateModelException）",
+				petDupIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("重复")),
+				string.Join(" | ", petDupIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
+			petSrc.Summons[1].ClassName = "UiCheckPet2";
+
+			// ⑪ 校验拦截：效果指向一只不存在的召唤物
+			petSrc.Cards.First((CardSpec c) => c.ClassName == "UiCheckPetSummon").Effects[0].PetSummon = "NoSuchPet";
+			var petMissIssues = ProfileValidator.Validate(petSrc);
+			Check("效果指向一只不存在的召唤物时校验器报错拦住（否则生成的代码会 CS0103）",
+				petMissIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("NoSuchPet")),
+				string.Join(" | ", petMissIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
+			petSrc.Cards.First((CardSpec c) => c.ClassName == "UiCheckPetSummon").Effects[0].PetSummon = "UiCheckPet";
+
+			// ⑫ 老存档兼容：单个 Summon（上一版的格式）要能迁移进列表
+			var legacyPet = ProfileFactory.Sample();
+			legacyPet.Summons.Clear();
+			legacyPet.Summon = new SummonSpec { Enabled = true, ClassName = "UiCheckLegacyPet", Name = "老伙伴", Hp = 11 };
+			ProfileFactory.Normalize(legacyPet);
+			Check("老存档兼容：单个 Summon 会迁移进 Summons 列表并把老字段清空（不能静默丢配置）",
+				legacyPet.Summon is null && legacyPet.Summons.Count == 1
+				&& legacyPet.Summons[0].ClassName == "UiCheckLegacyPet" && legacyPet.Summons[0].Name == "老伙伴"
+				&& legacyPet.Summons[0].Hp == 11 && legacyPet.Summons[0].StandDistance == SummonSpec.DefaultStandDistance,
+				legacyPet.Summon is null ? string.Join(" · ", legacyPet.Summons.Select((SummonSpec s) => s.Display)) : "老字段还在");
+			// 老存档里那个单对象是全空的（老版默认值）→ 不该凭空多出一条记录
+			var legacyEmpty = ProfileFactory.Sample();
+			legacyEmpty.Summons.Clear();
+			legacyEmpty.Summon = new SummonSpec();
+			ProfileFactory.Normalize(legacyEmpty);
+			Check("老存档兼容：全空的单个 Summon 不会迁成一条空召唤物（否则列表里会凭空多一条）",
+				legacyEmpty.Summon is null && legacyEmpty.Summons.Count == 0, $"{legacyEmpty.Summons.Count} 条");
+
+			// ⑬ 老效果（PetSummon 为空）自动用第一只启用的召唤物（行为与上一版单只召唤物一致）
+			var legacyEffectCard = new CardSpec { Name = "老召唤卡", ClassName = "UiCheckPetLegacyEffect", Cost = 1 };
+			legacyEffectCard.Effects.Clear();
+			legacyEffectCard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self" });   // 没填 PetSummon
+			string legacyEffectSrc = CSharpCodeGen.CardSource(petSrc, legacyEffectCard, 0);
+			Check("老存档的「召唤伙伴」效果没填「哪一只」时自动用第一只启用的召唤物（行为和上一版单只召唤物一致）",
+				legacyEffectSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner, 9m);"), "用第一只");
 		}
 		catch (Exception ex)
 		{
-			Check("召唤伙伴（整体）", ok: false, ex.GetType().Name + ": " + ex.Message + "  @" + string.Join(" | ", (ex.StackTrace ?? "").Split('\n').Take(4).Select((string s) => s.Trim())));
+			Check("召唤物（整体）", ok: false, ex.GetType().Name + ": " + ex.Message + "  @" + string.Join(" | ", (ex.StackTrace ?? "").Split('\n').Take(4).Select((string s) => s.Trim())));
 		}
 		finally
 		{

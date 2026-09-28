@@ -129,6 +129,18 @@
                           SelectedValue="{Binding SelectPile}"
                           ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）。"/>
 
+                <!-- 「召唤物」下拉：只在「召唤伙伴 / 伙伴攻击」这两种效果上出现（别的效果没有「哪一只」这回事）。
+                     候选由 MainWindow.PetSummonsCard / PetSummonsPlain 给（只列**已启用**的召唤物），
+                     SelectedValue 存的是 summon 的稳定标识（宠物类名），显示的是它的中文名。 -->
+                <TextBlock Grid.Row="11" Grid.Column="0" Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}"/>
+                <ComboBox Grid.Row="11" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}"
+                          ItemsSource="{Binding PetSummonsCard, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                          SelectedValue="{Binding PetSummon}"
+                          ToolTip="这条效果作用在**哪一只**召唤物上：卡牌 / 遗物在这里选。留空 = 用「召唤物」页里第一只启用的（老存档就是这样）。"/>
+
                 <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
@@ -302,6 +314,15 @@
                 <StackPanel>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                    <!-- 「召唤物」下拉（遗物版）：候选和卡牌版一样，只是走独立模板方便自检区分 -->
+                    <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                  SelectedValue="{Binding PetSummon}"/>
+                    </Grid>
                 </StackPanel>
             </ScrollViewer>
         </DataTemplate>
@@ -335,8 +356,19 @@
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <!-- 药水上的「召唤伙伴 / 伙伴攻击」是**不支持**的（校验器会报错拦住），
+                         这里仍然给一个下拉，免得用户在药水上选了这两种效果却找不到「哪一只」，
+                         以为是界面出问题了 —— 生成时写出的是「药水不支持」那行说明注释。 -->
+                    <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                        <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                  SelectedValue="{Binding PetSummon}"/>
+                    </Grid>
                     <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
-                               Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。"/>
+                               Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
                 </StackPanel>
             </ScrollViewer>
         </DataTemplate>

@@ -16,6 +16,9 @@ public sealed class CodeWriter
         return this;
     }
 
+    /// <summary>条件为真时才写这一行（生成「有时才有」的语句用，比如只有配了才存在的命名空间 using）。</summary>
+    public CodeWriter LineIf(bool condition, string text) => condition ? Line(text) : this;
+
     public CodeWriter Raw(string text) { _sb.Append(text); return this; }
 
     /// <summary>写一行并开启代码块（自动补 "{"）。</summary>

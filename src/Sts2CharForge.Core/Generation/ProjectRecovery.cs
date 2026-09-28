@@ -17,6 +17,13 @@ public sealed class RecoveryResult
     /// <summary>没认出来的生成代码语句（逐条列出来，方便人工补）。</summary>
     public List<string> Unparsed { get; } = new();
 
+    /// <summary>
+    /// 工程里 <c>cs/Pet.cs</c> 里的宠物类名（按出现顺序 = 召唤物列表顺序）。
+    /// 为什么放在结果里：卡牌效果回读时要靠它把 <c>.FromPetAttacker(__uiCheckPet)</c> 的局部变量名
+    /// 反推回「哪一只召唤物」（<c>EffectSpec.PetSummon</c>）。
+    /// </summary>
+    public List<string> PetClassNames { get; } = new();
+
     public bool HasUnparsed => Unparsed.Count > 0;
 }
 
@@ -52,6 +59,8 @@ public static class ProjectRecovery
         p.Ancients.Clear();
         p.CustomKeywords.Clear();
         p.KeywordRenames.Clear();
+        // 召唤物：模板里只借了「第一只的图片路径」当底，这里清掉重读（否则会和工程里读出来的叠成两份）
+        p.Summons.Clear();
 
         string cs = Path.Combine(projectDir, "cs");
         if (!Directory.Exists(cs)) throw new DirectoryNotFoundException("工程里没有 cs 目录，可能选错目录了：" + projectDir);
@@ -277,8 +286,8 @@ public static class ProjectRecovery
         foreach (var cp in p.CustomPowers) cp.Icon = Move(cp.Icon);
         foreach (var r in p.Relics) r.Icon = Move(r.Icon);
         foreach (var s in p.Potions) s.Icon = Move(s.Icon);
-        // 召唤伙伴的宠物图也是「工程目录删了就没了」的素材，一起搬到存档旁边
-        if (p.Summon is not null) p.Summon.Image = Move(p.Summon.Image);
+        // 召唤物的宠物图也是「工程目录删了就没了」的素材，一起搬到存档旁边（每只一张）
+        foreach (var s in p.Summons) if (s is not null) s.Image = Move(s.Image);
         if (copied > 0) result.Notes.Add($"素材 {copied} 个已复制到「{dir}」（配置里已指向这里）");
     }
 
@@ -287,8 +296,11 @@ public static class ProjectRecovery
         // 只借用「环境路径 / 素材路径」这些工程里反推不出来的东西
         return new CharacterProfile
         {
-            // 召唤伙伴的宠物图路径借过来（工程里只能反推出「有没有」，反推不出用户原来选的是哪张图）
-            Summon = new SummonSpec { Image = t.Summon?.Image },
+            // 召唤物的宠物图路径借过来（工程里只能反推出「有没有」，反推不出用户原来选的是哪张图）。
+            // 这里只借**第一只**的图当模板：真正的图片路径在下面 ParseSummon 里按工程里的 PNG 重新指过去。
+            Summons = new System.Collections.ObjectModel.ObservableCollection<SummonSpec>(
+                t.Summons is { Count: > 0 } ? new[] { new SummonSpec { Image = t.Summons[0].Image } }
+                                            : Array.Empty<SummonSpec>()),
             Paths = new PathsSpec
             {
                 VanillaProject = t.Paths.VanillaProject,
@@ -342,7 +354,7 @@ public static class ProjectRecovery
         if (text.Contains("ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0)")) p_xPlus(card);
 
         var vars = ParseVars(text);
-        ParseEffects(card.Effects, BodyOf(text, "OnPlay"), vars, nameToPowerId, EffectCtx.Card, result, cls);
+        ParseEffects(card.Effects, BodyOf(text, "OnPlay"), vars, nameToPowerId, EffectCtx.Card, result, cls, result.PetClassNames);
         ParseUpgrade(card, vars, text, result, cls);
         ParseKeywords(card, text);
         // 自定义关键词：生成的 ExtraHoverTips 里写的是 new LocString("card_keywords", "<KEY>.title")
@@ -397,8 +409,10 @@ public static class ProjectRecovery
 
     /// <summary>把效果语句反推成 EffectSpec（本文件的核心）。</summary>
     private static void ParseEffects(IList<EffectSpec> into, string body, List<Var> vars,
-        Dictionary<string, string> nameToPowerId, EffectCtx ctx, RecoveryResult result, string where)
+        Dictionary<string, string> nameToPowerId, EffectCtx ctx, RecoveryResult result, string where,
+        IReadOnlyList<string>? petClassNames = null)
     {
+        petClassNames ??= Array.Empty<string>();
         var lines = body.Split('\n').Select(l => l.TrimEnd('\r')).ToList();
         var frames = new List<Block>();          // 当前所在的块（循环 / 条件），按嵌套顺序
         int varIdx = 0;
@@ -469,6 +483,8 @@ public static class ProjectRecovery
             if (line.Contains("Cmd.Summon(choiceContext, base.Owner,"))
             {
                 var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self" };
+                // 是哪一只：调用里的 `<X>Cmd.Summon` 那个 X 就是宠物类名（= 稳定标识）
+                e.PetSummon = Match(line, @"(\w+)Cmd\.Summon\(choiceContext");
                 if (!line.Contains("CET:PetHp=configured"))
                 {
                     string arg = ArgAt(line, 2);
@@ -499,10 +515,20 @@ public static class ProjectRecovery
                     chain.Append(' ').Append(line);
                 }
                 string ch = chain.ToString();
-                // 「伙伴攻击」也是 DamageCmd.Attack 链，区别只在 attacker 是宠物（.FromMonster(...)）。
-                // 目标解析和下面普通伤害完全一样，所以这里分一次流就行。
-                bool fromMonster = ch.Contains(".FromMonster(");
+                // 「伙伴攻击」也是 DamageCmd.Attack 链，区别只在攻击者被换成了宠物。
+                // 现在是 `.FromPetAttacker(__<宠物类名>)`（老工程里是 .FromMonster(pet.Monster)）——
+                // 两种都认，目标解析和下面普通伤害完全一样，所以这里分一次流就行。
+                bool fromMonster = ch.Contains(".FromPetAttacker(") || ch.Contains(".FromMonster(");
                 var e = new EffectSpec { Kind = fromMonster ? "PetAttack" : "Damage", TargetSide = "Enemy" };
+                // 是哪一只：`.FromPetAttacker(__uiCheckPet)` 里的局部变量名反推回宠物类名
+                string? petVar = Match(ch, @"\.FromPetAttacker\((\w+)\)");
+                if (petVar is not null) e.PetSummon = PetClassOfVar(petVar, petClassNames);
+                // 老工程（上一版）写的是 .FromMonster(pet.Monster)：认得出是「伙伴攻击」，但反推不出是哪一只
+                // （那时生成器只支持一只召唤物）→ 留一条笔记，免得用户以为「哪一只」被静默丢了。
+                else if (ch.Contains(".FromMonster(") && petClassNames.Count > 0)
+                    result.Notes.Add($"{where}：这条「伙伴攻击」是老版本生成的（.FromMonster），"
+                        + $"恢复不出是哪一只召唤物 —— 生成时会自动用第一只「{petClassNames[0]}」，"
+                        + "需要的话到效果里重新选一次。");
                 if (ch.Contains(".TargetingAllOpponents")) e.TargetSide = "AllEnemies";
                 else if (ch.Contains(".TargetingRandomOpponents"))
                 {
@@ -764,9 +790,15 @@ public static class ProjectRecovery
                 string l = raw.Trim();
                 if (l.Length == 0 || l.StartsWith("//")) continue;
                 if (!l.Contains("Cmd.Summon(choiceContext, base.Owner,")) continue;
-                if (into.Any(x => x.Kind == "SummonPet")) continue;   // 上面已经认出来了，别重复加
-                var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self" };
-                if (!l.Contains("CET:PetHp=configured")) FillExpr(e, ArgAt(l, 2));
+                // 上面那段（逐行扫 effect 体）已经认出来的就别重复加：召唤物是**列表**，
+                // 一张牌上可以召唤多只，所以这里按「哪一只（+ 数值语义）」去重，不能只按 Kind 去重。
+                string? cls2 = Match(l, @"(\w+)Cmd\.Summon\(choiceContext");
+                bool configured = l.Contains("CET:PetHp=configured");
+                if (into.Any(x => x.Kind == "SummonPet"
+                        && string.Equals(x.PetSummon ?? "", cls2 ?? "", StringComparison.Ordinal)
+                        && (x.Amount <= 0m) == configured)) continue;
+                var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self", PetSummon = cls2 };
+                if (!configured) FillExpr(e, ArgAt(l, 2));
                 into.Add(e);
             }
         }
@@ -1052,7 +1084,7 @@ public static class ProjectRecovery
             Trigger = TriggerOfHook(RelicHookOf(text)),
         };
         var vars = ParseVars(text);
-        ParseEffects(relic.Effects, BodyOfHook(text), vars, nameToPowerId, EffectCtx.Relic, result, cls);
+        ParseEffects(relic.Effects, BodyOfHook(text), vars, nameToPowerId, EffectCtx.Relic, result, cls, result.PetClassNames);
         string? comment = Match(text, @"// 条件：(.+)");
         string? expr = Match(text, @"if \(!\((.+)\)\) return;") ?? Match(text, @"if \((_condUsedThisCombat)\)");
         var cond = ConditionFrom(comment, expr, nameToPowerId) ?? ConditionFromExpr(expr, nameToPowerId);
@@ -1075,7 +1107,7 @@ public static class ProjectRecovery
             TargetType = Match(text, @"=>\s*TargetType\.(\w+)") ?? "Self",
         };
         var vars = ParseVars(text);
-        ParseEffects(potion.Effects, BodyOf(text, "OnUse"), vars, nameToPowerId, EffectCtx.Potion, result, cls);
+        ParseEffects(potion.Effects, BodyOf(text, "OnUse"), vars, nameToPowerId, EffectCtx.Potion, result, cls, result.PetClassNames);
         return potion;
     }
 
@@ -1152,11 +1184,14 @@ public static class ProjectRecovery
     }
 
     /// <summary>
-    /// 回读召唤伙伴：配置来自 <c>cs/Pet.cs</c>（类名 / 血量常量 / VisualsPath）+ 模组工程里那份
+    /// 回读召唤物：配置来自 <c>cs/Pet.cs</c>（**每一只**一个 <c>MonsterModel</c> 子类：类名 /
+    /// 血量常量 <c>BaseHp</c> / 站位常量 <c>StandDistance</c> / 是否挂了守卫 Power）+ 模组工程里那份
     /// <c>monsters.json</c>（中文名）。
     ///
     /// 为什么必须回读：**不同步改这里就会静默丢配置** —— 用户从工程恢复存档时，
     /// 召唤物的名字 / 血量 / 图片全没了，而卡牌上的「召唤伙伴」效果却还在，一生成就报错。
+    ///
+    /// 类是**按在文件里出现的顺序**读的（生成时也是按列表顺序写的），所以列表顺序能原样还原。
     /// </summary>
     private static void ParseSummon(string projectDir, string cs, CharacterProfile p, RecoveryResult result)
     {
@@ -1164,42 +1199,85 @@ public static class ProjectRecovery
         if (!File.Exists(file)) return;
         string text = File.ReadAllText(file, Encoding.UTF8);
 
-        string cls = Match(text, @"public sealed class (\w+) : MonsterModel") ?? "";
-        if (cls.Length == 0)
+        // 每只召唤物一个 `public sealed class <类名> : MonsterModel` —— 顺便跳过守卫 Power 类
+        // （它们继承的是 PowerModel，不会匹配这条正则）。
+        var matches = Regex.Matches(text, @"public sealed class (\w+) : MonsterModel");
+        if (matches.Count == 0)
         {
-            result.Unparsed.Add("cs/Pet.cs 里找不到 `public sealed class X : MonsterModel`（宠物类名没恢复）");
+            result.Unparsed.Add("cs/Pet.cs 里找不到 `public sealed class X : MonsterModel`（召唤物类名没恢复）");
             return;
         }
-        p.Summon ??= new SummonSpec();
-        p.Summon.Enabled = true;
-        p.Summon.ClassName = cls;
-        p.Summon.Hp = Int(text: text, pattern: @"private const int BaseHp = (\d+);", fallback: 8);
 
-        // 中文名在本体的 monsters 表里（我们只写自己那一个键）
-        string entry = EffectCatalog.SlugFor(cls);
         string locDir = Path.Combine(projectDir, p.ModId, "localization");
+        var names = new Dictionary<string, string>(StringComparer.Ordinal);
         if (Directory.Exists(locDir))
         {
             foreach (string f in Directory.GetFiles(locDir, "monsters.json", SearchOption.AllDirectories))
             {
                 var dict = Json.ReadDict(f);
-                if (dict.TryGetValue(entry + ".name", out string? name) && !string.IsNullOrWhiteSpace(name))
-                {
-                    p.Summon.Name = name;
-                    break;
-                }
+                foreach (var kv in dict) names[kv.Key] = kv.Value;
             }
         }
-        if (string.IsNullOrWhiteSpace(p.Summon.Name)) p.Summon.Name = cls;
 
-        // 宠物图片：生成时放在 images/monsters/<entry 小写>.png
-        string png = Path.Combine(projectDir, "images", "monsters", entry.ToLowerInvariant() + ".png");
-        if (File.Exists(png)) p.Summon.Image = png;
+        foreach (Match m in matches)
+        {
+            string cls = m.Groups[1].Value;
+            result.PetClassNames.Add(cls);
+            // 这一只的类体（到下一个类声明为止）—— 里面的常量只属于它自己
+            int start = m.Index;
+            int end = text.Length;
+            foreach (Match nxt in matches)
+                if (nxt.Index > start) { end = nxt.Index; break; }
+            string body = text.Substring(start, end - start);
 
-        bool hasScene = File.Exists(Path.Combine(projectDir, "scenes", "creature_visuals",
-            entry.ToLowerInvariant() + ".tscn"));
-        result.Notes.Add($"召唤伙伴：{p.Summon.Name}（{cls}，生命 {p.Summon.Hp}）"
-            + (hasScene ? "，有自定义视觉场景" : "，视觉用本体占位图"));
+            var spec = new SummonSpec
+            {
+                Enabled = true,
+                ClassName = cls,
+                Hp = Int(text: body, pattern: @"private const int BaseHp = (\d+);", fallback: 8),
+                // 站位：生成的是 `private const float StandDistance = 110f;`
+                StandDistance = (int)Dec(body, @"private const float StandDistance = ([\d.]+)f", SummonSpec.DefaultStandDistance),
+                // 「替主人挨打」：生成时会在这一只的类体里挂守卫 Power（类名 = 前缀 + 宠物类名）
+                TakesDamageForOwner = body.Contains(PetGen.GuardianPowerPrefix + cls + ">"),
+            };
+            if (spec.StandDistance <= 0) spec.StandDistance = SummonSpec.DefaultStandDistance;
+
+            string entry = EffectCatalog.SlugFor(cls);
+            spec.Name = names.GetValueOrDefault(entry + ".name", cls);
+            if (string.IsNullOrWhiteSpace(spec.Name)) spec.Name = cls;
+
+            // 宠物图片：生成时放在 images/monsters/<entry 小写>.png
+            string png = Path.Combine(projectDir, "images", "monsters", entry.ToLowerInvariant() + ".png");
+            if (File.Exists(png)) spec.Image = png;
+
+            p.Summons.Add(spec);
+            bool hasScene = File.Exists(Path.Combine(projectDir, "scenes", "creature_visuals",
+                entry.ToLowerInvariant() + ".tscn"));
+            result.Notes.Add($"召唤物：{spec.Name}（{cls}，生命 {spec.Hp}，站位 {spec.StandDistance}"
+                + (spec.TakesDamageForOwner ? "，替主人挨打" : "") + "）"
+                + (hasScene ? "，有自定义视觉场景" : "，视觉用本体占位图"));
+        }
+    }
+
+    /// <summary>
+    /// 生成代码里「伙伴攻击」的局部变量名 → 宠物类名。
+    /// 变量名规则见 <see cref="CSharpCodeGen.PetAttackVarName"/>：<c>__</c> + 类名首字母小写
+    /// （<c>UiCheckPet</c> → <c>__uiCheckPet</c>）。按变量名反推不可靠（首字母大小写会丢信息），
+    /// 所以拿工程里**实际存在的类名**来比对，比不出来就返回 null（老工程里的 <c>__pet</c> 就走这条，
+    /// 那时只有一只召唤物，生成时会自动用第一只）。
+    /// </summary>
+    private static string? PetClassOfVar(string varName, IReadOnlyList<string> petClassNames)
+    {
+        string name = varName.TrimStart('_');
+        if (name.Length == 0) return null;
+        foreach (string cls in petClassNames)
+        {
+            if (cls.Length == 0) continue;
+            string guess = char.ToLowerInvariant(cls[0]) + cls.Substring(1);
+            if (string.Equals(guess, name, StringComparison.Ordinal)
+                || string.Equals(cls, name, StringComparison.OrdinalIgnoreCase)) return cls;
+        }
+        return null;
     }
 
     private static CustomPowerSpec ParseCustomPower(string file, CharacterProfile profile, LocTables loc, RecoveryResult result)

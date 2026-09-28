@@ -105,55 +105,82 @@
                         <TextBlock Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
                                    Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
 
-                        <!-- ============ 召唤伙伴（角色级配置：一只宠物，不是列表） ============ -->
-                        <GroupBox x:Name="SummonBox" Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" Margin="0,14,0,0"
-                                  DataContext="{Binding Profile.Summon}">
-                            <GroupBox.Header>
-                                <TextBlock Text="召唤伙伴（类似亡灵缚者的奥斯提，但完全不需要补丁）" FontWeight="Bold"/>
-                            </GroupBox.Header>
-                            <StackPanel>
-                                <CheckBox x:Name="SummonEnabled" Style="{StaticResource Check}"
-                                          Content="启用召唤伙伴" IsChecked="{Binding Enabled}"
-                                          ToolTip="勾上以后：生成 cs/Pet.cs（宠物类 + 召唤命令）、写 monsters.json 的宠物名字；卡牌/遗物效果里选「召唤伙伴 / 伙伴攻击」才有效。"/>
-                                <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#888"
-                                           Text="走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），模型由本体自动注册，所以不需要任何 Harmony 补丁。宠物每场战斗都要重新召唤 —— 本体的 PlayerCombatState 在战斗结束时会清空宠物，它不跨战斗、也不进存档。这一档不做替死 / 专属站位（那些才需要补丁）。"/>
-                                <Grid Margin="0,10,0,0">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="260"/>
-                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="260"/>
-                                    </Grid.ColumnDefinitions>
-                                    <Grid.RowDefinitions>
-                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                                    </Grid.RowDefinitions>
-                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="伙伴名字（宠物名牌）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                    <TextBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <TextBlock Grid.Row="0" Grid.Column="2" Text="伙伴英文类名（留空 = &lt;角色类名&gt;Pet）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                    <TextBox Grid.Row="0" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="召唤时的生命" Style="{StaticResource Label}"/>
-                                    <TextBox Grid.Row="1" Grid.Column="1" Width="90" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding Hp, UpdateSourceTrigger=PropertyChanged}"/>
-                                    <TextBlock Grid.Row="1" Grid.Column="2" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#888" VerticalAlignment="Center"
-                                               Text="这是没填血量时卡牌上「召唤伙伴」用的默认值（卡牌效果里也填了数值就按卡牌上的）。"/>
-                                    <TextBlock Grid.Row="2" Grid.Column="0" Text="伙伴图片（可空）" Style="{StaticResource Label}"/>
-                                    <DockPanel Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="3" LastChildFill="True">
-                                        <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0" Click="OnPickPetImage"/>
-                                        <Button DockPanel.Dock="Left" Content="清除" Padding="10,3" Margin="0,0,6,0" Click="OnClearPetImage"/>
-                                        <TextBox Style="{StaticResource Field}" IsReadOnly="True" Text="{Binding Image, Mode=OneWay}"/>
-                                    </DockPanel>
-                                </Grid>
-                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                                    <Border Width="72" Height="72" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
-                                        <Image Margin="2" Stretch="Uniform"
-                                               Source="{Binding PetImagePreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                                    </Border>
-                                    <TextBlock Margin="10,0,0,0" TextWrapping="Wrap" Width="560" Foreground="#888"
-                                               Text="建议竖版 PNG、带透明背景（越高越会被自动缩到约 220 像素高，底边贴地面线）。上传了就会生成 scenes/creature_visuals/&lt;宠物名&gt;.tscn 并让宠物用它；不传也能跑，宠物会用本体的占位图（一张静态 error.png）。"/>
-                                </StackPanel>
-                                <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#666"
-                                           Text="怎么让宠物上场：① 卡牌页新建一张牌，加一条效果选「召唤伙伴」（数值 0 = 用上面这个血量）；② 或者遗物页加一条「召唤伙伴」并把触发时机选成「战斗开始时」（= 本体 Byrdpip 的写法，每场战斗开场就召唤）。指挥它打人：卡牌效果里选「伙伴攻击」，伤害由宠物承担（它不在场时这张牌会跳过这一条，不会报错）。"/>
-                            </StackPanel>
-                        </GroupBox>
+                        <!-- 召唤物已经整组搬到「召唤物」选项卡（紧跟「角色」之后）—— 那里是列表 + 右侧详情 -->
+                        <TextBlock Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
+                                   Text="「召唤伙伴 / 伙伴攻击」的配置已经搬到「召唤物」选项卡（紧跟本页之后）：左边是召唤物列表，右边配名字 / 生命 / 站位距离 / 替主人挨打 / 图片。卡牌和遗物的效果里选「召唤伙伴」或「伙伴攻击」时，会多一个「召唤物（哪一只）」下拉。"/>
                     </Grid>
                 </ScrollViewer>
+            </TabItem>
+
+            <!-- ============ 召唤物（列表 + 右侧详情；类似「药水」页的结构） ============ -->
+            <TabItem x:Name="SummonTab" Header="召唤物">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加召唤物" Padding="8,4" Margin="0,0,6,0" Click="OnAddSummon"/>
+                            <Button Content="删除" Padding="8,4" Click="OnRemoveSummon"/>
+                            <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                          IsChecked="{Binding MultiSelectSummons, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                            <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllSummons"
+                                    Visibility="{Binding MultiSelectSummons, Converter={StaticResource BoolToVis}}"
+                                    ToolTip="选中列表里的全部召唤物"/>
+                            <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoSummon"
+                                    IsEnabled="{Binding CanUndoSummon}" ToolTip="{Binding UndoSummonHint}"/>
+                        </WrapPanel>
+                        <ListBox x:Name="SummonList" SelectionMode="{Binding MultiSelectSummons, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Summons}" DisplayMemberPath="Display"/>
+                    </DockPanel>
+                    <TextBlock x:Name="SummonEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择召唤物（或点左边的「添加召唤物」）"
+                               Visibility="{Binding SelectedItem, ElementName=SummonList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                  DataContext="{Binding SelectedItem, ElementName=SummonList}"
+                                  Visibility="{Binding SelectedItem, ElementName=SummonList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <StackPanel>
+                            <TextBlock Text="召唤物属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                       Text="走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），模型由本体自动注册，所以不需要任何 Harmony 补丁。宠物每场战斗都要重新召唤 —— 本体的 PlayerCombatState 在战斗结束时会清空宠物，它不跨战斗、也不进存档。这里可以配多只，同一场战斗里都在场：卡牌 / 遗物的效果里选「召唤伙伴 / 伙伴攻击」时会让你挑是哪一只。"/>
+                            <CheckBox Style="{StaticResource Check}" Content="启用这只召唤物"
+                                      IsChecked="{Binding Enabled}"
+                                      ToolTip="勾上以后：生成它的 MonsterModel 子类 + 召唤命令、写 monsters.json 里它的名字；效果里的「召唤物」下拉才会列出它。"/>
+                            <TextBlock Text="名字（宠物名牌）" Style="{StaticResource Label}"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="英文类名（留空 = 自动 &lt;角色类名&gt;Pet / Pet2 …）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="召唤时的生命（必须大于 0）" Style="{StaticResource Label}"/>
+                            <TextBox Width="120" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding Hp, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock Text="站位距离（摆在主人右边多远，单位像素）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBox Width="120" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StandDistance, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,2,0,0"
+                                       Text="本体给非 Osty 宠物写死的站位是「主人 X + 20」，几乎叠在主人身上（用户实测报过）。生成时会在宠物的 AfterCreatureAddedToCombat 钩子里自己摆位（那个钩子在本体摆位**之后**跑，所以不会被抢回去）。本体的奥斯提是 150~250，默认 110。"/>
+                            <CheckBox Style="{StaticResource Check}" Content="替主人挨打（守卫：主人受可格挡攻击时改由它承担）"
+                                      IsChecked="{Binding TakesDamageForOwner}"
+                                      ToolTip="挂一个照本体 DieForYouPower 写的守卫状态：主人的**可格挡攻击伤害**改由它承担；中毒 / 失去生命这类穿盾伤害照旧打在主人身上。整个存档只能勾一只 —— 本体的伤害重定向是链式遍历，两只同时勾会让伤害最终归谁不可预期。"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,2,0,0"
+                                       Text="「替主人挨打」整个存档只能勾一只（校验器会拦住）：本体的伤害重定向 Hook.ModifyUnblockedDamageTarget 是链式遍历，第二个重定向者看到的已经是第一个换过的目标，伤害归属会变得不可预期。"/>
+                            <TextBlock Text="宠物图片（可空）" Style="{StaticResource Label}"/>
+                            <DockPanel LastChildFill="True">
+                                <Button DockPanel.Dock="Left" Content="选择图片…" Padding="10,3" Margin="0,0,6,0" Click="OnPickSummonImage"/>
+                                <Button DockPanel.Dock="Left" Content="清除" Padding="10,3" Margin="0,0,6,0" Click="OnClearSummonImage"/>
+                                <TextBox Style="{StaticResource Field}" IsReadOnly="True" Text="{Binding Image, Mode=OneWay}"/>
+                            </DockPanel>
+                            <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                <Border Width="110" Height="110" BorderBrush="#999" BorderThickness="1" Background="#22FFFFFF">
+                                    <Image Margin="2" Stretch="Uniform"
+                                           Source="{Binding SelectedSummonImagePreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </Border>
+                                <TextBlock Margin="10,0,0,0" TextWrapping="Wrap" Width="520" Foreground="#888"
+                                           Text="建议竖版 PNG、带透明背景（越高越会被自动缩到约 220 像素高，底边贴地面线）。上传了就会生成 scenes/creature_visuals/&lt;召唤物 entry&gt;.tscn 并让它用它；不传也能跑，它会用本体的占位图（一张静态 error.png）。"/>
+                            </StackPanel>
+                            <TextBlock Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#666"
+                                       Text="怎么让它上场：① 卡牌页新建一张牌，加一条效果选「召唤伙伴」（数值 0 = 用上面这个血量），并在「召唤物（哪一只）」里选中它；② 或者遗物页加一条「召唤伙伴」并把触发时机选成「战斗开始时」（= 本体 Byrdpip 的写法，每场战斗开场就召唤）。指挥它打人：卡牌效果里选「伙伴攻击」并选中同一只，伤害由它承担（它不在场时这张牌会跳过这一条，不会报错）。"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
             </TabItem>
 
             <!-- ============ 额外资源量 / 状态 ============ -->

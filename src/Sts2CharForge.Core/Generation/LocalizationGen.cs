@@ -372,10 +372,18 @@ public static class LocalizationGen
     };
 
     /// <summary>
-    /// 召唤伙伴在卡面描述里的名字（用你在「角色」页填的名字；没填就用类名）。
-    /// 没启用召唤伙伴时也返回一个能读通的词 —— 校验器会另外报错拦住（卡牌引用了不存在的宠物）。
+    /// 「召唤伙伴 / 伙伴攻击」在卡面描述里的那只召唤物的名字。
+    /// 现在是列表：按效果上的 <see cref="EffectSpec.PetSummon"/>（稳定标识 = 宠物类名）挑那一只，
+    /// 留空（老存档）时退回第一只启用的召唤物（和上一版单只召唤物的行为一致）。
+    /// 一只都没有（或选的那只被删了）时返回「伙伴」这种读得通的词 —— 校验器会另外报错拦住。
     /// </summary>
-    private static string SummonName(CharacterProfile p) => PetGen.DisplayName(p);
+    private static string SummonName(CharacterProfile p, EffectSpec e)
+    {
+        var def = PetGen.Resolve(p, e.PetSummon);
+        if (def is not null) return def.DisplayName;
+        string want = (e.PetSummon ?? "").Trim();
+        return want.Length > 0 ? want : "伙伴";
+    }
 
     private static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
         Dictionary<EffectSpec, string>? varMap = null)
@@ -468,17 +476,17 @@ public static class LocalizationGen
             "TransformCardGlobal" => (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
                 + $"{(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
-            // ===== 召唤伙伴（第一档：本体的通用宠物 API，不需要补丁）=====
-            // 数值 0 = 用「角色」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
+            // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
+            // 数值 0 = 用「召唤物」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
             "SummonPet" => (e.AmountIsX && isCard)
-                ? $"召唤{SummonName(p)}（{var} 点生命）。"
+                ? $"召唤{SummonName(p, e)}（{var} 点生命）。"
                 : e.Amount <= 0
-                    ? $"召唤{SummonName(p)}。"
-                    : $"召唤{SummonName(p)}（{var} 点生命）。",
-            // 伙伴攻击：attacker 是宠物，不是自己 —— 描述里必须写清楚是谁在打
+                    ? $"召唤{SummonName(p, e)}。"
+                    : $"召唤{SummonName(p, e)}（{var} 点生命）。",
+            // 伙伴攻击：attacker 是宠物，不是自己 —— 描述里必须写清楚是哪只在打
             "PetAttack" => e.TargetSide == "Self"
-                ? $"{SummonName(p)}攻击自己，造成 {var} 点伤害。"
-                : $"{repeat}{when}让{SummonName(p)}{target}造成 {var} 点伤害{hitSuffix}。",
+                ? $"{SummonName(p, e)}攻击自己，造成 {var} 点伤害。"
+                : $"{repeat}{when}让{SummonName(p, e)}{target}造成 {var} 点伤害{hitSuffix}。",
             _ => "",
         };
         // 概率生效：写在这条效果后面（例：「造成 6 点伤害（50% 概率）。」）
