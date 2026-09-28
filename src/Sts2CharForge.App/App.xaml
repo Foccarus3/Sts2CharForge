@@ -47,6 +47,18 @@
         <Style TargetType="ComboBox" x:Key="Pick">
             <Setter Property="Margin" Value="0,3,8,3"/>
         </Style>
+        <!-- 「效果种类」下拉的候选：默认是全量 Kinds；
+             挂在 EffectScope.Pet=True 的效果栏里（「召唤物卡牌」页）时换成 PetKindChoices
+             —— 那一页只该列宠物类效果（用户要求），加上这张卡已经在用的种类是为了
+             不让 TwoWay 的 SelectedValue 因为「候选里没有当前值」而被写回 null。 -->
+        <Style TargetType="ComboBox" x:Key="PickKinds" BasedOn="{StaticResource Pick}">
+            <Setter Property="ItemsSource" Value="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"/>
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding Path=(local:EffectScope.Pet), RelativeSource={RelativeSource AncestorType=ContentControl}}" Value="True">
+                    <Setter Property="ItemsSource" Value="{Binding PetKindChoices, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="CheckBox" x:Key="Check">
             <Setter Property="Margin" Value="0,4,12,4"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -68,8 +80,7 @@
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
-                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Pick}"
-                          ItemsSource="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"
+                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource PickKinds}"
                           DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
 
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="数值" Style="{StaticResource Label}"/>
@@ -420,7 +431,8 @@
                         <TextBox Grid.Column="1" Style="{StaticResource Field}"
                                  Text="{Binding SelectedCardUpgradeCost, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"
+                                    local:EffectScope.Pet="True"/>
                     <!-- 「召唤物（哪一只）」下拉**不用在这里再加一份** —— 上面的 EffectCommon 里已经有了。
                          以前这里又加了一个，界面上就出现两个同样的下拉（用户报过）。 -->
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionCard}"/>

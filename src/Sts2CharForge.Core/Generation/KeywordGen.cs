@@ -30,19 +30,37 @@ public static class KeywordGen
     /// <summary>空/非法/撞本体时兜底用的键。</summary>
     public static string FallbackKey(int index) => "KEYWORD_" + (index + 1).ToString();
 
-    /// <summary>某条关键词的本地化键前缀（全大写下划线；空或非法时按序号兜底）。</summary>
+    /// <summary>
+    /// 把用户填的「英文标识」规范化成本地化键前缀：只保留 A–Z / 0–9，其余（空格、连字符、点…）换成 <c>_</c>，
+    /// 统一大写。
+    ///
+    /// **为什么不用 <see cref="Naming.Slug"/>**：那个算法是给**驼峰类名**用的，与本体
+    /// <c>StringHelper.Slugify</c> 一致 —— 它会在**连续大写之间也插下划线**，于是用户手填的 <c>FATE</c>
+    /// 会变成 <c>F_A_T_E</c>。而卡牌上存的引用是用户填的原样文本（<c>FATE</c>），两边就对不上、
+    /// 校验器会报「引用了不存在的自定义关键词」（自检抓到过）。标识本身就是键，不该再被拆字。
+    /// </summary>
+    public static string NormalizeKeyText(string? key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return "";
+        var sb = new System.Text.StringBuilder();
+        foreach (char ch in key!.Trim())
+        {
+            if (ch < 128 && char.IsLetterOrDigit(ch)) sb.Append(char.ToUpperInvariant(ch));
+            else if (ch == '_' || ch == '-' || ch == ' ' || ch == '.') sb.Append('_');
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>某条关键词的本地化键前缀（全大写；空或非法时按序号兜底）。</summary>
     public static string KeyOf(CustomKeywordSpec spec, int index)
     {
-        string raw = (spec.Key ?? "").Trim();
-        if (raw.Length == 0) return FallbackKey(index);
-        string slug = Naming.Slug(raw);
-        var cleaned = new string(slug.Where(ch => (char.IsLetterOrDigit(ch) && ch < 128) || ch == '_').ToArray());
+        string cleaned = NormalizeKeyText(spec.Key);
         return cleaned.Length == 0 ? FallbackKey(index) : cleaned;
     }
 
     /// <summary>是不是本体的保留键（界面校验用）。</summary>
     public static bool IsReservedKey(string? key) =>
-        !string.IsNullOrWhiteSpace(key) && ReservedKeys.Contains(Naming.Slug(key!.Trim()));
+        !string.IsNullOrWhiteSpace(key) && ReservedKeys.Contains(NormalizeKeyText(key));
 
     /// <summary>全部关键词 + 它们的本地化键（顺序 = 列表顺序）。</summary>
     public static List<(CustomKeywordSpec Spec, string Key)> All(CharacterProfile p)
@@ -69,6 +87,9 @@ public static class KeywordGen
         foreach (var item in All(p))
         {
             if (string.Equals(item.Key, want, StringComparison.OrdinalIgnoreCase)) return item;
+            // 也认「用户原样填的标识」与「规范化后的标识」两种写法（老存档 / 手写 JSON 都能对上）
+            if (string.Equals(NormalizeKeyText(item.Spec.Key), NormalizeKeyText(want), StringComparison.OrdinalIgnoreCase)
+                && NormalizeKeyText(want).Length > 0) return item;
             if (string.Equals((item.Spec.Name ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase)) return item;
         }
         return null;

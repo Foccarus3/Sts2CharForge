@@ -37,8 +37,8 @@ public static class ProfileValidator
             else if (KeywordGen.IsReservedKey(spec.Key))
                 issues.Add(new("错误", $"{who} 的英文标识「{spec.Key.Trim()}」和本体关键词撞名"
                     + "（NONE / EXHAUST / ETHEREAL / INNATE / UNPLAYABLE / RETAIN / SLY / ETERNAL 是本体占用的），换一个。"));
-            else if (!string.Equals(key, Naming.Slug(spec.Key.Trim()), StringComparison.OrdinalIgnoreCase))
-                issues.Add(new("警告", $"{who} 的英文标识会规范成 {key}（只能是英文/数字/下划线）。"));
+            else if (!string.Equals(key, KeywordGen.NormalizeKeyText(spec.Key), StringComparison.OrdinalIgnoreCase))
+                issues.Add(new("警告", $"{who} 的英文标识会规范成 {key}（只能用英文 / 数字 / 下划线）。"));
 
             if (seenKeys.TryGetValue(key, out var first))
                 issues.Add(new("错误", $"{who} 的英文标识和「{first}」重复（都是 {key}），本地化键会互相覆盖。"));
@@ -573,8 +573,12 @@ public static class ProfileValidator
             string want = e.PetSummon!.Trim();
             if (PetGen.Resolve(p, want) is null)
             {
+                // 「填过类名」和「留空靠位置自动推」两种都要认：只比 ClassName 的话，
+                // 类名留空的那种（界面上很常见）会被当成「这个召唤物不存在」，
+                // 于是提示变成「找不到（可能已经被删掉了）」—— 明明是停用了，会误导用户去重加一只。
                 bool existsButDisabled = p.Summons.Any(s => s is not null && !s.Enabled
-                    && string.Equals((s.ClassName ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase));
+                    && (string.Equals((s.ClassName ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase)
+                        || string.Equals(PetGen.ClassNameOf(p, s), want, StringComparison.OrdinalIgnoreCase)));
                 issues.Add(new("错误", $"{owner} 的第 {i} 条引用的召唤物「{want}」"
                     + (existsButDisabled
                         ? "已经被停用了（到「召唤物」页把它勾回「启用」，或在这条效果里换一只）。"

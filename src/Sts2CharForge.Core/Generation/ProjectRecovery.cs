@@ -354,8 +354,12 @@ public static class ProjectRecovery
         if (text.Contains("ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0)")) p_xPlus(card);
 
         var vars = ParseVars(text);
+        // ParseEffects 会**消耗** vars（按种类 / 名字取走变量值，避免被后面的效果按顺序捡走），
+        // 所以给 ParseUpgrade 一份**独立的副本**：升级增量要靠「变量在 CanonicalVars 里的位置」
+        // 反查效果，被消耗过就对不上号了（会变成「升级增量找不到对应效果」）。
+        var varsForUpgrade = new List<Var>(vars);
         ParseEffects(card.Effects, BodyOf(text, "OnPlay"), vars, nameToPowerId, EffectCtx.Card, result, cls, result.PetClassNames);
-        ParseUpgrade(card, vars, text, result, cls);
+        ParseUpgrade(card, varsForUpgrade, text, result, cls);
         ParseKeywords(card, text);
         // 自定义关键词：生成的 ExtraHoverTips 里写的是 new LocString("card_keywords", "<KEY>.title")
         var keywordRefs = Regex.Matches(text, @"LocString\(""card_keywords"", ""([^""]+)\.title""\)")
@@ -386,7 +390,7 @@ public static class ProjectRecovery
     }
 
     /// <summary>CanonicalVars 里声明的数值变量（顺序 = 效果顺序）。</summary>
-    private sealed record Var(string Kind, string? PowerId, decimal Amount, bool IsCards, bool IsEnergy);
+    private sealed record Var(string Kind, string? PowerId, decimal Amount, bool IsCards, bool IsEnergy, string? Name = null);
 
     /// <summary>
     /// 这个变量是「按生命值算」的宠物效果留下来的计算变量（CalculationBase / CalculationExtra / ExtraDamage / CalculatedBlock）。
@@ -416,14 +420,20 @@ public static class ProjectRecovery
         // 名字是我们自己起的，所以先把它们捞出来（否则会被下面的数字正则当成「名字不是数字」而漏掉）
         foreach (Match m in Regex.Matches(block, @"new DynamicVar\(""(\w+)"",\s*(-?[\d.]+)m?\)"))
             list.Add(new Var("DynamicVar", m.Groups[1].Value,
-                decimal.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), false, false));
-        foreach (Match m in Regex.Matches(block, @"new (\w+)Var(<(\w+)>)?\((-?[\d.]+)m?[^)]*\)"))
+                decimal.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), false, false, m.Groups[1].Value));
+        // 其余变量：既可能是**带名字**的（牺牲伙伴的固定收益 new DamageVar("PetSacrificeDamage", 7m, …)、
+        // 给伙伴施加状态 new PowerVar<StrengthPower>("PetPowerStrengthPower", 2m)），也可能不带名字。
+        // 一次正则按**声明顺序**扫出来（名字可选）—— 顺序必须和生成代码里一致：
+        // 升级增量是按「变量在 CanonicalVars 里的第几个」反查效果的，顺序错了会配到别的效果上。
+        // 那个名字就是生成代码里用的键（卡面占位符 / OnUpgrade 都按它取），漏了会让数值静默变成 0。
+        foreach (Match m in Regex.Matches(block, @"new (\w+)Var(?:<(\w+)>)?\((?:""(\w+)"",\s*)?(-?[\d.]+)m?"))
         {
             string kind = m.Groups[1].Value;
             if (kind == "Dynamic") continue;   // 上面那条已经处理过带名字的 DynamicVar
-            string? power = m.Groups[3].Success ? m.Groups[3].Value : null;
+            string? power = m.Groups[2].Success ? m.Groups[2].Value : null;
+            string? alias = m.Groups[3].Success ? m.Groups[3].Value : null;
             decimal amount = decimal.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
-            list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy"));
+            list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias));
         }
         return list;
     }
@@ -466,6 +476,12 @@ public static class ProjectRecovery
         // 这里先记下来，等真正那条语句出现时再按它还原（见 PetEffectFromMarker）。
         string? pendingPetMarker = null;
         int pendingPetMultiplier = 0;
+
+        // 牺牲伙伴生成的是「先算收益 → CreatureCmd.Kill(宠物) → 再 GainBlock / Attack」，
+        // 收益那一句既可能是前面的 `decimal gain/dmg = …`（已跳过）也可能是后面的动作行。
+        // 所以看到 Kill 时**只记住宠物**，等收益动作行出现时再拼成一条效果 ——
+        // 在 Kill 那行就收尾的话，后面的 GainBlock / Attack 会被再当成一条普通效果 → 多回读一条。
+        string? sacKillPet = null;
 
         // 收尾：把「每条效果自己的条件」带上（生成器是用一层 if 包的）
         void Done(EffectSpec e)
@@ -679,7 +695,9 @@ public static class ProjectRecovery
                 // 牺牲伙伴（收益是**伤害**）：先 decimal dmg = …（上面已跳过）、Kill，然后 DamageCmd.Attack(dmg)
                 if (pendingPetMarker is not null && ch.Contains("DamageCmd.Attack(dmg)"))
                 {
-                    var sac = PetEffectFromMarker(KillPetVar(), out string? why1);
+                    string killed = KillPetVar() ?? sacKillPet ?? "";
+                    sacKillPet = null;
+                    var sac = PetEffectFromMarker(killed, out string? why1);
                     if (sac is null) { result.Unparsed.Add($"{where}: {line} {why1}"); pendingPetMarker = null; continue; }
                     if (sac.PetSacrificeFormula == "Fixed")
                         FillAmount(sac, NextVar(vars, ref varIdx, "Damage"), nameToPowerId);
@@ -730,6 +748,21 @@ public static class ProjectRecovery
 
             if (line.StartsWith("CreatureCmd.GainBlock(", StringComparison.Ordinal) || line.StartsWith("await CreatureCmd.GainBlock(", StringComparison.Ordinal))
             {
+                // 牺牲伙伴（收益是**格挡**）：Kill 已经在上一行出现过 → 这一句才是那条效果的收尾
+                // （固定收益时数值是普通 BlockVar，按生命值算时是计算三件套）。
+                if (sacKillPet is not null)
+                {
+                    string? killed = sacKillPet;
+                    sacKillPet = null;
+                    var sacBlock = PetEffectFromMarker(killed, out string? whySacBlock);
+                    if (sacBlock is null) { result.Unparsed.Add($"{where}: {line} {whySacBlock}"); pendingPetMarker = null; continue; }
+                    if (sacBlock.PetSacrificeFormula == "Fixed")
+                        FillAmount(sacBlock, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                    else sacBlock.Amount = CalcAmount("CalculationBase");
+                    ApplyLoop(sacBlock, frames);
+                    Done(sacBlock);
+                    continue;
+                }
                 var e = new EffectSpec { Kind = "Block" };
                 FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
                 ApplyLoop(e, frames);
@@ -800,7 +833,9 @@ public static class ProjectRecovery
             {
                 var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyHeal);
                 if (e is null) { result.Unparsed.Add($"{where}: {line} {whyHeal}"); pendingPetMarker = null; continue; }
-                e.Amount = TakeCalcVar(calcVars, "Heal") ?? 0m;
+                // 数值在 CanonicalVars 里（HealVar）→ 按**种类**从 vars 里取（取出即删，
+                // 免得被后面别的效果按顺序捡走）。注意不能去 calcVars 里找：那里只有计算三件套。
+                e.Amount = TakeCalcVar(vars, "Heal") ?? 0m;
                 Done(e);
                 continue;
             }
@@ -810,33 +845,36 @@ public static class ProjectRecovery
             {
                 var e = PetEffectFromMarker(ArgAt(line, 0), out string? whyMax);
                 if (e is null) { result.Unparsed.Add($"{where}: {line} {whyMax}"); pendingPetMarker = null; continue; }
-                e.Amount = TakeCalcVar(calcVars, "MaxHp") ?? 0m;
+                e.Amount = TakeCalcVar(vars, "MaxHp") ?? 0m;
                 Done(e);
                 continue;
             }
 
-            // 伙伴失去生命：`CreatureCmd.Damage(choiceContext, __pet, …)` —— 目标第 3 个参数是宠物。
-            if (line.StartsWith("await CreatureCmd.Damage(", StringComparison.Ordinal)
-                && ArgAt(line, 1).StartsWith("__", StringComparison.Ordinal))
+            // 伙伴失去生命：`CreatureCmd.Damage(choiceContext, __pet, 值, ValueProp…, 来源)`
+            //
+            // 两个坑：
+            //   ① 生成的语句是**跨两行**的（值 + ValueProp 组合 + dealer/cardPlay 各占一行），
+            //      所以不能靠 ArgAt 取参数 —— 那个要求本行有闭合的右括号，取不到就整行认不出来；
+            //   ② 老工程里 `CreatureCmd.Damage(choiceContext, __pet, …)` 也可能是别的意思，
+            //      所以只认**带 PetLoseHp 标记**的那种（老工程没有标记，行为与以前完全一致）。
+            if (line.StartsWith("await CreatureCmd.Damage(choiceContext, __", StringComparison.Ordinal)
+                && pendingPetMarker is not null
+                && pendingPetMarker.Contains("CET:PetEffect=PetLoseHp", StringComparison.Ordinal))
             {
-                var e = PetEffectFromMarker(ArgAt(line, 1), out string? whyLoss);
+                string petArg = Match(line, @"await CreatureCmd\.Damage\(choiceContext, (\w+),") ?? "";
+                var e = PetEffectFromMarker(petArg, out string? whyLoss);
                 if (e is null) { result.Unparsed.Add($"{where}: {line} {whyLoss}"); pendingPetMarker = null; continue; }
-                e.Amount = TakeCalcVar(calcVars, "HpLoss") ?? 0m;
+                e.Amount = TakeCalcVar(vars, "HpLoss") ?? 0m;
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
             }
 
-            // 牺牲伙伴（收益是格挡）：`CreatureCmd.Kill(__pet)` 是这条效果独有的语句。
+            // 牺牲伙伴的 `await CreatureCmd.Kill(__pet);`：只记住是哪一只宠物，等收益动作行收尾
+            //（收益是伤害时动作在 Kill **之后**、是格挡时也在之后；收益那两句由上面的 GainBlock / Attack 分支处理）。
             if (line.Contains("CreatureCmd.Kill(__"))
             {
-                var e = PetEffectFromMarker(Match(line, @"CreatureCmd\.Kill\((\w+)\)"), out string? whySac);
-                if (e is null) { result.Unparsed.Add($"{where}: {line} {whySac}"); pendingPetMarker = null; continue; }
-                if (e.PetSacrificeFormula == "Fixed")
-                    FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
-                else e.Amount = CalcAmount("CalculationBase");
-                ApplyLoop(e, frames);
-                Done(e);
+                sacKillPet = Match(line, @"CreatureCmd\.Kill\((\w+)\)");
                 continue;
             }
 
@@ -904,8 +942,11 @@ public static class ProjectRecovery
                     if (pe.Kind == "PetApplyPower")
                     {
                         string? vn = Match(line, @"base\.DynamicVars\[""(\w+)""\]");
+                        // 生成时写的是 new PowerVar<StrengthPower>("PetPowerStrengthPower", 2m)：
+                        // 索引器里的键是**变量名**（不是泛型参数 T），所以两个都按一下。
                         int at = vn is null ? -1 : vars.FindIndex(v => v.Kind == "Power"
-                            && string.Equals(v.PowerId, vn, StringComparison.Ordinal));
+                            && (string.Equals(v.Name, vn, StringComparison.Ordinal)
+                                || string.Equals(v.PowerId, vn, StringComparison.Ordinal)));
                         if (at >= 0) { pe.Amount = vars[at].Amount; vars.RemoveAt(at); }
                     }
                     ApplyLoop(pe, frames);
@@ -1145,10 +1186,14 @@ public static class ProjectRecovery
     {
         string body = BodyOf(text, "OnUpgrade");
         if (body.Length == 0) return;
-        foreach (Match m in Regex.Matches(body, @"base\.DynamicVars\[""(\w+)""\]\.UpgradeValueBy\((-?[\d.]+)m\)"))
+        // 两种写法都要认：
+        //   · 普通效果 → base.DynamicVars["Damage"].UpgradeValueBy(3m)
+        //   · 「按生命值算」的宠物效果 → base.DynamicVars.CalculationBase.UpgradeValueBy(3m)
+        //     （那个计算变量的名字在本体里是固定死的，只能用属性写法，不是索引器）
+        foreach (Match m in Regex.Matches(body, @"base\.DynamicVars(?:\[""(\w+)""\]|\.(\w+))\.UpgradeValueBy\((-?[\d.]+)m\)"))
         {
-            string name = m.Groups[1].Value;
-            decimal delta = decimal.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+            string name = m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value;
+            decimal delta = decimal.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
             // 变量名 → 效果（按 CanonicalVars 里的顺序对应效果顺序）
             var e = EffectByVarName(card, vars, name);
             if (e is not null) e.UpgradeAmount += delta;
@@ -1200,6 +1245,9 @@ public static class ProjectRecovery
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false,
         "ApplyPower" => true,
+        // 额外资源量：只有「正数获得」才声明 StarsVar（花费走 CanonicalStarCost，不占变量）——
+        // 少了这一条，这类牌的升级增量会按错误的序号对到别的效果上（或者直接报「找不到对应效果」）。
+        "ExtraResource" => e.Amount > 0,
         "PetAttack" => true,
         "SummonPet" => e.Amount > 0,
         // 新增的那批宠物效果：除了两条「替主人承伤」开关，其余都在 CanonicalVars 里有变量
@@ -1209,7 +1257,7 @@ public static class ProjectRecovery
         _ => false,
     };
 
-    private static string VarNameOf(Var v) => v.Kind switch
+    private static string VarNameOf(Var v) => v.Name ?? v.Kind switch
     {
         "Damage" => "Damage",
         "Block" => "Block",
@@ -1265,7 +1313,11 @@ public static class ProjectRecovery
         RecoveryResult result, string where)
     {
         string? comment = Match(text, @"// 条件：(.+)");
-        string? conditionExpr = Match(text, @"IsPlayable => (.+);") ?? Match(text, @"ShouldGlowGoldInternal => (.+);");
+        // 「需要已召唤伙伴」的守卫（`<X>Cmd.Get(base.Owner) != null`）是**生成器自动加的**，不是用户配的条件：
+        // 先把它从 IsPlayable / 描金边的表达式里摘掉，否则会被当成「条件没认出来」记进 Unparsed
+        //（用户看到「有生成代码没认出来」会以为配置丢了），也会混进条件表达式里解析不出来。
+        string? conditionExpr = StripPetGuards(Match(text, @"IsPlayable => (.+);"))
+            ?? StripPetGuards(Match(text, @"ShouldGlowGoldInternal => (.+);"));
         if (comment is null && conditionExpr is null) return;
 
         var cond = ConditionFrom(comment, conditionExpr, nameToPowerId)
@@ -1278,6 +1330,23 @@ public static class ProjectRecovery
         }
         cond.WhenUnmet = conditionExpr is not null && text.Contains("IsPlayable =>") ? "Unplayable" : "NoEffect";
         card.Condition = cond;
+    }
+
+    /// <summary>
+    /// 摘掉生成器自动加的「需要已召唤伙伴」守卫项（<c>(XxxCmd.Get(base.Owner) != null)</c>），
+    /// 只留用户真正配置的条件表达式。
+    ///
+    /// 为什么要有这一步：卡牌只要有宠物类效果，生成器就会往 IsPlayable / ShouldGlowGoldInternal
+    /// 汇进 <c>(&lt;宠物&gt;Cmd.Get(base.Owner) != null)</c>（照本体 Osty 那批牌）。那是**运行时守卫**，
+    /// 回读时既不该算成条件、也不该报「没认出来」。全是守卫时返回 null = 这张牌没有用户条件。
+    /// </summary>
+    private static string? StripPetGuards(string? expr)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return null;
+        var rest = expr.Split("&&", StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => !Regex.IsMatch(x, @"^\(?\s*\w+Cmd\.Get\(base\.Owner\)\s*!=\s*null\s*\)?$"))
+            .ToList();
+        return rest.Count == 0 ? null : string.Join(" && ", rest);
     }
 
     /// <summary>把条件说明文字反推成 ConditionSpec。</summary>
@@ -1329,7 +1398,9 @@ public static class ProjectRecovery
         if (e.Contains("PileType.Discard") && e.Contains("Any()")) return new ConditionSpec { Kind = "DiscardPileEmpty" };
         var hp = Regex.Match(e, @"CurrentHp \* 100 <= .*MaxHp \* ([\d.]+)");
         if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = decimal.Parse(hp.Groups[1].Value, CultureInfo.InvariantCulture) };
-        var played = Regex.Match(e, @"CardPlaysFinished\.Count\([^)]*\) >= ([\d.]+)");
+        // 生成的是 `…CardPlaysFinished.Count(e => e.Actor == … && e.HappenedThisTurn(base.CombatState)) >= N`，
+        // 里面**套着括号**，所以不能写 [^)]*（那样只能匹配到内层那个右括号 → 整条条件认不出来）。
+        var played = Regex.Match(e, @"CardPlaysFinished\.Count\(.*?\)\s*>=\s*([\d.]+)");
         if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = decimal.Parse(played.Groups[1].Value, CultureInfo.InvariantCulture) };
         if (e.Contains("CardPlaysFinished.Any") && e.Contains("== this")) return new ConditionSpec { Kind = "NotPlayedThisCombat" };
         var turn = Regex.Match(e, @"TurnNumber % ([\d.]+) == 0");

@@ -1333,9 +1333,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "PetDamageByMaxHp" => "PetMaxHpDamage",
         "PetDamageByCurHp" => "PetCurHpDamage",
         "PetDamageByMissingHp" => "PetMissingHpDamage",
-        "PetHeal" => "PetHeal",
-        "PetLoseHp" => "PetHpLoss",
-        "PetGainMaxHp" => "PetMaxHp",
+        // 治疗 / 失去生命 / 最大生命：这三个用的就是**本体那三种变量**（HealVar / HpLossVar / MaxHpVar），
+        // 变量名是本体固定死的 "Heal" / "HpLoss" / "MaxHp"。
+        // 名字必须和声明一致：声明写的是 new HealVar(6m)（键 = Heal）、打出时读 base.DynamicVars.Heal，
+        // 卡面占位符与 OnUpgrade 也走同一个键 —— 以前这里写成 PetHeal / PetHpLoss / PetMaxHp，
+        // 于是卡面上那个 {PetHeal:diff()} 找不到同名变量（数字显示不出来），
+        // 升级时 base.DynamicVars["PetHeal"] 还会直接抛 KeyNotFoundException（牌组界面打不开）。
+        "PetHeal" => "Heal",
+        "PetLoseHp" => "HpLoss",
+        "PetGainMaxHp" => "MaxHp",
         // 牺牲伙伴：收益是格挡还是伤害各一套名字（同一张牌上两条牺牲也能靠别名区分）
         "PetSacrifice" => e.PetSacrificeGain == "Damage" ? "PetSacrificeDamage" : "PetSacrificeBlock",
         "PetApplyPower" => "PetPower" + (e.PowerId ?? ""),

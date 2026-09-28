@@ -460,6 +460,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// </summary>
 	public IReadOnlyList<EffectKindOption> PetKinds => EffectCatalog.PetEffectKinds;
 
+	/// <summary>
+	/// 「召唤物卡牌」页那个专属效果栏的**实际候选**：<see cref="PetKinds"/>，再加上
+	/// 「当前这张召唤物卡已经在用的效果种类」。
+	///
+	/// 为什么要补上已经在用的那些：下拉是 TwoWay 的 SelectedValue 绑定，
+	/// 候选列表里一旦没有当前值，WPF 会把选中项清空并**把 null 写回 EffectSpec.Kind** ——
+	/// 那样用户在这张牌上原有的一条「造成伤害」就会被静默清掉。
+	/// 所以候选 = 宠物类效果 ∪ 这张牌用到的种类（正常情况下就是宠物类效果本身）。
+	/// </summary>
+	public IReadOnlyList<EffectKindOption> PetKindChoices
+	{
+		get
+		{
+			var list = new List<EffectKindOption>(PetKinds);
+			CardSpec? card = PetCardList?.SelectedItem as CardSpec;
+			if (card is not null)
+			{
+				foreach (EffectSpec e in card.Effects)
+				{
+					EffectKindOption k = EffectCatalog.FindKind(e.Kind);
+					if (!list.Any(x => string.Equals(x.Kind, k.Kind, StringComparison.Ordinal))) list.Add(k);
+				}
+			}
+			return list;
+		}
+	}
+
 	/// <summary>牺牲伙伴的收益类型下拉（格挡 / 伤害）。</summary>
 	public IReadOnlyList<PetOption> PetSacrificeGains { get; } = new PetOption[]
 	{
@@ -500,26 +527,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private CharacterProfile? _petCardsBoundProfile;
 
 	/// <summary>
-	/// 把「召唤物卡牌」页的列表接上**当前 profile** 的过滤视图（只显示勾了「这是召唤物卡」的卡）。
+	/// 把「召唤物卡牌」页的列表接上**当前 profile** 的过滤视图（带宠物类效果或勾了「这是召唤物卡」的卡）。
 	///
 	/// 为什么每次换存档都要重建：过滤谓词是挂在**视图对象**上的，而换存档会把 <c>Profile</c> 换成新对象、
-	/// 视图跟着重建 —— 这时旧视图上的谓词就没了，于是这一页会把**全部卡牌**都列出来
-	/// （用户报过：一打开生成器就看到所有卡都在「召唤物卡牌」里）。
-	/// 用 CollectionViewSource 而不是另建一份集合，是为了两页里是**同一批对象**（改哪边都一样）。
+	/// 视图跟着重建 —— 这时旧视图上的谓词就没了，于是这一页会把**全部卡牌**都列出来。
+	/// 用视图而不是另建一份集合，是为了两页里是**同一批对象**（改哪边都一样）。
+	///
+	/// 谓词**直接设在视图上**，不走 <c>CollectionViewSource.Filter</c> 那个事件：
+	/// 那条路要靠临时 new 出来的 <c>CollectionViewSource</c> 自己活着才会把谓词转发到视图 ——
+	/// 而它只是个局部变量、没人持有，被回收之后视图上的谓词就没了，
+	/// 表现就是「一打开生成器就看到所有卡都在『召唤物卡牌』里」（用户报过；自检也抓住了这一条）。
 	/// </summary>
 	private void InitPetCardView()
 	{
 		if (PetCardList is null) return;
 		if (_petCardsView is not null && ReferenceEquals(_petCardsBoundProfile, Profile)) return;
 		_petCardsBoundProfile = Profile;
-		var cvs = new CollectionViewSource { Source = Profile.Cards };
 		// 这一页列两类牌：
 		//   ① 用了**任何宠物类效果**的牌（自动归类 —— 用户报过「带宠物效果的牌不出现，非要去卡牌页勾一下」）；
 		//   ② 手动勾了「这是召唤物卡」的牌（给「没有宠物效果但想放进来」的牌子用）。
-		cvs.Filter += (object sender, FilterEventArgs e) =>
-			e.Accepted = e.Item is CardSpec c && (c.IsPetCard || c.Effects.Any(x => x.PetAction));
-		_petCardsView = cvs.View;
-		PetCardList.ItemsSource = _petCardsView;
+		var view = new ListCollectionView((IList)Profile.Cards)
+		{
+			Filter = (object item) => item is CardSpec c && (c.IsPetCard || c.Effects.Any(x => x.PetAction)),
+		};
+		_petCardsView = view;
+		PetCardList.ItemsSource = view;
 	}
 
 	/// <summary>刷新「召唤物卡牌」列表（勾选状态 / 增删卡 / 换存档之后调用）。</summary>
@@ -1068,11 +1100,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			SyncDetail();
 		};
 		// 「召唤物卡牌」列表：换选中项要重指详情（和别的列表一样，漏了会「改了第二条、写进第一条」）
+		// 顺带刷新「效果种类」下拉的候选（PetKindChoices 是按这张牌在用的种类算出来的）。
 		if (PetCardList is not null)
 		{
 			PetCardList.SelectionChanged += delegate
 			{
 				SyncDetail();
+				Raise("PetKindChoices");
 			};
 		}
 		SetStatus(text ?? "就绪。填好配置 → 「① 生成工程」→「② 一键构建 + 安装」。");
@@ -1106,6 +1140,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		InitPetCardView();
 		PetCardDetail.DataContext = PetCardList?.SelectedItem;
 		PetCardEffectList?.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
+		Raise("PetKindChoices");
 		Raise("PetCardPortraitPreview");
 		Raise("CardPortraitPreview");
 		Raise("RelicIconPreview");
@@ -5740,6 +5775,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		int num15 = -1;
 		int num16 = -1;
 		int numPet = -1;
+		int numPetCard = -1;
 		for (int num17 = 0; num17 < MainTabs.Items.Count; num17++)
 		{
 			if (MainTabs.Items[num17] is TabItem tabItem3)
@@ -5748,6 +5784,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				{
 				case "角色":
 					num14 = num17;
+					break;
+				case "召唤物卡牌":
+					numPetCard = num17;
 					break;
 				case "额外资源量/状态":
 					num15 = num17;
@@ -5762,10 +5801,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 		}
 		Check("有「额外资源量/状态」选项卡", num15 >= 0, $"下标={num15}");
-		// 注意：加了「召唤物」（下标 1）之后，这一串的绝对数字也全部 +1 —— 只更新数字、不删断言。
-		Check("「角色」→「召唤物」→「额外资源量/状态」→「卡牌」按顺序排（下标依次 +1）",
-			num14 == 0 && numPet == 1 && num15 == 2 && num16 == 3,
-			$"角色={num14} / 召唤物={numPet} / 额外={num15} / 卡牌={num16}");
+		// 注意：加了「召唤物」（下标 1）和「召唤物卡牌」（下标 2，紧跟「召唤物」之后）之后，
+		// 位置在它们后面的那些页的绝对下标全部 +2 —— 只更新数字 + 把新页也算进来，不删断言。
+		Check("「角色」→「召唤物」→「召唤物卡牌」→「额外资源量/状态」→「卡牌」按顺序排（下标依次 +1）",
+			num14 == 0 && numPet == 1 && numPetCard == 2 && num15 == 3 && num16 == 4,
+			$"角色={num14} / 召唤物={numPet} / 召唤物卡牌={numPetCard} / 额外={num15} / 卡牌={num16}");
 		DependencyObject root13 = SelectTabRoot("额外资源量/状态");
 		List<CheckBox> list20 = new List<CheckBox>();
 		CollectCheckBoxes(root13, list20);
@@ -6753,7 +6793,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			recSrc.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "INNATE", Description = "开局就在手里。" });
 			srcOwn[0].KeywordIds = new List<string> { "FATE", "回响" };
 			var gen = ModGenerator.Generate(recSrc);
-			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot), gen.ProjectRoot);
+			// 失败时把「为什么」打出来（校验错误 + 日志尾部）—— 不然这条 FAIL 只有空细节，根本没法查
+			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot),
+				gen.Success
+					? gen.ProjectRoot
+					: (string.Join(" | ", gen.Issues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(4))
+					   + "  ‖ 日志尾部：" + string.Join(" ‖ ", gen.Log.TakeLast(8))));
 			// ===== 自定义关键词：本地化表 / 悬停说明 / 卡面描述，三处产物都要有 =====
 			string kwLocPath = Path.Combine(gen.ProjectRoot, recSrc.ModId, "localization", "zhs", "card_keywords.json");
 			Check("自定义关键词：生成了 card_keywords.json（写进本体那张表）", File.Exists(kwLocPath), kwLocPath);
@@ -6778,11 +6823,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				kwLoc.Contains("\"EXHAUST.title\": \"献祭\""), "EXHAUST.title = 献祭");
 			Check("本体关键词改名：没动 PERIOD（那是标点占位键，不是关键词）",
 				!kwLoc.Contains("PERIOD"), "表里没有 PERIOD");
-			// 没改的关键词一个键都不许写：写了「虚无」就等于凭空覆盖本体那条（说明也会一起被清空）
-			Check("本体关键词改名：没改的其它关键词不会被写进表里（虚无 / 固有 / 保留 / 奇巧 / 永恒 / 不能被打出）",
-				!kwLoc.Contains("ETHEREAL.") && !kwLoc.Contains("INNATE.") && !kwLoc.Contains("RETAIN.")
+			// 规则（写进表的边界）：Name 填了才写 <ID>.title、Description 填了才写 <ID>.description，
+			// **一个字都没填的关键词一个键都不许写** —— 写了就等于拿空 / 兜底值覆盖本体那条。
+			Check("本体关键词改名：一个字都没填的关键词（虚无 / 保留 / 奇巧 / 永恒 / 不能被打出）不会被写进表里",
+				!kwLoc.Contains("ETHEREAL.") && !kwLoc.Contains("RETAIN.")
 				&& !kwLoc.Contains("SLY.") && !kwLoc.Contains("ETERNAL.") && !kwLoc.Contains("UNPLAYABLE."),
-				"只有 EXHAUST 那几个键");
+				kwLoc.Replace("\r", "").Replace("\n", " "));
+			// 本用例里 INNATE 只填了说明：那就只该有 description 键，**绝不能**有 title
+			//（有了就说明「没填名字也写了 title」→ 本体那个名字被空值覆盖）。
+			Check("本体关键词改名：只填说明的关键词只写 <ID>.description、不写 <ID>.title",
+				kwLoc.Contains("\"INNATE.description\"") && !kwLoc.Contains("INNATE.title"),
+				kwLoc.Replace("\r", "").Replace("\n", " "));
 			Check("本体关键词改名：只填名字（说明留空）时不会把本体说明覆盖成空串",
 				!kwLoc.Contains("\"EXHAUST.description\""), "没写 description 键");
 			{
@@ -6793,15 +6844,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					new[] { new KeyValuePair<string, string>("UICHECK_KEYWORD_TEXT_1.description", "消耗 1 张牌。") });
 				try
 				{
-					var cardTable = EffectCatalog.ZhCardLoc;
 					List<(string Table, string Key, string Text)> kwText =
 						VanillaKeywordGen.KeywordTextReplacements(recSrc).ToList();
 					Check("本体关键词改名：本体卡面描述里的旧名字会被换掉（消耗 → 献祭）",
 						kwText.Any((r) => r.Table == "cards" && r.Key == "UICHECK_KEYWORD_TEXT_1.description"
 							&& r.Text.Contains("献祭") && !r.Text.Contains("消耗")),
 						$"{kwText.Count} 条替换项");
+					// 替换是**按本体表逐条**做的，所以每条替换项的键必须在「它自己那张本体表」里
+					//（以前拿 cards 表去查 relics / potions 的键 → 必然查不到，白白 FAIL）。
+					static bool InOwnTable((string Table, string Key, string Text) r) => r.Table switch
+					{
+						"cards" => EffectCatalog.ZhCardLoc.ContainsKey(r.Key),
+						"relics" => EffectCatalog.ZhRelicLoc.ContainsKey(r.Key),
+						"potions" => EffectCatalog.ZhPotionLoc.ContainsKey(r.Key),
+						_ => false,
+					};
+					List<string> strayKeys = kwText.Where((r) => !InOwnTable(r)).Select((r) => r.Table + " / " + r.Key).ToList();
 					Check("本体关键词改名：替换项只覆盖本体本来就有那个键的条目（不会给我们的自定义卡造键）",
-						kwText.All((r) => cardTable.ContainsKey(r.Key)), "键都在本体表里");
+						strayKeys.Count == 0,
+						strayKeys.Count == 0
+							? $"{kwText.Count} 条替换项，键都在各自的本体表里"
+							  + $"（cards {kwText.Count((r) => r.Table == "cards")} / relics {kwText.Count((r) => r.Table == "relics")} / potions {kwText.Count((r) => r.Table == "potions")}）"
+							: "不在本体表里的键：" + string.Join(" ｜ ", strayKeys.Take(5)));
 					Check("本体关键词改名：没填名字（只改说明）的关键词不产生替换项",
 						VanillaKeywordGen.KeywordTextReplacements(ProfileWithKeywordRename("EXHAUST", "", "只改说明")).Count() == 0,
 						"没改名 → 不替换");
@@ -6981,26 +7045,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("召唤物列表绑定到 Profile.Summons（列表，不是单对象）",
 				SummonList != null && BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Summons",
 				SummonList is null ? "没找到列表" : (BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "(没绑定)"));
-			DependencyObject summonRoot = SummonTab.Content as DependencyObject;
+			DependencyObject summonRoot = SelectTabRoot("召唤物");
 			List<string> summonTexts = TextsIn(summonRoot);
 			Check("召唤物页有「添加召唤物 / 删除 / 撤回删除」按钮",
 				summonTexts.Contains("添加召唤物") && summonTexts.Contains("删除") && summonTexts.Contains("撤回删除"), "控件在");
-			Check("召唤物页有「启用 / 名字 / 英文类名 / 生命 / 站位距离 / 替主人承伤」",
+			// 没选中任何召唤物时右边是**收起**的（只显示一句空态提示）—— 先确认这条空态在，
+			// 再自己加一条并选中，后面那些「详情里的控件」断言才有东西可查
+			//（以前直接读 TextsIn 页 root，详情折叠着，于是一律查不到 → 白白 FAIL）。
+			Check("召唤物页未选中时显示空态提示（右侧详情收起，不是一张空表单）",
+				summonTexts.Any((string t) => t.Contains("请选择召唤物")),
+				string.Join(" / ", summonTexts.Take(6)));
+			Check("召唤物：示例配置自带 0 只（新存档不凭空多一只宠物，也就不会凭空生成 cs/Pet.cs）",
+				Profile.Summons.Count == 0, $"{Profile.Summons.Count} 条");
+			var summonProbe = new SummonSpec
+			{
+				Enabled = true,
+				ClassName = "UiCheckPetPageProbe",
+				Name = "界面自检伙伴",
+				Hp = 10,
+				StandDistance = 120,
+			};
+			Profile.Summons.Add(summonProbe);
+			SummonList.SelectedItem = summonProbe;
+			UpdateLayout();
+			summonTexts = TextsIn(summonRoot);
+			Check("召唤物页有「启用 / 名字 / 英文类名 / 生命 / 站位距离 / 替主人承伤」（选中一条后详情展开才有）",
 				summonTexts.Any((string t) => t.Contains("启用这只召唤物")) && summonTexts.Any((string t) => t.Contains("名字（宠物名牌）"))
 				&& summonTexts.Any((string t) => t.Contains("英文类名")) && summonTexts.Any((string t) => t.Contains("召唤时的生命"))
 				&& summonTexts.Any((string t) => t.Contains("站位距离")) && summonTexts.Any((string t) => t.Contains("替主人承伤")),
 				string.Join(" / ", summonTexts.Where((string t) => t.Contains("召唤") || t.Contains("站位") || t.Contains("承伤")).Take(6)));
 			Check("召唤物页写明了「替主人承伤」可以勾多只、承伤的是列表里第一只活着的（本体伤害重定向是链式遍历，由我们仲裁）",
-				summonTexts.Any((string t) => t.Contains("可以勾多只") && t.Contains("第一只活着")), "有说明");
+				summonTexts.Any((string t) => t.Contains("可以勾多只") && t.Contains("第一只活着")),
+				string.Join(" / ", summonTexts.Where((string t) => t.Contains("承伤")).Take(4)));
 			// 详情里的输入框要双向绑定到「选中的那一只」上（数据源是列表的 SelectedItem）
 			{
-				var summonDetail = SummonTab.Content as DependencyObject;
 				List<TextBox> summonBoxes = new List<TextBox>();
-				CollectTextBoxes(summonDetail, summonBoxes);
+				CollectTextBoxes(summonRoot, summonBoxes);
 				List<string> summonPaths = summonBoxes.Select((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path ?? "").ToList();
 				Check("召唤物详情里有「名字 / 英文类名 / 生命 / 站位距离」四个输入框",
 					summonPaths.Contains("Name") && summonPaths.Contains("ClassName") && summonPaths.Contains("Hp") && summonPaths.Contains("StandDistance"),
-					string.Join(" / ", summonPaths.Where((string p) => p is "Name" or "ClassName" or "Hp" or "StandDistance")));
+					string.Join(" / ", summonPaths));
 				// 效果编辑器里的「召唤物（哪一只）」下拉：卡牌 / 遗物两处都要有
 				// （用 SelectTabRoot 切页再收文字 —— 顺手也保证这两个页本身能正常选中）
 				Check("效果编辑器有「召唤物（哪一只）」下拉（卡牌页）",
@@ -7013,10 +7097,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			{
 				TabItem petCardTabItem = FindTab("召唤物卡牌");
 				Check("有「召唤物卡牌」选项卡", petCardTabItem != null, petCardTabItem is null ? "没找到" : "找到了");
-				Check("召唤物卡牌列表绑定到 Profile.Cards 的**过滤视图**（勾了「这是召唤物卡」的那些；不是副本）",
-					PetCardList != null && ReferenceEquals(PetCardList.ItemsSource, _petCardsView)
-					&& BindingOperations.GetBinding(PetCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Source",
-					PetCardList is null ? "没找到列表" : (PetCardList.ItemsSource?.ToString() ?? "(没绑定)"));
+				// 绑定机制（故意这么做的）：每次换存档按**当前** Profile.Cards 重建过滤视图
+				// （挂在旧视图上的谓词会随换存档丢掉，那一页就会列出全部卡牌）。
+				// 所以这里不断言某个固定实例，而是断言：视图的源就是 Profile.Cards，
+				// 且列出来的正好是「带宠物类效果或勾了 IsPetCard」的那些。
+				RefreshPetCards();
+				UpdateLayout();
+				List<CardSpec> expectedPetCards = Profile.Cards.Where((CardSpec c) => c.IsPetCard || c.Effects.Any((EffectSpec x) => x.PetAction)).ToList();
+				var petCardView = PetCardList?.ItemsSource as CollectionView;
+				Check("召唤物卡牌列表绑定到 Profile.Cards 的**过滤视图**（带宠物效果或勾了「这是召唤物卡」的那些；不是副本）",
+					petCardView is not null && ReferenceEquals(petCardView.SourceCollection, Profile.Cards)
+					&& PetCardList!.Items.Cast<object>().SequenceEqual(expectedPetCards.Cast<object>()),
+					PetCardList is null ? "没找到列表"
+						: $"视图={petCardView?.GetType().Name ?? "null"} / 是缓存的那个视图={ReferenceEquals(petCardView, _petCardsView)}"
+						  + $" / 视图源=当前 Cards={ReferenceEquals(petCardView?.SourceCollection, Profile.Cards)}"
+						  + $" / 绑的是当前存档={ReferenceEquals(_petCardsBoundProfile, Profile)}"
+						  + $" / 实际 {PetCardList.Items.Count} 张，期望 {expectedPetCards.Count} 张（Profile.Cards 共 {Profile.Cards.Count} 张）："
+						  + string.Join(" · ", PetCardList.Items.Cast<object>().OfType<CardSpec>().Select((CardSpec c) => c.ClassName)));
 				{
 					// 「同一批对象」：过滤视图里的元素必须是 Profile.Cards 里的那一个（不是复制出来的）
 					var probePetCard = new CardSpec { Name = "自检宠物卡", ClassName = "UiCheckPetCardTab", Cost = 1, IsPetCard = true };
@@ -7027,13 +7124,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					bool shared = PetCardList.Items.Cast<object>().Any(o => ReferenceEquals(o, probePetCard));
 					Check("「召唤物卡牌」列表和「卡牌」页共享同一批对象（在卡牌页勾了勾选 / 改了名字，这里立刻就是新的）",
 						shared && Profile.Cards.Contains(probePetCard), shared ? "同一批对象" : "列表里没有它");
-					// 取消勾选 → 从这一页消失（牌本身还在「卡牌」页）
+					// 效果种类下拉：这一页的专属效果栏必须**只列宠物类效果**（PetKinds ∪ 这张牌在用的种类）
+					PetCardList.SelectedItem = probePetCard;
+					PetCardEffectList.SelectedIndex = 0;
+					UpdateLayout();
+					List<ComboBox> petCombos = new List<ComboBox>();
+					CollectCombos(SelectTabRoot("召唤物卡牌"), petCombos);
+					ComboBox? kindCombo = petCombos.FirstOrDefault((ComboBox c) => c.SelectedValuePath == "Kind");
+					List<string> kindItems = kindCombo?.ItemsSource is null
+						? new List<string>()
+						: kindCombo.ItemsSource.Cast<object>().OfType<EffectKindOption>().Select((EffectKindOption k) => k.Kind).ToList();
+					List<string> petKindIds = PetKinds.Select((EffectKindOption k) => k.Kind).ToList();
+					Check("召唤物卡牌页的效果种类下拉只列宠物类效果（PetKinds；不是全量的 Kinds）",
+						kindCombo is not null && PetKinds.Count > 0 && PetKinds.Count < Kinds.Count
+						&& petKindIds.All((string k) => kindItems.Contains(k))
+						&& kindItems.All((string k) => petKindIds.Contains(k) || probePetCard.Effects.Any((EffectSpec e) => string.Equals(e.Kind, k, StringComparison.Ordinal))),
+						kindCombo is null ? "没找到「效果种类」下拉" : $"{kindItems.Count} 项：{string.Join(" / ", kindItems)}");
+					// 带了宠物类效果的牌**自动**留在这页（用户要求：不用去卡牌页手动勾）——
+					// 所以「取消勾选就消失」只对**没有**宠物效果的牌成立，用一张干净的牌来验。
 					probePetCard.IsPetCard = false;
 					RefreshPetCards();
 					UpdateLayout();
+					Check("带宠物类效果的牌即使没勾「这是召唤物卡」也留在这页（自动归类，用户要求）",
+						PetCardList.Items.Cast<object>().Any(o => ReferenceEquals(o, probePetCard)),
+						$"{PetCardList.Items.Count} 张");
+					probePetCard.IsPetCard = true;
+					RefreshPetCards();
+					var probePlainCard = new CardSpec { Name = "自检普通卡", ClassName = "UiCheckPetCardTab2", Cost = 1, IsPetCard = true };
+					probePlainCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+					Profile.Cards.Add(probePlainCard);
+					RefreshPetCards();
+					UpdateLayout();
+					bool appeared = PetCardList.Items.Cast<object>().Any(o => ReferenceEquals(o, probePlainCard));
+					probePlainCard.IsPetCard = false;
+					RefreshPetCards();
+					UpdateLayout();
 					Check("取消勾选「这是召唤物卡」后它就从这一页消失（牌本身还在「卡牌」页）",
-						!PetCardList.Items.Cast<object>().Any(o => ReferenceEquals(o, probePetCard))
-						&& Profile.Cards.Contains(probePetCard), "已消失但还在卡牌页");
+						appeared && !PetCardList.Items.Cast<object>().Any(o => ReferenceEquals(o, probePlainCard))
+						&& Profile.Cards.Contains(probePlainCard),
+						appeared ? "已消失但还在卡牌页" : "勾上了却没出现在这一页");
+					Profile.Cards.Remove(probePlainCard);
 					Profile.Cards.Remove(probePetCard);
 					RefreshPetCards();
 				}
@@ -7044,10 +7174,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& PetKinds.Any(k => k.Kind == "PetSacrifice") && PetKinds.Any(k => k.Kind == "PetGuardOn")
 					&& PetKinds.Count < Kinds.Count,
 					string.Join(" / ", PetKinds.Select(k => k.Kind)));
-				Check("专属效果栏用的是 EffectEditorPetCard 模板，而且里面确实绑的是 PetKinds（不是全量的 Kinds）",
-					Application.Current?.Resources["EffectEditorPetCard"] is DataTemplate petTpl
-					&& TextsIn(SelectTabRoot("召唤物卡牌")).Contains("专属效果栏（只列宠物类效果）"),
-					Application.Current?.Resources["EffectEditorPetCard"] is DataTemplate ? "模板在" : "找不到模板");
+				// 模板必须真的存在、内容里确实有那个「只列宠物类效果」的栏，而且候选是 PetKinds ⊂ Kinds
+				// （不是全量 Kinds）—— 只查「模板在」挡不住「模板里的下拉被换成全量 Kinds」这种回归
+				//（上面那条已经按页面上**真实的**下拉查过一遍了，这里再钉住模板本身）。
+				{
+					// 模板是 LoadContent 出来的、没上过布局 → VisualTreeHelper 看不到子节点，按**逻辑树**走一遍
+					static List<string> LogicalTextsIn(DependencyObject root)
+					{
+						var found = new List<string>();
+						void Walk(DependencyObject node)
+						{
+							if (node is TextBlock tb) found.Add(tb.Text ?? "");
+							foreach (object child in LogicalTreeHelper.GetChildren(node))
+								if (child is DependencyObject d) Walk(d);
+						}
+						Walk(root);
+						return found;
+					}
+					DataTemplate? petTpl = Application.Current?.Resources["EffectEditorPetCard"] as DataTemplate;
+					DependencyObject? petTplRoot = petTpl?.LoadContent() as DependencyObject;
+					List<string> petTplTexts = petTplRoot is null ? new List<string>() : LogicalTextsIn(petTplRoot);
+					bool tplHasMarker = petTplTexts.Contains("专属效果栏（只列宠物类效果）");
+					bool petKindsAreSubset = PetKinds.All((EffectKindOption k) => Kinds.Any((EffectKindOption x) => string.Equals(x.Kind, k.Kind, StringComparison.Ordinal)));
+					bool petKindsAllPet = PetKinds.All((EffectKindOption k) => EffectCatalog.IsPetKind(k.Kind));
+					bool kindsHasNonPet = Kinds.Any((EffectKindOption k) => !EffectCatalog.IsPetKind(k.Kind));
+					Check("专属效果栏用的是 EffectEditorPetCard 模板，而且里面确实绑的是 PetKinds（不是全量的 Kinds）",
+						petTpl is not null && tplHasMarker && PetKinds.Count > 0 && petKindsAllPet && petKindsAreSubset && kindsHasNonPet && PetKinds.Count < Kinds.Count,
+						$"模板={(petTpl is null ? "找不到" : "在")} / 专属栏标记={(tplHasMarker ? "有" : "没有")} / PetKinds {PetKinds.Count} ⊂ Kinds {Kinds.Count}"
+						+ $"（PetKinds 全是宠物类={petKindsAllPet}，Kinds 里有非宠物类={kindsHasNonPet}）");
+				}
 				Check("「召唤物卡牌」页有「添加召唤物卡 / 删除 / 撤回删除 / 刷新列表」按钮",
 					TextsIn(SelectTabRoot("召唤物卡牌")).Contains("添加召唤物卡")
 					&& TextsIn(SelectTabRoot("召唤物卡牌")).Contains("删除效果")
@@ -7062,7 +7217,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				SummonList.SelectedIndex = 0;
 				UpdateLayout();
 				var probe = SummonList.SelectedItem as SummonSpec;
-				Check("召唤物列表里已经有一条第 1 只（示例 / 迁移出来的）", probe is not null, probe?.Display ?? "(空列表)");
+				// 示例配置本身不带召唤物（上面那条已经验过 0 条），这一条是本节自己加进去的 ——
+				// 断言它真的能选中、能读出详情（字段 / 勾选框都挂在「选中的那只」上）。
+				Check("召唤物列表里能选到前面加的那一只（选中后详情字段才有数据源）",
+					ReferenceEquals(probe, summonProbe), probe?.Display ?? "(空列表)");
 				if (probe is not null)
 				{
 					oldEnabled2 = probe.Enabled; oldGuard = probe.TakesDamageForOwner;
@@ -7099,8 +7257,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						PetSummon = PetGen.ClassNameOf(Profile, probe),
 					});
 					string disabledCard = CSharpCodeGen.CardSource(Profile, petOffCard, 0);
-					Check("即使召唤物被停用，卡牌代码也照常生成（拦住生成的是校验器，不是让代码炸掉）",
-						disabledCard.Contains("Cmd.Summon(choiceContext, base.Owner,"), "有召唤调用");
+					// 生成器**故意**不给「找不到的召唤物」写调用（否则会引用一个不存在的宠物类 → CS0103），
+					// 只留一行说明注释；拦住生成的是校验器。所以这里断言「不抛异常 + 留下说得清的说明」，
+					// 而不是「照样写出调用」（那反而会生成编译不过的代码）。
+					Check("即使召唤物被停用，卡牌代码也照常生成（不抛异常，留一行「没有可用的召唤物」说明；拦住生成的是校验器）",
+						disabledCard.Contains("没有可用的召唤物") && disabledCard.Contains("SevenPet")
+						&& !disabledCard.Contains("SevenPetCmd.Summon("),
+						disabledCard.Contains("没有可用的召唤物") ? "有说明、没写调用" : "说明缺失");
 					Profile.Cards.Add(petOffCard);
 					var petOffIssues = ProfileValidator.Validate(Profile);
 					string petOffErrors = string.Join(" | ", petOffIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message));
@@ -7119,6 +7282,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					restore.Name = oldName2; restore.ClassName = oldCls2;
 					restore.Hp = oldHp2; restore.StandDistance = oldDist;
 				}
+				// 自检自己加的那一只读完就撤掉：后面的用例都按「示例配置 0 只召唤物」来验
+				Profile.Summons.Remove(summonProbe);
 				RaisePetSummonChoices();
 			}
 		}
@@ -7272,7 +7437,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				petExt.Contains("public static AttackCommand FromPetAttacker(this AttackCommand command, Creature pet)")
 				&& petExt.Contains("typeof(AttackCommand).GetProperty(\"Attacker\",")
 				&& petExt.Contains("System.Reflection.BindingFlags.NonPublic")
-				&& !petExt.Contains("Harmony"), "反射方案");
+				// 「不是 Harmony 补丁」要按**真的用了 Harmony** 判：文件头的说明注释里写着
+				// 「为什么不用 Harmony 补丁」，直接 Contains("Harmony") 会把注释也算成命中（以前就这么误判过）。
+				&& !petExt.Contains("HarmonyPatch") && !petExt.Contains("HarmonyLib") && !petExt.Contains("using Harmony"),
+				"反射方案");
+			// 四种「由宠物发起攻击」的效果都必须触发这个文件：漏一种 → 生成的卡引用不存在的
+			// 扩展方法 → CS1061（编译直接过不去）。这里逐个种类验一遍需要它。
+			Check("bug③攻击：四种宠物攻击类效果（PetAttack / 按最大·当前·已损失生命）都算「要用扩展方法」",
+				PetGen.IsAttackKind("PetAttack") && PetGen.IsAttackKind("PetDamageByMaxHp")
+				&& PetGen.IsAttackKind("PetDamageByCurHp") && PetGen.IsAttackKind("PetDamageByMissingHp")
+				&& !PetGen.IsAttackKind("PetHeal") && !PetGen.IsAttackKind("PetSacrifice"),
+				string.Join(" / ", new[] { "PetAttack", "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp" }
+					.Select(k => k + "=" + PetGen.IsAttackKind(k))));
 			Check("bug③攻击：没有生成任何 Harmony 补丁", !Directory.GetFiles(Path.Combine(petGen.ProjectRoot, "cs"), "*.cs", SearchOption.AllDirectories)
 				.Any((string f) => File.ReadAllText(f, Encoding.UTF8).Contains("HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.Builders.AttackCommand)")), "没有攻击补丁");
 
@@ -7406,7 +7582,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& e.Amount == 12m && e.PetSummon == "UiCheckPet2")),
 				string.Join(" · ", petRec.Profile.Relics.SelectMany((RelicSpec r) => r.Effects).Select((EffectSpec e) => e.Kind + "/" + (e.PetSummon ?? "?"))));
 			Check("从工程恢复：没认出来的语句为 0（召唤物相关的生成代码都认得）", !petRec.HasUnparsed,
-				petRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				petRec.Unparsed.Count == 0 ? "全部认出来了" : $"{petRec.Unparsed.Count} 条：" + string.Join(" ｜ ", petRec.Unparsed.Take(3)));
 
 			// ⑧ 校验拦截：全部停用 → 不生成 cs/Pet.cs（卡牌还引用着 → 校验器报错拦住）
 			foreach (var s in petSrc.Summons) s.Enabled = false;
@@ -7602,7 +7778,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& Rec("UiCheckPetNewCur")?.Effects.Any(e => e.Kind == "PetDamageByCurHp" && e.TargetSide == "AllEnemies") == true
 					&& Rec("UiCheckPetNewMiss")?.Effects.Any(e => e.Kind == "PetDamageByMissingHp" && e.TargetSide == "RandomEnemies" && e.RepeatCount == 2) == true,
 					string.Join(" · ", new[] { "UiCheckPetNewMax", "UiCheckPetNewCur", "UiCheckPetNewMiss" }
-						.Select(c => c + "=" + string.Join(",", Rec(c)?.Effects.Select(e => e.Kind + "/" + e.Amount) ?? Array.Empty<string>()))));
+						.Select(c => c + "=" + string.Join(",", Rec(c)?.Effects.Select(e => e.Kind + "/" + e.Amount + "/" + (e.PetSummon ?? "?") + "/升级" + e.UpgradeAmount) ?? Array.Empty<string>()))));
 				Check("从工程恢复：治疗 / 失去生命 / 最大生命 / 施加状态 / 守卫开 / 守卫关 六条都认回来了",
 					Rec("UiCheckPetNewMisc")?.Effects.Select(e => e.Kind).SequenceEqual(new[] { "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetApplyPower", "PetGuardOn", "PetGuardOff" }) == true
 					&& Rec("UiCheckPetNewMisc")?.Effects[0].Amount == 6m
@@ -7611,18 +7787,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& Rec("UiCheckPetNewMisc")?.Effects[3].Amount == 2m,
 					string.Join(" · ", Rec("UiCheckPetNewMisc")?.Effects.Select(e => e.Kind + "/" + e.Amount + "/" + e.PowerId) ?? Array.Empty<string>()));
 				Check("从工程恢复：牺牲伙伴（格挡 / 最大生命×3）找回来了（收益类型 + 公式 + 倍率 + 哪一只）",
-					Rec("UiCheckPetNewSacBlock")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Block"
+					Rec("UiCheckPetNewSacBlock")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacBlock")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Block"
 						&& e.PetSacrificeFormula == "MaxHp" && e.PetSacrificeMultiplier == 3 && e.PetSummon == "UiCheckPet") == true,
 					string.Join(" · ", Rec("UiCheckPetNewSacBlock")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeGain + "/" + e.PetSacrificeFormula) ?? Array.Empty<string>()));
-				Check("从工程恢复：牺牲伙伴（伤害 / 固定 7 / 打单体）找回来了",
-					Rec("UiCheckPetNewSacDmg")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage"
+				Check("从工程恢复：牺牲伙伴（伤害 / 固定 7 / 打单体）找回来了 —— 而且只有**一条**（Kill 之后的收尾语句不再多算一条）",
+					Rec("UiCheckPetNewSacDmg")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacDmg")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage"
 						&& e.PetSacrificeFormula == "Fixed" && e.Amount == 7m && e.TargetSide == "Enemy") == true,
 					string.Join(" · ", Rec("UiCheckPetNewSacDmg")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeGain + "/" + e.PetSacrificeFormula + "/" + e.Amount) ?? Array.Empty<string>()));
 				Check("从工程恢复：牺牲伙伴（格挡 / 当前生命）找回来了",
-					Rec("UiCheckPetNewSacCur")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "CurHp") == true,
+					Rec("UiCheckPetNewSacCur")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacCur")?.Effects.Any(e => e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "CurHp") == true,
 					string.Join(" · ", Rec("UiCheckPetNewSacCur")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeFormula) ?? Array.Empty<string>()));
 				Check("从工程恢复：这一批宠物效果**一条都没漏**（没认出来的语句为 0）", !petRecNew.HasUnparsed,
-					petRecNew.Unparsed.FirstOrDefault() ?? "全部认出来了");
+					petRecNew.Unparsed.Count == 0 ? "全部认出来了" : $"{petRecNew.Unparsed.Count} 条：" + string.Join(" ｜ ", petRecNew.Unparsed.Take(3)));
 				Check("从工程恢复：「召唤物卡牌」标记按内容推回来了（有宠物类效果的卡都标上了 IsPetCard）",
 					Rec("UiCheckPetNewMax")?.IsPetCard == true && Rec("UiCheckPetSummon")?.IsPetCard == false,
 					$"新压={Rec("UiCheckPetNewMax")?.IsPetCard} / 纯召唤卡={Rec("UiCheckPetSummon")?.IsPetCard}");
@@ -7670,13 +7849,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					newLoc.Contains("此伤害等于[gold]小石头[/gold]的最大生命值。")
 					&& newLoc.Contains("此伤害等于[gold]小石头[/gold]的当前生命值。")
 					&& newLoc.Contains("此伤害等于[gold]小石头[/gold]的已损失的生命值。"), "描述对");
-				Check("卡面描述：治疗 / 失去生命 / 最大生命（写明同时回复等量生命）/ 守卫开·关 / 施加状态 都写对了",
-					newLoc.Contains("[gold]小石头[/gold]回复 {PetHeal:diff()} 点生命。")
-					&& newLoc.Contains("[gold]小石头[/gold]失去 {PetHpLoss:diff()} 点生命。")
-					&& newLoc.Contains("的最大生命值增加 {PetMaxHp:diff()} 点（同时回复等量生命）。")
-					&& newLoc.Contains("[gold]小石头[/gold]开始替你承受攻击伤害。")
-					&& newLoc.Contains("[gold]小石头[/gold]不再替你承受攻击伤害。")
-					&& newLoc.Contains("[gold]小石头[/gold]获得 {PetPowerStrengthPower:diff()} 层力量。"), "描述对");
+				// 六条各自的**实际文案**都放进 detail：FAIL 时一眼看得出是哪一条不对
+				//（以前 detail 只有「描述对」三个字，看不出哪条错，白跑一轮）。
+				{
+					string strengthZh = EffectCatalog.PowerName("StrengthPower");
+					var wantTexts = new (string What, string Text)[]
+					{
+						("治疗", "让[gold]小石头[/gold]回复 {Heal:diff()} 点生命。"),
+						("失去生命", "让[gold]小石头[/gold]失去 {HpLoss:diff()} 点生命。"),
+						("最大生命", "[gold]小石头[/gold]的最大生命值增加 {MaxHp:diff()} 点（同时回复等量生命）。"),
+						("施加状态", $"[gold]小石头[/gold]获得 {{PetPowerStrengthPower:diff()}} 层{strengthZh}。"),
+						("守卫开", "[gold]小石头[/gold]开始替主人承伤（主人受到可格挡的攻击伤害时，改由它承担）。"),
+						("守卫关", "[gold]小石头[/gold]不再替主人承伤。"),
+					};
+					List<string> missing = wantTexts.Where((w) => !newLoc.Contains(w.Text, StringComparison.Ordinal))
+						.Select((w) => w.What + " → " + w.Text).ToList();
+					Check("卡面描述：治疗 / 失去生命 / 最大生命（写明同时回复等量生命）/ 守卫开·关 / 施加状态 都写对了",
+						missing.Count == 0,
+						missing.Count == 0 ? string.Join(" ｜ ", wantTexts.Select((w) => w.Text))
+							: "缺 / 不符：" + string.Join(" ｜ ", missing));
+				}
 				Check("卡面描述：牺牲伙伴写着「若…存活：它死去，然后你获得…格挡 / 造成…伤害」",
 					newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后你获得{PetSacrificeBlock:diff()}点[gold]格挡[/gold]。")
 					&& newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后它对指定敌人造成{PetSacrificeDamage:diff()}点伤害。"), "描述对");
@@ -8952,6 +9144,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		CollectCombos(this, list35);
 		Check("界面上能找到下拉控件（这里不含增益/目标卡那两个搜索栏）", list35.Count >= 4, $"{list35.Count} 个 ComboBox");
 		Check("效果种类下拉已填充", list35.Any((ComboBox c) => c.Items.Count == Kinds.Count), $"应为 {Kinds.Count} 项");
+		// 「卡牌」页的效果种类下拉必须是**全量** Kinds：只有「召唤物卡牌」页那份专属效果栏才收窄成宠物类
+		//（收窄是 EffectScope.Pet 那个附加属性触发的，这条防的就是「把别的页面也一起收窄了」）。
+		Check("「卡牌」页的效果种类下拉是全量 Kinds（没被专属效果栏的收窄影响）",
+			list35.Any((ComboBox c) => c.SelectedValuePath == "Kind" && c.Items.Count == Kinds.Count && c.Items.Count > PetKinds.Count),
+			string.Join(" / ", list35.Where((ComboBox c) => c.SelectedValuePath == "Kind").Select((ComboBox c) => c.Items.Count + " 项")));
 		List<TextBox> boxes = new List<TextBox>();
 		CollectTextBoxes(this, boxes);
 		Check("效果编辑器有「对群数/命中次数」输入框", HasBox("RepeatCount"));

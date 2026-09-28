@@ -369,10 +369,17 @@ public static class ProfileFactory
         var legacy = p.Summon;
         p.Summon = null;                 // 老字段读完就清掉：留着会让「生成 / 界面」两边各有一套数据
         if (legacy is null) return;
-        bool meaningful = legacy.Enabled
+        // 「填过东西」的判定**不能只看 Enabled**：它的默认值就是 true（勾着的），
+        // 老存档里那个全空对象照样是 true —— 那样会凭空多出一条空召唤物（列表里多一条、还可能多生成 cs/Pet.cs）。
+        // 所以逐个字段和新建对象的默认值比：有一个不一样才算用户真的填过。
+        var blank = new SummonSpec();
+        bool meaningful = !legacy.Enabled
             || !string.IsNullOrWhiteSpace(legacy.ClassName)
             || !string.IsNullOrWhiteSpace(legacy.Name)
-            || !string.IsNullOrWhiteSpace(legacy.Image);
+            || !string.IsNullOrWhiteSpace(legacy.Image)
+            || legacy.TakesDamageForOwner
+            || legacy.Hp != blank.Hp
+            || legacy.StandDistance != blank.StandDistance;
         if (!meaningful) return;
 
         legacy.Enabled = true;           // 老存档有内容就当作启用（上一版默认也是不勾就不生成，这里只搬有内容的）
