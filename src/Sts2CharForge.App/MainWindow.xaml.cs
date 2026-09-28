@@ -513,7 +513,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		if (_petCardsView is not null && ReferenceEquals(_petCardsBoundProfile, Profile)) return;
 		_petCardsBoundProfile = Profile;
 		var cvs = new CollectionViewSource { Source = Profile.Cards };
-		cvs.Filter += (object sender, FilterEventArgs e) => e.Accepted = e.Item is CardSpec c && c.IsPetCard;
+		// 这一页列两类牌：
+		//   ① 用了**任何宠物类效果**的牌（自动归类 —— 用户报过「带宠物效果的牌不出现，非要去卡牌页勾一下」）；
+		//   ② 手动勾了「这是召唤物卡」的牌（给「没有宠物效果但想放进来」的牌子用）。
+		cvs.Filter += (object sender, FilterEventArgs e) =>
+			e.Accepted = e.Item is CardSpec c && (c.IsPetCard || c.Effects.Any(x => x.PetAction));
 		_petCardsView = cvs.View;
 		PetCardList.ItemsSource = _petCardsView;
 	}

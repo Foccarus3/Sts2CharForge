@@ -198,7 +198,7 @@
                     </Grid.ColumnDefinitions>
                     <DockPanel Grid.Column="0">
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
-                                   Text="这里只列「卡牌」页里勾了「这是召唤物卡」的那些牌（和那一页是**同一批对象**，改哪边都一样）。右边的效果栏是专属的：效果种类下拉只列宠物类效果。"/>
+                                   Text="这一页列两类牌：**用了任何宠物类效果的牌**（自动出现），以及手动勾了「这是召唤物卡」的牌（和「卡牌」页是**同一批对象**，改哪边都一样）。右边的效果栏是专属的：效果种类下拉只列宠物类效果。"/>
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="添加召唤物卡" Padding="8,4" Margin="0,0,6,0" Click="OnAddPetCard"
                                     ToolTip="加一张新卡并自动勾上「这是召唤物卡」，直接出现在这个列表里。"/>
@@ -215,7 +215,7 @@
 
                     <TextBlock x:Name="PetCardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Text="还没有召唤物卡：先点左边的「添加召唤物卡」，或者到「卡牌」页把某张牌勾上「这是召唤物卡」"
+                               Text="还没有召唤物卡：先点左边的「添加召唤物卡」，或者到「卡牌」页给某张牌加一个宠物类效果（会自动出现在这里）"
                                Visibility="{Binding SelectedItem, ElementName=PetCardList, Converter={StaticResource EmptyToVisibility}}"/>
 
                     <Grid x:Name="PetCardDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=PetCardList}"
@@ -236,8 +236,8 @@
                                 <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
                                 <TextBlock Text="费用" Style="{StaticResource Label}"/>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
-                                <CheckBox Content="这是召唤物卡（出现在本页）" Style="{StaticResource Check}" IsChecked="{Binding IsPetCard}"
-                                          ToolTip="勾上以后这张牌会出现在「召唤物卡牌」页；取消勾选就从这一页消失（牌本身还在「卡牌」页）。这只影响界面归类，不影响生成。"/>
+                                <CheckBox Content="这是召唤物卡（强制计入「召唤物卡牌」页）" Style="{StaticResource Check}" IsChecked="{Binding IsPetCard}"
+                                          ToolTip="带了**任何宠物类效果**的牌本来就会自动出现在「召唤物卡牌」页，这个勾选是给「还没有宠物效果、但你想先放进去」的牌用的。只影响界面归类，不影响生成。"/>
                                 <CheckBox Content="作为初始牌" Style="{StaticResource Check}" IsChecked="{Binding InStartingDeck}"/>
                                 <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
                                 <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
@@ -446,9 +446,9 @@
                             <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
                             <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
                             <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding InCardPool}"/>
-                            <!-- 「召唤物卡牌」选项卡的归类标记：勾上以后这张牌会出现在那一页（效果栏只列宠物类效果） -->
-                            <CheckBox Content="这是召唤物卡（出现在「召唤物卡牌」页）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding IsPetCard}"
-                                      ToolTip="勾上以后这张牌会出现在「召唤物卡牌」选项卡里，那一页的效果栏只列宠物类效果（召唤伙伴 / 伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人承伤…）。只是界面归类，不影响生成。"/>
+                            <!-- 「召唤物卡牌」选项卡的归类标记：带了宠物类效果的牌会自动出现在那一页，这个勾选是强制的补充手段 -->
+                            <CheckBox Content="这是召唤物卡（强制计入「召唤物卡牌」页）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding IsPetCard}"
+                                      ToolTip="带了**任何宠物类效果**的牌（召唤伙伴 / 伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人承伤…）本来就会自动出现在「召唤物卡牌」选中页；这个勾选是给「还没有宠物效果、但你想先放进去」的牌用的。只影响界面归类，不影响生成。"/>
                             <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
                                 <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>

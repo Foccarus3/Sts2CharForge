@@ -189,6 +189,7 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(PetKindZh));
                 Raise(nameof(PetSacrificeUsesMultiplier));
                 Raise(nameof(PetSacrificeFormulaZh));
+                Raise(nameof(IsPetSacrifice));   // 「收益 / 公式 / 倍率」三行的显隐绑的就是它
             }
         }
     }
@@ -360,6 +361,16 @@ public sealed class EffectSpec : SpecBase
         "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
         or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower"
         or "PetGuardOn" or "PetGuardOff";
+
+    /// <summary>
+    /// 这条效果是「牺牲伙伴」—— 界面上只有它才显示「收益 / 公式 / 倍率」那三行。
+    ///
+    /// 注意：属性名是**界面 XAML 直接绑的**（<c>Visibility="{Binding IsPetSacrifice, …}"</c>）。
+    /// 以前这个属性忘了定义，WPF 绑定失败会静默退回默认值「可见」，于是不管选哪种效果都显示那三行（用户报过）。
+    /// 另外 <see cref="Kind"/> 的 setter 必须 Raise 它，否则切换效果种类时界面不刷新。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsPetSacrifice => Kind == "PetSacrifice";
 
     private string? _petSummon;
 
