@@ -1915,7 +1915,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             string? cond = EffectConditionGuard(e, CondCtx.Card, inOnPlay: true, chanceSlices: cardChanceSlices);
             bool hasGuard = cond is not null;
-            // 需要「已经召唤出来的那只」的效果（伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人挨打…）：
+            // 需要「已经召唤出来的那只」的效果（伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人承伤…）：
             // 宠物不在场时**安全跳过这一条**（不抛异常，也不让整张牌失败）。
             // 变量在 OnPlay 开头就查好了（每个用到的那只各一次），这里只判空。
             string? petVar = NeedsExistingPet(e) && PetGen.Resolve(p, e.PetSummon) is { } pd
@@ -2154,7 +2154,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 本体的 DynamicVarSet 会直接抛 DynamicVarSet contains duplicate key 'Value'
         //（发生在构造卡牌时 → 开新局就崩、黑屏，实测踩过）。
         or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "CardReward"
-        // 「伙伴替主人挨打」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
+        // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
         // 否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)（两条就撞名 → 开新局崩）
         or "PetGuardOn" or "PetGuardOff"
         // 额外资源量：只有「正数获得」才声明变量（花费走 CanonicalStarCost，不占变量）
@@ -2780,7 +2780,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
-    /// 伙伴替主人挨打 开 / 关：用我们**自己的共用守卫类** <c>ForgePetGuardianPower</c>
+    /// 伙伴替主人承伤 开 / 关：用我们**自己的共用守卫类** <c>ForgePetGuardianPower</c>
     /// （不是本体的 DieForYouPower —— 那个是 Osty 专用；多只宠物共用这一个类、由它自己仲裁谁承担）。
     ///
     /// 这里不再判 <c>HasPower&lt;T&gt;()</c>：宠物已经判活（外面那层 <c>if (pet != null)</c>），
@@ -2796,7 +2796,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 + "   // 共用守卫：多只都挂时由它自己仲裁（列表里第一只活着的承担）");
         else
             w.Line($"await PowerCmd.Remove<{power}>({petVar});"
-                + "   // 取消替主人挨打：多只都挂着时只摘这一只，剩下那只（若有）继续承担");
+                + "   // 取消替主人承伤：多只都挂着时只摘这一只，剩下那只（若有）继续承担");
     }
 
     // ==================== 下回合生效的延迟 Power ====================

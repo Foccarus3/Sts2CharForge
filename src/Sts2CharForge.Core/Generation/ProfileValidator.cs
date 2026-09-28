@@ -541,7 +541,7 @@ public static class ProfileValidator
     /// 没启用而卡牌 / 遗物 / 药水却用了「召唤伙伴 / 伙伴攻击」→ 报错拦住（否则生成出来的牌会引用不存在的宠物类）。
     /// 另外拦住两件**只有校验器能拦**的事：
     ///   · 列表里两只召唤物用了同一个类名（本体模型 ID 只按类名算 → DuplicateModelException）；
-    ///   · 有两只同时勾了「替主人挨打」（本体 Hook.ModifyUnblockedDamageTarget 是链式遍历，两个重定向者
+    ///   · 有两只同时勾了「替主人承伤」（本体 Hook.ModifyUnblockedDamageTarget 是链式遍历，两个重定向者
     ///     会让伤害最终归谁完全不可预期）；
     ///   · 效果上选的召唤物不存在 / 没启用（生成出来的代码会引用一个不存在的类 → CS0103）。
     ///
@@ -758,22 +758,22 @@ public static class ProfileValidator
                     + "能正常上场 / 攻击 / 死亡，只是长得不好看。上传一张 PNG 就会自动生成宠物场景。"));
         }
 
-        // ===== 「替主人挨打」：可以勾多只，由生成代码自己仲裁 =====
+        // ===== 「替主人承伤」：可以勾多只，由生成代码自己仲裁 =====
         // 本体的 Hook.ModifyUnblockedDamageTarget 是**链式遍历**（Hook.cs:2057-2065）：
         //     creature = item.ModifyUnblockedDamageTarget(creature, …)
         // 而本体 DieForYouPower 第一句是 `if (target != Owner.PetOwner?.Creature) return target;` ——
         // 两只都挂守卫时，链上第一只改完目标之后，第二只看到的已经不是主人、直接放行，
-        // 于是「谁真正挨打」取决于本体不可控的监听顺序。我们的生成代码给所有勾选的宠物挂**同一个**守卫类，
+        // 于是「谁真正承伤」取决于本体不可控的监听顺序。我们的生成代码给所有勾选的宠物挂**同一个**守卫类，
         // 并在钩子里自己仲裁（只有宠物列表里第一只活着且挂着守卫的才承担，它死后下一只自动接手），
         // 所以这里**不再是错误**，只是把实际生效规则讲清楚。
         var guardians = enabled.Where(s => s.TakesDamageForOwner).ToList();
         if (guardians.Count > 1)
-            issues.Add(new("提示", $"有 {guardians.Count} 只召唤物勾了「替主人挨打」（"
+            issues.Add(new("提示", $"有 {guardians.Count} 只召唤物勾了「替主人承伤」（"
                 + string.Join("、", guardians.Select(s => $"「{PetGen.DisplayNameOf(s, PetGen.ClassNameOf(p, s))}」"))
-                + "）：挨打的是召唤物列表里第一只活着的，它死后会自动换下一只。"
+                + "）：承伤的是召唤物列表里第一只活着的，它死后会自动换下一只。"
                 + "本体的伤害重定向是链式遍历，所以由生成代码自己仲裁，行为是确定的。"));
         else if (guardians.Count == 1)
-            issues.Add(new("提示", $"「{PetGen.DisplayNameOf(guardians[0], PetGen.ClassNameOf(p, guardians[0]))}」会在主人受可格挡攻击时替主人挨打"
+            issues.Add(new("提示", $"「{PetGen.DisplayNameOf(guardians[0], PetGen.ClassNameOf(p, guardians[0]))}」会在主人受可格挡攻击时替主人承伤"
                 + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
 
         // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）

@@ -12,7 +12,7 @@ namespace Sts2CharForge.Core.Generation;
 /// 只要有一处对不上，游戏里就会「宠物没名字」或者「找不到视觉场景」。
 ///
 /// 现在是**列表**：每个勾了启用的召唤物各自一个 <c>MonsterModel</c> 子类 + 一个 <c>&lt;X&gt;Cmd</c>
-/// （所有勾了「替主人挨打」的召唤物**共用同一个**守卫 Power 类），它们全都写进同一个 <c>cs/Pet.cs</c>；
+/// （所有勾了「替主人承伤」的召唤物**共用同一个**守卫 Power 类），它们全都写进同一个 <c>cs/Pet.cs</c>；
 /// 战斗里可以同时在场（本体 <c>PlayerCombatState._pets</c> 本来就是列表）。
 ///
 /// 走的是什么机制（都在本体的公开 API 上，**不需要任何 Harmony 补丁**）：
@@ -28,7 +28,7 @@ namespace Sts2CharForge.Core.Generation;
 ///           从 <c>PlayerCombatState._pets</c> 摘掉），守卫 Power 也不覆写 <c>ShouldPowerBeRemovedAfterOwnerDeath</c>
 ///           —— 那两个是 Osty「留尸等复活」的语义，覆写成 false 会让尸体不消失、每次召唤都新建一只；
 ///   · 打人：先走正常卡牌路径，再用 <c>FromPetAttacker</c> 扩展方法把攻击者换成宠物（见 PetAttackExtensions）；
-///   · 替主人挨打：勾了几只都挂守卫，但挨打的是**宠物列表里第一只活着且挂了守卫的** ——
+///   · 替主人承伤：勾了几只都挂守卫，但承伤的是**宠物列表里第一只活着且挂了守卫的** ——
 ///           本体的 <c>Hook.ModifyUnblockedDamageTarget</c> 是链式遍历（Hook.cs:2057-2065），
 ///           本体 DieForYouPower 的写法（<c>if (target != Owner.PetOwner?.Creature) return target;</c>）
 ///           会让链上第一只把目标改成自己之后，第二只看到的已经不是主人而直接放行，
@@ -41,7 +41,7 @@ public static class PetGen
     public const int DefaultStandDistance = SummonSpec.DefaultStandDistance;
 
     /// <summary>
-    /// 「替主人挨打」的守卫 Power 类名前缀。**只用于回读老工程**（上一版是「每只宠物一个守卫类」，
+    /// 「替主人承伤」的守卫 Power 类名前缀。**只用于回读老工程**（上一版是「每只宠物一个守卫类」，
     /// 名字 = 这个前缀 + 宠物类名）；现在生成代码里只有一个共用类 <see cref="GuardianPowerClassName"/>。
     /// </summary>
     public const string GuardianPowerPrefix = "ForgePetGuardian";
@@ -127,7 +127,7 @@ public static class PetGen
     public static IReadOnlyList<PetDef> All(CharacterProfile p) => Enabled(p).Select(s => DefOf(p, s)).ToList();
 
     /// <summary>
-    /// 「替主人挨打」**所有召唤物共用**的守卫 Power 类名（全局唯一、不和本体状态撞名）。
+    /// 「替主人承伤」**所有召唤物共用**的守卫 Power 类名（全局唯一、不和本体状态撞名）。
     ///
     /// 为什么必须是**同一个类型**：仲裁要跨宠物识别「谁也有守卫」，而 <c>Creature.HasPower&lt;T&gt;()</c>
     /// 只认同一类型（<c>Creature.cs:561-564</c> 就是 <c>_powers.Any(p =&gt; p is T)</c>）——
@@ -302,7 +302,7 @@ position = Vector2(2, -{spriteH + 60})
 
     /// <summary>
     /// <c>cs/Pet.cs</c>：**所有启用的召唤物**（每只一个 <c>MonsterModel</c> 子类 + 一个 <c>&lt;X&gt;Cmd</c>）
-    /// + 有任何一只勾了「替主人挨打」时**一个共用的**守卫 Power 类。
+    /// + 有任何一只勾了「替主人承伤」时**一个共用的**守卫 Power 类。
     ///
     /// 为什么都放一个文件：本体的 <c>ModelDb</c> 是按类型扫的，放几个文件都一样；
     /// 而「从工程恢复存档」要能按固定顺序把列表读回来，一个文件里按顺序排列最省事
@@ -488,7 +488,7 @@ position = Vector2(2, -{spriteH + 60})
             // 勾了几只都用同一个守卫类；真正由谁承担由守卫自己仲裁（见 EmitGuardianPower）
             string power = GuardianPowerClassName;
             w.Line()
-             .Line("// 替主人挨打：挂守卫（照本体 DieForYouPower 写）。")
+             .Line("// 替主人承伤：挂守卫（照本体 DieForYouPower 写）。")
              .Line("// 多只都勾了这个选项时挂的是**同一个**守卫类，谁真正承担由守卫钩子里自己仲裁（列表里第一只活着的）。")
              .Line("// 先查一次防止重复挂 —— PowerStackType.Single 的状态重复 Apply 不会有第二个实例，但多一次施加会多播一次特效。")
              .Open($"if (!{petVar}.HasPower<{power}>())")
@@ -503,11 +503,11 @@ position = Vector2(2, -{spriteH + 60})
     }
 
     /// <summary>
-    /// 「替主人挨打」用的守卫 Power：照抄本体 <c>DieForYouPower</c>，**所有召唤物共用这一个类**。
+    /// 「替主人承伤」用的守卫 Power：照抄本体 <c>DieForYouPower</c>，**所有召唤物共用这一个类**。
     ///
     /// 为什么要共用（而不是每只一份）：
     ///   · 本体 <c>Creature.HasPower&lt;T&gt;()</c> 只认同一类型（<c>Creature.cs:561-564</c> 是
-    ///     <c>_powers.Any(p =&gt; p is T)</c>）—— 我们要在钩子里判「这只宠物有没有也勾了替主人挨打」，
+    ///     <c>_powers.Any(p =&gt; p is T)</c>）—— 我们要在钩子里判「这只宠物有没有也勾了替主人承伤」，
     ///     每只一个类就互相查不出来，只能退回去查类名 / 反射，既脆又容易错；
     ///   · 生成代码也少一大截。
     ///
@@ -515,7 +515,7 @@ position = Vector2(2, -{spriteH + 60})
     /// （<c>Hook.cs:2057-2065</c>：<c>creature = item.ModifyUnblockedDamageTarget(creature, …)</c>），
     /// 而本体 DieForYouPower 第一句是 <c>if (target != Owner.PetOwner?.Creature) return target;</c> ——
     /// 两只都挂守卫时，链上**第一只**把 target 改成自己，第二只看到的已经不是主人、判断不成立、直接放行。
-    /// 于是「谁真正挨打」取决于本体不可控的监听顺序（谁先注册）。这里改成：只有「宠物列表里第一只
+    /// 于是「谁真正承伤」取决于本体不可控的监听顺序（谁先注册）。这里改成：只有「宠物列表里第一只
     /// 活着且挂了守卫的」才把自己换上去，其它守卫一律放行 —— 行为完全确定，不依赖监听顺序；
     /// 第一只死了（<c>IsAlive</c> 为 false）之后下一只自动接手。
     /// </summary>
@@ -526,12 +526,12 @@ position = Vector2(2, -{spriteH + 60})
         string who = string.Join("、", guarded.Select(d => d.DisplayName));
 
         w.Line("/// <summary>")
-         .Line($"/// 「替主人挨打」：{who}挡在主人前面（照抄本体 DieForYouPower）。**所有召唤物共用这一个类**。")
+         .Line($"/// 「替主人承伤」：{who}挡在主人前面（照抄本体 DieForYouPower）。**所有召唤物共用这一个类**。")
          .Line("///")
          .Line("/// 只吸「可格挡的攻击伤害」（ValueProp.IsPoweredAttack()）—— 中毒、失去生命这类穿盾伤害照旧打在主人身上，")
          .Line("/// 否则宠物会变成无敌护盾。")
          .Line("///")
-         .Line("/// 多只召唤物同时勾了「替主人挨打」时由这里自己仲裁：只有**宠物列表里第一只活着且挂着这个守卫的**")
+         .Line("/// 多只召唤物同时勾了「替主人承伤」时由这里自己仲裁：只有**宠物列表里第一只活着且挂着这个守卫的**")
          .Line("/// 把自己换上去，其它守卫直接放行；第一只死了以后下一只自动接手，行为完全确定。")
          .Line("///")
          .Line("/// 为什么不靠本体自己排：本体 Hook.ModifyUnblockedDamageTarget 是链式遍历（Hook.cs:2057-2065），")
@@ -567,7 +567,7 @@ position = Vector2(2, -{spriteH + 60})
          .Line("if (base.Owner.IsDead) return target;")
          .Line("// 只有「可格挡的攻击伤害」才吸：中毒 / 失去生命这类穿盾伤害照旧打在主人身上")
          .Line("if (!props.IsPoweredAttack()) return target;")
-         .Line("// 多只都勾了「替主人挨打」时由我们自己仲裁：列表里第一只活着的承担")
+         .Line("// 多只都勾了「替主人承伤」时由我们自己仲裁：列表里第一只活着的承担")
          .Line("//（本体钩子是链式的，不仲裁就变成「看监听顺序」，行为不可预期；第一只死了 IsAlive=false，下一只自动接手）")
          .Line("Creature? current = base.Owner.PetOwner?.PlayerCombatState?.Pets")
          .Line("    .FirstOrDefault(p => p.IsAlive && p.HasPower<" + power + ">());")

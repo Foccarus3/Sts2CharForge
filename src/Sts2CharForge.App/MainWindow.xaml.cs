@@ -455,7 +455,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// <summary>
 	/// 「召唤物卡牌」页那个**专属效果栏**的效果种类下拉：只列宠物类效果
 	/// （召唤伙伴 / 伙伴攻击 / 按生命值算的伙伴攻击 / 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 /
-	/// 牺牲伙伴 / 给伙伴施加状态 / 伙伴替主人挨打 开·关）。
+	/// 牺牲伙伴 / 给伙伴施加状态 / 伙伴替主人承伤 开·关）。
 	/// 主注册表还是 <see cref="Kinds"/>（「卡牌 / 遗物 / 药水」页用全量），两处不会漂移。
 	/// </summary>
 	public IReadOnlyList<EffectKindOption> PetKinds => EffectCatalog.PetEffectKinds;
@@ -3624,7 +3624,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	private void OnRemoveCard(object sender, RoutedEventArgs e)
 	{
-		List<CardSpec> picked = SelectedOf<CardSpec>(CardList);
+		// 「召唤物卡牌」页的删除按钮用 Tag 把它自己的列表传进来（那一页是同一批卡片的过滤视图）。
+		// 以前写死读 CardList，于是那一页点删除永远提示「请先选中要删除的卡牌」（用户报过）。
+		ListBox list = ListFromTag(sender) ?? CardList;
+		List<CardSpec> picked = SelectedOf<CardSpec>(list);
 		if (picked.Count == 0)
 		{
 			SetStatus("请先选中要删除的卡牌（可 Ctrl/Shift 多选，或点「全选」）。");
@@ -3635,8 +3638,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			int value = RemoveManyWithUndo(_profile.Cards, picked, _cardUndo, "卡牌", delegate
 			{
-				CardList.SelectedItem = picked[0];
+				list.SelectedItem = picked[0];
 			});
+			RefreshPetCards();   // 删掉的可能有召唤物卡，过滤视图要跟着更新
 			SetStatus($"已删除 {value} 张卡牌（可点「撤回删除」恢复）");
 		}
 	}
@@ -6980,12 +6984,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			List<string> summonTexts = TextsIn(summonRoot);
 			Check("召唤物页有「添加召唤物 / 删除 / 撤回删除」按钮",
 				summonTexts.Contains("添加召唤物") && summonTexts.Contains("删除") && summonTexts.Contains("撤回删除"), "控件在");
-			Check("召唤物页有「启用 / 名字 / 英文类名 / 生命 / 站位距离 / 替主人挨打」",
+			Check("召唤物页有「启用 / 名字 / 英文类名 / 生命 / 站位距离 / 替主人承伤」",
 				summonTexts.Any((string t) => t.Contains("启用这只召唤物")) && summonTexts.Any((string t) => t.Contains("名字（宠物名牌）"))
 				&& summonTexts.Any((string t) => t.Contains("英文类名")) && summonTexts.Any((string t) => t.Contains("召唤时的生命"))
-				&& summonTexts.Any((string t) => t.Contains("站位距离")) && summonTexts.Any((string t) => t.Contains("替主人挨打")),
-				string.Join(" / ", summonTexts.Where((string t) => t.Contains("召唤") || t.Contains("站位") || t.Contains("挨打")).Take(6)));
-			Check("召唤物页写明了「替主人挨打」可以勾多只、挨打的是列表里第一只活着的（本体伤害重定向是链式遍历，由我们仲裁）",
+				&& summonTexts.Any((string t) => t.Contains("站位距离")) && summonTexts.Any((string t) => t.Contains("替主人承伤")),
+				string.Join(" / ", summonTexts.Where((string t) => t.Contains("召唤") || t.Contains("站位") || t.Contains("承伤")).Take(6)));
+			Check("召唤物页写明了「替主人承伤」可以勾多只、承伤的是列表里第一只活着的（本体伤害重定向是链式遍历，由我们仲裁）",
 				summonTexts.Any((string t) => t.Contains("可以勾多只") && t.Contains("第一只活着")), "有说明");
 			// 详情里的输入框要双向绑定到「选中的那一只」上（数据源是列表的 SelectedItem）
 			{
@@ -7128,7 +7132,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			petSrc.Paths.VanillaProject = Profile.Paths.VanillaProject;
 			petSrc.Paths.GameDataDir = Profile.Paths.GameDataDir;
 			petSrc.SaveName = "召唤物自检";
-			// 两只召唤物都勾「替主人挨打」（现在允许，由共用的守卫类自己仲裁：列表里第一只活着的承担），
+			// 两只召唤物都勾「替主人承伤」（现在允许，由共用的守卫类自己仲裁：列表里第一只活着的承担），
 			// 且两只的站位距离不同
 			petSrc.Summons.Clear();
 			petSrc.Summons.Add(new SummonSpec
@@ -7218,32 +7222,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				petCs.Contains("internal static class ForgePetLayout")
 				&& petCs.Contains("room.SetCreatureIsInteractable(pet, on: true);"), "有共用助手 + 重开血条");
 
-			// ①-c 可选④：替主人挨打（共用守卫 Power，照抄 DieForYouPower + 自己仲裁）
-			Check("替主人挨打：勾了几只都只生成**一个共用**的守卫 Power 类（不是每只一个 —— Creature.HasPower<T>() 只认同一类型，仲裁要跨宠物认人）",
+			// ①-c 可选④：替主人承伤（共用守卫 Power，照抄 DieForYouPower + 自己仲裁）
+			Check("替主人承伤：勾了几只都只生成**一个共用**的守卫 Power 类（不是每只一个 —— Creature.HasPower<T>() 只认同一类型，仲裁要跨宠物认人）",
 				petCs.Contains("public sealed class ForgePetGuardianPower : PowerModel")
 				&& !petCs.Contains("public sealed class ForgePetGuardianUiCheckPet")
 				&& !petCs.Contains("public sealed class ForgePetGuardianUiCheckPet2")
 				&& petCs.Split("public sealed class ForgePetGuardianPower : PowerModel").Length - 1 == 1, "共用一个守卫类");
-			Check("替主人挨打：守卫里有我们自己写的仲裁（宠物列表里第一只活着且挂了守卫的才承担，它死后下一只自动接手）",
+			Check("替主人承伤：守卫里有我们自己写的仲裁（宠物列表里第一只活着且挂了守卫的才承担，它死后下一只自动接手）",
 				petCs.Contains("FirstOrDefault(p => p.IsAlive && p.HasPower<ForgePetGuardianPower>())")
 				&& petCs.Contains("if (current is not null && !ReferenceEquals(current, base.Owner)) return target;"), "有仲裁");
-			Check("替主人挨打：两只勾了的召唤物，召唤命令里都挂同一个守卫",
+			Check("替主人承伤：两只勾了的召唤物，召唤命令里都挂同一个守卫",
 				petCs.Contains("if (!__uiCheckPet.HasPower<ForgePetGuardianPower>())")
 				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);")
 				&& petCs.Contains("if (!__uiCheckPet2.HasPower<ForgePetGuardianPower>())")
 				&& petCs.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet2, 1m, null, null);"), "两只都挂了");
-			Check("替主人挨打：守卫只吸「可格挡的攻击伤害」（中毒 / 失去生命照旧打在主人身上）",
+			Check("替主人承伤：守卫只吸「可格挡的攻击伤害」（中毒 / 失去生命照旧打在主人身上）",
 				petCs.Contains("if (!props.IsPoweredAttack()) return target;")
 				&& petCs.Contains("public override Creature ModifyUnblockedDamageTarget(Creature target, decimal amount, ValueProp props, Creature? dealer)"), "有判定");
-			Check("替主人挨打：目标不是自己主人就放过、自己死了就放过",
+			Check("替主人承伤：目标不是自己主人就放过、自己死了就放过",
 				petCs.Contains("if (target != base.Owner.PetOwner?.Creature) return target;")
 				&& petCs.Contains("if (base.Owner.IsDead) return target;"), "有守卫");
-			Check("替主人挨打：关掉状态图标（IsVisibleInternal => false）—— 不关的话本体要去 powers 表查 title/description，模组没这张表 → 名字显示成原始键名 + 图标退回 missing_power.png",
+			Check("替主人承伤：关掉状态图标（IsVisibleInternal => false）—— 不关的话本体要去 powers 表查 title/description，模组没这张表 → 名字显示成原始键名 + 图标退回 missing_power.png",
 				petCs.Contains("protected override bool IsVisibleInternal => false;"), "有覆写");
-			Check("替主人挨打：**不**覆写 ShouldCreatureBeRemovedFromCombatAfterDeath / ShouldPowerBeRemovedAfterOwnerDeath（那两个是 Osty「留尸等复活」的语义：会让尸体不消失、每次召唤都新建一只、越堆越多）",
+			Check("替主人承伤：**不**覆写 ShouldCreatureBeRemovedFromCombatAfterDeath / ShouldPowerBeRemovedAfterOwnerDeath（那两个是 Osty「留尸等复活」的语义：会让尸体不消失、每次召唤都新建一只、越堆越多）",
 				!petCs.Contains("ShouldCreatureBeRemovedFromCombatAfterDeath")
 				&& !petCs.Contains("ShouldPowerBeRemovedAfterOwnerDeath"), "两个都不在生成结果里");
-			Check("替主人挨打：保留 ShouldAllowHitting（自己死了以后不再接受攻击，本体 DieForYouPower 的写法）",
+			Check("替主人承伤：保留 ShouldAllowHitting（自己死了以后不再接受攻击，本体 DieForYouPower 的写法）",
 				petCs.Contains("public override bool ShouldAllowHitting(Creature creature)"), "还在");
 
 			// ①-e bug④/⑤：死亡语义 + 召唤命令（Get 判活 + 每个分支都重排全体）
@@ -7374,7 +7378,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("从工程恢复：站位距离找回来了（每只各自的 140 / 90）",
 				petRec.Profile.Summons[0].StandDistance == 140 && petRec.Profile.Summons[1].StandDistance == 90,
 				$"{petRec.Profile.Summons[0].StandDistance} / {petRec.Profile.Summons[1].StandDistance}");
-			Check("从工程恢复：「替主人挨打」的勾选找回来了（两只勾了的都回读成 True —— 守卫是共用的一个类，要按每只自己的召唤命令逐只判）",
+			Check("从工程恢复：「替主人承伤」的勾选找回来了（两只勾了的都回读成 True —— 守卫是共用的一个类，要按每只自己的召唤命令逐只判）",
 				petRec.Profile.Summons[0].TakesDamageForOwner && petRec.Profile.Summons[1].TakesDamageForOwner,
 				$"{petRec.Profile.Summons[0].TakesDamageForOwner} / {petRec.Profile.Summons[1].TakesDamageForOwner}");
 			Check("从工程恢复：卡牌上的「召唤伙伴」效果找回来了（数值 0 = 用配置血量，而且知道是哪一只）",
@@ -7411,20 +7415,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				petGen2.Success ? "生成成功但没写 Pet.cs" : "生成被校验拦住了");
 			foreach (var s in petSrc.Summons) s.Enabled = true;
 
-			// ⑨ 校验：同时勾两只「替主人挨打」现在**不再是错误**（共用守卫自己仲裁），只给一句提示
+			// ⑨ 校验：同时勾两只「替主人承伤」现在**不再是错误**（共用守卫自己仲裁），只给一句提示
 			petSrc.Summons[1].TakesDamageForOwner = true;
 			var petGuardIssues = ProfileValidator.Validate(petSrc);
-			Check("同时有两只召唤物勾了「替主人挨打」时校验器**不再报错**（生成代码自己仲裁：列表里第一只活着的承担，死了换下一只）",
+			Check("同时有两只召唤物勾了「替主人承伤」时校验器**不再报错**（生成代码自己仲裁：列表里第一只活着的承担，死了换下一只）",
 				!petGuardIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能勾一只"))
-				&& !petGuardIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("替主人挨打")),
+				&& !petGuardIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("替主人承伤")),
 				string.Join(" | ", petGuardIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
-			Check("同时勾两只时校验器给出了「第一只活着的挨打、死了自动换下一只」的提示（非错误，不拦生成）",
-				petGuardIssues.Any((ValidationIssue i) => !i.IsError && i.Message.Contains("有 2 只召唤物勾了「替主人挨打」")
+			Check("同时勾两只时校验器给出了「第一只活着的承伤、死了自动换下一只」的提示（非错误，不拦生成）",
+				petGuardIssues.Any((ValidationIssue i) => !i.IsError && i.Message.Contains("有 2 只召唤物勾了「替主人承伤」")
 					&& i.Message.Contains("第一只活着")),
-				string.Join(" | ", petGuardIssues.Where((ValidationIssue i) => i.Message.Contains("替主人挨打")).Select((ValidationIssue i) => i.Message)));
+				string.Join(" | ", petGuardIssues.Where((ValidationIssue i) => i.Message.Contains("替主人承伤")).Select((ValidationIssue i) => i.Message)));
 			// 两只都勾着也能照常生成（守卫类只有一个，两只的召唤命令都挂它）
 			var petGen3 = ModGenerator.Generate(petSrc);
-			Check("两只都勾「替主人挨打」时生成照常成功（校验器不再拦），且 Pet.cs 里只有一个共用守卫类",
+			Check("两只都勾「替主人承伤」时生成照常成功（校验器不再拦），且 Pet.cs 里只有一个共用守卫类",
 				petGen3.Success && File.Exists(Path.Combine(petGen3.ProjectRoot, "cs", "Pet.cs"))
 				&& File.ReadAllText(Path.Combine(petGen3.ProjectRoot, "cs", "Pet.cs"), Encoding.UTF8)
 					.Split("public sealed class ForgePetGuardianPower : PowerModel").Length - 1 == 1,
@@ -7546,11 +7550,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& miscSrc.Contains("当前生命同时回复"), "最大生命对");
 				Check("新效果「给伙伴施加状态」：PowerCmd.Apply<StrengthPower>(choiceContext, pet, …)（数值走 PetPowerStrengthPower 变量）",
 					miscSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, __uiCheckPet, base.DynamicVars[\"PetPowerStrengthPower\"].BaseValue,"), "施加状态对");
-				Check("新效果「伙伴替主人挨打（开）」：PowerCmd.Apply<ForgePetGuardianPower>（我们自己的共用守卫类，不是本体 DieForYouPower）",
+				Check("新效果「伙伴替主人承伤（开）」：PowerCmd.Apply<ForgePetGuardianPower>（我们自己的共用守卫类，不是本体 DieForYouPower）",
 					miscSrc.Contains("await PowerCmd.Apply<ForgePetGuardianPower>(choiceContext, __uiCheckPet, 1m, null, null);"), "守卫开对");
-				Check("新效果「取消伙伴替主人挨打（关）」：PowerCmd.Remove<ForgePetGuardianPower>(pet)（本体签名 PowerCmd.cs:282）",
+				Check("新效果「取消伙伴替主人承伤（关）」：PowerCmd.Remove<ForgePetGuardianPower>(pet)（本体签名 PowerCmd.cs:282）",
 					miscSrc.Contains("await PowerCmd.Remove<ForgePetGuardianPower>(__uiCheckPet);"), "守卫关对");
-				Check("新效果：两条「替主人挨打」开关**不声明**动态变量（否则会多出 DynamicVar(\"Value\")，两条就撞名 → 开新局崩）",
+				Check("新效果：两条「替主人承伤」开关**不声明**动态变量（否则会多出 DynamicVar(\"Value\")，两条就撞名 → 开新局崩）",
 					!miscSrc.Contains("new DynamicVar(\"Value\", 0m)"), "没有多余变量");
 
 				// —— 牺牲伙伴：格挡（最大生命×3）/ 伤害（固定 7）/ 格挡（当前生命）——

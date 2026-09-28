@@ -840,7 +840,7 @@ public static class ProjectRecovery
                 continue;
             }
 
-            // 替主人挨打（关）：`await PowerCmd.Remove<ForgePetGuardianPower>(__pet);`
+            // 替主人承伤（关）：`await PowerCmd.Remove<ForgePetGuardianPower>(__pet);`
             if (line.Contains($"PowerCmd.Remove<{PetGen.GuardianPowerClassName}>("))
             {
                 var e = PetEffectFromMarker(Match(line, @"PowerCmd\.Remove<\w+>\((\w+)\)"), out string? whyOff);
@@ -893,7 +893,7 @@ public static class ProjectRecovery
                 var parts = SplitArgs(args);
                 string target = parts.Count > 1 ? parts[1].Trim() : "";
 
-                // ===== 新增的那批宠物效果：给伙伴施加状态 / 替主人挨打（开）=====
+                // ===== 新增的那批宠物效果：给伙伴施加状态 / 替主人承伤（开）=====
                 // 目标参数是宠物局部变量（__xxx）而不是 base.Owner.Creature / cardPlay.Target / foe。
                 if (PetClassOfVar(target, petClassNames) is not null)
                 {
@@ -1202,7 +1202,7 @@ public static class ProjectRecovery
         "ApplyPower" => true,
         "PetAttack" => true,
         "SummonPet" => e.Amount > 0,
-        // 新增的那批宠物效果：除了两条「替主人挨打」开关，其余都在 CanonicalVars 里有变量
+        // 新增的那批宠物效果：除了两条「替主人承伤」开关，其余都在 CanonicalVars 里有变量
         // （和生成侧的 CSharpCodeGen.HasNoDynamicVar 保持一致）
         "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
             or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower" => true,
@@ -1511,7 +1511,7 @@ public static class ProjectRecovery
             };
             if (spec.StandDistance <= 0) spec.StandDistance = SummonSpec.DefaultStandDistance;
 
-            // 「替主人挨打」：现在**所有勾选的召唤物共用同一个守卫类**（PetGen.GuardianPowerClassName），
+            // 「替主人承伤」：现在**所有勾选的召唤物共用同一个守卫类**（PetGen.GuardianPowerClassName），
             // 判定落在「**这一只自己的召唤命令**里有没有**施加**共用守卫」上 ——
             //   · 不能只查整个文件：那样每只都会读到别只挂的那一行、全部被勾上；
             //   · 不能只查宠物类体：施加语句写在后面的命令助手类里，永远查不到 → 勾选被静默丢掉；
@@ -1543,7 +1543,7 @@ public static class ProjectRecovery
             bool hasScene = File.Exists(Path.Combine(projectDir, "scenes", "creature_visuals",
                 entry.ToLowerInvariant() + ".tscn"));
             result.Notes.Add($"召唤物：{spec.Name}（{cls}，生命 {spec.Hp}，站位 {spec.StandDistance}"
-                + (spec.TakesDamageForOwner ? "，替主人挨打" : "") + "）"
+                + (spec.TakesDamageForOwner ? "，替主人承伤" : "") + "）"
                 + (hasScene ? "，有自定义视觉场景" : "，视觉用本体占位图"));
         }
     }

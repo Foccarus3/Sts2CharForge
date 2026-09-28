@@ -570,9 +570,9 @@ public static class EffectCatalog
         new EffectKindOption("PetSacrifice", "牺牲伙伴换收益", "点", 0, 999, false, true),
         // 给伙伴施加状态：复用现有的「增益 / 减益」下拉（PowerId）+ 层数（Amount）。
         new EffectKindOption("PetApplyPower", "给伙伴施加状态", "层", 1, 99, false, false),
-        // 替主人挨打 开 / 关：用我们自己的共用守卫类 ForgePetGuardianPower（不是本体的 DieForYouPower）。
-        new EffectKindOption("PetGuardOn",  "伙伴替主人挨打（开）", "—", 0, 0, false, false),
-        new EffectKindOption("PetGuardOff", "取消伙伴替主人挨打（关）", "—", 0, 0, false, false),
+        // 替主人承伤 开 / 关：用我们自己的共用守卫类 ForgePetGuardianPower（不是本体的 DieForYouPower）。
+        new EffectKindOption("PetGuardOn",  "伙伴替主人承伤（开）", "—", 0, 0, false, false),
+        new EffectKindOption("PetGuardOff", "取消伙伴替主人承伤（关）", "—", 0, 0, false, false),
     };
 
     /// <summary>

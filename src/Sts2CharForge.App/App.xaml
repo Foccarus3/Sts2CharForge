@@ -399,7 +399,7 @@
              和卡牌版一样有「升级增量 / 升级后费用 / = X」这些卡牌专属的东西，
              但效果种类下拉换成了 **PetKinds**（只列宠物类效果：召唤伙伴 / 伙伴攻击 /
              按生命值算的伙伴攻击 / 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 / 牺牲伙伴 /
-             给伙伴施加状态 / 伙伴替主人挨打 开·关）。
+             给伙伴施加状态 / 伙伴替主人承伤 开·关）。
              底下的「召唤物（哪一只）」下拉用的是 PetSummonsCard（只列已启用的召唤物）。 -->
         <DataTemplate x:Key="EffectEditorPetCard">
             <ScrollViewer VerticalScrollBarVisibility="Auto">

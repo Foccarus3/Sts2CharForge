@@ -131,7 +131,7 @@ public static class ModGenerator
             PetGen.GenerateVisuals(profile, root, Log);
             Log($"  已生成召唤物 {pets.Count} 只：" + string.Join("、", pets.Select(d =>
                     $"{d.ClassName}（「{d.DisplayName}」，生命 {d.Hp}，站位 {d.StandDistance}"
-                    + (d.Guardian ? "，替主人挨打" : "") + "）"))
+                    + (d.Guardian ? "，替主人承伤" : "") + "）"))
                 + (pets.Any(d => d.HasImage) ? "，视觉用你上传的图" : "，视觉沿用本体的占位图（可上传自己的 PNG）"));
         }
 

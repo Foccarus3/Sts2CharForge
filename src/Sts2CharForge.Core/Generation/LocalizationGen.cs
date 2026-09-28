@@ -522,8 +522,8 @@ public static class LocalizationGen
             "PetLoseHp" => $"让[gold]{SummonName(p, e)}[/gold]失去 {var} 点生命。",
             "PetGainMaxHp" => $"[gold]{SummonName(p, e)}[/gold]的最大生命值增加 {var} 点（同时回复等量生命）。",
             "PetApplyPower" => $"[gold]{SummonName(p, e)}[/gold]获得 {var} 层{PowerNameFor(p, e.PowerId)}。",
-            "PetGuardOn" => $"[gold]{SummonName(p, e)}[/gold]开始替你承受攻击伤害。",
-            "PetGuardOff" => $"[gold]{SummonName(p, e)}[/gold]不再替你承受攻击伤害。",
+            "PetGuardOn" => $"[gold]{SummonName(p, e)}[/gold]开始替主人承伤（主人受到可格挡的攻击伤害时，改由它承担）。",
+            "PetGuardOff" => $"[gold]{SummonName(p, e)}[/gold]不再替主人承伤。",
             "PetSacrifice" => PetSacrificeText(p, e, var),
             _ => "",
         };

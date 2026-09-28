@@ -348,7 +348,7 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>
     /// 这条效果是**新增的那批宠物效果**（做的是宠物，不是自己 / 敌人）：
-    /// 伙伴攻击（按生命值算）/ 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 / 牺牲伙伴 / 给伙伴施加状态 / 伙伴替主人挨打 开·关。
+    /// 伙伴攻击（按生命值算）/ 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 / 牺牲伙伴 / 给伙伴施加状态 / 伙伴替主人承伤 开·关。
     ///
     /// 和 <see cref="PetAction"/> 的区别只在于**要不要先找到宠物**：
     ///   · <c>SummonPet</c> 不需要（Summon 内部自己找）；
@@ -482,8 +482,8 @@ public sealed class EffectSpec : SpecBase
                 "PetLoseHp" => $"{who}失去生命",
                 "PetGainMaxHp" => $"{who}最大生命",
                 "PetApplyPower" => $"给{who}施加 {PowerId ?? "?"}",
-                "PetGuardOn" => $"{who}替主人挨打（开）",
-                "PetGuardOff" => $"{who}替主人挨打（关）",
+                "PetGuardOn" => $"{who}替主人承伤（开）",
+                "PetGuardOff" => $"{who}替主人承伤（关）",
                 _ => null,
             };
         }
@@ -651,7 +651,7 @@ public sealed class CardSpec : SpecBase
     /// <summary>
     /// 「这是召唤物卡」：勾上以后这张牌会出现在「召唤物卡牌」选项卡里（左边那张列表只列勾了的），
     /// 那边的效果栏是**专属效果模板** —— 效果种类下拉只列宠物类效果（召唤伙伴 / 伙伴攻击 /
-    /// 按生命值算的伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人挨打…）。
+    /// 按生命值算的伙伴攻击 / 治疗伙伴 / 牺牲伙伴 / 替主人承伤…）。
     ///
     /// 注意：这只是一个「归类」标记（存档字段 + 界面筛选），**不影响生成** ——
     /// 一张没勾的牌照样可以用 «召唤伙伴 / 伙伴攻击»（老存档里的牌就是那样）。
@@ -1866,7 +1866,7 @@ public sealed class SummonSpec : SpecBase
     public string? Image { get => _image; set => Set(ref _image, value); }
 
     /// <summary>
-    /// 替主人挨打：勾上以后召唤时给它挂一个守卫 Power（照本体 <c>DieForYouPower</c> 写），
+    /// 替主人承伤：勾上以后召唤时给它挂一个守卫 Power（照本体 <c>DieForYouPower</c> 写），
     /// 主人受到的**可格挡攻击伤害**改由它承担；它死后本体默认就会把它从战斗里移除
     /// （不覆写 <c>ShouldCreatureBeRemovedFromCombatAfterDeath</c>）。
     ///
@@ -1900,7 +1900,7 @@ public sealed class SummonSpec : SpecBase
         + $"  ｜ 生命 {Hp}"
         + (string.IsNullOrWhiteSpace(ClassName) ? " ｜ 类名自动" : " ｜ " + ClassName.Trim())
         + $" ｜ 站位 {StandDistance}"
-        + (TakesDamageForOwner ? " ｜ 替主人挨打" : "")
+        + (TakesDamageForOwner ? " ｜ 替主人承伤" : "")
         + (string.IsNullOrWhiteSpace(Image) ? "" : " ｜ 有自定义图片");
 }
 
