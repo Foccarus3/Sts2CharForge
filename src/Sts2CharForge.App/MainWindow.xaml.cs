@@ -177,6 +177,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	/// <summary>
+	/// 卡面预览下面那行小字：这张图和**游戏里的显示区域（1000×760）**比例对不对。
+	/// 用户报过：上传了非推荐比例的卡面，游戏里出现黑边，但工具里的预览看不出来 ——
+	/// 所以预览按 1000×760 画一块黑底（见 MainWindow.xaml），这行字再把差多少说清楚。
+	/// </summary>
+	public string CardPortraitPreviewNote
+	{
+		get
+		{
+			if (!(CardList.SelectedItem is CardSpec cardSpec)) return "";
+			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
+			_profile.Art.CardPortraits.TryGetValue(key, out string? value);
+			return AspectNoteOf(value, 1000, 760, "游戏里卡面这块");
+		}
+	}
+
+	/// <summary>
+	/// 上传图和「游戏里的显示区域」的比例说明（预览旁边那行小字）。
+	/// 比例一致就回一句「不会留黑边」；不一致就说清偏宽还是偏窄、会留哪两边、大概留多少。
+	/// </summary>
+	internal static string AspectNoteOf(string? path, int frameW, int frameH, string what)
+	{
+		if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+		if (frameW <= 0 || frameH <= 0) return "";
+		var size = PngUtil.Decode(path);
+		if (size is not { } s || s.W <= 0 || s.H <= 0) return "";
+
+		double frameRatio = (double)frameW / frameH;
+		double imgRatio = (double)s.W / s.H;
+		if (Math.Abs(frameRatio - imgRatio) / frameRatio <= 0.02)
+			return $"✅ 比例和显示区域一致（{s.W}×{s.H}），游戏里不会留黑边。";
+
+		// 按比例缩放居中（contain）：图比框更「宽」→ 受宽度限制 → 上下留边；反之左右留边
+		bool wider = imgRatio > frameRatio;
+		double bar = wider ? 1 - frameRatio / imgRatio : 1 - imgRatio / frameRatio;
+		return $"⚠ 你这张是 {s.W}×{s.H}（比例 {imgRatio:0.00}:1），{what}是 {frameW}×{frameH}（{frameRatio:0.00}:1）："
+			+ (wider ? "图偏宽 → 游戏里会**上下**各留一条黑边" : "图偏窄 → 游戏里会**左右**各留一条黑边")
+			+ $"（约占那一侧的 {bar * 100:0}%）。上面预览里的黑底部分就是它 —— 想不留黑边就裁成 {frameW}×{frameH}（或同比例）。";
+	}
+
 	public BitmapImage? RelicIconPreview
 	{
 		get
@@ -1024,6 +1064,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		Raise("CardPortraitPreview");
+		Raise("CardPortraitPreviewNote");
 		Raise("RelicIconPreview");
 	}
 
@@ -2356,38 +2397,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		ArtSlots.Add(new ArtSlot("静态立绘（战斗 / 商店 / 篝火）", "替代本体的 Spine 骨骼动画，这三个地方都用这张静态图", "PNG，建议 281×235（或更大的同比例图）；留空则用工具自带占位图 zwt.png", (ArtSpec a) => a.CharacterStatic, delegate(ArtSpec a, string? v)
 		{
 			a.CharacterStatic = v;
-		}));
+		}, frameWidth: 281, frameHeight: 235));
 		ArtSlots.Add(new ArtSlot("顶部头像", "游戏内左上角角色头像，PNG-32，88×88（方图）", "PNG，建议 512×512（方图）", (ArtSpec a) => a.Icon, delegate(ArtSpec a, string? v)
 		{
 			a.Icon = v;
-		}));
+		}, frameWidth: 88, frameHeight: 88));
 		ArtSlots.Add(new ArtSlot("选人界面立绘", "选人界面底部的小立绘，132×195（竖版）", "PNG，建议 396×585 等比", (ArtSpec a) => a.SelectIcon, delegate(ArtSpec a, string? v)
 		{
 			a.SelectIcon = v;
-		}));
+		}, frameWidth: 132, frameHeight: 195));
 		// 注意：本体画面是 1920×1080 的横屏（project.godot 的 viewport），
 		// 这张背景图是整屏铺满的（keep-aspect 居中），所以**必须是横图**。
 		// 以前这里写的是「1000×1400 以上的竖图」，方向写反了（用户报的「分辨率反了」）。
 		ArtSlots.Add(new ArtSlot("选人界面背景大图", "选人界面里角色背后那张大图（整屏铺满；留空则用静态立绘那张图）", "PNG，横图，建议 1920×1080 或更大（和游戏画面同比例；竖图会左右留黑边）", (ArtSpec a) => a.SelectBackground, delegate(ArtSpec a, string? v)
 		{
 			a.SelectBackground = v;
-		}));
+		}, frameWidth: 1920, frameHeight: 1080));
 		ArtSlots.Add(new ArtSlot("地图标记", "地图上的角色标记，49×64", "PNG，建议 98×128 等比", (ArtSpec a) => a.MapMarker, delegate(ArtSpec a, string? v)
 		{
 			a.MapMarker = v;
-		}));
+		}, frameWidth: 49, frameHeight: 64));
 		ArtSlots.Add(new ArtSlot("能量图标", "卡牌左上角的费用图标 / 左侧那个能量球（本体 74×74）", "PNG，任意尺寸都行：会自动缩成 74×74（图集）与 24×24（卡牌文字内联），左侧能量球也换成这张图", (ArtSpec a) => a.EnergyIcon, delegate(ArtSpec a, string? v)
 		{
 			a.EnergyIcon = v;
-		}));
+		}, frameWidth: 74, frameHeight: 74));
 		ArtSlots.Add(new ArtSlot("选人过场贴图", "选角色时的过场遮罩，2560×1200", "PNG，灰度图（白=显示、黑=透明）", (ArtSpec a) => a.Transition, delegate(ArtSpec a, string? v)
 		{
 			a.Transition = v;
-		}));
+		}, frameWidth: 2560, frameHeight: 1200));
 		ArtSlots.Add(new ArtSlot("模组预览图（游戏「模组」界面）", "游戏主菜单「模组」界面右侧那块图（本体的 NModInfoContainer 按固定路径 res://<模组ID>/mod_image.png 找它，找不到就空着）", "PNG，建议 1200×630（那个框约 1.9:1）或 1280×720；别超过 1~2 MB（整张图会进 PCK）", (ArtSpec a) => a.ModImage, delegate(ArtSpec a, string? v)
 		{
 			a.ModImage = v;
-		}));
+		}, frameWidth: 1200, frameHeight: 630));
 	}
 
 	private void RefreshAll()
@@ -9615,11 +9656,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				gkPowerSrc.Contains("PowerInstanceType.Instanced"), "Instanced");
 			Check("临时 Power 不显示状态图标（不查 powers 表，也就不会缺图标）",
 				gkPowerSrc.Contains("IsVisibleInternal => false"), "隐藏");
-			Check("临时 Power 在回合结束时 RemoveKeyword / RemoveGivenCustomKeyword 并自毁",
+			Check("临时 Power 在回合结束时摘掉关键词、然后自毁",
 				gkPowerSrc.Contains("public override async Task AfterSideTurnEnd(")
 				&& gkPowerSrc.Contains("Card.RemoveKeyword(VanillaKeyword);")
-				&& gkPowerSrc.Contains("Card.RemoveGivenCustomKeyword(CustomKey);")
 				&& gkPowerSrc.Contains("await PowerCmd.Remove(this);"), "会摘掉");
+			// 只配了本体关键词时**不能**引用自定义关键词那套：RemoveGivenCustomKeyword 在 GivenKeywords.cs 里，
+			// 那个文件只有「给自定义关键词」才会生成 —— 两支都写上的话构建会 CS1061（用户实测踩过）
+			Check("只配本体关键词时，临时 Power 不引用自定义关键词那套（否则构建 CS1061）",
+				!gkPowerSrc.Contains("RemoveGivenCustomKeyword"), "没有引用");
+			CharacterProfile gkCustomOnly = ProfileFactory.Sample();
+			gkCustomOnly.CustomKeywords.Clear();
+			gkCustomOnly.CustomKeywords.Add(new CustomKeywordSpec { Name = "命定", Key = "FATE", Description = "自检用" });
+			gkCustomOnly.Cards.Add(new CardSpec
+			{
+				Name = "只给自定义临时", ClassName = "UiCheckGiveCustomOnly", Cost = 1,
+				Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "FATE", TempKeyword = true, TargetSide = "Self" } },
+			});
+			string gkCustomOnlySrc = CSharpCodeGen.TempKeywordPowerSource(gkCustomOnly);
+			Check("只配自定义关键词时，临时 Power 只摘自定义那一支（不引用本体那一支）",
+				gkCustomOnlySrc.Contains("Card.RemoveGivenCustomKeyword(CustomKey);")
+				&& !gkCustomOnlySrc.Contains("Card.RemoveKeyword(VanillaKeyword);"), "只有自定义那一支");
 
 			// 自定义关键词：注册表 + 两个补丁（卡面文字 + 悬停说明）
 			CharacterProfile gkCustom = ProfileFactory.Sample();
@@ -9858,6 +9914,48 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("PotionIconPreview");
 		Check("药水图标预览属性可用", PotionIconPreview == null, "未上传时应为 null");
 		Check("美术槽位不含「未解锁立绘」", !ArtSlots.Any((ArtSlot s) => s.Name.Contains("未解锁")));
+		// ===== 卡面 / 美术预览：按「游戏里的显示区域」画黑底，比例不对时能直接看到黑边 =====
+		{
+			Check("美术槽位都带上了「游戏里的显示区域」尺寸（预览按它画黑框）",
+				ArtSlots.All((ArtSlot s) => s.HasFrame && s.FrameWidth > 0 && s.FrameHeight > 0),
+				string.Join("、", ArtSlots.Select((ArtSlot s) => s.Name + "=" + s.FrameWidth + "×" + s.FrameHeight)));
+			Check("选人界面背景大图那块是 1920×1080（横图；竖图会左右留黑边）",
+				ArtSlots.First((ArtSlot s) => s.Name.Contains("背景大图")).FrameWidth == 1920
+				&& ArtSlots.First((ArtSlot s) => s.Name.Contains("背景大图")).FrameHeight == 1080, "1920×1080");
+
+			string ratioDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_ratio_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			Directory.CreateDirectory(ratioDir);
+			try
+			{
+				string wide = Path.Combine(ratioDir, "wide.png");       // 2000×760（比 1000×760 宽）
+				string narrow = Path.Combine(ratioDir, "narrow.png");   // 500×760（比 1000×760 窄）
+				string same = Path.Combine(ratioDir, "same.png");       // 1000×760（同比例）
+				ArtGenerator.WriteNeutralPng(wide, 2000, 760);
+				ArtGenerator.WriteNeutralPng(narrow, 500, 760);
+				ArtGenerator.WriteNeutralPng(same, 1000, 760);
+
+				string noteSame = AspectNoteOf(same, 1000, 760, "游戏里卡面这块");
+				string noteWide = AspectNoteOf(wide, 1000, 760, "游戏里卡面这块");
+				string noteNarrow = AspectNoteOf(narrow, 1000, 760, "游戏里卡面这块");
+				Check("比例一致时明确说「不会留黑边」", noteSame.Contains("不会留黑边"), noteSame);
+				Check("图偏宽（2000×760 vs 1000×760）→ 提示「上下」会留黑边",
+					noteWide.Contains("上下") && noteWide.Contains("黑边") && noteWide.Contains("2000×760"), noteWide);
+				Check("图偏窄（500×760）→ 提示「左右」会留黑边", noteNarrow.Contains("左右") && noteNarrow.Contains("黑边"), noteNarrow);
+				Check("没上传 / 文件不在时不给比例说明（不留一行空话）",
+					AspectNoteOf(null, 1000, 760, "x").Length == 0
+					&& AspectNoteOf(Path.Combine(ratioDir, "没有这个文件.png"), 1000, 760, "x").Length == 0, "空");
+				// 上传一张偏宽的图到「选人界面背景大图」槽位：说明里应该出现「上下」留黑边
+				ArtSlot bgSlot = ArtSlots.First((ArtSlot s) => s.Name.Contains("背景大图"));
+				bgSlot.Path = wide;
+				Check("槽位的比例说明跟着上传的图走（背景大图 1920×1080 + 2000×760 的图 → 上下留黑边）",
+					bgSlot.AspectNote.Contains("上下") && bgSlot.AspectNote.Contains("1920×1080"), bgSlot.AspectNote);
+				bgSlot.Path = null;
+			}
+			finally
+			{
+				try { Directory.Delete(ratioDir, true); } catch { }
+			}
+		}
 		string vp;
 		string artRoot;
 		if (!string.IsNullOrWhiteSpace(Profile.Paths.VanillaProject) && Directory.Exists(Profile.Paths.VanillaProject))
@@ -10478,6 +10576,20 @@ public sealed class ArtSlot : INotifyPropertyChanged
 
 	public string Requirement { get; }
 
+	/// <summary>游戏里这块的显示尺寸（宽；0 = 这个槽位没有固定的显示区域）。</summary>
+	public int FrameWidth { get; }
+
+	/// <summary>游戏里这块的显示尺寸（高；0 = 这个槽位没有固定的显示区域）。</summary>
+	public int FrameHeight { get; }
+
+	/// <summary>有没有「游戏里的显示区域」——有就按它的比例画预览黑框（能看到黑边）。</summary>
+	public bool HasFrame => FrameWidth > 0 && FrameHeight > 0;
+
+	/// <summary>上传图和显示区域的比例说明（预览下面那行小字；没上传 / 比例一致时也有话说）。</summary>
+	public string AspectNote => HasFrame
+		? MainWindow.AspectNoteOf(_path, FrameWidth, FrameHeight, $"游戏里这块（{Name}）")
+		: "";
+
 	public string? Path
 	{
 		get
@@ -10489,6 +10601,7 @@ public sealed class ArtSlot : INotifyPropertyChanged
 			_path = value;
 			Raise("Path");
 			Raise("Preview");
+			Raise("AspectNote");
 			Raise("Display");
 		}
 	}
@@ -10531,13 +10644,16 @@ public sealed class ArtSlot : INotifyPropertyChanged
 
 	public event PropertyChangedEventHandler? PropertyChanged;
 
-	public ArtSlot(string name, string hint, string requirement, Func<ArtSpec, string?> get, Action<ArtSpec, string?> set)
+	public ArtSlot(string name, string hint, string requirement, Func<ArtSpec, string?> get, Action<ArtSpec, string?> set,
+		int frameWidth = 0, int frameHeight = 0)
 	{
 		Name = name;
 		Hint = hint;
 		Requirement = requirement;
 		_get = get;
 		_set = set;
+		FrameWidth = frameWidth;
+		FrameHeight = frameHeight;
 	}
 
 	public void Load(ArtSpec art)

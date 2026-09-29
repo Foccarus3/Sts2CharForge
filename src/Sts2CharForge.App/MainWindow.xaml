@@ -410,9 +410,23 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" IsEnabled="{Binding ValueEditable}" Click="OnPickCardPortrait"/>
+                            <!-- 预览：按**游戏里的显示区域**（本体卡面就是 1000×760）画一块黑底，
+                                 上传图比例不一样时，这里看到的那圈黑边就是游戏里会出现的那圈（用户要求）。 -->
                             <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
-                                <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                <Viewbox Stretch="Uniform" Margin="4">
+                                    <Grid Width="1000" Height="760" Background="Black">
+                                        <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                    </Grid>
+                                </Viewbox>
                             </Border>
+                            <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11"
+                                       Foreground="#0A7"
+                                       Text="预览框 = 游戏里的显示区域（1000×760，白框内是黑底）。比例不一致时，黑底那部分就是游戏里留的黑边。"
+                                       Visibility="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                            <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11"
+                                       Foreground="#B60"
+                                       Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                       Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                         </StackPanel>
                         </ScrollViewer>
 
@@ -1187,8 +1201,22 @@
                                         IsEnabled="{Binding CanUndoArt}" ToolTip="{Binding UndoArtHint}"/>
                             </StackPanel>
                             <Border Margin="0,12,0,0" BorderBrush="#DDD" BorderThickness="1" Height="340" Background="#FAFAFA">
-                                <Image Source="{Binding Preview}" Stretch="Uniform"/>
+                                <!-- 有「游戏里的显示区域」的槽位：黑底 + 按那个比例画框（Viewbox 让它随面板缩放）。
+                                     上传图比例不对时，这里看到的就是游戏里会留的那圈黑边；没有固定显示区域的槽位照旧只显示图片。 -->
+                                <Grid>
+                                    <Viewbox Stretch="Uniform" Margin="6"
+                                             Visibility="{Binding HasFrame, Converter={StaticResource BoolToVis}}">
+                                        <Grid Width="{Binding FrameWidth}" Height="{Binding FrameHeight}" Background="Black">
+                                            <Image Source="{Binding Preview}" Stretch="Uniform"/>
+                                        </Grid>
+                                    </Viewbox>
+                                    <Image Source="{Binding Preview}" Stretch="Uniform"
+                                           Visibility="{Binding HasFrame, Converter={StaticResource BoolToCollapsed}}"/>
+                                </Grid>
                             </Border>
+                            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
+                                       Text="{Binding AspectNote}"
+                                       Visibility="{Binding AspectNote, Converter={StaticResource NotEmptyToVisibility}}"/>
                         </StackPanel>
                     </Border>
                 </Grid>

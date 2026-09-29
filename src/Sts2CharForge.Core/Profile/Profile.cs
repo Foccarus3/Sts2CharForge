@@ -1604,16 +1604,24 @@ public static class VanillaKeywordCatalog
     /// <summary>本体关键词一条：枚举名 + 本体中文名（+ 本体中文说明，读不到就是空串）。</summary>
     public sealed record Entry(string Id, string VanillaName, string VanillaDescription);
 
-    /// <summary>本体那 7 个关键词（顺序固定，界面表格就按这个顺序排）。</summary>
+    /// <summary>
+    /// 本体那 7 个关键词（顺序固定，界面表格就按这个顺序排）。
+    ///
+    /// 说明文字直接照抄本体 <c>localization/zhs/card_keywords.json</c> 的原文
+    /// （读得到本体文件时以那份为准，这里是读不到时的兜底）。照抄的原因：「本体关键词改名」要判断
+    /// 「填的和本体一样 = 等于没改」，兜底文本和本体不一致就会误判、写出多余的覆盖条目。
+    /// </summary>
     public static readonly IReadOnlyList<Entry> All = new[]
     {
-        new Entry("EXHAUST",    "消耗",       "打出后进入消耗堆，本场战斗内不再回到牌堆。"),
-        new Entry("ETHEREAL",   "虚无",       "若这张牌在你的回合结束时仍在手牌中，将其消耗。"),
-        new Entry("INNATE",     "固有",       "战斗开始时，这张牌必定在你的起始手牌中。"),
-        new Entry("UNPLAYABLE", "不能被打出", "这张牌不能被打出。"),
-        new Entry("RETAIN",     "保留",       "回合结束时，这张牌不会被弃掉。"),
-        new Entry("SLY",        "奇巧",       "若这张牌因弃牌离开手牌，则免费打出。"),
-        new Entry("ETERNAL",    "永恒",       "这张牌不能被消耗（消耗效果对它无效）。"),
+        new Entry("EXHAUST",    "消耗",       "在战斗结束前移除。"),
+        new Entry("ETHEREAL",   "虚无",       "如果这张牌在这个回合结束时留在你的[gold]手牌[/gold]中，则将其[gold]消耗[/gold]。"),
+        new Entry("INNATE",     "固有",       "每场战斗开始时这张牌会出现在你的[gold]手牌[/gold]。"),
+        new Entry("UNPLAYABLE", "不能被打出", "不能被打出的牌无法被打出。"),
+        new Entry("RETAIN",     "保留",       "保留的牌不会在回合结束时被弃掉。"),
+        new Entry("SLY",        "奇巧",       "如果这张牌在你的回合结束前从你的[gold]手牌[/gold]中被丢弃，则免费将其打出。"),
+        // 永恒不是「打出后回抽牌堆」：本体 CardModel.IsRemovable / IsTransformable 看的就是它 ——
+        // 带着这个关键词的牌**无法从牌组里移除或变化**（战斗中不在牌组里时仍可变化）。
+        new Entry("ETERNAL",    "永恒",       "无法从你的[gold]牌组[/gold]中移除或变化。"),
     };
 
     /// <summary>这个 id 是不是那 7 个之一（大小写不敏感，读手写 JSON 时兜底）。</summary>

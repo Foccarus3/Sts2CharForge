@@ -520,7 +520,9 @@ public static class EffectCatalog
         new KeywordChoiceOption("Retain",     "保留（回合末不弃）", false),
         new KeywordChoiceOption("Unplayable", "不能被打出", false),
         new KeywordChoiceOption("Sly",        "奇巧（被弃掉则免费打出）", false),
-        new KeywordChoiceOption("Eternal",    "永恒（打出后回到抽牌堆）", false),
+        // 永恒**不是**「打出后回抽牌堆」（我上一版写错了）：本体 CardModel.IsRemovable / IsTransformable
+        // 看的就是它 —— 带着它的牌无法从牌组中移除或变化。
+        new KeywordChoiceOption("Eternal",    "永恒（无法从牌组中移除或变化）", false),
     };
 
     /// <summary>是不是本体关键词的枚举名（用来区分「给本体关键词」和「给自定义关键词」）。</summary>

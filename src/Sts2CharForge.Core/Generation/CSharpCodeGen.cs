@@ -3675,7 +3675,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             default:
                 w.Line($"{cardExpr}.AddKeyword(CardKeyword.{kwEnum});");
-                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, default), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
+                // 这里必须写死枚举名：写 default 会和「(CardModel, string)」那个重载二义（CS0121，用户实测踩过）
+                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, CardKeyword.{kwEnum}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
                     + "   // 临时：回合结束时摘掉");
                 break;
         }
@@ -3757,18 +3758,48 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Line("/// <summary>这一回合结束：把关键词摘掉，然后自己消失。</summary>")
             .Open("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
             .Open("if (participants.Contains(base.Owner) && Card is not null)")
-            .Open("if (CustomKey.Length > 0)")
-            .Line("Card.RemoveGivenCustomKeyword(CustomKey);")
-            .Close()
-            .Line("else")
-            .Open("")
-            .Line("Card.RemoveKeyword(VanillaKeyword);")
-            .Close()
+            .Raw(TempKeywordRemovalBody(p))
             .Close()
             .Line("await PowerCmd.Remove(this);")
             .Close()
             .Close()
             .ToString();
+    }
+
+    /// <summary>
+    /// 「这一回合结束要摘掉什么」这段代码体。
+    ///
+    /// 两种关键词分开写：**只有这一份存档真的用到哪种，才写哪一支** ——
+    /// 自定义关键词那支要调 <c>RemoveGivenCustomKeyword</c>（在 GivenKeywords.cs 里，只有「给自定义关键词」时才会生成），
+    /// 全都写上的话，只配了本体关键词的存档会 CS1061（用户实测：构建失败）。
+    /// </summary>
+    private static string TempKeywordRemovalBody(CharacterProfile p)
+    {
+        var effects = GiveKeywordEffects(p).Where(e => e.TempKeyword).ToList();
+        bool anyCustom = effects.Any(e => !EffectCatalog.IsVanillaKeywordName(e.GivenKeyword));
+        bool anyVanilla = effects.Any(e => EffectCatalog.IsVanillaKeywordName(e.GivenKeyword));
+
+        var w = new CodeWriter();
+        w.Indent().Indent().Indent();       // 类 → 方法 → if：里面的语句是第 3 层缩进（和周围的生成代码对齐）
+        if (anyCustom && anyVanilla)
+        {
+            w.Open("if (CustomKey.Length > 0)")
+             .Line("Card.RemoveGivenCustomKeyword(CustomKey);")
+             .Close()
+             .Line("else")
+             .Open("")
+             .Line("Card.RemoveKeyword(VanillaKeyword);")
+             .Close();
+        }
+        else if (anyCustom)
+        {
+            w.Line("Card.RemoveGivenCustomKeyword(CustomKey);");
+        }
+        else
+        {
+            w.Line("Card.RemoveKeyword(VanillaKeyword);");
+        }
+        return w.ToString();
     }
 
     /// <summary>
