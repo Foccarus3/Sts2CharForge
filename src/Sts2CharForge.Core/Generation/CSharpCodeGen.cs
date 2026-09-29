@@ -961,6 +961,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (e.Condition is not null && !e.Condition.IsNone
                 && e.Condition.Kind == "HasPowerAtLeast" && !string.IsNullOrWhiteSpace(e.Condition.PowerId))
                 list.Add($"MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower<{e.Condition.PowerId!.Trim()}>()");
+            // 击晕：本体里它是怪物意图（不是状态），本体卡「口哨」用的就是这条静态提示
+            if (e.Kind == "Stun")
+                list.Add("MegaCrit.Sts2.Core.MonsterMoves.Intents.StunIntent.GetStaticHoverTip()");
         }
 
         // 额外资源量（本体的「星星」计数器）：本体没有专门给卡牌用的静态提示，
@@ -1704,7 +1707,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static bool NeedsTargetNullCheck(CardSpec c) =>
         c.Effects.Any(e => e.TargetSide == "Enemy"
-            && (e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            && (e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "Block" or "Heal" or "HpLoss" or "MaxHp"
                 || PetAttackKind(e.Kind)
                 || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage")));
 
@@ -2050,7 +2053,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「伙伴攻击」同理：打的是敌人（attacker 是宠物），卡牌也要变成需要选目标的那种。
         // 「牺牲伙伴」收益是伤害时同理（生成的是 .Targeting(cardPlay.Target)），收益是格挡时不算。
         static bool HitsEnemy(EffectSpec e) =>
-            e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "Block" or "Heal" or "HpLoss" or "MaxHp"
             || PetAttackKind(e.Kind)
             || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
@@ -2223,6 +2226,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "CardReward"
         // 「给予卡牌关键词」：数值 = 选几张牌（0 = 这张牌自己），不给这张牌加成任何动态变量
         or "GiveKeyword"
+        // 击晕：没有数值，也不用声明动态变量
+        or "Stun"
         // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
         // 否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)（两条就撞名 → 开新局崩）
         or "PetGuardOn" or "PetGuardOff"
@@ -2524,6 +2529,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             //   · 自定义关键词 → 走生成的「关键词补丁」注册表（卡面文字 + 悬停说明都是它加的），临时时由临时 Power 摘掉。
             case "GiveKeyword":
                 EmitGiveKeyword(w, p, e, useX, "base.Owner", "base.Owner.Creature", "this", selfAllowed: true);
+                break;
+
+            // ===== 击晕 =====
+            // 本体的「击晕」不是状态（Power），而是**怪物意图**：CreatureCmd.Stun(creature)
+            // （本体卡「口哨 Whistle」就是这么写的）。被打晕的敌人这一回合什么都不做。
+            case "Stun":
+                EmitStun(w, e, useX, "cardPlay.Target", "base.CombatState.HittableEnemies", "base.Owner");
                 break;
 
             case "Block":
@@ -3520,12 +3532,39 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
                 }
-                else
+                else if (e.TargetSide == "RandomEnemies")
+                {
+                    // 用户报过：「对 1 个随机敌人施加增益」在遗物上变成了**对所有敌人** ——
+                    // 因为以前这里不分目标，一律走「对所有敌人」那条重载。现在按目标分别生成。
+                    w.Line($"List<Creature> foes = base.Owner.Creature.CombatState.HittableEnemies.ToList();")
+                     .Open($"for (int __relFoeIdx = 0; __relFoeIdx < {RepeatExpr(e, useX: false)} && foes.Count > 0; __relFoeIdx++)")
+                     .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
+                    if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
+                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, null);");
+                    EmitSlowPercentFix(w, e, "foe");     // 在循环里（foe 的作用域内），不能拿到循环外面
+                    w.Close();
+                }
+                else if (e.TargetSide == "AllEnemies")
                 {
                     w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
                     // 一次性对全体施加（上面那条重载），这里逐个补百分比
                     EmitSlowPercentFixForAll(w, e);
                 }
+                else
+                {
+                    // 「指定敌人」：遗物没有「玩家选中的目标」→ 取可打的第一个敌人（和其它效果同一套约定）
+                    w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
+                     .Open("if (foe is not null)")
+                     .Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, null);");
+                    EmitSlowPercentFix(w, e, "foe");
+                    w.Close();
+                }
+                break;
+
+            // 击晕：本体不是状态而是怪物意图（CreatureCmd.Stun），遗物也能用
+            case "Stun":
+                EmitStun(w, e, useX: false, cardTargetExpr: null,
+                    enemiesExpr: "base.Owner.Creature.CombatState.HittableEnemies", playerExpr: "base.Owner");
                 break;
 
             // 临时增益：遗物也能给（本回合 +X，回合结束撤掉）
@@ -3533,8 +3572,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，临时增益无法实现）"); break; }
                 if (e.TargetSide == "Self")
                     w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
-                else
+                else if (e.TargetSide == "RandomEnemies")
+                {
+                    // 同上：随机 N 个不能变成「全体」
+                    w.Line($"List<Creature> foes = base.Owner.Creature.CombatState.HittableEnemies.ToList();")
+                     .Open($"for (int __relTempIdx = 0; __relTempIdx < {RepeatExpr(e, useX: false)} && foes.Count > 0; __relTempIdx++)")
+                     .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
+                    if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, null);")
+                     .Close();
+                }
+                else if (e.TargetSide == "AllEnemies")
                     w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
+                else
+                {
+                    w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
+                     .Open("if (foe is not null)")
+                     .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, null);")
+                     .Close();
+                }
                 break;
 
             // 给予卡牌关键词：遗物也能给（数值 0 在这里没有意义 —— 遗物不是一张牌）
@@ -3590,6 +3646,57 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Concat(p.Potions.SelectMany(s => s.Effects)).Any(e => e.Kind == "ExtraTurn");
 
     // ==================== 给予卡牌关键词 ====================
+
+    /// <summary>
+    /// 「击晕」的代码（卡牌 / 遗物 / 药水 / 自定义状态触发器共用）。
+    /// 本体里「击晕」**不是状态**，而是怪物意图 —— 公开 API 就一句
+    /// <c>CreatureCmd.Stun(creature)</c>（本体卡「口哨 Whistle」用的就是它，不需要 choiceContext）。
+    /// 所以它不能放进「增益 / 减益」那个下拉里（那里面全是 PowerModel）。
+    /// </summary>
+    /// <param name="cardTargetExpr">卡牌「指定敌人」的表达式（cardPlay.Target）；遗物 / 药水没有就传 null。</param>
+    /// <param name="enemiesExpr">「所有敌人」的表达式。</param>
+    /// <param name="playerExpr">玩家表达式（随机挑敌人时取 RNG 用）。</param>
+    internal static void EmitStunPublic(CodeWriter w, EffectSpec e, bool useX,
+        string? cardTargetExpr, string enemiesExpr, string playerExpr) =>
+        EmitStun(w, e, useX, cardTargetExpr, enemiesExpr, playerExpr);
+
+    private static void EmitStun(CodeWriter w, EffectSpec e, bool useX,
+        string? cardTargetExpr, string enemiesExpr, string playerExpr)
+    {
+        string n = RepeatExpr(e, useX);
+        switch (e.TargetSide)
+        {
+            case "AllEnemies":
+                w.Open($"foreach (Creature foe in {enemiesExpr})")
+                 .Line("await CreatureCmd.Stun(foe);")
+                 .Close();
+                break;
+            case "RandomEnemies":
+                // 和卡牌其它「随机敌人」写法一致：挑一只打晕一次，不允许重复时挑过的不再挑
+                w.Line($"List<Creature> foes = {enemiesExpr}.ToList();")
+                 .Open($"for (int __stunIdx = 0; __stunIdx < {n} && foes.Count > 0; __stunIdx++)")
+                 .Line($"Creature foe = {playerExpr}.RunState.Rng.CombatTargets.NextItem(foes);");
+                if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
+                w.Line("await CreatureCmd.Stun(foe);")
+                 .Close();
+                break;
+            case "Enemy" when cardTargetExpr is not null:
+                w.Line($"await CreatureCmd.Stun({cardTargetExpr});");
+                break;
+            case "Enemy":
+                // 遗物 / 药水没有「玩家选中的目标」：取可打的第一个敌人（和其它效果同一套约定）
+                w.Open($"Creature? foe = {enemiesExpr}.FirstOrDefault();")
+                 .Open("if (foe is not null)")
+                 .Line("await CreatureCmd.Stun(foe);")
+                 .Close()
+                 .Close();
+                break;
+            default:
+                // 「对自己」：本体也有自晕的场景（怪物给自己上 DIZZY_MOVE），照给
+                w.Line($"await CreatureCmd.Stun(base.Owner.Creature);");
+                break;
+        }
+    }
 
     /// <summary>
     /// 「给予卡牌关键词」的代码（卡牌 / 遗物 / 药水 / 自定义状态触发器共用）。
@@ -4141,6 +4248,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // ===== 给予卡牌关键词：药水也能用（数值 0 在药水上没有意义）=====
             case "GiveKeyword":
                 EmitGiveKeyword(w, p, e, useX: false, "base.Owner", "base.Owner.Creature", "null", selfAllowed: false);
+                break;
+
+            // ===== 击晕：药水也能用（按药水的「作用目标」打）=====
+            case "Stun":
+                if (potionTarget == "AllEnemies")
+                    w.Open($"foreach (Creature foe in {allEnemies})")
+                     .Line("await CreatureCmd.Stun(foe);")
+                     .Close();
+                else if (potionTarget == "AnyEnemy")
+                    w.Open("if (target is not null)")
+                     .Line("await CreatureCmd.Stun(target);")
+                     .Close();
+                else
+                    w.Line("await CreatureCmd.Stun(base.Owner.Creature);");
                 break;
 
             // ===== 召唤伙伴：药水不支持 =====

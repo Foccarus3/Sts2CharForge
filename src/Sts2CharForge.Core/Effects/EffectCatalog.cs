@@ -561,6 +561,10 @@ public static class EffectCatalog
         new EffectKindOption("Gold",    "获得金币",     "枚", 0,    999, false, false),
             new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, false, false),
         new EffectKindOption("ApplyPower", "施加增益/减益", "层", 1, 99, true, true),
+        // 击晕：本体的「击晕」不是状态（Power），而是**怪物意图**（StunIntent）——
+        // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
+        // 我们照它生成：被打晕的敌人这一回合什么都不做。
+        new EffectKindOption("Stun", "击晕（敌人本回合不行动）", "—", 0, 0, false, true),
         // 临时增益：本回合内 +X 层，回合结束时把这次加的 X 层撤掉（本体 FlexPotion 的
         // TemporaryStrengthPower 就是这套 —— 生成的 <角色>ForgeTemp<状态> 也是照它写的）。
         // 数值 = 层数（不按回合计时），作用对象沿用「施加增益/减益」那一套（自己 / 指定敌人 / 全体敌人）。

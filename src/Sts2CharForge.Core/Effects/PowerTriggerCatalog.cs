@@ -77,7 +77,7 @@ public static class PowerTriggers
     public static IReadOnlyList<string> SupportedEffectKinds { get; } = new[]
     {
         "Damage", "Block", "Draw", "Energy", "Heal", "HpLoss", "MaxHp", "Gold",
-        "ExtraResource", "ApplyPower", "TempPower", "GenerateCard", "ExtraTurn", "CardReward",
+        "ExtraResource", "ApplyPower", "TempPower", "Stun", "GenerateCard", "ExtraTurn", "CardReward",
         "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal",
     };
 

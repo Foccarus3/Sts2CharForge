@@ -587,6 +587,10 @@ public static class LocalizationGen
                 : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。",
             // 给予卡牌关键词：数值 = 选几张牌（0 = 这张牌自己）
             "GiveKeyword" => GiveKeywordText(p, e, repeat, when),
+            // 击晕：本体里它不是状态（Power）而是「怪物意图」，所以单列一条（本体卡「口哨」那种）
+            "Stun" => e.TargetSide == "Self"
+                ? $"{repeat}{when}自己被打晕（本回合不行动）。"
+                : $"{repeat}{when}击晕{(who.Length == 0 ? "指定敌人" : who)}（本回合不行动）。",
             // ===== 全局（直接改牌组）=====
             "AddCardGlobal" => $"获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
             // 挂「战斗胜利后」时是结算界面多一条奖励；挂在战斗中就是当场弹选牌界面（见 CSharpCodeGen.EmitCardReward）

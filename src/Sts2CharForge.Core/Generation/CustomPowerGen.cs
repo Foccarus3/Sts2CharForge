@@ -492,6 +492,12 @@ public static class CustomPowerGen
                 }
                 break;
 
+            // 击晕：状态触发器里也能用（CreatureCmd.Stun 不需要 choiceContext）
+            case "Stun":
+                CSharpCodeGen.EmitStunPublic(w, e, useX: false, cardTargetExpr: null,
+                    enemiesExpr: "base.Owner.CombatState.HittableEnemies", playerExpr: "base.Owner.Player");
+                break;
+
             // 给予卡牌关键词：状态触发器里也能给（数值 0 = 「这张牌自己」在状态里没有意义）
             case "GiveKeyword":
                 CSharpCodeGen.EmitGiveKeyword(w, null, e, useX: false,

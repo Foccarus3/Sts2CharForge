@@ -9748,6 +9748,74 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				&& CSharpCodeGen.RelicSource(gkRelicProbe, gkRelic, 0).Contains("__kwCard.AddKeyword(CardKeyword.Retain);"), "遗物也支持");
 		}
 
+		// ===== 击晕（本体里它不是状态，是怪物意图）+ 遗物的「随机/指定敌人」不能再变成全体 =====
+		{
+			Check("效果种类里有「击晕（敌人本回合不行动）」",
+				EffectCatalog.EffectKinds.Any(k => k.Kind == "Stun"), "在");
+			Check("击晕也能放在状态触发器里（CreatureCmd.Stun 不需要 choiceContext）",
+				PowerTriggers.Supports("Stun"), "在白名单里");
+
+			CharacterProfile stunProbe = ProfileFactory.Sample();
+			CardSpec stunCard = new CardSpec { Name = "自检击晕", ClassName = "UiCheckStun", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			stunCard.Effects.Add(new EffectSpec { Kind = "Stun", TargetSide = "Enemy" });
+			stunCard.Effects.Add(new EffectSpec { Kind = "Stun", TargetSide = "AllEnemies" });
+			stunCard.Effects.Add(new EffectSpec { Kind = "Stun", TargetSide = "RandomEnemies", RepeatCount = 2, AllowDuplicates = false });
+			stunProbe.Cards.Add(stunCard);
+			string stunSrc = CSharpCodeGen.CardSource(stunProbe, stunCard, 0);
+			Check("击晕生成的是本体那句 API CreatureCmd.Stun（本体卡「口哨」同款）",
+				stunSrc.Contains("await CreatureCmd.Stun(cardPlay.Target);"), "Stun API");
+			Check("击晕全体 → foreach 每个敌人各来一次", stunSrc.Contains("foreach (Creature foe in base.CombatState.HittableEnemies)")
+				&& stunSrc.Contains("await CreatureCmd.Stun(foe);"), "全体");
+			Check("击晕随机 N 个 → 循环随机挑（不允许重复时不重复挑）",
+				stunSrc.Contains("for (int __stunIdx = 0; __stunIdx < 2 && foes.Count > 0; __stunIdx++)")
+				&& stunSrc.Contains("NextItem(foes)") && stunSrc.Contains("foes.Remove(foe);"), "随机");
+			Check("击晕的卡会变成「要选目标」的牌（TargetType.AnyEnemy）",
+				stunSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			Check("击晕带本体那条静态悬停说明（StunIntent.GetStaticHoverTip）",
+				stunSrc.Contains("StunIntent.GetStaticHoverTip()"), "有悬停说明");
+			Check("击晕不声明动态变量（没有数值，也就不会有 Value 兜底变量）",
+				CSharpCodeGen.VarKeysOf(new[] { new EffectSpec { Kind = "Stun" } }).Count == 0, "没有变量");
+			Check("卡面描述写清击晕对象",
+				LocalizationGen.CardsJson(stunProbe).Contains("击晕指定敌人（本回合不行动）。")
+				&& LocalizationGen.CardsJson(stunProbe).Contains("击晕所有敌人（本回合不行动）。")
+				&& LocalizationGen.CardsJson(stunProbe).Contains("击晕随机 2 个敌人（本回合不行动）。"),
+				LocalizationGen.CardsJson(stunProbe).Replace("\n", " "));
+
+			// 遗物：目标必须分开处理（用户报过「对 1 个随机敌人施加增益」变成了对所有敌人生效）
+			CharacterProfile relProbe = ProfileFactory.Sample();
+			RelicSpec relRnd = new RelicSpec { Name = "自检随机1", Trigger = "PlayerTurnStart" };
+			relRnd.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "VulnerablePower", Amount = 2m, TargetSide = "RandomEnemies", RepeatCount = 1 });
+			relProbe.Relics.Add(relRnd);
+			string relRndSrc = CSharpCodeGen.RelicSource(relProbe, relRnd, 0);
+			Check("遗物「随机 N 个敌人」→ 按次随机挑，**不再**写成「对所有敌人」",
+				relRndSrc.Contains("for (int __relFoeIdx = 0; __relFoeIdx < 1 && foes.Count > 0; __relFoeIdx++)")
+				&& relRndSrc.Contains("await PowerCmd.Apply<VulnerablePower>(choiceContext, foe,")
+				&& !relRndSrc.Contains("Apply<VulnerablePower>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies,"),
+				"随机一只");
+			RelicSpec relOne = new RelicSpec { Name = "自检指定", Trigger = "PlayerTurnStart" };
+			relOne.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Enemy" });
+			relProbe.Relics.Add(relOne);
+			string relOneSrc = CSharpCodeGen.RelicSource(relProbe, relOne, 0);
+			Check("遗物「指定敌人」→ 取可打的第一个敌人（不是全体）",
+				relOneSrc.Contains("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
+				&& relOneSrc.Contains("await PowerCmd.Apply<WeakPower>(choiceContext, foe,")
+				&& !relOneSrc.Contains("Apply<WeakPower>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies,"),
+				"第一个敌人");
+			RelicSpec relAll = new RelicSpec { Name = "自检全体", Trigger = "PlayerTurnStart" };
+			relAll.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "AllEnemies" });
+			relProbe.Relics.Add(relAll);
+			Check("遗物「所有敌人」仍然走一次性全体施加（没改坏）",
+				CSharpCodeGen.RelicSource(relProbe, relAll, 0)
+					.Contains("Apply<WeakPower>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies,"), "全体");
+			RelicSpec relTempRnd = new RelicSpec { Name = "自检临时随机", Trigger = "PlayerTurnStart" };
+			relTempRnd.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "RandomEnemies", RepeatCount = 1 });
+			relProbe.Relics.Add(relTempRnd);
+			Check("遗物上的「临时增益·随机敌人」也按随机挑，而不是全体",
+				CSharpCodeGen.RelicSource(relProbe, relTempRnd, 0).Contains("for (int __relTempIdx = 0;")
+				&& !CSharpCodeGen.RelicSource(relProbe, relTempRnd, 0).Contains("ForgeTempStrengthPower>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies,"),
+				"随机一只");
+		}
+
 		// ===== 第二批⑤：临时增益（本回合 +X，回合结束撤掉）=====
 		{
 			Check("效果种类里有「临时增益（本回合 +X，回合结束消失）」",

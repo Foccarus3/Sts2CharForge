@@ -1068,6 +1068,26 @@ public static class ProjectRecovery
                 continue;
             }
 
+            // 击晕：生成的是 `await CreatureCmd.Stun(目标);`（本体卡「口哨」那句 API）。
+            // 目标从参数认：base.Owner.Creature = 自己；cardPlay.Target = 指定敌人；
+            // foe 在 for 循环里 = 随机 N 个、在 foreach 里 = 全体、在 if (foe is not null) 里 = 指定敌人（遗物那种）。
+            if (line.StartsWith("await CreatureCmd.Stun(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "Stun" };
+                if (line.Contains("base.Owner.Creature", StringComparison.Ordinal)) e.TargetSide = "Self";
+                else if (line.Contains("cardPlay.Target", StringComparison.Ordinal)) e.TargetSide = "Enemy";
+                else if (frames.Any(f => f.IsLoop)) e.TargetSide = randomFoes ? "RandomEnemies" : "AllEnemies";
+                else e.TargetSide = "Enemy";
+                if (e.TargetSide == "RandomEnemies")
+                {
+                    e.AllowDuplicates = !foesRemoved;
+                    ApplyLoop(e, frames, randomHits: true);
+                }
+                else ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
             if (line.StartsWith("await PowerCmd.Apply<", StringComparison.Ordinal))
             {
                 var m = Regex.Match(line, @"await PowerCmd\.Apply<(\w+)>\(([^;]*)\);");
@@ -1144,7 +1164,16 @@ public static class ProjectRecovery
                     //      foe 出现在「随机挑敌人」的循环里 = 随机敌人，出现在 foreach 里 = 全体
                     if (target.Contains("cardPlay.Target")) e.TargetSide = "Enemy";
                     else if (target.Contains("HittableEnemies")) e.TargetSide = "AllEnemies";
-                    else if (target == "foe") e.TargetSide = randomFoes ? "RandomEnemies" : "AllEnemies";
+                    else if (target == "foe")
+                    {
+                        // foe 有三种来源，靠**在不在循环里**分：
+                        //   · 没有循环 → 遗物那条 `Creature? foe = …FirstOrDefault();` = 指定敌人（一个）
+                        //   · foreach 循环 → 全体；for 循环 + List<Creature> foes → 随机 N 个
+                        // （以前不看循环，遗物的「指定敌人」回读成「全体」，再生成就真变成全体了）
+                        bool inLoop = frames.Any(f => f.IsLoop);
+                        e.TargetSide = !inLoop ? "Enemy"
+                            : (randomFoes ? "RandomEnemies" : "AllEnemies");
+                    }
                     else e.TargetSide = "Self";
                     if (e.TargetSide == "RandomEnemies")
                     {
@@ -1291,9 +1320,11 @@ public static class ProjectRecovery
 
     private static string LoopCount(string head)
     {
-        string? m = Match(head, @"i < (\d+)");
+        // 循环变量名不一定是 i：生成器在「随机挑敌人 / 随机击晕」里用的是 __foeIdx / __relFoeIdx / __stunIdx…
+        // （以前只认 `i < N`，于是「随机 2 个敌人」回读回来变成 1 个 —— 用户看到的像是配置被改了）
+        string? m = Match(head, @"\w+ < (\d+)");
         if (m is not null) return m;
-        if (head.Contains("i < x")) return "x";
+        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\w+ < x\b")) return "x";
         if (head.Contains("(int)base.Amount")) return "stack";
         return "?";
     }
