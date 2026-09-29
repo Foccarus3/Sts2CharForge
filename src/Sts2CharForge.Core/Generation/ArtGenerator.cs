@@ -56,6 +56,24 @@ public static class ArtGenerator
         rewrite["res://images/packed/sprite_fonts/ironclad_energy_icon.png"] =
             $"res://images/packed/sprite_fonts/{n.EnergyColor}_energy_icon.png";
 
+        // 模组预览图：本体模组界面按**固定路径**找它 —— res://<模组ID>/mod_image.png
+        //（NModInfoContainer.cs:39：找不到就把右侧那块留空，只显示名字/作者/版本/说明）。
+        // 落点和 localization 同级（<工程>\<模组ID>\），会一起打进 PCK。
+        if (!string.IsNullOrWhiteSpace(p.Art.ModImage))
+        {
+            if (File.Exists(p.Art.ModImage))
+            {
+                string modImageDst = Path.Combine(projectRoot, n.ModId, "mod_image.png");
+                Directory.CreateDirectory(Path.GetDirectoryName(modImageDst)!);
+                File.Copy(p.Art.ModImage!, modImageDst, overwrite: true);
+                log?.Invoke("  模组预览图：已放到 " + n.ModId + "/mod_image.png（游戏「模组」界面右侧显示）");
+            }
+            else
+            {
+                log?.Invoke("  [警告] 模组预览图文件不存在，已跳过：" + p.Art.ModImage);
+            }
+        }
+
         foreach (var (srcTemplate, dstTemplate, upload) in AssetMap())
         {
             string src = Path.Combine(p.Paths.VanillaProject, srcTemplate);

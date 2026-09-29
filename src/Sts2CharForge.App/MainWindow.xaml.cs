@@ -2331,6 +2331,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			a.Transition = v;
 		}));
+		ArtSlots.Add(new ArtSlot("模组预览图（游戏「模组」界面）", "游戏主菜单「模组」界面右侧那块图（本体的 NModInfoContainer 按固定路径 res://<模组ID>/mod_image.png 找它，找不到就空着）", "PNG，建议 1200×630（那个框约 1.9:1）或 1280×720；别超过 1~2 MB（整张图会进 PCK）", (ArtSpec a) => a.ModImage, delegate(ArtSpec a, string? v)
+		{
+			a.ModImage = v;
+		}));
 	}
 
 	private void RefreshAll()
@@ -4540,7 +4544,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("遗物列表绑定到 Profile.Relics", RelicList.ItemsSource == Profile.Relics);
 		Check("药水列表绑定到 Profile.Potions", PotionList.ItemsSource == Profile.Potions);
 		Check("关键词列表绑定到 Profile.CustomKeywords", KeywordList.ItemsSource == Profile.CustomKeywords);
-		Check("美术槽位已建立（7 个上传槽位 + 描边颜色输入）", ArtSlots.Count == 7, $"{ArtSlots.Count} 个");
+		Check("美术槽位已建立（8 个上传槽位 + 描边颜色输入）", ArtSlots.Count == 8, $"{ArtSlots.Count} 个");
 		try
 		{
 			StartupProfileDialog startupProfileDialog = new StartupProfileDialog(ProfileFolder);
@@ -8234,8 +8238,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						&& !string.IsNullOrWhiteSpace(artReloaded.Art.SelectIcon)
 						&& !string.IsNullOrWhiteSpace(artReloaded.Art.MapMarker)
 						&& !string.IsNullOrWhiteSpace(artReloaded.Art.EnergyIcon)
+						&& !string.IsNullOrWhiteSpace(artReloaded.Art.ModImage)
 						&& !string.IsNullOrWhiteSpace(artReloaded.Art.SelectBackground),
-						"Icon / SelectIcon / MapMarker / EnergyIcon / SelectBackground 都写进了 json");
+						"Icon / SelectIcon / MapMarker / EnergyIcon / ModImage / SelectBackground 都写进了 json");
 					Check("卡面（逐张上传）也会立刻写进存档",
 						artReloaded.Art.CardPortraits.Count > 0, artReloaded.Art.CardPortraits.Count + " 张卡面写进了 json");
 					Check("上传图片的提示会告诉用户「已写进存档」",

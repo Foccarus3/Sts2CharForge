@@ -1769,6 +1769,17 @@ public sealed class ArtSpec{
     public string? MapMarker { get; set; }
     public string? EnergyIcon { get; set; }
     public string? Transition { get; set; }
+
+    /// <summary>
+    /// 模组预览图（游戏主菜单「模组」界面右侧那块图）。本机 PNG 路径，可留空。
+    ///
+    /// 本体的模组界面是按**固定路径**找图的：<c>res://&lt;模组ID&gt;/mod_image.png</c>
+    /// （<c>NModInfoContainer.cs:39</c> —— 找不到就把那块留空，只显示名字 / 作者 / 版本 / 说明）。
+    /// 所以生成时会把这张图拷到 <c>&lt;工程&gt;\&lt;模组ID&gt;\mod_image.png</c>
+    /// （和 localization 同一个目录，一起打进 PCK）。
+    /// 建议 1200×630（那个框差不多 1.9:1）或 1280×720，PNG、别超过 1~2 MB。
+    /// </summary>
+    public string? ModImage { get; set; }
     /// <summary>静态战斗/商店/篝火立绘（替代本体的 Spine 骨骼动画）。留空则用工具自带占位图。</summary>
     public string? CharacterStatic { get; set; }
     /// <summary>没上传的槽位是否用本体（铁甲战士）素材占位。默认 false = 生成中性占位图，

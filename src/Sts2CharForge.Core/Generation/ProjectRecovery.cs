@@ -209,6 +209,12 @@ public static class ProjectRecovery
         ParseAncients(cs, p, loc, result);
 
         // ---- 把用到的图复制到存档旁边（工程目录以后删了也不缺图） ----
+        // 模组预览图先按固定路径认回来：本体模组界面读的是 res://<模组ID>/mod_image.png
+        //（工程里就是 <工程>\<模组ID>\mod_image.png），认到之后再交给 CopyAssets 搬进 _恢复素材
+        {
+            string modImageInProject = Path.Combine(projectDir, modId, "mod_image.png");
+            if (File.Exists(modImageInProject)) p.Art.ModImage = modImageInProject;
+        }
         if (!string.IsNullOrWhiteSpace(assetDir)) CopyAssets(p, assetDir!, result);
 
         result.Notes.Add($"卡牌 {p.Cards.Count(c => !c.IsVanillaCard)} 张（初始牌 {p.Cards.Count(c => c.InStartingDeck && !c.IsVanillaCard)} 张 / 不入池 {p.Cards.Count(c => !c.IsVanillaCard && !c.InCardPool)} 张）"
@@ -291,6 +297,7 @@ public static class ProjectRecovery
         p.Art.MapMarker = Move(p.Art.MapMarker);
         p.Art.EnergyIcon = Move(p.Art.EnergyIcon);
         p.Art.Transition = Move(p.Art.Transition);
+        p.Art.ModImage = Move(p.Art.ModImage);
         foreach (var key in p.Art.CardPortraits.Keys.ToList()) p.Art.CardPortraits[key] = Move(p.Art.CardPortraits[key]) ?? "";
         foreach (var ov in p.VanillaPowerOverrides) ov.Icon = Move(ov.Icon);
         foreach (var cp in p.CustomPowers) cp.Icon = Move(cp.Icon);
@@ -332,6 +339,7 @@ public static class ProjectRecovery
                 MapMarker = t.Art.MapMarker,
                 EnergyIcon = t.Art.EnergyIcon,
                 Transition = t.Art.Transition,
+                ModImage = t.Art.ModImage,
                 UseVanillaPlaceholders = t.Art.UseVanillaPlaceholders,
                 CardPortraits = new Dictionary<string, string>(t.Art.CardPortraits),
             },
