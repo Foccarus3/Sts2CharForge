@@ -16,9 +16,14 @@ public static class ModGenerator
         // 状态改名的「显示名」表：卡面/遗物/药水文字渲染都要用它（必须在校验和生成之前设好）
         EffectCatalog.SetPowerRenames(profile.VanillaPowerOverrides);
         // 自定义状态登记：卡牌/遗物/药水的「施加增益/减益」要能引用它们
+        // 注意：这里必须和 UI（MainWindow 的 SetCustomPowers）一样，只登记**启用**的状态。
+        // 否则「停用/删除过的状态」也会被当成「存在」，校验器就放过了引用它的卡牌，
+        // 而生成时又跳过它（ModGenerator 下面按 CustomPowerGen.IsActive 生成类）——
+        // 结果 dotnet 直接报 CS0246 找不到类型，用户只看到一堆看不懂的编译错误。
         EffectCatalog.SetCustomPowers(profile.CustomPowers
-            .Select((cp, i) => (CustomPowerGen.ClassNameOf(profile, cp, i), cp.Name))
-            .Where(x => !string.IsNullOrWhiteSpace(x.Item2)));
+            .Select((cp, i) => (CustomPowerGen.ClassNameOf(profile, cp, i), cp.Name, Active: CustomPowerGen.IsActive(cp)))
+            .Where(x => x.Active && !string.IsNullOrWhiteSpace(x.Name))
+            .Select(x => (x.Item1, x.Name)));
 
         var issues = ProfileValidator.Validate(profile);
         if (issues.Any(i => i.IsError))
