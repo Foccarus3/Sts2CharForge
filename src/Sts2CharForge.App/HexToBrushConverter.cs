@@ -89,14 +89,21 @@ public sealed class OkToBrushConverter : IValueConverter
 
 /// <summary>
 /// 「多选」开关 → ListBox 的选择模式。
-/// 开 = **Multiple**：直接点一行就切换它的选中状态（不用按 Ctrl），这才符合普通用户对「多选」
-/// 的预期；关 = Single，就是普通单选列表。
-/// 之前用 Extended 只支持 Ctrl/Shift 多选，用户点了两行发现还是只选中一行，就会觉得"开关没生效"。
+///
+/// 关（默认）= <b>Extended</b>：**Ctrl / Shift 点选就能多选**（Windows 的标准行为），
+///              不按 Ctrl 点第二行仍然只选中一行 —— 用户对「多选列表」的默认预期就是这个。
+/// 开 = <b>Multiple</b>：直接点一行就切换它的选中状态（不用按 Ctrl），给不想按 Ctrl 的人用。
+///
+/// 为什么改：以前关着的时候是 <c>Single</c>，于是「Ctrl/Shift 多选」**完全没反应**，
+/// 用户报过两次、方向刚好相反 ——
+///   · 第一次：Extended 时用户点两行发现还是只选中一行，觉得"多选没生效" → 改成 Multiple；
+///   · 第二次：Single 时用户按 Ctrl/Shift 想多选，发现加不上（用户报「还是只能选一个」）。
+/// 现在两头都照顾到：默认就有标准多选，想「点一下就加选」再打开「多选」开关。
 /// </summary>
 public sealed class MultiSelectModeConverter : IValueConverter
 {
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
-        value is true ? System.Windows.Controls.SelectionMode.Multiple : System.Windows.Controls.SelectionMode.Single;
+        value is true ? System.Windows.Controls.SelectionMode.Multiple : System.Windows.Controls.SelectionMode.Extended;
 
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();

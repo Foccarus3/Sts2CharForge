@@ -4,6 +4,7 @@
         xmlns:local="clr-namespace:Sts2CharForge.App"
         Title="Sts2CharForge —— 杀戮尖塔2 自定义角色生成器" Height="880" Width="1420"
         Icon="waku.ico"
+        PreviewKeyDown="OnWindowPreviewKeyDown"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
     </Window.Resources>
@@ -126,7 +127,7 @@
                             <Button Content="删除" Padding="8,4" Click="OnRemoveSummon"/>
                             <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
                                           IsChecked="{Binding MultiSelectSummons, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                                          ToolTip="Ctrl / Shift 点选本来就能多选（Ctrl+A 全选）；打开这个开关后**直接点列表行**就能加选（不用按 Ctrl），右侧会出现「全选」"/>
                             <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllSummons"
                                     Visibility="{Binding MultiSelectSummons, Converter={StaticResource BoolToVis}}"
                                     ToolTip="选中列表里的全部召唤物"/>
@@ -296,7 +297,7 @@
                             <Button Content="删除" Padding="8,4" Click="OnRemoveCard"/>
                             <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
                                           IsChecked="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                                          ToolTip="Ctrl / Shift 点选本来就能多选（Ctrl+A 全选）；打开这个开关后**直接点列表行**就能加选（不用按 Ctrl），右侧会出现「全选」"/>
                             <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllCards"
                                     Visibility="{Binding MultiSelectCards, Converter={StaticResource BoolToVis}}"
                                     ToolTip="选中列表里的全部卡牌"/>
@@ -453,7 +454,7 @@
                             <Button Content="删除" Padding="8,4" Click="OnRemoveRelic"/>
                             <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
                                           IsChecked="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                                          ToolTip="Ctrl / Shift 点选本来就能多选（Ctrl+A 全选）；打开这个开关后**直接点列表行**就能加选（不用按 Ctrl），右侧会出现「全选」"/>
                             <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllRelics"
                                     Visibility="{Binding MultiSelectRelics, Converter={StaticResource BoolToVis}}"
                                     ToolTip="选中列表里的全部遗物"/>
@@ -565,7 +566,7 @@
                             <Button Content="删除" Padding="8,4" Click="OnRemovePotion"/>
                             <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
                                           IsChecked="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），右侧会出现「全选」"/>
+                                          ToolTip="Ctrl / Shift 点选本来就能多选（Ctrl+A 全选）；打开这个开关后**直接点列表行**就能加选（不用按 Ctrl），右侧会出现「全选」"/>
                             <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllPotions"
                                     Visibility="{Binding MultiSelectPotions, Converter={StaticResource BoolToVis}}"
                                     ToolTip="选中列表里的全部药水"/>
@@ -681,7 +682,7 @@
                                 <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoKeyword"
                                         IsEnabled="{Binding CanUndoKeyword}" ToolTip="{Binding UndoKeywordHint}"/>
                             </WrapPanel>
-                            <ListBox x:Name="KeywordList" ItemsSource="{Binding Profile.CustomKeywords}" DisplayMemberPath="Display"/>
+                            <ListBox x:Name="KeywordList" SelectionMode="Extended" ItemsSource="{Binding Profile.CustomKeywords}" DisplayMemberPath="Display"/>
                         </DockPanel>
                         <TextBlock Grid.Column="2" FontSize="16" Foreground="#999"
                                    HorizontalAlignment="Center" VerticalAlignment="Center"
@@ -892,11 +893,12 @@
                                    Text="把本体某个状态（增益/减益，比如「中毒」）的名字、描述、图标、血条颜色、层数数字颜色改成你自己的。名字和描述走本地化表覆盖，图标和颜色走生成出来的补丁。注意：这是全局改动，本体其他角色身上的这个状态也会跟着变。"/>
                         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
                             <Button Content="添加改写" Padding="10,4" Margin="0,0,6,0" Click="OnAddPowerOverride"/>
-                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemovePowerOverride"/>
+                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemovePowerOverride"
+                                    ToolTip="可 Ctrl / Shift 多选（或按 Ctrl+A 全选）一次删掉多条"/>
                             <TextBlock VerticalAlignment="Center" Foreground="#888"
                                        Text="（同一个状态重复添加时，以最后一条为准）"/>
                         </StackPanel>
-                        <ListBox x:Name="PowerOverrideList" ItemsSource="{Binding Profile.VanillaPowerOverrides}"
+                        <ListBox x:Name="PowerOverrideList" SelectionMode="Extended" ItemsSource="{Binding Profile.VanillaPowerOverrides}"
                                  DisplayMemberPath="Display" SelectionChanged="OnPowerOverrideSelectionChanged"/>
                     </DockPanel>
 
@@ -993,10 +995,13 @@
                                    Text="自己造一个状态（本体没有的那种），给能力牌用：选「什么时候触发」+「触发时做什么」。生成时会写出一个 PowerModel 子类，名字/描述写进本地化表，图标和层数颜色走补丁。名字/描述/图标/颜色都是全局的（谁身上挂了这个状态就长这样）。"/>
                         <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
                             <Button Content="添加状态" Padding="10,4" Margin="0,0,6,0" Click="OnAddCustomPower"/>
-                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemoveCustomPower"/>
+                            <Button Content="删除选中" Padding="10,4" Margin="0,0,6,0" Click="OnRemoveCustomPower"
+                                    ToolTip="可 Ctrl / Shift 多选（或按 Ctrl+A 全选）一次删掉多个"/>
+                            <Button Content="撤回删除" Padding="10,4" Margin="0,0,6,0" Click="OnUndoPower"
+                                    IsEnabled="{Binding CanUndoPower}" ToolTip="{Binding UndoPowerHint}"/>
                             <TextBlock VerticalAlignment="Center" Foreground="#888" Text="（做好后在卡牌效果里选「施加增益/减益」→ 列表底部就是你造的状态）"/>
                         </StackPanel>
-                        <ListBox x:Name="CustomPowerList" ItemsSource="{Binding Profile.CustomPowers}"
+                        <ListBox x:Name="CustomPowerList" SelectionMode="Extended" ItemsSource="{Binding Profile.CustomPowers}"
                                  DisplayMemberPath="Display" SelectionChanged="OnCustomPowerSelectionChanged"/>
                     </DockPanel>
 
@@ -1071,7 +1076,7 @@
                                         <RowDefinition Height="110"/><RowDefinition Height="Auto"/>
                                         <RowDefinition Height="8"/><RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
-                                    <ListBox x:Name="CustomTriggerList" Grid.Row="0" ItemsSource="{Binding Triggers}"
+                                    <ListBox x:Name="CustomTriggerList" Grid.Row="0" SelectionMode="Extended" ItemsSource="{Binding Triggers}"
                                              DisplayMemberPath="Display" SelectionChanged="OnCustomTriggerSelectionChanged"/>
                                     <WrapPanel Grid.Row="1" Margin="0,6,0,0">
                                         <Button Content="添加触发时机" Padding="8,4" Margin="0,0,6,0" Click="OnAddPowerTrigger"/>
@@ -1123,7 +1128,7 @@
                                             </StackPanel>
 
                                             <TextBlock Margin="0,10,0,4" Text="触发时做什么" FontWeight="Bold"/>
-                                            <ListBox x:Name="CustomEffectList" Height="110" ItemsSource="{Binding Effects}"
+                                            <ListBox x:Name="CustomEffectList" Height="110" SelectionMode="Extended" ItemsSource="{Binding Effects}"
                                                      DisplayMemberPath="Display"/>
                                             <WrapPanel Margin="0,6,0,0">
                                                 <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect"
@@ -1257,7 +1262,7 @@
                         <Button Content="另存为新存档…" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnSaveProfileAsNew"/>
                         <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" HorizontalAlignment="Stretch" Margin="0,0,0,6"
                                       IsChecked="{Binding MultiSelectProfiles, RelativeSource={RelativeSource AncestorType=Window}}"
-                                      ToolTip="点一下开启多选：之后直接点列表行就能多选（不用按 Ctrl），下面会出现「全选」"/>
+                                      ToolTip="Ctrl / Shift 点选本来就能多选（Ctrl+A 全选）；打开这个开关后**直接点列表行**就能加选（不用按 Ctrl），下面会出现「全选」"/>
                         <Button Content="全选" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnSelectAllProfiles"
                                 Visibility="{Binding MultiSelectProfiles, Converter={StaticResource BoolToVis}}"
                                 ToolTip="选中列表里的全部存档"/>

@@ -817,6 +817,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public string UndoSummonHint => HintOf(_summonUndo);
 
 	/// <summary>
+	/// 「自定义状态」页的撤回状态（删状态 / 删触发时机 / 删触发时机里的效果都进这个栈）。
+	/// 以前这个栈只进不出 —— 页面上根本没有「撤回删除」按钮，删了就真没了。
+	/// </summary>
+	public bool CanUndoPower => _powerUndo.Count > 0;
+
+	public string UndoPowerHint => HintOf(_powerUndo);
+
+	/// <summary>
 	/// 「卡牌」页里「自定义关键词」的勾选行：当前选中的卡 × 全部关键词。
 	/// 勾上 = 把这条关键词写进这张卡的 KeywordIds（生成时描述开头会出现它、悬停卡面能看到说明）。
 	/// </summary>
@@ -1789,15 +1797,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	private void OnRemovePowerOverride(object sender, RoutedEventArgs e)
 	{
-		if (!(PowerOverrideList.SelectedItem is VanillaPowerOverride vanillaPowerOverride))
+		// 「删除选中」：支持 Ctrl/Shift 多选一次删掉多条（以前只看 SelectedItem，选了一堆也只删一条）
+		List<VanillaPowerOverride> picked = SelectedOf<VanillaPowerOverride>(PowerOverrideList);
+		if (picked.Count == 0)
 		{
-			SetStatus("请先在列表里选中一条改写。");
+			SetStatus("请先在列表里选中要删除的改写（可 Ctrl/Shift 多选）。");
 		}
-		else if (Confirm("确定删掉「" + vanillaPowerOverride.Display + "」这条改写吗？", "确认删除"))
+		else
 		{
-			Profile.VanillaPowerOverrides.Remove(vanillaPowerOverride);
-			SyncPowerOverrideDetail();
-			SetStatus("已删除这条改写。");
+			string what = picked.Count == 1 ? "「" + picked[0].Display + "」这条改写" : $"选中的 {picked.Count} 条改写";
+			if (Confirm($"确定删掉{what}吗？", "确认删除"))
+			{
+				foreach (VanillaPowerOverride item in picked) Profile.VanillaPowerOverrides.Remove(item);
+				SyncPowerOverrideDetail();
+				SetStatus($"已删除 {picked.Count} 条改写。");
+			}
 		}
 	}
 
@@ -2023,16 +2037,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	private void OnRemoveCustomPower(object sender, RoutedEventArgs e)
 	{
-		if (!(CustomPowerList.SelectedItem is CustomPowerSpec customPowerSpec))
+		// 「删除选中」：支持 Ctrl/Shift 多选一次删掉多个（以前只看 SelectedItem）
+		List<CustomPowerSpec> picked = SelectedOf<CustomPowerSpec>(CustomPowerList);
+		if (picked.Count == 0)
 		{
-			SetStatus("请先在左边选中要删除的状态。");
+			SetStatus("请先在左边选中要删除的状态（可 Ctrl/Shift 多选）。");
+			return;
 		}
-		else if (Confirm("确定删掉自定义状态「" + customPowerSpec.Name + "」吗？\n\n（已经用了这个状态的卡牌效果会失效，记得一起改掉。）", "确认删除"))
+		string what = picked.Count == 1
+			? "自定义状态「" + picked[0].Name + "」"
+			: $"选中的 {picked.Count} 个自定义状态";
+		if (Confirm($"确定删掉{what}吗？\n\n（已经用了这个状态的卡牌效果会失效，记得一起改掉。）", "确认删除"))
 		{
-			_profile.CustomPowers.Remove(customPowerSpec);
+			int value = RemoveManyWithUndo(_profile.CustomPowers, picked, _powerUndo, "自定义状态", delegate
+			{
+				CustomPowerList.SelectedItem = picked[0];
+			});
 			EffectCatalog.SetCustomPowers(null);
+			RefreshCustomPowerRegistry();
 			SyncCustomPowerDetail();
-			SetStatus("已删除这个自定义状态。");
+			SetStatus($"已删除 {value} 个自定义状态（可点「撤回删除」恢复）。");
 		}
 	}
 
@@ -2108,18 +2132,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	private void OnRemovePowerTrigger(object sender, RoutedEventArgs e)
 	{
-		if (CustomPowerList.SelectedItem is CustomPowerSpec customPowerSpec)
+		if (!(CustomPowerList.SelectedItem is CustomPowerSpec customPowerSpec))
 		{
-			if (!(CustomTriggerList.SelectedItem is PowerTriggerSpec powerTriggerSpec))
+			SetStatus("请先在上面选中一个自定义状态。");
+			return;
+		}
+		// 「删除触发时机」：支持 Ctrl/Shift 多选一次删掉多条
+		List<PowerTriggerSpec> picked = SelectedOf<PowerTriggerSpec>(CustomTriggerList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的触发时机（可 Ctrl/Shift 多选）。");
+			return;
+		}
+		string what = picked.Count == 1 ? "「" + picked[0].Display + "」这条触发时机" : $"选中的 {picked.Count} 条触发时机";
+		if (Confirm($"确定删掉{what}吗？", "确认删除"))
+		{
+			int value = RemoveManyWithUndo(customPowerSpec.Triggers, picked, _powerUndo, "触发时机", delegate
 			{
-				SetStatus("请先选中要删除的触发时机。");
-			}
-			else if (Confirm("确定删掉「" + powerTriggerSpec.Display + "」这条触发时机吗？", "确认删除"))
-			{
-				customPowerSpec.Triggers.Remove(powerTriggerSpec);
-				Raise("TriggerHint");
-				SetStatus("已删除这条触发时机。");
-			}
+				CustomTriggerList.SelectedItem = picked[0];
+			});
+			Raise("TriggerHint");
+			SetStatus($"已删除 {value} 条触发时机（可点「撤回删除」恢复）。");
 		}
 	}
 
@@ -3264,6 +3297,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("UndoPotionHint");
 		Raise("UndoKeywordHint");
 		Raise("UndoSummonHint");
+		Raise("UndoPowerHint");
+		Raise("CanUndoPower");
 		Raise("UndoArtHint");
 		Raise("UndoProfileHint");
 	}
@@ -3297,6 +3332,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		UndoLast(_summonUndo);
 	}
 
+	private void OnUndoPower(object sender, RoutedEventArgs e)
+	{
+		UndoLast(_powerUndo);
+	}
+
 	private void OnUndoKeyword(object sender, RoutedEventArgs e)
 	{
 		UndoLast(_keywordUndo);
@@ -3315,6 +3355,31 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private static List<T> SelectedOf<T>(ListBox lb) where T : class
 	{
 		return lb.SelectedItems.OfType<T>().ToList();
+	}
+
+	/// <summary>
+	/// Ctrl+A：把**当前焦点所在的那个列表**全选（文本框里的 Ctrl+A 不动，照旧全选文字）。
+	/// 只有多选列表才处理 —— 单选列表没有「全选」这回事，交回给别的处理逻辑（不标记 Handled）。
+	/// 把「焦点在谁身上」做成参数是为了能自检（--uicheck 里没法真的造一次键盘输入）。
+	/// </summary>
+	internal bool TrySelectAllShortcut(object? focused = null)
+	{
+		object? target = focused ?? Keyboard.FocusedElement;
+		if (!(target is ListBox lb) || lb.SelectionMode == SelectionMode.Single) return false;
+		SelectAll(lb, "条目");
+		return true;
+	}
+
+	/// <summary>窗口级快捷键（目前只有 Ctrl+A 全选）。</summary>
+	private void OnWindowPreviewKeyDown(object sender, KeyEventArgs e)
+	{
+		if (e.Key != Key.A || (Keyboard.Modifiers & ModifierKeys.Control) != ModifierKeys.Control) return;
+		// Shift/Ctrl 一起按只当 Ctrl 用；Alt 组合不抢
+		if ((Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt) return;
+		if (TrySelectAllShortcut())
+		{
+			e.Handled = true;
+		}
 	}
 
 	private void SelectAll(ListBox lb, string unit)
@@ -3424,24 +3489,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			return false;
 		}
 		return lb.SelectedItems.Count == 2;
-	}
-
-	private static bool CannotAddToSelection(ListBox lb)
-	{
-		if (lb.Items.Count < 2)
-		{
-			return lb.SelectionMode == SelectionMode.Single;
-		}
-		lb.SelectedIndex = 0;
-		try
-		{
-			lb.SelectedItems.Add(lb.Items[1]);
-		}
-		catch
-		{
-			return true;
-		}
-		return lb.SelectedItems.Count == 1;
 	}
 
 	private int RemoveManyWithUndo<T>(IList<T> list, List<T> selected, Stack<UndoEntry> stack, string unit, Action? afterRestore = null, Action? afterRemove = null) where T : class
@@ -4725,9 +4772,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Button button = FindButtonByContent("全选", root);
 		Check("卡牌页有「多选」开关（与其他按钮同款样式）", toggleButton != null && toggleButton.Style == TryFindResource("MultiToggle"), (toggleButton == null) ? "没找到" : ("样式=" + (toggleButton.Style?.ToString() ?? "(默认)")));
 		Check("卡牌页有「全选」按钮", button != null);
-		Check("默认不开多选：列表是单选模式", CardList.SelectionMode == SelectionMode.Single, CardList.SelectionMode.ToString());
-		Check("默认不开多选：看不到「全选」按钮（边界）", button != null && button.Visibility != Visibility.Visible, $"全选按钮可见性={button?.Visibility}");
-		Check("关着多选时点第二行不会累加选择（边界）", CannotAddToSelection(CardList), $"模式={CardList.SelectionMode}");
+		Check("默认（不点「多选」）就是 Extended —— Ctrl / Shift 点选能多选（用户报过「Ctrl/Shift 没反应、只能选一个」）",
+			CardList.SelectionMode == SelectionMode.Extended, CardList.SelectionMode.ToString());
+		Check("默认就能往已选中项里加选（Ctrl / Shift 多选的基础）", CanAddToSelection(CardList), "模式=" + CardList.SelectionMode);
+		Check("默认看不到「全选」按钮（要按 Ctrl+A，或打开「多选」开关才显示）", button != null && button.Visibility != Visibility.Visible, $"全选按钮可见性={button?.Visibility}");
+		CardList.SelectedItems.Clear();
+		Check("Ctrl+A：焦点在列表上就全选（窗口级快捷键）",
+			TrySelectAllShortcut(CardList) && CardList.SelectedItems.Count == Profile.Cards.Count,
+			$"选中 {CardList.SelectedItems.Count} / 共 {Profile.Cards.Count}");
+		Check("Ctrl+A 不抢文本框：焦点不在列表上时不处理（照旧全选文字）",
+			!TrySelectAllShortcut(new TextBox()), "文本框放行");
+		Check("Ctrl+A 不会去动单选列表（那些列表本来就没有「全选」）",
+			!TrySelectAllShortcut(new ListBox { SelectionMode = SelectionMode.Single, ItemsSource = new[] { "a", "b" } }), "单选列表放行");
+		CardList.SelectedItems.Clear();
 		bool flag = ToggleViaClick(toggleButton);
 		UpdateLayout();
 		Check("点一下「多选」开关能真的切换（不是只变了样子）", flag && toggleButton.IsChecked.GetValueOrDefault(), "切换成功=" + flag + " / IsChecked=" + toggleButton.IsChecked);
@@ -4947,7 +5004,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			RefreshProfiles();
 			DependencyObject root5 = SelectTabRoot("配置存档");
 			Check("存档页有「全选」按钮", FindButtonByContent("全选", root5) != null);
-			Check("存档页默认单选（多选开关关着）", ProfileList.SelectionMode == SelectionMode.Single, ProfileList.SelectionMode.ToString());
+			Check("存档页默认也是 Extended（Ctrl / Shift 多选直接可用）", ProfileList.SelectionMode == SelectionMode.Extended, ProfileList.SelectionMode.ToString());
+			Check("存档页 Ctrl+A 也能全选（不用先开「多选」）",
+				TrySelectAllShortcut(ProfileList) && ProfileList.SelectedItems.Count == ProfileList.Items.Count,
+				$"选中 {ProfileList.SelectedItems.Count} / 共 {ProfileList.Items.Count}");
+			ProfileList.SelectedItems.Clear();
 			ToggleViaClick(FindToggleButtonByContent("多选", root5));
 			UpdateLayout();
 			Check("存档页打开多选后变 Multiple", ProfileList.SelectionMode == SelectionMode.Multiple, ProfileList.SelectionMode.ToString());
@@ -4967,6 +5028,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				select x).ToList();
 			Dictionary<string, byte[]> beforeBytes = source.ToDictionary((string p) => p, (string p) => File.ReadAllBytes(p));
 			Check("临时存档已就绪（3 个）", Profiles.Count == 3, $"{Profiles.Count}");
+			// 有 3 个存档时再验一次 Ctrl+A：空列表那条只是「不报错」，这条才真的验「全选生效」
+			ProfileList.SelectedItems.Clear();
+			Check("存档页 Ctrl+A 在真有条目时选中全部 3 个",
+				TrySelectAllShortcut(ProfileList) && ProfileList.SelectedItems.Count == 3,
+				$"选中 {ProfileList.SelectedItems.Count} / 共 {Profiles.Count}");
+			ProfileList.SelectedItems.Clear();
 			ClickButtonByContent("全选", root5);
 			UpdateLayout();
 			Check("存档页「全选」选中全部", ProfileList.SelectedItems.Count == 3, $"{ProfileList.SelectedItems.Count}");
@@ -9286,6 +9353,116 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		};
 		Check("卡牌关键字能记下来", cardSpec25.KeywordList.Count == 4, string.Join("·", cardSpec25.KeywordList));
 		Check("关键字出现在卡牌列表文字里", cardSpec25.Display.Contains("Exhaust") && cardSpec25.Display.Contains("Retain"), cardSpec25.Display);
+
+		// ===== 多选：Ctrl / Shift / Ctrl+A 在所有「删除选中」的列表上都可用 =====
+		{
+			// 用户报过：按 Ctrl / Shift 想多选删除，结果加不上（以前关着「多选」开关时列表是 Single）。
+			Check("关键词列表是多选（Extended）：Ctrl/Shift 能多选删除",
+				KeywordList.SelectionMode == SelectionMode.Extended, KeywordList.SelectionMode.ToString());
+			Check("本体状态改写列表是多选（Extended）",
+				PowerOverrideList.SelectionMode == SelectionMode.Extended, PowerOverrideList.SelectionMode.ToString());
+			Check("自定义状态列表是多选（Extended）",
+				CustomPowerList.SelectionMode == SelectionMode.Extended, CustomPowerList.SelectionMode.ToString());
+			Check("自定义状态的「触发时机」列表是多选（Extended）",
+				CustomTriggerList.SelectionMode == SelectionMode.Extended, CustomTriggerList.SelectionMode.ToString());
+			Check("自定义状态的「效果」列表是多选（Extended）",
+				CustomEffectList.SelectionMode == SelectionMode.Extended, CustomEffectList.SelectionMode.ToString());
+			// 「多选」开关 → 模式的约定（开关本身在别的自检里被打开过，所以这里显式摆回两种状态再断言）
+			MultiSelectCards = false;
+			UpdateLayout();
+			Check("「多选」关着 → Extended：Ctrl / Shift 点选能多选（用户报过「Ctrl/Shift 没反应、只能选一个」）",
+				CardList.SelectionMode == SelectionMode.Extended, CardList.SelectionMode.ToString());
+			Check("关着时也能往已选中项里加选（Ctrl / Shift 多选的基础）", CanAddToSelection(CardList), "模式=" + CardList.SelectionMode);
+			MultiSelectCards = true;
+			UpdateLayout();
+			Check("「多选」打开 → Multiple：直接点行累加，不用按 Ctrl（两种习惯都支持）",
+				CardList.SelectionMode == SelectionMode.Multiple, CardList.SelectionMode.ToString());
+			MultiSelectCards = false;
+			MultiSelectRelics = false;
+			MultiSelectPotions = false;
+			MultiSelectSummons = false;
+			MultiSelectProfiles = false;
+			UpdateLayout();
+			CardList.SelectedItems.Clear();
+			Check("切页用的那几个列表（卡牌/遗物/药水/召唤物/存档）默认都是 Extended，不点「多选」就能 Ctrl/Shift 多选",
+				CardList.SelectionMode == SelectionMode.Extended && RelicList.SelectionMode == SelectionMode.Extended
+				&& PotionList.SelectionMode == SelectionMode.Extended && SummonList.SelectionMode == SelectionMode.Extended
+				&& ProfileList.SelectionMode == SelectionMode.Extended,
+				$"{CardList.SelectionMode}/{RelicList.SelectionMode}/{PotionList.SelectionMode}/{SummonList.SelectionMode}/{ProfileList.SelectionMode}");
+
+			// 多条一起删：本体状态改写（以前只看 SelectedItem，选了一堆也只删一条）
+			{
+				int overridesBefore = Profile.VanillaPowerOverrides.Count;
+				Profile.VanillaPowerOverrides.Add(new VanillaPowerOverride { PowerId = "PoisonPower", Name = "多选甲" });
+				Profile.VanillaPowerOverrides.Add(new VanillaPowerOverride { PowerId = "WeakPower", Name = "多选乙" });
+				Profile.VanillaPowerOverrides.Add(new VanillaPowerOverride { PowerId = "FrailPower", Name = "多选丙" });
+				PowerOverrideList.SelectedItems.Clear();
+				PowerOverrideList.SelectedItems.Add(Profile.VanillaPowerOverrides[overridesBefore]);
+				PowerOverrideList.SelectedItems.Add(Profile.VanillaPowerOverrides[overridesBefore + 2]);
+				int confirmBefore = ConfirmRequests;
+				OnRemovePowerOverride(this, new RoutedEventArgs());
+				Check("本体状态改写：一次删掉多选的那几条（不是只删第一条）",
+					Profile.VanillaPowerOverrides.Count == overridesBefore + 1
+					&& !Profile.VanillaPowerOverrides.Any(o => o.Name is "多选甲" or "多选丙")
+					&& Profile.VanillaPowerOverrides.Any(o => o.Name == "多选乙"),
+					string.Join("·", Profile.VanillaPowerOverrides.Select(o => o.Name)));
+				Check("本体状态改写：多条删除只要一次确认", ConfirmRequests == confirmBefore + 1, $"{confirmBefore} → {ConfirmRequests}");
+				while (Profile.VanillaPowerOverrides.Count > overridesBefore) Profile.VanillaPowerOverrides.RemoveAt(Profile.VanillaPowerOverrides.Count - 1);
+				SyncPowerOverrideDetail();
+			}
+
+			// 多条一起删 + 撤回：自定义状态（连带它的触发时机列表；这一页以前没有「撤回删除」按钮）
+			{
+				int powersBefore = Profile.CustomPowers.Count;
+				CustomPowerSpec multi1 = new CustomPowerSpec { Name = "多选甲", ClassName = "UiCheckMultiA", Type = "Buff" };
+				CustomPowerSpec multi2 = new CustomPowerSpec { Name = "多选乙", ClassName = "UiCheckMultiB", Type = "Buff" };
+				multi1.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+				multi2.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+				Profile.CustomPowers.Add(multi1);
+				Profile.CustomPowers.Add(multi2);
+				CustomPowerList.SelectedItems.Clear();
+				CustomPowerList.SelectedItems.Add(multi1);
+				CustomPowerList.SelectedItems.Add(multi2);
+				OnRemoveCustomPower(this, new RoutedEventArgs());
+				Check("自定义状态：一次删掉多选的那几个（不是只删第一个）",
+					!Profile.CustomPowers.Contains(multi1) && !Profile.CustomPowers.Contains(multi2),
+					$"{Profile.CustomPowers.Count} 个");
+				Check("自定义状态：删完就有「撤回删除」可点（这一页以前没有这个按钮，删了真没了）", CanUndoPower, UndoPowerHint);
+				OnUndoPower(this, new RoutedEventArgs());
+				Check("自定义状态：多条删除一次全撤回（数量 + 顺序都回来）",
+					Profile.CustomPowers.Count == powersBefore + 2
+					&& ReferenceEquals(Profile.CustomPowers[powersBefore], multi1)
+					&& ReferenceEquals(Profile.CustomPowers[powersBefore + 1], multi2),
+					$"{Profile.CustomPowers.Count} 个");
+
+				// 多条一起删：某个状态的触发时机（删完也要能撤回）
+				CustomPowerSpec multiSpec = new CustomPowerSpec { Name = "多选时机", ClassName = "UiCheckMultiC", Type = "Buff" };
+				multiSpec.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+				multiSpec.Triggers.Add(new PowerTriggerSpec { Kind = "TurnEnd" });
+				multiSpec.Triggers.Add(new PowerTriggerSpec { Kind = "CombatStart" });
+				Profile.CustomPowers.Add(multiSpec);
+				CustomPowerList.SelectedItem = multiSpec;
+				UpdateLayout();
+				CustomTriggerList.SelectedItems.Clear();
+				CustomTriggerList.SelectedItems.Add(multiSpec.Triggers[0]);
+				CustomTriggerList.SelectedItems.Add(multiSpec.Triggers[1]);
+				OnRemovePowerTrigger(this, new RoutedEventArgs());
+				Check("触发时机：一次删掉多选的那几条",
+					multiSpec.Triggers.Count == 1 && multiSpec.Triggers[0].Kind == "CombatStart",
+					string.Join("·", multiSpec.Triggers.Select(t => t.Kind)));
+				OnUndoPower(this, new RoutedEventArgs());
+				Check("触发时机：多条删除也能一次撤回（顺序复原）",
+					multiSpec.Triggers.Count == 3 && multiSpec.Triggers[0].Kind == "TurnStart" && multiSpec.Triggers[1].Kind == "TurnEnd",
+					string.Join("·", multiSpec.Triggers.Select(t => t.Kind)));
+
+				// 清理：把这一轮加的测试状态和撤回栈都清掉
+				_powerUndo.Clear();
+				Profile.CustomPowers.Remove(multiSpec);
+				Profile.CustomPowers.Remove(multi1);
+				Profile.CustomPowers.Remove(multi2);
+				Check("多选删除测试用的自定义状态已清理", Profile.CustomPowers.Count == powersBefore, $"{Profile.CustomPowers.Count} 个");
+			}
+		}
 
 		// ===== 第二批③④：临时保留 / 临时奇巧（本体的「单回合」标记 + 卡面关键词 + 悬停说明）=====
 		{
