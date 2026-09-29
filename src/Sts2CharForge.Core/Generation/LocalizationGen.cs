@@ -61,12 +61,15 @@ public static class LocalizationGen
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
             // 老存档是「整张牌一个条件」，那个条件写在最后；新存档的条件跟着各自的效果走（Describe 里处理）
             string legacy = ConditionSuffix(c.Condition, isCard: true, p);
-            // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
+            // 自定义关键词 + 内置的「临时保留 / 临时奇巧」：和本体关键词一样拼在描述最前面
+            // （本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
+            string tempKeywordText = KeywordGen.TempCardTextFor(c);
+            string head = string.Join("\n", new[] { keywordText, tempKeywordText }.Where(x => x.Length > 0));
             string cardBody = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
-            dict[$"{entry}.description"] = keywordText.Length == 0
+            dict[$"{entry}.description"] = head.Length == 0
                 ? cardBody
-                : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
+                : (cardBody.Length == 0 ? head : head + "\n" + cardBody);
         }
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
@@ -188,6 +191,9 @@ public static class LocalizationGen
         // 本体关键词改名：只写用户真的改了的键（留空 / 和本体一样都不写，见 VanillaKeywordGen.LocEntries）
         foreach (var kv in VanillaKeywordGen.LocEntries(p))
             dict[kv.Key] = kv.Value;
+        // 生成器内置的「临时保留 / 临时奇巧」：只写真的用到的键（卡面那行字 + 悬停说明都要它）
+        foreach (var kv in KeywordGen.TempLocEntries(p))
+            dict[kv.Key] = kv.Value;
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
 
@@ -274,6 +280,15 @@ public static class LocalizationGen
         // 本体状态改写：键和本体 powers 表同名，本体加载 mod 本地化表时会 MergeWith 覆盖掉本体的值
         foreach (var kv in VanillaPowerGen.LocEntries(p))
             dict[kv.Key] = kv.Value;
+        // 「临时增益」的临时 Power：状态栏里显示成「临时 X」，说明写清「本回合内 +N，回合结束消失」
+        foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p))
+        {
+            string entry = Naming.EntryOf(CSharpCodeGen.TempPowerClassName(e, p));
+            string powerName = EffectCatalog.PowerName(e.PowerId);
+            dict[$"{entry}.title"] = $"临时{powerName}";
+            dict[$"{entry}.description"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
+            dict[$"{entry}.smartDescription"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
+        }
         // 自定义状态（能力牌用）：键就是本体的规则 Id.Entry + ".title"（PowerModel.Title 默认就这么取）
         for (int i = 0; i < p.CustomPowers.Count; i++)
         {
@@ -523,6 +538,11 @@ public static class LocalizationGen
             "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
                 ? $"{repeat}{when}{target}施加{PowerNameFor(p, e.PowerId)}（受到伤害 +{e.SlowPercentEffective}%）。"
                 : $"{repeat}{when}{target}施加 {var} 层{PowerNameFor(p, e.PowerId)}。",
+            // 临时增益：本回合 +X 层，回合结束时撤掉（生成的是 <角色>ForgeTemp<状态> Power）
+            // 给自己的写「获得」，给敌人的写「施加」（同一句话套在敌人身上会很别扭）
+            "TempPower" => e.TargetSide == "Self"
+                ? $"{repeat}{when}本回合内获得 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。"
+                : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。",
             // ===== 全局（直接改牌组）=====
             "AddCardGlobal" => $"获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
             // 挂「战斗胜利后」时是结算界面多一条奖励；挂在战斗中就是当场弹选牌界面（见 CSharpCodeGen.EmitCardReward）

@@ -25,7 +25,16 @@ public static class KeywordGen
     private static readonly HashSet<string> ReservedKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "NONE", "EXHAUST", "ETHEREAL", "INNATE", "UNPLAYABLE", "RETAIN", "SLY", "ETERNAL", "PERIOD",
+        // 生成器自带的两个内置关键词（「临时保留 / 临时奇巧」，见下面的 Temp* 成员）：
+        // 用户的自定义关键词不能占用这两个键，否则会把卡面上那行字和悬停说明覆盖掉
+        TempRetainKey, TempSlyKey,
     };
+
+    /// <summary>「临时保留」的本地化键（生成器内置，不占用户的自定义关键词）。</summary>
+    public const string TempRetainKey = "TEMP_RETAIN";
+
+    /// <summary>「临时奇巧」的本地化键（生成器内置）。</summary>
+    public const string TempSlyKey = "TEMP_SLY";
 
     /// <summary>空/非法/撞本体时兜底用的键。</summary>
     public static string FallbackKey(int index) => "KEYWORD_" + (index + 1).ToString();
@@ -136,6 +145,67 @@ public static class KeywordGen
             if (!lines.Contains(line)) lines.Add(line);
         }
         return string.Join("\n", lines);
+    }
+
+    // ==================== 内置关键词：临时保留 / 临时奇巧 ====================
+    //
+    // 为什么是「关键词」而不是本体 CardKeyword：本体的 CardKeyword 是**封闭枚举**（模组加不了新值），
+    // 而这两个是「只这一回合」的单回合版本 —— 卡牌代码里打的是本体 GiveSingleTurnRetain/Sly 标记，
+    // 卡面上则用自定义关键词那套等价机制显示（[gold]名字[/gold]。+ 悬停说明）。
+    // 键固定为 TEMP_RETAIN / TEMP_SLY，写了这两个键的 card_keywords.json 由 ModGenerator 生成。
+
+    /// <summary>内置临时关键词在卡面上的名字。</summary>
+    public static string TempTitleOf(string key) =>
+        string.Equals(key, TempRetainKey, StringComparison.OrdinalIgnoreCase) ? "临时保留" : "临时奇巧";
+
+    /// <summary>内置临时关键词的悬停说明（鼠标悬停在卡上时弹出的那段）。</summary>
+    public static string TempDescriptionOf(string key) =>
+        string.Equals(key, TempRetainKey, StringComparison.OrdinalIgnoreCase)
+            ? "临时保留：这张牌在回合结束时不会被弃掉 —— 只限这一回合。和「保留」的区别：「保留」是每回合都留，"
+              + "临时保留只保这一次，下一回合就恢复正常（除非它还带着「保留」关键词）。"
+            : "临时奇巧：这张牌只在这一回合算「奇巧」—— 在这一回合里被弃掉时可以免费打出。"
+              + "和「奇巧」的区别：「奇巧」一直算，临时奇巧只算这一次。";
+
+    /// <summary>这张牌要用到哪几个内置临时关键词的键（顺序固定：临时保留 → 临时奇巧）。</summary>
+    public static List<string> TempKeysOf(CardSpec c)
+    {
+        var list = new List<string>();
+        if (c is null) return list;
+        if (c.TempRetain) list.Add(TempRetainKey);
+        if (c.TempSly) list.Add(TempSlyKey);
+        return list;
+    }
+
+    /// <summary>整个存档里有没有用到内置临时关键词（决定要不要写 card_keywords.json）。</summary>
+    public static bool UsesTempKeywords(CharacterProfile p) =>
+        p.Cards is not null && p.Cards.Any(c => c is not null && (c.TempRetain || c.TempSly));
+
+    /// <summary>内置临时关键词 → 悬停提示的 C# 表达式（和 <see cref="TipsFor"/> 同一套写法）。</summary>
+    public static List<string> TempTipsFor(CardSpec c) =>
+        TempKeysOf(c).Select(k => "new MegaCrit.Sts2.Core.HoverTips.HoverTip("
+                + $"new LocString(\"card_keywords\", \"{k}.title\"), "
+                + $"new LocString(\"card_keywords\", \"{k}.description\"))")
+            .ToList();
+
+    /// <summary>内置临时关键词 → 卡面描述开头那几行（不含末尾换行；没有就返回空串）。</summary>
+    public static string TempCardTextFor(CardSpec c) =>
+        string.Join("\n", TempKeysOf(c).Select(k => $"[gold]{TempTitleOf(k)}[/gold]。"));
+
+    /// <summary>
+    /// 内置临时关键词的本地化条目 —— 只写**真的用到**的那几个键
+    /// （没用到就不写，免得往本体表里塞用不上的东西）。
+    /// </summary>
+    public static Dictionary<string, string> TempLocEntries(CharacterProfile p)
+    {
+        var dict = new Dictionary<string, string>();
+        if (p.Cards is null) return dict;
+        foreach (string key in p.Cards.Where(c => c is not null).SelectMany(TempKeysOf)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            dict[key + ".title"] = TempTitleOf(key);
+            dict[key + ".description"] = TempDescriptionOf(key);
+        }
+        return dict;
     }
 
     /// <summary>本地化表内容（键 = <c>&lt;KEY&gt;.title</c> / <c>&lt;KEY&gt;.description</c>）。</summary>

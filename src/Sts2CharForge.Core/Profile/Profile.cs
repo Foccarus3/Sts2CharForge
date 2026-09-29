@@ -543,6 +543,8 @@ public sealed class EffectSpec : SpecBase
                 "MaxHp" => "最大生命",
                 "Gold" => "金币",
                 "ApplyPower" => "增益/减益 " + (PowerId ?? "?"),
+                // 临时增益（本回合 +X，回合结束撤掉）：界面上写清「临时」，别和普通的「施加」看混
+                "TempPower" => "临时增益（本回合）" + (PowerId ?? "?"),
                 "AddCardGlobal" => "获得卡牌（全局）",
                 "TransformCardGlobal" => "变化卡牌（全局）",
                 "RemoveCardGlobal" => "删除卡牌（全局）",

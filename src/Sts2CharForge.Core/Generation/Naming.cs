@@ -47,6 +47,9 @@ public sealed record Naming(
     /// <summary>「下回合生效」的延迟 Power 类名（兜底用当前角色）。</summary>
     public static string AmbientDelayedPowerClass(EffectSpec e) => _currentCharClass + DelayedPowerSuffix(e);
 
+    /// <summary>「临时增益（本回合 +X）」的临时 Power 类名（兜底用当前角色）。</summary>
+    public static string AmbientTempPowerClass(EffectSpec e) => _currentCharClass + TempPowerSuffix(e);
+
     public string CardClassName(CardSpec c, int index) =>
         IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
 
@@ -82,6 +85,16 @@ public sealed record Naming(
 
     /// <summary>延迟 Power 的固定后半段（回读时按它认「下回合生效」）。</summary>
     public static string DelayedPowerSuffix(EffectSpec e) => "ForgeDelayed" + (e.PowerId ?? "Power");
+
+    /// <summary>
+    /// 「临时增益（本回合 +X）」用的临时 Power（<c>&lt;角色&gt;ForgeTemp&lt;状态&gt;</c>）。
+    /// 它自己不给任何加成，只是在施加时把 X 层加进真正的状态、回合结束时再把 X 层撤掉
+    /// （本体 FlexPotion 的 TemporaryStrengthPower 就是这套）。
+    /// </summary>
+    public string TempPowerClass(EffectSpec e) => CharClass + TempPowerSuffix(e);
+
+    /// <summary>临时 Power 的固定后半段（回读时按它认「临时增益」）。</summary>
+    public static string TempPowerSuffix(EffectSpec e) => "ForgeTemp" + (e.PowerId ?? "Power");
 
     /// <summary>「替主人承伤」共用的守卫 Power（所有召唤物共用一个类，所以只能有一个）。</summary>
     public string GuardianPowerClass => CharClass + "ForgePetGuardianPower";

@@ -213,6 +213,15 @@ public static class ModGenerator
         if (delayed.Count > 0)
             ProjectFilesGen.WriteText(Path.Combine(cs, "DelayedPowers.cs"), CSharpCodeGen.DelayedPowersSource(profile));
 
+        // 临时增益（本回合 +X，回合结束撤掉）：每个状态一个临时 Power 类
+        var tempPowers = CSharpCodeGen.CollectTempPowerEffects(profile).ToList();
+        if (tempPowers.Count > 0)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "TempPowers.cs"), CSharpCodeGen.TempPowersSource(profile));
+            Log($"  已生成临时增益用的 Power {tempPowers.Count} 个（本回合 +X，回合结束撤掉）："
+                + string.Join("、", tempPowers.Select(e => EffectCatalog.PowerName(e.PowerId))));
+        }
+
         // 本体「缓慢」数值助手：只有配了「直接把缓慢设成 N%」才生成
         if (CSharpCodeGen.NeedsSlowPowerHelper(profile))
         {
@@ -245,7 +254,8 @@ public static class ModGenerator
 
         Log($"  C# 源码：角色 1 + 池 3 + 卡牌 {profile.Cards.Count(c => !c.IsVanillaCard)}"
             + (profile.Cards.Any(c => c.IsVanillaCard) ? $"（另有本体卡引用 {profile.Cards.Count(c => c.IsVanillaCard)} 条，不生成类）" : "")
-            + $" + 遗物 {profile.Relics.Count} + 药水 {profile.Potions.Count} + 自定义状态 {powerCount} + 延迟 Power {delayed.Count}");
+            + $" + 遗物 {profile.Relics.Count} + 药水 {profile.Potions.Count} + 自定义状态 {powerCount}"
+            + $" + 延迟 Power {delayed.Count} + 临时 Power {tempPowers.Count}");
 
         string locRoot = Path.Combine(root, n.ModId, "localization", "zhs");
         // 本体状态改名：本体卡牌/遗物/药水描述里写的旧名字一起换掉（用户要求：卡面描述也得跟着改）
@@ -270,21 +280,22 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "potions.json"),
             LocalizationGen.MergeVanillaText(LocalizationGen.PotionsJson(profile), vanillaText, "potions"));
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "ancients.json"), LocalizationGen.AncientsJson(profile));
-        bool needPowersLoc = delayed.Count > 0 || VanillaPowerGen.LocEntries(profile).Any() || powerCount > 0;
+        bool needPowersLoc = delayed.Count > 0 || VanillaPowerGen.LocEntries(profile).Any() || powerCount > 0
+            || tempPowers.Count > 0;
         if (needPowersLoc)
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "powers.json"), LocalizationGen.PowersJson(profile));
         // 自定义名字：覆盖本体的「辉星」悬停提示（本体加载时会把模组的同名表并进来覆盖）
         string hoverTips = LocalizationGen.StaticHoverTipsJson(profile);
         if (hoverTips.Contains("STAR_COUNT", StringComparison.Ordinal))
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "static_hover_tips.json"), hoverTips);
-        // 自定义关键词 / 本体关键词改名：都写进本体的 card_keywords 表（逐键合并）。
-        // 有关键词改名时也必须写这个文件 —— 不生成的话，改的名字在游戏里根本不生效。
-        bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile);
+        // 自定义关键词 / 本体关键词改名 / 内置的「临时保留·临时奇巧」：都写进本体的 card_keywords 表（逐键合并）。
+        // 有其中任何一样就必须写这个文件 —— 不生成的话，改的名字 / 卡面那行字在游戏里根本不生效。
+        bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile) || KeywordGen.UsesTempKeywords(profile);
         if (needKeywordsLoc)
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "card_keywords.json"), LocalizationGen.KeywordsJson(profile));
         Log("  本地化：characters / cards / relics / potions / ancients"
             + (needPowersLoc ? " / powers" : "")
-            + (needKeywordsLoc ? " / card_keywords（自定义关键词 / 本体关键词改名）" : "")
+            + (needKeywordsLoc ? " / card_keywords（自定义关键词 / 本体关键词改名 / 临时保留·临时奇巧）" : "")
             + (PetGen.IsActive(profile) ? " / monsters（召唤物的名字）" : ""));
 
         ArtGenerator.Generate(profile, root, Log);

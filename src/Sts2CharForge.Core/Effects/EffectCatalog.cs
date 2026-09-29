@@ -522,6 +522,10 @@ public static class EffectCatalog
         new EffectKindOption("Gold",    "获得金币",     "枚", 0,    999, false, false),
             new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, false, false),
         new EffectKindOption("ApplyPower", "施加增益/减益", "层", 1, 99, true, true),
+        // 临时增益：本回合内 +X 层，回合结束时把这次加的 X 层撤掉（本体 FlexPotion 的
+        // TemporaryStrengthPower 就是这套 —— 生成的 <角色>ForgeTemp<状态> 也是照它写的）。
+        // 数值 = 层数（不按回合计时），作用对象沿用「施加增益/减益」那一套（自己 / 指定敌人 / 全体敌人）。
+        new EffectKindOption("TempPower", "临时增益（本回合 +X，回合结束消失）", "层", 1, 99, false, true),
         new EffectKindOption("EndTurn",   "结束回合",       "—", 0, 0, false, false),
         new EffectKindOption("ExtraTurn", "额外获得一回合", "—", 0, 0, false, false),
         new EffectKindOption("GenerateCard",  "生成卡牌", "张", 1, 10, false, false),

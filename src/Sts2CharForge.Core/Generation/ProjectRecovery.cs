@@ -536,6 +536,19 @@ public static class ProjectRecovery
             pendingPetMarker = null;
         }
 
+        // 「格挡 / 回复生命 / 失去生命 / 最大生命」这几种效果**也能对敌人生效**，所以回读时必须认出作用对象。
+        // 生成的目标写法只有三种：cardPlay.Target（指定敌人）/ foe（全体 · 随机）/ 其余（自己的 base.Owner.Creature）。
+        // 以前这几条不设 TargetSide，于是 EffectSpec 的默认值 "Enemy" 一路留着 ——
+        // 回读出来的「给自己加 5 点格挡」会变成「给指定敌人加格挡」（下次生成就真的加到敌人身上了）。
+        string SideOfTarget(string text)
+        {
+            if (text.Contains("cardPlay.Target", StringComparison.Ordinal) || text.Contains("target", StringComparison.Ordinal))
+                return "Enemy";
+            if (text.Contains("foe", StringComparison.Ordinal))
+                return randomFoes ? "RandomEnemies" : "AllEnemies";
+            return "Self";
+        }
+
         // 「按生命值算」的宠物攻击 / 牺牲伙伴的收益：都用 `base.DynamicVars.CalculatedDamage` /
         // `CalculatedBlock` 取（本体那两个计算变量是固定名字的），所以这里按名字从 calcVars 里捞。
         decimal CalcAmount(string kind) => TakeCalcVar(calcVars, kind) ?? 0m;
@@ -829,7 +842,7 @@ public static class ProjectRecovery
                     Done(sacBlock);
                     continue;
                 }
-                var e = new EffectSpec { Kind = "Block" };
+                var e = new EffectSpec { Kind = "Block", TargetSide = SideOfTarget(line) };
                 FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
                 ApplyLoop(e, frames);
                 Done(e);
@@ -956,7 +969,7 @@ public static class ProjectRecovery
 
             if (line.StartsWith("await CreatureCmd.Heal(", StringComparison.Ordinal))
             {
-                var e = new EffectSpec { Kind = "Heal" };
+                var e = new EffectSpec { Kind = "Heal", TargetSide = SideOfTarget(line) };
                 FillExpr(e, ArgAt(line, 1));
                 Done(e);
                 continue;
@@ -964,7 +977,7 @@ public static class ProjectRecovery
 
             if (line.StartsWith("await CreatureCmd.GainMaxHp(", StringComparison.Ordinal))
             {
-                var e = new EffectSpec { Kind = "MaxHp" };
+                var e = new EffectSpec { Kind = "MaxHp", TargetSide = SideOfTarget(line) };
                 FillExpr(e, ArgAt(line, 1));
                 Done(e);
                 continue;
@@ -972,7 +985,7 @@ public static class ProjectRecovery
 
             if (line.StartsWith("await CreatureCmd.LoseMaxHp(", StringComparison.Ordinal))
             {
-                var e = new EffectSpec { Kind = "MaxHp" };
+                var e = new EffectSpec { Kind = "MaxHp", TargetSide = SideOfTarget(line) };
                 FillExpr(e, ArgAt(line, 2));
                 e.Amount = -e.Amount;
                 Done(e);
@@ -982,7 +995,8 @@ public static class ProjectRecovery
             if (line.StartsWith("await CreatureCmd.Damage(choiceContext, base.Owner", StringComparison.Ordinal))
             {
                 // 自己吃伤害：本体里 Heal(负数) 和 HpLoss 生成的是同一段代码，这里统一按「失去生命」
-                var e = new EffectSpec { Kind = "HpLoss" };
+                // （能被包在敌人的 foreach 里时 SideOfTarget 会给 AllEnemies/RandomEnemies，自己的默认 Self）
+                var e = new EffectSpec { Kind = "HpLoss", TargetSide = SideOfTarget(line) };
                 FillExpr(e, ArgAt(line, 2));
                 ApplyLoop(e, frames);
                 Done(e);
@@ -1045,8 +1059,21 @@ public static class ProjectRecovery
                 else if (power == "DrawCardsNextTurnPower" || power.Contains("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
                 else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
                 else if (power.Contains("ForgeDelayed", StringComparison.Ordinal)) { e.NextTurn = true; }
+                // 临时增益：打的是我们生成的临时 Power（<角色>ForgeTemp<状态>）——
+                // 从类名里把真正的状态名抠回来（前缀 ForgeTemp，后缀 Power），从而认回「临时增益」这一条。
+                else if (power.Contains("ForgeTemp", StringComparison.Ordinal))
+                {
+                    string? real = TempPowerTargetOf(power);
+                    if (real is not null)
+                    {
+                        e.Kind = "TempPower";
+                        e.PowerId = real;
+                    }
+                    else
+                        result.Unparsed.Add($"{where}: 临时增益的状态没认出来（{power}）");
+                }
 
-                if (e.Kind == "ApplyPower")
+                if (e.Kind is "ApplyPower" or "TempPower")
                 {
                     // 目标：cardPlay.Target = 单体敌人；HittableEnemies 整串 = 全体；
                     //      foe 出现在「随机挑敌人」的循环里 = 随机敌人，出现在 foreach 里 = 全体
@@ -1073,6 +1100,9 @@ public static class ProjectRecovery
                     "Block" => "Block",
                     "Draw" => "Cards",
                     "Energy" => "Energy",
+                    // 临时增益：CanonicalVars 里声明的是**真正那个状态**的 PowerVar（不是临时 Power 的），
+                    // 所以按 e.PowerId 找；别的（含延迟）用生成代码里那个 Power 名找。
+                    "TempPower" => "Power:" + (e.PowerId ?? power),
                     _ => "Power:" + power,
                 });
                 FillAmountOrExpr(e, amountExpr, v, nameToPowerId, power);
@@ -1205,6 +1235,20 @@ public static class ProjectRecovery
 
     private static int LoopValue(string s) => int.TryParse(s, out int n) ? n : 1;
 
+    /// <summary>
+    /// 从生成的临时 Power 类名（<c>&lt;角色&gt;ForgeTemp&lt;状态&gt;</c>）里把真正的状态名抠回来。
+    /// 生成时后缀就是那个状态的类名（例：SparkleForgeTempStrengthPower → StrengthPower），
+    /// 所以「ForgeTemp」之后那一段就是 <see cref="EffectSpec.PowerId"/>。
+    /// </summary>
+    private static string? TempPowerTargetOf(string className)
+    {
+        const string marker = "ForgeTemp";
+        int at = className.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        string raw = className[(at + marker.Length)..].Trim();
+        return raw.Length == 0 ? null : raw;
+    }
+
     private static Var? NextVar(List<Var> vars, ref int idx, string kind)
     {
         for (int i = idx; i < vars.Count; i++)
@@ -1328,6 +1372,8 @@ public static class ProjectRecovery
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false,
         "ApplyPower" => true,
+        // 临时增益：和「施加增益/减益」一样声明 PowerVar<那个状态>，升级增量也落在同一个变量上
+        "TempPower" => true,
         // 额外资源量：只有「正数获得」才声明 StarsVar（花费走 CanonicalStarCost，不占变量）——
         // 少了这一条，这类牌的升级增量会按错误的序号对到别的效果上（或者直接报「找不到对应效果」）。
         "ExtraResource" => e.Amount > 0,
@@ -1365,6 +1411,11 @@ public static class ProjectRecovery
 
     private static void ParseKeywords(CardSpec card, string text)
     {
+        // 「临时保留 / 临时奇巧」：生成的是 BeforeFlush 里打本体的单回合标记（只打一次），
+        // 认这两句本体 API 就能把开关读回来（和 CanonicalKeywords 无关，所以放在前面）。
+        if (text.Contains("GiveSingleTurnRetain()", StringComparison.Ordinal)) card.TempRetain = true;
+        if (text.Contains("GiveSingleTurnSly()", StringComparison.Ordinal)) card.TempSly = true;
+
         // 本体卡标签 CardTag（Strike / Defend / …）：别的模型按它查牌（升级初始打击 / 防御的遗物）
         string? tags = Match(text, @"CanonicalTags =>[^;]*?\{([^}]*)\}");
         if (tags is not null)

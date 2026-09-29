@@ -9286,6 +9286,106 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		};
 		Check("卡牌关键字能记下来", cardSpec25.KeywordList.Count == 4, string.Join("·", cardSpec25.KeywordList));
 		Check("关键字出现在卡牌列表文字里", cardSpec25.Display.Contains("Exhaust") && cardSpec25.Display.Contains("Retain"), cardSpec25.Display);
+
+		// ===== 第二批③④：临时保留 / 临时奇巧（本体的「单回合」标记 + 卡面关键词 + 悬停说明）=====
+		{
+			List<string> cardPageTexts = TextsIn(SelectTabRoot("卡牌"));
+			Check("卡牌页有「临时保留」勾选框", cardPageTexts.Contains("临时保留（只这一回合不弃）"), "控件在");
+			Check("卡牌页有「临时奇巧」勾选框", cardPageTexts.Contains("临时奇巧（只这一回合算奇巧）"), "控件在");
+			Check("「临时」这两个词是加在「卡牌关键字」那一组里（不是别的页）",
+				cardPageTexts.Contains("奇巧（被弃掉则免费打出）") && cardPageTexts.Contains("临时保留（只这一回合不弃）"), "同组");
+
+			CharacterProfile tempKwProbe = ProfileFactory.Sample();
+			CardSpec tempKwCard = new CardSpec
+			{
+				Name = "临时关键字测试", ClassName = "UiCheckTempKw", CardType = "Skill", Rarity = "Common", Cost = 1,
+				TempRetain = true, TempSly = true,
+			};
+			tempKwCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
+			tempKwProbe.Cards.Add(tempKwCard);
+			string tempKwSrc = CSharpCodeGen.CardSource(tempKwProbe, tempKwCard, 0);
+			Check("临时保留生成本体的单回合标记 GiveSingleTurnRetain()", tempKwSrc.Contains("GiveSingleTurnRetain()"), "钩子在");
+			Check("临时奇巧生成本体的单回合标记 GiveSingleTurnSly()", tempKwSrc.Contains("GiveSingleTurnSly()"), "钩子在");
+			Check("单回合标记写在 BeforeFlush（手牌被弃掉之前那个钩子）里",
+				tempKwSrc.Contains("public override Task BeforeFlush(PlayerChoiceContext choiceContext, Player player)"), "BeforeFlush");
+			Check("标记只打一次（有 __tempRetainDone / __tempSlyDone 守卫，否则每回合重打 = 永久保留）",
+				tempKwSrc.Contains("private bool __tempRetainDone;") && tempKwSrc.Contains("if (!__tempRetainDone)")
+				&& tempKwSrc.Contains("private bool __tempSlyDone;") && tempKwSrc.Contains("if (!__tempSlyDone)"), "只打一次");
+			Check("卡面关键词挂上了悬停说明（card_keywords 的两条键）",
+				tempKwSrc.Contains("\"TEMP_RETAIN.title\"") && tempKwSrc.Contains("\"TEMP_RETAIN.description\"")
+				&& tempKwSrc.Contains("\"TEMP_SLY.title\""), "悬停说明在");
+			string tempKwCards = LocalizationGen.CardsJson(tempKwProbe);
+			Check("卡面描述最前面是「[gold]临时保留[/gold]。/ [gold]临时奇巧[/gold]。」",
+				tempKwCards.Contains("[gold]临时保留[/gold]。") && tempKwCards.Contains("[gold]临时奇巧[/gold]。"),
+				tempKwCards.Replace("\n", " "));
+			string tempKwTable = LocalizationGen.KeywordsJson(tempKwProbe);
+			Check("card_keywords 表里写了这两个键（不写的话游戏里悬停就是缺键异常）",
+				tempKwTable.Contains("\"TEMP_RETAIN.title\"") && tempKwTable.Contains("\"TEMP_RETAIN.description\"")
+				&& tempKwTable.Contains("\"TEMP_SLY.title\"") && tempKwTable.Contains("\"TEMP_SLY.description\""), "两张键都在");
+			CharacterProfile tempRetainOnly = ProfileFactory.Sample();
+			tempRetainOnly.Cards.Add(new CardSpec { Name = "只临时保留", ClassName = "UiCheckTempRetainOnly", Cost = 1, TempRetain = true });
+			string tempRetainOnlyTable = LocalizationGen.KeywordsJson(tempRetainOnly);
+			Check("只用到一个时就只写那一个键（不写用不上的）",
+				tempRetainOnlyTable.Contains("\"TEMP_RETAIN.title\"") && !tempRetainOnlyTable.Contains("TEMP_SLY"), "只有一个键");
+			Check("一个都没勾时不写这两个键（不往本体表里塞没用的东西）",
+				!LocalizationGen.KeywordsJson(ProfileFactory.Sample()).Contains("TEMP_"), "干净");
+			Check("内置键被列为保留键（用户的自定义关键词不能占用、否则会盖掉卡面那行字）",
+				KeywordGen.IsReservedKey("TEMP_RETAIN") && KeywordGen.IsReservedKey("temp_sly"), "保留键");
+			CardSpec tempCopySrc = new CardSpec { Name = "临时复制源", Cost = 1, TempRetain = true, TempSly = true };
+			CardSpec tempCopyDst = DeepCloneCard(tempCopySrc);
+			Check("复制卡牌时这两个开关跟着走", tempCopyDst.TempRetain && tempCopyDst.TempSly, "深拷贝");
+		}
+
+		// ===== 第二批⑤：临时增益（本回合 +X，回合结束撤掉）=====
+		{
+			Check("效果种类里有「临时增益（本回合 +X，回合结束消失）」",
+				EffectCatalog.EffectKinds.Any(k => k.Kind == "TempPower"), string.Join("/", EffectCatalog.EffectKinds.Select(k => k.Kind)));
+			Check("临时增益能挂在状态触发器里（白名单里有它）", PowerTriggers.Supports("TempPower"), "在白名单里");
+			CharacterProfile tempPowerProbe = ProfileFactory.Sample();
+			CardSpec tempPowerCard = new CardSpec
+			{
+				Name = "临时力量测试", ClassName = "UiCheckTempPower", CardType = "Skill", Rarity = "Common", Cost = 1,
+			};
+			tempPowerCard.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 3m, UpgradeAmount = 1m, TargetSide = "Self" });
+			tempPowerProbe.Cards.Add(tempPowerCard);
+			string tempPowerSrc = CSharpCodeGen.CardSource(tempPowerProbe, tempPowerCard, 0);
+			string tempPowerCls = Naming.From(tempPowerProbe).TempPowerClass(tempPowerCard.Effects[0]);
+			Check("打出去的是生成的临时 Power（不是直接施加本体状态）",
+				tempPowerSrc.Contains($"await PowerCmd.Apply<{tempPowerCls}>(choiceContext, base.Owner.Creature,"), tempPowerCls);
+			Check("临时 Power 的类名带角色前缀（两个模组装一起不撞模型 ID）",
+				tempPowerCls.StartsWith(Naming.From(tempPowerProbe).CharClass, StringComparison.Ordinal) && tempPowerCls.EndsWith("ForgeTempStrengthPower", StringComparison.Ordinal), tempPowerCls);
+			Check("临时 Power 有动态变量（卡面数字 / 升级增量都按它走）",
+				tempPowerSrc.Contains("new PowerVar<StrengthPower>(") && tempPowerSrc.Contains("OnUpgrade"), "有变量");
+			string tempPowersSrc = CSharpCodeGen.TempPowersSource(tempPowerProbe);
+			Check("临时 Power 照本体 TemporaryStrengthPower 写：施加时把层数加进真正的状态",
+				tempPowersSrc.Contains("public override async Task BeforeApplied(Creature target, decimal amount, Creature? applier, CardModel? cardSource)")
+				&& tempPowersSrc.Contains("await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), target, amount, applier, cardSource, silent: true);"), "BeforeApplied");
+			Check("叠加时按增量补（AfterPowerAmountChanged）",
+				tempPowersSrc.Contains("public override async Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource)"), "有");
+			Check("回合结束时把这次加的层数撤掉、然后自己消失（AfterSideTurnEnd）",
+				tempPowersSrc.Contains("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
+				&& tempPowersSrc.Contains("await PowerCmd.Remove(this);")
+				&& tempPowersSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, -base.Amount, base.Owner, null);"), "回合结束撤掉");
+			Check("没配临时增益时不会生成临时 Power（UsesTempPower = false）",
+				!CSharpCodeGen.UsesTempPower(ProfileFactory.Sample()), "不生成");
+			string tempPowerCards = LocalizationGen.CardsJson(tempPowerProbe);
+			Check("卡面描述写清「本回合内 +X 层…（回合结束时消失）」",
+				tempPowerCards.Contains("本回合内获得 {StrengthPower:diff()} 层") && tempPowerCards.Contains("（回合结束时消失）"),
+				tempPowerCards.Replace("\n", " "));
+			string tempPowerLoc = LocalizationGen.PowersJson(tempPowerProbe);
+			Check("临时 Power 有本地化（状态栏显示「临时气势」+ 说明）",
+				tempPowerLoc.Contains(Naming.EntryOf(tempPowerCls) + ".title") && tempPowerLoc.Contains("回合结束时消失"), "有本地化");
+			Check("要改状态但没选状态时报错（不是静默生成个空类）",
+				ProfileValidator.Validate(new CharacterProfile { Cards = { new CardSpec { Name = "缺状态", Cost = 1, Effects = { new EffectSpec { Kind = "TempPower", Amount = 2m } } } } })
+					.Any(i => i.IsError && i.Message.Contains("未选择有效的 Power")), "有错误");
+			CharacterProfile tempPowerRelic = ProfileFactory.Sample();
+			RelicSpec tempPowerRelicSpec = new RelicSpec { Name = "临时增益遗物", Trigger = "PlayerTurnStart", Rarity = "Common" };
+			tempPowerRelicSpec.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" });
+			tempPowerRelic.Relics.Add(tempPowerRelicSpec);
+			Check("遗物上也能用临时增益",
+				CSharpCodeGen.RelicSource(tempPowerRelic, tempPowerRelicSpec, 0).Contains($"PowerCmd.Apply<{Naming.From(tempPowerRelic).TempPowerClass(tempPowerRelicSpec.Effects[0])}>("), "遗物也支持");
+		}
+
 		RecheckEnvironment();
 		Check("环境自检有结果项", EnvItems.Count >= 5, $"{EnvItems.Count} 项 / {EnvSummaryText}");
 		Check("环境自检能识别 .NET SDK", EnvItems.Any((EnvCheckItem i) => i.Name.Contains("SDK")), EnvItems.First((EnvCheckItem i) => i.Name.Contains("SDK")).Display);

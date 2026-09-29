@@ -136,9 +136,9 @@ public static class ProfileValidator
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条效果是「{e.Kind}」，"
                             + "这种效果需要卡牌上下文（选牌 / 结束回合），状态触发器里用不了。"
                             + $"能用的是：{string.Join(" / ", PowerTriggers.SupportedEffectKinds)}。"));
-                    if (e.Kind == "ApplyPower" && string.IsNullOrWhiteSpace(e.PowerId))
-                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「施加增益/减益」还没选状态。"));
-                    else if (e.Kind == "ApplyPower" && EffectCatalog.Powers.Count > 0
+                    if (e.Kind is "ApplyPower" or "TempPower" && string.IsNullOrWhiteSpace(e.PowerId))
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」还没选状态。"));
+                    else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
                              && !EffectCatalog.IsCustomPower(e.PowerId) && EffectCatalog.FindPower(e.PowerId) is null)
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条要施加的状态找不到：{e.PowerId}。"));
                     // 每条效果自己的条件选项（能力/状态里的条件不支持「这张牌」类条件）
@@ -155,7 +155,7 @@ public static class ProfileValidator
                             + "想要固定数值就把那个勾去掉。"));
                     // 本体里有些状态显示的数字根本不是层数（自己 override 了 DisplayAmount）：
                     // 填多少层，状态栏那个数字都不会是你填的值（用户报过「30 层缓慢」）
-                    if (e.Kind == "ApplyPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
+                    if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
                         issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
                             + $"本体这个状态显示的数字不是层数 —— {amountNote}"
                             + "（层数照旧记着，只是状态栏那个数字由它自己算，别按「显示 = 你填的层数」去读。）"));
@@ -404,7 +404,7 @@ public static class ProfileValidator
 
             if (!CSharpCodeGen.HasContext(r.Trigger))
             {
-                foreach (var e in r.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower"
+                foreach (var e in r.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower" or "TempPower"
                                                        || (x.Kind == "MaxHp" && x.Amount < 0)))
                 {
                     issues.Add(new("警告",
@@ -431,7 +431,7 @@ public static class ProfileValidator
             ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion");
             AddDuplicateVarNotice(issues, $"药水「{s.Name}」", s.Effects);
 
-            if (s.Usage == "AnyTime" && s.Effects.Any(e => e.Kind is "Damage" or "Block" or "Draw" or "ApplyPower"))
+            if (s.Usage == "AnyTime" && s.Effects.Any(e => e.Kind is "Damage" or "Block" or "Draw" or "ApplyPower" or "TempPower"))
                 issues.Add(new("警告", $"药水「{s.Name}」是「任意时机」，但含战斗内效果（伤害/格挡/抽牌/挂增益），战斗外会缺少战斗上下文；建议改「仅战斗中」。"));
         }
 
@@ -502,6 +502,7 @@ public static class ProfileValidator
         if (p.ExtraResource.Enabled) mine.Add(n.ExtraResourceRelicClass);
         if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
+        foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
         if (PetGen.IsActive(p))
         {
             foreach (var d in PetGen.All(p)) mine.Add(d.ClassName);
@@ -923,12 +924,12 @@ public static class ProfileValidator
             var kind = EffectCatalog.FindKind(e.Kind);
             if (e.Amount < kind.Min || e.Amount > kind.Max)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
-            if (e.Kind == "ApplyPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
-            else if (e.Kind == "ApplyPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
+            if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
+            else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的增益/减益未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));
             // 本体里有些状态显示的数字不是层数（自己 override 了 PowerModel.DisplayAmount）：
             // 填多少层状态栏都不会显示你填的值（用户报过「施加 30 层缓慢，游戏里只看到缓慢」）
-            if (e.Kind == "ApplyPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
+            if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
                 issues.Add(new("提示", $"{owner} 施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
                     + $"本体这个状态显示的数字不是层数 —— {amountNote}"
                     + "（层数照旧记着，只是状态栏那个数字由它自己算。）"));
@@ -1007,7 +1008,7 @@ public static class ProfileValidator
                     "AllEnemies" => "AllEnemies",
                     _ => "Self",
                 };
-                bool matters = e.Kind is "Damage" or "ApplyPower";
+                bool matters = e.Kind is "Damage" or "ApplyPower" or "TempPower";
                 if (matters && e.TargetSide != want)
                     issues.Add(new("警告", $"{owner} 的「{kind.Display}」效果对象是「{e.TargetSide}」，"
                         + $"但药水作用目标是「{potionTargetType}」→ 实际执行按药水目标，描述也已按药水目标生成。"));

@@ -944,9 +944,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         var all = effects as IList<EffectSpec> ?? effects.ToList();
         foreach (var e in all)
         {
-            if (e.Kind == "ApplyPower" && !string.IsNullOrWhiteSpace(e.PowerId))
+            if (e.Kind is "ApplyPower" or "TempPower" && !string.IsNullOrWhiteSpace(e.PowerId))
             {
-                string type = e.NextTurn ? DelayedPowerClassName(e, owner) : e.PowerId!.Trim();
+                // 临时增益指向的是**生成的那个临时 Power**（它自己有一条 powers 本地化：「临时 X / 本回合+X，回合结束消失」），
+                // 指向本体那个状态的话，悬停里就只会说「气势」而看不出这是临时的。
+                string type = e.Kind == "TempPower"
+                    ? TempPowerClassName(e, owner)
+                    : e.NextTurn ? DelayedPowerClassName(e, owner) : e.PowerId!.Trim();
                 // 「数值 = 层数 / X」时数量说不准，就不写数量（本体自己也有不写数量的写法）
                 string amount = (e.AmountIsX || e.AmountIsStack || e.Amount <= 0)
                     ? ""
@@ -1319,6 +1323,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "MaxHp" => "MaxHp",
         "Gold" => "Gold",
         "ApplyPower" => e.PowerId ?? "Power",
+        // 临时增益：变量名也用那个状态的类名（卡面 {StrengthPower:diff()}），
+        // 同一张牌上同时有「施加」和「临时施加」同一个状态时，VarNamesOf 会自动给第二个起别名。
+        "TempPower" => e.PowerId ?? "Power",
         // 额外资源量 = 本体的星星：本体有现成的 StarsVar（默认名 "Stars"），
         // 用它才能让卡面 {Stars:diff()} 随升级变（用户报过「升级后卡面还显示 2」）。
         "ExtraResource" => "Stars",
@@ -1463,6 +1470,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 额外资源量：用本体的 StarsVar，这样卡面描述 {Stars:diff()} 会随升级变（用户报过「升级后还显示 2」）
             "ExtraResource" => $"new StarsVar({prefix}{Lit.Int(e.Amount)})",
             "ApplyPower" => $"new PowerVar<{e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
+            // 临时增益：同样用那个状态的 PowerVar（卡面数字随升级变），只是打出去时施加的是生成的临时 Power
+            "TempPower" => $"new PowerVar<{e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
             // 召唤伙伴：本体没有「宠物生命 / 宠物伤害」这两种变量类型，用带名字的普通 DynamicVar
             // （名字是 PetHp / PetDamage，卡面描述里的 {…:diff()} 与升级增量都按它走）
             "SummonPet" => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
@@ -1695,7 +1704,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static bool NeedsTargetNullCheck(CardSpec c) =>
         c.Effects.Any(e => e.TargetSide == "Enemy"
-            && (e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            && (e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
                 || PetAttackKind(e.Kind)
                 || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage")));
 
@@ -1893,9 +1902,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line($"protected override bool ShouldGlowRedInternal => {string.Join(" || ", petNeeds.Select(x => $"!({x})"))};");
 
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
-        // 自定义关键词也走这一段（文本来自我们写进本体 card_keywords 表的键）
+        // 自定义关键词 + 内置的「临时保留 / 临时奇巧」也走这一段（文本来自我们写进本体 card_keywords 表的键）
         w.Raw(HoverTipsOverride(c.Effects, isPublic: false, isCard: true,
-            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList), owner: p));
+            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList).Concat(KeywordGen.TempTipsFor(c)), owner: p));
 
         w.Line()
          .Line($"public {cls}() : base({(c.CostIsX ? 0 : c.Cost)}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
@@ -2067,7 +2076,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「伙伴攻击」同理：打的是敌人（attacker 是宠物），卡牌也要变成需要选目标的那种。
         // 「牺牲伙伴」收益是伤害时同理（生成的是 .Targeting(cardPlay.Target)），收益是格挡时不算。
         static bool HitsEnemy(EffectSpec e) =>
-            e.Kind is "Damage" or "ApplyPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
             || PetAttackKind(e.Kind)
             || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
@@ -2632,6 +2641,35 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         break;
                 }
                 break;
+
+            // 临时增益：不打真正的状态，而是打我们生成的「临时 Power」——
+            // 它在施加时把 X 层加进真正的状态、回合结束时再把 X 层撤掉、自己消失
+            // （本体 FlexPotion 的 TemporaryStrengthPower 就是这套，照它写）。
+            case "TempPower":
+                switch (e.TargetSide)
+                {
+                    case "Self":
+                        w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);"
+                            + "   // 临时增益：本回合 +X，回合结束撤掉");
+                        break;
+                    case "AllEnemies":
+                        w.Open("foreach (Creature foe in base.CombatState.HittableEnemies)")
+                         .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, this);")
+                         .Close();
+                        break;
+                    case "RandomEnemies":
+                        w.Line("List<Creature> foes = base.CombatState.HittableEnemies.ToList();")
+                         .Open($"for (int __foeIdx = 0; __foeIdx < {RepeatExpr(e, useX)} && foes.Count > 0; __foeIdx++)")
+                         .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
+                        if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
+                        w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, this);")
+                         .Close();
+                        break;
+                    default:
+                        w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, cardPlay.Target, {amt}, base.Owner.Creature, this);");
+                        break;
+                }
+                break;
         }
     }
 
@@ -3060,6 +3098,88 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
     }
 
+    /// <summary>
+    /// 「临时增益（本回合 +X）」用到的全部效果（按状态去重）。
+    /// 只做卡牌 / 药水 / 遗物 / 自定义状态触发里出现的；有才生成对应的临时 Power 类。
+    /// </summary>
+    public static IEnumerable<EffectSpec> CollectTempPowerEffects(CharacterProfile p)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in p.Cards.SelectMany(c => c.Effects)
+                     .Concat(p.Relics.SelectMany(r => r.Effects))
+                     .Concat(p.Potions.SelectMany(s => s.Effects))
+                     .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects)))
+        {
+            if (e.Kind != "TempPower") continue;
+            if (seen.Add(e.PowerId ?? "")) yield return e;
+        }
+    }
+
+    /// <summary>这个存档里有没有「临时增益」（有才生成 TempPowers.cs）。</summary>
+    public static bool UsesTempPower(CharacterProfile p) => CollectTempPowerEffects(p).Any();
+
+    /// <summary>临时增益 Power 的类名（兜底用当前角色，见 <see cref="Naming.CurrentCharClass"/>）。</summary>
+    internal static string TempPowerClassName(EffectSpec e, CharacterProfile? owner = null) =>
+        owner is null ? Naming.AmbientTempPowerClass(e) : Naming.From(owner).TempPowerClass(e);
+
+    /// <summary>
+    /// 「临时增益（本回合 +X）」的临时 Power：**照抄本体 TemporaryStrengthPower 那套**写。
+    ///
+    /// 为什么不能直接施加状态再自己减掉：本体的「临时力量 / 临时敏捷 / 临时专注」就是
+    /// <c>TemporaryStrengthPower</c> 这一类类（FlexPotion 的 FlexPotionPower 继承它）——
+    ///   · <c>BeforeApplied</c>：新挂上时，把 X 层加进**真正的状态**（silent，不额外闪特效）；
+    ///   · <c>AfterPowerAmountChanged</c>：叠加时按**增量**补进真正的状态（同一套）；
+    ///   · <c>AfterSideTurnEnd</c>：这一回合结束（拥有者在这一侧里）时，把这次加的 X 层撤掉、自己消失。
+    /// 好处是：层数、叠加、显示、以及「这是临时加的」在状态栏上都和本体一模一样；
+    /// 而且不需要 Harmony，也不依赖任何本体私有 API。
+    /// </summary>
+    public static string TempPowersSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 临时增益（本回合 +X）用的临时 Power </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line();
+
+        foreach (var e in CollectTempPowerEffects(p))
+        {
+            string power = e.PowerId ?? "StrengthPower";
+            string cls = n.TempPowerClass(e);
+            // 增益 / 减益跟着那个状态本身的分类走（查不到就按增益）
+            bool isBuff = EffectCatalog.FindPower(e.PowerId)?.IsBuff ?? true;
+
+            w.Line($"/// <summary>临时 {power}：本回合内 +层数，回合结束时把这次加的层数撤掉。</summary>")
+             .Open($"public sealed class {cls} : PowerModel")
+             .Line($"public override PowerType Type => PowerType.{(isBuff ? "Buff" : "Debuff")};")
+             .Line()
+             .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+             .Line()
+             .Line("// 刚挂上：把层数加进真正的状态（silent = 不额外闪一次，本体 FlexPotion 的做法）")
+             .Open("public override async Task BeforeApplied(Creature target, decimal amount, Creature? applier, CardModel? cardSource)")
+             .Line($"await PowerCmd.Apply<{power}>(new ThrowingPlayerChoiceContext(), target, amount, applier, cardSource, silent: true);")
+             .Close()
+             .Line()
+             .Line("// 叠加时按增量补进真正的状态（amount 是这次变化的量，base.Amount 是变化后的总量）")
+             .Open("public override async Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource)")
+             .Open("if (!(amount == (decimal)base.Amount) && power == this)")
+             .Line($"await PowerCmd.Apply<{power}>(choiceContext, base.Owner, amount, applier, cardSource, silent: true);")
+             .Close()
+             .Close()
+             .Line()
+             .Line("// 这一回合结束：把这次临时加的层数撤掉，然后自己消失（撤的是 -base.Amount，其它来源加的层数不受影响）")
+             .Open("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
+             .Open("if (participants.Contains(base.Owner))")
+             .Line("Flash();")
+             .Line("await PowerCmd.Remove(this);")
+             .Line($"await PowerCmd.Apply<{power}>(choiceContext, base.Owner, -base.Amount, base.Owner, null);")
+             .Close()
+             .Close()
+             .Close()
+             .Line();
+        }
+        return w.ToString();
+    }
+
     public static string DelayedPowersSource(CharacterProfile p)
     {
         var n = Naming.From(p);
@@ -3420,6 +3540,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     EmitSlowPercentFixForAll(w, e);
                 }
                 break;
+
+            // 临时增益：遗物也能给（本回合 +X，回合结束撤掉）
+            case "TempPower":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，临时增益无法实现）"); break; }
+                if (e.TargetSide == "Self")
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                else
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
+                break;
         }
     }
 
@@ -3667,6 +3796,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
+                }
+                break;
+
+            // ===== 临时增益：药水也能用（本回合 +X，回合结束撤掉）=====
+            case "TempPower":
+                if (potionTarget == "AllEnemies")
+                {
+                    w.Open($"foreach (Creature foe in {allEnemies})")
+                     .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, null);")
+                     .Close();
+                }
+                else if (potionTarget == "AnyEnemy")
+                {
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, target, {amt}, base.Owner.Creature, null);");
+                }
+                else
+                {
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 }
                 break;
 

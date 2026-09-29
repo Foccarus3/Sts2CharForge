@@ -361,7 +361,7 @@ public static class CustomPowerGen
 
     /// <summary>这些效果必须要有 choiceContext 才能生成（校验器也用它）。</summary>
     internal static bool NeedsChoiceContext(string? kind) =>
-        kind is "Damage" or "Draw" or "ApplyPower" or "ExtraTurn" or "CardReward";
+        kind is "Damage" or "Draw" or "ApplyPower" or "TempPower" or "ExtraTurn" or "CardReward";
 
     /// <summary>
     /// 「随机挑一个敌人」那一行。
@@ -488,6 +488,25 @@ public static class CustomPowerGen
                             $"await PowerCmd.Apply<{e.PowerId}>(choiceContext, {foe}, {amt}, base.Owner, null);");
                         // EmitFoeBlock 生成的变量就叫 other
                         CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
+                        break;
+                }
+                break;
+
+            // 临时增益（本回合 +X，回合结束撤掉）：打的是生成的临时 Power
+            case "TempPower":
+                switch (e.TargetSide)
+                {
+                    case "Self":
+                        w.Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, base.Owner, {amt}, base.Owner, null);");
+                        break;
+                    case "AllEnemies":
+                        w.Open("foreach (Creature other in base.Owner.CombatState.HittableEnemies)")
+                         .Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, other, {amt}, base.Owner, null);")
+                         .Close();
+                        break;
+                    default:
+                        EmitFoeBlock(w, foeFrom, foe =>
+                            $"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, {foe}, {amt}, base.Owner, null);");
                         break;
                 }
                 break;
