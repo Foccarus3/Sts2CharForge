@@ -280,8 +280,10 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "potions.json"),
             LocalizationGen.MergeVanillaText(LocalizationGen.PotionsJson(profile), vanillaText, "potions"));
         ProjectFilesGen.WriteText(Path.Combine(locRoot, "ancients.json"), LocalizationGen.AncientsJson(profile));
+        // 注意「透支能量 / 额外获得一回合」也要算进来：它们各自的 Power 会挂在状态栏上，
+        // 不写 powers.json 的话游戏只能把原始键名印出来（用户实测报过「打出透支后状态描述不正常」）。
         bool needPowersLoc = delayed.Count > 0 || VanillaPowerGen.LocEntries(profile).Any() || powerCount > 0
-            || tempPowers.Count > 0;
+            || tempPowers.Count > 0 || CSharpCodeGen.UsesEnergyDebt(profile) || CSharpCodeGen.UsesExtraTurn(profile);
         if (needPowersLoc)
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "powers.json"), LocalizationGen.PowersJson(profile));
         // 自定义名字：覆盖本体的「辉星」悬停提示（本体加载时会把模组的同名表并进来覆盖）

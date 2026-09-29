@@ -289,6 +289,24 @@ public static class LocalizationGen
             dict[$"{entry}.description"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
             dict[$"{entry}.smartDescription"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
         }
+        // 「透支能量」的负债 Power：它会挂在玩家身上（状态栏里有个图标，数量 = 下回合要少几点能量）。
+        // 少了这段，游戏在 powers 表里查不到 title/description，就会把**原始键名**原样印在悬停提示上
+        // （用户实测截图：powers.SPARKLE_FORGE_ENERGY_DEBT_POWER.title / …description）。
+        if (CSharpCodeGen.UsesEnergyDebt(p))
+        {
+            string entry = Naming.EntryOf(Naming.From(p).EnergyDebtPowerClass);
+            dict[$"{entry}.title"] = "能量透支";
+            dict[$"{entry}.description"] = "下回合少 {Amount} 点能量。";
+            dict[$"{entry}.smartDescription"] = "下回合少 {Amount} 点能量。";
+        }
+        // 「额外获得一回合」的 Power 同理（它会一直挂在状态栏里，直到把额外回合用掉）
+        if (CSharpCodeGen.UsesExtraTurn(p))
+        {
+            string entry = Naming.EntryOf(Naming.From(p).ExtraTurnPowerClass);
+            dict[$"{entry}.title"] = "额外回合";
+            dict[$"{entry}.description"] = "本回合结束后额外获得一个回合。";
+            dict[$"{entry}.smartDescription"] = "本回合结束后额外获得一个回合。";
+        }
         // 自定义状态（能力牌用）：键就是本体的规则 Id.Entry + ".title"（PowerModel.Title 默认就这么取）
         for (int i = 0; i < p.CustomPowers.Count; i++)
         {

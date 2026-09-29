@@ -9464,6 +9464,56 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 		}
 
+		// ===== 透支能量 / 额外回合：生成的 Power 也必须有本地化 =====
+		// 用户实测报过：打出「透支」之后，状态那一栏的描述显示成原始键名
+		// （powers.SPARKLE_FORGE_ENERGY_DEBT_POWER.title / …description）—— 因为 powers.json 里没这两条键。
+		{
+			string debtRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_debt_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile debt = ProfileFactory.Sample();
+				debt.Paths.OutputDir = debtRoot;
+				debt.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				debt.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				debt.SaveName = "透支自检";
+				// 故意把其它会写 powers.json 的东西都清掉：这一段就是要验「只用到透支 / 额外回合时也会写」
+				debt.CustomPowers.Clear();
+				debt.VanillaPowerOverrides.Clear();
+				foreach (CardSpec c in debt.Cards)
+					foreach (EffectSpec e in c.Effects)
+						e.NextTurn = false;                      // 关掉「下回合生效」的延迟 Power
+				Naming debtNaming = Naming.From(debt);
+				CardSpec debtCard = new CardSpec { Name = "自检透支", ClassName = "UiCheckDebt", CardType = "Skill", Rarity = "Common", Cost = 0, InCardPool = true };
+				debtCard.Effects.Add(new EffectSpec { Kind = "OverdraftEnergy", Amount = 2m, TargetSide = "Self" });
+				debt.Cards.Add(debtCard);
+				CardSpec turnCard = new CardSpec { Name = "自检额外回合", ClassName = "UiCheckExtraTurn", CardType = "Skill", Rarity = "Rare", Cost = 1, InCardPool = true };
+				turnCard.Effects.Add(new EffectSpec { Kind = "ExtraTurn", TargetSide = "Self" });
+				debt.Cards.Add(turnCard);
+
+				GenerationResult debtGen = ModGenerator.Generate(debt);
+				string debtLocPath = Path.Combine(debtGen.ProjectRoot, debtNaming.ModId, "localization", "zhs", "powers.json");
+				Check("透支 / 额外回合：只用到它们也会生成 powers.json（不生成的话游戏查不到键，只能把原始键名印出来）",
+					File.Exists(debtLocPath), debtLocPath);
+				string debtLoc = File.Exists(debtLocPath) ? File.ReadAllText(debtLocPath) : "";
+				string debtEntry = Naming.EntryOf(debtNaming.EnergyDebtPowerClass);
+				string turnEntry = Naming.EntryOf(debtNaming.ExtraTurnPowerClass);
+				Check("透支：负债 Power 有 title（状态悬停里那个名字，不再是 powers.…title）",
+					debtLoc.Contains(debtEntry + ".title"), debtEntry + ".title");
+				Check("透支：负债 Power 的 description 带 {Amount} 占位符（显示成「下回合少 2 点能量」）",
+					debtLoc.Contains(debtEntry + ".description") && debtLoc.Contains("下回合少 {Amount} 点能量。"), debtEntry + ".description");
+				Check("透支：smartDescription 也写了（本体战斗里的悬停优先用它）",
+					debtLoc.Contains(debtEntry + ".smartDescription"), debtEntry + ".smartDescription");
+				Check("额外回合：Power 也有 title / description（同一个坑，顺手一起验）",
+					debtLoc.Contains(turnEntry + ".title") && debtLoc.Contains(turnEntry + ".description"), turnEntry);
+				Check("键名和本体查表用的键一致（Naming.EntryOf 算出来的那个）",
+					File.Exists(debtLocPath) && debtLoc.Contains("\"" + debtEntry + ".title\""), debtEntry);
+			}
+			finally
+			{
+				try { if (Directory.Exists(debtRoot)) Directory.Delete(debtRoot, true); } catch { }
+			}
+		}
+
 		// ===== 第二批③④：临时保留 / 临时奇巧（本体的「单回合」标记 + 卡面关键词 + 悬停说明）=====
 		{
 			List<string> cardPageTexts = TextsIn(SelectTabRoot("卡牌"));

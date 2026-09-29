@@ -501,6 +501,7 @@ public static class ProfileValidator
         mine.Add(n.PotionPoolClass);
         if (p.ExtraResource.Enabled) mine.Add(n.ExtraResourceRelicClass);
         if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
+        if (CSharpCodeGen.UsesEnergyDebt(p)) mine.Add(n.EnergyDebtPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
         if (PetGen.IsActive(p))
