@@ -1768,6 +1768,35 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line($"public override IEnumerable<CardKeyword> CanonicalKeywords => [{kw}];");
         }
 
+        // 临时保留 / 临时奇巧：本体的「单回合」标记（GiveSingleTurnRetain / GiveSingleTurnSly）——
+        // 那个标记在 EndOfTurnCleanup() 里会复位，所以**只会多留这一回合**（和 Retain / Sly 关键词的区别就在这里）。
+        // 挂在哪一步：覆写 BeforeFlush（「这次手牌被弃掉之前」的钩子，卡牌在手牌堆里就收得到；
+        // 本体的 Expertise 是打出时给抽到的牌打标记，诅咒牌 Debt 走的是 OnTurnEndInHand，同一条钩子链）。
+        // 只打一次：否则每回合都会重新打上标记 → 就变成永久保留了。
+        if (c.TempRetain || c.TempSly)
+        {
+            w.Line();
+            w.Line("// 「临时保留 / 临时奇巧」用的单回合标记（只打一次 → 只保 / 只算这一回合）");
+            if (c.TempRetain) w.Line("private bool __tempRetainDone;");
+            if (c.TempSly) w.Line("private bool __tempSlyDone;");
+            w.Line()
+             .Line("/// <summary>回合结束、手牌被弃掉之前：给自己打上单回合标记。</summary>")
+             .Open("public override Task BeforeFlush(PlayerChoiceContext choiceContext, Player player)")
+             .Line("if (!ReferenceEquals(player, base.Owner)) return Task.CompletedTask;");
+            if (c.TempRetain)
+                w.Open("if (!__tempRetainDone)")
+                 .Line("__tempRetainDone = true;")
+                 .Line("GiveSingleTurnRetain();   // 本体 API：只这一回合不被弃掉")
+                 .Close();
+            if (c.TempSly)
+                w.Open("if (!__tempSlyDone)")
+                 .Line("__tempSlyDone = true;")
+                 .Line("GiveSingleTurnSly();      // 本体 API：只这一回合算奇巧")
+                 .Close();
+            w.Line("return Task.CompletedTask;")
+             .Close();
+        }
+
         // X 费用（本体储君「天际钻头」/ 亡灵契约师「挽歌」这种）：本体用 HasEnergyCostX 表示，
         // 构造函数里费用写 0，实际消耗由本体结算，X 值用 ResolveEnergyXValue() 取。
         bool usesX = c.Effects.Any(e => e.UsesX);

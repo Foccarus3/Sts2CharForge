@@ -746,6 +746,22 @@ public sealed class CardSpec : SpecBase
     /// <summary>奇巧 Sly：回合结束前被弃掉则免费打出</summary>
     public bool Sly { get => _sly; set => Set(ref _sly, value); }
 
+    private bool _tempRetain;
+    private bool _tempSly;
+
+    /// <summary>
+    /// 临时保留：**只这一回合**不会被弃掉（和「保留 Retain」的区别：Retain 是每回合都留）。
+    ///
+    /// 本体机制：<c>CardModel.ShouldRetainThisTurn</c> = 有 Retain 关键词 **或** 被打了「单回合保留」标记
+    /// （<c>CardCmd.ApplySingleTurnRetain</c> / <c>GiveSingleTurnRetain()</c>），
+    /// 而那个标记在 <c>EndOfTurnCleanup()</c> 里复位 —— 所以「保一次」就是本回合。
+    /// 生成：这张牌覆写 <c>BeforeFlush</c>（手牌被弃掉之前），第一次触及时给自己打上标记（只打一次）。
+    /// </summary>
+    public bool TempRetain { get => _tempRetain; set => Set(ref _tempRetain, value); }
+
+    /// <summary>临时奇巧：**只这一回合**算「奇巧」（被打出前被弃掉可免费打出），下一回合不再算。</summary>
+    public bool TempSly { get => _tempSly; set => Set(ref _tempSly, value); }
+
     /// <summary>选了哪些关键字（生成 CanonicalKeywords 用）。</summary>
     [JsonIgnore]
     public IReadOnlyList<string> KeywordList
