@@ -222,6 +222,18 @@ public static class ModGenerator
                 + string.Join("、", tempPowers.Select(e => EffectCatalog.PowerName(e.PowerId))));
         }
 
+        // 「给予卡牌关键词」：临时关键词用的 Power + 「给自定义关键词」的注册表与两个补丁
+        if (CSharpCodeGen.UsesTempKeywordPower(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "TempKeywordPower.cs"), CSharpCodeGen.TempKeywordPowerSource(profile));
+            Log("  已生成「临时关键词」用的 Power（回合结束时把临时给出的关键词摘掉）");
+        }
+        if (CSharpCodeGen.UsesGivenCustomKeyword(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "GivenKeywords.cs"), CSharpCodeGen.GivenKeywordPatchSource(profile));
+            Log("  已生成「给予自定义关键词」的运行时支持（注册表 + 卡面文字 / 悬停说明两个补丁）");
+        }
+
         // 本体「缓慢」数值助手：只有配了「直接把缓慢设成 N%」才生成
         if (CSharpCodeGen.NeedsSlowPowerHelper(profile))
         {
@@ -292,7 +304,7 @@ public static class ModGenerator
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "static_hover_tips.json"), hoverTips);
         // 自定义关键词 / 本体关键词改名 / 内置的「临时保留·临时奇巧」：都写进本体的 card_keywords 表（逐键合并）。
         // 有其中任何一样就必须写这个文件 —— 不生成的话，改的名字 / 卡面那行字在游戏里根本不生效。
-        bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile) || KeywordGen.UsesTempKeywords(profile);
+        bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile);
         if (needKeywordsLoc)
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "card_keywords.json"), LocalizationGen.KeywordsJson(profile));
         Log("  本地化：characters / cards / relics / potions / ancients"

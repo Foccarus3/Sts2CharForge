@@ -378,7 +378,7 @@ public static class ProfileValidator
                 issues.Add(new("警告", $"卡牌「{c.Name}」费用 {c.Cost} 超出常规范围（0~5）。"));
             if (c.InStartingDeck && c.StartingCopies is < 1 or > 10)
                 issues.Add(new("警告", $"卡牌「{c.Name}」初始份数 {c.StartingCopies} 建议 1~10。"));
-            ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: "Card");
+            ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: "Card", p: p);
             AddDuplicateVarNotice(issues, $"卡牌「{c.Name}」", c.Effects);
             // 老存档的「整张牌一个条件」也校验一下（打开后会自动搬到第一条效果上）
             if (c.Condition is not null && !c.Condition.IsNone && c.Effects.Count > 0)
@@ -398,7 +398,7 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"遗物「{r.Name}」稀有度非法：{r.Rarity}"));
             if (!EffectCatalog.RelicTriggers.Any(t => t.Id == r.Trigger))
                 issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{r.Trigger}"));
-            ValidateEffects(issues, $"遗物「{r.Name}」", r.Effects, ctx: "Relic");
+            ValidateEffects(issues, $"遗物「{r.Name}」", r.Effects, ctx: "Relic", p: p);
             AddDuplicateVarNotice(issues, $"遗物「{r.Name}」", r.Effects);
             ValidateCondition(issues, $"遗物「{r.Name}」（整只遗物的触发条件）", r.Condition, "Relic");
 
@@ -428,7 +428,7 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"药水「{s.Name}」使用时机非法：{s.Usage}"));
             if (!EffectCatalog.PotionTargets.Contains(s.TargetType))
                 issues.Add(new("错误", $"药水「{s.Name}」目标非法：{s.TargetType}"));
-            ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion");
+            ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion", p: p);
             AddDuplicateVarNotice(issues, $"药水「{s.Name}」", s.Effects);
 
             if (s.Usage == "AnyTime" && s.Effects.Any(e => e.Kind is "Damage" or "Block" or "Draw" or "ApplyPower" or "TempPower"))
@@ -502,6 +502,7 @@ public static class ProfileValidator
         if (p.ExtraResource.Enabled) mine.Add(n.ExtraResourceRelicClass);
         if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
         if (CSharpCodeGen.UsesEnergyDebt(p)) mine.Add(n.EnergyDebtPowerClass);
+        if (CSharpCodeGen.UsesTempKeywordPower(p)) mine.Add(n.TempKeywordPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
         if (PetGen.IsActive(p))
@@ -911,7 +912,7 @@ public static class ProfileValidator
     }
 
     private static void ValidateEffects(List<ValidationIssue> issues, string owner, IEnumerable<EffectSpec> effects,
-        string? potionTargetType = null, string ctx = "Card")
+        string? potionTargetType = null, string ctx = "Card", CharacterProfile? p = null)
     {
         int index = 0;
         foreach (var e in effects)
@@ -934,6 +935,9 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{owner} 施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
                     + $"本体这个状态显示的数字不是层数 —— {amountNote}"
                     + "（层数照旧记着，只是状态栏那个数字由它自己算。）"));
+            // 给予卡牌关键词：关键词必须选、而且必须存在（本体枚举名 或 已定义的自定义关键词）
+            if (e.Kind == "GiveKeyword")
+                ValidateGiveKeyword(issues, owner, e, p, ctx);
             // 「直接把「缓慢」设成 N%」那几个坑
             if (e.SlowPercent > 0)
             {
@@ -1018,7 +1022,36 @@ public static class ProfileValidator
     }
 
     /// <summary>
-    /// 一条「条件选项」的校验。ctx：Card / Relic / Power / Potion ——
+    /// 「给予卡牌关键词」的校验：关键词填了没、存不存在；数值 0（= 这张牌自己）只有卡牌上成立。
+    /// 自定义关键词给的是「战斗里的牌」，所以卡牌 / 遗物 / 药水 / 状态触发器都能用（数值 ≥ 1 即可）。
+    /// </summary>
+    private static void ValidateGiveKeyword(List<ValidationIssue> issues, string owner, EffectSpec e, CharacterProfile p, string ctx)
+    {
+        string raw = (e.GivenKeyword ?? "").Trim();
+        if (raw.Length == 0)
+        {
+            issues.Add(new("错误", $"{owner} 的「给予卡牌关键词」还没选要给哪个关键词"
+                + "（本体关键词在「给予关键词」下拉里，自定义关键词要先到「自定义关键词」页添加）。"));
+            return;
+        }
+        string? vanilla = EffectCatalog.NormalizeVanillaKeyword(raw);
+        if (vanilla is null && p is not null && KeywordGen.Find(p, raw) is null)
+        {
+            issues.Add(new("错误", $"{owner} 的「给予卡牌关键词」要给的「{raw}」找不到："
+                + "既不是本体关键词（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒），也不是已定义的自定义关键词。"));
+        }
+        if (e.AmountIsX)
+            issues.Add(new("提示", $"{owner} 的「给予卡牌关键词」数值 = X："
+                + "选几张牌取决于这张牌结算时的 X（X 费牌才有意义）。"));
+        else if (e.Amount <= 0 && ctx != "Card")
+            issues.Add(new("错误", $"{owner} 的「给予卡牌关键词」数值是 0（= 这张牌自己）："
+                + "只有卡牌上的这条效果才有「自己」这张牌 —— 遗物 / 药水 / 状态触发器请改成 ≥ 1 张。"));
+        if (e.TempKeyword)
+            issues.Add(new("提示", $"{owner} 的「给予卡牌关键词」勾了「临时关键词」："
+                + "保留 / 奇巧走本体的单回合标记，其它关键词会在回合结束时被摘掉（卡面上那几个字也会跟着消失）。"));
+    }
+
+    /// <summary>
     /// 条件能不能用在这个地方、需不需要选状态 / 填数值。
     /// </summary>
     internal static void ValidateCondition(List<ValidationIssue> issues, string owner, ConditionSpec? cond, string ctx)

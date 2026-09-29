@@ -360,10 +360,6 @@
                                 <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
                                 <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
                                 <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
-                                <CheckBox Content="临时保留（只这一回合不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TempRetain}"
-                                          ToolTip="只保这一回合：回合结束时这张牌不会被弃掉，下一回合就恢复正常（除非它还勾了「保留」）。卡面会显示「临时保留」并带悬停说明。"/>
-                                <CheckBox Content="临时奇巧（只这一回合算奇巧）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding TempSly}"
-                                          ToolTip="只算这一回合：这一回合里被弃掉可以免费打出，下一回合不再算（除非它还勾了「奇巧」）。卡面会显示「临时奇巧」并带悬停说明。"/>
                             </WrapPanel>
                             <TextBlock Text="自定义关键词（勾选这张牌用到的）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"

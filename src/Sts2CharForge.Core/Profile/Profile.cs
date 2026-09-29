@@ -190,6 +190,9 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(PetSacrificeUsesMultiplier));
                 Raise(nameof(PetSacrificeFormulaZh));
                 Raise(nameof(IsPetSacrifice));   // 「收益 / 公式 / 倍率」三行的显隐绑的就是它
+                Raise(nameof(IsGiveKeyword));    // 「给予关键词 / 是否为临时关键词」两行的显隐绑的就是它
+                Raise(nameof(IsSlowPower));
+                Raise(nameof(Display));
             }
         }
     }
@@ -323,9 +326,55 @@ public sealed class EffectSpec : SpecBase
         _ => "手牌",
     };
 
-    /// <summary>这条效果要不要显示「从哪里选牌」（只有消耗 / 变化卡牌用得到）。</summary>
+    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 给予关键词用得到）。</summary>
     [JsonIgnore]
-    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard";
+    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "GiveKeyword";
+
+    // ===== 给予卡牌关键词（GiveKeyword）=====
+    private string _givenKeyword = "";
+
+    /// <summary>
+    /// 「给予卡牌关键词」要给的关键词：本体关键词的枚举名（<c>Retain</c> / <c>Exhaust</c> …）
+    /// 或者自定义关键词的英文标识（键）。
+    /// </summary>
+    public string GivenKeyword
+    {
+        get => _givenKeyword;
+        set { if (Set(ref _givenKeyword, value ?? "")) { Raise(nameof(IsCustomGivenKeyword)); Raise(nameof(Display)); } }
+    }
+
+    private bool _tempKeyword;
+
+    /// <summary>
+    /// 「是否为临时关键词」：勾上 = 这个关键词**只这一回合**有效，回合结束自动去掉。
+    /// 保留 / 奇巧走本体的单回合标记（<c>GiveSingleTurnRetain/Sly</c>），其余的靠生成的
+    /// <c>&lt;角色&gt;ForgeTempKeywordPower</c> 在回合结束时摘掉。
+    /// </summary>
+    public bool TempKeyword
+    {
+        get => _tempKeyword;
+        set { if (Set(ref _tempKeyword, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>这条效果是在「给予卡牌关键词」。</summary>
+    [JsonIgnore]
+    public bool IsGiveKeyword => Kind == "GiveKeyword";
+
+    /// <summary>
+    /// 要给的关键词在界面上的名字：本体关键词中文名（Retain → 保留），
+    /// 自定义关键词显示用户填的**英文标识**（Profile 层拿不到关键词列表，界面上的下拉会显示中文名）。
+    /// </summary>
+    [JsonIgnore]
+    public string GivenKeywordZh =>
+        string.IsNullOrWhiteSpace(_givenKeyword) ? "?"
+        : EffectCatalog.VanillaKeywordZh(_givenKeyword);
+
+    /// <summary>
+    /// 给的是自定义关键词（不是本体那 7 个）。看名字就能判断：本体关键词都是英文枚举名。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsCustomGivenKeyword =>
+        !string.IsNullOrWhiteSpace(_givenKeyword) && !EffectCatalog.IsVanillaKeywordName(_givenKeyword);
 
     /// <summary>本体「缓慢」是 10% 一档（内部 SlowAmount 是整数）：四舍五入到最近的 10%，返回实际生效的百分比。</summary>
     [JsonIgnore]
@@ -545,6 +594,11 @@ public sealed class EffectSpec : SpecBase
                 "ApplyPower" => "增益/减益 " + (PowerId ?? "?"),
                 // 临时增益（本回合 +X，回合结束撤掉）：界面上写清「临时」，别和普通的「施加」看混
                 "TempPower" => "临时增益（本回合）" + (PowerId ?? "?"),
+                // 给予关键词：数值 = 选几张牌（0 = 这张牌自己），后面跟关键词名与是否临时
+                // （本体关键词显示中文名：Retain → 保留；自定义关键词显示它自己的名字）
+                "GiveKeyword" => (Amount <= 0 ? "自己" : (CardPick == "Chosen" ? "自己选 " : "随机 ") + $"{Amount:0.##} 张")
+                    + "给予关键词「" + GivenKeywordZh + "」"
+                    + (TempKeyword ? "（临时）" : ""),
                 "AddCardGlobal" => "获得卡牌（全局）",
                 "TransformCardGlobal" => "变化卡牌（全局）",
                 "RemoveCardGlobal" => "删除卡牌（全局）",
@@ -747,22 +801,6 @@ public sealed class CardSpec : SpecBase
     public bool Unplayable { get => _unplayable; set => Set(ref _unplayable, value); }
     /// <summary>奇巧 Sly：回合结束前被弃掉则免费打出</summary>
     public bool Sly { get => _sly; set => Set(ref _sly, value); }
-
-    private bool _tempRetain;
-    private bool _tempSly;
-
-    /// <summary>
-    /// 临时保留：**只这一回合**不会被弃掉（和「保留 Retain」的区别：Retain 是每回合都留）。
-    ///
-    /// 本体机制：<c>CardModel.ShouldRetainThisTurn</c> = 有 Retain 关键词 **或** 被打了「单回合保留」标记
-    /// （<c>CardCmd.ApplySingleTurnRetain</c> / <c>GiveSingleTurnRetain()</c>），
-    /// 而那个标记在 <c>EndOfTurnCleanup()</c> 里复位 —— 所以「保一次」就是本回合。
-    /// 生成：这张牌覆写 <c>BeforeFlush</c>（手牌被弃掉之前），第一次触及时给自己打上标记（只打一次）。
-    /// </summary>
-    public bool TempRetain { get => _tempRetain; set => Set(ref _tempRetain, value); }
-
-    /// <summary>临时奇巧：**只这一回合**算「奇巧」（被打出前被弃掉可免费打出），下一回合不再算。</summary>
-    public bool TempSly { get => _tempSly; set => Set(ref _tempSly, value); }
 
     /// <summary>选了哪些关键字（生成 CanonicalKeywords 用）。</summary>
     [JsonIgnore]

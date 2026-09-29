@@ -837,9 +837,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	/// <summary>
+	/// 「给予卡牌关键词」那个下拉的候选：本体那 7 个关键词 + 存档里已有的自定义关键词。
+	/// 自定义关键词的 Id 用它的**键**（生成时写进代码的就是这个键），Display 里带上中文名方便找。
+	/// </summary>
+	public IReadOnlyList<KeywordChoiceOption> KeywordChoices
+	{
+		get
+		{
+			var list = EffectCatalog.VanillaKeywordChoices
+				.Select(k => new KeywordChoiceOption(k.Id, k.Display, false))
+				.ToList();
+			foreach (var (spec, key) in KeywordGen.All(_profile))
+			{
+				string name = KeywordGen.DisplayName(spec, key);
+				list.Add(new KeywordChoiceOption(key, $"{name}（自定义）", true));
+			}
+			return list;
+		}
+	}
+
 	/// <summary>有没有自定义关键词（「卡牌」页的空态提示用）。</summary>
 	public bool HasCustomKeywords => _profile.CustomKeywords.Count > 0;
-
 	public bool NoCustomKeywords => _profile.CustomKeywords.Count == 0;
 
 	public string UndoArtHint => HintOf(_artUndo);
@@ -987,6 +1006,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		PotionDetail.DataContext = PotionList.SelectedItem;
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
+		Raise("KeywordChoices");
 		Raise("HasCustomKeywords");
 		Raise("NoCustomKeywords");
 		Raise("SelectedCardUpgradeCost");
@@ -9010,6 +9030,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			$"模板里 {effectTplTexts.Length} 个文本");
 		Check("EffectSpec.IsSlowPower 只在选「缓慢」时为 true",
 			new EffectSpec { PowerId = "SlowPower" }.IsSlowPower && !new EffectSpec { PowerId = "PoisonPower" }.IsSlowPower, "判断对");
+		// 「给予卡牌关键词」那两行：只在效果种类 = 给予卡牌关键词 时显示（和「直接把缓慢设成 %」同一套 Visibility 绑定）
+		Check("效果编辑面板上有「给予关键词」和「是否为临时关键词」两行（紧跟在「选牌方式」下面）",
+			effectTplTexts.Any((string t) => t.Contains("给予关键词"))
+			&& effectTplTexts.Any((string t) => t.Contains("是否为临时关键词")),
+			$"模板里 {effectTplTexts.Length} 个文本");
+		Check("EffectSpec.IsGiveKeyword 只在「给予卡牌关键词」时为 true（那两行显隐绑的就是它）",
+			new EffectSpec { Kind = "GiveKeyword" }.IsGiveKeyword && !new EffectSpec { Kind = "Block" }.IsGiveKeyword, "判断对");
+		Check("「从哪里选牌」对「给予卡牌关键词」也显示（它也要选手牌 / 抽牌堆 / 弃牌堆）",
+			new EffectSpec { Kind = "GiveKeyword" }.UsesSelectPile, "会显示");
+		Check("数值 = 0 时列表文字写「自己」，≥1 时写「自己选 / 随机 N 张」",
+			new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "Retain" }.Display.Contains("自己")
+			&& new EffectSpec { Kind = "GiveKeyword", Amount = 2m, GivenKeyword = "Retain", CardPick = "Random" }.Display.Contains("随机 2 张"),
+			new EffectSpec { Kind = "GiveKeyword", Amount = 2m, GivenKeyword = "Retain", CardPick = "Random" }.Display);
 		// 「生效次数 = 3」+ 随机目标：以前会生成两层 for (int i…) → CS0136 编译不过（用户实测踩过）
 		CharacterProfile loopProbe = ProfileFactory.Sample();
 		CardSpec loopCard = new CardSpec { Name = "自检多层随机", ClassName = "UiCheckNestedLoop", Rarity = "Common", InCardPool = true };
@@ -9514,53 +9547,118 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 		}
 
-		// ===== 第二批③④：临时保留 / 临时奇巧（本体的「单回合」标记 + 卡面关键词 + 悬停说明）=====
+		// ===== 给予卡牌关键词（取代了卡牌级的「临时保留 / 临时奇巧」两个勾选框）=====
 		{
 			List<string> cardPageTexts = TextsIn(SelectTabRoot("卡牌"));
-			Check("卡牌页有「临时保留」勾选框", cardPageTexts.Contains("临时保留（只这一回合不弃）"), "控件在");
-			Check("卡牌页有「临时奇巧」勾选框", cardPageTexts.Contains("临时奇巧（只这一回合算奇巧）"), "控件在");
-			Check("「临时」这两个词是加在「卡牌关键字」那一组里（不是别的页）",
-				cardPageTexts.Contains("奇巧（被弃掉则免费打出）") && cardPageTexts.Contains("临时保留（只这一回合不弃）"), "同组");
+			Check("卡牌页不再有「临时保留 / 临时奇巧」两个勾选框（改成「给予卡牌关键词」效果了）",
+				!cardPageTexts.Any(t => t.StartsWith("临时保留", StringComparison.Ordinal)
+					|| t.StartsWith("临时奇巧", StringComparison.Ordinal)), "已移除");
 
-			CharacterProfile tempKwProbe = ProfileFactory.Sample();
-			CardSpec tempKwCard = new CardSpec
-			{
-				Name = "临时关键字测试", ClassName = "UiCheckTempKw", CardType = "Skill", Rarity = "Common", Cost = 1,
-				TempRetain = true, TempSly = true,
-			};
-			tempKwCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
-			tempKwProbe.Cards.Add(tempKwCard);
-			string tempKwSrc = CSharpCodeGen.CardSource(tempKwProbe, tempKwCard, 0);
-			Check("临时保留生成本体的单回合标记 GiveSingleTurnRetain()", tempKwSrc.Contains("GiveSingleTurnRetain()"), "钩子在");
-			Check("临时奇巧生成本体的单回合标记 GiveSingleTurnSly()", tempKwSrc.Contains("GiveSingleTurnSly()"), "钩子在");
-			Check("单回合标记写在 BeforeFlush（手牌被弃掉之前那个钩子）里",
-				tempKwSrc.Contains("public override Task BeforeFlush(PlayerChoiceContext choiceContext, Player player)"), "BeforeFlush");
-			Check("标记只打一次（有 __tempRetainDone / __tempSlyDone 守卫，否则每回合重打 = 永久保留）",
-				tempKwSrc.Contains("private bool __tempRetainDone;") && tempKwSrc.Contains("if (!__tempRetainDone)")
-				&& tempKwSrc.Contains("private bool __tempSlyDone;") && tempKwSrc.Contains("if (!__tempSlyDone)"), "只打一次");
-			Check("卡面关键词挂上了悬停说明（card_keywords 的两条键）",
-				tempKwSrc.Contains("\"TEMP_RETAIN.title\"") && tempKwSrc.Contains("\"TEMP_RETAIN.description\"")
-				&& tempKwSrc.Contains("\"TEMP_SLY.title\""), "悬停说明在");
-			string tempKwCards = LocalizationGen.CardsJson(tempKwProbe);
-			Check("卡面描述最前面是「[gold]临时保留[/gold]。/ [gold]临时奇巧[/gold]。」",
-				tempKwCards.Contains("[gold]临时保留[/gold]。") && tempKwCards.Contains("[gold]临时奇巧[/gold]。"),
-				tempKwCards.Replace("\n", " "));
-			string tempKwTable = LocalizationGen.KeywordsJson(tempKwProbe);
-			Check("card_keywords 表里写了这两个键（不写的话游戏里悬停就是缺键异常）",
-				tempKwTable.Contains("\"TEMP_RETAIN.title\"") && tempKwTable.Contains("\"TEMP_RETAIN.description\"")
-				&& tempKwTable.Contains("\"TEMP_SLY.title\"") && tempKwTable.Contains("\"TEMP_SLY.description\""), "两张键都在");
-			CharacterProfile tempRetainOnly = ProfileFactory.Sample();
-			tempRetainOnly.Cards.Add(new CardSpec { Name = "只临时保留", ClassName = "UiCheckTempRetainOnly", Cost = 1, TempRetain = true });
-			string tempRetainOnlyTable = LocalizationGen.KeywordsJson(tempRetainOnly);
-			Check("只用到一个时就只写那一个键（不写用不上的）",
-				tempRetainOnlyTable.Contains("\"TEMP_RETAIN.title\"") && !tempRetainOnlyTable.Contains("TEMP_SLY"), "只有一个键");
-			Check("一个都没勾时不写这两个键（不往本体表里塞没用的东西）",
-				!LocalizationGen.KeywordsJson(ProfileFactory.Sample()).Contains("TEMP_"), "干净");
-			Check("内置键被列为保留键（用户的自定义关键词不能占用、否则会盖掉卡面那行字）",
-				KeywordGen.IsReservedKey("TEMP_RETAIN") && KeywordGen.IsReservedKey("temp_sly"), "保留键");
-			CardSpec tempCopySrc = new CardSpec { Name = "临时复制源", Cost = 1, TempRetain = true, TempSly = true };
-			CardSpec tempCopyDst = DeepCloneCard(tempCopySrc);
-			Check("复制卡牌时这两个开关跟着走", tempCopyDst.TempRetain && tempCopyDst.TempSly, "深拷贝");
+			Check("效果种类里有「给予卡牌关键词」",
+				EffectCatalog.EffectKinds.Any(k => k.Kind == "GiveKeyword"), "在");
+			Check("「给予关键词」下拉的候选里本体 7 个关键词都在（含永恒）",
+				EffectCatalog.VanillaKeywordChoices.Count == 7
+				&& EffectCatalog.IsVanillaKeywordName("Retain") && EffectCatalog.IsVanillaKeywordName("Sly")
+				&& EffectCatalog.IsVanillaKeywordName("Eternal")
+				&& !EffectCatalog.IsVanillaKeywordName("FATE"), $"{EffectCatalog.VanillaKeywordChoices.Count} 个");
+			Check("自定义关键词也会出现在「给予关键词」下拉里（Id 用的是它的键）",
+				KeywordChoices.Any(k => k.IsCustom || k.Id == "Retain") && KeywordChoices.Count == EffectCatalog.VanillaKeywordChoices.Count + KeywordGen.All(Profile).Count,
+				$"{KeywordChoices.Count} 项");
+
+			// 数值 0 = 这张牌自己 + 临时（保留 → 本体的单回合标记）
+			CharacterProfile gkProbe = ProfileFactory.Sample();
+			CardSpec gkSelf = new CardSpec { Name = "自检给予自己", ClassName = "UiCheckGiveSelf", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			gkSelf.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "Retain", TempKeyword = true, TargetSide = "Self" });
+			gkSelf.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "Exhaust", TempKeyword = false, TargetSide = "Self" });
+			gkProbe.Cards.Add(gkSelf);
+			string gkSelfSrc = CSharpCodeGen.CardSource(gkProbe, gkSelf, 0);
+			Check("数值 0 → 给的是这张牌自己（this）",
+				gkSelfSrc.Contains("this.GiveSingleTurnRetain();"), "自己");
+			Check("临时 + 保留 → 走本体的单回合标记 GiveSingleTurnRetain()（回合末自动复位）",
+				gkSelfSrc.Contains("this.GiveSingleTurnRetain();"), "单回合标记");
+			Check("不勾临时 → 直接 AddKeyword（本体 API，卡面文字会立刻刷新）",
+				gkSelfSrc.Contains("this.AddKeyword(CardKeyword.Exhaust);"), "AddKeyword");
+			Check("回读标记写出来了（CET:GiveKeyword=… CET:GiveKeywordTemp=…）",
+				gkSelfSrc.Contains("CET:GiveKeyword=Retain") && gkSelfSrc.Contains("CET:GiveKeywordTemp=1")
+				&& gkSelfSrc.Contains("CET:GiveKeyword=Exhaust") && gkSelfSrc.Contains("CET:GiveKeywordTemp=0"), "标记在");
+
+			// 数值 > 0 = 选 N 张（自己选 / 随机、三摞牌都行）
+			CardSpec gkPick = new CardSpec { Name = "自检给予别人", ClassName = "UiCheckGivePick", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			gkPick.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 2m, GivenKeyword = "Innate", CardPick = "Chosen", SelectPile = "Draw", TargetSide = "Self" });
+			gkPick.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 3m, GivenKeyword = "Sly", TempKeyword = true, CardPick = "Random", SelectPile = "Discard", TargetSide = "Self" });
+			gkProbe.Cards.Add(gkPick);
+			string gkPickSrc = CSharpCodeGen.CardSource(gkProbe, gkPick, 0);
+			Check("自己选 N 张 → CardSelectCmd.FromCombatPile（从抽牌堆挑，张数写进 CardSelectorPrefs）",
+				gkPickSrc.Contains("CardSelectCmd.FromCombatPile(choiceContext, PileType.Draw.GetPile(base.Owner), base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 2))"), "抽牌堆");
+			Check("随机 N 张 → 按 RNG 挑，张数 = 循环次数",
+				gkPickSrc.Contains("for (int __kwIdx = 0; __kwIdx < 3; __kwIdx++)")
+				&& gkPickSrc.Contains("NextItem(PileType.Discard.GetPile(base.Owner).Cards)"), "随机挑");
+			Check("临时 + 奇巧 → GiveSingleTurnSly()（本体单回合标记）",
+				gkPickSrc.Contains("__kwCard.GiveSingleTurnSly();"), "奇巧");
+			Check("自己选牌时生成了选牌界面提示语（selectionScreenPrompt）",
+				LocalizationGen.CardsJson(gkProbe).Contains("\"UI_CHECK_GIVE_PICK.selectionScreenPrompt\""), "提示语在");
+			string gkCards = LocalizationGen.CardsJson(gkProbe);
+			Check("卡面描述写清「给谁 / 几张 / 哪个关键词 / 是否临时」",
+				gkCards.Contains("这张牌获得[gold]保留[/gold]（本回合）。")
+				&& gkCards.Contains("这张牌获得[gold]消耗[/gold]。")
+				&& gkCards.Contains("自己选 2 张抽牌堆里的牌获得[gold]固有[/gold]。")
+				&& gkCards.Contains("随机 3 张弃牌堆里的牌获得[gold]奇巧[/gold]（本回合）。"),
+				gkCards.Replace("\n", " "));
+			Check("列表里也看得出给的是哪个关键词、是不是临时",
+				gkSelf.Effects[0].Display.Contains("保留") && gkSelf.Effects[0].Display.Contains("临时")
+				&& gkPick.Effects[1].Display.Contains("随机"), gkSelf.Effects[0].Display);
+
+			// 临时关键词 Power：回合结束把关键词摘掉
+			Check("勾了临时关键词才生成那个临时 Power", CSharpCodeGen.UsesTempKeywordPower(gkProbe));
+			string gkPowerSrc = CSharpCodeGen.TempKeywordPowerSource(gkProbe);
+			Check("临时 Power 是 Instanced（每张牌 / 每个关键词一条，不能按 Id 合并）",
+				gkPowerSrc.Contains("PowerInstanceType.Instanced"), "Instanced");
+			Check("临时 Power 不显示状态图标（不查 powers 表，也就不会缺图标）",
+				gkPowerSrc.Contains("IsVisibleInternal => false"), "隐藏");
+			Check("临时 Power 在回合结束时 RemoveKeyword / RemoveGivenCustomKeyword 并自毁",
+				gkPowerSrc.Contains("public override async Task AfterSideTurnEnd(")
+				&& gkPowerSrc.Contains("Card.RemoveKeyword(VanillaKeyword);")
+				&& gkPowerSrc.Contains("Card.RemoveGivenCustomKeyword(CustomKey);")
+				&& gkPowerSrc.Contains("await PowerCmd.Remove(this);"), "会摘掉");
+
+			// 自定义关键词：注册表 + 两个补丁（卡面文字 + 悬停说明）
+			CharacterProfile gkCustom = ProfileFactory.Sample();
+			gkCustom.CustomKeywords.Clear();
+			gkCustom.CustomKeywords.Add(new CustomKeywordSpec { Name = "命定", Key = "FATE", Description = "自检用" });
+			CardSpec gkCustomCard = new CardSpec { Name = "自检给自定义", ClassName = "UiCheckGiveCustom", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			gkCustomCard.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "FATE", TempKeyword = true, TargetSide = "Self" });
+			gkCustom.Cards.Add(gkCustomCard);
+			Check("给自定义关键词时才算「要那个补丁」", CSharpCodeGen.UsesGivenCustomKeyword(gkCustom));
+			string gkCustomSrc = CSharpCodeGen.CardSource(gkCustom, gkCustomCard, 0);
+			Check("给自定义关键词生成的是扩展方法调用（键就是 FATE）",
+				gkCustomSrc.Contains("this.AddGivenCustomKeyword(\"FATE\");")
+				&& gkCustomSrc.Contains("CET:GiveKeyword=custom:FATE"), "自定义");
+			string gkPatch = CSharpCodeGen.GivenKeywordPatchSource(gkCustom);
+			Check("补丁挂在 GetDescriptionForPile（卡面文字）和 get_ExtraHoverTips（悬停说明）上",
+				gkPatch.Contains("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"GetDescriptionForPile\")]")
+				&& gkPatch.Contains("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"get_ExtraHoverTips\")]"), "两个补丁");
+			Check("注册表用 ConditionalWeakTable（牌没了自动清，不会吊住卡牌）",
+				gkPatch.Contains("ConditionalWeakTable<CardModel, List<string>>"), "弱表");
+			Check("补丁里查不到键会退回键名（不让补丁抛异常）",
+				gkPatch.Contains("catch") && gkPatch.Contains("return key;"), "兜底");
+
+			// 校验：没选关键词要报错；数值 0 只能在卡牌上用；遗物上要 ≥ 1
+			Check("没选关键词 → 校验报错",
+				ProfileValidator.Validate(new CharacterProfile { Cards = { new CardSpec { Name = "缺关键词", Cost = 1, Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 0m } } } } })
+					.Any(i => i.IsError && i.Message.Contains("还没选要给哪个关键词")), "有错误");
+			Check("写了不存在的自定义关键词 → 校验报错",
+				ProfileValidator.Validate(new CharacterProfile { Cards = { new CardSpec { Name = "乱填关键词", Cost = 1, Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "NOPE" } } } } })
+					.Any(i => i.IsError && i.Message.Contains("找不到")), "有错误");
+			CharacterProfile gkRelicProbe = ProfileFactory.Sample();
+			RelicSpec gkRelic = new RelicSpec { Name = "自检给关键词遗物", Trigger = "PlayerTurnStart" };
+			gkRelic.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "Retain" });
+			gkRelicProbe.Relics.Add(gkRelic);
+			Check("遗物上写「数值 0 = 这张牌自己」→ 校验报错（那里没有「这张牌」）",
+				ProfileValidator.Validate(gkRelicProbe).Any(i => i.IsError && i.Message.Contains("只有卡牌上的这条效果")), "有错误");
+			gkRelic.Effects[0].Amount = 2m;
+			Check("遗物上改成「选 2 张」→ 校验通过、而且能生成",
+				!ProfileValidator.Validate(gkRelicProbe).Any(i => i.IsError && i.Message.Contains("给予卡牌关键词"))
+				&& CSharpCodeGen.RelicSource(gkRelicProbe, gkRelic, 0).Contains("__kwCard.AddKeyword(CardKeyword.Retain);"), "遗物也支持");
 		}
 
 		// ===== 第二批⑤：临时增益（本回合 +X，回合结束撤掉）=====

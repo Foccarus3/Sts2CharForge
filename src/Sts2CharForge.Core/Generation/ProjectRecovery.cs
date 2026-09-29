@@ -506,6 +506,11 @@ public static class ProjectRecovery
         string? pendingPetAllGroup = null;
         var allPetGroups = new HashSet<string>(StringComparer.Ordinal);
 
+        // 「给予卡牌关键词」：生成时写一行 `// CET:GiveKeyword=<本体枚举名 或 custom:键> CET:GiveKeywordTemp=0/1`。
+        // 关键词和「是不是临时」只能靠这行标记还原；数值 / 选牌方式 / 哪一摞牌从紧跟着的那几行代码里读，
+        // 之后那几行（AddKeyword / 临时 Power / foreach…）全部跳过，免得被当成别的效果。
+        bool skipGivenKeywordBody = false;
+
         // 牺牲伙伴生成的是「先算收益 → CreatureCmd.Kill(宠物) → 再 GainBlock / Attack」，
         // 收益那一句既可能是前面的 `decimal gain/dmg = …`（已跳过）也可能是后面的动作行。
         // 所以看到 Kill 时**只记住宠物**，等收益动作行出现时再拼成一条效果 ——
@@ -641,6 +646,50 @@ public static class ProjectRecovery
                 // 「全部召唤物」的组号（生成器在每一份展开代码前都写一遍）
                 string? allGrp = Match(line, @"CET:PetAll=(\w+)");
                 if (allGrp is not null) pendingPetAllGroup = allGrp;
+                // 「给予卡牌关键词」的标记：关键词 + 是不是临时；数值 / 方式 / 哪一摞牌看接下来那几行
+                string? gkRaw = Match(line, @"CET:GiveKeyword=(\S+)");
+                if (gkRaw is not null)
+                {
+                    var gk = new EffectSpec
+                    {
+                        Kind = "GiveKeyword",
+                        TempKeyword = line.Contains("CET:GiveKeywordTemp=1", StringComparison.Ordinal),
+                        GivenKeyword = gkRaw.StartsWith("custom:", StringComparison.Ordinal) ? gkRaw[7..] : gkRaw,
+                    };
+                    string peek = string.Join("\n", lines.Skip(i).Take(6));
+                    string? handSel = Match(peek, @"(CardSelectCmd\.FromHand\()");
+                    string? pileSel = Match(peek, @"CardSelectCmd\.FromCombatPile\(choiceContext, PileType\.(\w+)");
+                    string? randLoop = Match(peek, @"for \(int __kwIdx = 0; __kwIdx < (\w+); __kwIdx\+\+\)");
+                    if (handSel is not null || pileSel is not null)
+                    {
+                        gk.CardPick = "Chosen";
+                        gk.SelectPile = pileSel switch { "Draw" => "Draw", "Discard" => "Discard", _ => "Hand" };
+                        string? cnt = Match(peek, @"CardSelectorPrefs\([^,]+,\s*(\w+)\)");
+                        if (cnt is not null)
+                        {
+                            if (cnt == "x") gk.AmountIsX = true;
+                            else gk.Amount = Dec(cnt, @"(\d+)", 1);
+                        }
+                    }
+                    else if (randLoop is not null)
+                    {
+                        gk.CardPick = "Random";
+                        gk.SelectPile = Match(peek, @"NextItem\(PileType\.(\w+)") switch
+                        {
+                            "Draw" => "Draw",
+                            "Discard" => "Discard",
+                            _ => "Hand",
+                        };
+                        if (randLoop == "x") gk.AmountIsX = true;
+                        else if (int.TryParse(randLoop, out int gkN)) gk.Amount = gkN;
+                    }
+                    else
+                    {
+                        gk.Amount = 0;                     // 数值 0 = 这张牌自己
+                    }
+                    Done(gk);
+                    skipGivenKeywordBody = true;
+                }
                 continue;
             }
 
@@ -679,6 +728,22 @@ public static class ProjectRecovery
             if (line.StartsWith("decimal gain = ") || line.StartsWith("decimal dmg = ")) continue;
             // 选牌 / 变化的前置语句（真正的动作在后面的 foreach + await 里）
             if (line.StartsWith("var toTransform") || line.StartsWith("var toExhaust") || line.StartsWith("var pick")) continue;
+
+            // 「给予卡牌关键词」的代码行：效果本身在标记那一行就收尾了，这里只把这些语句跳过去
+            // （花括号 / for / foreach 在上面已经交给 frames 处理，这里只认真正的语句）
+            if (skipGivenKeywordBody)
+            {
+                bool gkBody = line.StartsWith("var __kwCards", StringComparison.Ordinal)
+                    || line.StartsWith("CardModel? __kwCard", StringComparison.Ordinal)
+                    || line.StartsWith("if (__kwCard is null) break;", StringComparison.Ordinal)
+                    || line.Contains("AddKeyword(CardKeyword.", StringComparison.Ordinal)
+                    || line.Contains("GiveSingleTurnRetain()", StringComparison.Ordinal)
+                    || line.Contains("GiveSingleTurnSly()", StringComparison.Ordinal)
+                    || line.Contains("AddGivenCustomKeyword(", StringComparison.Ordinal)
+                    || line.Contains("ForgeTempKeywordPower", StringComparison.Ordinal);
+                if (gkBody) continue;
+                skipGivenKeywordBody = false;
+            }
 
             // 召唤伙伴：生成的是 `<X>Cmd.Summon(choiceContext, base.Owner, <血量>); // CET:PetHp=…`
             //
@@ -1411,11 +1476,6 @@ public static class ProjectRecovery
 
     private static void ParseKeywords(CardSpec card, string text)
     {
-        // 「临时保留 / 临时奇巧」：生成的是 BeforeFlush 里打本体的单回合标记（只打一次），
-        // 认这两句本体 API 就能把开关读回来（和 CanonicalKeywords 无关，所以放在前面）。
-        if (text.Contains("GiveSingleTurnRetain()", StringComparison.Ordinal)) card.TempRetain = true;
-        if (text.Contains("GiveSingleTurnSly()", StringComparison.Ordinal)) card.TempSly = true;
-
         // 本体卡标签 CardTag（Strike / Defend / …）：别的模型按它查牌（升级初始打击 / 防御的遗物）
         string? tags = Match(text, @"CanonicalTags =>[^;]*?\{([^}]*)\}");
         if (tags is not null)

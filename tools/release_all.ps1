@@ -16,13 +16,18 @@
 #
 # 用法（最常用）：
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1
-#       → 把 V0.0.9 升成 V0.0.10，重新发布程序、打两个包、发 GitHub Release
+#       → 把 V0.0.9 升成 V0.0.10，重新发布程序、只打**更新包**（默认不打整合包）、发 GitHub Release
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1 -Bump none -NoRelease
-#       → 不升版本、不发 GitHub，只重新打包（本地自测用）
+#       → 不升版本、不发 GitHub，只重新打更新包（本地自测用）
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1 -Version V0.1.0
 #       → 直接指定版本号（忽略 -Bump）
+#   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1 -WithBundle
+#       → 这次**额外**打一个 408 MB 的整合包（默认不打：用户要求以后只出更新包）
 #   powershell -ExecutionPolicy Bypass -File tools\release_all.ps1 -Commit
 #       → 发布完成后顺手 git add/commit/push
+#
+# 旧包策略（用户要求）：每次打完包自动删掉**其它版本**的整合包 / 更新包 / 生成器包，
+# 只留当前版本这一份（别的 zip 不碰）。
 #
 # 发布说明：docs\RELEASE_NOTES_<版本>.md（缺了会提示，-NewNotes 可生成骨架）
 param(
@@ -40,7 +45,10 @@ param(
     [string]$NotesFile = "",
     # 跳过 dotnet publish（复用现有的「程序文件」，只重打包）
     [switch]$SkipBuild,
-    # 不重打整合包（370 MB，网络慢时可跳过）
+    # 打「整合包」（408 MB，很慢）。**默认不打**：用户要求以后只出更新包；
+    # 真要整包分发时再加 -WithBundle。
+    [switch]$WithBundle,
+    # 兼容旧用法：显式要求跳过整合包（现在默认就是跳过）
     [switch]$SkipBundle,
     # 不重打更新包
     [switch]$SkipUpdate,
@@ -167,14 +175,17 @@ if (-not (Test-Path $NotesFile)) {
 }
 
 # ---------- 3) 确认 ----------
+# 整合包默认不打（用户要求：以后只打包更新包）；-WithBundle 才打。
+$buildBundle = ($WithBundle -and -not $SkipBundle)
 $plan = @()
 $plan += "部署根目录   : $App"
 $plan += "输出目录     : $OutDir"
 $plan += "版本号       : $current -> $target"
 $plan += "步骤         : " + $(if ($SkipBuild) { "跳过发布程序" } else { "dotnet publish 发布程序" }) +
-                              $(if ($SkipBundle) { " / 跳过整合包" } else { " / 打整合包" }) +
+                              $(if ($buildBundle) { " / 打整合包（-WithBundle）" } else { " / 不打整合包（默认）" }) +
                               $(if ($SkipUpdate) { " / 跳过更新包" } else { " / 打更新包" }) +
                               $(if ($NoRelease) { " / 不发 GitHub" } else { " / 发 GitHub Release" })
+$plan += "旧包清理     : 打完删掉其它版本的整合包 / 更新包 / 生成器包"
 Write-Host ""
 $plan | ForEach-Object { Write-Host ("  " + $_) }
 if (-not $Yes) {
@@ -208,8 +219,34 @@ if ($exeVer -ne $target) { Fail "程序版本（$exeVer）和版本号（$target
 # ---------- 6) 两个包 ----------
 $bundleZip = Join-Path $OutDir ("Sts2CharForge_整合包_" + $target + ".zip")
 $updateZip = Join-Path $OutDir ("Sts2CharForge_更新包_" + $target + ".zip")
-if (-not $SkipBundle) { Invoke-Step "打整合包" $mb @{ Root = $App; Out = $bundleZip } } else { Step "打整合包"; Info "已跳过（-SkipBundle）" }
+if ($buildBundle) { Invoke-Step "打整合包" $mb @{ Root = $App; Out = $bundleZip } } else { Step "打整合包"; Info "已跳过（默认不打；要整包加 -WithBundle）" }
 if (-not $SkipUpdate) { Invoke-Step "打更新包" $mu @{ Root = $App; Out = $updateZip } } else { Step "打更新包"; Info "已跳过（-SkipUpdate）" }
+
+# ---------- 6.5) 删掉旧包 ----------
+# 用户要求：更新后自动删除过往版本的更新包和整合包，只留当前版本；而且**平时只出更新包**
+#（package_app 顺手打的那个 408 MB 整包也一起删掉）。只删我们自己的包名，别的 zip 一律不碰。
+Step "清理旧版本的包"
+$oldPatterns = @(
+    @{ Dir = $OutDir; Filter = "Sts2CharForge_整合包_*.zip" },
+    @{ Dir = $OutDir; Filter = "Sts2CharForge_更新包_*.zip" },
+    @{ Dir = $App;    Filter = "杀戮尖塔2角色生成器V*.zip" }
+)
+$removedCount = 0
+foreach ($p in $oldPatterns) {
+    if (-not (Test-Path $p.Dir)) { continue }
+    foreach ($f in @(Get-ChildItem -Path $p.Dir -Filter $p.Filter -File -ErrorAction SilentlyContinue)) {
+        $isCurrent = $f.Name -like ("*" + $target + "*")
+        # 没打整合包时，连当前版本那个「杀戮尖塔2角色生成器V<版本>.zip」（package_app 顺手打的整包）也删掉
+        $dropAsBundle = (-not $buildBundle) -and $f.Name.StartsWith("杀戮尖塔2角色生成器V", [StringComparison]::Ordinal)
+        if ($isCurrent -and -not $dropAsBundle) { continue }
+        try {
+            Remove-Item $f.FullName -Force
+            $removedCount++
+            Info ("  已删除" + $(if ($dropAsBundle) { "整包（以后只留更新包）：" } else { "旧包：" }) + $f.Name + "（" + [math]::Round($f.Length / 1MB, 1) + " MB）")
+        } catch { Info ("  [警告] 删不掉：" + $f.Name + " —— " + $_.Exception.Message) }
+    }
+}
+if ($removedCount -eq 0) { Info "  没有其它版本的旧包需要删" }
 
 # ---------- 7) 发布到 GitHub ----------
 if (-not $NoRelease) {
@@ -221,7 +258,7 @@ if (-not $NoRelease) {
     if ($DryRun)     { $rargs.DryRun = $true }
     # 哪个包没打，就别让发布脚本去找它
     if ($SkipUpdate) { $rargs.OnlyBundle = $true }
-    if ($SkipBundle) { $rargs.SkipBundle = $true }
+    if (-not $buildBundle) { $rargs.SkipBundle = $true }
     Invoke-Step "发布到 GitHub Releases" $rg $rargs
 } else { Step "发布到 GitHub"; Info "已跳过（-NoRelease）" }
 

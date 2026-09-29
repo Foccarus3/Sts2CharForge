@@ -33,6 +33,9 @@ public sealed record PowerEntry(string Id, string Slug, string Type, string Stac
 public sealed record EffectKindOption(string Kind, string Display, string Unit, decimal Min, decimal Max,
     bool SupportsNextTurn, bool NeedsTarget);
 
+/// <summary>「给予卡牌关键词」里能选的一个关键词（本体枚举名 或 自定义关键词的键）。</summary>
+public sealed record KeywordChoiceOption(string Id, string Display, bool IsCustom);
+
 public sealed record TriggerOption(string Id, string Display, string HookSignature);
 
 /// <summary>
@@ -505,6 +508,40 @@ public static class EffectCatalog
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 本体 <c>CardKeyword</c> 枚举里的关键词（「给予卡牌关键词」能给的、以及卡牌页能勾的）。
+    /// 本体枚举是封闭的（模组加不了新值），所以自定义关键词只能走我们自己的等价机制。
+    /// </summary>
+    public static IReadOnlyList<KeywordChoiceOption> VanillaKeywordChoices { get; } = new[]
+    {
+        new KeywordChoiceOption("Exhaust",    "消耗（打出后移除）", false),
+        new KeywordChoiceOption("Ethereal",   "虚无（回合末未打出则消耗）", false),
+        new KeywordChoiceOption("Innate",     "固有（开局必在手牌）", false),
+        new KeywordChoiceOption("Retain",     "保留（回合末不弃）", false),
+        new KeywordChoiceOption("Unplayable", "不能被打出", false),
+        new KeywordChoiceOption("Sly",        "奇巧（被弃掉则免费打出）", false),
+        new KeywordChoiceOption("Eternal",    "永恒（打出后回到抽牌堆）", false),
+    };
+
+    /// <summary>是不是本体关键词的枚举名（用来区分「给本体关键词」和「给自定义关键词」）。</summary>
+    public static bool IsVanillaKeywordName(string? name) =>
+        !string.IsNullOrWhiteSpace(name)
+        && VanillaKeywordChoices.Any(k => string.Equals(k.Id, name.Trim(), StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>本体关键词枚举名规范化（大小写按枚举写死的那份）。</summary>
+    public static string? NormalizeVanillaKeyword(string? name) =>
+        VanillaKeywordChoices.FirstOrDefault(k => string.Equals(k.Id, name?.Trim(), StringComparison.OrdinalIgnoreCase))?.Id;
+
+    /// <summary>本体关键词的中文名（界面上显示用，例：Retain → 保留；不是本体关键词就返回原名）。</summary>
+    public static string VanillaKeywordZh(string? name)
+    {
+        string? id = NormalizeVanillaKeyword(name);
+        if (id is null) return (name ?? "").Trim();
+        string display = VanillaKeywordChoices.First(k => k.Id == id).Display;
+        int at = display.IndexOf('（');
+        return at > 0 ? display[..at] : display;
+    }
+
     public static IReadOnlyList<EffectKindOption> EffectKinds { get; } = new[]
     {
         new EffectKindOption("Damage",  "造成伤害",     "点", 0,    999, false, true),
@@ -535,6 +572,10 @@ public static class EffectCatalog
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
         new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
         new EffectKindOption("TakeFromDiscard", "从弃牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
+        // 给予卡牌关键词：数值 = 选几张牌（**0 = 这张牌自己**），从「选牌方式 / 从哪里选牌」挑，
+        // 给它们加上「给予关键词」里选的那个关键词（可以是自定义关键词）；勾「是否为临时关键词」
+        // 就只本回合有效（保留 / 奇巧走本体单回合标记，其余的由生成的临时 Power 在回合结束摘掉）。
+        new EffectKindOption("GiveKeyword",     "给予卡牌关键词", "张", 0, 9, false, false),
         // ===== 全局（直接改玩家的牌组：跨战斗永久生效）=====
         // 「全局」= 直接动玩家的牌组（PileType.Deck），不是战斗里的手牌 / 抽牌堆。
         // 参考本体：篝火「烹饪」用 CardSelectCmd.FromDeckForRemoval + CardPileCmd.RemoveFromDeck 删牌；

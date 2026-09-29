@@ -1,5 +1,6 @@
 using System.IO.Compression;
 using System.Text.Json.Nodes;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -127,6 +128,7 @@ public static class ArtGenerator
         WriteEnergyIcon(p, projectRoot);
         WriteExtraResourceIcon(p, projectRoot, log);
         WriteVanillaPowerIcons(p, projectRoot, log);
+        WriteGeneratedPowerIcons(p, projectRoot, log);
         WriteStaticCharacterScenes(p, projectRoot, log);
         WriteTransitionMaterial(p, projectRoot);
         WriteCardPortraits(p, projectRoot, log);
@@ -984,6 +986,71 @@ region = Rect2(0, 0, {rw}, {rh})
         string hint = size is { } s && s.W != s.H ? $"，[警告] 这张图是 {s.W}×{s.H}，不是方图，建议换成方图" : "";
         string small = size is { } s2 && (s2.W != 24 || s2.H != 24) ? $"；文字里的内联图标已自动缩成 24×24（原图 {s2.W}×{s2.H}）" : "";
         log?.Invoke($"  额外资源量图标：已使用你上传的图 {Path.GetFileName(src)}{hint}{small}");
+    }
+
+    /// <summary>
+    /// 生成出来的那几个 Power（透支能量 / 额外回合 / 下回合生效 / 临时增益）也要有图标。
+    ///
+    /// 走的是本体自己的**回退路径**：<c>PowerModel.PackedIconPath</c> 是
+    /// <c>res://images/atlases/power_atlas.sprites/&lt;entry&gt;.tres</c>，本体的 AtlasResourceLoader
+    /// 在图集里找不到这个精灵时会回退到 <c>res://images/powers/&lt;entry&gt;.png</c>；
+    /// 没有这个文件就报 "Missing sprite" 并显示 missing_power（紫色占位）。
+    /// <c>PowerModel.BigIcon</c>（施加 / 闪烁那张大图）本来就直接读这个路径。
+    /// 所以只要把这张 PNG 放进工程，小图标和大图标就都有了 —— 不需要补丁。
+    ///
+    /// 图从本体 <c>images/powers/</c> 里挑一张语义最接近的：
+    ///   · 透支能量 → <c>energy_next_turn_power.png</c>（本体「下回合能量」，就是同一件事）
+    ///   · 额外回合 → <c>borrowed_time_power.png</c>（本体「借来的时间」，时钟那张）
+    ///   · 下回合生效 / 临时增益 → 那个状态**自己**的图标（照样能一眼看出是哪个状态）
+    /// 这里**不看**「用本体素材占位」那个勾选项：它是管角色立绘 / 背景的，而状态图标没有「中性占位」这种
+    /// 说法（一个纯色方块还不如本体图直观）。本体里找不到那张图（没解包工程）才写中性占位图。
+    /// </summary>
+    private static void WriteGeneratedPowerIcons(CharacterProfile p, string projectRoot, Action<string>? log)
+    {
+        var n = Naming.From(p);
+        var wanted = new List<(string Entry, string VanillaIcon, string Why)>();
+
+        if (CSharpCodeGen.UsesEnergyDebt(p))
+            wanted.Add((n.EnergyDebtPowerClass, "energy_next_turn_power.png", "透支能量"));
+        if (CSharpCodeGen.UsesExtraTurn(p))
+            wanted.Add((n.ExtraTurnPowerClass, "borrowed_time_power.png", "额外回合"));
+
+        string IconOfPower(string? powerId)
+        {
+            string png = EffectCatalog.SlugFor(powerId).ToLowerInvariant() + ".png";
+            return File.Exists(Path.Combine(p.Paths.VanillaProject, "images", "powers", png))
+                ? png
+                : "energy_next_turn_power.png";     // 那个状态在本体里没有单独的图（例如自定义状态）：用能量图兜底
+        }
+
+        foreach (var e in CSharpCodeGen.CollectDelayedEffects(p))
+            wanted.Add((n.DelayedPowerClass(e), IconOfPower(e.PowerId), "下回合：" + EffectCatalog.PowerName(e.PowerId)));
+        foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p))
+            wanted.Add((n.TempPowerClass(e), IconOfPower(e.PowerId), "临时：" + EffectCatalog.PowerName(e.PowerId)));
+
+        int copied = 0, neutral = 0;
+        foreach (var (entry, vanillaIcon, why) in wanted.DistinctBy(w => w.Entry))
+        {
+            string dst = Path.Combine(projectRoot, "images", "powers", entry.ToLowerInvariant() + ".png");
+            if (File.Exists(dst)) continue;                     // 用户自己的图标（自定义状态）优先，别覆盖
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+
+            string src = Path.Combine(p.Paths.VanillaProject, "images", "powers", vanillaIcon);
+            if (File.Exists(src))
+            {
+                File.Copy(src, dst, overwrite: true);
+                copied++;
+            }
+            else
+            {
+                WriteNeutralPng(dst, 256, 256);
+                neutral++;
+            }
+        }
+        if (copied + neutral > 0)
+            log?.Invoke($"  生成出来的状态的图标：{copied} 个用本体图（透支=下回合能量 / 额外回合=借来的时间 / 下回合·临时=那个状态自己的图）"
+                + (neutral > 0 ? $"，{neutral} 个中性占位（本体里找不到那张图：要指定解包工程目录）" : "")
+                + "（放 res://images/powers/<类名小写>.png，本体找不到图集精灵时会回退到它）");
     }
 
     /// <summary>

@@ -65,6 +65,8 @@
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <!-- 13/14 行给「给予卡牌关键词」用（给予关键词 + 是否为临时关键词） -->
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
@@ -122,6 +124,21 @@
                 <ComboBox Grid.Row="8" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding CardPickModes, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding CardPick}"/>
+
+                <!-- 「给予关键词」：只在效果种类 = 给予卡牌关键词 时出现（紧跟在「选牌方式」下面）。
+                     候选 = 本体那 7 个关键词 + 存档里的自定义关键词（KeywordChoices）。 -->
+                <TextBlock Grid.Row="13" Grid.Column="0" Text="给予关键词" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding IsGiveKeyword, Converter={StaticResource BoolToVis}}"/>
+                <ComboBox Grid.Row="13" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding IsGiveKeyword, Converter={StaticResource BoolToVis}}"
+                          ItemsSource="{Binding KeywordChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding GivenKeyword}"
+                          ToolTip="要给出去的关键词：上面是本体的 7 个（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒），下面是你自己造的关键词（「自定义关键词」页里加的）。"/>
+                <CheckBox Grid.Row="14" Grid.Column="0" Grid.ColumnSpan="2" Style="{StaticResource Check}"
+                          Content="是否为临时关键词（只这一回合生效，回合结束自动去掉）"
+                          Visibility="{Binding IsGiveKeyword, Converter={StaticResource BoolToVis}}"
+                          IsChecked="{Binding TempKeyword}"
+                          ToolTip="勾上 = 这个关键词只本回合有效：保留 / 奇巧走本体的「单回合」标记，其它关键词（含自定义）会在回合结束时被摘掉、卡面上那几个字也一起消失。不勾 = 一直带着。"/>
 
                 <!-- 「从哪里选牌」：以前只有手牌，现在也能选抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种） -->
                 <TextBlock Grid.Row="10" Grid.Column="0" Text="从哪里选牌（消耗 / 变化用）" Style="{StaticResource Label}" MinWidth="96"

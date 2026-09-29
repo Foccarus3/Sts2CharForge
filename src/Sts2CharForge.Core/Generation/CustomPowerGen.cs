@@ -492,6 +492,12 @@ public static class CustomPowerGen
                 }
                 break;
 
+            // 给予卡牌关键词：状态触发器里也能给（数值 0 = 「这张牌自己」在状态里没有意义）
+            case "GiveKeyword":
+                CSharpCodeGen.EmitGiveKeyword(w, null, e, useX: false,
+                    playerExpr: "base.Owner.Player", creatureExpr: "base.Owner", sourceExpr: "null", selfAllowed: false);
+                break;
+
             // 临时增益（本回合 +X，回合结束撤掉）：打的是生成的临时 Power
             case "TempPower":
                 switch (e.TargetSide)

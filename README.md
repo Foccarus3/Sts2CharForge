@@ -63,20 +63,34 @@
 （`Exhaust / Ethereal / Innate / Retain / Unplayable / Sly`，生成 `CanonicalKeywords` 覆写）。
 注：本体没有「永恒」这个关键字，最接近的是「固有（Innate，开局必在手牌）」。
 
-除这 6 个之外，还有两个**只这一回合**的版本（同一组勾选框里）：
+除这 6 个之外，还可以用**效果**给牌加关键词 —— 见下面的「给予卡牌关键词」。
+（卡牌页不再有「临时保留 / 临时奇巧」两个勾选框，那两个需求现在由「给予卡牌关键词」+
+「数值 = 0（这张牌自己）」+「是否为临时关键词」实现。）
 
-| 勾选 | 效果 | 生成的东西 |
+## 给予卡牌关键词（效果种类里的一项）
+
+效果种类选 **「给予卡牌关键词」**：**数值 = 选几张牌**（**0 = 这张牌自己**），
+然后在「选牌方式」（自己选 / 随机）和「从哪里选牌」（手牌 / 抽牌堆 / 弃牌堆）里选，
+再在它下面新增的 **「给予关键词」** 下拉里选要给的关键词 —— 候选是本体那 7 个
+（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒）**加上你自己的自定义关键词**；
+最下面的 **「是否为临时关键词」** 勾上就只这一回合生效（回合结束自动去掉）。
+
+生成出来的代码分三种情况：
+
+| 给的是什么 | 生成的东西 | 临时（勾了「是否为临时关键词」） |
 |---|---|---|
-| **临时保留**（只这一回合不弃） | 这张牌在**回合结束时**不会被弃掉，只限这一回合；下一回合恢复正常 | 覆写 `BeforeFlush`，第一次触发时调本体 `GiveSingleTurnRetain()`（只打一次标记） |
-| **临时奇巧**（只这一回合算奇巧） | 这张牌**只在这一回合**算「奇巧」（这一回合里被弃掉可以免费打出） | 同上，调 `GiveSingleTurnSly()` |
+| 本体的**保留 / 奇巧** | `<牌>.AddKeyword(CardKeyword.Retain)` | 走本体的单回合标记 `GiveSingleTurnRetain()` / `GiveSingleTurnSly()`（`EndOfTurnCleanup` 自动复位） |
+| 本体的其它关键词 | 同上 | 先 `AddKeyword`，再挂生成的 `<角色>ForgeTempKeywordPower`，回合结束 `RemoveKeyword` |
+| **自定义关键词** | `<牌>.AddGivenCustomKeyword("键")` | 同上，回合结束 `RemoveGivenCustomKeyword` |
 
-机制说明：本体的「保留 / 奇巧」由一个**单回合标记**驱动（`CardModel.ShouldRetainThisTurn`、
-`GiveSingleTurnRetain() / GiveSingleTurnSly()`），而这个标记在 `EndOfTurnCleanup()` 里会复位 ——
-所以「保一次 / 算一次」正好就是这一回合。生成时**只打一次**标记，否则每回合都会重新打上、就变成永久保留了。
-
-它们不是本体枚举里的关键字（枚举是封闭的、模组加不了），所以走的是和「自定义关键词」同一套等价机制：
-卡面描述最前面出现 `[gold]临时保留[/gold]。`、鼠标悬停弹出说明，文案写在 `localization/zhs/card_keywords.json`
-的 `TEMP_RETAIN` / `TEMP_SLY` 两张键上（只写真的用到的）。
+- 本体关键词走的是 `CardModel.AddKeyword` / `RemoveKeyword`（本体 API，会触发 `KeywordsChanged`，
+  所以**卡面上那行金色字会立刻出现 / 消失**；本体卡、别的模组的卡也能给）。
+- 自定义关键词在生成期是**写死在卡面描述文本里**的（`cards.json`），运行时加不了文本，
+  所以给它们配了 `<角色>GivenKeywords.cs`：一个 `CardModel → 关键词键` 的注册表
+  （`ConditionalWeakTable`，牌没了自动清）+ 两个 Harmony Postfix ——
+  一个补 `CardModel.GetDescriptionForPile`（把 `[gold]名字[/gold]。` 拼在描述最前面）、
+  一个补 `CardModel.get_ExtraHoverTips`（让悬停也有说明）。这样**任何卡**（含本体卡）都能被给自定义关键词。
+- 数值 0（这张牌自己）只有卡牌上有意义；遗物 / 药水 / 自定义状态触发器请填 ≥ 1（校验会拦住 0）。
 
 ## 临时增益（本回合 +X，回合结束消失）
 
@@ -130,7 +144,6 @@
 几条约定与限制：
 
 - 英文标识不能和本体占用的键撞名（`NONE / EXHAUST / ETHEREAL / INNATE / UNPLAYABLE / RETAIN / SLY / ETERNAL`），
-  也不能占用生成器内置的两个键（`TEMP_RETAIN` / `TEMP_SLY`，那是「临时保留 / 临时奇巧」卡面文字用的），
   撞了生成前校验会报错；同名/同标识的重复关键词也会被拦住。
 - 删除关键词时，卡牌上对它的引用会一并清掉（否则校验会报「引用了不存在的关键词」）；
   但「撤回删除」只恢复关键词本身，卡牌上的勾选要重新点。

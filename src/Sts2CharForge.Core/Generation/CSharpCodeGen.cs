@@ -1777,34 +1777,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line($"public override IEnumerable<CardKeyword> CanonicalKeywords => [{kw}];");
         }
 
-        // 临时保留 / 临时奇巧：本体的「单回合」标记（GiveSingleTurnRetain / GiveSingleTurnSly）——
-        // 那个标记在 EndOfTurnCleanup() 里会复位，所以**只会多留这一回合**（和 Retain / Sly 关键词的区别就在这里）。
-        // 挂在哪一步：覆写 BeforeFlush（「这次手牌被弃掉之前」的钩子，卡牌在手牌堆里就收得到；
-        // 本体的 Expertise 是打出时给抽到的牌打标记，诅咒牌 Debt 走的是 OnTurnEndInHand，同一条钩子链）。
-        // 只打一次：否则每回合都会重新打上标记 → 就变成永久保留了。
-        if (c.TempRetain || c.TempSly)
-        {
-            w.Line();
-            w.Line("// 「临时保留 / 临时奇巧」用的单回合标记（只打一次 → 只保 / 只算这一回合）");
-            if (c.TempRetain) w.Line("private bool __tempRetainDone;");
-            if (c.TempSly) w.Line("private bool __tempSlyDone;");
-            w.Line()
-             .Line("/// <summary>回合结束、手牌被弃掉之前：给自己打上单回合标记。</summary>")
-             .Open("public override Task BeforeFlush(PlayerChoiceContext choiceContext, Player player)")
-             .Line("if (!ReferenceEquals(player, base.Owner)) return Task.CompletedTask;");
-            if (c.TempRetain)
-                w.Open("if (!__tempRetainDone)")
-                 .Line("__tempRetainDone = true;")
-                 .Line("GiveSingleTurnRetain();   // 本体 API：只这一回合不被弃掉")
-                 .Close();
-            if (c.TempSly)
-                w.Open("if (!__tempSlyDone)")
-                 .Line("__tempSlyDone = true;")
-                 .Line("GiveSingleTurnSly();      // 本体 API：只这一回合算奇巧")
-                 .Close();
-            w.Line("return Task.CompletedTask;")
-             .Close();
-        }
+        // 临时保留 / 临时奇巧：现在由「给予卡牌关键词」效果实现（数值 0 = 这张牌自己 + 勾「是否为临时关键词」），
+        // 卡牌级的那两个勾选框已按用户要求取消。
 
         // X 费用（本体储君「天际钻头」/ 亡灵契约师「挽歌」这种）：本体用 HasEnergyCostX 表示，
         // 构造函数里费用写 0，实际消耗由本体结算，X 值用 ResolveEnergyXValue() 取。
@@ -1904,7 +1878,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
         // 自定义关键词 + 内置的「临时保留 / 临时奇巧」也走这一段（文本来自我们写进本体 card_keywords 表的键）
         w.Raw(HoverTipsOverride(c.Effects, isPublic: false, isCard: true,
-            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList).Concat(KeywordGen.TempTipsFor(c)), owner: p));
+            extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList), owner: p));
 
         w.Line()
          .Line($"public {cls}() : base({(c.CostIsX ? 0 : c.Cost)}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
@@ -2247,6 +2221,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 本体的 DynamicVarSet 会直接抛 DynamicVarSet contains duplicate key 'Value'
         //（发生在构造卡牌时 → 开新局就崩、黑屏，实测踩过）。
         or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "CardReward"
+        // 「给予卡牌关键词」：数值 = 选几张牌（0 = 这张牌自己），不给这张牌加成任何动态变量
+        or "GiveKeyword"
         // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
         // 否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)（两条就撞名 → 开新局崩）
         or "PetGuardOn" or "PetGuardOff"
@@ -2537,6 +2513,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "OverdraftEnergy":
                 w.Line($"await PowerCmd.Apply<{Naming.From(p).EnergyDebtPowerClass}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);"
                     + "   // 透支：施加时立刻给能量，下回合能量重置后再扣掉（本体 GainEnergy 忽略负数，所以必须自己扣）");
+                break;
+
+            // ===== 给予卡牌关键词 =====
+            // 数值 = 选几张牌（**0 = 这张牌自己**），从「选牌方式 / 从哪里选牌」挑，
+            // 给它们加上「给予关键词」里选的那个关键词（本体枚举名 或 自定义关键词的键）。
+            // 勾了「是否为临时关键词」= 只本回合有效：
+            //   · 保留 / 奇巧 → 本体的单回合标记（GiveSingleTurnRetain / GiveSingleTurnSly，回合末自动复位）；
+            //   · 其它本体关键词 → 现在就 AddKeyword，再挂一个我们生成的临时 Power，回合结束时 RemoveKeyword；
+            //   · 自定义关键词 → 走生成的「关键词补丁」注册表（卡面文字 + 悬停说明都是它加的），临时时由临时 Power 摘掉。
+            case "GiveKeyword":
+                EmitGiveKeyword(w, p, e, useX, "base.Owner", "base.Owner.Creature", "this", selfAllowed: true);
                 break;
 
             case "Block":
@@ -3549,6 +3536,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 else
                     w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
                 break;
+
+            // 给予卡牌关键词：遗物也能给（数值 0 在这里没有意义 —— 遗物不是一张牌）
+            case "GiveKeyword":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，给予关键词无法实现）"); break; }
+                EmitGiveKeyword(w, p, e, useX: false, "base.Owner", "base.Owner.Creature", "null", selfAllowed: false);
+                break;
         }
     }
 
@@ -3595,6 +3588,288 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static bool UsesExtraTurn(CharacterProfile p) =>
         p.Cards.SelectMany(c => c.Effects).Concat(p.Relics.SelectMany(r => r.Effects))
             .Concat(p.Potions.SelectMany(s => s.Effects)).Any(e => e.Kind == "ExtraTurn");
+
+    // ==================== 给予卡牌关键词 ====================
+
+    /// <summary>
+    /// 「给予卡牌关键词」的代码（卡牌 / 遗物 / 药水 / 自定义状态触发器共用）。
+    /// </summary>
+    /// <param name="playerExpr">玩家表达式（卡牌 / 遗物 / 药水是 base.Owner，状态触发器里是 base.Owner.Player）。</param>
+    /// <param name="creatureExpr">玩家角色的表达式（临时关键词那个 Power 挂在它身上）。</param>
+    /// <param name="sourceExpr">来源模型（卡牌是 this，遗物 / 药水 / 状态是 null）。</param>
+    /// <param name="selfAllowed">能不能用「数值 0 = 这张牌自己」（只有卡牌上有「这张牌」）。</param>
+    internal static void EmitGiveKeyword(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX,
+        string playerExpr, string creatureExpr, string sourceExpr, bool selfAllowed)
+    {
+        string kwRaw = (e.GivenKeyword ?? "").Trim();
+        bool customKw = !EffectCatalog.IsVanillaKeywordName(kwRaw);
+        string kwEnum = EffectCatalog.NormalizeVanillaKeyword(kwRaw) ?? "Retain";
+        // 拿不到 profile 的地方（自定义状态的钩子链）：用户在下拉里选的**已经是键**，规范化一下就够
+        string customKey = !customKw ? "" : (p is null ? KeywordGen.NormalizeKeyText(kwRaw) : KeywordGen.KeyOfReference(p, kwRaw));
+        // 回读标记：生成代码里认不出「给的是哪个关键词 / 是不是临时的」
+        w.Line($"// CET:GiveKeyword={(customKw ? "custom:" + customKey : kwEnum)} CET:GiveKeywordTemp={(e.TempKeyword ? "1" : "0")}");
+        if (customKw && customKey.Length == 0)
+        {
+            Warn(w, e, "（没选关键词，这条效果什么都不做）");
+            return;
+        }
+        if (e.Amount <= 0)
+        {
+            if (!selfAllowed)
+            {
+                Warn(w, e, "（数值 0 = 这张牌自己，只有卡牌上有「这张牌」—— 请改成 ≥ 1 张）");
+                return;
+            }
+            w.Line("// 数值 0 = 这张牌自己");
+            EmitGiveKeywordTo(w, e, "this", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            return;
+        }
+        string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
+        string pileExpr = $"PileType.{e.SelectPile}.GetPile({playerExpr})";
+        if (e.CardPick == "Chosen")
+        {
+            if (e.SelectPile == "Hand")
+                w.Line($"var __kwCards = (await CardSelectCmd.FromHand(context: choiceContext, player: {playerExpr}, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: null, source: {sourceExpr})).ToList();");
+            else
+                w.Line($"var __kwCards = (await CardSelectCmd.FromCombatPile(choiceContext, {pileExpr}, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+            w.Line("foreach (CardModel __kwCard in __kwCards)");
+            w.Open("");
+            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            w.Close();
+        }
+        else
+        {
+            w.Line($"// 随机从{PileZh(e.SelectPile)}挑 {n} 张");
+            w.Open($"for (int __kwIdx = 0; __kwIdx < {n}; __kwIdx++)");
+            w.Line($"CardModel? __kwCard = {playerExpr}.RunState.Rng.CombatCardSelection.NextItem({pileExpr}.Cards);");
+            w.Line("if (__kwCard is null) break;");
+            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            w.Close();
+        }
+    }
+
+    /// <summary>给某张牌加上关键词（<paramref name="cardExpr"/> 是那张牌的表达式）。</summary>
+    private static void EmitGiveKeywordTo(CodeWriter w, EffectSpec e, string cardExpr,
+        string creatureExpr, string sourceExpr, bool customKw, string kwEnum, string customKey)
+    {
+        if (customKw)
+        {
+            w.Line($"{cardExpr}.AddGivenCustomKeyword({Lit.Str(customKey)});   // 自定义关键词：卡面文字与悬停说明由生成的关键词补丁加上");
+            if (e.TempKeyword)
+                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, {Lit.Str(customKey)}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
+                    + "   // 临时：回合结束时摘掉");
+            return;
+        }
+        if (!e.TempKeyword)
+        {
+            w.Line($"{cardExpr}.AddKeyword(CardKeyword.{kwEnum});   // 本体 API：卡面文字会立刻刷新");
+            return;
+        }
+        switch (kwEnum)
+        {
+            case "Retain":
+                w.Line($"{cardExpr}.GiveSingleTurnRetain();   // 本体 API：只这一回合保留（回合末自动复位）");
+                break;
+            case "Sly":
+                w.Line($"{cardExpr}.GiveSingleTurnSly();      // 本体 API：只这一回合算奇巧（回合末自动复位）");
+                break;
+            default:
+                w.Line($"{cardExpr}.AddKeyword(CardKeyword.{kwEnum});");
+                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, default), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
+                    + "   // 临时：回合结束时摘掉");
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 临时关键词 Power 的类名（兜底用当前角色，见 <see cref="Naming.CurrentCharClass"/>）。
+    /// 只在生成 <c>CardSource</c> / <c>RelicSource</c> 之类「已经调过 Naming.From」的地方用，
+    /// 所以 <paramref name="owner"/> 一般传 null。
+    /// </summary>
+    internal static string TempKeywordPowerClassName(EffectSpec? e, CharacterProfile? owner) =>
+        owner is null ? Naming.CurrentCharClass + "ForgeTempKeywordPower" : Naming.From(owner).TempKeywordPowerClass;
+
+    /// <summary>存档里有没有「临时关键词」（有才生成那个 Power）。</summary>
+    public static bool UsesTempKeywordPower(CharacterProfile p) => GiveKeywordEffects(p).Any(e => e.TempKeyword);
+
+    /// <summary>存档里所有「给予卡牌关键词」效果（卡的 / 遗物的 / 药水的 / 自定义状态触发的）。</summary>
+    public static IEnumerable<EffectSpec> GiveKeywordEffects(CharacterProfile p) =>
+        p.Cards.SelectMany(c => c.Effects)
+            .Concat(p.Relics.SelectMany(r => r.Effects))
+            .Concat(p.Potions.SelectMany(s => s.Effects))
+            .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects))
+            .Where(e => e.Kind == "GiveKeyword");
+
+    /// <summary>存档里有没有给「自定义关键词」的（有才生成注册表 + 那个补丁）。</summary>
+    public static bool UsesGivenCustomKeyword(CharacterProfile p) =>
+        GiveKeywordEffects(p).Any(e => !EffectCatalog.IsVanillaKeywordName(e.GivenKeyword));
+
+    /// <summary>
+    /// 「临时关键词」用的 Power：记住「哪张牌、哪个关键词」，这一回合结束（拥有者那一侧结束时）把它摘掉。
+    ///
+    /// 保留 / 奇巧不用它 —— 本体自己有单回合标记（GiveSingleTurnRetain / GiveSingleTurnSly）。
+    /// 其它本体关键词和自定义关键词都得靠这个：本体没有「只这一回合」的等价物。
+    /// 每加一张牌就挂一个实例，所以 InstanceType 必须是 Instanced（否则本体按 Id 合并成一条，
+    /// 只记得最后一张牌、最后一关键词）。
+    /// </summary>
+    public static string TempKeywordPowerSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        return new CodeWriter()
+            .Line("// <auto-generated> 「给予卡牌关键词」勾了「临时关键词」时用的 Power </auto-generated>")
+            .Line($"namespace {n.Namespace};")
+            .Line()
+            .Line("/// <summary>回合结束时把这次临时给出去的（本体）关键词摘掉。</summary>")
+            .Open($"public sealed class {n.TempKeywordPowerClass} : PowerModel")
+            .Line("/// <summary>每张牌 / 每个关键词一条，不能按 Id 合并。</summary>")
+            .Line("public override PowerInstanceType InstanceType => PowerInstanceType.Instanced;")
+            .Line()
+            .Line("public override PowerType Type => PowerType.Buff;")
+            .Line()
+            .Line("public override PowerStackType StackType => PowerStackType.Single;")
+            .Line()
+            .Line("/// <summary>不给这个内部标记建图标（也就不用去 powers 表查名字 / 图标）。</summary>")
+            .Line("protected override bool IsVisibleInternal => false;")
+            .Line()
+            .Line("/// <summary>要摘掉关键词的那张牌。</summary>")
+            .Line("public CardModel? Card;")
+            .Line()
+            .Line("/// <summary>本体关键词（CustomKey 非空时忽略它）。</summary>")
+            .Line("public CardKeyword VanillaKeyword;")
+            .Line()
+            .Line("/// <summary>自定义关键词的键（空 = 摘的是本体关键词）。</summary>")
+            .Line("public string CustomKey = \"\";")
+            .Line()
+            .Line($"public {n.TempKeywordPowerClass}() {{ }}")
+            .Line()
+            .Line("/// <summary>方便生成端一行构造：new X(CardModel, string)。</summary>")
+            .Open($"public {n.TempKeywordPowerClass}(CardModel card, string customKey)")
+            .Line("Card = card;")
+            .Line("CustomKey = customKey ?? \"\";")
+            .Close()
+            .Line()
+            .Line("/// <summary>方便生成端一行构造：new X(CardModel, CardKeyword)。</summary>")
+            .Open($"public {n.TempKeywordPowerClass}(CardModel card, CardKeyword keyword)")
+            .Line("Card = card;")
+            .Line("VanillaKeyword = keyword;")
+            .Close()
+            .Line()
+            .Line("/// <summary>这一回合结束：把关键词摘掉，然后自己消失。</summary>")
+            .Open("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
+            .Open("if (participants.Contains(base.Owner) && Card is not null)")
+            .Open("if (CustomKey.Length > 0)")
+            .Line("Card.RemoveGivenCustomKeyword(CustomKey);")
+            .Close()
+            .Line("else")
+            .Open("")
+            .Line("Card.RemoveKeyword(VanillaKeyword);")
+            .Close()
+            .Close()
+            .Line("await PowerCmd.Remove(this);")
+            .Close()
+            .Close()
+            .ToString();
+    }
+
+    /// <summary>
+    /// 「给予自定义关键词」的运行时支持：一个 <c>CardModel → 关键词键</c> 的注册表 +
+    /// 两个 Harmony 补丁（卡面描述 + 悬停说明）。
+    ///
+    /// 为什么要补丁：自定义关键词在生成期是**写死在卡面描述文本里**的（cards.json），
+    /// 运行时给一张牌加词条没法改那段文本 —— <c>CardModel.Description</c> 和
+    /// <c>GetDescriptionForPile</c> 都不是 virtual，只能 Postfix 它们。
+    /// 好处是**本体卡 / 别的模组的卡也能给**（不限于我们自己生成的卡）。
+    /// </summary>
+    public static string GivenKeywordPatchSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        return new CodeWriter()
+            .Line("// <auto-generated> 「给予卡牌关键词」：运行时给任意卡牌加自定义关键词（卡面 + 悬停） </auto-generated>")
+            .Line("using System;")
+            .Line("using System.Collections.Generic;")
+            .Line("using System.Linq;")
+            .Line("using System.Runtime.CompilerServices;")
+            .Line("using MegaCrit.Sts2.Core.HoverTips;")
+            .Line("using MegaCrit.Sts2.Core.Localization;")
+            .Line("using MegaCrit.Sts2.Core.Models;")
+            .Line($"namespace {n.Namespace};")
+            .Line()
+            .Line("/// <summary>这张牌身上「被给过」的自定义关键词（键）。战斗结束 / 这张牌没了就自然消失。</summary>")
+            .Line("public static class ForgeGivenKeywords")
+            .Open("")
+            .Line("// 用 ConditionalWeakTable：键是卡牌实例本身，牌被回收就跟着没了，不用手动清理、也不会把牌吊住")
+            .Line("private static readonly ConditionalWeakTable<CardModel, List<string>> Table = new();")
+            .Line()
+            .Open("public static void Add(CardModel card, string key)")
+            .Line("if (card is null || string.IsNullOrWhiteSpace(key)) return;")
+            .Line("List<string> list = Table.GetOrCreateValue(card);")
+            .Line("if (!list.Contains(key)) list.Add(key);")
+            .Close()
+            .Line()
+            .Open("public static void Remove(CardModel card, string key)")
+            .Line("if (card is null || string.IsNullOrWhiteSpace(key)) return;")
+            .Open("if (Table.TryGetValue(card, out List<string>? list))")
+            .Line("list.Remove(key);")
+            .Close()
+            .Close()
+            .Line()
+            .Open("public static IReadOnlyList<string> Get(CardModel card)")
+            .Line("if (card is null) return Array.Empty<string>();")
+            .Line("return Table.TryGetValue(card, out List<string>? list) ? list : (IReadOnlyList<string>)Array.Empty<string>();")
+            .Close()
+            .Close()
+            .Line()
+            .Line("/// <summary>给卡牌用的两个扩展方法（生成的效果代码直接调）。</summary>")
+            .Line("public static class ForgeGivenKeywordExtensions")
+            .Open("")
+            .Line("public static void AddGivenCustomKeyword(this CardModel card, string key) => ForgeGivenKeywords.Add(card, key);")
+            .Line("public static void RemoveGivenCustomKeyword(this CardModel card, string key) => ForgeGivenKeywords.Remove(card, key);")
+            .Close()
+            .Line()
+            .Line("/// <summary>卡面描述：把「给过」的关键词按本体的观感拼在描述最前面（[gold]名字[/gold]。）。</summary>")
+            .Line("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"GetDescriptionForPile\")]")
+            .Line("internal static class GivenKeywordTextPatch")
+            .Open("")
+            .Line("[HarmonyLib.HarmonyPostfix]")
+            .Open("private static void After(CardModel __instance, ref string __result)")
+            .Line("IReadOnlyList<string> keys = ForgeGivenKeywords.Get(__instance);")
+            .Line("if (keys.Count == 0) return;")
+            .Line("var lines = keys.Select(k => \"[gold]\" + GivenKeywordLoc.Title(k) + \"[/gold]。\");")
+            .Line("__result = string.Join(\"\\n\", lines) + (string.IsNullOrEmpty(__result) ? \"\" : \"\\n\" + __result);")
+            .Close()
+            .Close()
+            .Line()
+            .Line("/// <summary>悬停提示：鼠标停在卡上时，这些关键词也有说明（和本体关键词一样）。</summary>")
+            .Line("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"get_ExtraHoverTips\")]")
+            .Line("internal static class GivenKeywordHoverPatch")
+            .Open("")
+            .Line("[HarmonyLib.HarmonyPostfix]")
+            .Open("private static void After(CardModel __instance, ref IEnumerable<IHoverTip> __result)")
+            .Line("IReadOnlyList<string> keys = ForgeGivenKeywords.Get(__instance);")
+            .Line("if (keys.Count == 0) return;")
+            .Line("var list = __result?.ToList() ?? new List<IHoverTip>();")
+            .Line("foreach (string k in keys)")
+            .Open("")
+            .Line("list.Add(new HoverTip(new LocString(\"card_keywords\", k + \".title\"), new LocString(\"card_keywords\", k + \".description\")));")
+            .Close()
+            .Line("__result = list;")
+            .Close()
+            .Close()
+            .Line()
+            .Line("/// <summary>关键词键 → 本地化文本（拿不到就退回键名，不让补丁抛异常）。</summary>")
+            .Line("internal static class GivenKeywordLoc")
+            .Open("")
+            .Open("internal static string Title(string key)")
+            .Open("try")
+            .Line("return new LocString(\"card_keywords\", key + \".title\").GetFormattedText() ?? key;")
+            .Close()
+            .Open("catch")
+            .Line("return key;")
+            .Close()
+            .Close()
+            .Close()
+            .ToString();
+    }
 
     /// <summary>额外回合用的 Power（照抄本体 MockExtraTurnPower 的写法）。</summary>
     /// <summary>这个配置里有没有「透支能量」效果（有才生成那个负债 Power；只做卡牌）。</summary>
@@ -3815,6 +4090,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 }
+                break;
+
+            // ===== 给予卡牌关键词：药水也能用（数值 0 在药水上没有意义）=====
+            case "GiveKeyword":
+                EmitGiveKeyword(w, p, e, useX: false, "base.Owner", "base.Owner.Creature", "null", selfAllowed: false);
                 break;
 
             // ===== 召唤伙伴：药水不支持 =====

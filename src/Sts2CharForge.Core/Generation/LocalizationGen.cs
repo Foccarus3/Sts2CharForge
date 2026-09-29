@@ -61,15 +61,12 @@ public static class LocalizationGen
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
             // 老存档是「整张牌一个条件」，那个条件写在最后；新存档的条件跟着各自的效果走（Describe 里处理）
             string legacy = ConditionSuffix(c.Condition, isCard: true, p);
-            // 自定义关键词 + 内置的「临时保留 / 临时奇巧」：和本体关键词一样拼在描述最前面
-            // （本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
+            // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
-            string tempKeywordText = KeywordGen.TempCardTextFor(c);
-            string head = string.Join("\n", new[] { keywordText, tempKeywordText }.Where(x => x.Length > 0));
             string cardBody = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
-            dict[$"{entry}.description"] = head.Length == 0
+            dict[$"{entry}.description"] = keywordText.Length == 0
                 ? cardBody
-                : (cardBody.Length == 0 ? head : head + "\n" + cardBody);
+                : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
         }
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
@@ -120,9 +117,39 @@ public static class LocalizationGen
         return name == "额外资源量" || text.Length == 0 ? text : text.Replace("额外资源量", name);
     }
 
-    /// <summary>这组效果里有没有「从牌堆拿牌到手牌」（那种会弹自己的选牌界面，需要一句提示语）。</summary>
+    /// <summary>这组效果里有没有「从牌堆拿牌到手牌」或「自己选牌给予关键词」（那种会弹自己的选牌界面，需要一句提示语）。</summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
-        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard");
+        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard"
+            || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen"));
+
+    /// <summary>「给予卡牌关键词」的一句话描述。</summary>
+    private static string GiveKeywordText(CharacterProfile p, EffectSpec e, string repeat, string when)
+    {
+        string kw = KeywordNameFor(p, e);
+        string temp = e.TempKeyword ? "（本回合）" : "";
+        if (e.Amount <= 0) return $"{when}这张牌获得[gold]{kw}[/gold]{temp}。";
+        string n = e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString();
+        string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", _ => "手牌" };
+        string pick = e.CardPick == "Chosen" ? "自己选" : "随机";
+        return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}。";
+    }
+
+    /// <summary>「给予卡牌关键词」在卡面上的名字：本体关键词用中文枚举名，自定义关键词用它的显示名。</summary>
+    private static string KeywordNameFor(CharacterProfile p, EffectSpec e)
+    {
+        string raw = (e.GivenKeyword ?? "").Trim();
+        if (raw.Length == 0) return "?";
+        string? vanilla = EffectCatalog.NormalizeVanillaKeyword(raw);
+        if (vanilla is not null)
+        {
+            // 去掉括号里的解释（「保留（回合末不弃）」→「保留」）
+            string display = EffectCatalog.VanillaKeywordChoices.First(k => k.Id == vanilla).Display;
+            int at = display.IndexOf('（');
+            return at > 0 ? display[..at] : display;
+        }
+        var hit = KeywordGen.Find(p, raw);
+        return hit is null ? raw : KeywordGen.DisplayName(hit.Value.Spec, hit.Value.Key);
+    }
 
     /// <summary>
     /// 选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。
@@ -190,9 +217,6 @@ public static class LocalizationGen
         var dict = KeywordGen.LocEntries(p);
         // 本体关键词改名：只写用户真的改了的键（留空 / 和本体一样都不写，见 VanillaKeywordGen.LocEntries）
         foreach (var kv in VanillaKeywordGen.LocEntries(p))
-            dict[kv.Key] = kv.Value;
-        // 生成器内置的「临时保留 / 临时奇巧」：只写真的用到的键（卡面那行字 + 悬停说明都要它）
-        foreach (var kv in KeywordGen.TempLocEntries(p))
             dict[kv.Key] = kv.Value;
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
@@ -561,6 +585,8 @@ public static class LocalizationGen
             "TempPower" => e.TargetSide == "Self"
                 ? $"{repeat}{when}本回合内获得 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。"
                 : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。",
+            // 给予卡牌关键词：数值 = 选几张牌（0 = 这张牌自己）
+            "GiveKeyword" => GiveKeywordText(p, e, repeat, when),
             // ===== 全局（直接改牌组）=====
             "AddCardGlobal" => $"获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
             // 挂「战斗胜利后」时是结算界面多一条奖励；挂在战斗中就是当场弹选牌界面（见 CSharpCodeGen.EmitCardReward）
