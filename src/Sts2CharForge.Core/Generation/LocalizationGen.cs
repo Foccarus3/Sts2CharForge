@@ -485,6 +485,8 @@ public static class LocalizationGen
                 ? $"{repeat}{when}获得 {var} 点格挡。"
                 : $"{repeat}{when}{forWho}获得 {var} 点格挡。",
             "Draw" => $"{repeat}{when}抽 {var} 张牌。",
+            // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
+            "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
             "Energy" => $"{repeat}{when}获得 {var} 点能量。",
             "Heal" => e.Amount < 0 && var != "X"
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点生命。" : $"{forWho}失去 {-e.Amount} 点生命。")

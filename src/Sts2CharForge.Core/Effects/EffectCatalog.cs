@@ -514,6 +514,8 @@ public static class EffectCatalog
         new EffectKindOption("Block",   "获得格挡",     "点", 0,    999, true,  true),
         new EffectKindOption("Draw",    "抽牌",         "张", 0,    10,  true,  false),
         new EffectKindOption("Energy",  "获得能量",     "点", 0,    10,  true,  false),
+        // 透支：现在拿 N 点能量，下回合少 N 点（本体的 GainEnergy 会忽略负数，所以走我们生成的负债 Power）
+        new EffectKindOption("OverdraftEnergy", "透支能量（下回合少）", "点", 1, 10, true, false),
         new EffectKindOption("Heal",    "回复生命",     "点", -999, 999, false, true),
         new EffectKindOption("HpLoss",  "失去生命",     "点", 0,    999, false, true),
         new EffectKindOption("MaxHp",   "最大生命",     "点", -999, 999, false, true),

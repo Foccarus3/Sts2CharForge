@@ -1030,6 +1030,17 @@ public static class ProjectRecovery
                     Done(e);
                     continue;
                 }
+                // 透支能量：生成的是我们自己的负债 Power（<角色>ForgeEnergyDebtPower）—— 认回「透支能量」这一条。
+                // 数值走的是本体 EnergyVar（键 = Energy，不是这个 Power 的名字），所以这里按 "Energy" 去取。
+                if (power.EndsWith("ForgeEnergyDebtPower", StringComparison.Ordinal))
+                {
+                    e.Kind = "OverdraftEnergy";
+                    e.PowerId = null;
+                    FillAmount(e, NextVar(vars, ref varIdx, "Energy"), nameToPowerId);
+                    ApplyLoop(e, frames);
+                    Done(e);
+                    continue;
+                }
                 if (power == "BlockNextTurnPower") { e.Kind = "Block"; e.NextTurn = true; }
                 else if (power == "DrawCardsNextTurnPower" || power.Contains("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
                 else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
@@ -1321,6 +1332,8 @@ public static class ProjectRecovery
         // 少了这一条，这类牌的升级增量会按错误的序号对到别的效果上（或者直接报「找不到对应效果」）。
         "ExtraResource" => e.Amount > 0,
         "PetAttack" => true,
+        // 透支能量：和「获得能量」共用 EnergyVar（键 = Energy），所以升级增量按变量名对得上
+        "OverdraftEnergy" => true,
         "SummonPet" => e.Amount > 0,
         // 新增的那批宠物效果：除了两条「替主人承伤」开关，其余都在 CanonicalVars 里有变量
         // （和生成侧的 CSharpCodeGen.HasNoDynamicVar 保持一致）

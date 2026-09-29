@@ -133,6 +133,12 @@ public static class ModGenerator
             Log("  已生成「额外获得一回合」用的 ForgeExtraTurnPower");
         }
 
+        if (CSharpCodeGen.UsesEnergyDebt(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "EnergyDebtPower.cs"), CSharpCodeGen.EnergyDebtPowerSource(profile));
+            Log("  已生成「透支能量」用的负债 Power（下回合少 N 点能量）");
+        }
+
         if (profile.ExtraResource.Enabled)
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResource.cs"), CSharpCodeGen.ExtraResourceSource(profile));

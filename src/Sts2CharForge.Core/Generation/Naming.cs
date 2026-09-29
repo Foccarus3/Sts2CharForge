@@ -74,6 +74,9 @@ public sealed record Naming(
     /// <summary>「额外获得一个回合」用的 Power。</summary>
     public string ExtraTurnPowerClass => CharClass + "ForgeExtraTurnPower";
 
+    /// <summary>「透支能量」用的负债 Power（下回合少 N 点能量；本体的 GainEnergy 会忽略负数，只能自己扣）。</summary>
+    public string EnergyDebtPowerClass => CharClass + "ForgeEnergyDebtPower";
+
     /// <summary>「下回合生效」用的延迟 Power（<c>&lt;角色&gt;ForgeDelayed&lt;状态&gt;</c>）。</summary>
     public string DelayedPowerClass(EffectSpec e) => CharClass + DelayedPowerSuffix(e);
 
