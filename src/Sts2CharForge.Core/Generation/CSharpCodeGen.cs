@@ -3656,7 +3656,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             w.Line($"{cardExpr}.AddGivenCustomKeyword({Lit.Str(customKey)});   // 自定义关键词：卡面文字与悬停说明由生成的关键词补丁加上");
             if (e.TempKeyword)
-                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, {Lit.Str(customKey)}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
+                w.Line($"await PowerCmd.Apply(choiceContext, {TempKeywordPowerClassName(e, null)}.CreateForCustom({cardExpr}, {Lit.Str(customKey)}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
                     + "   // 临时：回合结束时摘掉");
             return;
         }
@@ -3675,8 +3675,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             default:
                 w.Line($"{cardExpr}.AddKeyword(CardKeyword.{kwEnum});");
-                // 这里必须写死枚举名：写 default 会和「(CardModel, string)」那个重载二义（CS0121，用户实测踩过）
-                w.Line($"await PowerCmd.Apply(choiceContext, new {TempKeywordPowerClassName(e, null)}({cardExpr}, CardKeyword.{kwEnum}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
+                // 必须走 Create(...)（里面是 ModelDb.Power<T>().ToMutable()）：
+                // 直接 new 一个 AbstractModel 会往 ModelDb 注册同名模型，第二次就
+                // DuplicateModelException「You have called a constructor on an AbstractModel. Use ModelDb instead.」
+                // → 出牌过程抛异常 → 卡牌悬浮在空中、打不出去（用户实测）。
+                w.Line($"await PowerCmd.Apply(choiceContext, {TempKeywordPowerClassName(e, null)}.Create({cardExpr}, CardKeyword.{kwEnum}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
                     + "   // 临时：回合结束时摘掉");
                 break;
         }
@@ -3743,16 +3746,28 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Line()
             .Line($"public {n.TempKeywordPowerClass}() {{ }}")
             .Line()
-            .Line("/// <summary>方便生成端一行构造：new X(CardModel, string)。</summary>")
-            .Open($"public {n.TempKeywordPowerClass}(CardModel card, string customKey)")
-            .Line("Card = card;")
-            .Line("CustomKey = customKey ?? \"\";")
+            .Line("/// <summary>")
+            .Line("/// 造一个带载荷的**可变副本**（本体关键词版）。")
+            .Line("///")
+            .Line("/// 为什么不能直接 new：AbstractModel 的构造函数会往 ModelDb 注册模型ID，")
+            .Line("/// 第二次 new 同一个类就抛 DuplicateModelException ——")
+            .Line("/// 「You have called a constructor on an AbstractModel. Use ModelDb instead.」")
+            .Line("/// 那个异常从 OnPlay 里冒出去，表现是**卡牌悬浮在空中、打不出去**（用户实测）。")
+            .Line("/// 正确做法：ModelDb.Power<T>() 拿规范模型 → ToMutable() 拿可变副本 → 再填载荷。")
+            .Line("/// </summary>")
+            .Open($"public static {n.TempKeywordPowerClass} Create(CardModel card, CardKeyword keyword)")
+            .Line($"{n.TempKeywordPowerClass} power = ({n.TempKeywordPowerClass})ModelDb.Power<{n.TempKeywordPowerClass}>().ToMutable();")
+            .Line("power.Card = card;")
+            .Line("power.VanillaKeyword = keyword;")
+            .Line("return power;")
             .Close()
             .Line()
-            .Line("/// <summary>方便生成端一行构造：new X(CardModel, CardKeyword)。</summary>")
-            .Open($"public {n.TempKeywordPowerClass}(CardModel card, CardKeyword keyword)")
-            .Line("Card = card;")
-            .Line("VanillaKeyword = keyword;")
+            .Line("/// <summary>造一个带载荷的可变副本（自定义关键词版）。</summary>")
+            .Open($"public static {n.TempKeywordPowerClass} CreateForCustom(CardModel card, string customKey)")
+            .Line($"{n.TempKeywordPowerClass} power = ({n.TempKeywordPowerClass})ModelDb.Power<{n.TempKeywordPowerClass}>().ToMutable();")
+            .Line("power.Card = card;")
+            .Line("power.CustomKey = customKey ?? \"\";")
+            .Line("return power;")
             .Close()
             .Line()
             .Line("/// <summary>这一回合结束：把关键词摘掉，然后自己消失。</summary>")

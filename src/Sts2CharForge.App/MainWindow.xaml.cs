@@ -9630,6 +9630,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				gkSelfSrc.Contains("this.GiveSingleTurnRetain();"), "单回合标记");
 			Check("不勾临时 → 直接 AddKeyword（本体 API，卡面文字会立刻刷新）",
 				gkSelfSrc.Contains("this.AddKeyword(CardKeyword.Exhaust);"), "AddKeyword");
+			// 临时给「其它本体关键词」要挂一个我们生成的 Power：**必须用 ModelDb + ToMutable 造副本**，
+			// 直接 new 会 DuplicateModelException（「Use ModelDb instead」）→ 出牌抛异常 → 卡牌悬浮打不出去（用户实测）
+			CharacterProfile gkTempProbe = ProfileFactory.Sample();
+			gkTempProbe.Cards.Add(new CardSpec
+			{
+				Name = "自检临时虚无", ClassName = "UiCheckGiveTempEthereal", Cost = 1,
+				Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "Ethereal", TempKeyword = true, TargetSide = "Self" } },
+			});
+			string gkTempSrc = CSharpCodeGen.CardSource(gkTempProbe, gkTempProbe.Cards[^1], 0);
+			Check("临时给其它本体关键词：用生成的 Create(...) 挂临时 Power（不是 new）",
+				gkTempSrc.Contains("ForgeTempKeywordPower.Create(this, CardKeyword.Ethereal)"), "用 Create");
+			Check("生成的效果代码里**不再出现 new <…>ForgeTempKeywordPower(**（new 会 DuplicateModelException）",
+				!gkTempSrc.Contains("new " + Naming.From(gkTempProbe).TempKeywordPowerClass + "("), "没有 new");
+			string gkPowerFactorySrc = CSharpCodeGen.TempKeywordPowerSource(gkTempProbe);
+			Check("临时 Power 里给了 Create / CreateForCustom 两个工厂（内部 ModelDb.Power<T>().ToMutable()）",
+				gkPowerFactorySrc.Contains("public static " + Naming.From(gkTempProbe).TempKeywordPowerClass + " Create(CardModel card, CardKeyword keyword)")
+				&& gkPowerFactorySrc.Contains(".ToMutable()")
+				&& gkPowerFactorySrc.Contains("ModelDb.Power<"), "有工厂");
+			Check("工厂的注释里写明「不要 new」的原因（免得以后又被改回去）",
+				gkPowerFactorySrc.Contains("Use ModelDb instead"), "注释在");
 			Check("回读标记写出来了（CET:GiveKeyword=… CET:GiveKeywordTemp=…）",
 				gkSelfSrc.Contains("CET:GiveKeyword=Retain") && gkSelfSrc.Contains("CET:GiveKeywordTemp=1")
 				&& gkSelfSrc.Contains("CET:GiveKeyword=Exhaust") && gkSelfSrc.Contains("CET:GiveKeywordTemp=0"), "标记在");

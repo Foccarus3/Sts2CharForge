@@ -19,7 +19,7 @@
       节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …）；
       **只有用户明确说「发布」时才一次性跳到 V0.2.0**（tools\release_all.ps1 -Version V0.2.0）。
     -->
-    <InformationalVersion>V0.2.7</InformationalVersion>
+    <InformationalVersion>V0.2.8</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
   </PropertyGroup>
 
