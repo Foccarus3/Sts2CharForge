@@ -1031,7 +1031,12 @@ region = Rect2(0, 0, {rw}, {rh})
         int copied = 0, neutral = 0;
         foreach (var (entry, vanillaIcon, why) in wanted.DistinctBy(w => w.Entry))
         {
-            string dst = Path.Combine(projectRoot, "images", "powers", entry.ToLowerInvariant() + ".png");
+            // 文件名必须是**本体的 Id.Entry**（= 类名按本体规则 slugify，带下划线）：
+            // 本体找的是 res://images/powers/<Id.Entry 小写>.png，例如 sparkle_forge_energy_debt_power.png。
+            // 直接用「类名小写」（sparkleforgeenergydebtpower.png）**游戏找不到** ——
+            // 日志里就是 "Missing sprite 'sparkle_forge_energy_debt_power' in power_atlas" + 紫占位（用户实测）。
+            string fileName = EffectCatalog.SlugFor(entry).ToLowerInvariant() + ".png";
+            string dst = Path.Combine(projectRoot, "images", "powers", fileName);
             if (File.Exists(dst)) continue;                     // 用户自己的图标（自定义状态）优先，别覆盖
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 
@@ -1050,7 +1055,7 @@ region = Rect2(0, 0, {rw}, {rh})
         if (copied + neutral > 0)
             log?.Invoke($"  生成出来的状态的图标：{copied} 个用本体图（透支=下回合能量 / 额外回合=借来的时间 / 下回合·临时=那个状态自己的图）"
                 + (neutral > 0 ? $"，{neutral} 个中性占位（本体里找不到那张图：要指定解包工程目录）" : "")
-                + "（放 res://images/powers/<类名小写>.png，本体找不到图集精灵时会回退到它）");
+                + "（放 res://images/powers/<本体 Id.Entry 小写>.png，本体在图集里找不到精灵时会回退到它）");
     }
 
     /// <summary>

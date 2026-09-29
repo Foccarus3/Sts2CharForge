@@ -9581,6 +9581,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					debtLoc.Contains(turnEntry + ".title") && debtLoc.Contains(turnEntry + ".description"), turnEntry);
 				Check("键名和本体查表用的键一致（Naming.EntryOf 算出来的那个）",
 					File.Exists(debtLocPath) && debtLoc.Contains("\"" + debtEntry + ".title\""), debtEntry);
+				// 状态图标的**文件名**也必须是本体的 Id.Entry（类名 slugify：带下划线）：
+				// 游戏找的是 res://images/powers/<Id.Entry 小写>.png。
+				// 用「类名小写」当文件名的话游戏找不到 → 日志里 Missing sprite + 紫占位（用户实测）。
+				string debtSlugPng = EffectCatalog.SlugFor(debtNaming.EnergyDebtPowerClass).ToLowerInvariant() + ".png";
+				Check("生成的状态图标用的是「本体 Id.Entry」文件名（带下划线），不是类名小写",
+					File.Exists(Path.Combine(debtGen.ProjectRoot, "images", "powers", debtSlugPng)),
+					"images/powers/" + debtSlugPng);
+				Check("类名小写那种文件名不再被使用（用了游戏就找不到）",
+					!File.Exists(Path.Combine(debtGen.ProjectRoot, "images", "powers",
+						debtNaming.EnergyDebtPowerClass.ToLowerInvariant() + ".png")),
+					debtNaming.EnergyDebtPowerClass.ToLowerInvariant() + ".png");
 			}
 			finally
 			{
