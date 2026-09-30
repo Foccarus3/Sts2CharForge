@@ -10566,6 +10566,35 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					.Any(i => i.Message.Contains("不在本体自带素材里")), "有警告");
 			Check("没设样式时生成的诅咒还是用本体诅咒卡池（老存档行为不变）",
 				CSharpCodeGen.CurseSource(ProfileFactory.Sample(), curse, 0).Contains("CardPool<CurseCardPool>()"), "老样子");
+
+			// ---- 先古卡的染色补丁（先古卡不显示普通 Frame，只换卡框材质是没用的）----
+			string tintSrc = PatchesGen.StyledCardTintSource(styleProbe);
+			Check("先古卡额外生成一个染色补丁：染 AncientBorder / AncientBanner 的 modulate",
+				tintSrc.Contains("\"%AncientBorder\"") && tintSrc.Contains("\"%AncientBanner\"")
+				&& tintSrc.Contains("rect.Modulate = want;"), "补丁在");
+			Check("补丁只染「先古稀有度 + 我们那个外观池」的卡（别的卡一点都不动）",
+				tintSrc.Contains($"card is {{ Rarity: CardRarity.Ancient }} && card.VisualCardPool is {Naming.From(styleProbe).AncientStylePoolClass}"),
+				"条件在");
+			Check("染色是「在本体原本的 modulate 上乘一遍」并记住原色（否则 Reload 反复调用会越来越暗）",
+				tintSrc.Contains("ConditionalWeakTable<Godot.TextureRect, Godot.Color[]>")
+				&& tintSrc.Contains("bas = new[] { rect.Modulate };")
+				&& tintSrc.Contains("bas[0].R * c.R"), "乘一遍");
+			Check("补丁类上**没有** [HarmonyPatch] 特性（它是手动打的，不能让 PatchAll 连坐）",
+				!tintSrc.Contains("[HarmonyLib.HarmonyPatch"), "没有特性");
+			string entrySrc = PatchesGen.ModEntrySource(styleProbe);
+			Check("模组入口里手动打这个补丁，而且包在 try/catch 里（打不上只丢染色，不影响角色注册）",
+				entrySrc.Contains("HarmonyLib.AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard), \"Reload\")")
+				&& entrySrc.Contains($"harmony.Patch(__tintTarget, postfix: new HarmonyLib.HarmonyMethod(typeof({Naming.From(styleProbe).CharClass}StyledCardTint)")
+				&& entrySrc.Contains("先古卡染色补丁没打上"), "手动打");
+			Check("没设先古卡样式时不生成染色补丁",
+				!PatchesGen.ModEntrySource(ProfileFactory.Sample()).Contains("StyledCardTint"), "不生成");
+			// 界面：直接往 RRGGBB 框里填颜色要能生效（以前下拉还停在「跟角色配色」，填了没反应）
+			var typedStyle = new SpecialCardStyleSpec();
+			typedStyle.FrameColor = "8A5CF6";
+			Check("往 RRGGBB 框里直接填颜色会自动切到「自定义」（不然填了不生效，用户报过「没反应」）",
+				typedStyle.IsCustomFrame && typedStyle.Any && typedStyle.PreviewHex == "8A5CF6",
+				$"{typedStyle.Frame} / {typedStyle.PreviewHex}");
+			Check("填了乱码不会误切成「自定义」", !new SpecialCardStyleSpec { FrameColor = "ZZ" }.IsCustomFrame, "没切");
 		}
 
 		RecheckEnvironment();

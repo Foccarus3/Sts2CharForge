@@ -1013,7 +1013,25 @@ public sealed class SpecialCardStyleSpec : SpecBase
     public string FrameColor
     {
         get => _frameColor;
-        set { if (Set(ref _frameColor, value ?? "")) { Raise(nameof(IsCustomFrame)); Raise(nameof(Display)); } }
+        set
+        {
+            string v = value ?? "";
+            // 直接往这个框里填一个合法颜色 = 就是想用自定义色：自动把下拉切到「自定义」。
+            // 不这么做的话，下拉还停在「跟角色配色」时填了颜色也不生效
+            //（用户报过「改了 RRGGBB 没反应」——就是踩在这上面）。
+            if (CardColorSpec.NormalizeHex(v).Length > 0 && !IsCustomFrame)
+            {
+                _frame = CustomFrame;
+                Raise(nameof(IsCustomFrame));
+                Raise(nameof(Frame));
+            }
+            if (Set(ref _frameColor, v))
+            {
+                Raise(nameof(PreviewHex));    // 色块预览绑的是它，不通知就看不到颜色变化
+                Raise(nameof(Any));
+                Raise(nameof(Display));
+            }
+        }
     }
 
     /// <summary>选了「自定义颜色」那一项。</summary>

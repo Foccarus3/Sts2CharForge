@@ -209,7 +209,7 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 
 | 填的东西 | 生成什么 |
 |---|---|
-| 自定义颜色 `8A5CF6` | `materials/cards/frames/<角色>_curse_frame_mat.tres`（按颜色的 HSV 写一份 `hsv.gdshader` 材质）+ 一个**外观池** `<角色>CurseStylePool`，诅咒的 `VisualCardPool` 指过去 |
+| 自定义颜色 `8A5CF6` | `materials/cards/frames/<角色>_curse_frame_mat.tres`（按颜色的 HSV 写一份 `hsv.gdshader` 材质）+ 一个**外观池** `<角色>CurseStylePool`，诅咒的 `VisualCardPool` 指过去；**先古卡**额外生成 `<角色>StyledCardTint.cs`（染先古边框 / 横幅的 modulate，见下） |
 | 本体框色 `card_frame_blue` | 只生成外观池，`CardFrameMaterialPath` 直接用那个本体框色（不用写材质） |
 | 跟角色配色 | 什么都不生成（诅咒仍用本体 `CurseCardPool`，先古卡用角色卡池） |
 
@@ -220,11 +220,19 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 这个外观池**不装任何卡**（`GenerateAllCards() => []`），也不进 `ModelDb.AllCardPools` ——
 所以它不会在卡牌图鉴里多出一个空分类。
 
+**先古卡还要额外一个染色补丁**（诅咒不用）：先古卡在卡面节点里**根本不显示普通的 Frame** ——
+`NCard.Reload()` 里写死了 `_frame.Visible = (稀有度 != Ancient)`，先古卡显示的是
+`AncientBorder` / `AncientTextBg` / `AncientBanner` 三张**先古专用贴图**，它们没有材质、只吃节点的
+`modulate`（本体自己就是用 modulate 给它们上色的：场景里 `AncientBorder` 的默认 modulate 是
+`(1, 0.978, 0.906, 0.502)`）。所以「只换卡框材质」对先古卡一点效果都没有 ——
+生成器会额外产出 `<角色>StyledCardTint.cs`：在 `NCard.Reload` 之后，把属于这个外观池的先古卡的
+`AncientBorder` / `AncientBanner` 的 modulate **乘上**你填的颜色（记住本体原色再乘，避免 Reload
+反复调用越乘越暗）。这个补丁在模组入口里**手动打**并包在 try/catch 里：万一本体改了方法名，
+最多是没有染色，不会连累角色注册。
+
 **改不了的那两项**：牌堆底色（`card.Pool.DeckEntryCardColor`）和能量图标描边
 （`NCard` 里的 `Model.Pool.EnergyOutlineColor`）取的都是**真实卡池**，而真实卡池必须装这张卡 ——
 所以按「类」改不了，外观池里照抄角色的那份（工具里也就不给这两个填框，免得填了没反应）。
-先古卡自带的「先古外观」（beta 卡框贴图 + 先古边框 + 先古横幅，见 `CardModel.FramePath` /
-`BannerMaterialPath` / `AncientTextBgPath`）也不受影响，RRGGBB 是给它们**染色**。
 
 ### 四、回读（从工程恢复存档）
 

@@ -691,7 +691,7 @@
                                 <DockPanel DockPanel.Dock="Bottom" Margin="0,2,0,0">
                                     <TextBlock Text="自定义颜色（RRGGBB）" Style="{StaticResource Label}" MinWidth="140"/>
                                     <TextBox Style="{StaticResource Field}"
-                                             IsEnabled="{Binding Profile.CurseStyle.IsCustomFrame, RelativeSource={RelativeSource AncestorType=Window}}"
+                                             IsEnabled="True"
                                              Text="{Binding Profile.CurseStyle.FrameColor, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="填 6 位十六进制（例如 8A5CF6）。生成时会按它算 HSV 写一份卡框材质，只有诅咒用这个框色。"/>
                                 </DockPanel>
@@ -732,7 +732,7 @@
                                 <DockPanel DockPanel.Dock="Bottom" Margin="0,2,0,0">
                                     <TextBlock Text="自定义颜色（RRGGBB）" Style="{StaticResource Label}" MinWidth="140"/>
                                     <TextBox Style="{StaticResource Field}"
-                                             IsEnabled="{Binding Profile.AncientStyle.IsCustomFrame, RelativeSource={RelativeSource AncestorType=Window}}"
+                                             IsEnabled="True"
                                              Text="{Binding Profile.AncientStyle.FrameColor, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="填 6 位十六进制（例如 E0B24C）。生成时会按它算 HSV 写一份卡框材质，只有先古卡用这个框色。"/>
                                 </DockPanel>

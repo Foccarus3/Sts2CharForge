@@ -77,7 +77,10 @@ public static class ModGenerator
             ProjectFilesGen.WriteText(Path.Combine(cs, n.AncientStylePoolClass + ".cs"),
                 CSharpCodeGen.SpecialStylePoolSource(profile, profile.AncientStyle, n.AncientStylePoolClass, "先古卡",
                     CSharpCodeGen.SpecialFrameMaterialOf(profile, profile.AncientStyle, "ancient")!));
-            Log($"  已生成先古卡的外观池（卡框 = {profile.AncientStyle.Display}）");
+            // 先古卡不显示普通 Frame（NCard 里 _frame.Visible = 稀有度 != Ancient），
+            // 所以还要一个补丁去染 AncientBorder / AncientBanner 的 modulate
+            ProjectFilesGen.WriteText(Path.Combine(cs, n.CharClass + "StyledCardTint.cs"), PatchesGen.StyledCardTintSource(profile));
+            Log($"  已生成先古卡的外观池（卡框 = {profile.AncientStyle.Display}）+ 先古边框染色补丁");
         }
         ProjectFilesGen.WriteText(Path.Combine(cs, n.RelicPoolClass + ".cs"), CSharpCodeGen.RelicPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.PotionPoolClass + ".cs"), CSharpCodeGen.PotionPoolSource(profile));
