@@ -1677,6 +1677,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
             or "PetGuardOn" or "PetGuardOff";
 
     /// <summary>
+    /// 这条效果会不会让**整张牌**在「伙伴还没上场」时打不出去（本体那套 <c>IsPlayable</c> + 描红框）。
+    ///
+    /// 和 <see cref="NeedsExistingPet"/> 的区别：那个回答的是「这条效果要不要拿到宠物这个变量、
+    /// 拿不到就跳过这一条」；这个只回答「整张牌能不能打」。
+    ///
+    /// **「替主人承伤」开 / 关不算**：它本来就是「现场给伙伴挂个状态」这种可有可无的附加效果，
+    /// 而且**「召唤伙伴 + 替主人承伤」是最常见的组合** —— 把整张牌卡在「必须先有一只已经上场的小八」上，
+    /// 这张召唤牌就永远打不出去了。用户实测就是这个：卡牌「召唤小八替你挨打」在战斗里是红的、点不动
+    /// （生成的代码里写着 `IsPlayable => xiaobaCmd.Get(base.Owner) != null`，而小八正是这张牌负责召的）。
+    /// 挂守卫那段生成时本来就包了 `if (__pet is not null)`，所以伙伴不在场时它只是静默跳过，不会报错。
+    /// </summary>
+    internal static bool BlocksPlayWithoutPet(EffectSpec e) =>
+        NeedsExistingPet(e) && e.Kind is not ("PetGuardOn" or "PetGuardOff");
+
+    /// <summary>
     /// 把「对某个生物做一件事」按作用对象展开（格挡 / 回复生命 / 失去生命 / 最大生命 现在支持打敌人）。
     /// Self = 自己；Enemy = 这张牌指定的目标（遗物/药水没有目标时退回「可打的第一个敌人」）；
     /// AllEnemies = 所有可打的敌人；RandomEnemies = 随机 N 个（N 可以 = X）。
@@ -1966,7 +1981,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 就生成两句守卫：没伙伴时这张牌打不出去 + 描红框提示（本体 Osty 的牌就是这么做的：
         // BoneShards / Poke / Sacrifice … 全是 ShouldGlowRedInternal => base.Owner.IsOstyMissing）。
         // 这里的「有没有伙伴」= <Pet>Cmd.Get(base.Owner) != null（Get 会判活，死了也算没有）。
+        //
+        // 注意这里分两份：
+        //   · petNeeds —— 需要**宠物这个变量**（OnPlay 开头查一次，逐条效果再判一次 null 跳过）；
+        //   · petGates —— 会让**整张牌打不出去**的那些（见 BlocksPlayWithoutPet）。
+        // 「替主人承伤」开 / 关只在 petNeeds 里：它本来就是可有可无的附加效果，
+        // 而「召唤伙伴 + 替主人承伤」是最常见的组合 —— 把整张牌卡在「必须先有小八」上，
+        // 这张召唤牌就永远打不出去了（用户实测：「小八替你挨打」那张牌是红的、点不动）。
         var petNeeds = new List<string>();
+        var petGates = new List<string>();
+        // 「这张牌自己会先把这只召出来」的宠物：那张牌不该再被「必须先有这只」卡住打不出去。
+        // 例：一张「召唤小八，然后让它攻击」的牌 —— 第一次打出时小八还不存在，
+        // 如果按「已有伙伴」判定可打出，这张牌永远打不出去（同一个坑的另一半）。
+        var summonedHere = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in c.Effects.Where(x => x.Kind == "SummonPet"))
+            foreach (var d in PetGen.ResolveMany(p, e.PetSummon)) summonedHere.Add(d.ClassName);
         foreach (var e in c.Effects)
         {
             if (!NeedsExistingPet(e)) continue;
@@ -1977,11 +2006,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 ? $"{defs[0].ClassName}Cmd.Get(base.Owner) != null"
                 : "(" + string.Join(" || ", defs.Select(d => $"{d.ClassName}Cmd.Get(base.Owner) != null")) + ")";
             if (!petNeeds.Contains(need, StringComparer.Ordinal)) petNeeds.Add(need);
+            // 真的会卡住「打不出去」的才进 petGates：效果自己不需要已有宠物（承伤开关）、
+            // 或者这张牌自己就会把它召出来的，都不算
+            bool gated = BlocksPlayWithoutPet(e) && !defs.Any(d => summonedHere.Contains(d.ClassName));
+            if (gated && !petGates.Contains(need, StringComparer.Ordinal)) petGates.Add(need);
         }
         // 条件都用「满足才算数」的写法（c.Condition 生成出来的就是「满足」表达式），
         // 所以伙伴守卫也用 != null，一起 && 起来即可：没伙伴 → 打不出去 / 描红框。
-        gateConds.AddRange(petNeeds);
-        glowConds.AddRange(petNeeds);
+        gateConds.AddRange(petGates);
+        glowConds.AddRange(petGates);
         // 「指定敌人」这种条件要等玩家选了目标才知道结果，写不进 IsPlayable / 描金边（那时还没选目标）。
         // 这类条件只在效果那一层生效（包住对应的效果）。
         static bool NeedsPlayTarget(ConditionSpec? c) =>
@@ -2022,8 +2055,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line($"protected override bool ShouldGlowGoldInternal => {string.Join(" && ", glowConds.Select(x => $"({x})"))};");
         }
         // 缺伙伴时描红框提示（本体的 Osty 牌全是这个写法：base.Owner.IsOstyMissing）
-        if (petNeeds.Count > 0)
-            w.Line($"protected override bool ShouldGlowRedInternal => {string.Join(" || ", petNeeds.Select(x => $"!({x})"))};");
+        // 只按「真的会卡住打不出」的那些算（petGates）——「替主人承伤」不在此列，不然
+        // 「召唤 + 承伤」的牌一上场就是红的（用户实测）。
+        if (petGates.Count > 0)
+            w.Line($"protected override bool ShouldGlowRedInternal => {string.Join(" || ", petGates.Select(x => $"!({x})"))};");
 
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
         // 自定义关键词 + 内置的「临时保留 / 临时奇巧」也走这一段（文本来自我们写进本体 card_keywords 表的键）
@@ -2140,7 +2175,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         bool needPet = NeedsExistingPet(e);
                         string pv = petLookup.GetValueOrDefault(d.ClassName) ?? PetAttackVarName(d.ClassName);
                         if (needPet) w.Open($"if ({pv} is not null)");
-                        EmitCardEffect(w, p, e, usesX, cardVars, needPet ? pv : null, d);
+                        EmitCardEffect(w, p, e, usesX, cardVars, needPet ? pv : null, d, effectComment: null, petLookup);
                         if (needPet) w.Close();
                     }
                 }
@@ -2158,7 +2193,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (hasGuard) w.Open(cond!);
                 if (petGuard) w.Open($"if ({petVar} is not null)");
             }
-            EmitCardEffect(w, p, e, usesX, cardVars, petVar);
+            EmitCardEffect(w, p, e, usesX, cardVars, petVar, petDef: null, effectComment: null, petLookup);
             if (petGuard) w.Close();
             if (hasGuard) w.Close();
         }
@@ -2448,13 +2483,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static void EmitCardEffect(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
-        string? effectComment = null) =>
+        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null) =>
         EmitRepeated(w, e, x =>
         {
             // 宠物类效果：在这条效果的**第一行**写一行标记（单行，回读按它认种类与公式，见 MarkerText）
             if (IsPetKindForMarker(e.Kind))
                 x.Line($"// CET:PetEffect={MarkerText(e)}");
-            EmitCardEffectOnce(x, p, e, useX, varMap, petVar, petDef, effectComment);
+            EmitCardEffectOnce(x, p, e, useX, varMap, petVar, petDef, effectComment, petLookup);
         }, useX);
 
     /// <summary>
@@ -2585,9 +2620,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
             or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower"
             or "PetGuardOn" or "PetGuardOff";
 
+    /// <summary>
+    /// 「这条召唤伙伴」对应的**查询变量名**（那张牌在 OnPlay 开头声明的 <c>Creature? __&lt;宠物&gt;</c>）。
+    ///
+    /// 为什么召唤也要这个：同一张牌里如果还有别的宠物效果（替主人承伤 / 伙伴攻击 / 给伙伴加血…），
+    /// 它们用的都是那个变量；而它是在**召唤之前**查的、这时必然是 null ——
+    /// 不把 <c>Summon</c> 返回的那只写回去，后半段就全被 <c>if (__pet is not null)</c> 跳过了，
+    /// 玩家会看到「卡打出去了、但伙伴没承伤 / 没攻击」（用户实测的正是「召唤小八替你挨打」这张）。
+    /// 变量的声明规则和 CardSource 里的 petLookup 一致：只有这张牌真的有「需要已召唤宠物」的效果时才有这个变量，
+    /// 所以这里查不到就返回 null（纯召唤牌不写回，免得引用一个没声明的变量 → CS0103）。
+    /// </summary>
+    private static string? PetSummonVarOf(CharacterProfile p, EffectSpec e, PetGen.PetDef? petDef, IReadOnlyDictionary<string, string>? petLookup)
+    {
+        if (petLookup is null) return null;
+        string? cls = (petDef ?? PetGen.Resolve(p, e.PetSummon))?.ClassName;
+        return cls is not null && petLookup.TryGetValue(cls, out string? v) ? v : null;
+    }
+
     private static void EmitCardEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
-        string? effectComment = null)
+        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null)
     {
         string amt = AmountExpr(e, useX, varMap);
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
@@ -2639,7 +2691,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
             case "SummonPet":
-                EmitSummonPet(w, e, p, amt, useX, effectComment, petDef);
+                // 把「这只宠物在这张牌里的查询变量」（如果声明了）传进去：召唤命令返回的那只要写回它，
+                // 否则同一张牌后面那些宠物效果（承伤 / 攻击 / 加血…）第一次会被 `if (__pet is not null)` 整条跳过
+                EmitSummonPet(w, e, p, amt, useX, effectComment, petDef, PetSummonVarOf(p, e, petDef, petLookup));
                 break;
 
             case "PetAttack":
@@ -2944,7 +2998,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <see cref="PetGen.Resolve"/> 会退回第一只启用的召唤物 —— 和上一版单只召唤物的行为一致。
     /// </summary>
     private static void EmitSummonPet(CodeWriter w, EffectSpec e, CharacterProfile p, string amt, bool useX,
-        string? extraComment = null, PetGen.PetDef? petDef = null)
+        string? extraComment = null, PetGen.PetDef? petDef = null, string? petVar = null)
     {
         // 「全部召唤物」：展开时逐只传进来（那时 e.PetSummon 是 "*"，Resolve 认不出来）
         var def = petDef ?? PetGen.Resolve(p, e.PetSummon);
@@ -2961,7 +3015,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line(useConfigured
             ? $"// 数值 0 = 用「召唤物」页里配置的血量（{def.DisplayName} {def.Hp} 点生命）"
             : $"// 按这条效果填的生命召唤{def.DisplayName}（已经在场就加最大生命，本体 OstyCmd 的做法）");
-        w.Line($"await {cmd}.Summon(choiceContext, base.Owner, {hp});"
+        // 把 Summon 返回的那只**写回局部变量**：那个变量是在 OnPlay 开头查一次的，之后所有宠物效果都用它。
+        // 召唤前它必然还是 null（不然就不用召了），不复写的话「同一张牌先召唤、再让它承伤 / 攻击 / 加血」
+        // 第一次打出时后半段会被整条跳过（`if (__pet is not null)` 判空）—— 玩家会以为效果没生效。
+        string assign = petVar is null ? "" : petVar + " = ";
+        w.Line($"{assign}await {cmd}.Summon(choiceContext, base.Owner, {hp});"
             + PetHpComment(useConfigured) + (extraComment is null ? "" : " " + extraComment));
     }
 

@@ -7769,6 +7769,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& !PetGen.UsesGuardianEffect(ProfileFactory.Sample()), "四条路都认");
 				Check("勾选框没勾 + 用了守卫效果 → 校验给一句提示（说清「效果照样有效，只是开场不自动承伤」）",
 					ProfileValidator.Validate(guardOnly).Any(i => i.Message.Contains("效果照样有效")), "有提示");
+
+				// ①-g 回归：卡牌**打不出去**（用户实测：「召唤小八替你挨打」在战斗里是红的、点不动）
+				// 根因：那张牌有「替主人承伤（开）」效果，而 NeedsExistingPet 把它也算成「要已有伙伴」，
+				// 于是生成了 IsPlayable => xiaobaCmd.Get(base.Owner) != null —— 而小八正是这张牌负责召的，
+				// 第一次打出时它必然不存在 → 永远打不出去。
+				{
+					CharacterProfile canPlay = ProfileFactory.Sample();
+					canPlay.Summons.Clear();
+					canPlay.Summons.Add(new SummonSpec { Enabled = true, ClassName = "UiCheckPlayPet", Name = "自检出场宠", Hp = 30, TakesDamageForOwner = false });
+					var summonGuard = new CardSpec { Name = "自检召唤并承伤", ClassName = "UiCheckSummonGuard", Cost = 1, InCardPool = true };
+					summonGuard.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, PetSummon = "UiCheckPlayPet" });
+					summonGuard.Effects.Add(new EffectSpec { Kind = "PetGuardOn", PetSummon = "UiCheckPlayPet" });
+					canPlay.Cards.Add(summonGuard);
+					string sg = CSharpCodeGen.CardSource(canPlay, summonGuard, 0);
+					Check("「召唤伙伴 + 替主人承伤」的牌**不会**被「必须先有伙伴」卡住打不出去（用户实测那张就是这个问题）",
+						!sg.Contains("protected override bool IsPlayable")
+						&& !sg.Contains("ShouldGlowRedInternal"), sg.Contains("IsPlayable") ? "还有 IsPlayable 判定" : "没有判定");
+					Check("召唤命令返回的那只写回 OnPlay 开头的查询变量（不然同一张牌后面的承伤 / 攻击第一次会被整条跳过）",
+						sg.Contains("__uiCheckPlayPet = await UiCheckPlayPetCmd.Summon(choiceContext, base.Owner,"), "写回了");
+					// 同一张牌「召唤 + 伙伴攻击」也是同一个坑：不能因为「要有伙伴才能打」而永远打不出去
+					var summonAttack = new CardSpec { Name = "自检召唤并攻击", ClassName = "UiCheckSummonAttack", Cost = 1, InCardPool = true };
+					summonAttack.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, PetSummon = "UiCheckPlayPet" });
+					summonAttack.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 6m, PetSummon = "UiCheckPlayPet", TargetSide = "Enemy" });
+					canPlay.Cards.Add(summonAttack);
+					string sa = CSharpCodeGen.CardSource(canPlay, summonAttack, 0);
+					Check("「召唤伙伴 + 伙伴攻击」的牌同理（这张牌自己会召，就不该要求「已经召出来」）",
+						!sa.Contains("protected override bool IsPlayable"), sa.Contains("IsPlayable") ? "还有 IsPlayable 判定" : "没有判定");
+					Check("但如果这张牌**不**负责召唤那只伙伴，「必须先有它」的判定照旧保留（本体 Osty 牌那套）",
+						CSharpCodeGen.CardSource(canPlay, new CardSpec
+						{
+							Name = "自检只攻击", ClassName = "UiCheckAttackOnly", Cost = 1,
+							Effects = { new EffectSpec { Kind = "PetAttack", Amount = 5m, PetSummon = "UiCheckPlayPet", TargetSide = "Enemy" } },
+						}, 0).Contains("protected override bool IsPlayable => (UiCheckPlayPetCmd.Get(base.Owner) != null);"), "保留了");
+				}
 			}
 
 			// ①-e bug④/⑤：死亡语义 + 召唤命令（Get 判活 + 每个分支都重排全体）
@@ -8210,8 +8244,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					(allSrc.Split(new[] { "// CET:PetAll=" }, StringSplitOptions.None).Length - 1) + " 行标记（3 条效果 × 2 只 = 6）");
 				Check("「全部召唤物」：每只**各自**判在不在场（不在场的那只整段跳过，不会抛异常）",
 					allSrc.Contains("if (__uiCheckPet is not null)") && allSrc.Contains("if (__uiCheckPet2 is not null)"), "两只各一层守卫");
-				Check("「全部召唤物」：整张牌的「缺伙伴就打不出去 / 描红框」用「任意一只在场」的或运算",
-					allSrc.Contains("UiCheckPetCmd.Get(base.Owner) != null || UiCheckPet2Cmd.Get(base.Owner) != null"),
+				Check("「全部召唤物」：这张牌**自己会召**它们，所以不再被「必须先有伙伴」卡住打不出去",
+					!allSrc.Contains("protected override bool IsPlayable"), allSrc.Contains("IsPlayable") ? "还有 IsPlayable 判定" : "没有判定");
+				// 反过来：一张**只让伙伴干活、自己不召**的牌，照旧要有「缺伙伴就打不出去 / 描红框」的判定，
+				// 而且「全部召唤物」要用「任意一只在场」的或运算。
+				CardSpec allHealOnly = new CardSpec { Name = "全体育疗", ClassName = "UiCheckPetAllHeal", CardType = "Skill", Cost = 1, InCardPool = true };
+				allHealOnly.Effects.Add(new EffectSpec { Kind = "PetHeal", Amount = 5m, TargetSide = "Self", PetSummon = PetGen.AllId });
+				string allHealSrc = CSharpCodeGen.CardSource(petSrc, allHealOnly, 0);
+				Check("「全部召唤物」：不负责召唤时，整张牌的「缺伙伴就打不出去 / 描红框」用「任意一只在场」的或运算",
+					allHealSrc.Contains("UiCheckPetCmd.Get(base.Owner) != null || UiCheckPet2Cmd.Get(base.Owner) != null")
+					&& allHealSrc.Contains("protected override bool IsPlayable") && allHealSrc.Contains("ShouldGlowRedInternal"),
 					"或运算在");
 
 				// 「全部召唤物」+「按生命值算」：一张牌只有一套固定名字的计算变量（CalculatedDamage），

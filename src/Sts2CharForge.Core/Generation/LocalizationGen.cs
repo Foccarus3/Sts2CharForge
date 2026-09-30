@@ -377,6 +377,17 @@ public static class LocalizationGen
             dict[$"{entry}.description"] = "本回合结束后额外获得一个回合。";
             dict[$"{entry}.smartDescription"] = "本回合结束后额外获得一个回合。";
         }
+        // 「替主人承伤」的守卫 Power：它挂在**伙伴**身上（IsVisibleInternal => false，不显示图标），
+        // 但游戏 / BaseLib 仍会去 powers 表查它的 title（日志里会刷
+        // `GetRawText: Key '<角色>FORGE_PET_GUARDIAN_POWER.title' not found in table 'powers'`），
+        // 所以照样补一条，别让日志里出现找不到键的警告。
+        if (PetGen.UsesGuardianEffect(p) || PetGen.Enabled(p).Any(s => s.TakesDamageForOwner))
+        {
+            string entry = Naming.EntryOf(Naming.From(p).GuardianPowerClass);
+            dict[$"{entry}.title"] = "替主人承伤";
+            dict[$"{entry}.description"] = "这只伙伴会替你承受可格挡的攻击伤害（中毒 / 失去生命这类穿盾伤害照旧打在你身上）。";
+            dict[$"{entry}.smartDescription"] = dict[$"{entry}.description"];
+        }
         // 「强化指定卡牌」的强化 Power：它会挂在状态栏里（层数 = 加多少），
         // 少了这段游戏查不到 title/description，悬停提示就会把原始键名原样印出来。
         foreach (var e in CSharpCodeGen.CollectBoostEffects(p))
