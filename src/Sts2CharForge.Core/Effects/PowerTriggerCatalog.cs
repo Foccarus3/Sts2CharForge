@@ -153,16 +153,20 @@ public static class PowerTriggers
         string who = e.TargetSide == "Self" ? "" : foe;
         string suffix = who.Length == 0 ? "" : $"（{who}）";
         if (e.ChanceEnabled) suffix += $"（{e.ChancePercent.ToString("0.##")}% 概率）";
+        // 「获得能量 / 获得金币」填了负数 = 扣除（生成的是 LoseEnergy / LoseGold）：
+        // 描述也得跟着写成「失去 N」，不然状态描述会印成「获得 -2 点能量」。
+        bool negAmount = e.Amount < 0 && !e.AmountIsStack;
+        string nAbs = negAmount ? Math.Abs(e.Amount).ToString("0.##") : n;
         string body = e.Kind switch
         {
             "Damage" => $"造成 [blue]{n}[/blue] 点伤害",
             "Block" => $"获得 [blue]{n}[/blue] 点格挡",
             "Draw" => $"抽 [blue]{n}[/blue] 张牌",
-            "Energy" => $"获得 [blue]{n}[/blue] 点能量",
+            "Energy" => $"{(negAmount ? "失去" : "获得")} [blue]{nAbs}[/blue] 点能量",
             "Heal" => $"回复 [blue]{n}[/blue] 点生命",
             "HpLoss" => $"失去 [blue]{n}[/blue] 点生命",
             "MaxHp" => $"最大生命 [blue]{n}[/blue]",
-            "Gold" => $"获得 [blue]{n}[/blue] 金币",
+            "Gold" => $"{(negAmount ? "失去" : "获得")} [blue]{nAbs}[/blue] 金币",
             "ExtraResource" => $"获得 [blue]{n}[/blue] 点额外资源量",
             // 本体「缓慢」这类「显示数字不是层数」的状态：勾了「直接设成 N%」时层数没意义（按本体做法施加 1 层）
             "ApplyPower" => e.SlowPercentEffective > 0 && e.IsSlowPower

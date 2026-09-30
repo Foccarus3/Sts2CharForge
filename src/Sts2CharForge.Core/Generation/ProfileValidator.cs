@@ -328,6 +328,13 @@ public static class ProfileValidator
         foreach (var (style, what) in new[] { (p.CurseStyle, "诅咒"), (p.AncientStyle, "先古卡") })
         {
             if (style is null) continue;
+            if (style.IsCustomFrame && !style.AllowsCustomColor)
+            {
+                // 诅咒：用户要求去掉「自定义颜色」这一项 —— 老存档里存过的一律忽略（退回本体诅咒卡池）
+                issues.Add(new("提示", $"{what}不支持「自定义卡框颜色」（这个选项已经去掉）："
+                    + $"存档里那句 Frame = custom（颜色 {style.FrameColor}）会被忽略，诅咒仍然按本体的诅咒卡框（灰色）显示。"));
+                continue;
+            }
             if (style.IsCustomFrame)
             {
                 // 填了内容但不是合法颜色 → 报错（空着 = 没设样式，不报）
@@ -553,6 +560,7 @@ public static class ProfileValidator
         if (p.ExtraResource.Enabled) mine.Add(n.ExtraResourceRelicClass);
         if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
         if (CSharpCodeGen.UsesEnergyDebt(p)) mine.Add(n.EnergyDebtPowerClass);
+        if (CSharpCodeGen.UsesEnergyNextTurnDebt(p)) mine.Add(n.EnergyNextTurnDebtPowerClass);
         if (CSharpCodeGen.UsesTempKeywordPower(p)) mine.Add(n.TempKeywordPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
@@ -993,6 +1001,20 @@ public static class ProfileValidator
                 else
                     issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
             }
+            // 「获得能量 / 获得金币」填了负数 = 扣除（本体 GainEnergy / GainGold 对非正数直接返回，
+            // 所以生成的是 LoseEnergy / LoseGold，数值会夹到 0、不会扣成负数）。这里是让用户确认一下语义。
+            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && !e.AmountIsX)
+            {
+                string unit = e.Kind == "Energy" ? "点能量" : "枚金币";
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 {e.Amount}："
+                    + (e.NextTurn
+                        ? $"会生成「下回合开始时失去 {-e.Amount} {unit}」（本体下回合加能量的状态只认正数，所以用生成的负债状态扣）"
+                        : $"会生成「失去 {-e.Amount} {unit}」")
+                    + $"，不够时只扣到 0（不会变成负数）。"));
+            }
+            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsX)
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值 = X 且填了负数：X 要到打出时才知道正负，"
+                    + "所以这条会按「获得 X」生成（负数被忽略）。"));
             if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
             else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的增益/减益未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));

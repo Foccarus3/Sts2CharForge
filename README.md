@@ -42,6 +42,27 @@
 | 获得卡牌奖励 | N 选一进牌组。挂「战斗胜利后」（状态 / 遗物）走本体战斗奖励（`room.AddExtraReward(new CardReward(...))`，结算界面多一条）；挂战斗中则当场弹选牌界面 |
 | 强化指定卡牌 | 像本体「精准」对「小刀」那样，只给**你指定的那一张卡**加伤害 / 格挡（见下文「强化指定卡牌」） |
 
+### 「获得能量 / 获得金币」填负数 = 扣除
+
+数值填负数就是扣：`-2` = 失去 2 点能量、`-25` = 失去 25 枚金币（范围 -10~10 点 / -999~999 枚）。
+为什么不能直接把这个负数交给本体：
+
+- `PlayerCmd.GainEnergy` 第一句是 `if (!(amount > 0m)) return;` —— **非正数什么都不做**；
+- `PlayerCmd.GainGold` 改完数值后同样是 `if (!(amount > 0m)) return;`。
+
+所以生成器把负数改写成 `PlayerCmd.LoseEnergy(System.Math.Abs(...), owner)` /
+`PlayerCmd.LoseGold(System.Math.Abs(...), owner)`（`LoseGold` 默认 `GoldLossType.Lost`）——
+这两个内部会 `Math.Max(0, …)`，**不够时只扣到 0，不会扣成负数**。卡面描述也跟着写成
+「失去 2 点能量。」而不是「获得 -2 点能量。」（自定义状态的触发器描述同理）。
+
+- `Energy` + 勾了「下回合生效」+ 负数 → 本体 `EnergyNextTurnPower` 的 `AfterEnergyReset` 走的还是
+  `GainEnergy`（负数被忽略），所以改用一个生成的负债状态 `<角色>ForgeEnergyNextTurnDebtPower`
+  （`AfterEnergyReset` 里 `LoseEnergy(base.Amount)` 再自毁），描述写「下回合开始时，失去 3 点能量。」；
+- 想「现在拿、下回合还」（本体的透支）用「透支能量」那条效果，不用填负数；
+- 「数值 = X」的卡牌上填负数无效：X 要到打出时才知道，正负判不出来，只能按「获得」生成（校验会给提示）。
+- `--recover` 认这两种写法：`LoseEnergy` / `LoseGold` 回读成负数，生成的那个负债状态回读成
+  「获得能量 -N + 下回合生效」。
+
 ### 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆
 
 「消耗卡牌」「变化卡牌」下面有一个 **「从哪里选牌」** 下拉（手牌 = 本体默认）：
@@ -203,14 +224,18 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 
 - 默认 **「跟角色配色（默认）」** —— 和以前完全一样（诅咒用本体的灰色诅咒框，先古卡用角色的卡框）；
 - 也可以直接选**本体的 8 种框色**（铁甲红 / 无色灰 / 诅咒紫灰 / 任务深蓝…）；
-- 或者选 **「自定义」**，在下面的 **RRGGBB** 输入框里填 6 位十六进制（右边有色块预览）。
+- **先古卡**还能选 **「自定义」**，在下面的 **RRGGBB** 输入框里填 6 位十六进制（右边有色块预览）。
+- **诅咒没有「自定义颜色」这一项**（本体的诅咒外观就是固定的灰色卡池，染色没有意义）：
+  下拉里只有「跟角色配色」+ 本体框色名；老存档 / 老工程里存过的 `Frame = custom` 一律忽略
+  （`SpecialCardStyleSpec.AllowsCustomColor = false` → `Any` / `PreviewHex` 都当没设过，
+  生成时退回 `CurseCardPool`，校验器会给一句「不支持、会被忽略」的提示）。
 
 生成出来的东西：
 
 | 填的东西 | 生成什么 |
 |---|---|
-| 自定义颜色 `8A5CF6` | `materials/cards/frames/<角色>_curse_frame_mat.tres`（按颜色的 HSV 写一份 `hsv.gdshader` 材质）+ 一个**外观池** `<角色>CurseStylePool`，诅咒的 `VisualCardPool` 指过去；**先古卡**额外生成 `<角色>StyledCardTint.cs`（染先古边框 / 横幅的 modulate，见下） |
-| 本体框色 `card_frame_blue` | 只生成外观池，`CardFrameMaterialPath` 直接用那个本体框色（不用写材质） |
+| 自定义颜色 `8A5CF6`（**只有先古卡能选**） | `materials/cards/frames/<角色>_ancient_frame_mat.tres`（按颜色的 HSV 写一份 `hsv.gdshader` 材质）+ 一个**外观池** `<角色>AncientStylePool`，先古卡的 `VisualCardPool` 指过去；**先古卡**额外生成 `<角色>StyledCardTint.cs`（染先古边框 / 横幅的 modulate，见下） |
+| 本体框色 `card_frame_blue` | 只生成外观池，`CardFrameMaterialPath` 直接用那个本体框色（不用写材质）；先古卡的染色补丁按这个框色对应的种子色染 |
 | 跟角色配色 | 什么都不生成（诅咒仍用本体 `CurseCardPool`，先古卡用角色卡池） |
 
 **为什么是「外观池」**：本体的边框材质只能从**池**上取 ——
@@ -226,8 +251,9 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 `modulate`（本体自己就是用 modulate 给它们上色的：场景里 `AncientBorder` 的默认 modulate 是
 `(1, 0.978, 0.906, 0.502)`）。所以「只换卡框材质」对先古卡一点效果都没有 ——
 生成器会额外产出 `<角色>StyledCardTint.cs`：在 `NCard.Reload` 之后，把属于这个外观池的先古卡的
-`AncientBorder` / `AncientBanner` 的 modulate **乘上**你填的颜色（记住本体原色再乘，避免 Reload
-反复调用越乘越暗）。这个补丁在模组入口里**手动打**并包在 try/catch 里：万一本体改了方法名，
+`AncientBorder` / `AncientBanner` 的 modulate **乘上**你要的颜色（记住本体原色再乘，避免 Reload
+反复调用越乘越暗；选的是本体框色名时用那个框色对应的种子色，不会生成 `Color("#")` 这种解析不出来的值）。
+这个补丁在模组入口里**手动打**并包在 try/catch 里：万一本体改了方法名，
 最多是没有染色，不会连累角色注册。
 
 **改不了的那两项**：牌堆底色（`card.Pool.DeckEntryCardColor`）和能量图标描边

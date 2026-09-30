@@ -971,10 +971,34 @@ public static class ProjectRecovery
                 continue;
             }
 
+            // 负数「获得能量」= 扣除（生成的是 LoseEnergy(System.Math.Abs(…))）：回读成负数
+            if (line.StartsWith("await PlayerCmd.LoseEnergy(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "Energy" };
+                FillAmount(e, NextVar(vars, ref varIdx, "Energy"), nameToPowerId, fallbackExpr: AbsInner(ArgAt(line, 0)));
+                e.Amount = -Math.Abs(e.Amount);
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
             if (line.StartsWith("await PlayerCmd.GainGold(", StringComparison.Ordinal))
             {
                 var e = new EffectSpec { Kind = "Gold" };
-                FillExpr(e, ArgAt(line, 0));
+                // 数值走 GoldVar（生成时声明的是 new GoldVar(...)，取的是索引器）——
+                // 直接 FillExpr(ArgAt(line,0)) 认不出 base.DynamicVars["Gold"].BaseValue，会静默变 0。
+                FillAmount(e, NextVar(vars, ref varIdx, "Gold"), nameToPowerId, fallbackExpr: ArgAt(line, 0));
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 负数「获得金币」= 扣除（生成的是 LoseGold(System.Math.Abs(…))）：回读成负数
+            if (line.StartsWith("await PlayerCmd.LoseGold(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "Gold" };
+                FillAmount(e, NextVar(vars, ref varIdx, "Gold"), nameToPowerId, fallbackExpr: AbsInner(ArgAt(line, 0)));
+                e.Amount = -Math.Abs(e.Amount);
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -1166,6 +1190,20 @@ public static class ProjectRecovery
                 {
                     e.Kind = "ExtraTurn";
                     e.PowerId = null;
+                    ApplyLoop(e, frames);
+                    Done(e);
+                    continue;
+                }
+                // 负数「获得能量」+「下回合生效」：打的是我们生成的「下回合少 N 点能量」负债 Power
+                // （本体的 EnergyNextTurnPower 走 GainEnergy，负数会被忽略）→ 认回「获得能量 -N + 下回合」。
+                if (power.EndsWith("ForgeEnergyNextTurnDebtPower", StringComparison.Ordinal))
+                {
+                    e.Kind = "Energy";
+                    e.PowerId = null;
+                    e.NextTurn = true;
+                    FillAmount(e, NextVar(vars, ref varIdx, "Energy"), nameToPowerId,
+                        fallbackExpr: AbsInner(parts.Count > 0 ? parts[0].Trim() : ""));
+                    e.Amount = -Math.Abs(e.Amount);
                     ApplyLoop(e, frames);
                     Done(e);
                     continue;
@@ -1443,6 +1481,9 @@ public static class ProjectRecovery
                 "Block" => v.Kind == "Block",
                 "Cards" => v.IsCards,
                 "Energy" => v.IsEnergy,
+                // 金币：生成时用 GoldVar（键 = Gold，走索引器 base.DynamicVars["Gold"].BaseValue）。
+                // 以前这里没有 "Gold" 分支 → 取不到变量、FillExpr 又认不出索引器表达式 → 金币数值静默变成 0。
+                "Gold" => v.Kind == "Gold",
                 "Stars" => v.Kind == "Stars",
                 // 伙伴攻击：生成时用的是我们自己起名的普通 DynamicVar "PetDamage"（不是 DamageVar）
                 "PetDamage" => v.Kind == "DynamicVar" && string.Equals(v.PowerId, "PetDamage", StringComparison.Ordinal),
@@ -1564,7 +1605,10 @@ public static class ProjectRecovery
         // 否则 CanonicalVars 的变量和「有变量的效果」会错位一格，升级增量会加到别的效果上。
         CSharpCodeGen.IsAllPetsInlineCalc(e) ? false : e.Kind switch
     {
-        "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false,
+        "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false && !e.AmountIsX,
+        // 金币：生成侧确实会声明 GoldVar（HasNoDynamicVar 没有排除它）——这里以前漏了它，
+        // 于是「金币」后面那条带变量的效果会整体错位一格，升级增量会加到别的效果上。
+        "Gold" => e.AmountIsStack == false && !e.AmountIsX,
         "ApplyPower" => true,
         // 临时增益：和「施加增益/减益」一样声明 PowerVar<那个状态>，升级增量也落在同一个变量上
         "TempPower" => true,
@@ -2354,6 +2398,17 @@ public static class ProjectRecovery
         if (open < 0 || close <= open) return "";
         var parts = SplitArgs(line[(open + 1)..close]);
         return index < parts.Count ? parts[index].Trim() : "";
+    }
+
+    /// <summary>
+    /// 把生成代码里的 <c>System.Math.Abs(内层)</c> 外壳剥掉（负数「获得能量 / 获得金币」生成的就是这层壳），
+    /// 剥不掉就原样返回。剥完再交给 FillExpr / FillAmount，就能拿回「-2」这种字面量。
+    /// </summary>
+    private static string AbsInner(string expr)
+    {
+        expr = expr.Trim();
+        var m = Regex.Match(expr, @"^System\.Math\.Abs\((.+)\)$");
+        return m.Success ? m.Groups[1].Value.Trim() : expr;
     }
 
     private static List<string> SplitArgs(string args)

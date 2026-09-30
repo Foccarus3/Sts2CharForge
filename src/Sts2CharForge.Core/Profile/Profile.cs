@@ -136,11 +136,25 @@ public sealed class CharacterProfile
     /// 生成时会单独造一个「外观池」给诅咒用（本体只允许从**池**上取边框材质：<c>CardModel.FrameMaterial</c>
     /// 就是 <c>VisualCardPool.FrameMaterial</c>，卡本身改不了 —— 本体 Clash / DualWield 也是靠覆写
     /// <c>VisualCardPool</c> 借外观的）。留空 = 完全按老样子（用本体的诅咒卡框）。
+    ///
+    /// **不支持「自定义颜色」**（<see cref="SpecialCardStyleSpec.AllowsCustomColor"/> = false）：
+    /// 这一项已经按用户要求在界面上去掉，老存档里存过的也一律忽略（退回本体诅咒卡框）。
+    /// 可选的是「跟角色配色」和本体的那几种框色名。
     /// </summary>
     public SpecialCardStyleSpec CurseStyle
     {
-        get => _curseStyle;
-        set => _curseStyle = value ?? new SpecialCardStyleSpec();
+        get
+        {
+            _curseStyle.AllowsCustomColor = false;
+            return _curseStyle;
+        }
+        set
+        {
+            _curseStyle = value ?? new SpecialCardStyleSpec();
+            // 诅咒去掉「自定义颜色」：老存档里存过的 custom 一律忽略
+            //（生成时退回本体诅咒卡框；界面下拉显示「跟角色配色（默认）」；校验器会给一句提示）。
+            _curseStyle.AllowsCustomColor = false;
+        }
     }
 
     /// <summary>「诅咒 / 先古卡」页里**先古卡**的外观（卡牌边框颜色）。留空 = 跟角色的卡牌配色一样。</summary>
@@ -1038,14 +1052,24 @@ public sealed class SpecialCardStyleSpec : SpecBase
     [JsonIgnore]
     public bool IsCustomFrame => string.Equals(_frame, CustomFrame, StringComparison.Ordinal);
 
-    /// <summary>配色色块预览用（没填就返回空串，界面显示成透明）。</summary>
+    /// <summary>
+    /// 这一类牌**允不允许**「自定义颜色」。诅咒牌不允许（用户要求：诅咒去掉自定义颜色选项）——
+    /// 诅咒在本体里的外观就是固定的灰色卡池，染色没有意义。
+    /// 老存档 / 老工程里存过 <c>custom</c> 的一律当没设过：<see cref="Any"/> 会是 false，
+    /// 生成时退回本体的诅咒卡池、界面上也不会显示色块。
+    /// （不是存档字段：由 <see cref="CharacterProfile.CurseStyle"/> 在读取时强制设成 false。）
+    /// </summary>
     [JsonIgnore]
-    public string PreviewHex => IsCustomFrame ? CardColorSpec.NormalizeHex(_frameColor) : "";
+    public bool AllowsCustomColor { get; set; } = true;
+
+    /// <summary>配色色块预览用（没填 / 这一类牌不支持自定义颜色 就返回空串，界面显示成透明）。</summary>
+    [JsonIgnore]
+    public string PreviewHex => IsCustomFrame && AllowsCustomColor ? CardColorSpec.NormalizeHex(_frameColor) : "";
 
     /// <summary>有没有做任何外观设置（没设置 = 生成时不加任何东西，和以前完全一样）。</summary>
     [JsonIgnore]
     public bool Any => IsCustomFrame
-        ? CardColorSpec.NormalizeHex(_frameColor).Length > 0
+        ? AllowsCustomColor && CardColorSpec.NormalizeHex(_frameColor).Length > 0
         : _frame.Length > 0;
 
     [JsonIgnore]

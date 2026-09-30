@@ -562,13 +562,16 @@ public static class EffectCatalog
         // 所以「给敌人加格挡」「给敌人回血」这类也能做出来（有些怪就是靠这个变强）。
         new EffectKindOption("Block",   "获得格挡",     "点", 0,    999, true,  true),
         new EffectKindOption("Draw",    "抽牌",         "张", 0,    10,  true,  false),
-        new EffectKindOption("Energy",  "获得能量",     "点", 0,    10,  true,  false),
+        // 负数 = 失去 N 点能量（本体的 PlayerCmd.GainEnergy 第一句就是 `if (!(amount > 0m)) return;` ——
+        // 非正数什么都不做，所以负数必须改走 PlayerCmd.LoseEnergy，见 CSharpCodeGen.IsNegativeAmount）。
+        new EffectKindOption("Energy",  "获得能量（负数 = 失去）", "点", -10, 10, true,  false),
         // 透支：现在拿 N 点能量，下回合少 N 点（本体的 GainEnergy 会忽略负数，所以走我们生成的负债 Power）
         new EffectKindOption("OverdraftEnergy", "透支能量（下回合少）", "点", 1, 10, true, false),
         new EffectKindOption("Heal",    "回复生命",     "点", -999, 999, false, true),
         new EffectKindOption("HpLoss",  "失去生命",     "点", 0,    999, false, true),
         new EffectKindOption("MaxHp",   "最大生命",     "点", -999, 999, false, true),
-        new EffectKindOption("Gold",    "获得金币",     "枚", 0,    999, false, false),
+        // 负数 = 扣除 N 枚金币（同上：GainGold 对非正数直接 return，负数走 PlayerCmd.LoseGold，会夹到 0）
+        new EffectKindOption("Gold",    "获得金币（负数 = 扣除）", "枚", -999, 999, false, false),
             new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, false, false),
         new EffectKindOption("ApplyPower", "施加增益/减益", "层", 1, 99, true, true),
         // 击晕：本体的「击晕」不是状态（Power），而是**怪物意图**（StunIntent）——

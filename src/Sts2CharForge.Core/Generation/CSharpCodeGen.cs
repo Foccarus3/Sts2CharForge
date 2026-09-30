@@ -1023,6 +1023,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>这条效果是不是「直接把缓慢设成 N%」。</summary>
     internal static bool IsSlowPercentEffect(EffectSpec e) => e.SlowPercentEffective > 0 && e.IsSlowPower;
 
+    // ==================== 「获得能量 / 获得金币」填负数 = 扣除 ====================
+    //
+    // 用户要求：填 -2 就该扣 2 点。
+    // 为什么不能直接把这个负数交给本体的 Gain 系列 ——
+    //   PlayerCmd.GainEnergy：第一句 `if (!(amount > 0m)) return;`（非正数什么都不做）
+    //   PlayerCmd.GainGold  ：先 Hook 改数值，然后 `if (!(amount > 0m)) return;`
+    // 两条都是「非正数直接返回」，所以 -2 传进去等于没写。扣必须走：
+    //   PlayerCmd.LoseEnergy(amount, player)          → PlayerCombatState.LoseEnergy（内部 Math.Clamp(…, 0, …)）
+    //   PlayerCmd.LoseGold(amount, player, Lost)      → player.Gold = int.Max(0, gold - amount)
+    // 两个都会把结果夹在 0，不会把能量 / 金币扣成负数。LoseGold 自己**不检查正负**（传负数会变成加钱），
+    // 所以这里一律套一层 System.Math.Abs。
+
+    /// <summary>
+    /// 这条「获得能量 / 获得金币」的数值是负数吗（负数 = 扣除）。
+    /// 「数值 = X」的卡牌不算：X 要到运行时才知道，正负判不出来，只能按「获得」生成。
+    /// </summary>
+    internal static bool IsNegativeAmount(EffectSpec e, bool useX) =>
+        e.Amount < 0 && !(useX && e.AmountIsX);
+
+    /// <summary>取绝对值的那层壳（负数效果用；字面量和 DynamicVars 取值都适用）。</summary>
+    internal static string AbsExpr(string expr) => $"System.Math.Abs({expr})";
+
+    /// <summary>「获得 N 点能量」那一行（N 是负数时生成 LoseEnergy，数值取绝对值）。</summary>
+    internal static string GainEnergyLine(EffectSpec e, string amt, bool useX, string ownerExpr) =>
+        IsNegativeAmount(e, useX)
+            ? $"await PlayerCmd.LoseEnergy({AbsExpr(amt)}, {ownerExpr});   // 负数 = 失去（本体 GainEnergy 对非正数直接返回）"
+            : $"await PlayerCmd.GainEnergy({amt}, {ownerExpr});";
+
+    /// <summary>「获得 N 枚金币」那一行（N 是负数时生成 LoseGold，数值取绝对值）。</summary>
+    internal static string GainGoldLine(EffectSpec e, string amt, bool useX, string ownerExpr) =>
+        IsNegativeAmount(e, useX)
+            ? $"await PlayerCmd.LoseGold({AbsExpr(amt)}, {ownerExpr});   // 负数 = 扣除（本体 GainGold 对非正数直接返回）"
+            : $"await PlayerCmd.GainGold({amt}, {ownerExpr});";
+
     /// <summary>
     /// 存档里**所有**效果：普通卡 + 诅咒 + 先古卡 + 遗物 + 药水 + 自定义状态的触发器。
     ///
@@ -2791,9 +2825,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "Energy":
                 if (e.NextTurn)
-                    w.Line($"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
+                    // 下回合生效：正数用本体的 EnergyNextTurnPower；负数（下回合少 N 点）它做不到
+                    // （AfterEnergyReset 走的还是 GainEnergy，负数被忽略）→ 用我们生成的负债 Power。
+                    w.Line(IsNegativeAmount(e, useX)
+                        ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>(choiceContext, base.Owner.Creature, {AbsExpr(amt)}, base.Owner.Creature, this);   // 下回合少 N 点能量"
+                        : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
                 else
-                    w.Line($"await PlayerCmd.GainEnergy({amt}, base.Owner);");
+                    w.Line(GainEnergyLine(e, amt, useX, "base.Owner"));
                 break;
 
             case "Heal":
@@ -2820,7 +2858,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Gold":
-                w.Line($"await PlayerCmd.GainGold({amt}, base.Owner);");
+                w.Line(GainGoldLine(e, amt, useX, "base.Owner"));
                 break;
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。
@@ -3879,7 +3917,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Energy":
-                w.Line($"await PlayerCmd.GainEnergy({amt}, base.Owner);");
+                if (e.NextTurn)
+                {
+                    // 下回合生效：负数（下回合少 N 点）用生成的负债 Power —— 本体 EnergyNextTurnPower 忽略负数
+                    if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「下回合生效」的能量无法实现）"); break; }
+                    w.Line(IsNegativeAmount(e, useX: false)
+                        ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>(choiceContext, base.Owner.Creature, {AbsExpr(amt)}, base.Owner.Creature, null);   // 下回合少 N 点能量"
+                        : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                }
+                else
+                    w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
                 break;
 
             case "Heal":
@@ -3913,7 +3960,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Gold":
-                w.Line($"await PlayerCmd.GainGold({amt}, base.Owner);");
+                w.Line(GainGoldLine(e, amt, useX: false, "base.Owner"));
                 break;
 
             case "ExtraResource":
@@ -4470,6 +4517,49 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return w.ToString();
     }
 
+    /// <summary>
+    /// 「获得能量」填了负数 + 勾了「下回合生效」时用的负债 Power：下回合能量重置后扣掉 N 点，然后自毁。
+    ///
+    /// 为什么不直接用本体的 <c>EnergyNextTurnPower</c>：它的 <c>AfterEnergyReset</c> 走
+    /// <c>PlayerCmd.GainEnergy(base.Amount)</c>，而 GainEnergy 第一句就是 <c>if (!(amount &gt; 0m)) return;</c>
+    /// —— 负数（= 想扣能量）被直接忽略。所以这里自己写一个：<c>PlayerCmd.LoseEnergy</c> 才扣得动，
+    /// 而且它内部会把能量夹在 0（不会扣成负能量）。
+    /// 和「透支能量」那个负债 Power 的区别：那个 <c>AfterApplied</c> 会先把能量给玩家（透支的「现在拿」），
+    /// 这个只扣、不给（就是「下回合少 N 点」）。
+    /// </summary>
+    public static string EnergyNextTurnDebtPowerSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 「下回合少 N 点能量」用的负债 Power </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line()
+         .Line("/// <summary>下回合能量重置后扣掉 N 点能量（本体 GainEnergy 忽略负数，所以必须自己 LoseEnergy）。</summary>")
+         .Open($"public sealed class {n.EnergyNextTurnDebtPowerClass} : PowerModel")
+         .Line("public override PowerType Type => PowerType.Debuff;")
+         .Line()
+         .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+         .Line()
+         .Line("protected override IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip> ExtraHoverTips =>")
+         .Line("[")
+         .Line("    MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.ForEnergy(this),")
+         .Line("];")
+         .Line()
+         .Line("// 下回合能量重置后再扣掉（LoseEnergy 内部会夹到 0，不会变成负能量）")
+         .Open("public override async Task AfterEnergyReset(Player player)")
+         .Open("if (player == base.Owner.Player)")
+         .Line("await PlayerCmd.LoseEnergy(base.Amount, player);")
+         .Line("await PowerCmd.Remove(this);")
+         .Close()
+         .Close()
+         .Close();
+        return w.ToString();
+    }
+
+    /// <summary>这个配置里有没有「获得能量 = 负数 + 下回合生效」（有才生成那个负债 Power）。</summary>
+    public static bool UsesEnergyNextTurnDebt(CharacterProfile p) =>
+        AllEffects(p).Any(e => e.Kind == "Energy" && e.NextTurn && e.Amount < 0 && !e.AmountIsX);
+
     public static string ExtraTurnPowerSource(CharacterProfile p)
     {
         var n = Naming.From(p);
@@ -4578,7 +4668,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"await CardPileCmd.Draw(choiceContext, {amt}, base.Owner);");
                 break;
             case "Energy":
-                w.Line($"await PlayerCmd.GainEnergy({amt}, base.Owner);");
+                if (e.NextTurn)
+                    // 下回合生效：负数（下回合少 N 点）用生成的负债 Power —— 本体 EnergyNextTurnPower 忽略负数
+                    w.Line(IsNegativeAmount(e, useX: false)
+                        ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>(choiceContext, base.Owner.Creature, {AbsExpr(amt)}, base.Owner.Creature, null);   // 下回合少 N 点能量"
+                        : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                else
+                    w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
                 break;
             case "Heal":
                 if (e.Amount < 0)
@@ -4599,7 +4695,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     EmitPotionPerCreature(w, potionTarget, allEnemies, c => $"await CreatureCmd.GainMaxHp({c}, {amt});");
                 break;
             case "Gold":
-                w.Line($"await PlayerCmd.GainGold({amt}, base.Owner);");
+                w.Line(GainGoldLine(e, amt, useX: false, "base.Owner"));
                 break;
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。药水没有费用概念，负数直接扣（不会扣成负数）。

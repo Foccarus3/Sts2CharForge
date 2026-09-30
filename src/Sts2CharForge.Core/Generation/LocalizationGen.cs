@@ -614,7 +614,10 @@ public static class LocalizationGen
             "Draw" => $"{repeat}{when}抽 {var} 张牌。",
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
-            "Energy" => $"{repeat}{when}获得 {var} 点能量。",
+            // 负数 = 失去（生成的是 LoseEnergy：本体 GainEnergy 对非正数直接返回）
+            "Energy" => e.Amount < 0 && var != "X"
+                ? $"{repeat}{when}失去 {-e.Amount} 点能量。"
+                : $"{repeat}{when}获得 {var} 点能量。",
             "Heal" => e.Amount < 0 && var != "X"
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点生命。" : $"{forWho}失去 {-e.Amount} 点生命。")
                 : (who.Length == 0 ? $"{repeat}回复 {var} 点生命。" : $"{repeat}{forWho}回复 {var} 点生命。"),
@@ -622,7 +625,10 @@ public static class LocalizationGen
             "MaxHp" => e.Amount < 0 && var != "X"
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点最大生命。" : $"{forWho}失去 {-e.Amount} 点最大生命。")
                 : (who.Length == 0 ? $"{repeat}获得 {var} 点最大生命。" : $"{repeat}{forWho}获得 {var} 点最大生命。"),
-            "Gold" => $"获得 {var} 枚金币。",
+            // 负数 = 扣除（生成的是 LoseGold：本体 GainGold 对非正数直接返回）
+            "Gold" => e.Amount < 0
+                ? $"失去 {-e.Amount} 枚金币。"
+                : $"获得 {var} 枚金币。",
             // 额外资源量：正数获得用 {Stars:diff()} —— 卡面会在升级后自动显示升级值（用户报过升级后仍显示原值）；
             // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣
             "ExtraResource" => starCostIsX && e.Amount < 0 && isCard

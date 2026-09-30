@@ -1041,6 +1041,8 @@ region = Rect2(0, 0, {rw}, {rh})
 
         if (CSharpCodeGen.UsesEnergyDebt(p))
             wanted.Add((n.EnergyDebtPowerClass, "energy_next_turn_power.png", "透支能量"));
+        if (CSharpCodeGen.UsesEnergyNextTurnDebt(p))
+            wanted.Add((n.EnergyNextTurnDebtPowerClass, "energy_next_turn_power.png", "下回合少能量"));
         if (CSharpCodeGen.UsesExtraTurn(p))
             wanted.Add((n.ExtraTurnPowerClass, "borrowed_time_power.png", "额外回合"));
 

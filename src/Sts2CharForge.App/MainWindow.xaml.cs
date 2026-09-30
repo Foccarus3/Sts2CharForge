@@ -367,31 +367,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// <summary>「诅咒 / 先古卡」页那两个下拉的候选：多一项「跟角色配色（默认）」。</summary>
 	public IReadOnlyList<FrameItem> SpecialFrameItems { get; }
 
+	/// <summary>
+	/// 诅咒那一栏的候选：「跟角色配色（默认）」+ 本体的框色名。
+	/// **没有「自定义」**（用户要求去掉诅咒的自定义颜色）—— 见 SpecialCardStyleSpec.AllowsCustomColor。
+	/// </summary>
+	public IReadOnlyList<FrameItem> CurseFrameItems { get; }
+
 	/// <summary>诅咒的卡框下拉（写进 <see cref="CharacterProfile.CurseStyle"/>）。</summary>
 	public FrameItem CurseFrameSelection
 	{
-		get => SpecialFrameSelectionOf(Profile.CurseStyle);
-		set { ApplySpecialFrame(Profile.CurseStyle, value, "CurseFrameSelection"); }
+		get => SpecialFrameSelectionOf(Profile.CurseStyle, allowCustom: false);
+		set { ApplySpecialFrame(Profile.CurseStyle, value, "CurseFrameSelection", allowCustom: false); }
 	}
 
 	/// <summary>先古卡的卡框下拉（写进 <see cref="CharacterProfile.AncientStyle"/>）。</summary>
 	public FrameItem AncientFrameSelection
 	{
-		get => SpecialFrameSelectionOf(Profile.AncientStyle);
-		set { ApplySpecialFrame(Profile.AncientStyle, value, "AncientFrameSelection"); }
+		get => SpecialFrameSelectionOf(Profile.AncientStyle, allowCustom: true);
+		set { ApplySpecialFrame(Profile.AncientStyle, value, "AncientFrameSelection", allowCustom: true); }
 	}
 
-	private FrameItem SpecialFrameSelectionOf(SpecialCardStyleSpec style)
+	private FrameItem SpecialFrameSelectionOf(SpecialCardStyleSpec style, bool allowCustom)
 	{
-		if (style.IsCustomFrame) return _customFrame;
-		if (style.Frame.Length == 0) return _followRoleFrame;
+		// 不支持自定义颜色的那一类（诅咒）即使存档里写着 custom，也显示成「跟角色配色（默认）」
+		if (style.IsCustomFrame && allowCustom) return _customFrame;
+		if (style.Frame.Length == 0 || style.IsCustomFrame) return _followRoleFrame;
 		return FrameItems.FirstOrDefault((FrameItem i) => i.Value == style.Frame) ?? _followRoleFrame;
 	}
 
-	private void ApplySpecialFrame(SpecialCardStyleSpec style, FrameItem value, string prop)
+	private void ApplySpecialFrame(SpecialCardStyleSpec style, FrameItem value, string prop, bool allowCustom)
 	{
 		if (value is null) return;
-		if (value.Value == _customFrame.Value)                    // null = 自定义颜色
+		if (allowCustom && value.Value == _customFrame.Value)      // null = 自定义颜色
 		{
 			style.Frame = SpecialCardStyleSpec.CustomFrame;
 			if (CardColorSpec.NormalizeHex(style.FrameColor).Length == 0)
@@ -1067,6 +1074,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		// 「诅咒 / 先古卡」页那两个下拉：第一项是「跟角色配色（默认）」，其余和上面的框色一样。
 		// 复用同一个 _customFrame 实例，自检里就能用引用比较认出「自定义」。
 		SpecialFrameItems = new[] { _followRoleFrame }.Concat(FrameItems).ToList();
+		// 诅咒那一栏**没有「自定义」**（用户要求去掉诅咒的自定义颜色选项）：
+		// 只给「跟角色配色（默认）」+ 本体的框色名。
+		CurseFrameItems = new[] { _followRoleFrame }
+			.Concat(FrameItems.Where((FrameItem i) => i.Value is not null)).ToList();
 		HookProfileColors();
 		// 启动时那份配置也要先把「本体关键词改名」的 7 行补齐（Profile 的 setter 只在换存档时跑）
 		EnsureKeywordRenameRows();
@@ -7044,10 +7055,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			};
 			recAncient.Effects.Add(new EffectSpec { Kind = "Block", Amount = 11m, UpgradeAmount = 4m, TargetSide = "Self" });
 			recSrc.AncientCards.Add(recAncient);
-			// 两类牌各自的卡框颜色（RRGGBB）+ 角色自己的自定义框色，回读时要能从材质文件的 h/s/v 反算回来
-			recSrc.CurseStyle.Frame = SpecialCardStyleSpec.CustomFrame;
-			recSrc.CurseStyle.FrameColor = "8A5CF6";
-			recSrc.AncientStyle.Frame = "card_frame_blue";
+			// 两类牌各自的卡框 + 角色自己的自定义框色，回读时要能从生成的代码 / 材质文件读回来。
+			// 诅咒这份用**本体框色名**（「自定义颜色」已经在界面上去掉了，见 CurseStyle.AllowsCustomColor）；
+			// 先古卡那份用「自定义颜色」，走材质文件的 h/s/v 反算。
+			recSrc.CurseStyle.Frame = "card_frame_curse";
+			recSrc.AncientStyle.Frame = SpecialCardStyleSpec.CustomFrame;
+			recSrc.AncientStyle.FrameColor = "8A5CF6";
 			recSrc.Colors.CardFrameColor = "123456";
 			var gen = ModGenerator.Generate(recSrc);
 			// 失败时把「为什么」打出来（校验错误 + 日志尾部）—— 不然这条 FAIL 只有空细节，根本没法查
@@ -7298,12 +7311,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					: rec.Profile.AncientCards[0].Effects[0].Amount + "+" + rec.Profile.AncientCards[0].Effects[0].UpgradeAmount);
 			Check("从工程恢复：诅咒 / 先古卡不会被算成普通卡（三张列表各归各位）",
 				rec.Profile.Cards.All(x => x.Rarity != "Curse" && x.Rarity != "Ancient"), "各归各位");
-			Check("从工程恢复：诅咒的自定义卡框颜色（RRGGBB）找回来了",
-				rec.Profile.CurseStyle.Frame == SpecialCardStyleSpec.CustomFrame && rec.Profile.CurseStyle.FrameColor == "8A5CF6",
-				$"{rec.Profile.CurseStyle.Frame} / {rec.Profile.CurseStyle.FrameColor}");
-			Check("从工程恢复：先古卡选了本体框色（card_frame_blue）也认得出来",
-				rec.Profile.AncientStyle.Frame == "card_frame_blue" && rec.Profile.AncientStyle.FrameColor.Length == 0,
-				$"{rec.Profile.AncientStyle.Frame} / '{rec.Profile.AncientStyle.FrameColor}'");
+			Check("从工程恢复：诅咒选了本体框色（card_frame_curse）也认得出来",
+				rec.Profile.CurseStyle.Frame == "card_frame_curse" && rec.Profile.CurseStyle.FrameColor.Length == 0
+				&& !rec.Profile.CurseStyle.IsCustomFrame,
+				$"{rec.Profile.CurseStyle.Frame} / '{rec.Profile.CurseStyle.FrameColor}'");
+			Check("从工程恢复：先古卡的自定义卡框颜色从材质文件的 h/s/v 反算回来了",
+				rec.Profile.AncientStyle.Frame == SpecialCardStyleSpec.CustomFrame && rec.Profile.AncientStyle.FrameColor == "8A5CF6",
+				$"{rec.Profile.AncientStyle.Frame} / {rec.Profile.AncientStyle.FrameColor}");
 			Check("从工程恢复：角色自己的自定义边框颜色也读回来了（以前路径写错，一直静默退回默认红）",
 				rec.Profile.Colors.CardFrameColor == "123456", rec.Profile.Colors.CardFrameColor);
 		}
@@ -9659,6 +9673,103 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Trigger = "CombatVictory",
 				Effects = { new EffectSpec { Kind = "CardReward", Amount = 3m, TargetSide = "Self" } },
 			}, 1).Contains("StaticHoverTip.CardReward"), "卡牌奖励提示在");
+
+		// ---- 「获得能量 / 获得金币」填负数 = 扣除（本体的 GainEnergy / GainGold 对非正数直接 return）----
+		{
+			Check("「获得能量 / 获得金币」允许填负数（负数 = 失去 / 扣除）",
+				EffectCatalog.FindKind("Energy").Min < 0m && EffectCatalog.FindKind("Gold").Min < 0m,
+				$"能量 {EffectCatalog.FindKind("Energy").Min}~{EffectCatalog.FindKind("Energy").Max}、"
+				+ $"金币 {EffectCatalog.FindKind("Gold").Min}~{EffectCatalog.FindKind("Gold").Max}");
+			CharacterProfile negProbe = ProfileFactory.Sample();
+			var negCard = new CardSpec
+			{
+				Name = "自检负能量卡", ClassName = "UiCheckNegEnergy", Rarity = "Common", Cost = 1, InCardPool = true,
+				Effects =
+				{
+					new EffectSpec { Kind = "Energy", Amount = -2m, TargetSide = "Self" },
+					new EffectSpec { Kind = "Gold", Amount = -25m, TargetSide = "Self" },
+				},
+			};
+			var posCard = new CardSpec
+			{
+				Name = "自检正能量卡", ClassName = "UiCheckPosEnergy", Rarity = "Common", Cost = 1, InCardPool = true,
+				Effects =
+				{
+					new EffectSpec { Kind = "Energy", Amount = 2m, TargetSide = "Self" },
+					new EffectSpec { Kind = "Gold", Amount = 25m, TargetSide = "Self" },
+				},
+			};
+			// 负数 + 下回合生效：本体 EnergyNextTurnPower 走 GainEnergy（负数无效）→ 用生成的负债 Power
+			var negNextCard = new CardSpec
+			{
+				Name = "自检下回合负能量卡", ClassName = "UiCheckNegEnergyNext", Rarity = "Common", Cost = 1, InCardPool = true,
+				Effects = { new EffectSpec { Kind = "Energy", Amount = -3m, TargetSide = "Self", NextTurn = true } },
+			};
+			// 三张都进存档（描述 / 校验 / 满配巡检 / 回读都要走「存档里真的有的卡」这条路）
+			negProbe.Cards.Add(negCard);
+			negProbe.Cards.Add(posCard);
+			negProbe.Cards.Add(negNextCard);
+			string negSrc = CSharpCodeGen.CardSource(negProbe, negCard, 0);
+			Check("负数「获得能量」生成的是 LoseEnergy（数值取绝对值，不会把能量扣成负数）",
+				negSrc.Contains("PlayerCmd.LoseEnergy(System.Math.Abs(base.DynamicVars.Energy.BaseValue), base.Owner)")
+				&& !negSrc.Contains("PlayerCmd.GainEnergy"), "LoseEnergy");
+			// 金币没有本体属性写法（VarAccess 对 Gold 走索引器），所以这里断言的是索引器那条
+			Check("负数「获得金币」生成的是 LoseGold",
+				negSrc.Contains("PlayerCmd.LoseGold(System.Math.Abs(base.DynamicVars[\"Gold\"].BaseValue), base.Owner)")
+				&& !negSrc.Contains("PlayerCmd.GainGold"), "LoseGold");
+			Check("负数「获得能量 / 金币」的卡面描述写「失去 N」而不是「获得 -N」",
+				LocalizationGen.CardsJson(negProbe).Contains("失去 2 点能量")
+				&& LocalizationGen.CardsJson(negProbe).Contains("失去 25 枚金币"), "描述");
+			Check("校验：负数会给出「会生成失去 N」的提示（不报错）",
+				ProfileValidator.Validate(negProbe).Any((ValidationIssue i) => i.Message.Contains("会生成「失去 2 点能量」"))
+				&& !ProfileValidator.Validate(negProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("超出允许范围")), "有提示");
+			// 正数还是原来的写法（老存档行为不变）
+			string posSrc = CSharpCodeGen.CardSource(negProbe, posCard, 1);
+			Check("正数「获得能量 / 金币」仍然是 GainEnergy / GainGold",
+				posSrc.Contains("PlayerCmd.GainEnergy") && posSrc.Contains("PlayerCmd.GainGold")
+				&& !posSrc.Contains("LoseEnergy") && !posSrc.Contains("LoseGold"), "老样子");
+			string negNextSrc = CSharpCodeGen.CardSource(negProbe, negNextCard, 2);
+			string debtClass = Naming.From(negProbe).EnergyNextTurnDebtPowerClass;
+			Check("负数「获得能量」+「下回合生效」用的是生成的负债 Power（EnergyNextTurnPower 扣不动能量）",
+				negNextSrc.Contains($"PowerCmd.Apply<{debtClass}>") && !negNextSrc.Contains("PowerCmd.Apply<EnergyNextTurnPower>"), debtClass);
+			Check("这个负债 Power 只在用到时才生成（UsesEnergyNextTurnDebt 认得出来）",
+				CSharpCodeGen.UsesEnergyNextTurnDebt(negProbe)
+				&& !CSharpCodeGen.UsesEnergyNextTurnDebt(ProfileFactory.Sample()), "认得出来");
+			string debtSrc = CSharpCodeGen.EnergyNextTurnDebtPowerSource(negProbe);
+			Check("负债 Power 在下回合能量重置后 LoseEnergy（并自毁）",
+				debtSrc.Contains("public override async Task AfterEnergyReset(Player player)")
+				&& debtSrc.Contains("await PlayerCmd.LoseEnergy(base.Amount, player);")
+				&& debtSrc.Contains("await PowerCmd.Remove(this);")
+				&& !debtSrc.Contains("await PlayerCmd.GainEnergy"), "AfterEnergyReset");
+			Check("负数 + 下回合生效的卡面描述写「失去 3 点能量」且带上「下回合开始时」",
+				LocalizationGen.CardsJson(negProbe).Contains("下回合开始时，失去 3 点能量"), "描述");
+			// 回读：生成 → --recover 应当原样认出负数（LoseEnergy / LoseGold / 负债 Power）
+			string negRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_neg_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				negProbe.Paths.OutputDir = negRoot;
+				negProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				negProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				string negJson = Path.Combine(negRoot, "neg.json");
+				ProfileFactory.Save(negProbe, negJson);
+				Check("（准备）负数能量 / 金币的存档能生成工程", ModGenerator.Generate(negProbe).Success, negRoot);
+				var negRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(negProbe));
+				var rc = negRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckNegEnergy");
+				var rn = negRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckNegEnergyNext");
+				Check("回读：负数「获得能量 / 金币」原样回来（不会变成正数 / 丢掉）",
+					rc is not null && rc.Effects.Any((EffectSpec e) => e.Kind == "Energy" && e.Amount == -2m)
+					&& rc.Effects.Any((EffectSpec e) => e.Kind == "Gold" && e.Amount == -25m),
+					rc is null ? "(没回读出来)" : $"{rc.Effects.Count} 条");
+				Check("回读：负数 + 下回合生效也原样回来（负债 Power 认回「获得能量 -3 + 下回合」）",
+					rn is not null && rn.Effects.Any((EffectSpec e) => e.Kind == "Energy" && e.Amount == -3m && e.NextTurn),
+					rn is null ? "(没回读出来)" : $"{rn.Effects.Count} 条");
+				Check("回读没有认不出来的语句", !negRec.HasUnparsed, negRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(negRoot)) Directory.Delete(negRoot, recursive: true); } catch { }
+			}
+		}
 		Check("「选人界面背景大图」的说明是横图（本体画面 1920×1080，以前写成「1000×1400 的竖图」了）",
 			ArtSlots.Any((ArtSlot s) => s.Name == "选人界面背景大图"
 				&& s.Requirement.Contains("横图") && s.Requirement.Contains("1920×1080") && !s.Requirement.Contains("1000×1400")),
@@ -10601,37 +10712,58 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Profile.Curses.Count == curseBefore && Profile.AncientCards.Count == ancientBefore, "已清理");
 
 			// ---- 样式（RRGGBB 卡框颜色）----
-			Check("「诅咒 / 先古卡」页的两个卡框下拉多一项「跟角色配色（默认）」",
+			Check("「诅咒 / 先古卡」页的卡框下拉多一项「跟角色配色（默认）」",
 				SpecialFrameItems.Count == FrameItems.Count + 1 && SpecialFrameItems[0].Value == "", SpecialFrameItems[0].Name);
+			// 诅咒的候选项里**不能有「自定义」**（用户要求去掉诅咒的自定义颜色）
+			Check("诅咒的卡框下拉没有「自定义」这一项（只有跟角色配色 + 本体框色名）",
+				CurseFrameItems.Count == FrameItems.Count && CurseFrameItems[0].Value == ""
+				&& CurseFrameItems.All((FrameItem i) => i != _customFrame && i.Value is not null),
+				string.Join("/", CurseFrameItems.Select((FrameItem i) => i.Name)));
 			Check("默认（没设样式）时下拉显示「跟角色配色」、也不生成外观池",
 				CurseFrameSelection == SpecialFrameItems[0] && AncientFrameSelection == SpecialFrameItems[0]
 				&& !Profile.CurseStyle.Any && !Profile.AncientStyle.Any, CurseFrameSelection.Name);
 			CharacterProfile styleProbe = ProfileFactory.Sample();
+			// 诅咒：老存档里存过 custom 也一律**忽略**（选项已去掉）—— 退回本体诅咒卡池
 			styleProbe.CurseStyle.Frame = SpecialCardStyleSpec.CustomFrame;
 			styleProbe.CurseStyle.FrameColor = "8A5CF6";
-			styleProbe.AncientStyle.Frame = "card_frame_blue";
-			// 诅咒：自定义颜色 → 生成外观池 + hsv 材质 + VisualCardPool 指过去
+			Check("诅咒不支持自定义颜色：Any / PreviewHex 都是空、下拉显示「跟角色配色」",
+				!styleProbe.CurseStyle.Any && styleProbe.CurseStyle.PreviewHex.Length == 0
+				&& SpecialFrameSelectionOf(styleProbe.CurseStyle, allowCustom: false) == _followRoleFrame, "忽略了");
+			Check("诅咒存了自定义色也还是用本体诅咒卡池（不生成外观池 / 染色材质）",
+				CSharpCodeGen.CurseSource(styleProbe, curse, 0).Contains("CardPool<CurseCardPool>()")
+				&& CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.CurseStyle, "curse") is null, "本体诅咒框");
+			Check("校验：诅咒存了自定义色 → 给一句「不支持、会被忽略」的提示",
+				ProfileValidator.Validate(styleProbe).Any((ValidationIssue i) => i.Message.Contains("不支持「自定义卡框颜色」")),
+				"有提示");
+			// 诅咒仍然支持「本体框色名」→ 生成外观池 + hsv 材质 + VisualCardPool 指过去
+			styleProbe.CurseStyle.Frame = "card_frame_curse";
 			string curseStyleSrc = CSharpCodeGen.CurseSource(styleProbe, curse, 0);
-			Check("给诅咒设了卡框颜色后，VisualCardPool 指向生成的外观池（不再用本体的诅咒框）",
+			Check("诅咒选了本体框色（card_frame_curse）后 VisualCardPool 指向生成的外观池（不再用本体的诅咒框）",
 				curseStyleSrc.Contains($"public override CardPoolModel VisualCardPool => ModelDb.CardPool<{Naming.From(styleProbe).CurseStylePoolClass}>();")
 				&& !curseStyleSrc.Contains("CardPool<CurseCardPool>()"), "外观池");
-			string cursePoolSrc = CSharpCodeGen.SpecialStylePoolSource(styleProbe, styleProbe.CurseStyle,
-				Naming.From(styleProbe).CurseStylePoolClass, "诅咒", CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.CurseStyle, "curse")!);
+			Check("选了本体框色时直接用那个名字、不生成新材质",
+				CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.CurseStyle, "curse") == "card_frame_curse", "本体框色");
 			Check("外观池里没有卡（GenerateAllCards 返回空，不会在卡牌图鉴里多出空分类）",
-				cursePoolSrc.Contains("protected override CardModel[] GenerateAllCards() => [];"), "空池");
-			Check("外观池的卡框材质名 = <角色>_curse_frame（RRGGBB 生成的那份）、能量图标仍用角色自己的",
-				cursePoolSrc.Contains($"CardFrameMaterialPath => \"{Naming.From(styleProbe).CharSlug}_curse_frame\"")
-				&& cursePoolSrc.Contains($"EnergyColorName => \"{Naming.From(styleProbe).CharSlug}\";"), "材质名");
-			Check("选了本体框色（先古卡 = card_frame_blue）时直接用那个名字、不生成新材质",
-				CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.AncientStyle, "ancient") == "card_frame_blue",
+				CSharpCodeGen.SpecialStylePoolSource(styleProbe, styleProbe.CurseStyle,
+					Naming.From(styleProbe).CurseStylePoolClass, "诅咒",
+					CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.CurseStyle, "curse")!)
+				.Contains("protected override CardModel[] GenerateAllCards() => [];"), "空池");
+			// 先古卡：自定义颜色照旧（生成的是 <角色>_ancient_frame 材质）
+			styleProbe.AncientStyle.Frame = SpecialCardStyleSpec.CustomFrame;
+			styleProbe.AncientStyle.FrameColor = "E0B24C";
+			string ancientPoolSrc = CSharpCodeGen.SpecialStylePoolSource(styleProbe, styleProbe.AncientStyle,
+				Naming.From(styleProbe).AncientStylePoolClass, "先古卡",
 				CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.AncientStyle, "ancient")!);
+			Check("先古卡的「自定义颜色」照旧：外观池的卡框材质名 = <角色>_ancient_frame、能量图标仍用角色自己的",
+				ancientPoolSrc.Contains($"CardFrameMaterialPath => \"{Naming.From(styleProbe).CharSlug}_ancient_frame\"")
+				&& ancientPoolSrc.Contains($"EnergyColorName => \"{Naming.From(styleProbe).CharSlug}\";"), "材质名");
 			string ancientStyleSrc = CSharpCodeGen.CardSource(styleProbe, ancient, 0);
 			Check("给先古卡设了卡框后也覆写 VisualCardPool",
 				ancientStyleSrc.Contains($"public override CardPoolModel VisualCardPool => ModelDb.CardPool<{Naming.From(styleProbe).AncientStylePoolClass}>();"), "外观池");
-			Check("样式色块预览用 PreviewHex（自定义色才有值）",
-				styleProbe.CurseStyle.PreviewHex == "8A5CF6" && styleProbe.AncientStyle.PreviewHex == "", "色块");
-			Check("校验：自定义色填成乱码 → 报错",
-				ProfileValidator.Validate(new CharacterProfile { CurseStyle = { Frame = SpecialCardStyleSpec.CustomFrame, FrameColor = "ZZZZZZ" } })
+			Check("样式色块预览用 PreviewHex（先古卡的自定义色才有值）",
+				styleProbe.AncientStyle.PreviewHex == "E0B24C" && styleProbe.CurseStyle.PreviewHex == "", "色块");
+			Check("校验：自定义色填成乱码 → 报错（先古卡）",
+				ProfileValidator.Validate(new CharacterProfile { AncientStyle = { Frame = SpecialCardStyleSpec.CustomFrame, FrameColor = "ZZZZZZ" } })
 					.Any(i => i.IsError && i.Message.Contains("不是合法的颜色")), "有错误");
 			Check("校验：选了不存在的本体框色 → 警告",
 				ProfileValidator.Validate(new CharacterProfile { AncientStyle = { Frame = "card_frame_nope" } })
@@ -10688,6 +10820,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				// 关键：这些效果全部挂在**诅咒**上（不在 p.Cards 里），外加先古卡 / 遗物 / 药水 / 自定义状态各一份
 				var sinkCurse = new CardSpec { Name = "自检满配诅咒", ClassName = "UiCheckSinkCurse", Rarity = "Curse", CardType = "Curse", Cost = -1 };
 				sinkCurse.Effects.Add(new EffectSpec { Kind = "OverdraftEnergy", Amount = 2m, TargetSide = "Self" });
+				// 负数「获得能量」+ 下回合生效 → 用到生成的「下回合少能量」负债 Power（也在诅咒上，不在 p.Cards 里）
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "Energy", Amount = -2m, TargetSide = "Self", NextTurn = true });
 				sinkCurse.Effects.Add(new EffectSpec { Kind = "ExtraTurn", TargetSide = "Self" });
 				sinkCurse.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" });
 				sinkCurse.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 1m, SpawnCardId = "SevenCrush", BoostStat = "Damage", TargetSide = "Self" });
@@ -10737,7 +10871,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				var sinkNaming = Naming.From(sink);
 				var expect = new List<string>
 				{
-					sinkNaming.EnergyDebtPowerClass, sinkNaming.ExtraTurnPowerClass,
+					sinkNaming.EnergyDebtPowerClass, sinkNaming.EnergyNextTurnDebtPowerClass, sinkNaming.ExtraTurnPowerClass,
 					sinkNaming.TempKeywordPowerClass, sinkNaming.GuardianPowerClass,
 				};
 				foreach (var e in CSharpCodeGen.CollectTempPowerEffects(sink)) expect.Add(sinkNaming.TempPowerClass(e));
@@ -10747,7 +10881,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("生成工程里「引用到的生成类」全都被生成了（差一个就是 CS0246，整个模组编译不过）",
 					dangling.Count == 0, dangling.Count == 0 ? $"{expect.Count} 个类都在" : "缺：" + string.Join("、", dangling));
 				Check("满配存档用的效果都被识别出来了（诅咒 / 先古卡里的也算数）",
-					CSharpCodeGen.UsesEnergyDebt(sink) && CSharpCodeGen.UsesExtraTurn(sink)
+					CSharpCodeGen.UsesEnergyDebt(sink) && CSharpCodeGen.UsesEnergyNextTurnDebt(sink) && CSharpCodeGen.UsesExtraTurn(sink)
 					&& CSharpCodeGen.UsesTempKeywordPower(sink) && CSharpCodeGen.NeedsSlowPowerHelper(sink)
 					&& sinkAll.Contains("class SlowPowerHelper"), "都认得出");
 				Check("「伙伴攻击」扩展方法在「只用诅咒里的伙伴攻击」时也会生成（否则 CS1061）",

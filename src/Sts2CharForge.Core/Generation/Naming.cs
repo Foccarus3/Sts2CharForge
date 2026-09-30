@@ -84,6 +84,13 @@ public sealed record Naming(
     public string EnergyDebtPowerClass => CharClass + "ForgeEnergyDebtPower";
 
     /// <summary>
+    /// 「获得能量」填了负数 + 勾了「下回合生效」时用的 Power：下回合能量重置后扣掉 N 点。
+    /// 本体 <c>EnergyNextTurnPower</c> 的 AfterEnergyReset 走的是 GainEnergy（忽略非正数），
+    /// 所以「下回合少 N 点」只能自己生成一个（和透支能量那个负债 Power 长得像，但施加时不加能量）。
+    /// </summary>
+    public string EnergyNextTurnDebtPowerClass => CharClass + "ForgeEnergyNextTurnDebtPower";
+
+    /// <summary>
     /// 「给予卡牌关键词」勾了「临时关键词」时用的 Power：记住「哪张牌、哪个关键词」，
     /// 回合结束时把它摘掉（保留 / 奇巧走本体自己的单回合标记，不用这个）。
     /// </summary>
