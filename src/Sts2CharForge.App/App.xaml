@@ -192,6 +192,10 @@
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnPick}"
                                   ToolTip="「指定卡」= 用上面「目标卡」里选的那张；「按范围随机」= 从卡池里按下面的范围限定抽（本体「发现 / 炼制药水」那种）。"/>
                     </Grid>
+                    <!-- 「指定卡」时的指路提示：用户报过「找不到在哪限定范围」—— 那一行只有切成「按范围随机」才出现 -->
+                    <TextBlock Margin="102,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#888"
+                               Text="想看「范围限定（攻击 / 技能 / 能力 / 诅咒 / 状态）」？把上面这行切成「按范围随机」，它就会出现在下面。"
+                               Visibility="{Binding ShowSpawnPickHint, Converter={StaticResource BoolToVis}}"/>
                     <Grid Visibility="{Binding ShowSpawnFilter, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>

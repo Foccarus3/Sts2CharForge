@@ -10260,6 +10260,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 			UpdateLayout();
 			Check("卡牌页效果编辑器确实渲染了（否则「解释文字已去掉」那两条是空跑）", TextsIn((DependencyObject)((TabItem)MainTabs.SelectedItem).Content).Any((string t) => t.Contains("作用对象")), "模板已渲染");
+
+			// 「生成 / 变化」那几行到底有没有出现在界面上（用户报过「找不到在哪限定范围 / 找不到那四个勾选框」）
+			var spawnUiCard = new CardSpec { Name = "自检范围界面", ClassName = "UiCheckSpawnUi", Rarity = "Common", Cost = 1, InCardPool = true };
+			spawnUiCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Hand" });
+			Profile.Cards.Add(spawnUiCard);
+			CardList.SelectedItem = spawnUiCard;
+			CardEffectList.SelectedIndex = 0;
+			UpdateLayout();
+			var cardTabRoot = (DependencyObject)((TabItem)MainTabs.SelectedItem).Content;
+			var cardTexts = VisibleTextsIn(cardTabRoot);
+			Check("「生成卡牌」时界面上有「取卡方式（生成 / 变化）」下拉（用户找的就是这一行）",
+				cardTexts.Any((string t) => t.Contains("取卡方式（生成 / 变化）")), "在");
+			Check("生成卡牌的四行「生成 / 变化出来的卡：…」勾选框都在界面上（直接升级 / 免费打出 / 仅本回合免费 / 仅本回合升级）",
+				cardTexts.Any((string t) => t.Contains("直接升级"))
+				&& cardTexts.Any((string t) => t.Contains("免费打出（本场战斗内 0 费）"))
+				&& cardTexts.Any((string t) => t.Contains("仅本回合免费"))
+				&& cardTexts.Any((string t) => t.Contains("仅本回合升级")),
+				string.Join(" ｜ ", cardTexts.Where((string t) => t.Contains("生成 / 变化出来的卡")).Distinct()));
+			Check("「指定卡」时先不显示「范围限定」，而是给一句「切『按范围随机』就会出现」的指路提示（用户报过找不到）",
+				!VisibleTextsIn(cardTabRoot).Any((string t) => t.Contains("范围限定（随机出什么）"))
+				&& VisibleTextsIn(cardTabRoot).Any((string t) => t.Contains("想看「范围限定")), "指定卡时给提示");
+			spawnUiCard.Effects[0].SpawnPick = "Random";
+			UpdateLayout();
+			Check("切成「按范围随机」后「范围限定（随机出什么）」就出现了，而且候选齐全",
+				VisibleTextsIn(cardTabRoot).Any((string t) => t.Contains("范围限定（随机出什么）"))
+				&& SpawnFilters.Count == 6, string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
+			Profile.Cards.Remove(spawnUiCard);
+			CardList.SelectedIndex = 0;   // 后面还有断言要用 CardList.SelectedItem，清掉自检卡后必须选回去
+			UpdateLayout();
+			Check("（收尾）自检加的那张卡已清掉", !Profile.Cards.Contains(spawnUiCard));
 		}
 		Check("效果栏底下不再有那一大段解释文字", !TextsIn(root15).Any((string t) => t.Contains("作用对象：自己 = 给自己加增益")), "已去掉");
 		Check("遗物效果栏底下也不再有解释文字", !TextsIn(root16).Any((string t) => t.Contains("作用对象：自己 = 给自己加增益")), "已去掉");
@@ -11987,6 +12017,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		List<Button> list4 = new List<Button>();
 		CollectButtons(root, list4);
 		list2.AddRange(list4.Select((Button b) => (b.Content as string) ?? ""));
+		return list2;
+	}
+
+	/// <summary>
+	/// 和 <see cref="TextsIn"/> 一样，但**只收真正可见的那些**（<c>IsVisible</c> 会把祖先的 Visibility 一起算上）。
+	/// 为什么要它：TextsIn 连 Collapsed 里的文字也收，验「这一行现在到底显示没有」时会被骗过（实测踩过）。
+	/// </summary>
+	private static List<string> VisibleTextsIn(DependencyObject root)
+	{
+		List<TextBlock> list = new List<TextBlock>();
+		CollectTextBlocks(root, list);
+		List<string> list2 = list.Where((TextBlock t) => t.IsVisible).Select((TextBlock t) => t.Text ?? "").ToList();
+		List<CheckBox> list3 = new List<CheckBox>();
+		CollectCheckBoxes(root, list3);
+		list2.AddRange(list3.Where((CheckBox c) => c.IsVisible).Select((CheckBox c) => (c.Content as string) ?? ""));
+		List<Button> list4 = new List<Button>();
+		CollectButtons(root, list4);
+		list2.AddRange(list4.Where((Button b) => b.IsVisible).Select((Button b) => (b.Content as string) ?? ""));
 		return list2;
 	}
 

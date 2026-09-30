@@ -259,6 +259,11 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(IsPetSacrifice));   // 「收益 / 公式 / 倍率」三行的显隐绑的就是它
                 Raise(nameof(IsGiveKeyword));    // 「给予关键词 / 是否为临时关键词」两行的显隐绑的就是它
                 Raise(nameof(IsBoostCard));      // 「强化什么（伤害 / 格挡）」那一行的显隐绑的就是它
+                // 「生成 / 变化」那几行（取卡方式 / 范围限定 / 四个附加处理勾选框）的显隐绑的是这两个 ——
+                // 不通知的话：把「效果种类」改成「生成卡牌」时那几行**不会出现**（用户报过「找不到在哪限定范围」）。
+                Raise(nameof(UsesSpawnOptions));
+                Raise(nameof(ShowSpawnFilter));
+                Raise(nameof(ShowSpawnPickHint));
                 Raise(nameof(IsSlowPower));
                 Raise(nameof(Display));
             }
@@ -281,7 +286,16 @@ public sealed class EffectSpec : SpecBase
     public string SpawnPick
     {
         get => _spawnPick;
-        set { if (Set(ref _spawnPick, value ?? "Fixed")) { Raise(nameof(IsSpawnRandom)); Raise(nameof(Display)); } }
+        set
+        {
+            if (Set(ref _spawnPick, value ?? "Fixed"))
+            {
+                Raise(nameof(IsSpawnRandom));
+                Raise(nameof(ShowSpawnFilter));   // 「范围限定」那一行的显隐绑的是它（不通知就不会出现）
+                Raise(nameof(ShowSpawnPickHint));
+                Raise(nameof(Display));
+            }
+        }
     }
 
     /// <summary>是不是「按范围随机」（界面上后面那几行要不要显示也跟着它）。</summary>
@@ -345,6 +359,10 @@ public sealed class EffectSpec : SpecBase
     /// <summary>「范围限定」那一行要不要显示（只有选了「按范围随机」才有意义）。</summary>
     [JsonIgnore]
     public bool ShowSpawnFilter => UsesSpawnOptions && IsSpawnRandom;
+
+    /// <summary>「指定卡」时在下面提示一句「范围限定」在哪（用户报过「找不到在哪限定范围」）。</summary>
+    [JsonIgnore]
+    public bool ShowSpawnPickHint => UsesSpawnOptions && !IsSpawnRandom;
 
     private bool _chanceEnabled;
     private decimal _chancePercent = 50m;
