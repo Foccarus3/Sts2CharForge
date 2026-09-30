@@ -590,6 +590,11 @@ public static class EffectCatalog
         new EffectKindOption("ExtraTurn", "额外获得一回合", "—", 0, 0, false, false),
         new EffectKindOption("GenerateCard",  "生成卡牌", "张", 1, 10, false, false),
         new EffectKindOption("ExhaustCard",   "消耗卡牌", "张", 1, 9,  false, false),
+        // 丢弃卡牌：把手牌 / 抽牌堆里的 N 张牌丢进弃牌堆（不是「消耗」—— 它们还会被洗回来）。
+        // 走本体的 CardCmd.Discard（内部 CardPileCmd.Add(card, 弃牌堆) + 派发 AfterCardDiscarded 钩子），
+        // 所以「奇巧」这类跟弃牌有关的东西照常触发。可丢的牌堆只有手牌 / 抽牌堆：
+        // 弃牌堆里的牌本来就在那儿，丢它没有意义（界面上那一行也只给这两项）。
+        new EffectKindOption("DiscardCard",   "丢弃卡牌", "张", 1, 9,  false, false),
         new EffectKindOption("TransformCard", "变化卡牌", "张", 1, 9,  false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
@@ -697,6 +702,16 @@ public static class EffectCatalog
         "Draw" => "抽牌堆",
         "Discard" => "弃牌堆",
         _ => "手牌",
+    };
+
+    /// <summary>
+    /// 「丢弃卡牌」能丢的那几摞牌：只有手牌 / 抽牌堆。
+    /// 为什么没有弃牌堆：那摞里的牌本来就已经被丢了，再「丢弃」一次没有任何意义。
+    /// </summary>
+    public static IReadOnlyList<PileChoiceOption> DiscardPiles { get; } = new[]
+    {
+        new PileChoiceOption("Hand", "手牌（本体默认）"),
+        new PileChoiceOption("Draw", "抽牌堆（把抽牌堆里的牌丢进弃牌堆）"),
     };
 
     /// <summary>「消耗卡牌 / 变化卡牌」的选牌方式。</summary>

@@ -177,9 +177,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 	/// <summary>
-	/// 卡面预览下面那行小字：这张图和**游戏里的显示区域（1000×760）**比例对不对。
+	/// 卡面预览下面那行小字：这张图和**游戏里的显示区域**比例对不对。
 	/// 用户报过：上传了非推荐比例的卡面，游戏里出现黑边，但工具里的预览看不出来 ——
-	/// 所以预览按 1000×760 画一块黑底（见 MainWindow.xaml），这行字再把差多少说清楚。
+	/// 所以预览按显示区域画一块黑底（见 MainWindow.xaml），这行字再把差多少说清楚。
+	///
+	/// 显示区域分两种（本体 scenes/cards/card.tscn）：
+	///   · 普通卡 / 诅咒：%Portrait 是 250×190（×4 = **1000×760**，横图），stretch_mode = KEEP_ASPECT_COVERED；
+	///   · 先古卡：%AncientPortrait 是 598×842（**竖图**，本体先古卡的卡面素材都是 606×852），
+	///     stretch_mode 是默认的「直接拉满」→ 比例不对会被拉变形（不是留黑边）。
 	/// </summary>
 	public string CardPortraitPreviewNote
 	{
@@ -189,15 +194,62 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			if (cardSpec is null) return "";
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			_profile.Art.CardPortraits.TryGetValue(key, out string? value);
-			return AspectNoteOf(value, 1000, 760, "游戏里卡面这块");
+			var (w, h, what, stretch) = CardPortraitFrameOf(cardSpec);
+			return AspectNoteOf(value, w, h, what, stretch);
 		}
 	}
 
 	/// <summary>
+	/// 这张卡的卡面在游戏里的显示区域（宽 / 高 / 说明 / 是不是「直接拉满」）。
+	/// 先古卡是竖图（本体先古卡素材 606×852，节点 598×842 且不保持比例）；其余是 1000×760。
+	/// </summary>
+	internal static (int W, int H, string What, bool Stretch) CardPortraitFrameOf(CardSpec card) =>
+		card.IsAncientCard
+			? (606, 852, "游戏里先古卡卡面这块", true)
+			: (1000, 760, "游戏里卡面这块", false);
+
+	/// <summary>预览框的宽（绑到 XAML 那块黑底 Grid 上，先古卡是竖的）。</summary>
+	public int CardPortraitFrameWidth => CardPortraitFrameOf(ActivePortraitCard() ?? new CardSpec()).W;
+
+	/// <summary>预览框的高。</summary>
+	public int CardPortraitFrameHeight => CardPortraitFrameOf(ActivePortraitCard() ?? new CardSpec()).H;
+
+	/// <summary>预览里那张图的拉伸方式：先古卡是「直接拉满」（游戏里就是会把图拉变形），其余按比例放。</summary>
+	public Stretch CardPortraitPreviewStretch =>
+		CardPortraitFrameOf(ActivePortraitCard() ?? new CardSpec()).Stretch ? Stretch.Fill : Stretch.Uniform;
+
+	/// <summary>「上传卡面…」按钮上的提示（先古卡是竖图 606×852，别的 1000×760）。</summary>
+	public string CardPortraitUploadHint
+	{
+		get
+		{
+			var (w, h, _, _) = CardPortraitFrameOf(ActivePortraitCard() ?? new CardSpec());
+			return w == 1000 ? "上传卡面…（建议 1000×760 PNG）" : $"上传卡面…（建议 {w}×{h} PNG，竖图）";
+		}
+	}
+
+	/// <summary>预览框下面那句说明（先古卡那块是竖的、而且不保持比例，得说清楚）。</summary>
+	public string CardPortraitFrameHint
+	{
+		get
+		{
+			var (w, h, _, stretch) = CardPortraitFrameOf(ActivePortraitCard() ?? new CardSpec());
+			return stretch
+				? $"预览框 = 游戏里先古卡的显示区域（{w}×{h} 竖图，本体先古卡素材就是这个尺寸）。"
+				  + "本体这块是**直接拉满**、不保持比例 —— 所以预览里的图会被拉成这个形状（比例差得多就很难看，建议裁成同比例）。"
+				: $"预览框 = 游戏里的显示区域（{w}×{h}，白框内是黑底）。比例不一致时，黑底那部分就是游戏里留的黑边。";
+		}
+	}
+
+	/// <summary>当前正在编辑的那张卡（卡牌列表 / 诅咒 / 先古卡三处互斥）。</summary>
+	private CardSpec? ActivePortraitCard() => (CardList?.SelectedItem as CardSpec) ?? SpecialCardOf();
+
+	/// <summary>
 	/// 上传图和「游戏里的显示区域」的比例说明（预览旁边那行小字）。
 	/// 比例一致就回一句「不会留黑边」；不一致就说清偏宽还是偏窄、会留哪两边、大概留多少。
+	/// stretch = 游戏里那块是**直接拉满**（先古卡）：那就不是留黑边，而是被拉变形。
 	/// </summary>
-	internal static string AspectNoteOf(string? path, int frameW, int frameH, string what)
+	internal static string AspectNoteOf(string? path, int frameW, int frameH, string what, bool stretch = false)
 	{
 		if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
 		if (frameW <= 0 || frameH <= 0) return "";
@@ -206,8 +258,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 		double frameRatio = (double)frameW / frameH;
 		double imgRatio = (double)s.W / s.H;
-		if (Math.Abs(frameRatio - imgRatio) / frameRatio <= 0.02)
-			return $"✅ 比例和显示区域一致（{s.W}×{s.H}），游戏里不会留黑边。";
+		// 容差：普通卡「按比例缩放居中」错一点就看得见黑边，所以卡得紧（2%）；
+		// 先古卡那块是**直接拉满**的，差 3~5% 肉眼看不出来（用户现有那张 1600×2336 就差 3.5%），
+		// 所以放宽到 5%，免得为了一点点拉伸就报警。
+		double tolerance = stretch ? 0.05 : 0.02;
+		if (Math.Abs(frameRatio - imgRatio) / frameRatio <= tolerance)
+			return $"✅ 比例和显示区域一致（{s.W}×{s.H}），游戏里不会留黑边（也不会被拉伸）。";
+
+		if (stretch)
+			return $"⚠ 你这张是 {s.W}×{s.H}（比例 {imgRatio:0.00}:1），{what}是 {frameW}×{frameH}（{frameRatio:0.00}:1）而且"
+				+ "**直接拉满不保持比例** → 游戏里会被拉变形（上面预览里看到的就是变形后的样子）。"
+				+ $"想不变形就裁成 {frameW}×{frameH}（或同比例）。";
 
 		// 按比例缩放居中（contain）：图比框更「宽」→ 受宽度限制 → 上下留边；反之左右留边
 		bool wider = imgRatio > frameRatio;
@@ -1138,9 +1199,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
+		RaiseCardPortrait();
+		Raise("RelicIconPreview");
+	}
+
+	/// <summary>
+	/// 刷新卡面预览那一整块（图 / 比例说明 / 预览框尺寸 / 拉伸方式 / 上传按钮上的建议尺寸）。
+	/// 为什么要一起通知：先古卡的显示区域是**竖的**（606×852 且游戏里直接拉满），
+	/// 切换到先古卡时预览框、说明、上传提示都得跟着变（以前写死 1000×760，先古卡上的图会被拉变形）。
+	/// </summary>
+	private void RaiseCardPortrait()
+	{
 		Raise("CardPortraitPreview");
 		Raise("CardPortraitPreviewNote");
-		Raise("RelicIconPreview");
+		Raise("CardPortraitFrameWidth");
+		Raise("CardPortraitFrameHeight");
+		Raise("CardPortraitPreviewStretch");
+		Raise("CardPortraitUploadHint");
+		Raise("CardPortraitFrameHint");
 	}
 
 	/// <summary>
@@ -3748,8 +3824,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			CardList.SelectedItem = null;
 		}
 		Raise("ShowSpecialCardHint");
-		Raise("CardPortraitPreview");
-		Raise("CardPortraitPreviewNote");
+		RaiseCardPortrait();
 	}
 
 	private void OnAddCurse(object sender, RoutedEventArgs e)
@@ -3857,9 +3932,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			string key = Naming.From(_profile).CardClassName(_profile, card);
 			_profile.Art.CardPortraits[key] = openFileDialog.FileName;
-			Raise("CardPortraitPreview");
-			Raise("CardPortraitPreviewNote");
-			PersistArtChange($"已为「{card.Name}」设置卡面：{openFileDialog.FileName}（建议 1000×760 PNG）");
+			RaiseCardPortrait();
+			var specialFrame = CardPortraitFrameOf(card);
+			PersistArtChange($"已为「{card.Name}」设置卡面：{openFileDialog.FileName}"
+				+ $"（建议 {specialFrame.W}×{specialFrame.H} PNG{(specialFrame.Stretch ? "，竖图" : "")}）");
 		}
 	}
 
@@ -4077,8 +4153,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			_profile.Art.CardPortraits[key] = openFileDialog.FileName;
-			Raise("CardPortraitPreview");
-			PersistArtChange($"已为「{cardSpec.Name}」设置卡面：{openFileDialog.FileName}（建议 1000×760 PNG）");
+			RaiseCardPortrait();
+			var uploadFrame = CardPortraitFrameOf(cardSpec);
+			PersistArtChange($"已为「{cardSpec.Name}」设置卡面：{openFileDialog.FileName}"
+				+ $"（建议 {uploadFrame.W}×{uploadFrame.H} PNG{(uploadFrame.Stretch ? "，竖图" : "")}）");
 		}
 	}
 
@@ -9595,11 +9673,130 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileZh == "手牌"
 			&& CSharpCodeGen.CardSource(handProbe, handCard, 0).Contains("CardSelectCmd.FromHand(")
 			&& EffectCatalog.SelectPiles.Count == 3, $"选项 {EffectCatalog.SelectPiles.Count} 个");
-		Check("「从哪里选牌」只有消耗 / 变化卡牌用得到",
+		Check("「从哪里选牌」只有消耗 / 变化 / 丢弃 / 给予关键词用得到",
 			new EffectSpec { Kind = "ExhaustCard" }.UsesSelectPile && new EffectSpec { Kind = "TransformCard" }.UsesSelectPile
-			&& !new EffectSpec { Kind = "Damage" }.UsesSelectPile, "只在这两种上显示");
+			&& new EffectSpec { Kind = "DiscardCard" }.UsesSelectPile && new EffectSpec { Kind = "GiveKeyword" }.UsesSelectPile
+			&& !new EffectSpec { Kind = "Damage" }.UsesSelectPile, "只在这几种上显示");
 		Check("状态触发器里没有「从牌堆拿牌」这一类（要弹选牌界面）",
 			!PowerTriggers.Supports("TakeFromDraw") && !PowerTriggers.Supports("TakeFromDiscard"), "状态里不支持");
+
+		// ===== 丢弃卡牌（用户要求的新效果：手牌 / 抽牌堆里丢 N 张进弃牌堆）=====
+		{
+			Check("效果种类里有「丢弃卡牌」（张数 1~9）",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "DiscardCard")
+				&& EffectCatalog.FindKind("DiscardCard").Min == 1m && EffectCatalog.FindKind("DiscardCard").Max == 9m,
+				EffectCatalog.FindKind("DiscardCard").Display);
+			Check("丢弃只能选「手牌 / 抽牌堆」两摞（弃牌堆里的牌本来就在那儿，没有意义）",
+				new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Count == 2
+				&& new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.All((PileChoiceOption o) => o.Id is "Hand" or "Draw")
+				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileChoices.Count == 3,
+				string.Join("/", new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Select((PileChoiceOption o) => o.Id)));
+			Check("丢弃那一行的标题是「从哪里丢弃」（不是「从哪里选牌」）",
+				new EffectSpec { Kind = "DiscardCard" }.SelectPileLabel.Contains("丢弃")
+				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileLabel.Contains("选牌"),
+				new EffectSpec { Kind = "DiscardCard" }.SelectPileLabel);
+			Check("状态触发器里用不了丢弃卡牌（要选牌 / 要卡牌上下文）", !PowerTriggers.Supports("DiscardCard"), "状态里不支持");
+			CharacterProfile disProbe = ProfileFactory.Sample();
+			CardSpec disCard = new CardSpec { Name = "自检丢弃", ClassName = "UiCheckDiscard", Rarity = "Common", Cost = 1, InCardPool = true };
+			disCard.Effects.Clear();
+			disCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand" });
+			disCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 3m, CardPick = "Random", SelectPile = "Draw" });
+			disProbe.Cards.Add(disCard);
+			string disSrc = CSharpCodeGen.CardSource(disProbe, disCard, 0);
+			Check("「丢弃卡牌」自己选（手牌）走 CardCmd.Discard + 丢手牌专用的 FromHandForDiscard（奇巧会描金）",
+				disSrc.Contains("CardSelectCmd.FromHandForDiscard(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, 2), null, this)")
+				&& disSrc.Contains("await CardCmd.Discard(choiceContext, toDiscard);"), "自己选丢手牌");
+			Check("「丢弃卡牌」随机（抽牌堆）从抽牌堆抓牌再丢掉",
+				disSrc.Contains("NextItem(PileType.Draw.GetPile(base.Owner).Cards)")
+				&& disSrc.Contains("await CardCmd.Discard(choiceContext, pick);"), "随机丢抽牌堆");
+			Check("丢弃不声明动态变量（张数写在代码里，不会多出一个用不上的 {Value:diff()}）",
+				!disSrc.Contains("new DynamicVar"), "没变量");
+			Check("卡面描述写清丢哪一摞 / 怎么丢",
+				LocalizationGen.CardsJson(disProbe).Contains("自己选丢弃 2 张手牌。")
+				&& LocalizationGen.CardsJson(disProbe).Contains("随机从抽牌堆里丢弃 3 张牌。"),
+				LocalizationGen.CardsJson(disProbe).Replace("\n", " "));
+			Check("校验：丢弃会给出「丢进弃牌堆 / 不是消耗」的说明（抽牌堆那条还会提醒奇巧不触发）",
+				ProfileValidator.Validate(disProbe).Any((ValidationIssue i) => i.Message.Contains("丢进弃牌堆") && i.Message.Contains("不是消耗"))
+				&& ProfileValidator.Validate(disProbe).Any((ValidationIssue i) => i.Message.Contains("不经手牌")), "有提示");
+			Check("列表那一行写着「丢弃 / 怎么选 / 从哪一摞」",
+				disCard.Effects[1].Display.Contains("丢弃") && disCard.Effects[1].Display.Contains("随机")
+				&& disCard.Effects[1].Display.Contains("抽牌堆"), disCard.Effects[1].Display);
+			// 遗物 / 药水里也能丢（都有 choiceContext）
+			Check("遗物里也能用「丢弃卡牌」（自己选抽牌堆）",
+				CSharpCodeGen.RelicSource(disProbe, new RelicSpec
+				{
+					Name = "自检丢弃遗物", ClassName = "UiCheckDiscardRelic", Trigger = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Draw" } },
+				}, 1).Contains("CardCmd.Discard(choiceContext, toDiscard)"), "遗物");
+			Check("药水里也能用「丢弃卡牌」（随机手牌）",
+				CSharpCodeGen.PotionSource(disProbe, new PotionSpec
+				{
+					Name = "自检丢弃药水", ClassName = "UiCheckDiscardPotion", TargetType = "Self",
+					Effects = { new EffectSpec { Kind = "DiscardCard", Amount = 2m, CardPick = "Random", SelectPile = "Hand" } },
+				}, 2).Contains("CardCmd.Discard(choiceContext, pick)"), "药水");
+			// 生成 → 回读：四种组合 + 「从哪里选牌」都要原样回来（以前消耗 / 变化根本回读不出来这个字段）
+			string disRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_discard_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				disProbe.Paths.OutputDir = disRoot;
+				disProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				disProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				ProfileFactory.Save(disProbe, Path.Combine(disRoot, "discard.json"));
+				Check("（准备）丢弃卡牌的存档能生成工程", ModGenerator.Generate(disProbe).Success, disRoot);
+				var disRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(disProbe));
+				var rc = disRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckDiscard");
+				Check("回读：丢弃的「张数 / 怎么选 / 从哪一摞」四种组合都原样回来",
+					rc is not null && rc.Effects.Count == 2
+					&& rc.Effects[0].Kind == "DiscardCard" && rc.Effects[0].Amount == 2m
+					&& rc.Effects[0].CardPick == "Chosen" && rc.Effects[0].SelectPile == "Hand"
+					&& rc.Effects[1].Amount == 3m && rc.Effects[1].CardPick == "Random" && rc.Effects[1].SelectPile == "Draw",
+					rc is null ? "(没回读出来)" : string.Join("、", rc.Effects.Select((EffectSpec x) => $"{x.Kind} {x.Amount} {x.CardPick} {x.SelectPile}")));
+				Check("回读没有认不出来的语句", !disRec.HasUnparsed, disRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(disRoot)) Directory.Delete(disRoot, recursive: true); } catch { }
+			}
+			// 消耗 / 变化：以前「从哪里选牌」回读会静默退回手牌（顺手修掉的老 bug）
+			string pileRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_pile_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile pileRecProbe = ProfileFactory.Sample();
+				pileRecProbe.ExtraResource.Enabled = true;      // 「拥有额外资源量至少 N 点」这个条件要它才算数
+				CardSpec pileRecCard = new CardSpec { Name = "自检选牌回读", ClassName = "UiCheckPileBack", Rarity = "Common", Cost = 1, InCardPool = true };
+				pileRecCard.Condition = new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = 2m };
+				pileRecCard.Effects.Clear();
+				pileRecCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 2m, CardPick = "Random", SelectPile = "Draw" });
+				pileRecCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Discard" });
+				pileRecCard.Effects.Add(new EffectSpec { Kind = "TakeFromDraw", Amount = 1m });
+				pileRecCard.Effects.Add(new EffectSpec { Kind = "TakeFromDiscard", Amount = 2m });
+				pileRecProbe.Cards.Add(pileRecCard);
+				pileRecProbe.Paths.OutputDir = pileRoot;
+				pileRecProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				pileRecProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				ProfileFactory.Save(pileRecProbe, Path.Combine(pileRoot, "pile.json"));
+				Check("（准备）消耗 / 变化选牌堆的存档能生成工程", ModGenerator.Generate(pileRecProbe).Success, pileRoot);
+				var pileRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(pileRecProbe));
+				var pc = pileRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckPileBack");
+				Check("回读：消耗的「从哪里选牌 = 抽牌堆」不再退回手牌（以前这个字段根本没回读）",
+					pc is not null && pc.Effects.Any((EffectSpec x) => x.Kind == "ExhaustCard" && x.SelectPile == "Draw" && x.CardPick == "Random"),
+					pc is null ? "(没回读出来)" : string.Join("、", pc.Effects.Select((EffectSpec x) => $"{x.Kind} {x.CardPick} {x.SelectPile}")));
+				Check("回读：变化的「从哪里选牌 = 弃牌堆」也在（留空目标卡那种 TransformToRandom 以前会被记成「没认出来」）",
+					pc is not null && pc.Effects.Any((EffectSpec x) => x.Kind == "TransformCard" && x.SelectPile == "Discard")
+					&& !pileRec.HasUnparsed, pileRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				Check("回读：「从抽牌堆 / 弃牌堆拿牌到手牌」也认得出来（以前这两种效果回读后直接丢掉）",
+					pc is not null && pc.Effects.Any((EffectSpec x) => x.Kind == "TakeFromDraw" && x.Amount == 1m)
+					&& pc.Effects.Any((EffectSpec x) => x.Kind == "TakeFromDiscard" && x.Amount == 2m),
+					pc is null ? "(没回读出来)" : string.Join("、", pc.Effects.Select((EffectSpec x) => $"{x.Kind} {x.Amount}")));
+				Check("回读：「拥有额外资源量至少 2 点」这个条件认得出来（以前记成「条件没认出来」）",
+					pc is not null && pc.Condition.Kind == "ExtraResourceAtLeast" && pc.Condition.Amount == 2m,
+					pc is null ? "(没回读出来)" : pc.Condition.Kind + " " + pc.Condition.Amount);
+			}
+			finally
+			{
+				try { if (Directory.Exists(pileRoot)) Directory.Delete(pileRoot, recursive: true); } catch { }
+			}
+		}
 		// 悬停提示：卡面 / 遗物 / 药水里提到的状态要能弹说明（本体状态改写后就是新名字 + 新描述；自定义状态同理）
 		CharacterProfile hoverProbe = ProfileFactory.Sample();
 		CardSpec hoverCard = new CardSpec { Name = "自检悬停", ClassName = "UiCheckHover", Rarity = "Common", InCardPool = true };
@@ -11074,6 +11271,62 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("没上传 / 文件不在时不给比例说明（不留一行空话）",
 					AspectNoteOf(null, 1000, 760, "x").Length == 0
 					&& AspectNoteOf(Path.Combine(ratioDir, "没有这个文件.png"), 1000, 760, "x").Length == 0, "空");
+				// ===== 先古卡：显示区域是**竖的**（606×852），而且游戏里直接拉满、不保持比例 =====
+				var normalFrame = CardPortraitFrameOf(new CardSpec { Rarity = "Common" });
+				var ancientFrame = CardPortraitFrameOf(new CardSpec { Rarity = "Ancient" });
+				Check("普通卡的卡面框还是 1000×760（横图、按比例显示）",
+					normalFrame.W == 1000 && normalFrame.H == 760 && !normalFrame.Stretch,
+					$"{normalFrame.W}×{normalFrame.H}");
+				Check("先古卡的卡面框是竖的 606×852（和本体先古卡素材一致）",
+					ancientFrame.W == 606 && ancientFrame.H == 852 && ancientFrame.Stretch,
+					$"{ancientFrame.W}×{ancientFrame.H} 拉满={ancientFrame.Stretch}");
+				string ancientWide = Path.Combine(ratioDir, "ancient_wide.png");   // 1000×760（横图丢进竖框）
+				string ancientSame = Path.Combine(ratioDir, "ancient_same.png");   // 606×852（同比例）
+				ArtGenerator.WriteNeutralPng(ancientWide, 1000, 760);
+				ArtGenerator.WriteNeutralPng(ancientSame, 606, 852);
+				string noteAncientSame = AspectNoteOf(ancientSame, ancientFrame.W, ancientFrame.H, ancientFrame.What, ancientFrame.Stretch);
+				string noteAncientWide = AspectNoteOf(ancientWide, ancientFrame.W, ancientFrame.H, ancientFrame.What, ancientFrame.Stretch);
+				Check("先古卡比例一致时也说「不会留黑边」", noteAncientSame.Contains("不会留黑边"), noteAncientSame);
+				Check("先古卡那张是「直接拉满」→ 横图会提示「会被拉变形」，不再说留黑边",
+					noteAncientWide.Contains("拉变形") && !noteAncientWide.Contains("黑边") && noteAncientWide.Contains("606×852"), noteAncientWide);
+				// 生成：先古卡的占位卡面必须是竖的（不然游戏里会被拉成一坨）
+				string ancientArtRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_ancientart_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					// 两个探针：一个勾「用本体素材占位」（复制本体先古卡占位图），一个不勾（生成中性占位图）
+					foreach (bool useVanilla in new[] { true, false })
+					{
+						CharacterProfile ancientArtProbe = ProfileFactory.Sample();
+						ancientArtProbe.Art.UseVanillaPlaceholders = useVanilla;
+						ancientArtProbe.Paths.OutputDir = Path.Combine(ancientArtRoot, useVanilla ? "vanilla" : "neutral");
+						ancientArtProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+						ancientArtProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+						ancientArtProbe.AncientCards.Add(new CardSpec
+						{
+							Name = "自检竖卡面", ClassName = "UiCheckAncientArt", CardType = "Skill", Rarity = "Ancient", Cost = 1,
+							InCardPool = true,
+						});
+						Check($"（准备）带先古卡的存档能生成工程（用本体素材占位 = {useVanilla}）",
+							ModGenerator.Generate(ancientArtProbe).Success, ancientArtProbe.Paths.OutputDir);
+						var artNaming = Naming.From(ancientArtProbe);
+						string ancientPng = Path.Combine(ModGenerator.ProjectRootOf(ancientArtProbe), "images/packed/card_portraits",
+							artNaming.PoolTitle, Naming.EntryOf("UiCheckAncientArt").ToLowerInvariant() + ".png");
+						var ancientSize = PngUtil.Decode(ancientPng);
+						Check($"先古卡的卡面生成出来是 606×852 竖图（用本体素材占位 = {useVanilla}）",
+							ancientSize is { } asz && asz.W == 606 && asz.H == 852,
+							ancientSize is { } asz2 ? $"{asz2.W}×{asz2.H}" : "(没有文件)");
+						string ancientBeta = Path.Combine(Profile.Paths.VanillaProject, "images/packed/card_portraits/ancient_beta.png");
+						if (useVanilla && File.Exists(ancientBeta) && File.Exists(ancientPng))
+							Check("勾「用本体素材占位」时先古卡用的是本体的先古卡占位图（ancient_beta.png），不是铁甲战士那张横图",
+								new FileInfo(ancientBeta).Length == new FileInfo(ancientPng).Length
+								&& File.ReadAllBytes(ancientBeta).AsSpan().SequenceEqual(File.ReadAllBytes(ancientPng)),
+								$"{new FileInfo(ancientPng).Length} / {new FileInfo(ancientBeta).Length} 字节");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(ancientArtRoot)) Directory.Delete(ancientArtRoot, true); } catch { }
+				}
 				// 上传一张偏宽的图到「选人界面背景大图」槽位：说明里应该出现「上下」留黑边
 				ArtSlot bgSlot = ArtSlots.First((ArtSlot s) => s.Name.Contains("背景大图"));
 				bgSlot.Path = wide;

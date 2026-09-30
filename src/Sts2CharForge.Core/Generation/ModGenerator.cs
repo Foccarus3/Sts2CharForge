@@ -462,7 +462,8 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Install "{p.Paths.InstallDir
 - 头像：`images/ui/top_panel/character_icon_{n.CharSlug}.png`
 - 选人立绘：`images/packed/character_select/char_select_{n.CharSlug}.png`
 - 能量图标：`images/atlases/ui_atlas.sprites/card/energy_{n.EnergyColor}.tres` + tpsheet 条目
-- 卡面：`images/packed/card_portraits/{n.PoolTitle}/<卡牌ID小写>.png`（建议 1000×760）
+- 卡面：`images/packed/card_portraits/{n.PoolTitle}/<卡牌ID小写>.png`（普通卡 / 诅咒建议 1000×760 横图；
+  **先古卡建议 606×852 竖图** —— 本体先古卡的卡面框是竖的，素材也都是 606×852）
 
 ## 构建环境
 - 解包工程：`{p.Paths.VanillaProject}`

@@ -36,6 +36,7 @@
 | 结束回合 / 额外获得一回合 | `PlayerCmd.EndTurn` / 自动生成 `ForgeExtraTurnPower` |
 | 生成卡牌 | 参考静默猎手的剑舞·小刀：`CombatState.CreateCard<T>` + `CardPileCmd.AddGeneratedCardsToCombat`；可选生成的卡（本体卡或本模组的卡）与去处（手牌/抽牌堆/弃牌堆） |
 | 消耗卡牌 | 参考铁甲战士的坚毅：可选「自己选」（`CardSelectCmd.FromHand` + `CardCmd.Exhaust`）或「随机」（`Rng.CombatCardSelection.NextItem`）；「从哪里选牌」可选 手牌 / 抽牌堆 / 弃牌堆 |
+| 丢弃卡牌 | 丢进弃牌堆（洗牌后会回来）：`CardCmd.Discard` + `CardSelectCmd.FromHandForDiscard` / `FromCombatPile`；「从哪里丢弃」可选 手牌 / 抽牌堆（见下文「丢弃卡牌」） |
 | 变化卡牌 | 参考储君的下去：填了目标卡 → `CardCmd.Transform`；留空 → `CardCmd.TransformToRandom`；同样支持「从哪里选牌」 |
 | 从抽牌堆 / 弃牌堆拿牌到手牌 | 参考本体的「搜寻 / 全息影像 / 挖掘」：`CardSelectCmd.FromCombatPile` + `CardPileCmd.Add(选中, PileType.Hand)`，弹自己的选牌界面（提示语 `<ENTRY>.selectionScreenPrompt` 会一起生成） |
 | 获得卡牌 / 变化卡牌 / 删除卡牌（全局） | 直接改**牌组**（跨战斗永久生效）：`RunState.CreateCard` + `CardPileCmd.Add(card, PileType.Deck)` / `CardCmd.Transform` / `CardSelectCmd.FromDeckForRemoval` + `CardPileCmd.RemoveFromDeck` |
@@ -65,19 +66,38 @@
 
 ### 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆
 
-「消耗卡牌」「变化卡牌」下面有一个 **「从哪里选牌」** 下拉（手牌 = 本体默认）：
+「消耗卡牌」「变化卡牌」「丢弃卡牌」下面有一个 **「从哪里选牌」** 下拉（手牌 = 本体默认）：
 
 | 选哪一摞 | 生成的东西 | 本体的同款 |
 |---|---|---|
-| 手牌 | `CardSelectCmd.FromHand(context, player, prefs, filter, source)` | 坚毅 / 下去 |
+| 手牌 | `CardSelectCmd.FromHand(context, player, prefs, filter, source)`（丢弃走 `FromHandForDiscard`，奇巧牌会描金） | 坚毅 / 下去 / 杂技 / 幸存者 |
 | 抽牌堆 | `CardSelectCmd.FromCombatPile(choiceContext, PileType.Draw.GetPile(base.Owner), base.Owner, prefs)` | 充能 Charge / 净化 Cleanse / 降灵 Seance |
 | 弃牌堆 | 同上，换成 `PileType.Discard.GetPile(base.Owner)` | 全息影像 Hologram / 头槌 Headbutt / 挖掘 Dredge / 宇宙冷漠 |
 
 「随机」模式下就是从那一摞里随机抓：`Rng.CombatCardSelection.NextItem(PileType.Draw.GetPile(base.Owner).Cards)`。
 描述也会跟着写成「自己选从弃牌堆消耗 1 张牌。」，不会写死「手牌」。
+**「丢弃卡牌」只有手牌 / 抽牌堆两个选项**（弃牌堆里的牌本来就已经被丢了，再丢一次没有意义）。
 
 「从抽牌堆 / 弃牌堆拿牌到手牌」这两种效果是**只有「自己选」的**（弹选牌界面，挑 N 张进手牌），
 那一摞里没牌时什么都不做。这两类效果只能用在卡牌 / 遗物 / 药水上（状态触发器里没有这条 UI 流程，校验会拦住）。
+
+### 丢弃卡牌（丢进弃牌堆，不是消耗）
+
+数值 = 丢几张（1~9），「选牌方式」= 自己选 / 随机，「从哪里丢弃」= 手牌 / 抽牌堆。
+生成的是本体的 `CardCmd.Discard`（内部 `CardPileCmd.Add(card, 弃牌堆)` + `Hook.AfterCardDiscarded`）：
+
+| 怎么配 | 生成的东西 | 表现 |
+|---|---|---|
+| 自己选 + 手牌 | `CardSelectCmd.FromHandForDiscard(…)` → `CardCmd.Discard(choiceContext, toDiscard)` | 弹选牌界面挑 N 张手牌丢掉 |
+| 自己选 + 抽牌堆 | `CardSelectCmd.FromCombatPile(… PileType.Draw …)` → `CardCmd.Discard(…)` | 从抽牌堆里挑 N 张丢掉 |
+| 随机（任意一摞） | `for (…) { NextItem(<那一摞>.Cards) → CardCmd.Discard(choiceContext, pick) }` | 随机丢 N 张，那一摞不够就有多少丢多少 |
+
+- 丢掉的牌**洗牌后会回到抽牌堆**（和「消耗卡牌」的区别就在这里：消耗是这一场不再回来）；
+- 走本体 `CardCmd.Discard` 所以「被丢弃时」的钩子照常触发 —— 手牌版本的奇巧牌在选牌界面会描金；
+  从**抽牌堆**丢的那条不经手牌，所以「奇巧」这类「从手牌被丢弃时」的效果不会触发（校验器会给提示）；
+- 解包工程里能回读：`CardCmd.Discard` + `DiscardSelectionPrompt` 认「自己选 / 随机」，
+  选牌那句里的 `FromHandForDiscard` / `PileType.X` 认「从哪一摞」（顺手把「消耗 / 变化」以前**根本没回读**
+  「从哪里选牌」、以及 `CardCmd.TransformToRandom` 被记成「认不出来」两个老问题一起修了）。
 
 ## 卡牌关键字
 
@@ -217,6 +237,12 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
   1. 先古之民给的遗物 —— 本体「尘封的书 DustyTome」会从**你的卡池**里随机挑一张先古卡（你做的先古卡也在候选里）；
   2. 或者你自己的效果：「生成卡牌 / 获得卡牌（全局）/ 获得卡牌奖励」里选它。
 - 详情面板里**没有**「稀有度」下拉：这一页的牌写死是 Ancient（诅咒那栏写死 Curse），省得配错。
+- **卡面是竖的**：本体先古卡在卡面节点里显示的不是普通 `%Portrait`（250×190 → 1000×760 横图），
+  而是 `%AncientPortrait`（598×842，**直接拉满不保持比例**），本体所有先古卡素材都是 **606×852**。
+  所以给先古卡传卡面请用 **606×852 竖图**：选到先古卡时工具里的预览框会换成 606×852 的竖框、
+  按「拉满」显示（比例不对一眼就能看到变形），上传按钮与比例说明也会按这个尺寸给；
+  没传图时生成的占位图同样是竖的（勾「用本体素材占位」用本体的 `ancient_beta.png`）。
+  诅咒和普通卡不受影响，仍是 1000×760 横图。
 
 ### 三、外观：用 RRGGBB 给这两类牌换卡框颜色
 
@@ -485,7 +511,11 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 实现见 `src/Sts2CharForge.Core/Generation/ProjectRecovery.cs`：它是 `CSharpCodeGen` 的逆运算
 （`CanonicalVars` + 构造函数 + `OnPlay` + `OnUpgrade` + `IsPlayable` + 本地化表 + 卡池/遗物池顺序）。
 自检里有**往返测试**：示例配置 → 生成工程 → 反推 → 逐项比对（卡名 / 费用 / 效果 / 目标 / 升级 / 条件 / 池子归属
-/ 强化指定卡牌 / 自定义描述）。
+/ 强化指定卡牌 / 自定义描述 / 丢弃卡牌 / 「从哪里选牌」）。
+
+这一版顺手补回来的几处回读（以前会静默丢效果或刷「没认出来」）：
+「从哪里选牌」（消耗 / 变化以前根本不回读，一律退回手牌）、留空目标卡的 `CardCmd.TransformToRandom`、
+「从抽牌堆 / 弃牌堆拿牌到手牌」（`__taken` 那两行）、「拥有额外资源量至少 N 点」这个条件。
 
 静默保存（选解包工程目录、生成前）会先核对「内存里的配置」和「当前存档文件名」是否一致，
 不一致就不写，避免把别的配置写进这份存档。
@@ -622,10 +652,17 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 > 注意：`animations\characters\ironclad\ironclad.png`、`animations\character_select\ironclad\*.png` 那几张是
 > **Spine 图集**（例如战斗图集是 1329×269 的图集页），**不是**能直接当立绘用的单张图 —— 别把它们当静态立绘传进去。
 
-**预览会按「游戏里的显示区域」画一块黑底**（卡面 1000×760、各槽位按上表的本体原图尺寸）：
+**预览会按「游戏里的显示区域」画一块黑底**（普通卡 / 诅咒的卡面 1000×760、各槽位按上表的本体原图尺寸）：
 上传图比例和它不一致时，游戏里是按比例缩放居中显示的，多出来的那一圈就是黑边 ——
 预览里的黑底就是它，下面还会写清「图偏宽 → 上下留黑边 / 图偏窄 → 左右留黑边」以及大概占多少。
 想不留黑边就把图裁成那个比例（或直接用推荐尺寸）。
+
+**先古卡的卡面是竖的**：本体的先古卡在卡面节点里用的不是 `%Portrait` 而是 `%AncientPortrait`
+（598×842，而且**直接拉满、不保持比例**），本体所有先古卡素材都是 **606×852**。所以：
+选到先古卡时，卡面预览框会变成 606×852 的**竖框**、而且按「拉满」显示（比例不对能直接看到变形），
+上传按钮写「建议 606×852 竖图」，比例说明也改说「会被拉变形」而不是「留黑边」；
+生成占位图时先古卡也走竖图（勾「用本体素材占位」用本体的 `ancient_beta.png`，
+不勾则生成 606×852 的中性占位图）。普通卡 / 诅咒不受影响，还是 1000×760 横图。
 
 上传文件按**原尺寸直接使用**（程序不做缩放），请按下列尺寸准备：
 
@@ -639,7 +676,7 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 | 地图标记 | PNG-32 | **49×64** | 地图上的角色标记 |
 | 能量图标 | PNG-32 | **74×74** | 会写进 `ui_atlas.tpsheet`；文字里的能量小图标另外按 24×24 生成，左侧能量球也会换成这张图 |
 | 选人过场贴图 | 灰度/RGBA | **2560×1200** | 白=显示、黑=透明（转场遮罩） |
-| 卡面（每张卡） | PNG（RGBA 或 24bit 均可） | **1000×760** | 横版，本体铁甲卡面即 24bit 无 alpha |
+| 卡面（每张卡） | PNG（RGBA 或 24bit 均可） | **1000×760**（普通卡 / 诅咒）；**606×852**（先古卡，竖图） | 横版，本体铁甲卡面即 24bit 无 alpha；先古卡的卡面框是竖的（本体先古卡素材就是 606×852） |
 | 遗物图标（每个遗物） | PNG-32 | **256×256** | 方图 |
 | 多人手势 ×4 | PNG-32 | **422×1200** | point / rock / paper / scissors（暂无界面上传入口，可手动放进工程） |
 

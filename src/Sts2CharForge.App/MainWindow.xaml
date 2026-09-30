@@ -411,19 +411,21 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                            <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" IsEnabled="{Binding ValueEditable}" Click="OnPickCardPortrait"/>
-                            <!-- 预览：按**游戏里的显示区域**（本体卡面就是 1000×760）画一块黑底，
-                                 上传图比例不一样时，这里看到的那圈黑边就是游戏里会出现的那圈（用户要求）。 -->
+                            <Button Content="{Binding CardPortraitUploadHint, RelativeSource={RelativeSource AncestorType=Window}}" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" IsEnabled="{Binding ValueEditable}" Click="OnPickCardPortrait"/>
+                            <!-- 预览：按**游戏里的显示区域**画一块黑底（普通卡 1000×760 横图；先古卡是竖的 606×852，
+                                 而且本体那块是「直接拉满」→ 预览也按拉满画，比例不对就能直接看到变形）。 -->
                             <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
                                 <Viewbox Stretch="Uniform" Margin="4">
-                                    <Grid Width="1000" Height="760" Background="Black">
-                                        <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                    <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
+                                        <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                               Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                     </Grid>
                                 </Viewbox>
                             </Border>
                             <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11"
                                        Foreground="#0A7"
-                                       Text="预览框 = 游戏里的显示区域（1000×760，白框内是黑底）。比例不一致时，黑底那部分就是游戏里留的黑边。"
+                                       Text="{Binding CardPortraitFrameHint, RelativeSource={RelativeSource AncestorType=Window}}"
                                        Visibility="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                             <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11"
                                        Foreground="#B60"
@@ -770,16 +772,18 @@
                                           Content="战斗结束时，如果它还在牌组里就消失（本体「罪恶 Guilty」那套）"
                                           IsChecked="{Binding CurseRemoveAfterCombat}"
                                           ToolTip="不勾 = 一直留在牌组里（需要玩家自己想办法删掉）。勾上 = 每打一场战斗它就少一点存在感，最后自己消失 —— 本体「罪恶」是挂满 5 场战斗后自动删除。"/>
-                                <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
+                                <Button Content="{Binding CardPortraitUploadHint, RelativeSource={RelativeSource AncestorType=Window}}" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
                                 <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
                                     <Viewbox Stretch="Uniform" Margin="4">
-                                        <Grid Width="1000" Height="760" Background="Black">
-                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                        <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
+                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                   Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                         </Grid>
                                     </Viewbox>
                                 </Border>
                                 <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#0A7"
-                                           Text="预览框 = 游戏里的显示区域（1000×760，黑底那圈就是游戏里会留的黑边）。"
+                                           Text="{Binding CardPortraitFrameHint, RelativeSource={RelativeSource AncestorType=Window}}"
                                            Visibility="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                            Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -873,14 +877,20 @@
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>
                                 </ItemsControl>
-                                <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
+                                <Button Content="{Binding CardPortraitUploadHint, RelativeSource={RelativeSource AncestorType=Window}}" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
                                 <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
                                     <Viewbox Stretch="Uniform" Margin="4">
-                                        <Grid Width="1000" Height="760" Background="Black">
-                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                        <!-- 先古卡：预览框是竖的（606×852），而且按游戏里的做法「直接拉满」显示 -->
+                                        <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
+                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                   Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                         </Grid>
                                     </Viewbox>
                                 </Border>
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#0A7"
+                                           Text="{Binding CardPortraitFrameHint, RelativeSource={RelativeSource AncestorType=Window}}"
+                                           Visibility="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                            Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                            Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>

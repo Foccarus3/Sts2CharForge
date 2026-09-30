@@ -394,9 +394,24 @@ public sealed class EffectSpec : SpecBase
         _ => "手牌",
     };
 
-    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 给予关键词用得到）。</summary>
+    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 给予关键词 / 丢弃用得到）。</summary>
     [JsonIgnore]
-    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "GiveKeyword";
+    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" or "GiveKeyword";
+
+    /// <summary>
+    /// 这一条效果的可选牌堆（界面下拉的候选）。
+    /// 「丢弃卡牌」只有手牌 / 抽牌堆（见 <see cref="EffectCatalog.DiscardPiles"/>）；
+    /// 别的效果还是三摞都能选。
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<PileChoiceOption> SelectPileChoices =>
+        Kind == "DiscardCard" ? EffectCatalog.DiscardPiles : EffectCatalog.SelectPiles;
+
+    /// <summary>「从哪里选牌」那一行的标题（「丢弃卡牌」的措辞不一样：是「丢哪一摞」）。</summary>
+    [JsonIgnore]
+    public string SelectPileLabel => Kind == "DiscardCard"
+        ? "从哪里丢弃（手牌 / 抽牌堆）"
+        : "从哪里选牌（消耗 / 变化用）";
 
     // ===== 给予卡牌关键词（GiveKeyword）=====
     private string _givenKeyword = "";
@@ -654,7 +669,9 @@ public sealed class EffectSpec : SpecBase
             {
                 "GenerateCard" => $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → {SpawnToPile}",
                 "TransformCard" => $" ｜ 变为 {(SpawnCardId is { Length: > 0 } tc ? tc : "随机卡")} ｜ {CardPickZh}",
-                "ExhaustCard" => $" ｜ {CardPickZh}",
+                "ExhaustCard" => $" ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                // 丢弃：把「丢哪一摞 / 怎么选」显示出来（两种牌堆的行为差别挺大，值得一眼看到）
+                "DiscardCard" => $" ｜ 丢弃 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
                 "AddCardGlobal" => $" ｜ 加进牌组：{(SpawnCardId is { Length: > 0 } ac ? ac : "（未填→Shiv）")}",
                 "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")} ｜ {CardPickZh}",
                 "RemoveCardGlobal" => $" ｜ 从牌组删牌 ｜ {CardPickZh}",

@@ -542,6 +542,11 @@ public static class ProjectRecovery
         // 之后那几行（AddKeyword / 临时 Power / foreach…）全部跳过，免得被当成别的效果。
         bool skipGivenKeywordBody = false;
 
+        // 「从哪里选牌」：消耗 / 变化 / 丢弃的选牌语句里带着它（FromHand* = 手牌，PileType.X = 那一摞）。
+        // 记在暂存里，等真正的动作语句（CardCmd.Exhaust / Transform / Discard）出现时再配给那条效果 ——
+        // 以前完全没回读这个字段，回读出来的「从抽牌堆消耗 / 变化」会静默退回手牌。
+        string? pendingSelectPile = null;
+
         // 「强化指定卡牌」：生成时写一行 `// CET:BoostCard=<卡类名> CET:BoostStat=Damage|Block`。
         // 目标卡与强化什么只能靠它还原（代码里只剩「Apply 到某个 ForgeBoost Power」这一句）；
         // 数值走 CanonicalVars 里的 Boost 变量（别名 Boost2 由 NextVar 顺位找）。
@@ -765,8 +770,21 @@ public static class ProjectRecovery
             if (line.StartsWith("int x = ")) continue;
             // 牺牲伙伴的收益暂存（真正的动作是后面的 Kill + GainBlock / DamageCmd.Attack）
             if (line.StartsWith("decimal gain = ") || line.StartsWith("decimal dmg = ")) continue;
-            // 选牌 / 变化的前置语句（真正的动作在后面的 foreach + await 里）
-            if (line.StartsWith("var toTransform") || line.StartsWith("var toExhaust") || line.StartsWith("var pick")) continue;
+            // 选牌 / 变化 / 丢弃的前置语句（真正的动作在后面的 foreach + await 里）。
+            // 顺便把「从哪里选牌」记下来（自己选的写法里只有这一行说了是哪一摞：
+            // 手牌走 CardSelectCmd.FromHand / FromHandForDiscard，别的摞走 FromCombatPile(…, PileType.X)）。
+            if (line.StartsWith("var toTransform") || line.StartsWith("var toExhaust")
+                || line.StartsWith("var toDiscard") || line.StartsWith("var pick"))
+            {
+                pendingSelectPile = PileFromSelectCode(line) ?? pendingSelectPile;
+                continue;
+            }
+            // 随机选牌那一行（CardModel? pick = …NextItem(PileType.X…)）：也同样记下是哪一摞
+            if (line.StartsWith("CardModel? pick = ", StringComparison.Ordinal))
+            {
+                pendingSelectPile = PileFromSelectCode(line) ?? pendingSelectPile;
+                continue;
+            }
 
             // 「给予卡牌关键词」的代码行：效果本身在标记那一行就收尾了，这里只把这些语句跳过去
             // （花括号 / for / foreach 在上面已经交给 frames 处理，这里只认真正的语句）
@@ -1325,11 +1343,20 @@ public static class ProjectRecovery
                 continue;
             }
 
-            if (line.StartsWith("await CardCmd.Transform(", StringComparison.Ordinal))
+            // 变化卡牌：填了目标卡 → CardCmd.Transform(原卡, 新卡)；留空 → CardCmd.TransformToRandom。
+            // **两种都要认**（以前只认 Transform，留空那种会被记成「没认出来」）。
+            if (line.StartsWith("await CardCmd.Transform(", StringComparison.Ordinal)
+                || line.StartsWith("await CardCmd.TransformToRandom(", StringComparison.Ordinal))
             {
                 // 「自己选」走 foreach (… in toTransform)；「随机」走循环 + TransformToRandom
                 bool chosenTransform = body.Contains("in toTransform");
-                var e = new EffectSpec { Kind = "TransformCard", CardPick = chosenTransform ? "Chosen" : "Random" };
+                var e = new EffectSpec
+                {
+                    Kind = "TransformCard",
+                    CardPick = chosenTransform ? "Chosen" : "Random",
+                    SelectPile = pendingSelectPile ?? "Hand",
+                };
+                pendingSelectPile = null;
                 string? target = Match(line, @"CreateCard<(\w+)>");
                 e.SpawnCardId = target;
                 string? count = chosenTransform ? Match(body, @"TransformSelectionPrompt, (\d+)") : null;
@@ -1347,11 +1374,33 @@ public static class ProjectRecovery
                 {
                     Kind = "ExhaustCard",
                     CardPick = chosenExhaust ? "Chosen" : "Random",
+                    SelectPile = pendingSelectPile ?? "Hand",
                 };
+                pendingSelectPile = null;
                 string? count = chosenExhaust ? Match(body, @"ExhaustSelectionPrompt, (\d+)") : null;
                 e.Amount = count is not null
                     ? decimal.Parse(count, CultureInfo.InvariantCulture)
                     : (LoopValue(LoopTop() ?? "1"));
+                Done(e);
+                continue;
+            }
+
+            // 丢弃卡牌（新效果）：自己选是 CardCmd.Discard(choiceContext, toDiscard)，
+            // 随机是循环里 CardCmd.Discard(choiceContext, pick) —— 两种都是同一句，靠 body / 暂存区分。
+            if (line.StartsWith("await CardCmd.Discard(", StringComparison.Ordinal))
+            {
+                bool chosenDiscard = line.Contains("toDiscard", StringComparison.Ordinal);
+                var e = new EffectSpec
+                {
+                    Kind = "DiscardCard",
+                    CardPick = chosenDiscard ? "Chosen" : "Random",
+                    SelectPile = pendingSelectPile ?? "Hand",
+                };
+                pendingSelectPile = null;
+                string? count = chosenDiscard ? Match(body, @"DiscardSelectionPrompt, (\d+)") : null;
+                e.Amount = count is not null
+                    ? decimal.Parse(count, CultureInfo.InvariantCulture)
+                    : LoopValue(LoopTop() ?? "1");
                 Done(e);
                 continue;
             }
@@ -1373,6 +1422,26 @@ public static class ProjectRecovery
                 Done(e);
                 continue;
             }
+
+            // 「从抽牌堆 / 弃牌堆拿牌到手牌（自己选）」——生成的是两行：
+            //   var __taken = (await CardSelectCmd.FromCombatPile(choiceContext, PileType.X.GetPile(base.Owner), base.Owner,
+            //                      new CardSelectorPrefs(base.SelectionScreenPrompt, N))).ToList();
+            //   if (__taken.Count > 0) await CardPileCmd.Add(__taken, PileType.Hand);
+            // 以前**完全没有回读这两种效果**（回读后被静默丢掉，只在「没认出来」里列一行）——
+            // 用这两种效果的存档（例如 SparkleMod 的「逃脱 / 移形换影」）会掉效果，所以补上。
+            if (line.StartsWith("var __taken = ", StringComparison.Ordinal))
+            {
+                string pile = Match(line, @"PileType\.(\w+)\.GetPile") ?? "Draw";
+                var e = new EffectSpec { Kind = pile == "Discard" ? "TakeFromDiscard" : "TakeFromDraw" };
+                string? n = Match(line, @"SelectionScreenPrompt, (\w+)\)");
+                if (n == "x") e.AmountIsX = true;
+                else if (n is not null) e.Amount = decimal.Parse(n, CultureInfo.InvariantCulture);
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+            if (line.StartsWith("if (__taken.Count > 0) await CardPileCmd.Add(", StringComparison.Ordinal))
+                continue;   // 上面那条效果的收尾语句（效果已经在 __taken 那一行收尾了）
 
             // 认不出来的语句 → 记下来让用户核对（不静默丢）
             if (line.Contains("await ") || line.Contains("PlayerCmd.") || line.Contains("CardCmd.") || line.Contains("CreatureCmd.")
@@ -1779,6 +1848,10 @@ public static class ProjectRecovery
         if (cards.Success) return new ConditionSpec { Kind = "HandAtMost", Amount = decimal.Parse(cards.Groups[1].Value, CultureInfo.InvariantCulture) };
         cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) >= ([\d.]+)");
         if (cards.Success) return new ConditionSpec { Kind = "HandAtLeast", Amount = decimal.Parse(cards.Groups[1].Value, CultureInfo.InvariantCulture) };
+        // 「拥有额外资源量至少 N 点」：生成的是 ((base.Owner?.PlayerCombatState?.Stars) ?? 0) >= N。
+        // 少了这一条，带这个条件的卡（SparkleMod 的「匕首 / 双倍 / 守护」）回读时会被记成「条件没认出来」。
+        var stars = Regex.Match(e, @"PlayerCombatState\?\.Stars\) \?\? 0\) >= ([\d.]+)");
+        if (stars.Success) return new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = decimal.Parse(stars.Groups[1].Value, CultureInfo.InvariantCulture) };
         if (e.Contains("CardType.Attack") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlyAttack" };
         if (e.Contains("CardType.Skill") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlySkill" };
         if (e.Contains("PileType.Draw")) return new ConditionSpec { Kind = "DrawPileEmpty" };
@@ -2386,6 +2459,22 @@ public static class ProjectRecovery
     {
         string? v = Match(text, pattern);
         return v is null ? fallback : decimal.Parse(v, CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// 从「选牌」那一句生成代码里认出「从哪里选牌」：
+    ///   · 自己选手牌 → <c>CardSelectCmd.FromHand(…)</c> / <c>FromHandForDiscard(…)</c>
+    ///   · 别的摞   → <c>CardSelectCmd.FromCombatPile(choiceContext, PileType.X…)</c>（自己选）
+    ///                或 <c>NextItem(PileType.X…)</c>（随机抓）
+    /// 认不出来返回 null（调用处保留上一次的值 / 退回手牌）。
+    /// </summary>
+    private static string? PileFromSelectCode(string line)
+    {
+        string? pile = Match(line, @"FromCombatPile\(choiceContext, PileType\.(\w+)")
+            ?? Match(line, @"NextItem\(PileType\.(\w+)");
+        if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", _ => "Hand" };
+        if (line.Contains("CardSelectCmd.FromHand", StringComparison.Ordinal)) return "Hand";
+        return null;
     }
 
     private static string? Hex(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.TrimStart('#').ToUpperInvariant();

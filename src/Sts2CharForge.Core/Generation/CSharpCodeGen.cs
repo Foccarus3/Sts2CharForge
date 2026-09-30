@@ -2346,6 +2346,41 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 丢弃卡牌：把手牌 / 抽牌堆里的 N 张牌丢进弃牌堆（用户要求的新效果）。
+    ///
+    /// 走本体的 <c>CardCmd.Discard</c> —— 它内部是 <c>CardPileCmd.Add(card, 弃牌堆)</c> +
+    /// <c>Hook.AfterCardDiscarded</c>（本体「杂技 Acrobatics / 早有准备 Prepared / 幸存者 Survivor /
+    /// 计算赌博 CalculatedGamble」都是这么丢的），所以「奇巧」这类跟弃牌有关的钩子照常触发。
+    /// 它在**任何一摞**上都能用（Add 会把牌从原来那摞挪过去），所以「从抽牌堆丢」也是同一个调用。
+    ///
+    /// 自己选：手牌走 <c>CardSelectCmd.FromHandForDiscard</c>（本体丢手牌专用的那个：奇巧牌会描金），
+    ///         抽牌堆走 <c>CardSelectCmd.FromCombatPile</c>；随机：Rng.CombatCardSelection 抓。
+    /// </summary>
+    private static void EmitDiscardCard(CodeWriter w, EffectSpec e, bool useX = false)
+    {
+        string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
+        string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        if (e.CardPick == "Chosen")
+        {
+            w.Line($"// 自己从{pileZh}选 {n} 张丢弃");
+            if (e.SelectPile == "Hand")
+                w.Line($"var toDiscard = (await CardSelectCmd.FromHandForDiscard(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}), null, this)).ToList();");
+            else
+                w.Line($"var toDiscard = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}))).ToList();");
+            w.Line("await CardCmd.Discard(choiceContext, toDiscard);");
+        }
+        else
+        {
+            w.Line($"// 随机从{pileZh}丢弃 {n} 张");
+            w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
+            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
+            w.Line("if (pick is null) break;");
+            w.Line("await CardCmd.Discard(choiceContext, pick);");
+            w.Close();
+        }
+    }
+
+    /// <summary>
     /// 变化卡牌（参考储君的「下去」Begone）：
     /// 指定了目标卡 → CardCmd.Transform(原卡, 新卡)；没指定 → CardCmd.TransformToRandom（随机变化）。
     /// 「从哪里选牌」同消耗卡牌：手牌 / 抽牌堆 / 弃牌堆（本体「降灵 Seance / 充能 Charge」就是选抽牌堆变化）。
@@ -2448,6 +2483,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static bool HasNoDynamicVar(EffectSpec e) =>
         e.Kind is "EndTurn" or "ExtraTurn" or "GenerateCard" or "ExhaustCard" or "TransformCard"
+        // 丢弃卡牌：数值 = 丢几张（写在代码里），没有动态变量 —— 不列在这里的话兜底会生成
+        // new DynamicVar("Value", N)，同一张牌两条丢弃就撞名/起别名，卡面还会多出个用不上的占位符。
+        or "DiscardCard"
         // 全局（牌组）类：获得 / 变化 / 删除牌组里的牌 —— 张数是循环次数，也不是动态变量。
         // **必须列在这里**：漏掉的话 VarDeclaration 的兜底会生成两个 new DynamicVar("Value", …)，
         // 本体的 DynamicVarSet 会直接抛 DynamicVarSet contains duplicate key 'Value'
@@ -2695,6 +2733,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ExhaustCard":
                 EmitExhaustCard(w, e, useX);
+                break;
+
+            case "DiscardCard":
+                EmitDiscardCard(w, e, useX);
                 break;
 
             case "TransformCard":
@@ -3818,6 +3860,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitExhaustCard(w, e);
                 break;
 
+            case "DiscardCard":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，丢弃卡牌无法实现）"); break; }
+                EmitDiscardCard(w, e);
+                break;
+
             case "TransformCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，变化卡牌无法实现）"); break; }
                 EmitTransformCard(w, e);
@@ -4627,6 +4674,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ExhaustCard":
                 EmitExhaustCard(w, e);
+                break;
+
+            case "DiscardCard":
+                EmitDiscardCard(w, e);
                 break;
 
             case "TransformCard":

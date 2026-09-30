@@ -645,6 +645,11 @@ public static class LocalizationGen
             "ExhaustCard" => e.SelectPile == "Hand"
                 ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
                 : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+            // 丢弃卡牌：丢进弃牌堆（不是消耗，洗牌后会回来）。丢哪一摞写在描述里：
+            // 手牌 = 「丢弃 N 张手牌」；抽牌堆 = 「从抽牌堆里丢弃 N 张牌」。
+            "DiscardCard" => e.SelectPile == "Hand"
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
             "TransformCard" => (e.SelectPile == "Hand"
                     ? $"{EffectCatalog.CardPickZh(e.CardPick)}将 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌变化为"
                     : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为")

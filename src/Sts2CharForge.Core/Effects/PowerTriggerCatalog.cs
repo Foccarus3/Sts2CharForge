@@ -173,6 +173,9 @@ public static class PowerTriggers
                 ? $"施加{EffectCatalog.PowerName(e.PowerId, "状态")}（受到伤害 +{e.SlowPercentEffective}%）"
                 : $"施加 [blue]{n}[/blue] 层{EffectCatalog.PowerName(e.PowerId, "状态")}",
             "GenerateCard" => $"生成 [blue]{n}[/blue] 张牌",
+            // 丢弃卡牌（状态触发器里用不了，但描述里还是要写对，不然界面会印出 Kind 原文）
+            "DiscardCard" => $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 [blue]{n}[/blue] 张"
+                + (e.SelectPile == "Hand" ? "手牌" : $"（{EffectCatalog.SelectPileZh(e.SelectPile)}）牌"),
             "ExtraTurn" => "额外获得一个回合",
             _ => e.Kind,
         };

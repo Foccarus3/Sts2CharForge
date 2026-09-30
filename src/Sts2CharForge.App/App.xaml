@@ -118,20 +118,23 @@
                           ItemsSource="{Binding SpawnTargets, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding SpawnTo}"/>
 
-                <TextBlock Grid.Row="8" Grid.Column="0" Text="选牌方式（消耗 / 变化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="选牌方式（消耗 / 变化 / 丢弃用）" Style="{StaticResource Label}" MinWidth="96"/>
                 <ComboBox Grid.Row="8" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding CardPickModes, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding CardPick}"/>
 
-                <!-- 「从哪里选牌」：以前只有手牌，现在也能选抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种） -->
-                <TextBlock Grid.Row="10" Grid.Column="0" Text="从哪里选牌（消耗 / 变化用）" Style="{StaticResource Label}" MinWidth="96"
+                <!-- 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种）。
+                     「丢弃卡牌」只有手牌 / 抽牌堆（候选由 EffectSpec.SelectPileChoices 按效果种类给），
+                     所以标题也绑到 SelectPileLabel 上（那一条的措辞是「从哪里丢弃」）。 -->
+                <TextBlock Grid.Row="10" Grid.Column="0" Style="{StaticResource Label}" MinWidth="96"
+                           Text="{Binding SelectPileLabel}"
                            Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"/>
                 <ComboBox Grid.Row="10" Grid.Column="1" Style="{StaticResource Pick}"
                           Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"
-                          ItemsSource="{Binding SelectPiles, RelativeSource={RelativeSource AncestorType=Window}}"
+                          ItemsSource="{Binding SelectPileChoices}"
                           DisplayMemberPath="Display" SelectedValuePath="Id"
                           SelectedValue="{Binding SelectPile}"
-                          ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）。"/>
+                          ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）；「丢弃卡牌」只能选手牌 / 抽牌堆，走 CardCmd.Discard 丢进弃牌堆。"/>
 
                 <!-- 「召唤物」下拉：只在「召唤伙伴 / 伙伴攻击」这两种效果上出现（别的效果没有「哪一只」这回事）。
                      候选由 MainWindow.PetSummonsCard / PetSummonsPlain 给（只列**已启用**的召唤物），

@@ -1088,10 +1088,19 @@ public static class ProfileValidator
             // 生成 / 消耗 / 变化卡牌
             if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("警告", $"{owner} 的「生成卡牌」没填目标卡，将默认生成 Shiv（静默猎手的小刀）。"));
-            if (e.Kind is "ExhaustCard" or "TransformCard" && e.Amount is < 1 or > 9)
-                issues.Add(new("错误", $"{owner} 的「{(e.Kind == "ExhaustCard" ? "消耗卡牌" : "变化卡牌")}」张数 {e.Amount} 超出范围（1~9）。"));
+            if (e.Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" && e.Amount is < 1 or > 9)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（1~9）。"));
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
+            // 丢弃卡牌：丢进弃牌堆（洗牌后会回来，不是「消耗」）；丢哪一摞行为差得挺多，说明清楚
+            if (e.Kind == "DiscardCard")
+            {
+                issues.Add(new("提示", e.SelectPile == "Hand"
+                    ? $"{owner} 的「丢弃卡牌」会{EffectCatalog.CardPickZh(e.CardPick)}把 {(int)e.Amount} 张手牌丢进弃牌堆"
+                        + "（走本体 CardCmd.Discard：奇巧这类「被丢弃时」的钩子照常触发；洗牌后会回到抽牌堆，不是消耗）。"
+                    : $"{owner} 的「丢弃卡牌」会{EffectCatalog.CardPickZh(e.CardPick)}把抽牌堆里的 {(int)e.Amount} 张牌丢进弃牌堆"
+                        + "（不经手牌，所以「奇巧」这种「从手牌被丢弃时」的效果**不会**触发）。"));
+            }
 
             // 强化指定卡牌（像「精准」）：没选目标卡就没意义（会变成「强化所有卡」，和这个效果的本意不符）
             if (e.Kind == "BoostCard")

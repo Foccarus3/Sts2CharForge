@@ -1242,6 +1242,9 @@ shader_parameter/transitionTex = ExtResource("1_trans")
         string placeholder = Path.Combine(p.Paths.VanillaProject, "images/packed/card_portraits/ironclad/strike_ironclad.png");
         if (!File.Exists(placeholder))
             placeholder = Path.Combine(p.Paths.VanillaProject, "images/packed/card_portraits/ironclad/bash.png");
+        // 先古卡的卡面框是**竖的**：本体的先古卡素材都是 606×852（节点 %AncientPortrait 是 598×842，
+        // 而且游戏里直接拉满、不保持比例）。拿 1000×760 的横图去占位会被拉成一坨，所以先古卡单独占位。
+        string ancientPlaceholder = Path.Combine(p.Paths.VanillaProject, "images/packed/card_portraits/ancient_beta.png");
 
         // 卡面素材目录跟**模型所在的卡池**走（Pool.Title）—— 诅咒 / 先古卡也在你自己的卡池里，
         // 所以它们的卡面同样放 images/packed/card_portraits/<你的角色>/ 下
@@ -1250,6 +1253,8 @@ shader_parameter/transitionTex = ExtResource("1_trans")
         {
             // 本体卡引用（打击 / 防御）：卡面用本体自己的图，不用我们生成占位图
             if (c.IsVanillaCard) continue;
+            bool ancient = c.IsAncientCard;
+            (int W, int H) size = ancient ? (606, 852) : (1000, 760);
             string cls = n.CardClassName(p, c);
             string entry = Naming.EntryOf(cls).ToLowerInvariant();
             string pngDst = Path.Combine(projectRoot, "images/packed/card_portraits", n.PoolTitle, entry + ".png");
@@ -1257,20 +1262,21 @@ shader_parameter/transitionTex = ExtResource("1_trans")
 
             string? userArt = p.Art.CardPortraits.TryGetValue(cls, out string? up) ? up : null;
             Directory.CreateDirectory(Path.GetDirectoryName(pngDst)!);
+            string? vanillaPlaceholder = ancient && File.Exists(ancientPlaceholder) ? ancientPlaceholder : placeholder;
             if (!string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt))
             {
                 File.Copy(userArt, pngDst, overwrite: true);
             }
-            else if (p.Art.UseVanillaPlaceholders && File.Exists(placeholder))
+            else if (p.Art.UseVanillaPlaceholders && File.Exists(vanillaPlaceholder))
             {
-                File.Copy(placeholder, pngDst, overwrite: true);
+                File.Copy(vanillaPlaceholder, pngDst, overwrite: true);
             }
             else
             {
-                WriteNeutralPng(pngDst, 1000, 760);   // 中性占位卡面
+                WriteNeutralPng(pngDst, size.W, size.H);   // 中性占位卡面（先古卡是竖的）
             }
 
-            var (w, h) = ReadPngSize(pngDst, 1000, 760);
+            var (w, h) = ReadPngSize(pngDst, size.W, size.H);
             ProjectFilesGen.WriteText(tresDst, $"""
 [gd_resource type="AtlasTexture" load_steps=2 format=3]
 
