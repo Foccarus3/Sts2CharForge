@@ -823,7 +823,14 @@ public static class EffectCatalog
         : Conditions.FirstOrDefault(c => string.Equals(c.Id, kind, StringComparison.OrdinalIgnoreCase));
 
     public static IReadOnlyList<string> CardTypes { get; } = new[] { "Attack", "Skill", "Power" };
-    public static IReadOnlyList<string> CardRarities { get; } = new[] { "Basic", "Common", "Uncommon", "Rare" };
+    /// <summary>
+    /// 卡牌稀有度。除了本体那三档奖励稀有度（含 Basic），还有：
+    ///   · Curse —— 诅咒（「诅咒 / 先古卡」页里的第一个列表；费用固定 -1、不能被打出、效果走 OnTurnEndInHand）
+    ///   · Ancient —— 先古卡（同一个页面的第二个列表；不进战斗奖励，由先古遗物 / 你自己的效果给）
+    /// 本体的 <c>CardFactory</c> 只会在 Common / Uncommon / Rare 里抽奖励，所以把这两种放进卡池也不会
+    /// 让它们跑进普通奖励（诅咒连稀有度都抽不到，先古卡是被显式排除的）。
+    /// </summary>
+    public static IReadOnlyList<string> CardRarities { get; } = new[] { "Basic", "Common", "Uncommon", "Rare", "Ancient", "Curse" };
     public static IReadOnlyList<string> RelicRarities { get; } = new[] { "Starter", "Common", "Uncommon", "Rare", "Shop" };
     public static IReadOnlyList<string> PotionRarities { get; } = new[] { "Common", "Uncommon", "Rare" };
     public static IReadOnlyList<string> TargetSides { get; } = new[] { "Self", "Enemy", "AllEnemies", "RandomEnemies" };

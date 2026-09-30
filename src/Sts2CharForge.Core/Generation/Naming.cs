@@ -137,7 +137,9 @@ public sealed record Naming(
     {
         if (IsValidIdentifier(c.ClassName)) return EmittedCardClass(c.ClassName!.Trim());
         int own = 0;
-        foreach (var x in p.Cards)
+        // 自动编号要把**诅咒 / 先古卡**一起数进去（它们和普通卡用同一个命名空间，
+        // 各自从 1 开始编号会撞类名 → 本体注册时 DuplicateModelException，模组直接加载不了）。
+        foreach (var x in p.AllCards)
         {
             if (ReferenceEquals(x, c)) break;
             if (!x.IsVanillaCard && !x.IsStartingBasic) own++;      // 初始的打击 / 防御不占号

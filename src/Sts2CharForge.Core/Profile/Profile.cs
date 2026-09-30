@@ -107,6 +107,37 @@ public sealed class CharacterProfile
     public bool ForceIroncladFillerWhenSparse { get; set; }
 
     public ObservableCollection<CardSpec> Cards { get; set; } = new();
+
+    /// <summary>
+    /// 自定义**诅咒**（「诅咒 / 先古卡」页里的第一个列表）。
+    ///
+    /// 和 <see cref="Cards"/> 是同一套 <see cref="CardSpec"/>（效果编辑器 / 卡面 / 自定义描述全都复用），
+    /// 区别只在生成：费用固定 -1、类型 / 稀有度固定 Curse、自动加上本体的「不能被打出」，
+    /// 效果不写在 OnPlay 里而是走本体的 <c>OnTurnEndInHand</c>
+    /// （「在你的回合结束时，如果这张牌在你的手牌中……」—— 本体诅咒 Decay / Doubt / Shame / BadLuck 就是这么写的）。
+    ///
+    /// 为什么不留在一个列表里靠稀有度区分：分开列表后**界面上能一眼看清哪些是诅咒**，
+    /// 而且诅咒的详情面板要换掉「费用 / 类型 / 稀有度 / 卡池」那几行（它们对诅咒没有意义）。
+    /// 生成 / 卡池 / 素材 仍然按**稀有度**判断（见 <see cref="CardSpec.IsCurseCard"/>），
+    /// 所以老存档里手改过稀有度的卡也照样能生成对。
+    /// </summary>
+    public ObservableCollection<CardSpec> Curses { get; set; } = new();
+
+    /// <summary>
+    /// 自定义**先古卡**（「诅咒 / 先古卡」页里的第二个列表）：稀有度 Ancient，
+    /// 和普通卡唯一的区别是**不会进战斗奖励 / 随机生成**（本体 <c>CardFactory</c> 里 Ancient 被显式排除），
+    /// 拿到它们的方式是先古之民给的遗物（本体「尘封的书 DustyTome」会从你的卡池里随机挑一张先古卡）
+    /// 或者你自己的效果（「生成卡牌 / 获得卡牌（全局）」里选它）。
+    /// </summary>
+    public ObservableCollection<CardSpec> AncientCards { get; set; } = new();
+
+    /// <summary>
+    /// 这个存档里**所有会生成出来的卡**（普通卡 + 诅咒 + 先古卡）。
+    /// 生成 / 本地化 / 卡面素材 / 卡池 / 回读一律遍历它，别再各自去拼 <see cref="Cards"/>。
+    /// </summary>
+    [JsonIgnore]
+    public IEnumerable<CardSpec> AllCards => Cards.Concat(Curses).Concat(AncientCards);
+
     public ObservableCollection<RelicSpec> Relics { get; set; } = new();
     public ObservableCollection<PotionSpec> Potions { get; set; } = new();
     /// <summary>
@@ -669,6 +700,7 @@ public sealed class CardSpec : SpecBase
     private bool _retain;
     private bool _unplayable;
     private bool _sly;
+    private bool _eternal;
     private bool _costIsX;
     private bool _starCostIsX;
     private bool _xPlusOnUpgrade;
@@ -853,6 +885,11 @@ public sealed class CardSpec : SpecBase
     public bool Unplayable { get => _unplayable; set => Set(ref _unplayable, value); }
     /// <summary>奇巧 Sly：回合结束前被弃掉则免费打出</summary>
     public bool Sly { get => _sly; set => Set(ref _sly, value); }
+    /// <summary>
+    /// 永恒 Eternal：**无法从你的牌组中移除或变化**（本体就是 IsRemovable / IsTransformable 两个开关）。
+    /// 本体的诅咒「厄运」就是靠它 + 不能被打出做的。
+    /// </summary>
+    public bool Eternal { get => _eternal; set => Set(ref _eternal, value); }
 
     /// <summary>选了哪些关键字（生成 CanonicalKeywords 用）。</summary>
     [JsonIgnore]
@@ -867,8 +904,33 @@ public sealed class CardSpec : SpecBase
             if (Retain) list.Add("Retain");
             if (Unplayable) list.Add("Unplayable");
             if (Sly) list.Add("Sly");
+            if (Eternal) list.Add("Eternal");
             return list;
         }
+    }
+
+    // ===== 诅咒 / 先古卡（「诅咒 / 先古卡」页）=====
+    /// <summary>
+    /// 这是一张**诅咒**：费用固定 -1、类型 / 稀有度固定 Curse，本体自带的「不能被打出」也固定加上，
+    /// 效果不写在 OnPlay 里而是走 **OnTurnEndInHand**（「在你的回合结束时，如果这张牌在你的手牌中」）。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsCurseCard => string.Equals(Rarity?.Trim(), "Curse", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>这是一张**先古卡**：稀有度 Ancient —— 只会被先古遗物 / 你自己的效果拿到，不进普通战斗奖励。</summary>
+    [JsonIgnore]
+    public bool IsAncientCard => string.Equals(Rarity?.Trim(), "Ancient", StringComparison.OrdinalIgnoreCase);
+
+    private bool _curseRemoveAfterCombat;
+
+    /// <summary>
+    /// 诅咒专用：战斗结束时如果它还在**牌组**里，就把它自己删掉（本体诅咒「罪恶 Guilty」那套：
+    /// 挂满 N 场战斗后自己消失）。只有诅咒用得到。
+    /// </summary>
+    public bool CurseRemoveAfterCombat
+    {
+        get => _curseRemoveAfterCombat;
+        set { if (Set(ref _curseRemoveAfterCombat, value)) Raise(nameof(Display)); }
     }
 
     public ObservableCollection<EffectSpec> Effects { get; set; } = new();

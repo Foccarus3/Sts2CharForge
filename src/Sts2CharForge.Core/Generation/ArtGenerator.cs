@@ -1212,9 +1212,11 @@ shader_parameter/transitionTex = ExtResource("1_trans")
         if (!File.Exists(placeholder))
             placeholder = Path.Combine(p.Paths.VanillaProject, "images/packed/card_portraits/ironclad/bash.png");
 
-        for (int i = 0; i < p.Cards.Count; i++)
+        // 卡面素材目录跟**模型所在的卡池**走（Pool.Title）—— 诅咒 / 先古卡也在你自己的卡池里，
+        // 所以它们的卡面同样放 images/packed/card_portraits/<你的角色>/ 下
+        // （诅咒的 VisualCardPool 只是让卡框显示成本体的灰色，不影响素材路径）。
+        foreach (var c in p.AllCards)
         {
-            var c = p.Cards[i];
             // 本体卡引用（打击 / 防御）：卡面用本体自己的图，不用我们生成占位图
             if (c.IsVanillaCard) continue;
             string cls = n.CardClassName(p, c);

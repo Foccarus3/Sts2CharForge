@@ -360,6 +360,8 @@
                                 <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
                                 <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
                                 <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
+                                <CheckBox Content="永恒（无法从牌组移除或变化）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Eternal}"
+                                          ToolTip="本体「厄运 BadLuck」那种诅咒用的关键字：IsRemovable / IsTransformable 都是 false —— 商店、事件、变化效果都动不了它。"/>
                             </WrapPanel>
                             <TextBlock Text="自定义关键词（勾选这张牌用到的）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,0,6,2"
@@ -638,6 +640,237 @@
                                 <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=PotionEffectList}">
                                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotion}"/>
+                                </Border>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
+            <!-- ============ 诅咒 / 先古卡 ============ -->
+            <TabItem x:Name="CurseTab" Header="诅咒 / 先古卡">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左：两个列表（诅咒 / 先古卡）。它们和普通卡用同一套 CardSpec，
+                         所以效果编辑器 / 卡面 / 自定义描述全都照旧，只是分开放、详情面板各行不同。 -->
+                    <Grid Grid.Column="0">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="*"/><RowDefinition Height="8"/><RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <GroupBox Grid.Row="0" Header="自定义诅咒（不能被打出，在你的回合结束时若在手牌里触发）">
+                            <DockPanel>
+                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                    <Button Content="添加诅咒" Padding="8,4" Margin="0,0,6,0" Click="OnAddCurse"/>
+                                    <Button Content="删除" Padding="8,4" Margin="0,0,6,0" Click="OnRemoveCurse"/>
+                                    <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                                  IsChecked="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllCurses"
+                                            Visibility="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                                    <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCurse"
+                                            IsEnabled="{Binding CanUndoCurse}" ToolTip="{Binding UndoCurseHint}"/>
+                                </WrapPanel>
+                                <ListBox x:Name="CurseList" ItemsSource="{Binding Profile.Curses}" DisplayMemberPath="Display"
+                                         SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         SelectionChanged="OnSpecialCardSelectionChanged"
+                                         ToolTip="诅咒：打不出去，留在手牌里就会在回合结束时坑你。本体的「受伤 / 疑虑 / 苦恼 / 厄运」就是这一类。"/>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <GroupBox Grid.Row="2" Header="自定义先古卡（稀有度为「先古」，不进普通奖励）">
+                            <DockPanel>
+                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                    <Button Content="添加先古卡" Padding="8,4" Margin="0,0,6,0" Click="OnAddAncientCard"/>
+                                    <Button Content="删除" Padding="8,4" Margin="0,0,6,0" Click="OnRemoveAncientCard"/>
+                                    <ToggleButton Content="多选" Style="{StaticResource MultiToggle}" VerticalAlignment="Center"
+                                                  IsChecked="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    <Button Content="全选" Padding="8,4" Margin="6,0,0,0" Click="OnSelectAllAncientCards"
+                                            Visibility="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                                    <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoAncientCard"
+                                            IsEnabled="{Binding CanUndoAncient}" ToolTip="{Binding UndoAncientHint}"/>
+                                </WrapPanel>
+                                <ListBox x:Name="AncientCardList" ItemsSource="{Binding Profile.AncientCards}" DisplayMemberPath="Display"
+                                         SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         SelectionChanged="OnSpecialCardSelectionChanged"
+                                         ToolTip="先古卡 = 本体稀有度 Ancient 的强力牌（本体「丰饶 / 神化 / 幽灵形态」那种）。它们不会出现在战斗奖励里：拿到它们靠先古之民给的遗物（本体「尘封的书」会从你的卡池里随机挑一张先古卡），或者你自己的效果（「生成卡牌 / 获得卡牌（全局）」里选它）。"/>
+                            </DockPanel>
+                        </GroupBox>
+                    </Grid>
+
+                    <!-- 两张详情面板都没选中时：一句提示 -->
+                    <TextBlock Grid.Column="2" FontSize="16" Foreground="#999"
+                               HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择诅咒或先古卡"
+                               Visibility="{Binding ShowSpecialCardHint, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+
+                    <!-- ===== 诅咒详情 ===== -->
+                    <Grid Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=CurseList}"
+                          Visibility="{Binding SelectedItem, ElementName=CurseList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.1*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                            <StackPanel>
+                                <TextBlock Text="诅咒属性" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <Border Background="#FFF8E1" BorderBrush="#F0D48A" BorderThickness="1" Padding="6" Margin="0,0,0,6">
+                                    <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontSize="11"
+                                               Text="诅咒的费用固定 -1（打不出去）、类型 / 稀有度固定 Curse，生成时自动加上本体的「不能被打出」关键字。效果写在右边 —— 触发时机是「在你的回合结束时，如果这张牌还在你的手牌中」（本体受伤 / 疑虑 / 苦恼 / 厄运都是这么做的）。"/>
+                                </Border>
+                                <TextBlock Text="名称（中文，列表里显示用）" Style="{StaticResource Label}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="英文类名（留空 = 自动编号 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="卡牌关键字（「不能被打出」是诅咒自带的）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                                <WrapPanel Margin="6,0,0,0">
+                                    <CheckBox Content="固有（开局必在手牌）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Innate}"
+                                              ToolTip="本体诅咒「苦恼 Writhe」就是 固有 + 不能被打出：开局就在手里卡着你。"/>
+                                    <CheckBox Content="永恒（无法从牌组移除或变化）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Eternal}"
+                                              ToolTip="本体诅咒「厄运 BadLuck」= 永恒 + 不能被打出：商店 / 事件都删不掉它。"/>
+                                </WrapPanel>
+                                <CheckBox Margin="6,6,0,0" Style="{StaticResource Check}"
+                                          Content="战斗结束时，如果它还在牌组里就消失（本体「罪恶 Guilty」那套）"
+                                          IsChecked="{Binding CurseRemoveAfterCombat}"
+                                          ToolTip="不勾 = 一直留在牌组里（需要玩家自己想办法删掉）。勾上 = 每打一场战斗它就少一点存在感，最后自己消失 —— 本体「罪恶」是挂满 5 场战斗后自动删除。"/>
+                                <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
+                                <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
+                                    <Viewbox Stretch="Uniform" Margin="4">
+                                        <Grid Width="1000" Height="760" Background="Black">
+                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                        </Grid>
+                                    </Viewbox>
+                                </Border>
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#0A7"
+                                           Text="预览框 = 游戏里的显示区域（1000×760，黑底那圈就是游戏里会留的黑边）。"
+                                           Visibility="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
+                                           Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                           Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="{}{Damage:diff()} 这类本体占位符照旧能用。"/>
+                                <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}"
+                                          Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                          IsChecked="{Binding CustomDescriptionReplaces}"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                        <DockPanel Grid.Column="2">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=CurseEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=CurseEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                        IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <ListBox x:Name="CurseEffectList" Grid.Row="0"
+                                         SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         ItemsSource="{Binding Effects}" DisplayMemberPath="Display"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=CurseEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlain}"/>
+                                </Border>
+                            </Grid>
+                        </DockPanel>
+                    </Grid>
+
+                    <!-- ===== 先古卡详情 ===== -->
+                    <Grid Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=AncientCardList}"
+                          Visibility="{Binding SelectedItem, ElementName=AncientCardList, Converter={StaticResource NotEmptyToVisibility}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="1.1*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
+                        </Grid.ColumnDefinitions>
+                        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                            <StackPanel>
+                                <TextBlock Text="先古卡属性" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <Border Background="#FFF8E1" BorderBrush="#F0D48A" BorderThickness="1" Padding="6" Margin="0,0,0,6">
+                                    <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontSize="11"
+                                               Text="先古卡就是稀有度为「先古」的普通牌（本体丰饶 / 神化 / 幽灵形态那种）：能打出、能升级，只是不进战斗奖励。拿到它的方式：先古之民给的遗物（本体「尘封的书」会从你的卡池里随机挑一张先古卡），或者你自己的效果里选它。"/>
+                                </Border>
+                                <TextBlock Text="名称（中文，列表里显示用）" Style="{StaticResource Label}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="英文类名（留空 = 自动编号 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="类型" Style="{StaticResource Label}"/>
+                                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
+                                <TextBlock Text="费用" Style="{StaticResource Label}"/>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="稀有度固定为「先古」（Ancient），生成时写死" Style="{StaticResource Label}" Foreground="#888" FontSize="11"/>
+                                <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                                <WrapPanel Margin="6,0,0,0">
+                                    <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>
+                                    <CheckBox Content="虚无（回合末未打出则消耗）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Ethereal}"/>
+                                    <CheckBox Content="固有（开局必在手牌）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Innate}"/>
+                                    <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
+                                    <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
+                                    <CheckBox Content="永恒（无法从牌组移除或变化）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Eternal}"/>
+                                </WrapPanel>
+                                <TextBlock Text="自定义关键词（勾选这张牌用到的）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                                <TextBlock Text="还没定义任何关键词：先到「自定义关键词」页添加。" Style="{StaticResource Label}" Foreground="#999" Margin="6,2,0,0"
+                                           Visibility="{Binding NoCustomKeywords, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                                <ItemsControl Margin="6,0,0,0" ItemsSource="{Binding CustomKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="{Binding Name}"
+                                                      ToolTip="{Binding KeyHint}" IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <TextBlock Text="升级后的关键字（不变 / 升级后获得 / 升级后失去）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
+                                <ItemsControl Margin="6,0,0,0" ItemsSource="{Binding UpgradeKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                                                <TextBlock Text="{Binding Zh}" Width="120" VerticalAlignment="Center"/>
+                                                <ComboBox Width="140" Style="{StaticResource Pick}"
+                                                          ItemsSource="{Binding KeywordUpgradeStates, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                          SelectedValue="{Binding State, Mode=TwoWay}"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <Button Content="上传卡面…（建议 1000×760 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickSpecialCardPortrait"/>
+                                <Border BorderBrush="#DDD" BorderThickness="1" Height="190" Margin="6,4,0,0" Background="#FAFAFA">
+                                    <Viewbox Stretch="Uniform" Margin="4">
+                                        <Grid Width="1000" Height="760" Background="Black">
+                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
+                                        </Grid>
+                                    </Viewbox>
+                                </Border>
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
+                                           Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                           Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"/>
+                                <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}"
+                                          Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                          IsChecked="{Binding CustomDescriptionReplaces}"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                        <DockPanel Grid.Column="2">
+                            <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=AncientEffectList}"/>
+                                <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=AncientEffectList}"/>
+                                <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                        IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
+                            </WrapPanel>
+                            <Grid>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <ListBox x:Name="AncientEffectList" Grid.Row="0"
+                                         SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         ItemsSource="{Binding Effects}" DisplayMemberPath="Display"/>
+                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                        DataContext="{Binding SelectedItem, ElementName=AncientEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorCard}"/>
                                 </Border>
                             </Grid>
                         </DockPanel>

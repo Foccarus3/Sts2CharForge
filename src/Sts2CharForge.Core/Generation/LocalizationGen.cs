@@ -49,9 +49,8 @@ public static class LocalizationGen
     {
         var n = Naming.From(p);
         var dict = new Dictionary<string, string>();
-        for (int i = 0; i < p.Cards.Count; i++)
+        foreach (var c in p.AllCards)
         {
-            var c = p.Cards[i];
             // 本体卡引用（打击 / 防御）：名字和描述都用本体自己的那份，不要覆盖
             if (c.IsVanillaCard) continue;
             string entry = Naming.EntryOf(n.CardClassName(p, c));
@@ -63,7 +62,11 @@ public static class LocalizationGen
             string legacy = ConditionSuffix(c.Condition, isCard: true, p);
             // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
-            string cardBody = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
+            // 诅咒：效果写的不是「打出时」而是「在你的回合结束时，如果这张牌在你的手牌中」
+            // —— 照本体的行文（Decay 的中文就是「在你的回合结束时，如果这张牌在你的[gold]手牌[/gold]中, …」）
+            string cardBody = c.IsCurseCard
+                ? CurseBodyText(p, c)
+                : Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
             // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
             string customDesc = (c.CustomDescription ?? "").Trim();
             if (customDesc.Length > 0)
@@ -75,6 +78,28 @@ public static class LocalizationGen
                 : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
         }
         return JsonSerializer.Serialize(dict, JsonOpts);
+    }
+
+    /// <summary>
+    /// 诅咒的卡面描述：本体那句「在你的回合结束时，如果这张牌在你的[gold]手牌[/gold]中，…」+ 效果。
+    /// 「不能被打出」不写在这段里 —— 它是本体的关键字（<c>CardKeyword.Unplayable</c>），
+    /// 卡面会自己把关键字那一行印在最前面（和「消耗 / 虚无」一样）。
+    /// 「战斗结束时删掉自己」那条也写出来，否则玩家看不懂这张诅咒为什么会自己消失。
+    /// </summary>
+    private static string CurseBodyText(CharacterProfile p, CardSpec c)
+    {
+        var sb = new StringBuilder();
+        if (c.Effects.Count > 0)
+        {
+            string body = Describe(c.Effects, p, isCard: true);
+            sb.Append("在你的回合结束时，如果这张牌在你的[gold]手牌[/gold]中：").Append('\n').Append(body);
+        }
+        if (c.CurseRemoveAfterCombat)
+        {
+            if (sb.Length > 0) sb.Append('\n');
+            sb.Append("战斗结束时，如果这张牌在你的[gold]牌组[/gold]中，它会消失。");
+        }
+        return sb.ToString();
     }
 
     public static string RelicsJson(CharacterProfile p)

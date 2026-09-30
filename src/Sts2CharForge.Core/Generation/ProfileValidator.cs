@@ -279,11 +279,13 @@ public static class ProfileValidator
 
         // X 费用：本体 ResolveEnergyXValue() 在「不是 X 费用」的牌上会直接抛异常，
         // 所以「效果用了 X 但费用不是 X」必须在这里挡住（生成代码里也做了兜底：X 按 0）。
-        for (int i = 0; i < p.Cards.Count; i++)
+        for (int i = 0; i < p.AllCards.Count(); i++)
         {
-            var c = p.Cards[i];
+            var c = p.AllCards.ElementAt(i);
             // 本体卡引用（打击 / 防御）：数值/效果/费用都由本体决定，不参与这些校验
             if (c.IsVanillaCard) continue;
+            // 诅咒：费用和类型都是生成时写死的（-1 / Curse），X 费用那几条不适用
+            if (c.IsCurseCard) continue;
             bool usesX = c.Effects.Any(e => e.UsesX);
             // 升级后费用：X 费牌改不了、负数费用会被夹到 0，提前说清楚
             if (c.UpgradeCost is { } upCost)
@@ -336,9 +338,9 @@ public static class ProfileValidator
 
         // 卡牌
         var cardNames = new HashSet<string>(StringComparer.Ordinal);
-        for (int i = 0; i < p.Cards.Count; i++)
+        // 普通卡 + 诅咒 + 先古卡一起校验（三者在同一个命名空间里、类名必须互不重复）
+        foreach (var c in p.AllCards)
         {
-            var c = p.Cards[i];
             // 本体卡引用：只校验「类名是不是本体的英文类名」和初始份数，别的都不适用
             if (c.IsVanillaCard)
             {
@@ -370,15 +372,48 @@ public static class ProfileValidator
                 || (isBasicCard && string.Equals(c.ClassName!.Trim(), "Defend", StringComparison.OrdinalIgnoreCase) && !c.TagList.Contains("Defend")))
                 issues.Add(new("警告", $"卡牌「{c.Name}」（{c.ClassName}）没有标本体卡标签 —— 本体那些「升级你的初始打击 / 防御」的"
                     + "遗物 / 事件是按 CardTag 查牌的，漏标它们就找不到这张牌。到「卡牌」页的「本体卡标签」里勾上 Strike / Defend。"));
-            if (!EffectCatalog.CardTypes.Contains(c.CardType))
+            if (!EffectCatalog.CardTypes.Contains(c.CardType)
+                // 诅咒的类型就是本体的 CardType.Curse（这一档不给普通卡选，但诅咒固定是它）
+                && !(c.IsCurseCard && string.Equals(c.CardType, "Curse", StringComparison.OrdinalIgnoreCase)))
                 issues.Add(new("错误", $"卡牌「{c.Name}」类型非法：{c.CardType}"));
             if (!EffectCatalog.CardRarities.Contains(c.Rarity))
                 issues.Add(new("错误", $"卡牌「{c.Name}」稀有度非法：{c.Rarity}"));
-            if (c.Cost is < 0 or > 5)
+
+            // ===== 诅咒 =====
+            if (c.IsCurseCard)
+            {
+                // 诅咒的费用 / 类型是生成时写死的（-1 / Curse），界面上改不了，这里只提醒
+                if (c.Cost != -1)
+                    issues.Add(new("提示", $"诅咒「{c.Name}」的费用会被生成成 -1（打不出去），这里填的 {c.Cost} 不起作用。"));
+                if (c.Effects.Count == 0 && !c.HasCustomDescription)
+                    issues.Add(new("警告", $"诅咒「{c.Name}」没有任何效果、也没写自定义描述 —— 它只会是一张"
+                        + "「不能被打出」的白板牌（本体「苦恼 Writhe」就是这样，确认这是你想要的）。"));
+                if (c.InStartingDeck)
+                    issues.Add(new("警告", $"诅咒「{c.Name}」被放进了初始卡组 —— 开局手里就有这张诅咒，确认这是你想要的。"));
+                if (c.InCardPool)
+                    issues.Add(new("提示", $"诅咒「{c.Name}」不会出现在战斗奖励 / 商店里（本体只从 Common / Uncommon / Rare 里抽奖励）"
+                        + "—— 它要由你自己的效果（生成卡牌 / 获得卡牌（全局）/ 获得卡牌奖励）或遗物给出来。"));
+                // 诅咒的效果是在「回合结束还在手牌里」触发的：随机目标 / 指定敌人都能算出来，
+                // 但没有 CardPlay，所以「打出的目标」这类写法在这里没有意义
+                foreach (var e in c.Effects.Where(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard"))
+                    issues.Add(new("警告", $"诅咒「{c.Name}」的「{EffectCatalog.FindKind(e.Kind).Display}」会在回合结束时弹选牌界面，"
+                        + "每条效果都弹一次会打断战斗节奏 —— 确认这是你想要的。"));
+            }
+            // ===== 先古卡 =====
+            else if (c.IsAncientCard)
+            {
+                if (c.InCardPool)
+                    issues.Add(new("提示", $"先古卡「{c.Name}」不会出现在战斗奖励 / 商店里（本体 CardFactory 显式排除 Ancient）"
+                        + "—— 拿到它的方式是先古遗物（本体「尘封的书」会从你的卡池里随机挑一张先古卡）或你自己的效果。"));
+                if (c.Rarity is "Basic")
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的稀有度不能既是先古卡又是 Basic。"));
+            }
+
+            if (c.Cost is < 0 or > 5 && !c.IsCurseCard)
                 issues.Add(new("警告", $"卡牌「{c.Name}」费用 {c.Cost} 超出常规范围（0~5）。"));
             if (c.InStartingDeck && c.StartingCopies is < 1 or > 10)
                 issues.Add(new("警告", $"卡牌「{c.Name}」初始份数 {c.StartingCopies} 建议 1~10。"));
-            ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: "Card", p: p);
+            ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: c.IsCurseCard ? "Curse" : "Card", p: p);
             AddDuplicateVarNotice(issues, $"卡牌「{c.Name}」", c.Effects);
             // 老存档的「整张牌一个条件」也校验一下（打开后会自动搬到第一条效果上）
             if (c.Condition is not null && !c.Condition.IsNone && c.Effects.Count > 0)
@@ -436,10 +471,10 @@ public static class ProfileValidator
         }
 
         // 初始卡组：本体卡引用（打击 / 防御）也是牌，所以「空不空」要看有没有任何放进初始卡组的牌
-        if (!p.Cards.Any(c => c.InStartingDeck))
+        if (!p.AllCards.Any(c => c.InStartingDeck))
             issues.Add(new("警告", "初始卡组是空的：卡牌页里没有任何卡勾了「放进初始卡组」"
                 + "（默认那两条本体「打击 / 防御」被删掉了吗？）—— 开局会没有牌可打。"));
-        if (!p.Cards.Any(c => !c.IsVanillaCard))
+        if (!p.Cards.Any(c => !c.IsVanillaCard) && !p.Curses.Any() && !p.AncientCards.Any())
             issues.Add(new("提示", "还没有自己的卡牌：现在初始卡组只有本体的打击 / 防御（本体卡只做引用，不生成自己的卡类）。"));
 
         // 安装目录：本体只认 <游戏目录>\mods（选成游戏目录 / data 目录时自动纠正，这里只提醒）
@@ -487,7 +522,7 @@ public static class ProfileValidator
 
         // 本配置会注册的全部模型类名
         var mine = new SortedSet<string>(StringComparer.Ordinal);
-        foreach (var c in p.Cards)
+        foreach (var c in p.AllCards)
             if (c is not null && !c.IsVanillaCard) mine.Add(n.CardClassName(p, c));
         for (int i = 0; i < p.Relics.Count; i++)
             if (p.Relics[i] is not null) mine.Add(n.RelicClassName(p.Relics[i], i));
@@ -761,7 +796,8 @@ public static class ProfileValidator
                 }
             }
         }
-        foreach (var c in p.Cards)
+        // 宠物效果的自检：普通卡 + 诅咒 + 先古卡一起扫（诅咒里的「召唤伙伴」也会生成宠物代码）
+        foreach (var c in p.AllCards)
         {
             if (c is null) continue;
             Scan($"卡牌「{c.Name}」", c.Effects, forPotion: false);
@@ -876,7 +912,7 @@ public static class ProfileValidator
                 + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
 
         // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）
-        bool anyCardOrRelicSummons = p.Cards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
+        bool anyCardOrRelicSummons = p.AllCards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
             || p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet"));
         if (!anyCardOrRelicSummons)
             issues.Add(new("提示", $"召唤物已启用（{enabled.Count} 只），但没有任何卡牌 / 遗物在「召唤」它们"
@@ -1076,6 +1112,8 @@ public static class ProfileValidator
         bool allowed = ctx switch
         {
             "Card" => opt.ForCard,
+            // 诅咒也是卡（效果写在 OnTurnEndInHand 里），条件可用范围和卡牌一样
+            "Curse" => opt.ForCard,
             "Relic" => opt.ForRelic,
             "Power" => opt.ForPower,
             _ => false,

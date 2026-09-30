@@ -153,7 +153,12 @@ public static class ProjectRecovery
                 card.InStartingDeck = true;
                 card.StartingCopies = copies;
             }
-            p.Cards.Add(card);
+            // 诅咒 / 先古卡按**稀有度**回到各自的列表（页面上它们是分开的两栏；
+            // 生成 / 卡池 / 素材都按稀有度判断，所以这里也必须按稀有度分回去，
+            // 否则回读出来的诅咒会跑到普通卡列表里、界面上看着就不对了）
+            if (card.IsCurseCard) p.Curses.Add(card);
+            else if (card.IsAncientCard) p.AncientCards.Add(card);
+            else p.Cards.Add(card);
         }
 
         // ---- 遗物 ----
@@ -378,7 +383,8 @@ public static class ProjectRecovery
             card.CustomDescriptionReplaces = customDesc.Groups[1].Value == "1";
         }
 
-        var ctor = Regex.Match(text, @": base\((\d+), CardType\.(\w+), CardRarity\.(\w+), TargetType\.(\w+)\)");
+        // 费用可能是负数（诅咒固定 -1），所以数字部分要允许前导 -
+        var ctor = Regex.Match(text, @": base\((-?\d+), CardType\.(\w+), CardRarity\.(\w+), TargetType\.(\w+)\)");
         if (ctor.Success)
         {
             card.Cost = int.Parse(ctor.Groups[1].Value, CultureInfo.InvariantCulture);
@@ -394,8 +400,20 @@ public static class ProjectRecovery
         // 所以给 ParseUpgrade 一份**独立的副本**：升级增量要靠「变量在 CanonicalVars 里的位置」
         // 反查效果，被消耗过就对不上号了（会变成「升级增量找不到对应效果」）。
         var varsForUpgrade = new List<Var>(vars);
-        ParseEffects(card.Effects, BodyOf(text, "OnPlay"), vars, nameToPowerId, EffectCtx.Card, result, cls, result.PetClassNames);
-        ParseUpgrade(card, varsForUpgrade, text, result, cls);
+        // 诅咒：效果写在 OnTurnEndInHand 里（不是 OnPlay），而且没有「打出的目标」这一说 ——
+        // 语句是照遗物那套生成的，所以按**遗物**的上下文解析（ctx 用 Card 会去认 cardPlay.Target）
+        bool curse = card.IsCurseCard;
+        ParseEffects(card.Effects, BodyOf(text, curse ? "OnTurnEndInHand" : "OnPlay"), vars, nameToPowerId,
+            curse ? EffectCtx.Relic : EffectCtx.Card, result, cls, result.PetClassNames);
+        if (curse)
+        {
+            // 「战斗结束时如果它还在牌组里就删掉自己」（本体「罪恶 Guilty」那套）
+            card.CurseRemoveAfterCombat = Regex.IsMatch(text, @"CardPileCmd\.RemoveFromDeck\(this\)");
+        }
+        else
+        {
+            ParseUpgrade(card, varsForUpgrade, text, result, cls);
+        }
         ParseKeywords(card, text);
         // 自定义关键词：生成的 ExtraHoverTips 里写的是 new LocString("card_keywords", "<KEY>.title")
         var keywordRefs = Regex.Matches(text, @"LocString\(""card_keywords"", ""([^""]+)\.title""\)")
@@ -1052,7 +1070,8 @@ public static class ProjectRecovery
             if (line.StartsWith("await CreatureCmd.Heal(", StringComparison.Ordinal))
             {
                 var e = new EffectSpec { Kind = "Heal", TargetSide = SideOfTarget(line) };
-                FillExpr(e, ArgAt(line, 1));
+                // 生成的是 base.DynamicVars["Heal"].BaseValue（HealVar 没有同名属性 → 索引器写法）
+                FillAmountOrExpr(e, ArgAt(line, 1), NextVar(vars, ref varIdx, "Heal"), nameToPowerId, "Heal");
                 Done(e);
                 continue;
             }
@@ -1060,7 +1079,7 @@ public static class ProjectRecovery
             if (line.StartsWith("await CreatureCmd.GainMaxHp(", StringComparison.Ordinal))
             {
                 var e = new EffectSpec { Kind = "MaxHp", TargetSide = SideOfTarget(line) };
-                FillExpr(e, ArgAt(line, 1));
+                FillAmountOrExpr(e, ArgAt(line, 1), NextVar(vars, ref varIdx, "MaxHp"), nameToPowerId, "MaxHp");
                 Done(e);
                 continue;
             }
@@ -1079,7 +1098,8 @@ public static class ProjectRecovery
                 // 自己吃伤害：本体里 Heal(负数) 和 HpLoss 生成的是同一段代码，这里统一按「失去生命」
                 // （能被包在敌人的 foreach 里时 SideOfTarget 会给 AllEnemies/RandomEnemies，自己的默认 Self）
                 var e = new EffectSpec { Kind = "HpLoss", TargetSide = SideOfTarget(line) };
-                FillExpr(e, ArgAt(line, 2));
+                // 生成的是 base.DynamicVars["HpLoss"].BaseValue（同样没有同名属性，走索引器）
+                FillAmountOrExpr(e, ArgAt(line, 2), NextVar(vars, ref varIdx, "HpLoss"), nameToPowerId, "HpLoss");
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -1422,6 +1442,12 @@ public static class ProjectRecovery
                 "Stars" => v.Kind == "Stars",
                 // 伙伴攻击：生成时用的是我们自己起名的普通 DynamicVar "PetDamage"（不是 DamageVar）
                 "PetDamage" => v.Kind == "DynamicVar" && string.Equals(v.PowerId, "PetDamage", StringComparison.Ordinal),
+                // 回复生命 / 失去生命 / 最大生命：本体那三种变量（键就是 Heal / HpLoss / MaxHp）。
+                // 生成的是 base.DynamicVars["Heal"].BaseValue 这种**索引器**写法（这三个没有同名属性），
+                // 以前这里直接把表达式丢给 FillExpr → 认不出来 → 数值静默变成 0（自检抓到的）。
+                "Heal" => v.Kind == "Heal",
+                "HpLoss" => v.Kind == "HpLoss",
+                "MaxHp" => v.Kind == "MaxHp",
                 // 强化指定卡牌：生成时用的是普通 DynamicVar，名字是 Boost（同一张牌上第二次起叫 Boost2）
                 "Boost" => v.Kind == "DynamicVar" && v.PowerId is not null
                     && (v.PowerId == "Boost"
@@ -1601,6 +1627,8 @@ public static class ProjectRecovery
                 case "Retain": card.Retain = true; break;
                 case "Unplayable": card.Unplayable = true; break;
                 case "Sly": card.Sly = true; break;
+                // 永恒（IsRemovable / IsTransformable 都为 false）：诅咒「厄运」用的就是它
+                case "Eternal": card.Eternal = true; break;
             }
         }
     }

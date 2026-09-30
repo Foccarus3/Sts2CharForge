@@ -164,10 +164,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			if (!(CardList.SelectedItem is CardSpec cardSpec))
-			{
-				return null;
-			}
+			// 三个列表（卡牌 / 诅咒 / 先古卡）共用这一套预览属性 —— 选中是互斥的，所以拿到的一定是当前那张
+			var cardSpec = (CardList.SelectedItem as CardSpec) ?? SpecialCardOf();
+			if (cardSpec is null) return null;
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			if (!_profile.Art.CardPortraits.TryGetValue(key, out string value))
 			{
@@ -186,7 +185,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			if (!(CardList.SelectedItem is CardSpec cardSpec)) return "";
+			var cardSpec = (CardList.SelectedItem as CardSpec) ?? SpecialCardOf();
+			if (cardSpec is null) return "";
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			_profile.Art.CardPortraits.TryGetValue(key, out string? value);
 			return AspectNoteOf(value, 1000, 760, "游戏里卡面这块");
@@ -468,10 +468,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			if (!(CardList?.SelectedItem is CardSpec card)) return Array.Empty<KeywordUpgradeRow>();
+			if (ActiveCardForDetail() is not { } card) return Array.Empty<KeywordUpgradeRow>();
 			return KeywordUpgradeSpec.All.Select(k => new KeywordUpgradeRow(card, k.Field, k.Zh)).ToList();
 		}
 	}
+
+	/// <summary>
+	/// 「当前正在编辑的那张卡」：卡牌 / 诅咒 / 先古卡三个列表里选中的那张。
+	/// 三处选中是互斥的（见 <see cref="OnSpecialCardSelectionChanged"/>），所以这里按顺序取第一个就够了。
+	///
+	/// 为什么要有它：卡面预览、升级后费用、升级后关键字、自定义关键词勾选这些**窗口级**属性
+	/// 以前写死了 <c>CardList.SelectedItem</c>，新开的两栏（诅咒 / 先古卡）共用同一套面板时就会拿到 null。
+	/// </summary>
+	internal CardSpec? ActiveCardForDetail() =>
+		(CardList?.SelectedItem as CardSpec) ?? SpecialCardOf();
 
 
 	/// <summary>
@@ -694,11 +704,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			return (CardList?.SelectedItem as CardSpec)?.UpgradeCost;
+			return ActiveCardForDetail()?.UpgradeCost;
 		}
 		set
 		{
-			if (CardList?.SelectedItem is CardSpec cardSpec)
+			if (ActiveCardForDetail() is { } cardSpec)
 			{
 				cardSpec.UpgradeCost = value;
 				Raise("UpgradeCostHint");
@@ -710,7 +720,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			if (!(CardList?.SelectedItem is CardSpec cardSpec))
+			if (ActiveCardForDetail() is not { } cardSpec)
 			{
 				return "";
 			}
@@ -872,7 +882,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			if (!(CardList?.SelectedItem is CardSpec card)) return Array.Empty<CustomKeywordRow>();
+			if (ActiveCardForDetail() is not { } card) return Array.Empty<CustomKeywordRow>();
 			return KeywordGen.All(_profile).Select(k => new CustomKeywordRow(card, k.Spec, k.Key)).ToList();
 		}
 	}
@@ -1245,7 +1255,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		try
 		{
-			List<PowerEntry> list = EffectCatalog.Cards.Concat(Profile.Cards.Select(delegate(CardSpec c, int i)
+			List<PowerEntry> list = EffectCatalog.Cards.Concat(Profile.AllCards.Select(delegate(CardSpec c, int i)
 			{
 				string text = Naming.From(Profile).CardClassName(Profile, c);
 				return new PowerEntry(text, "", "Card", "Counter", c.Name, text);
@@ -2345,8 +2355,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			int atk = 0, skill = 0, power = 0, other = 0, vanilla = 0, vanillaCopies = 0;
-			foreach (CardSpec c in _profile.Cards)
+			int atk = 0, skill = 0, power = 0, other = 0, vanilla = 0, vanillaCopies = 0, curse = 0, ancient = 0;
+			foreach (CardSpec c in _profile.AllCards)
 			{
 				// 本体卡（打击 / 防御）不算「自己的卡」：它们不生成类、不进卡池，只有初始卡组里那几份
 				if (c.IsVanillaCard)
@@ -2355,6 +2365,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					vanillaCopies += Math.Max(1, c.StartingCopies);
 					continue;
 				}
+				if (c.IsCurseCard) { curse++; continue; }
+				if (c.IsAncientCard) { ancient++; continue; }
 				switch ((c.CardType ?? "").Trim())
 				{
 				case "Attack": atk++; break;
@@ -2364,18 +2376,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				}
 			}
 			string more = ((other > 0) ? ($" ｜ 其它 {other}") : "");
-			int own = _profile.Cards.Count - vanilla;
+			string extra = (curse > 0 ? $" ｜ 诅咒 {curse}" : "") + (ancient > 0 ? $" ｜ 先古卡 {ancient}" : "");
+			int own = _profile.AllCards.Count(c => !c.IsVanillaCard);
 			string van = vanilla > 0 ? $" ｜ 本体卡 {vanilla} 条（初始 {vanillaCopies} 张）" : "";
-			return $"卡牌：攻击 {atk} ｜ 技能 {skill} ｜ 能力 {power}{more} ｜ 共 {own} 张{van}";
+			return $"卡牌：攻击 {atk} ｜ 技能 {skill} ｜ 能力 {power}{more}{extra} ｜ 共 {own} 张{van}";
 		}
 	}
 
 	private void HookCardCount()
 	{
-		_profile.Cards.CollectionChanged -= OnCardsChanged;
-		_profile.Cards.CollectionChanged += OnCardsChanged;
-		foreach (CardSpec c in _profile.Cards) c.PropertyChanged -= OnCardChanged;
-		foreach (CardSpec c in _profile.Cards) c.PropertyChanged += OnCardChanged;
+		// 三张列表（卡牌 / 诅咒 / 先古卡）都要挂钩子：数量统计和目标卡下拉都要跟着它们变
+		foreach (var list in new[] { _profile.Cards, _profile.Curses, _profile.AncientCards })
+		{
+			list.CollectionChanged -= OnCardsChanged;
+			list.CollectionChanged += OnCardsChanged;
+			foreach (CardSpec c in list) c.PropertyChanged -= OnCardChanged;
+			foreach (CardSpec c in list) c.PropertyChanged += OnCardChanged;
+		}
 	}
 
 	private void OnCardsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -3357,6 +3374,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("CanUndoPotion");
 		Raise("CanUndoKeyword");
 		Raise("CanUndoSummon");
+		Raise("CanUndoCurse");
+		Raise("CanUndoAncient");
+		Raise("UndoCurseHint");
+		Raise("UndoAncientHint");
 		Raise("CanUndoArt");
 		Raise("CanUndoProfile");
 		Raise("UndoCardHint");
@@ -3635,8 +3656,155 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
-	private void OnAddRelic(object sender, RoutedEventArgs e)
+	// ===== 「诅咒 / 先古卡」页（两个列表共用一张详情区，靠选中项决定显示哪一个）=====
+	private readonly Stack<UndoEntry> _curseUndo = new Stack<UndoEntry>();
+	private readonly Stack<UndoEntry> _ancientUndo = new Stack<UndoEntry>();
+
+	public bool CanUndoCurse => _curseUndo.Count > 0;
+	public string UndoCurseHint => HintOf(_curseUndo);
+	public bool CanUndoAncient => _ancientUndo.Count > 0;
+	public string UndoAncientHint => HintOf(_ancientUndo);
+
+	/// <summary>「诅咒 / 先古卡」页当前选中的那张牌（两个列表里有一个选中就算）。</summary>
+	internal CardSpec? SpecialCardOf() =>
+		(CurseList.SelectedItem as CardSpec) ?? (AncientCardList.SelectedItem as CardSpec);
+
+	/// <summary>两个列表都没选中时显示那句空态提示。</summary>
+	public bool ShowSpecialCardHint => SpecialCardOf() is null;
+
+	/// <summary>
+	/// 三个列表（卡牌 / 诅咒 / 先古卡）共用同一套「卡面预览」属性，所以选中要互斥：
+	/// 选中这一栏就把另外两栏的选择清掉，否则预览会看着像串了（用户报过类似的观感问题）。
+	/// </summary>
+	private void OnSpecialCardSelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
+		if (sender == CurseList && CurseList.SelectedItem is not null)
+		{
+			AncientCardList.SelectedItem = null;
+			CardList.SelectedItem = null;
+		}
+		else if (sender == AncientCardList && AncientCardList.SelectedItem is not null)
+		{
+			CurseList.SelectedItem = null;
+			CardList.SelectedItem = null;
+		}
+		Raise("ShowSpecialCardHint");
+		Raise("CardPortraitPreview");
+		Raise("CardPortraitPreviewNote");
+	}
+
+	private void OnAddCurse(object sender, RoutedEventArgs e)
+	{
+		var c = new CardSpec
+		{
+			Name = "新诅咒",
+			CardType = "Curse",
+			Rarity = "Curse",
+			Cost = -1,
+			Unplayable = true,      // 诅咒一律打不出去（生成时也会强制加上这个关键字）
+		};
+		_profile.Curses.Add(c);
+		SyncDetail();
+		CurseList.SelectedItem = c;
+		SetStatus("已添加诅咒：费用 -1、不能被打出，右边加的效果会在「你的回合结束时，如果它还在你的手牌里」触发。");
+	}
+
+	private void OnRemoveCurse(object sender, RoutedEventArgs e)
+	{
+		List<CardSpec> picked = SelectedOf<CardSpec>(CurseList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的诅咒（可 Ctrl/Shift 多选）。");
+			return;
+		}
+		string what = picked.Count == 1 ? "诅咒「" + picked[0].Name + "」" : $"选中的 {picked.Count} 张诅咒";
+		if (ConfirmDelete(what))
+		{
+			int n = RemoveManyWithUndo(_profile.Curses, picked, _curseUndo, "诅咒", delegate
+			{
+				CurseList.SelectedItem = picked[0];
+			});
+			SetStatus($"已删除 {n} 张诅咒（可点「撤回删除」恢复）");
+		}
+	}
+
+	private void OnUndoCurse(object sender, RoutedEventArgs e)
+	{
+		UndoLast(_curseUndo);
+	}
+
+	private void OnSelectAllCurses(object sender, RoutedEventArgs e)
+	{
+		SelectAll(CurseList, "诅咒");
+	}
+
+	private void OnAddAncientCard(object sender, RoutedEventArgs e)
+	{
+		var c = new CardSpec
+		{
+			Name = "新先古卡",
+			CardType = "Attack",
+			Rarity = "Ancient",
+			Cost = 1,
+		};
+		_profile.AncientCards.Add(c);
+		SyncDetail();
+		AncientCardList.SelectedItem = c;
+		SetStatus("已添加先古卡：和普通卡一样写效果 / 费用，只是稀有度是先古、不会进战斗奖励。");
+	}
+
+	private void OnRemoveAncientCard(object sender, RoutedEventArgs e)
+	{
+		List<CardSpec> picked = SelectedOf<CardSpec>(AncientCardList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的先古卡（可 Ctrl/Shift 多选）。");
+			return;
+		}
+		string what = picked.Count == 1 ? "先古卡「" + picked[0].Name + "」" : $"选中的 {picked.Count} 张先古卡";
+		if (ConfirmDelete(what))
+		{
+			int n = RemoveManyWithUndo(_profile.AncientCards, picked, _ancientUndo, "先古卡", delegate
+			{
+				AncientCardList.SelectedItem = picked[0];
+			});
+			SetStatus($"已删除 {n} 张先古卡（可点「撤回删除」恢复）");
+		}
+	}
+
+	private void OnUndoAncientCard(object sender, RoutedEventArgs e)
+	{
+		UndoLast(_ancientUndo);
+	}
+
+	private void OnSelectAllAncientCards(object sender, RoutedEventArgs e)
+	{
+		SelectAll(AncientCardList, "先古卡");
+	}
+
+	/// <summary>诅咒 / 先古卡共用的「上传卡面」——取当前选中的那张（两个列表里的）。</summary>
+	private void OnPickSpecialCardPortrait(object sender, RoutedEventArgs e)
+	{
+		if (SpecialCardOf() is not { } card)
+		{
+			SetStatus("请先在左边选中一张诅咒或先古卡。");
+			return;
+		}
+		OpenFileDialog openFileDialog = new OpenFileDialog
+		{
+			Filter = "图片 (*.png)|*.png"
+		};
+		if (openFileDialog.ShowDialog(this).GetValueOrDefault())
+		{
+			string key = Naming.From(_profile).CardClassName(_profile, card);
+			_profile.Art.CardPortraits[key] = openFileDialog.FileName;
+			Raise("CardPortraitPreview");
+			Raise("CardPortraitPreviewNote");
+			PersistArtChange($"已为「{card.Name}」设置卡面：{openFileDialog.FileName}（建议 1000×760 PNG）");
+		}
+	}
+
+	private void OnAddRelic(object sender, RoutedEventArgs e)	{
 		_profile.Relics.Add(new RelicSpec
 		{
 			Name = "新遗物",
@@ -5405,6 +5573,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		int num11 = -1;
 		int numKw = -1;
 		int numSummon = -1;
+		int numCurseTab = -1;
 		for (int num12 = 0; num12 < MainTabs.Items.Count; num12++)
 		{
 			if (MainTabs.Items[num12] is TabItem tabItem2)
@@ -5419,6 +5588,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					break;
 				case "药水":
 					num8 = num12;
+					break;
+				case "诅咒 / 先古卡":
+					numCurseTab = num12;
 					break;
 				case "美术资源":
 					num9 = num12;
@@ -5438,7 +5610,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		// 注意：这一串下标是**绝对**的，加了「召唤物」（紧跟「角色」，下标 1）之后全部 +1。
 		// 只更新数字、不删断言 —— 顺序一旦被改乱（比如把「召唤物」插到最后）这里就会红。
 		Check("「召唤物」是第 2 个选项卡（紧跟「角色」，下标 1）", numSummon == 1, $"召唤物={numSummon}");
-		Check("「药水」→「自定义关键词」→「先古之民」→「本体状态改写」→「自定义状态」→「美术资源」按顺序排", num8 >= 0 && numKw == num8 + 1 && num7 == numKw + 1 && num10 == num7 + 1 && num11 == num10 + 1 && num9 == num11 + 1, $"药水={num8} / 关键词={numKw} / 先古之民={num7} / 本体状态改写={num10} / 自定义状态={num11} / 美术={num9}");
+		Check("「药水」→「诅咒 / 先古卡」→「自定义关键词」→「先古之民」→「本体状态改写」→「自定义状态」→「美术资源」按顺序排", num8 >= 0 && numCurseTab == num8 + 1 && numKw == numCurseTab + 1 && num7 == numKw + 1 && num10 == num7 + 1 && num11 == num10 + 1 && num9 == num11 + 1, $"药水={num8} / 诅咒先古卡={numCurseTab} / 关键词={numKw} / 先古之民={num7} / 本体状态改写={num10} / 自定义状态={num11} / 美术={num9}");
 		Check("目录里包含建筑师（本体没给他写过通用对话，靠补丁注入）", EffectCatalog.Ancients.Any((AncientEntry a) => a.Id == "THE_ARCHITECT"), "有 THE_ARCHITECT");
 		SelectTabRoot("角色");
 		List<TextBox> list9 = new List<TextBox>();
@@ -6809,6 +6981,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			// 另一种模式：整段替换掉自动描述（标记里的 CustomDescReplace=1 也要读回来）
 			srcOwn[3].CustomDescription = "自检：只留这段话。";
 			srcOwn[3].CustomDescriptionReplaces = true;
+			// 诅咒 + 先古卡：回读时也要各自回到「诅咒 / 先古卡」页的那两个列表里（按稀有度分）
+			var recCurse = new CardSpec
+			{
+				Name = "恢复用诅咒", ClassName = "UiCheckRecCurse", CardType = "Curse", Rarity = "Curse",
+				Cost = -1, Unplayable = true, Eternal = true, CurseRemoveAfterCombat = true,
+			};
+			recCurse.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 3m, TargetSide = "Self" });
+			recSrc.Curses.Add(recCurse);
+			var recAncient = new CardSpec
+			{
+				Name = "恢复用先古卡", ClassName = "UiCheckRecAncient", CardType = "Skill", Rarity = "Ancient", Cost = 1,
+				InCardPool = true,
+			};
+			recAncient.Effects.Add(new EffectSpec { Kind = "Block", Amount = 11m, UpgradeAmount = 4m, TargetSide = "Self" });
+			recSrc.AncientCards.Add(recAncient);
 			var gen = ModGenerator.Generate(recSrc);
 			// 失败时把「为什么」打出来（校验错误 + 日志尾部）—— 不然这条 FAIL 只有空细节，根本没法查
 			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot),
@@ -7036,6 +7223,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("从工程恢复：勾了「替换掉自动描述」的那张也找回来了",
 				recOwn[3].CustomDescription == "自检：只留这段话。" && recOwn[3].CustomDescriptionReplaces,
 				$"{(recOwn[3].CustomDescription ?? "(空)")} / 替换={recOwn[3].CustomDescriptionReplaces}");
+			Check("从工程恢复：诅咒回到「诅咒」列表里（不是混进普通卡），效果也读回来了",
+				rec.Profile.Curses.Count == 1
+				&& rec.Profile.Curses[0].Name == "恢复用诅咒"
+				&& rec.Profile.Curses[0].Rarity == "Curse"
+				&& rec.Profile.Curses[0].Cost == -1
+				&& rec.Profile.Curses[0].Eternal
+				&& rec.Profile.Curses[0].CurseRemoveAfterCombat
+				&& rec.Profile.Curses[0].Effects.Any(x => x.Kind == "HpLoss" && x.Amount == 3m),
+				rec.Profile.Curses.Count == 0 ? "一条都没恢复"
+					: $"{rec.Profile.Curses[0].Name} / {rec.Profile.Curses[0].Rarity} / 费 {rec.Profile.Curses[0].Cost}"
+					  + $" / 自删={rec.Profile.Curses[0].CurseRemoveAfterCombat}"
+					  + $" / 效果={string.Join("、", rec.Profile.Curses[0].Effects.Select(x => x.Kind + " " + x.Amount + "+" + x.UpgradeAmount))}"
+					  + $" / {string.Join("·", rec.Profile.Curses[0].KeywordList)}");
+			Check("从工程恢复：先古卡回到「先古卡」列表里，数值 / 升级增量都在",
+				rec.Profile.AncientCards.Count == 1
+				&& rec.Profile.AncientCards[0].Rarity == "Ancient"
+				&& rec.Profile.AncientCards[0].CardType == "Skill"
+				&& rec.Profile.AncientCards[0].Effects.Any(x => x.Kind == "Block" && x.Amount == 11m && x.UpgradeAmount == 4m),
+				rec.Profile.AncientCards.Count == 0 ? "一条都没恢复"
+					: rec.Profile.AncientCards[0].Effects[0].Amount + "+" + rec.Profile.AncientCards[0].Effects[0].UpgradeAmount);
+			Check("从工程恢复：诅咒 / 先古卡不会被算成普通卡（三张列表各归各位）",
+				rec.Profile.Cards.All(x => x.Rarity != "Curse" && x.Rarity != "Ancient"), "各归各位");
 		}
 		catch (Exception ex)
 		{
@@ -7052,7 +7261,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			TabItem summonTabItem = FindTab("召唤物");
 			Check("有「召唤物」选项卡", summonTabItem != null, summonTabItem is null ? "没找到" : "找到了");
 			int idxRole = -1, idxSummon = -1, idxExtra = -1, idxCard = -1, idxRelic = -1, idxPotion = -1;
-			int idxKeyword = -1, idxAncient = -1, idxPowerOverride = -1, idxCustomPower = -1, idxArt = -1;
+			int idxCurse = -1, idxKeyword = -1, idxAncient = -1, idxPowerOverride = -1, idxCustomPower = -1, idxArt = -1;
 			for (int ti = 0; ti < MainTabs.Items.Count; ti++)
 			{
 				if (!(MainTabs.Items[ti] is TabItem t)) continue;
@@ -7064,6 +7273,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					case "卡牌": idxCard = ti; break;
 					case "遗物": idxRelic = ti; break;
 					case "药水": idxPotion = ti; break;
+					case "诅咒 / 先古卡": idxCurse = ti; break;
 					case "自定义关键词": idxKeyword = ti; break;
 					case "先古之民": idxAncient = ti; break;
 					case "本体状态改写": idxPowerOverride = ti; break;
@@ -7071,12 +7281,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					case "美术资源": idxArt = ti; break;
 				}
 			}
-			// 「召唤物卡牌」选项卡已按用户要求整页删除：编在它后面的那些页的下标全部 -1。
-			Check("选项卡顺序：角色=0、召唤物=1、额外资源量=2、卡牌=3、遗物=4、药水=5、自定义关键词=6、先古之民=7、本体状态改写=8、自定义状态=9、美术资源=10",
+			Check("选项卡顺序：角色=0、召唤物=1、额外资源量=2、卡牌=3、遗物=4、药水=5、诅咒 / 先古卡=6、自定义关键词=7、先古之民=8、本体状态改写=9、自定义状态=10、美术资源=11",
 				idxRole == 0 && idxSummon == 1 && idxExtra == 2 && idxCard == 3 && idxRelic == 4 && idxPotion == 5
-				&& idxKeyword == 6 && idxAncient == 7 && idxPowerOverride == 8 && idxCustomPower == 9 && idxArt == 10,
+				&& idxCurse == 6 && idxKeyword == 7 && idxAncient == 8 && idxPowerOverride == 9 && idxCustomPower == 10 && idxArt == 11,
 				$"角色={idxRole} / 召唤物={idxSummon} / 额外资源量={idxExtra} / 卡牌={idxCard} / 遗物={idxRelic} / 药水={idxPotion}"
-				+ $" / 自定义关键词={idxKeyword} / 先古之民={idxAncient} / 本体状态改写={idxPowerOverride} / 自定义状态={idxCustomPower} / 美术资源={idxArt}");
+				+ $" / 诅咒先古卡={idxCurse} / 自定义关键词={idxKeyword} / 先古之民={idxAncient} / 本体状态改写={idxPowerOverride} / 自定义状态={idxCustomPower} / 美术资源={idxArt}");
 			Check("召唤物列表绑定到 Profile.Summons（列表，不是单对象）",
 				SummonList != null && BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Summons",
 				SummonList is null ? "没找到列表" : (BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "(没绑定)"));
@@ -10077,6 +10286,154 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				&& descReplaceSrc.Contains("// CET:CustomDescReplace=1 CET:CustomDescription=只留这段话。"), "标记在");
 			Check("两行文本转义 / 还原是一对（回读后还是两行）",
 				CSharpCodeGen.UnescapeMarker(CSharpCodeGen.EscapeMarker("第一行\n第二行")) == "第一行\n第二行", "往返一致");
+		}
+
+		// ===== 自定义诅咒 / 先古卡（「诅咒 / 先古卡」页）=====
+		{
+			Check("稀有度里多了「先古 / 诅咒」两档（本体的 CardRarity.Ancient / Curse）",
+				EffectCatalog.CardRarities.Contains("Ancient") && EffectCatalog.CardRarities.Contains("Curse"),
+				string.Join(" / ", EffectCatalog.CardRarities));
+
+			// ---- 诅咒 ----
+			CharacterProfile curseProbe = ProfileFactory.Sample();
+			var curse = new CardSpec
+			{
+				Name = "自检诅咒", ClassName = "UiCheckCurse", CardType = "Curse", Rarity = "Curse",
+				Cost = -1, Unplayable = true, Innate = true, CurseRemoveAfterCombat = true,
+			};
+			curse.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 2m, TargetSide = "Self" });
+			curse.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Self" });
+			curseProbe.Curses.Add(curse);
+			string curseSrc = CSharpCodeGen.CurseSource(curseProbe, curse, 0);
+			Check("诅咒的构造函数：费用固定 -1、类型 / 稀有度固定 Curse、目标 None（和本体诅咒一模一样）",
+				curseSrc.Contains("public UiCheckCurse() : base(-1, CardType.Curse, CardRarity.Curse, TargetType.None) { }"), "构造在");
+			Check("诅咒不能升级（MaxUpgradeLevel => 0）", curseSrc.Contains("public override int MaxUpgradeLevel => 0;"), "在");
+			Check("诅咒不进战斗里的随机生成（CanBeGeneratedInCombat => false）",
+				curseSrc.Contains("public override bool CanBeGeneratedInCombat => false;"), "在");
+			Check("诅咒的卡框走本体的诅咒卡池（灰色），模型仍然注册在你自己的卡池里",
+				curseSrc.Contains("public override CardPoolModel VisualCardPool => ModelDb.CardPool<CurseCardPool>();"), "在");
+			Check("「不能被打出」是诅咒自带的，固有 / 永恒按勾选加上",
+				curseSrc.Contains("public override IEnumerable<CardKeyword> CanonicalKeywords => [CardKeyword.Unplayable, CardKeyword.Innate];"),
+				"关键字");
+			Check("效果走本体的诅咒钩子：HasTurnEndInHandEffect + OnTurnEndInHand",
+				curseSrc.Contains("public override bool HasTurnEndInHandEffect => true;")
+				&& curseSrc.Contains("protected override async Task OnTurnEndInHand(PlayerChoiceContext choiceContext)"), "钩子在");
+			Check("诅咒效果生成的是遗物那套语句（没有 cardPlay）：失去生命 + 施加虚弱",
+				curseSrc.Contains("CreatureCmd.Damage(choiceContext, base.Owner.Creature,")
+				&& curseSrc.Contains("await PowerCmd.Apply<WeakPower>(choiceContext, base.Owner.Creature,"), curseSrc.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Damage"))?.Trim() ?? "(没找到)");
+			Check("勾了「战斗结束时自删」→ 生成 AfterCombatEnd + RemoveFromDeck(this)（本体「罪恶」那套）",
+				curseSrc.Contains("public override async Task AfterCombatEnd(CombatRoom room)")
+				&& curseSrc.Contains("await CardPileCmd.RemoveFromDeck(this);"), "在");
+			Check("诅咒声明了动态变量（卡面 {HpLoss:diff()} / {WeakPower:diff()} 才有数字）",
+				curseSrc.Contains("new HpLossVar(2m)") && curseSrc.Contains("new PowerVar<WeakPower>(1m)"), "变量在");
+			string curseCards = LocalizationGen.CardsJson(curseProbe);
+			Check("诅咒卡面描述照本体行文：「在你的回合结束时，如果这张牌在你的手牌中：…」",
+				curseCards.Contains("在你的回合结束时，如果这张牌在你的[gold]手牌[/gold]中：")
+				&& curseCards.Contains("失去 {HpLoss:diff()} 点生命。")
+				&& curseCards.Contains("施加 {WeakPower:diff()} 层虚弱。"), curseCards.Replace("\n", " "));
+			Check("「战斗结束时自删」也写进了卡面描述（不然玩家看不懂它为什么自己消失）",
+				curseCards.Contains("战斗结束时，如果这张牌在你的[gold]牌组[/gold]中，它会消失。"), "在");
+			string cursePool = CSharpCodeGen.CardPoolSource(curseProbe);
+			Check("诅咒也进你的卡池（本体的硬规则：每张卡都必须属于某个卡池，否则 Preload 直接抛异常）",
+				cursePool.Contains("ModelDb.Card<UiCheckCurse>(),"), "在池子里");
+			Check("诅咒被 FilterThroughEpochs 排除掉（不进奖励 / 商店，双保险）",
+				cursePool.Contains("keep.RemoveAll(c => c.Id == ModelDb.Card<UiCheckCurse>().Id"), "被排除");
+			Check("诅咒的自动类名和普通卡不撞（三张列表一起编号）",
+				Naming.From(curseProbe).CardClassName(curseProbe, curse) == "UiCheckCurse", Naming.From(curseProbe).CardClassName(curseProbe, curse));
+			Check("没填类名的诅咒也会自动编号、且不和普通卡重号",
+				Naming.From(curseProbe).CardClassName(curseProbe, new CardSpec { Name = "无名诅咒", Rarity = "Curse" })
+					!= Naming.From(curseProbe).CardClassName(curseProbe, curseProbe.Cards[^1]),
+				Naming.From(curseProbe).CardClassName(curseProbe, new CardSpec { Name = "无名诅咒", Rarity = "Curse" }));
+			Check("校验：诅咒没有效果也没描述 → 提醒它是个白板",
+				ProfileValidator.Validate(new CharacterProfile { Curses = { new CardSpec { Name = "白板诅咒", Rarity = "Curse" } } })
+					.Any(i => i.Message.Contains("白板牌")), "有提示");
+			Check("校验：诅咒的类型 / 稀有度不会被当成非法",
+				!ProfileValidator.Validate(new CharacterProfile { Curses = { new CardSpec { Name = "合法诅咒", Rarity = "Curse", CardType = "Curse", Cost = -1 } } })
+					.Any(i => i.IsError && (i.Message.Contains("类型非法") || i.Message.Contains("稀有度非法"))), "不报错");
+			// 按**稀有度**判断（不是按列表）：老存档里手改过稀有度的卡也要走诅咒模板
+			var rarityCurse = new CardSpec { Name = "手改稀有度", ClassName = "UiCheckCurseByRarity", Rarity = "Curse", CardType = "Curse", Cost = -1 };
+			Check("生成按稀有度认诅咒（不按它在哪个列表）", rarityCurse.IsCurseCard, "IsCurseCard");
+
+			// ---- 先古卡 ----
+			CharacterProfile ancientProbe = ProfileFactory.Sample();
+			var ancient = new CardSpec
+			{
+				Name = "自检先古卡", ClassName = "UiCheckAncient", CardType = "Power", Rarity = "Ancient", Cost = 2,
+			};
+			ancient.Effects.Add(new EffectSpec { Kind = "Block", Amount = 12m, TargetSide = "Self" });
+			ancientProbe.AncientCards.Add(ancient);
+			string ancientSrc = CSharpCodeGen.CardSource(ancientProbe, ancient, 0);
+			Check("先古卡的构造函数：稀有度 Ancient，其余和普通卡一样",
+				ancientSrc.Contains("public UiCheckAncient() : base(2, CardType.Power, CardRarity.Ancient, TargetType.Self) { }"), "构造在");
+			Check("先古卡不进随机生成 / 随机奖励（本体 CardFactory 显式排除 Ancient）",
+				ancientSrc.Contains("public override bool CanBeGeneratedInCombat => false;")
+				&& ancientSrc.Contains("public override bool CanBeGeneratedByModifiers => false;"), "在");
+			Check("先古卡照样是普通牌：OnPlay 里正常生成效果（获得 12 点格挡）",
+				ancientSrc.Contains("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)")
+				&& ancientSrc.Contains("CreatureCmd.GainBlock(base.Owner.Creature, base.DynamicVars.Block.BaseValue"), "OnPlay 在");
+			string ancientPool = CSharpCodeGen.CardPoolSource(ancientProbe);
+			Check("先古卡也进你的卡池、并且被排除出奖励（本体的「尘封的书」就是从卡池里挑先古卡）",
+				ancientPool.Contains("ModelDb.Card<UiCheckAncient>(),")
+				&& ancientPool.Contains("keep.RemoveAll(c => c.Id == ModelDb.Card<UiCheckAncient>().Id"), "在池子里");
+			Check("先古卡的卡面描述就是普通描述",
+				LocalizationGen.CardsJson(ancientProbe).Contains("获得 {Block:diff()} 点格挡。"), "普通描述");
+			Check("校验：先古卡的稀有度合法、不会被拦住",
+				!ProfileValidator.Validate(new CharacterProfile { AncientCards = { new CardSpec { Name = "合法先古卡", Rarity = "Ancient", Cost = 1 } } })
+					.Any(i => i.IsError && i.Message.Contains("稀有度非法")), "不报错");
+
+			// ---- 界面接线 ----
+			Check("有「诅咒 / 先古卡」选项卡", FindTab("诅咒 / 先古卡") is not null, FindTab("诅咒 / 先古卡") is null ? "没找到" : "找到了");
+			Check("诅咒列表绑的是 Profile.Curses、先古卡列表绑的是 Profile.AncientCards",
+				BindingOperations.GetBinding(CurseList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Curses"
+				&& BindingOperations.GetBinding(AncientCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.AncientCards",
+				(BindingOperations.GetBinding(CurseList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "?") + " / "
+				+ (BindingOperations.GetBinding(AncientCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "?"));
+			DependencyObject curseRoot = SelectTabRoot("诅咒 / 先古卡");
+			UpdateLayout();
+			List<string> curseTexts = TextsIn(curseRoot);
+			Check("两个列表都没选中时显示空态提示",
+				curseTexts.Any(t => t.Contains("请选择诅咒或先古卡")), string.Join(" / ", curseTexts.Take(5)));
+			Check("「添加诅咒 / 添加先古卡 / 删除 / 撤回删除」四个按钮都在",
+				curseTexts.Contains("添加诅咒") && curseTexts.Contains("添加先古卡")
+				&& curseTexts.Contains("删除") && curseTexts.Contains("撤回删除"), "控件在");
+			int curseBefore = Profile.Curses.Count;
+			ClickButtonByContent("添加诅咒", curseRoot);
+			UpdateLayout();
+			Check("点「添加诅咒」会加一条诅咒、并自动选中",
+				Profile.Curses.Count == curseBefore + 1 && ReferenceEquals(CurseList.SelectedItem, Profile.Curses[^1]),
+				$"{Profile.Curses.Count} 条");
+			CardSpec added = Profile.Curses[^1];
+			Check("新诅咒的默认值：费用 -1、类型 / 稀有度 Curse、勾上「不能被打出」",
+				added.Cost == -1 && added.CardType == "Curse" && added.Rarity == "Curse" && added.Unplayable, $"{added.Cost} / {added.CardType} / {added.Rarity}");
+			curseRoot = SelectTabRoot("诅咒 / 先古卡");
+			UpdateLayout();
+			// 空态那行是同一格里叠着的 TextBlock，**收起时仍在可视树里**（Visibility=Collapsed）——
+			// 所以这里查 IsVisible，不能只查文字在不在（TextsIn 是不过滤可见性的）
+			List<TextBlock> curseBlocks = new List<TextBlock>();
+			CollectTextBlocks(curseRoot, curseBlocks);
+			Check("选中诅咒后空态提示收起、诅咒详情面板出现",
+				!curseBlocks.Any(t => t.Text != null && t.Text.Contains("请选择诅咒或先古卡") && t.IsVisible)
+				&& curseBlocks.Any(t => t.Text == "诅咒属性" && t.IsVisible), "面板在");
+			Check("诅咒详情面板里的效果编辑器是「遗物那套」（没有「升级增量 / 数值 = X」那几行）",
+				curseBlocks.Any(t => t.Text == "诅咒属性" && t.IsVisible)
+				&& !curseBlocks.Any(t => t.Text == "升级增量" && t.IsVisible), "没有升级那两行");
+			int ancientBefore = Profile.AncientCards.Count;
+			ClickButtonByContent("添加先古卡", curseRoot);
+			UpdateLayout();
+			Check("点「添加先古卡」会加一条、稀有度默认 Ancient",
+				Profile.AncientCards.Count == ancientBefore + 1 && Profile.AncientCards[^1].Rarity == "Ancient",
+				$"{Profile.AncientCards.Count} 条");
+			curseRoot = SelectTabRoot("诅咒 / 先古卡");
+			UpdateLayout();
+			Check("先古卡面板里有「自定义关键词」和「升级后的关键字」（先古卡也是普通牌，能力齐全）",
+				TextsIn(curseRoot).Any(t => t.Contains("自定义关键词（勾选这张牌用到的）"))
+				&& TextsIn(curseRoot).Any(t => t.Contains("升级后的关键字")), "都在");
+			// 收尾：把自检加的东西删掉，后面的断言看不到它们
+			Profile.Curses.Remove(added);
+			Profile.AncientCards.RemoveAt(Profile.AncientCards.Count - 1);
+			UpdateLayout();
+			Check("诅咒 / 先古卡列表能正常删除（自检收尾）",
+				Profile.Curses.Count == curseBefore && Profile.AncientCards.Count == ancientBefore, "已清理");
 		}
 
 		RecheckEnvironment();

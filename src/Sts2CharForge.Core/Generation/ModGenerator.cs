@@ -76,14 +76,20 @@ public static class ModGenerator
             if (missingVars.Count > 0) varProblems.Add($"{modelName} → " + string.Join("、", missingVars));
         }
 
-        for (int i = 0; i < profile.Cards.Count; i++)
+        // 卡牌 / 诅咒 / 先古卡：三种都生成到 cs/Cards/ 下（诅咒和先古卡也是 CardModel 的子类），
+        // 只是各自的模板不同（诅咒：-1 费 + Curse 类型 + OnTurnEndInHand；先古卡：普通卡 + 稀有度 Ancient）
+        int cardIndex = 0;
+        foreach (var card in profile.AllCards)
         {
             // 本体卡引用（打击 / 防御）没有自己的类、没有自己的本地化，只有初始卡组里那一行
-            if (profile.Cards[i].IsVanillaCard) continue;
-            string cardCls = n.CardClassName(profile, profile.Cards[i]);
-            string cardSrc = CSharpCodeGen.CardSource(profile, profile.Cards[i], i);
+            if (card.IsVanillaCard) continue;
+            string cardCls = n.CardClassName(profile, card);
+            string cardSrc = card.IsCurseCard
+                ? CSharpCodeGen.CurseSource(profile, card, cardIndex)
+                : CSharpCodeGen.CardSource(profile, card, cardIndex);
             ProjectFilesGen.WriteText(Path.Combine(cs, "Cards", cardCls + ".cs"), cardSrc);
             AuditVars(cardCls, cardSrc);
+            cardIndex++;
         }
 
         // ===== 生成后自检：卡池 / 初始卡组里引用的卡类，必须有对应的 cs/Cards/*.cs =====
@@ -91,7 +97,7 @@ public static class ModGenerator
         // 生成出来是「SevenCard9.cs 里写着 class SevenCard11」，编译直接报
         // CS0246: 未能找到类型或命名空间名"SevenCard9"。这里提前拦住并说清楚是哪张卡。
         {
-            var writtenCards = profile.Cards.Where(c => !c.IsVanillaCard)
+            var writtenCards = profile.AllCards.Where(c => !c.IsVanillaCard)
                 .Select(c => n.CardClassName(profile, c)).ToHashSet(StringComparer.Ordinal);
             var referenced = System.Text.RegularExpressions.Regex
                 .Matches(CSharpCodeGen.CardPoolSource(profile), @"ModelDb\.Card<(\w+)>\(\)")
@@ -280,6 +286,8 @@ public static class ModGenerator
 
         Log($"  C# 源码：角色 1 + 池 3 + 卡牌 {profile.Cards.Count(c => !c.IsVanillaCard)}"
             + (profile.Cards.Any(c => c.IsVanillaCard) ? $"（另有本体卡引用 {profile.Cards.Count(c => c.IsVanillaCard)} 条，不生成类）" : "")
+            + (profile.Curses.Count > 0 ? $" + 诅咒 {profile.Curses.Count}" : "")
+            + (profile.AncientCards.Count > 0 ? $" + 先古卡 {profile.AncientCards.Count}" : "")
             + $" + 遗物 {profile.Relics.Count} + 药水 {profile.Potions.Count} + 自定义状态 {powerCount}"
             + $" + 延迟 Power {delayed.Count} + 临时 Power {tempPowers.Count}");
 
@@ -406,6 +414,8 @@ public static class ModGenerator
 | 类型 | 数量 |
 |---|---|
 | 卡牌 | {p.Cards.Count(c => !c.IsVanillaCard)} |
+| 诅咒 | {p.Curses.Count} |
+| 先古卡 | {p.AncientCards.Count} |
 | 遗物 | {p.Relics.Count} |
 | 药水 | {p.Potions.Count} |
 
