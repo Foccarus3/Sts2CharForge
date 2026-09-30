@@ -64,6 +64,12 @@ public static class LocalizationGen
             // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
             string cardBody = Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
+            // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
+            string customDesc = (c.CustomDescription ?? "").Trim();
+            if (customDesc.Length > 0)
+                cardBody = c.CustomDescriptionReplaces
+                    ? customDesc
+                    : (cardBody.Length == 0 ? customDesc : cardBody + "\n" + customDesc);
             dict[$"{entry}.description"] = keywordText.Length == 0
                 ? cardBody
                 : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
@@ -132,6 +138,24 @@ public static class LocalizationGen
         string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", _ => "手牌" };
         string pick = e.CardPick == "Chosen" ? "自己选" : "随机";
         return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}。";
+    }
+
+    /// <summary>
+    /// 「强化指定卡牌」（像本体「精准」）的一句话描述。
+    /// 数值 = 加多少（本场战斗内一直有效），负数 = 削弱那张卡。
+    /// 负数时写死绝对值（和「回复 / 失去生命」那几条一个写法）：卡面上印「额外造成 -4 点伤害」很别扭。
+    /// </summary>
+    private static string BoostCardText(CharacterProfile p, EffectSpec e, string var)
+    {
+        string card = CardNameOf(p, e.SpawnCardId);
+        bool block = e.BoostStat == "Block";
+        if (e.Amount < 0 && var != "X")
+            return block
+                ? $"你打出的{card}获得的格挡减少 {-e.Amount} 点（本场战斗内持续）。"
+                : $"你打出的{card}造成的伤害减少 {-e.Amount} 点（本场战斗内持续）。";
+        return block
+            ? $"你打出的{card}额外获得 {var} 点格挡（本场战斗内持续）。"
+            : $"你打出的{card}额外造成 {var} 点伤害（本场战斗内持续）。";
     }
 
     /// <summary>「给予卡牌关键词」在卡面上的名字：本体关键词用中文枚举名，自定义关键词用它的显示名。</summary>
@@ -330,6 +354,19 @@ public static class LocalizationGen
             dict[$"{entry}.title"] = "额外回合";
             dict[$"{entry}.description"] = "本回合结束后额外获得一个回合。";
             dict[$"{entry}.smartDescription"] = "本回合结束后额外获得一个回合。";
+        }
+        // 「强化指定卡牌」的强化 Power：它会挂在状态栏里（层数 = 加多少），
+        // 少了这段游戏查不到 title/description，悬停提示就会把原始键名原样印出来。
+        foreach (var e in CSharpCodeGen.CollectBoostEffects(p))
+        {
+            string entry = Naming.EntryOf(CSharpCodeGen.BoostPowerClassName(e, p));
+            string card = CardNameOf(p, e.SpawnCardId);
+            bool block = e.BoostStat == "Block";
+            dict[$"{entry}.title"] = $"强化：{card}";
+            dict[$"{entry}.description"] = block
+                ? $"你打出的{card}额外获得 {{Amount}} 点格挡，本场战斗内持续。"
+                : $"你打出的{card}额外造成 {{Amount}} 点伤害，本场战斗内持续。";
+            dict[$"{entry}.smartDescription"] = dict[$"{entry}.description"];
         }
         // 自定义状态（能力牌用）：键就是本体的规则 Id.Entry + ".title"（PowerModel.Title 默认就这么取）
         for (int i = 0; i < p.CustomPowers.Count; i++)
@@ -587,6 +624,8 @@ public static class LocalizationGen
                 : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。",
             // 给予卡牌关键词：数值 = 选几张牌（0 = 这张牌自己）
             "GiveKeyword" => GiveKeywordText(p, e, repeat, when),
+            // 强化指定卡牌（像本体「精准」对「小刀」）：本场战斗内，你打出的**那一张卡**伤害 / 格挡 +N
+            "BoostCard" => BoostCardText(p, e, var),
             // 击晕：本体里它不是状态（Power）而是「怪物意图」，所以单列一条（本体卡「口哨」那种）
             "Stun" => e.TargetSide == "Self"
                 ? $"{repeat}{when}自己被打晕（本回合不行动）。"

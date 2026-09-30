@@ -40,6 +40,7 @@
 | 从抽牌堆 / 弃牌堆拿牌到手牌 | 参考本体的「搜寻 / 全息影像 / 挖掘」：`CardSelectCmd.FromCombatPile` + `CardPileCmd.Add(选中, PileType.Hand)`，弹自己的选牌界面（提示语 `<ENTRY>.selectionScreenPrompt` 会一起生成） |
 | 获得卡牌 / 变化卡牌 / 删除卡牌（全局） | 直接改**牌组**（跨战斗永久生效）：`RunState.CreateCard` + `CardPileCmd.Add(card, PileType.Deck)` / `CardCmd.Transform` / `CardSelectCmd.FromDeckForRemoval` + `CardPileCmd.RemoveFromDeck` |
 | 获得卡牌奖励 | N 选一进牌组。挂「战斗胜利后」（状态 / 遗物）走本体战斗奖励（`room.AddExtraReward(new CardReward(...))`，结算界面多一条）；挂战斗中则当场弹选牌界面 |
+| 强化指定卡牌 | 像本体「精准」对「小刀」那样，只给**你指定的那一张卡**加伤害 / 格挡（见下文「强化指定卡牌」） |
 
 ### 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆
 
@@ -59,11 +60,11 @@
 
 ## 卡牌关键字
 
-「卡牌」页可勾选本体 `CardKeyword`：消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧
-（`Exhaust / Ethereal / Innate / Retain / Unplayable / Sly`，生成 `CanonicalKeywords` 覆写）。
-注：本体没有「永恒」这个关键字，最接近的是「固有（Innate，开局必在手牌）」。
+「卡牌」页可勾选本体 `CardKeyword`：消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒
+（`Exhaust / Ethereal / Innate / Retain / Unplayable / Sly / Eternal`，生成 `CanonicalKeywords` 覆写）。
+其中「永恒」的效果是**无法从你的牌组中移除或变化**（本体就是 `IsRemovable` / `IsTransformable` 两个开关）。
 
-除这 6 个之外，还可以用**效果**给牌加关键词 —— 见下面的「给予卡牌关键词」。
+除这 7 个之外，还可以用**效果**给牌加关键词 —— 见下面的「给予卡牌关键词」。
 （卡牌页不再有「临时保留 / 临时奇巧」两个勾选框，那两个需求现在由「给予卡牌关键词」+
 「数值 = 0（这张牌自己）」+「是否为临时关键词」实现。）
 
@@ -121,6 +122,41 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 
 所以状态栏上会看到「临时气势 +3」这样的条目，回合结束自动掉光；**别的来源加的层数不受影响**
 （撤掉的只是这次临时加的 X 层）。生成的类名是 `<角色类名>ForgeTemp<状态>`，多模组共存不撞车。
+
+## 强化指定卡牌（像本体「精准」对「小刀」）
+
+「卡牌 / 遗物 / 药水 / 自定义状态」的效果种类里有一项
+**「强化指定卡牌（像「精准」，+N 伤害/格挡）」**：
+
+- **目标卡** 下拉里选要强化的那张牌（自己的牌和本体卡都能选，**必填**）；
+- 它下面的 **强化什么** 里选 伤害（像「精准」）或 格挡（像「敏捷」）；
+- **数值** = 加多少，**填负数就是削弱**那张牌。
+
+生成的是挂在自己身上的一张状态（`<角色>ForgeBoost<目标卡><Damage|Block>Power`），
+钩子和本体那两个状态一模一样：
+
+| 强化什么 | 钩子 | 判定 |
+|---|---|---|
+| 伤害 | `ModifyDamageAdditive(Creature? target, decimal amount, ValueProp props, Creature? dealer, CardModel? cardSource, CardPlay? cardPlay)` | 只强化自己打出的、且 `props.IsPoweredAttack()` 的**那一张卡** |
+| 格挡 | `ModifyBlockAdditive(Creature target, decimal block, ValueProp props, CardModel? cardSource, CardPlay? cardPlay)` | 只强化那一张卡的 `IsPoweredCardOrMonsterMoveBlock()` |
+
+- 本体「精准」是用 `card.Tags.Contains(CardTag.Shiv)` 认小刀的，我们直接认**卡牌类型**
+  （`cardSource is not <目标卡>`），比按标签认更精确、也不要求那张牌带什么标签。
+- **层数 = 加多少**，本场战斗内一直有效（战斗结束状态自己消失，**不会改到存档里的卡牌**）。
+  状态栏里显示「强化：某某」和层数；`AllowNegative => true` 是为了让负数（削弱）也能挂上
+  （本体状态默认把负数夹到 0）。
+- 同一个「目标卡 + 伤害/格挡」只会生成**一个** Power（多张牌强化同一张卡时共用）。
+
+## 卡牌自定义描述（「卡牌」页 → 卡面预览下面）
+
+自动生成的卡面描述不合意时，可以在 **自定义描述** 里自己写一段（支持多行）：
+
+- 默认**追加**在自动描述后面（自动那句话还在，你在下面补一句）；
+- 勾上 **「替换掉自动生成的描述」** 就整段换成你写的（自动那句不生成）；
+- 给这张牌勾了自定义关键词时，关键词那一行仍然排在最前面（那是关键词机制在管，不属于效果描述）；
+- 「从工程恢复存档」也会把你写的这段读回来（多行、追不追加都能还原 ——
+  生成时写在卡牌 `.cs` 里的一行 `// CET:CustomDescReplace=… CET:CustomDescription=…` 标记，
+  换行转义成 `\n`；本地化表里认不出来，因为那张表里是「自动描述 + 你写的」拼起来的）。
 
 ## 自定义关键词（「自定义关键词」页）
 
@@ -330,13 +366,14 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 **万一存档被覆盖 / 改坏 / 整个删掉**：工程里带着全部信息，可以从工程反推回存档 ——
 
 - 界面：「配置存档」页 → **「从工程恢复存档…」**，选一个以前生成出来的模组工程目录，
-  反推出卡牌（费用 / 稀有度 / 关键字 / 每条效果的数值与升级增量 / 条件）、遗物、药水、自定义状态、
+  反推出卡牌（费用 / 稀有度 / 关键字 / 每条效果的数值与升级增量 / 条件 / 自定义描述）、遗物、药水、自定义状态、
   角色属性、本地化名字、上传过的图，另存为 `<工程名>_恢复.json`；
 - 命令行：`forge --recover "工程目录" --out "恢复.json"`（加 `--profile 旧.json` 可补上环境路径）。
 
 实现见 `src/Sts2CharForge.Core/Generation/ProjectRecovery.cs`：它是 `CSharpCodeGen` 的逆运算
 （`CanonicalVars` + 构造函数 + `OnPlay` + `OnUpgrade` + `IsPlayable` + 本地化表 + 卡池/遗物池顺序）。
-自检里有**往返测试**：示例配置 → 生成工程 → 反推 → 逐项比对（卡名 / 费用 / 效果 / 目标 / 升级 / 条件 / 池子归属）。
+自检里有**往返测试**：示例配置 → 生成工程 → 反推 → 逐项比对（卡名 / 费用 / 效果 / 目标 / 升级 / 条件 / 池子归属
+/ 强化指定卡牌 / 自定义描述）。
 
 静默保存（选解包工程目录、生成前）会先核对「内存里的配置」和「当前存档文件名」是否一致，
 不一致就不写，避免把别的配置写进这份存档。

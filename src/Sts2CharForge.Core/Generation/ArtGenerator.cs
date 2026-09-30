@@ -1027,6 +1027,11 @@ region = Rect2(0, 0, {rw}, {rh})
             wanted.Add((n.DelayedPowerClass(e), IconOfPower(e.PowerId), "下回合：" + EffectCatalog.PowerName(e.PowerId)));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p))
             wanted.Add((n.TempPowerClass(e), IconOfPower(e.PowerId), "临时：" + EffectCatalog.PowerName(e.PowerId)));
+        // 强化指定卡牌：伤害用本体「精准」那张、格挡用「敏捷」那张（就是同一件事：给某张卡加数值）
+        foreach (var e in CSharpCodeGen.CollectBoostEffects(p))
+            wanted.Add((n.BoostPowerClass(e),
+                e.BoostStat == "Block" ? "dexterity_power.png" : "accuracy_power.png",
+                "强化：" + (e.SpawnCardId ?? "?")));
 
         int copied = 0, neutral = 0;
         foreach (var (entry, vanillaIcon, why) in wanted.DistinctBy(w => w.Entry))

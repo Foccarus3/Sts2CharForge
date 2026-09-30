@@ -901,6 +901,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public bool HasCustomKeywords => _profile.CustomKeywords.Count > 0;
 	public bool NoCustomKeywords => _profile.CustomKeywords.Count == 0;
 
+	/// <summary>
+	/// 「强化指定卡牌」里「强化什么」的候选：伤害（像本体「精准」）/ 格挡（像「敏捷」）。
+	/// 是静态表，但走窗口属性绑定（和「增益 / 减益」那些下拉一个写法）。
+	/// </summary>
+	public IReadOnlyList<BoostStatOption> BoostStats => EffectCatalog.BoostStats;
+
 	public string UndoArtHint => HintOf(_artUndo);
 
 	public string UndoProfileHint => HintOf(_profileUndo);
@@ -6792,6 +6798,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			recSrc.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "EXHAUST", Name = "献祭" });
 			recSrc.KeywordRenames.Add(new VanillaKeywordRenameSpec { KeywordId = "INNATE", Description = "开局就在手里。" });
 			srcOwn[0].KeywordIds = new List<string> { "FATE", "回响" };
+			// 强化指定卡牌（像「精准」）：目标卡 / 强化什么 / 数值都要能从工程读回来（靠 // CET:BoostCard= 标记）
+			srcOwn[0].Effects.Add(new EffectSpec
+			{
+				Kind = "BoostCard", Amount = 3m, UpgradeAmount = 1m,
+				SpawnCardId = "SevenCrush", BoostStat = "Damage", TargetSide = "Self",
+			});
+			// 卡牌自定义描述（追加模式 + 多行）：靠 .cs 里的 // CET:CustomDescription= 标记读回来
+			srcOwn[2].CustomDescription = "自检：第一行\n第二行";
+			// 另一种模式：整段替换掉自动描述（标记里的 CustomDescReplace=1 也要读回来）
+			srcOwn[3].CustomDescription = "自检：只留这段话。";
+			srcOwn[3].CustomDescriptionReplaces = true;
 			var gen = ModGenerator.Generate(recSrc);
 			// 失败时把「为什么」打出来（校验错误 + 日志尾部）—— 不然这条 FAIL 只有空细节，根本没法查
 			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot),
@@ -7009,6 +7026,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				recOwn[0].InStartingDeck && recOwn[0].StartingCopies == srcOwn[0].StartingCopies
 				&& rec.Profile.Cards.Count(c => !c.InCardPool) == recSrc.Cards.Count(c => !c.InCardPool),
 				$"初始 {recOwn[0].StartingCopies} 张 / 不入池 {rec.Profile.Cards.Count(c => !c.InCardPool)} 张");
+			Check("从工程恢复：强化指定卡牌找回来了（目标卡 / 伤害还是格挡 / 数值 / 升级增量）",
+				recOwn[0].Effects.Any((EffectSpec x) => x.Kind == "BoostCard" && x.SpawnCardId == "SevenCrush"
+					&& x.BoostStat == "Damage" && x.Amount == 3m && x.UpgradeAmount == 1m),
+				string.Join(" / ", recOwn[0].Effects.Select((EffectSpec x) => $"{x.Kind} {x.Amount}+{x.UpgradeAmount} {x.SpawnCardId}")));
+			Check("从工程恢复：卡牌自定义描述找回来了（多行也完整，没被截成一行）",
+				recOwn[2].CustomDescription == "自检：第一行\n第二行" && !recOwn[2].CustomDescriptionReplaces,
+				(recOwn[2].CustomDescription ?? "(空)").Replace("\n", "\\n"));
+			Check("从工程恢复：勾了「替换掉自动描述」的那张也找回来了",
+				recOwn[3].CustomDescription == "自检：只留这段话。" && recOwn[3].CustomDescriptionReplaces,
+				$"{(recOwn[3].CustomDescription ?? "(空)")} / 替换={recOwn[3].CustomDescriptionReplaces}");
 		}
 		catch (Exception ex)
 		{
@@ -7176,6 +7203,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					CardList.SelectedIndex = Profile.Cards.Count - 1;
 					UpdateLayout();
 				}
+			}
+
+			// ===== 「强化指定卡牌」的「强化什么」下拉 +「目标卡」标签（界面上真的能看到 / 双向绑得上）=====
+			{
+				CardSpec probeBoostFxCard = new CardSpec { Name = "自检强化界面", ClassName = "UiCheckBoostTab", Cost = 1, InCardPool = true };
+				probeBoostFxCard.Effects.Add(new EffectSpec
+				{
+					Kind = "BoostCard", Amount = 2m, SpawnCardId = "SevenCrush", BoostStat = "Damage", TargetSide = "Self",
+				});
+				Profile.Cards.Add(probeBoostFxCard);
+				CardList.SelectedItem = probeBoostFxCard;
+				CardEffectList.SelectedIndex = 0;
+				UpdateLayout();
+				DependencyObject boostRoot = SelectTabRoot("卡牌");
+				UpdateLayout();
+				List<TextBlock> boostTexts = new List<TextBlock>();
+				CollectTextBlocks(boostRoot, boostTexts);
+				Check("「目标卡」那一行的标签写明了它也用于「强化」（生成 / 变化 / 强化用）",
+					boostTexts.Any((TextBlock t) => t.Text == "目标卡（生成 / 变化 / 强化用）" && t.IsVisible), "标签在");
+				Check("选到「强化指定卡牌」时「强化什么」那一行才会出现（IsBoostCard 驱动）",
+					boostTexts.Any((TextBlock t) => t.Text == "强化什么" && t.IsVisible), "标签在");
+				List<ComboBox> boostCombos = new List<ComboBox>();
+				CollectCombos(boostRoot, boostCombos);
+				ComboBox? statCombo = boostCombos.FirstOrDefault((ComboBox c) => c.SelectedValuePath == "Id"
+					&& BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "BoostStat");
+				Check("「强化什么」下拉绑在效果的 BoostStat 上（候选 = 伤害 / 格挡两项）",
+					statCombo is not null && statCombo.IsVisible && statCombo.Items.Count == EffectCatalog.BoostStats.Count
+					&& (statCombo.SelectedValue as string) == "Damage",
+					statCombo is null ? "没找到下拉" : $"选中={statCombo.SelectedValue ?? "(空)"} / 候选 {statCombo.Items.Count} 项");
+				if (statCombo is not null)
+				{
+					statCombo.SelectedValue = "Block";
+					UpdateLayout();
+					Check("下拉改成「格挡」后效果上跟着变（生成出来就是 ModifyBlockAdditive 那套）",
+						probeBoostFxCard.Effects[0].BoostStat == "Block", probeBoostFxCard.Effects[0].BoostStatZh);
+				}
+				// 收尾：换回普通效果 → 「强化什么」那一行收起（没有绑定残留）
+				probeBoostFxCard.Effects[0].Kind = "Damage";
+				UpdateLayout();
+				boostRoot = SelectTabRoot("卡牌");
+				UpdateLayout();
+				List<TextBlock> boostTexts2 = new List<TextBlock>();
+				CollectTextBlocks(boostRoot, boostTexts2);
+				Check("换回普通效果后「强化什么」那一行收起（不残留）",
+					!boostTexts2.Any((TextBlock t) => t.Text == "强化什么" && t.IsVisible), "已收起");
+				Profile.Cards.Remove(probeBoostFxCard);
+				CardList.SelectedIndex = Profile.Cards.Count - 1;
+				UpdateLayout();
 			}
 			// 勾选框 / 字段都要能双向编辑到「列表里选中的那一只」上
 			bool oldEnabled2 = false, oldGuard = false;
@@ -9864,6 +9939,144 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			tempPowerRelic.Relics.Add(tempPowerRelicSpec);
 			Check("遗物上也能用临时增益",
 				CSharpCodeGen.RelicSource(tempPowerRelic, tempPowerRelicSpec, 0).Contains($"PowerCmd.Apply<{Naming.From(tempPowerRelic).TempPowerClass(tempPowerRelicSpec.Effects[0])}>("), "遗物也支持");
+		}
+
+		// ===== 强化指定卡牌（像本体「精准」对「小刀」）+ 卡牌自定义描述 =====
+		{
+			Check("效果种类里有「强化指定卡牌（像「精准」，+N 伤害/格挡）」",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "BoostCard"), "在");
+			Check("「强化什么」有伤害 / 格挡两项（伤害 = 精准、格挡 = 敏捷那套）",
+				EffectCatalog.BoostStats.Count == 2
+				&& EffectCatalog.BoostStats.Any((BoostStatOption s) => s.Id == "Damage")
+				&& EffectCatalog.BoostStats.Any((BoostStatOption s) => s.Id == "Block"),
+				string.Join("/", EffectCatalog.BoostStats.Select((BoostStatOption s) => s.Id)));
+			Check("强化指定卡牌能放在状态触发器里（只是给自己挂一张 Power）",
+				PowerTriggers.Supports("BoostCard"), "在白名单里");
+
+			CharacterProfile boostProbe = ProfileFactory.Sample();
+			CardSpec boostCard = new CardSpec
+			{
+				Name = "自检精准", ClassName = "UiCheckBoost", CardType = "Power", Rarity = "Rare", Cost = 1, InCardPool = true,
+			};
+			// 一张牌同时挂两种强化：目标卡 / 强化什么 / 数值三样都要各走各的（变量名会自动起别名 Boost2）
+			boostCard.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 3m, UpgradeAmount = 2m, SpawnCardId = "SevenSlash", BoostStat = "Damage", TargetSide = "Self" });
+			boostCard.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 2m, SpawnCardId = "SevenGuard", BoostStat = "Block", TargetSide = "Self" });
+			boostProbe.Cards.Add(boostCard);
+			string boostSrc = CSharpCodeGen.CardSource(boostProbe, boostCard, 0);
+			string boostDmgCls = Naming.From(boostProbe).BoostPowerClass(boostCard.Effects[0]);
+			string boostBlkCls = Naming.From(boostProbe).BoostPowerClass(boostCard.Effects[1]);
+			Check("强化 Power 的类名带角色前缀 + 目标卡 + 伤害/格挡（两个模组 / 两种强化都不会撞模型 ID）",
+				boostDmgCls == "SevenForgeBoostSevenSlashDamagePower" && boostBlkCls == "SevenForgeBoostSevenGuardBlockPower",
+				boostDmgCls + " / " + boostBlkCls);
+			Check("打出去时挂的是生成的强化 Power，层数 = 数值（挂在自己身上）",
+				boostSrc.Contains($"await PowerCmd.Apply<{boostDmgCls}>(choiceContext, base.Owner.Creature,")
+				&& boostSrc.Contains($"await PowerCmd.Apply<{boostBlkCls}>(choiceContext, base.Owner.Creature,"), "挂在身上");
+			Check("两条强化各声明一个变量（第二次自动起别名 Boost2，不会撞 DynamicVarSet 的键）",
+				boostSrc.Contains("new DynamicVar(\"Boost\", 3m)") && boostSrc.Contains("new DynamicVar(\"Boost2\", 2m)"),
+				"CET:BoostCard 两条");
+			var boostCardVars = CSharpCodeGen.VarNamesOf(boostCard.Effects);
+			Check("卡面描述里两个数字都是 {…:diff()} 占位符（升级后数字会跟着变）",
+				CSharpCodeGen.DisplayVarNameOf(boostCard.Effects[0], boostCardVars) == "Boost"
+				&& CSharpCodeGen.DisplayVarNameOf(boostCard.Effects[1], boostCardVars) == "Boost2",
+				CSharpCodeGen.DisplayVarNameOf(boostCard.Effects[0], boostCardVars) + " / " + CSharpCodeGen.DisplayVarNameOf(boostCard.Effects[1], boostCardVars));
+
+			string boostPowers = CSharpCodeGen.BoostPowersSource(boostProbe);
+			Check("伤害那条照本体「精准」写：ModifyDamageAdditive + 只看这张卡",
+				boostPowers.Contains("public override decimal ModifyDamageAdditive(Creature? target, decimal amount, ValueProp props, Creature? dealer, CardModel? cardSource, CardPlay? cardPlay)")
+				&& boostPowers.Contains("if (cardSource is not SevenSlash) return 0m;")
+				&& boostPowers.Contains("if (!props.IsPoweredAttack()) return 0m;"), "精准那套");
+			Check("格挡那条照本体「敏捷」写：ModifyBlockAdditive + 只看这张卡",
+				boostPowers.Contains("public override decimal ModifyBlockAdditive(Creature target, decimal block, ValueProp props, CardModel? cardSource, CardPlay? cardPlay)")
+				&& boostPowers.Contains("if (cardSource is not SevenGuard) return 0m;")
+				&& boostPowers.Contains("if (!props.IsPoweredCardOrMonsterMoveBlock()) return 0m;"), "敏捷那套");
+			Check("允许负数（填负数 = 削弱那张卡；本体状态默认会把负数夹到 0）",
+				boostPowers.Contains("public override bool AllowNegative => true;"), "AllowNegative");
+			Check("同一个「目标卡 + 强化什么」只生成一个 Power（去重）",
+				CSharpCodeGen.CollectBoostEffects(boostProbe).Count() == 2, $"{CSharpCodeGen.CollectBoostEffects(boostProbe).Count()} 个");
+			Check("没配强化时不生成 BoostPowers（UsesBoostCard = false）",
+				!CSharpCodeGen.UsesBoostCard(ProfileFactory.Sample()), "不生成");
+
+			string boostCardsLoc = LocalizationGen.CardsJson(boostProbe);
+			Check("卡面描述写清「哪张卡、伤害还是格挡、加多少、本场战斗内持续」",
+				boostCardsLoc.Contains("你打出的七式斩额外造成 {Boost:diff()} 点伤害（本场战斗内持续）。")
+				&& boostCardsLoc.Contains("你打出的七的防线额外获得 {Boost2:diff()} 点格挡（本场战斗内持续）。"),
+				boostCardsLoc.Replace("\n", " "));
+			string boostPowersLoc = LocalizationGen.PowersJson(boostProbe);
+			Check("强化 Power 有本地化（状态栏显示「强化：七式斩」+ 说明，不会印原始键名）",
+				boostPowersLoc.Contains(Naming.EntryOf(boostDmgCls) + ".title") && boostPowersLoc.Contains("强化：七式斩"), "有本地化");
+			Check("回读标记写出来了（CET:BoostCard=… CET:BoostStat=…）",
+				boostSrc.Contains("CET:BoostCard=SevenSlash CET:BoostStat=Damage")
+				&& boostSrc.Contains("CET:BoostCard=SevenGuard CET:BoostStat=Block"), "标记在");
+			Check("列表里写清强化的是哪张卡、强化什么、加多少（负数会显示 -）",
+				boostCard.Effects[0].Display.Contains("强化「SevenSlash」的伤害 +3")
+				&& boostCard.Effects[1].Display.Contains("强化「SevenGuard」的格挡 +2"), boostCard.Effects[0].Display);
+			CharacterProfile boostNeg = ProfileFactory.Sample();
+			CardSpec boostNegCard = new CardSpec
+			{
+				Name = "自检削弱", ClassName = "UiCheckBoostNeg", Cost = 1,
+				Effects = { new EffectSpec { Kind = "BoostCard", Amount = -2m, SpawnCardId = "SevenSlash", BoostStat = "Damage", TargetSide = "Self" } },
+			};
+			boostNeg.Cards.Add(boostNegCard);
+			Check("数值填负数 → 描述写「造成的伤害减少 2 点」（不会印出「额外造成 -2 点伤害」）",
+				LocalizationGen.CardsJson(boostNeg).Contains("你打出的七式斩造成的伤害减少 2 点（本场战斗内持续）。"),
+				LocalizationGen.CardsJson(boostNeg).Replace("\n", " "));
+
+			Check("没选目标卡 → 校验报错（不然会变成「强化所有卡」）",
+				ProfileValidator.Validate(new CharacterProfile { Cards = { new CardSpec { Name = "空强化", Cost = 1, Effects = { new EffectSpec { Kind = "BoostCard", Amount = 2m } } } } })
+					.Any((ValidationIssue i) => i.IsError && i.Message.Contains("没选目标卡")), "有错误");
+			Check("数值 0 → 提示（挂个 0 层强化等于没效果）",
+				ProfileValidator.Validate(new CharacterProfile { Cards = { new CardSpec { Name = "零强化", Cost = 1, Effects = { new EffectSpec { Kind = "BoostCard", Amount = 0m, SpawnCardId = "SevenSlash" } } } } })
+					.Any((ValidationIssue i) => i.Message.Contains("数值是 0")), "有提示");
+			CharacterProfile boostRelic = ProfileFactory.Sample();
+			RelicSpec boostRelicSpec = new RelicSpec { Name = "自检强化遗物", Trigger = "PlayerTurnStart", Rarity = "Common" };
+			boostRelicSpec.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 1m, SpawnCardId = "SevenSlash", BoostStat = "Damage", TargetSide = "Self" });
+			boostRelic.Relics.Add(boostRelicSpec);
+			Check("遗物上也能用（开场就挂上强化）",
+				CSharpCodeGen.RelicSource(boostRelic, boostRelicSpec, 0)
+					.Contains($"PowerCmd.Apply<{Naming.From(boostRelic).BoostPowerClass(boostRelicSpec.Effects[0])}>(choiceContext, base.Owner.Creature,"),
+				"遗物也支持");
+			CharacterProfile boostTrigger = ProfileFactory.Sample();
+			CustomPowerSpec boostPow = new CustomPowerSpec { Name = "自检强化状态" };
+			PowerTriggerSpec boostTurn = new PowerTriggerSpec { Kind = "TurnStart" };
+			boostTurn.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 1m, SpawnCardId = "SevenSlash", BoostStat = "Damage", TargetSide = "Self" });
+			boostPow.Triggers.Add(boostTurn);
+			boostTrigger.CustomPowers.Add(boostPow);
+			Naming.From(boostTrigger);      // 生成器内部也是这么设「当前角色」的（Ambient 兜底名按它算）
+			Check("自定义状态的触发器里也能用（挂的是生成的强化 Power）",
+				CustomPowerGen.Source(boostTrigger, boostPow, 0)
+					.Contains($"PowerCmd.Apply<{Naming.AmbientBoostPowerClass(boostTurn.Effects[0])}>("), "状态触发器也支持");
+
+			// ---- 卡牌自定义描述（追加 / 替换两种）----
+			CharacterProfile descProbe = ProfileFactory.Sample();
+			CardSpec descAppend = new CardSpec
+			{
+				Name = "自检追加描述", ClassName = "UiCheckDescAppend", Cost = 1,
+				Effects = { new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" } },
+				CustomDescription = "第一行\n第二行",
+			};
+			CardSpec descReplace = new CardSpec
+			{
+				Name = "自检替换描述", ClassName = "UiCheckDescReplace", Cost = 1,
+				Effects = { new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" } },
+				CustomDescription = "只留这段话。",
+				CustomDescriptionReplaces = true,
+			};
+			descProbe.Cards.Add(descAppend);
+			descProbe.Cards.Add(descReplace);
+			string descLoc = LocalizationGen.CardsJson(descProbe);
+			Check("自定义描述默认**追加**在自动描述后面（自动那句还在）",
+				descLoc.Contains("获得 {Block:diff()} 点格挡。\\n第一行\\n第二行"), "追加");
+			Check("勾了「替换掉自动生成的描述」就整段换掉（自动那句不在了）",
+				descLoc.Contains("\"UI_CHECK_DESC_REPLACE.description\": \"只留这段话。\""), "替换");
+			Check("没填自定义描述时卡片描述和以前一模一样（不留多余空行）",
+				!LocalizationGen.CardsJson(ProfileFactory.Sample()).Contains("\\n\\n"), "没多余空行");
+			string descAppendSrc = CSharpCodeGen.CardSource(descProbe, descAppend, 0);
+			string descReplaceSrc = CSharpCodeGen.CardSource(descProbe, descReplace, 0);
+			Check("自定义描述写进 .cs 的单行标记（换行转义成 \\n，不然标记会被截断）",
+				descAppendSrc.Contains("// CET:CustomDescReplace=0 CET:CustomDescription=第一行\\n第二行")
+				&& descReplaceSrc.Contains("// CET:CustomDescReplace=1 CET:CustomDescription=只留这段话。"), "标记在");
+			Check("两行文本转义 / 还原是一对（回读后还是两行）",
+				CSharpCodeGen.UnescapeMarker(CSharpCodeGen.EscapeMarker("第一行\n第二行")) == "第一行\n第二行", "往返一致");
 		}
 
 		RecheckEnvironment();

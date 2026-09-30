@@ -1004,6 +1004,15 @@ public static class ProfileValidator
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
 
+            // 强化指定卡牌（像「精准」）：没选目标卡就没意义（会变成「强化所有卡」，和这个效果的本意不符）
+            if (e.Kind == "BoostCard")
+            {
+                if (string.IsNullOrWhiteSpace(e.SpawnCardId))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」没选目标卡 —— 请在「目标卡」里选一张要强化的牌。"));
+                if (e.Amount == 0m)
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 0 → 挂上一个 0 层的强化状态，等于没有效果。"));
+            }
+
             // 药水：实际打谁由药水的「作用目标」决定，效果里的对象只影响描述，容易配出不一致
             if (potionTargetType is not null)
             {

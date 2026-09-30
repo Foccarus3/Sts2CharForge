@@ -79,6 +79,8 @@ public static class PowerTriggers
         "Damage", "Block", "Draw", "Energy", "Heal", "HpLoss", "MaxHp", "Gold",
         "ExtraResource", "ApplyPower", "TempPower", "Stun", "GenerateCard", "ExtraTurn", "CardReward",
         "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal",
+        // 强化指定卡牌：只是给自己挂一张强化 Power（不需要卡牌上下文），状态触发器里也能用
+        "BoostCard",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>

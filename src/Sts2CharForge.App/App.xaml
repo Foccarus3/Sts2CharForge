@@ -101,12 +101,12 @@
                     </local:SearchComboBox.ItemTemplate>
                 </local:SearchComboBox>
 
-                <TextBlock Grid.Row="6" Grid.Column="0" Text="目标卡（生成 / 变化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBlock Grid.Row="6" Grid.Column="0" Text="目标卡（生成 / 变化 / 强化用）" Style="{StaticResource Label}" MinWidth="96"/>
                 <local:SearchComboBox Grid.Row="6" Grid.Column="1"
                                       SearchPath="Display"
                                       ItemsSource="{Binding AllCards, RelativeSource={RelativeSource AncestorType=Window}}"
                                       SelectedValuePath="Id" SelectedValue="{Binding SpawnCardId, Mode=TwoWay}"
-                                      ToolTip="「生成卡牌」= 生成哪张卡；「变化卡牌」= 变成哪张卡（留空 = 随机变化）。直接打字搜索，点选项或按回车自动补全。">
+                                      ToolTip="「生成卡牌」= 生成哪张卡；「变化卡牌」= 变成哪张卡（留空 = 随机变化）；「强化指定卡牌」= 强化哪一张卡（必填）。直接打字搜索，点选项或按回车自动补全。">
                     <local:SearchComboBox.ItemTemplate>
                         <!-- 中文名 + 英文类名都留着（Display 里已经拼好了） -->
                         <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
@@ -166,6 +166,18 @@
                               Visibility="{Binding IsGiveKeyword, Converter={StaticResource BoolToVis}}"
                               IsChecked="{Binding TempKeyword}"
                               ToolTip="勾上 = 这个关键词只本回合有效：保留 / 奇巧走本体的「单回合」标记，其它关键词（含自定义）会在回合结束时被摘掉、卡面上那几个字也一起消失。不勾 = 一直带着。"/>
+                    <!-- 「强化指定卡牌」专用：紧跟「目标卡」，因为上面那个下拉选的就是要强化的那张卡。
+                         数值 = 加多少（本场战斗内一直有效），填负数就是削弱那张卡。 -->
+                    <Grid Visibility="{Binding IsBoostCard, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="强化什么" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding BoostStats, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding BoostStat}"
+                                  ToolTip="像本体的「精准」那样给指定的那张卡加伤害，或者像「敏捷」那样加格挡。上面「目标卡」选的那张牌就是要强化的牌；「数值」= 加多少（本场战斗内一直有效，填负数就是削弱）。"/>
+                    </Grid>
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->

@@ -36,6 +36,9 @@ public sealed record EffectKindOption(string Kind, string Display, string Unit, 
 /// <summary>「给予卡牌关键词」里能选的一个关键词（本体枚举名 或 自定义关键词的键）。</summary>
 public sealed record KeywordChoiceOption(string Id, string Display, bool IsCustom);
 
+/// <summary>「强化指定卡牌」强化的是什么：伤害 / 格挡（本体「精准」是伤害、「敏捷」是格挡）。</summary>
+public sealed record BoostStatOption(string Id, string Display);
+
 public sealed record TriggerOption(string Id, string Display, string HookSignature);
 
 /// <summary>
@@ -530,6 +533,13 @@ public static class EffectCatalog
         !string.IsNullOrWhiteSpace(name)
         && VanillaKeywordChoices.Any(k => string.Equals(k.Id, name.Trim(), StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>「强化指定卡牌」能强化的两种数值。</summary>
+    public static IReadOnlyList<BoostStatOption> BoostStats { get; } = new[]
+    {
+        new BoostStatOption("Damage", "伤害（像本体「精准」对「小刀」）"),
+        new BoostStatOption("Block", "格挡（像本体「敏捷」）"),
+    };
+
     /// <summary>本体关键词枚举名规范化（大小写按枚举写死的那份）。</summary>
     public static string? NormalizeVanillaKeyword(string? name) =>
         VanillaKeywordChoices.FirstOrDefault(k => string.Equals(k.Id, name?.Trim(), StringComparison.OrdinalIgnoreCase))?.Id;
@@ -565,6 +575,10 @@ public static class EffectCatalog
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
         // 我们照它生成：被打晕的敌人这一回合什么都不做。
         new EffectKindOption("Stun", "击晕（敌人本回合不行动）", "—", 0, 0, false, true),
+        // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
+        // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
+        // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。
+        new EffectKindOption("BoostCard", "强化指定卡牌（像「精准」，+N 伤害/格挡）", "点", -99, 99, false, false),
         // 临时增益：本回合内 +X 层，回合结束时把这次加的 X 层撤掉（本体 FlexPotion 的
         // TemporaryStrengthPower 就是这套 —— 生成的 <角色>ForgeTemp<状态> 也是照它写的）。
         // 数值 = 层数（不按回合计时），作用对象沿用「施加增益/减益」那一套（自己 / 指定敌人 / 全体敌人）。

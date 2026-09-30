@@ -50,6 +50,9 @@ public sealed record Naming(
     /// <summary>「临时增益（本回合 +X）」的临时 Power 类名（兜底用当前角色）。</summary>
     public static string AmbientTempPowerClass(EffectSpec e) => _currentCharClass + TempPowerSuffix(e);
 
+    /// <summary>「强化指定卡牌」用的 Power 类名（兜底用当前角色）。</summary>
+    public static string AmbientBoostPowerClass(EffectSpec e) => _currentCharClass + BoostPowerSuffix(e);
+
     public string CardClassName(CardSpec c, int index) =>
         IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
 
@@ -85,6 +88,25 @@ public sealed record Naming(
     /// 回合结束时把它摘掉（保留 / 奇巧走本体自己的单回合标记，不用这个）。
     /// </summary>
     public string TempKeywordPowerClass => CharClass + "ForgeTempKeywordPower";
+
+    /// <summary>
+    /// 「强化指定卡牌」（像本体「精准」）用的 Power：
+    /// <c>&lt;角色&gt;ForgeBoost&lt;目标卡类名&gt;&lt;Damage|Block&gt;Power</c>。
+    /// 它挂在自己身上，只给**那一张卡**的伤害 / 格挡加 N。
+    /// </summary>
+    public string BoostPowerClass(EffectSpec e) => CharClass + BoostPowerSuffix(e);
+
+    /// <summary>强化 Power 的固定后半段（回读时按它认「强化指定卡牌」）。</summary>
+    public static string BoostPowerSuffix(EffectSpec e) =>
+        "ForgeBoost" + SafeName(e.SpawnCardId) + (e.BoostStat == "Block" ? "Block" : "Damage") + "Power";
+
+    /// <summary>把用户填的卡牌类名收拾成能直接拼进标识符的样子（类名允许留空 / 填中文）。</summary>
+    private static string SafeName(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "Card";
+        var chars = raw.Trim().Where(ch => char.IsLetterOrDigit(ch) && ch < 128).ToArray();
+        return chars.Length == 0 ? "Card" : new string(chars);
+    }
 
     /// <summary>「下回合生效」用的延迟 Power（<c>&lt;角色&gt;ForgeDelayed&lt;状态&gt;</c>）。</summary>
     public string DelayedPowerClass(EffectSpec e) => CharClass + DelayedPowerSuffix(e);

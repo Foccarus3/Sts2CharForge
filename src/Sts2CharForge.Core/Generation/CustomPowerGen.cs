@@ -504,6 +504,12 @@ public static class CustomPowerGen
                     playerExpr: "base.Owner.Player", creatureExpr: "base.Owner", sourceExpr: "null", selfAllowed: false);
                 break;
 
+            // 强化指定卡牌：状态触发器里也能挂（挂在自己身上，只给那一张卡加伤害 / 格挡）
+            case "BoostCard":
+                w.Line(CSharpCodeGen.BoostMarker(e));
+                w.Line($"await PowerCmd.Apply<{Naming.AmbientBoostPowerClass(e)}>(choiceContext, base.Owner, {amt}, base.Owner, null);");
+                break;
+
             // 临时增益（本回合 +X，回合结束撤掉）：打的是生成的临时 Power
             case "TempPower":
                 switch (e.TargetSide)

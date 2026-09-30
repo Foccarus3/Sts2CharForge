@@ -191,6 +191,7 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(PetSacrificeFormulaZh));
                 Raise(nameof(IsPetSacrifice));   // 「收益 / 公式 / 倍率」三行的显隐绑的就是它
                 Raise(nameof(IsGiveKeyword));    // 「给予关键词 / 是否为临时关键词」两行的显隐绑的就是它
+                Raise(nameof(IsBoostCard));      // 「强化什么（伤害 / 格挡）」那一行的显隐绑的就是它
                 Raise(nameof(IsSlowPower));
                 Raise(nameof(Display));
             }
@@ -359,6 +360,24 @@ public sealed class EffectSpec : SpecBase
     /// <summary>这条效果是在「给予卡牌关键词」。</summary>
     [JsonIgnore]
     public bool IsGiveKeyword => Kind == "GiveKeyword";
+
+    // ===== 强化指定卡牌（BoostCard，像本体「精准」对「小刀」）=====
+    private string _boostStat = "Damage";
+
+    /// <summary>强化的是伤害还是格挡（见 <see cref="EffectCatalog.BoostStats"/>）。</summary>
+    public string BoostStat
+    {
+        get => _boostStat;
+        set { if (Set(ref _boostStat, value)) { Raise(nameof(BoostStatZh)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>界面 / 描述里用：这条效果强化的是伤害还是格挡。</summary>
+    [JsonIgnore]
+    public string BoostStatZh => BoostStat == "Block" ? "格挡" : "伤害";
+
+    /// <summary>这条效果是在「强化指定卡牌」。</summary>
+    [JsonIgnore]
+    public bool IsBoostCard => Kind == "BoostCard";
 
     /// <summary>
     /// 要给的关键词在界面上的名字：本体关键词中文名（Retain → 保留），
@@ -594,6 +613,9 @@ public sealed class EffectSpec : SpecBase
                 "ApplyPower" => "增益/减益 " + (PowerId ?? "?"),
                 // 击晕：本体没有这个状态，它是怪物意图（本体卡「口哨」那种），所以单列一条
                 "Stun" => "击晕",
+                // 强化指定卡（像「精准」）：数值 = 加多少，目标卡 = 强化哪张
+                "BoostCard" => $"强化「{(string.IsNullOrWhiteSpace(SpawnCardId) ? "?" : SpawnCardId)}」的{BoostStatZh} "
+                    + (Amount >= 0 ? "+" : "") + Amount.ToString("0.##"),
                 // 临时增益（本回合 +X，回合结束撤掉）：界面上写清「临时」，别和普通的「施加」看混
                 "TempPower" => "临时增益（本回合）" + (PowerId ?? "?"),
                 // 给予关键词：数值 = 选几张牌（0 = 这张牌自己），后面跟关键词名与是否临时
@@ -701,6 +723,34 @@ public sealed class CardSpec : SpecBase
     public bool InStartingDeck { get => _inStartingDeck; set => Set(ref _inStartingDeck, value); }
     public int StartingCopies { get => _startingCopies; set => Set(ref _startingCopies, value); }
     public bool InCardPool { get => _inCardPool; set => Set(ref _inCardPool, value); }
+
+    private string _customDescription = "";
+
+    /// <summary>
+    /// 卡牌自定义描述（留空 = 只用自动生成的那段）。
+    ///
+    /// 里面可以照常写本体的占位符（例如 <c>造成 {Damage:diff()} 点伤害</c> 会显示成升级后的数字、
+    /// <c>[gold]…[/gold]</c> 是金色富文本），也可以只写一句风味文字。
+    /// 默认**追加**在自动描述后面（不勾 <see cref="CustomDescriptionReplaces"/>）。
+    /// </summary>
+    public string CustomDescription
+    {
+        get => _customDescription;
+        set { if (Set(ref _customDescription, value ?? "")) { Raise(nameof(HasCustomDescription)); Raise(nameof(Display)); } }
+    }
+
+    private bool _customDescriptionReplaces;
+
+    /// <summary>自定义描述是不是**替换**掉自动生成的那段（不勾 = 追加在后面）。</summary>
+    public bool CustomDescriptionReplaces
+    {
+        get => _customDescriptionReplaces;
+        set { if (Set(ref _customDescriptionReplaces, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>填了自定义描述（界面上那一栏的显隐用）。</summary>
+    [JsonIgnore]
+    public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
     private bool _isVanilla;
 

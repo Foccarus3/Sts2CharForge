@@ -227,6 +227,15 @@ public static class ModGenerator
                 + string.Join("、", tempPowers.Select(e => EffectCatalog.PowerName(e.PowerId))));
         }
 
+        // 强化指定卡牌（像本体「精准」对「小刀」）：每个「目标卡 + 伤害/格挡」一个 Power 类
+        var boosts = CSharpCodeGen.CollectBoostEffects(profile).ToList();
+        if (boosts.Count > 0)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "BoostPowers.cs"), CSharpCodeGen.BoostPowersSource(profile));
+            Log($"  已生成「强化指定卡牌」用的 Power {boosts.Count} 个（像本体「精准」：只给指定的那张卡加伤害 / 格挡）："
+                + string.Join("、", boosts.Select(e => (e.SpawnCardId ?? "?") + (e.BoostStat == "Block" ? "（格挡）" : "（伤害）"))));
+        }
+
         // 「给予卡牌关键词」：临时关键词用的 Power + 「给自定义关键词」的注册表与两个补丁
         if (CSharpCodeGen.UsesTempKeywordPower(profile))
         {

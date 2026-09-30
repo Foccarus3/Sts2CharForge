@@ -369,6 +369,15 @@ public static class ProjectRecovery
             Name = loc.Get($"{entry}.title", cls),
         };
 
+        // 卡牌自定义描述：生成时写的是 `// CET:CustomDescReplace=0/1 CET:CustomDescription=<换行转义过的文本>`
+        // （见 CSharpCodeGen.CardSource）—— 从本地化表里认不出来（那张表里是「自动描述 + 你写的」拼起来的）
+        var customDesc = Regex.Match(text, @"CET:CustomDescReplace=(\d) CET:CustomDescription=(.*)$", RegexOptions.Multiline);
+        if (customDesc.Success)
+        {
+            card.CustomDescription = CSharpCodeGen.UnescapeMarker(customDesc.Groups[2].Value.TrimEnd());
+            card.CustomDescriptionReplaces = customDesc.Groups[1].Value == "1";
+        }
+
         var ctor = Regex.Match(text, @": base\((\d+), CardType\.(\w+), CardRarity\.(\w+), TargetType\.(\w+)\)");
         if (ctor.Success)
         {
@@ -439,24 +448,24 @@ public static class ProjectRecovery
     {
         var list = new List<Var>();
         string block = BlockAfter(text, "CanonicalVars =>");
-        // 召唤伙伴 / 伙伴攻击：生成的是**带名字的普通 DynamicVar**（new DynamicVar("PetDamage", 6m)），
-        // 名字是我们自己起的，所以先把它们捞出来（否则会被下面的数字正则当成「名字不是数字」而漏掉）
-        foreach (Match m in Regex.Matches(block, @"new DynamicVar\(""(\w+)"",\s*(-?[\d.]+)m?\)"))
-            list.Add(new Var("DynamicVar", m.Groups[1].Value,
-                decimal.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture), false, false, m.Groups[1].Value));
-        // 其余变量：既可能是**带名字**的（牺牲伙伴的固定收益 new DamageVar("PetSacrificeDamage", 7m, …)、
-        // 给伙伴施加状态 new PowerVar<StrengthPower>("PetPowerStrengthPower", 2m)），也可能不带名字。
-        // 一次正则按**声明顺序**扫出来（名字可选）—— 顺序必须和生成代码里一致：
-        // 升级增量是按「变量在 CanonicalVars 里的第几个」反查效果的，顺序错了会配到别的效果上。
-        // 那个名字就是生成代码里用的键（卡面占位符 / OnUpgrade 都按它取），漏了会让数值静默变成 0。
+        // **一次按声明顺序扫完** —— 顺序必须和生成代码里一致：升级增量是按「变量在 CanonicalVars 里
+        // 的第几个」反查效果的，顺序错了增量就配到别的效果上（自检测出来过）。
+        //   · 带名字的普通 DynamicVar（召唤伙伴的 PetHp / PetDamage、强化指定卡牌的 Boost）名字在第一个参数；
+        //   · 其它变量（DamageVar / BlockVar / PowerVar<T> …）既可能带名字（同种变量第二次的别名、
+        //     牺牲伙伴的收益），也可能不带名字。
+        // 以前 DynamicVar 是**先单独扫一遍**、其余再扫一遍，等于把 DynamicVar 全排到最前面 ——
+        // 一张牌上同时有「伤害」和「强化指定卡牌」时，两边的升级增量会互换。
         foreach (Match m in Regex.Matches(block, @"new (\w+)Var(?:<(\w+)>)?\((?:""(\w+)"",\s*)?(-?[\d.]+)m?"))
         {
             string kind = m.Groups[1].Value;
-            if (kind == "Dynamic") continue;   // 上面那条已经处理过带名字的 DynamicVar
             string? power = m.Groups[2].Success ? m.Groups[2].Value : null;
             string? alias = m.Groups[3].Success ? m.Groups[3].Value : null;
             decimal amount = decimal.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
-            list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias));
+            if (kind == "Dynamic")
+                // 带名字的普通 DynamicVar：变量键（名字）放在 PowerId 里，Name 也一起给上（和 VarNameOf 的约定一致）
+                list.Add(new Var("DynamicVar", alias, amount, false, false, alias));
+            else
+                list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias));
         }
         return list;
     }
@@ -510,6 +519,11 @@ public static class ProjectRecovery
         // 关键词和「是不是临时」只能靠这行标记还原；数值 / 选牌方式 / 哪一摞牌从紧跟着的那几行代码里读，
         // 之后那几行（AddKeyword / 临时 Power / foreach…）全部跳过，免得被当成别的效果。
         bool skipGivenKeywordBody = false;
+
+        // 「强化指定卡牌」：生成时写一行 `// CET:BoostCard=<卡类名> CET:BoostStat=Damage|Block`。
+        // 目标卡与强化什么只能靠它还原（代码里只剩「Apply 到某个 ForgeBoost Power」这一句）；
+        // 数值走 CanonicalVars 里的 Boost 变量（别名 Boost2 由 NextVar 顺位找）。
+        string? pendingBoostMarker = null;
 
         // 牺牲伙伴生成的是「先算收益 → CreatureCmd.Kill(宠物) → 再 GainBlock / Attack」，
         // 收益那一句既可能是前面的 `decimal gain/dmg = …`（已跳过）也可能是后面的动作行。
@@ -646,6 +660,9 @@ public static class ProjectRecovery
                 // 「全部召唤物」的组号（生成器在每一份展开代码前都写一遍）
                 string? allGrp = Match(line, @"CET:PetAll=(\w+)");
                 if (allGrp is not null) pendingPetAllGroup = allGrp;
+                // 「强化指定卡牌」的标记：目标卡 + 强化什么（数值看后面的 Boost 变量）
+                string? boostRaw = Match(line, @"CET:BoostCard=(\S+)");
+                if (boostRaw is not null) pendingBoostMarker = line;
                 // 「给予卡牌关键词」的标记：关键词 + 是不是临时；数值 / 方式 / 哪一摞牌看接下来那几行
                 string? gkRaw = Match(line, @"CET:GiveKeyword=(\S+)");
                 if (gkRaw is not null)
@@ -1140,6 +1157,32 @@ public static class ProjectRecovery
                     Done(e);
                     continue;
                 }
+                // 强化指定卡牌：打的是我们生成的强化 Power（<角色>ForgeBoost<目标卡><Damage|Block>Power）。
+                // 目标卡 / 强化什么按标记还原（标记丢了就从类名里抠），数值走 CanonicalVars 的 Boost 变量。
+                if (power.Contains("ForgeBoost", StringComparison.Ordinal))
+                {
+                    e.Kind = "BoostCard";
+                    e.PowerId = null;
+                    string? card = pendingBoostMarker is null ? null : Match(pendingBoostMarker, @"CET:BoostCard=(\S+)");
+                    if (card is null || card == "?")
+                    {
+                        card = BoostTargetOf(power);
+                        if (card is null)
+                            result.Unparsed.Add($"{where}: 强化指定卡牌的目标卡没认出来（{power}）");
+                    }
+                    e.SpawnCardId = card;
+                    e.BoostStat = pendingBoostMarker is not null
+                        && pendingBoostMarker.Contains("CET:BoostStat=Block", StringComparison.Ordinal)
+                        ? "Block" : (power.EndsWith("BlockPower", StringComparison.Ordinal) ? "Block" : "Damage");
+                    // 这条效果永远作用在自己身上（挂一张强化 Power），目标对象固定「自己」——
+                    // 和校验器那句「作用对象固定为自己」保持一致，列表里也就不会显示成「→ 单体敌人」
+                    e.TargetSide = "Self";
+                    pendingBoostMarker = null;
+                    FillAmount(e, NextVar(vars, ref varIdx, "Boost"), nameToPowerId);
+                    ApplyLoop(e, frames);
+                    Done(e);
+                    continue;
+                }
                 if (power == "BlockNextTurnPower") { e.Kind = "Block"; e.NextTurn = true; }
                 else if (power == "DrawCardsNextTurnPower" || power.Contains("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
                 else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
@@ -1345,6 +1388,26 @@ public static class ProjectRecovery
         return raw.Length == 0 ? null : raw;
     }
 
+    /// <summary>
+    /// 从生成的强化 Power 类名（<c>&lt;角色&gt;ForgeBoost&lt;目标卡&gt;&lt;Damage|Block&gt;Power</c>）
+    /// 里把目标卡类名抠回来 —— 只在 <c>// CET:BoostCard=</c> 标记丢了的时候兜底用。
+    /// 例：SparkleForgeBoostSparkleStrikeDamagePower → SparkleStrike。
+    /// </summary>
+    private static string? BoostTargetOf(string className)
+    {
+        const string marker = "ForgeBoost";
+        int at = className.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0) return null;
+        string raw = className[(at + marker.Length)..];
+        foreach (string tail in new[] { "DamagePower", "BlockPower" })
+            if (raw.EndsWith(tail, StringComparison.Ordinal))
+            {
+                string card = raw[..^tail.Length];
+                return card.Length == 0 || card == "Card" ? null : card;
+            }
+        return null;
+    }
+
     private static Var? NextVar(List<Var> vars, ref int idx, string kind)
     {
         for (int i = idx; i < vars.Count; i++)
@@ -1359,6 +1422,11 @@ public static class ProjectRecovery
                 "Stars" => v.Kind == "Stars",
                 // 伙伴攻击：生成时用的是我们自己起名的普通 DynamicVar "PetDamage"（不是 DamageVar）
                 "PetDamage" => v.Kind == "DynamicVar" && string.Equals(v.PowerId, "PetDamage", StringComparison.Ordinal),
+                // 强化指定卡牌：生成时用的是普通 DynamicVar，名字是 Boost（同一张牌上第二次起叫 Boost2）
+                "Boost" => v.Kind == "DynamicVar" && v.PowerId is not null
+                    && (v.PowerId == "Boost"
+                        || (v.PowerId.StartsWith("Boost", StringComparison.Ordinal)
+                            && v.PowerId.Length > 5 && v.PowerId[5..].All(char.IsDigit))),
                 _ when kind.StartsWith("Power:") => v.Kind == "Power" && string.Equals(v.PowerId, kind[6..], StringComparison.Ordinal),
                 _ => false,
             };
@@ -1470,6 +1538,8 @@ public static class ProjectRecovery
         "ApplyPower" => true,
         // 临时增益：和「施加增益/减益」一样声明 PowerVar<那个状态>，升级增量也落在同一个变量上
         "TempPower" => true,
+        // 强化指定卡牌：声明的是普通 DynamicVar「Boost」（数值 = X 时生成侧不声明变量）
+        "BoostCard" => !e.AmountIsX,
         // 额外资源量：只有「正数获得」才声明 StarsVar（花费走 CanonicalStarCost，不占变量）——
         // 少了这一条，这类牌的升级增量会按错误的序号对到别的效果上（或者直接报「找不到对应效果」）。
         "ExtraResource" => e.Amount > 0,

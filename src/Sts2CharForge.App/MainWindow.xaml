@@ -427,6 +427,16 @@
                                        Foreground="#B60"
                                        Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                        Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                            <!-- 卡牌自定义描述：留空 = 只用自动生成的那段 -->
+                            <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用上面那些效果自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
+                            <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                     VerticalScrollBarVisibility="Auto" IsEnabled="{Binding ValueEditable}"
+                                     Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="可以写风味文字，也可以照常写本体占位符：{Damage:diff()} 会显示成升级后的数字，[gold]…[/gold] 是金色富文本。"/>
+                            <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
+                                      Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                      IsChecked="{Binding CustomDescriptionReplaces}"
+                                      ToolTip="不勾：上面那段自动描述 + 换行 + 你写的这段（推荐，数字会跟着升级变）。勾上：卡面上只有你写的这段（想完全自己写就用它）。"/>
                         </StackPanel>
                         </ScrollViewer>
 
