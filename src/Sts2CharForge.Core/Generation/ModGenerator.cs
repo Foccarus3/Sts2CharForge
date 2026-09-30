@@ -175,6 +175,12 @@ public static class ModGenerator
             Log("  已生成「下回合少 N 点能量」用的负债 Power（「获得能量」填了负数 + 下回合生效）");
         }
 
+        if (CSharpCodeGen.UsesTempUpgrade(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "TempUpgradePower.cs"), CSharpCodeGen.TempUpgradePowerSource(profile));
+            Log("  已生成「仅本回合升级」用的临时升级 Power（生成 / 变化出来的卡回合结束降回来）");
+        }
+
         if (profile.ExtraResource.Enabled)
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResource.cs"), CSharpCodeGen.ExtraResourceSource(profile));

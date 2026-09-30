@@ -448,10 +448,19 @@ public static class CustomPowerGen
                     break;
                 }
 
+            // 毒性爆发：状态里也能用（都是本体 API）。注意这里的 base.Owner 是 Creature（不是 Player），
+            // 所以敌人列表 / 施加者都用它自己的形式（见 CSharpCodeGen.EmitOutbreak 的参数说明）。
+            case "Outbreak":
+                CSharpCodeGen.EmitOutbreak(w, e, amt,
+                    enemies: "base.Owner.CombatState.HittableEnemies",
+                    applier: "base.Owner", cardSource: "null");
+                break;
+
             // 全局（牌组）类效果：状态里也能用（直接改玩家的牌组，不受战斗牌堆限制）
             case "AddCardGlobal":
             case "TransformCardGlobal":
             case "RemoveCardGlobal":
+            case "UpgradeCardGlobal":
                 CSharpCodeGen.EmitGlobalCardEffectPublic(w, e, "base.Owner.Player", e.AmountIsStack);
                 break;
 
@@ -538,16 +547,32 @@ public static class CustomPowerGen
         w.Close();   // 这条效果自己的作用域
     }
 
+    /// <summary>
+    /// 自定义状态的触发时机里造成的伤害。
+    ///
+    /// 用户要求：「自定义状态造成的伤害不能判定为角色造成的伤害」——
+    /// 本体是靠 <c>dealer</c> 归因的（<c>CreatureCmd.Damage</c> 里
+    /// <c>if (dealer != null &amp;&amp; dealer.Player != null &amp;&amp; target.Player == null) dealer.Player.ExtraFields.DamageDealt += …</c>），
+    /// 所以这里传 **dealer: null**：伤害不计入「你造成的伤害」（本体「伤害最高」徽章、相关条件/统计都按这个走），
+    /// 战斗记录里也写成「XX 受到了 N 点伤害」而不是「你造成了 N 点伤害」。
+    /// 注意 <c>dealer</c> 只收非空 Creature 的重载不能传 null，必须用 7 个参数那条（末尾三个 null）。
+    ///
+    /// 同时保留 <c>ValueProp.Unpowered</c>：本体的力量/虚弱只对「PoweredAttack」生效
+    /// （<c>props.IsPoweredAttack()</c> = 带 Move 且不带 Unpowered），所以伤害不随状态浮动；
+    /// <c>dealer == null</c> 还顺带让荆棘/火焰屏障这类「被打就反弹」不会触发（它们都判 <c>dealer != null</c>）。
+    /// 本体的「中毒跳伤 / 灭亡 / 窒息 / 闹鬼」这些状态造成的伤害就是这么写的（PoisonPower.Trigger 里 dealer 传 null）。
+    /// </summary>
     private static void EmitDamage(CodeWriter w, EffectSpec e, string amt, string? foeFrom)
     {
+        const string props = "ValueProp.Unpowered";
         switch (e.TargetSide)
         {
             case "Self":
-                w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner, {amt}, ValueProp.Unpowered, base.Owner);");
+                w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner, {amt}, {props}, null, null, null);");
                 break;
             case "AllEnemies":
                 w.Open("foreach (Creature other in base.Owner.CombatState.HittableEnemies)")
-                 .Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, ValueProp.Unpowered, base.Owner);")
+                 .Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);")
                  .Close();
                 break;
             case "RandomEnemies":
@@ -556,13 +581,13 @@ public static class CustomPowerGen
                     w.Open($"for (int k = 0; k < {times}; k++)");
                     w.Line(RandomTargetLine);
                     w.Line("if (other is null) break;");
-                    w.Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, ValueProp.Unpowered, base.Owner);");
+                    w.Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);");
                     w.Close();
                     break;
                 }
             default:
                 EmitFoeBlock(w, foeFrom, foe =>
-                    $"await CreatureCmd.Damage(choiceContext, {foe}, {amt}, ValueProp.Unpowered, base.Owner);");
+                    $"await CreatureCmd.Damage(choiceContext, {foe}, {amt}, {props}, null, null, null);");
                 break;
         }
     }

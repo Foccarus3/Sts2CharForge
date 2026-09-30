@@ -850,13 +850,29 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string rng = $"{owner}.RunState.Rng.Niche";
+        if (e.UsesSpawnOptions) w.Line(SpawnMarker(e));
 
         switch (e.Kind)
         {
             case "AddCardGlobal":
-                w.Line($"// 获得 {n} 张 {target ?? "Shiv"}：直接加进牌组（永久，不是战斗里的手牌 / 抽牌堆）");
+                if (!e.IsSpawnRandom)
+                {
+                    w.Line($"// 获得 {n} 张 {target ?? "Shiv"}：直接加进牌组（永久，不是战斗里的手牌 / 抽牌堆）");
+                    w.Open($"for (int __addIdx = 0; __addIdx < {n}; __addIdx++)");
+                    w.Line($"CardModel gained = {owner}.RunState.CreateCard(ModelDb.Card<{target ?? "Shiv"}>(), {owner});");
+                    if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(gained);   // 加进牌组时就是升级过的");
+                    w.Line("await CardPileCmd.Add(gained, PileType.Deck);");
+                    w.Close();
+                    break;
+                }
+                // 按范围随机：从卡池里抽，再逐张加进牌组
+                w.Line($"// 按范围随机获得 {n} 张「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」加进牌组（永久）");
+                w.Line($"var __addPool = {SpawnPoolExpr(e, owner)};");
                 w.Open($"for (int __addIdx = 0; __addIdx < {n}; __addIdx++)");
-                w.Line($"CardModel gained = {owner}.RunState.CreateCard(ModelDb.Card<{target ?? "Shiv"}>(), {owner});");
+                w.Line($"CardModel? __pickCard = {rng}.NextItem(__addPool);");
+                w.Line("if (__pickCard is null) break;");
+                w.Line($"CardModel gained = {owner}.RunState.CreateCard(__pickCard, {owner});");
+                if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(gained);   // 加进牌组时就是升级过的");
                 w.Line("await CardPileCmd.Add(gained, PileType.Deck);");
                 w.Close();
                 break;
@@ -879,31 +895,68 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 }
                 break;
 
-            case "TransformCardGlobal":
+            // 升级牌组里的牌（永久）：本体「香盒 Pomander / 混沌之香 AromaOfChaos」的写法 ——
+            // CardSelectCmd.FromDeckForUpgrade（那个界面只列能升级的牌）+ CardCmd.Upgrade。
+            // 和战斗里那个「升级卡牌」不是一回事：这个直接改玩家的牌组（写进存档、跨战斗）。
+            case "UpgradeCardGlobal":
                 if (e.CardPick == "Chosen")
                 {
-                    w.Line($"// 自己选 {n} 张牌组里的牌变化：{target ?? "随机变化"}");
+                    w.Line($"// 自己选 {n} 张牌组里的牌升级（本体的「升级卡牌」界面）");
+                    w.Line($"var toUpgradeDeck = (await CardSelectCmd.FromDeckForUpgrade({owner}, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}))).ToList();");
+                    w.Line("foreach (CardModel c in toUpgradeDeck) CardCmd.Upgrade(c);");
+                }
+                else
+                {
+                    w.Line($"// 随机把牌组里 {n} 张能升级的牌升级");
+                    w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
+                    w.Line($"CardModel? pick = {rng}.NextItem(PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsUpgradable));");
+                    w.Line("if (pick is null) break;");
+                    w.Line("CardCmd.Upgrade(pick);");
+                    w.Close();
+                }
+                break;
+
+            case "TransformCardGlobal":
+                if (e.IsSpawnRandom)
+                    w.Line($"var __transformPool = {SpawnPoolExpr(e, owner)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
+                if (e.CardPick == "Chosen")
+                {
+                    w.Line($"// 自己选 {n} 张牌组里的牌变化：{(e.IsSpawnRandom ? "按范围随机" : target ?? "随机变化")}");
                     w.Line($"var toTransformDeck = (await CardSelectCmd.FromDeckGeneric({owner}, new CardSelectorPrefs(CardSelectorPrefs.TransformSelectionPrompt, {n}), null, null)).ToList();");
                     w.Line("foreach (CardModel c in toTransformDeck)");
                     w.Open("");
-                    w.Line(target is null
-                        ? $"await CardCmd.TransformToRandom(c, {rng});"
-                        : $"await CardCmd.Transform(c, {owner}.RunState.CreateCard(ModelDb.Card<{target}>(), {owner}));");
+                    EmitTransformGlobalBody(w, e, owner, rng, "c", target);
                     w.Close();
                 }
                 else
                 {
-                    w.Line($"// 随机把牌组里 {n} 张牌变化：{target ?? "随机变化"}");
+                    w.Line($"// 随机把牌组里 {n} 张牌变化：{(e.IsSpawnRandom ? "按范围随机" : target ?? "随机变化")}");
                     w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
                     w.Line($"CardModel? pick = {rng}.NextItem(PileType.Deck.GetPile({owner}).Cards);");
                     w.Line("if (pick is null) break;");
-                    w.Line(target is null
-                        ? $"await CardCmd.TransformToRandom(pick, {rng});"
-                        : $"await CardCmd.Transform(pick, {owner}.RunState.CreateCard(ModelDb.Card<{target}>(), {owner}));");
+                    EmitTransformGlobalBody(w, e, owner, rng, "pick", target);
                     w.Close();
                 }
                 break;
         }
+    }
+
+    /// <summary>牌组里的牌变成什么：按范围随机抽一张 / 指定的那张 / 本体的随机变化；抽到的还能直接是升级过的。</summary>
+    private static void EmitTransformGlobalBody(CodeWriter w, EffectSpec e, string owner, string rng, string cardVar, string? target)
+    {
+        if (e.IsSpawnRandom)
+        {
+            w.Line($"CardModel? __newDeck = {rng}.NextItem(__transformPool);");
+            w.Open("if (__newDeck is not null)");
+            w.Line($"CardModel __made = {owner}.RunState.CreateCard(__newDeck, {owner});");
+            if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__made);   // 变出来就是升级过的");
+            w.Line($"await CardCmd.Transform({cardVar}, __made);");
+            w.Close();
+            return;
+        }
+        w.Line(target is null
+            ? $"await CardCmd.TransformToRandom({cardVar}, {rng});"
+            : $"await CardCmd.Transform({cardVar}, {owner}.RunState.CreateCard(ModelDb.Card<{target}>(), {owner}));");
     }
 
     /// <summary>给别的生成器（自定义状态）用的入口：全局牌组类效果。</summary>
@@ -1387,6 +1440,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 强化指定卡牌：只是「强化多少」这一个数字（打出的 Power 层数）。
         // 同一张牌上给两张不同的卡各强化一次时，VarNamesOf 会自动给第二个起别名（Boost2）。
         "BoostCard" => "Boost",
+        // 升级卡牌：数值 = 升级几张，用本体的 CardsVar（键 = Cards）—— 卡面 {Cards:diff()} 跟着升级变
+        "UpgradeCard" => "Cards",
+        // 预见：数值 = 看抽牌堆顶几张，同样用 CardsVar
+        "Scry" => "Cards",
+        // 毒性爆发：数值 = 上几层中毒，用本体的 PowerVar<PoisonPower>（键 = PoisonPower）
+        "Outbreak" => "PoisonPower",
+        // 大限已至：升级增量（如果填了）落在计算三件套的 CalculatedDamage 上
+        "TimesUp" => "CalculatedDamage",
         // 额外资源量 = 本体的星星：本体有现成的 StarsVar（默认名 "Stars"），
         // 用它才能让卡面 {Stars:diff()} 随升级变（用户报过「升级后卡面还显示 2」）。
         "ExtraResource" => "Stars",
@@ -1424,6 +1485,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "Damage" => "Damage",
         "Block" => "Block",
         "Draw" => "Cards",
+        // 升级卡牌 / 预见：数值也是「几张牌」，用本体的 CardsVar（有同名属性，可以直接 base.DynamicVars.Cards）
+        "UpgradeCard" => "Cards",
+        "Scry" => "Cards",
         "Energy" => "Energy",
         // 透支能量：和「获得能量」共用本体的 EnergyVar（键 = Energy）—— 卡面 {Energy:diff()}、
         // 升级增量、同一张牌上的别名（Energy2）全都照旧能用
@@ -1471,6 +1535,31 @@ public static class ExtraResourceEnergyCounterDiagPatch
         map is not null && map.TryGetValue(e, out string? name) ? name : VarNameOf(e);
 
     /// <summary>
+    /// 「填入参数」按钮用的候选：这个模型（卡牌 / 遗物 / 药水）里能写进自定义描述的数值占位符。
+    ///
+    /// 本体读描述的占位符时是按 <c>DynamicVar</c> 的**键**取的（<c>{Damage}</c>），卡牌还能写
+    /// <c>{Damage:diff()}</c> 让卡面在升级后显示升级值 —— 所以卡片给带 :diff() 的那种，
+    /// 遗物 / 药水（不能升级）给普通的。
+    /// 只列**这条模型真的声明过**的变量（抄一个不存在的键，游戏里会原样印出 {XXX} 或显示不出来）。
+    /// </summary>
+    public static List<(string Token, string Desc)> ParamHints(IEnumerable<EffectSpec> effects, bool isCard)
+    {
+        var list = new List<(string, string)>();
+        var all = effects as IList<EffectSpec> ?? effects.ToList();
+        var map = VarNamesOf(all);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in all)
+        {
+            if (HasNoDynamicVar(e)) continue;
+            string key = DisplayVarNameOf(e, map);
+            if (key.Length == 0 || !seen.Add(key)) continue;
+            string token = isCard ? $"{{{key}:diff()}}" : $"{{{key}}}";
+            list.Add((token, EffectCatalog.FindKind(e.Kind).Display));
+        }
+        return list;
+    }
+
+    /// <summary>
     /// 这个模型的动态变量「基础名」清单（用来校验有没有同种变量出现多次）。
     /// 本体 DynamicVarSet 用变量名当键，重名会直接抛异常 → 整场战斗的回合循环死掉
     /// （表现：抽不了牌、结束不了回合 —— 用户实测踩过）。生成时会自动给第二个起别名。
@@ -1484,7 +1573,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 只有本体确实有同名属性的变量才能用属性写法（Damage / Block / Cards / Energy / Stars）；
         // 起了别名（Damage2 这种）或只有索引器的（Power / PetHp / PetDamage）一律用 ["名字"]。
         // PetHp / PetDamage 是**我们自己起的名字**，本体 DynamicVars 上当然没有这两个属性 → 必须走索引器。
-        bool hasProperty = e.Kind is "Damage" or "Block" or "Draw" or "Energy" or "ExtraResource";
+        bool hasProperty = e.Kind is "Damage" or "Block" or "Draw" or "Energy" or "ExtraResource"
+            or "UpgradeCard" or "Scry";
         return hasProperty && name == VarPropertyOf(e)
             ? $"base.DynamicVars.{VarPropertyOf(e)}.BaseValue"
             : $"base.DynamicVars[{Lit.Str(name)}].BaseValue";
@@ -1521,6 +1611,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "Damage" => $"new DamageVar({prefix}{Lit.Dec(e.Amount)}, ValueProp.Move)",
             "Block" => $"new BlockVar({prefix}{Lit.Dec(e.Amount)}, ValueProp.Move)",
             "Draw" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
+            // 升级卡牌 / 预见：数值也是「几张牌」，共用本体的 CardsVar（键 = Cards，同名时自动起别名）
+            "UpgradeCard" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
+            "Scry" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
+            // 毒性爆发：数值 = 上几层中毒，用本体的 PowerVar<PoisonPower>（键 = PoisonPower）——
+            // 本体 Outbreak 就是这么声明的，卡面 {PoisonPower:diff()} 与升级增量都跟着它走
+            "Outbreak" => $"new PowerVar<PoisonPower>({prefix}{Lit.Dec(e.Amount)})",
+            // 大限已至：伤害 = 目标身上的灾厄层数，用本体的计算三件套（跟三种「按生命值算的伙伴攻击」同一套写法）
+            "TimesUp" => TimesUpVars(),
             "Energy" => $"new EnergyVar({prefix}{Lit.Int(e.Amount)})",
             // 透支能量：同样用 EnergyVar（数值 = 透支的点数；升级增量 / 别名都照常）
             "OverdraftEnergy" => $"new EnergyVar({prefix}{Lit.Int(e.Amount)})",
@@ -1584,6 +1682,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static string CalcBlockVars(string petValueExpr) =>
         "new CalculationBaseVar(0m), new CalculationExtraVar(1m), "
         + "new CalculatedBlockVar(ValueProp.Move).WithMultiplier(" + PetMultiplierLambda(petValueExpr) + ")";
+
+    /// <summary>
+    /// 「大限已至」的计算三件套：伤害 = **目标身上**的灾厄层数（本体 Time's Up 就是这么写的：
+    /// <c>new CalculatedDamageVar(ValueProp.Move).WithMultiplier((_, target) =&gt; target?.GetPowerAmount&lt;DoomPower&gt;() ?? 0)</c>）。
+    /// lambda 同样必须是静态的（见 <see cref="PetMultiplierLambda"/>），这里第二个参数就是**被打的目标**，
+    /// 所以直接用 <c>target</c>，不用去查宠物。
+    /// </summary>
+    internal static string TimesUpVars() =>
+        "new CalculationBaseVar(0m), new ExtraDamageVar(1m), "
+        + "new CalculatedDamageVar(ValueProp.Move).WithMultiplier("
+        + "delegate(CardModel _, Creature? target) { return (target != null) ? (decimal)target.GetPowerAmount<DoomPower>() : 0; })";
 
     /// <summary>
     /// 倍率 lambda。**必须是静态的**：本体 <c>CalculatedVar.cs:50-53</c> 一发现
@@ -2283,6 +2392,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「牺牲伙伴」收益是伤害时同理（生成的是 .Targeting(cardPlay.Target)），收益是格挡时不算。
         static bool HitsEnemy(EffectSpec e) =>
             e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "Block" or "Heal" or "HpLoss" or "MaxHp"
+            // 「大限已至」是本体 Time's Up 那种「指定敌人」的攻击牌（伤害 = 目标的灾厄层数），
+            // 必须让这张牌变成要选目标的，否则打出去时 cardPlay.Target 是空的。
+            or "TimesUp"
             || PetAttackKind(e.Kind)
             || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
@@ -2293,17 +2405,127 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
-    /// 生成卡牌。照本体的官方做法用 CardPileCmd.AddToCombatAndPreview：
-    /// 它会 CreateCard → AddGeneratedCardToCombat（记进战斗历史）→ 按牌堆类型弹预览。
-    /// 之前用 AddGeneratedCardsToCombat 直接塞进抽牌堆/弃牌堆，界面上牌堆查看会出问题。
+    /// 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」的标记（回读靠它，见 ProjectRecovery）。
+    ///
+    /// 为什么不从代码里反推：这几个设置生成出来的都是**本体 API 的零散语句**
+    /// （CardCmd.Upgrade / SetToFreeThisTurn / 一个临时的 ForgeTempUpgradePower…），
+    /// 而「免费 / 仅本回合」这种差别只差一个方法名，反推很容易认错（而且老存档没有这些设置）。
+    /// 标记一行写全，回读就一行读完。
     /// </summary>
-    private static void EmitGenerateCard(CodeWriter w, EffectSpec e, bool useX = false)
+    internal static string SpawnMarker(EffectSpec e) =>
+        $"// CET:SpawnPick={e.SpawnPick} CET:SpawnFilter={(string.IsNullOrWhiteSpace(e.SpawnFilter) ? "-" : e.SpawnFilter)}"
+        + $" CET:SpawnUp={(e.SpawnUpgraded ? 1 : 0)} CET:SpawnFree={(e.SpawnFree ? 1 : 0)}"
+        + $" CET:SpawnFreeTurn={(e.SpawnFreeThisTurn ? 1 : 0)} CET:SpawnUpTurn={(e.SpawnUpgradedThisTurn ? 1 : 0)}";
+
+    /// <summary>
+    /// 「生成卡牌」。
+    ///
+    /// 两种取卡方式：
+    ///   · 「指定卡」（默认，老存档）→ <c>AddToCombatAndPreview&lt;卡类&gt;</c>（本体官方做法）；
+    ///   · 「按范围随机」→ 从卡池里按范围（攻击 / 技能 / 能力 / 诅咒 / 状态）随机抽 N 张
+    ///     （本体「发现 Discovery / 攻击药水 AttackPotion」用的就是 CardFactory.GetDistinctForCombat）。
+    /// 生成出来的卡还能带几个附加处理（升级 / 免费 / 仅本回合升级 / 仅本回合免费）—— 见 EmitSpawnModifiers。
+    /// </summary>
+    private static void EmitGenerateCard(CodeWriter w, EffectSpec e, bool useX = false, string cardSource = "this")
     {
-        string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pile = e.SpawnToPile;
-        w.Line($"// 生成 {n} 张 {card} 放进{PileZh(pile)}");
-        w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner.Creature, PileType.{pile}, {n}, base.Owner);");
+        string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
+        w.Line(SpawnMarker(e));
+        if (!e.IsSpawnRandom)
+        {
+            string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
+            w.Line($"// 生成 {n} 张 {card} 放进{PileZh(pile)}");
+            if (!e.HasSpawnModifier)
+            {
+                w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner.Creature, PileType.{pile}, {n}, base.Owner);");
+                return;
+            }
+            // 要改「生成出来的卡」就得自己 CreateCard：AddToCombatAndPreview 内部拿不到那些实例
+            EmitTempUpgradePowerApply(w, tempUp, cardSource);
+            w.Open($"for (int __genIdx = 0; __genIdx < {n}; __genIdx++)");
+            w.Line($"CardModel __gen = base.Owner.Creature.CombatState.CreateCard(ModelDb.Card<{card}>(), base.Owner);");
+            EmitSpawnModifiers(w, e, "__gen", tempUp);
+            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
+            w.Close();
+            return;
+        }
+
+        // 按范围随机：从卡池里抽 N 张（不重复）
+        w.Line($"// 按范围随机生成 {n} 张「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」放进{PileZh(pile)}");
+        w.Line($"var __genPool = {SpawnPoolExpr(e)};");
+        EmitTempUpgradePowerApply(w, tempUp, cardSource);
+        w.Line($"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat(base.Owner, __genPool, {n}, base.Owner.RunState.Rng.CombatCardGeneration))");
+        w.Open("");
+        EmitSpawnModifiers(w, e, "__gen", tempUp);
+        w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
+        w.Close();
+    }
+
+    /// <summary>
+    /// 勾了「仅在此回合升级」时，先挂上生成的那个「回合结束降回来」的状态（只挂一次，生成出来的卡都交给它）。
+    /// </summary>
+    private static void EmitTempUpgradePowerApply(CodeWriter w, string? tempUpVar, string cardSource)
+    {
+        if (tempUpVar is null) return;
+        w.Line("// 仅本回合升级：挂一个「回合结束时把它们降回来」的状态（下面的 Track 负责升级并记住是哪几张）");
+        w.Line($"var {tempUpVar} = await PowerCmd.Apply<{Naming.AmbientTempUpgradePowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, {cardSource});");
+    }
+
+    /// <summary>
+    /// 「生成 / 变化出来的卡」的附加处理：升级 / 免费打出 / 仅本回合免费 / 仅本回合升级。
+    ///
+    /// 本体 API（都在 <c>CardModel</c> / <c>CardEnergyCost</c> 上）：
+    ///   · 升级 → <c>CardCmd.Upgrade(card)</c>（本体 Apotheosis / Armaments / Whetstone 都这么升）；
+    ///   · 免费（本场战斗）→ <c>card.SetToFreeThisCombat()</c>（本体 Metamorphosis 那种）；
+    ///   · 仅本回合免费 → <c>card.SetToFreeThisTurn()</c>（本体 InfernalBlade / AttackPotion 生成牌就是它）；
+    ///   · 仅本回合升级 → 本体**没有**这种 API（只有视觉预览 CardUpgradePreviewType），
+    ///     所以升级之后把这张牌交给生成的 <c>&lt;角色&gt;ForgeTempUpgradePower</c>，
+    ///     它在回合结束时把「这次真的升上去的那几张」降回来（本来就是升级过的牌不碰）。
+    /// </summary>
+    internal static void EmitSpawnModifiers(CodeWriter w, EffectSpec e, string cardVar, string? tempUpVar = null)
+    {
+        if (e.SpawnUpgradedThisTurn)
+        {
+            // Track 里做「本来就是升级过的就不动」的判断 + 升级 + 记住它
+            if (tempUpVar is not null)
+                w.Line($"if ({tempUpVar} is not null) {tempUpVar}.Track({cardVar}); else CardCmd.Upgrade({cardVar});");
+        }
+        else if (e.SpawnUpgraded)
+        {
+            w.Line($"CardCmd.Upgrade({cardVar});");
+        }
+        if (e.SpawnFree) w.Line($"{cardVar}.SetToFreeThisCombat();");
+        if (e.SpawnFreeThisTurn) w.Line($"{cardVar}.SetToFreeThisTurn();");
+    }
+
+    /// <summary>
+    /// 「按范围随机」时的候选卡池表达式：
+    ///   · 攻击 / 技能 / 能力 / 不限 → 角色卡池（+ 不限时也带上无色卡池？不加：本体的「发现」只用自己的角色卡池）；
+    ///   · 诅咒 → 本体的诅咒卡池 + 你自己的卡池里的诅咒（你自己的诅咒也在这里面）；
+    ///   · 状态 → 本体的状态卡池（伤口 / 灼伤 / 眩晕那种）+ 你自己的卡池里的状态牌。
+    /// 一律按 <c>GetUnlockedCards</c> 走（和本体一致，会过滤掉没解锁 / 多人限制的牌）。
+    /// </summary>
+    private static string SpawnPoolExpr(EffectSpec e, string owner = "base.Owner")
+    {
+        string charPool = $"{owner}.Character.CardPool.GetUnlockedCards({owner}.UnlockState, {owner}.RunState.CardMultiplayerConstraint)";
+        string filter = e.SpawnFilter switch
+        {
+            "Attack" => "c => c.Type == CardType.Attack",
+            "Skill" => "c => c.Type == CardType.Skill",
+            "Power" => "c => c.Type == CardType.Power",
+            // 诅咒 / 状态：本体的那两个卡池里的 + 你自己卡池里的（你做的诅咒 / 状态牌也在自己卡池里）
+            "Curse" => "c => c.Rarity == CardRarity.Curse",
+            "Status" => "c => c.Type == CardType.Status || c.Rarity == CardRarity.Status",
+            _ => "c => true",
+        };
+        string extra = e.SpawnFilter switch
+        {
+            "Curse" => $"{charPool}.Concat(ModelDb.CardPool<CurseCardPool>().GetUnlockedCards({owner}.UnlockState, {owner}.RunState.CardMultiplayerConstraint))",
+            "Status" => $"{charPool}.Concat(ModelDb.CardPool<StatusCardPool>().GetUnlockedCards({owner}.UnlockState, {owner}.RunState.CardMultiplayerConstraint))",
+            _ => charPool,
+        };
+        return $"{extra}.Where({filter}).Distinct().ToList()";
     }
 
     /// <summary>选牌用的那一摞牌（本体写法：PileType.X.GetPile(player)）。</summary>
@@ -2381,15 +2603,134 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 「自己搞定一整段」的新效果在生成代码前写一行标记（毒性爆发 / 预见 / 升级卡牌 / 大限已至）。
+    ///
+    /// 为什么要标记：这四种效果的实现都是好几行（循环 + 施加 + 触发 / 选牌 + 丢掉 / 攻击链），
+    /// 回读时逐行猜很容易认错 —— 例如预见的 `CardCmd.Discard(choiceContext, __scryDiscard)` 会被当成
+    /// 「丢弃卡牌」、毒性爆发的 `PowerCmd.Apply&lt;PoisonPower&gt;` 会被当成「施加中毒」。
+    /// 所以标记那一行就把效果收尾（数值 / 选牌方式 / 哪一摞都写在标记里），后面那几行整段跳过。
+    /// 回读见 ProjectRecovery 的 `CET:Effect=` 分支。
+    /// </summary>
+    internal static string SelfContainedMarker(EffectSpec e) =>
+        $"// CET:Effect={e.Kind} CET:Amount={Lit.Dec(e.Amount)} CET:Pick={e.CardPick} CET:Pile={e.SelectPile}"
+        + $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsX ? 1 : 0)}";
+
+    /// <summary>
+    /// 升级卡牌（用户要求的新效果）：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级。
+    ///
+    /// 升级用本体的 <c>CardCmd.Upgrade</c>（本体自己也是这么升级的：Apotheosis / Armaments / Whetstone）；
+    /// 它内部会跳过「不能升级」的卡（<c>IsUpgradable</c>），并做 FinalizeUpgradeInternal（费用 / 变量收尾）。
+    /// 选牌时也带上 <c>c =&gt; c.IsUpgradable</c> 过滤，免得玩家选到升不了的牌（选了也是白选）。
+    /// 战斗里的卡是牌组卡的**克隆**，所以这里升级只影响本场战斗（本体机制，不用我们处理）。
+    /// </summary>
+    private static void EmitUpgradeCard(CodeWriter w, EffectSpec e, bool useX = false)
+    {
+        string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
+        string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        w.Line(SelfContainedMarker(e));
+        if (e.CardPick == "Chosen")
+        {
+            w.Line($"// 自己从{pileZh}选 {n} 张升级（只列能升级的牌）");
+            if (e.SelectPile == "Hand")
+                w.Line($"var toUpgrade = (await CardSelectCmd.FromHand(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => c.IsUpgradable, this)).ToList();");
+            else
+                w.Line($"var toUpgrade = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => c.IsUpgradable)).ToList();");
+            w.Line("foreach (CardModel c in toUpgrade) CardCmd.Upgrade(c);");
+        }
+        else
+        {
+            w.Line($"// 随机升级{pileZh}里的 {n} 张（只挑能升级的）");
+            w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
+            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards.Where(c => c.IsUpgradable));");
+            w.Line("if (pick is null) break;");
+            w.Line("CardCmd.Upgrade(pick);");
+            w.Close();
+        }
+    }
+
+    /// <summary>
+    /// 预见（一代观者的 Scry）：看抽牌堆顶的 N 张，把其中**任意张**丢进弃牌堆。
+    ///
+    /// 本体（StS2）**没有**这个机制（只有水晶球事件里同名的美术资源），所以自己拼：
+    ///   · 抽牌堆顶 = <c>PileType.Draw.GetPile(player).Cards</c> 的**前 N 个**
+    ///     （本体 CardPile 的索引 0 就是顶：抽牌时取 <c>Cards.FirstOrDefault()</c>，MoveToTop 也是 Insert(0)）；
+    ///   · 从「显式牌表」里选牌只有 <c>CardSelectCmd.FromSimpleGrid</c>
+    ///     （FromChooseACardScreen 超过 3 张会直接抛异常），min 0 / max N = 可以一张都不丢；
+    ///   · 丢牌走 <c>CardCmd.Discard</c>（派发 AfterCardDiscarded，奇巧照常触发）。
+    /// </summary>
+    private static void EmitScry(CodeWriter w, EffectSpec e, bool useX = false)
+    {
+        string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
+        w.Line(SelfContainedMarker(e));
+        w.Line($"// 预见 {n}：看抽牌堆顶的 {n} 张，想丢的丢进弃牌堆（可以一张都不丢）");
+        w.Line($"var __scryTop = PileType.Draw.GetPile(base.Owner).Cards.Take({n}).ToList();");
+        w.Open("if (__scryTop.Count > 0)");
+        w.Line("var __scryDiscard = (await CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))).ToList();");
+        w.Open("if (__scryDiscard.Count > 0)");
+        w.Line("await CardCmd.Discard(choiceContext, __scryDiscard);");
+        w.Close();
+        w.Close();
+    }
+
+    private static void EmitOutbreak(CodeWriter w, EffectSpec e, string amt, string cardSource)
+        => EmitOutbreak(w, e, amt,
+            enemies: "base.Owner.Creature.CombatState.HittableEnemies",
+            applier: "base.Owner.Creature", cardSource: cardSource);
+
+    /// <summary>
+    /// 毒性爆发（本体 Outbreak，静默猎手稀有技能）：给**所有敌人**上 N 层中毒，然后把中毒立刻触发一次。
+    /// 本体的写法就是 <c>PowerCmd.Apply&lt;PoisonPower&gt;</c> 一轮 + <c>PoisonPower.Trigger()</c> 一轮；
+    /// 那一下伤害在 PoisonPower 内部是 <c>dealer: null</c>，所以不算「你造成的伤害」、也不吃力量（本体机制）。
+    ///
+    /// 参数化的原因：卡牌 / 遗物 / 药水里 <c>base.Owner</c> 是 Player（要 .Creature），
+    /// 而自定义状态触发器里 <c>base.Owner</c> 本身就是 Creature（见 CustomPowerGen 的上下文）。
+    /// </summary>
+    internal static void EmitOutbreak(CodeWriter w, EffectSpec e, string amt, string enemies, string applier, string cardSource)
+    {
+        w.Line(SelfContainedMarker(e));
+        w.Line($"// 毒性爆发：给所有敌人上 {amt} 层中毒，并立刻触发一次中毒伤害");
+        w.Open($"foreach (Creature foe in {enemies})")
+         .Line($"await PowerCmd.Apply<PoisonPower>(choiceContext, foe, {amt}, {applier}, {cardSource});")
+         .Close();
+        w.Open($"foreach (Creature foe in {enemies})")
+         .Line("PoisonPower? poison = foe.GetPower<PoisonPower>();")
+         .Line("if (poison is not null) await poison.Trigger();")
+         .Close();
+    }
+
+    /// <summary>
+    /// 大限已至（本体 Time's Up）：造成等于**目标身上灾厄层数**的伤害。
+    /// 本体用的是计算变量三件套 + 普通攻击链（<c>DamageCmd.Attack(CalculatedDamage).FromCard(...).Targeting(cardPlay.Target)</c>），
+    /// 所以这是一次正常攻击（能被格挡、吃力量/易伤），而伤害数字由目标的 DoomPower 层数决定。
+    /// 只能打在**单个指定敌人**上（本体也是 TargetType.AnyEnemy），目标为空时本体直接抛异常。
+    /// </summary>
+    private static void EmitTimesUp(CodeWriter w, EffectSpec e)
+    {
+        w.Line(SelfContainedMarker(e));
+        w.Line("// 大限已至：造成等于目标身上灾厄层数的伤害（本体 Time's Up 的写法）");
+        w.Line("ArgumentNullException.ThrowIfNull(cardPlay.Target, \"cardPlay.Target\");   // 指定目标才生效（本体这张牌也是 AnyEnemy）");
+        w.Line("await DamageCmd.Attack(base.DynamicVars.CalculatedDamage)")
+         .Indent().Line(".FromCard(this, cardPlay)").Line(".Targeting(cardPlay.Target)")
+         .Line(".WithHitFx(\"vfx/vfx_attack_slash\")").Line(".Execute(choiceContext);").Dedent().Line();
+    }
+
+    /// <summary>
     /// 变化卡牌（参考储君的「下去」Begone）：
-    /// 指定了目标卡 → CardCmd.Transform(原卡, 新卡)；没指定 → CardCmd.TransformToRandom（随机变化）。
+    /// 指定了目标卡 → CardCmd.Transform(原卡, 新卡)；没指定 → CardCmd.TransformToRandom（随机变化）；
+    /// 「按范围随机」→ 先按范围抽一张出来再 Transform（这样范围限定才有意义）。
     /// 「从哪里选牌」同消耗卡牌：手牌 / 抽牌堆 / 弃牌堆（本体「降灵 Seance / 充能 Charge」就是选抽牌堆变化）。
+    /// 变出来的新卡还能带「升级 / 免费 / 仅本回合升级 / 仅本回合免费」这几个附加处理。
     /// </summary>
     private static void EmitTransformCard(CodeWriter w, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        w.Line(SpawnMarker(e));
+        bool randomSpawn = e.IsSpawnRandom;
+        if (randomSpawn) w.Line($"var __transformPool = {SpawnPoolExpr(e)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
+        string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
+        if (e.HasSpawnModifier) EmitTempUpgradePowerApply(w, tempUp, "this");
 
         if (e.CardPick == "Chosen")
         {
@@ -2400,9 +2741,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"var toTransform = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.TransformSelectionPrompt, {n}))).ToList();");
             w.Line("foreach (CardModel c in toTransform)");
             w.Open("");
-            w.Line(target is null
-                ? "await CardCmd.TransformToRandom(c, base.Owner.RunState.Rng.CombatCardSelection);"
-                : $"await CardCmd.Transform(c, base.CombatState.CreateCard<{target}>(base.Owner));");
+            EmitTransformBody(w, e, "c", target, randomSpawn, tempUp);
             w.Close();
         }
         else
@@ -2411,11 +2750,29 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
             w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
             w.Line("if (pick is null) break;");
-            w.Line(target is null
-                ? "await CardCmd.TransformToRandom(pick, base.Owner.RunState.Rng.CombatCardSelection);"
-                : $"await CardCmd.Transform(pick, base.CombatState.CreateCard<{target}>(base.Owner));");
+            EmitTransformBody(w, e, "pick", target, randomSpawn, tempUp);
             w.Close();
         }
+    }
+
+    /// <summary>把一张牌变成什么：按范围随机抽一张 / 指定的那张 / 本体的随机变化。</summary>
+    private static void EmitTransformBody(CodeWriter w, EffectSpec e, string cardVar, string? target, bool randomSpawn, string? tempUpVar)
+    {
+        if (randomSpawn)
+        {
+            // 按范围随机：先抽一张（CardFactory 会用本体那套「变化候选」规则），变完再套附加处理
+            w.Line($"CardModel? __newCard = base.Owner.RunState.Rng.CombatCardSelection.NextItem(__transformPool);");
+            w.Line($"if (__newCard is not null)");
+            w.Open("");
+            w.Line($"CardModel __made = base.Owner.Creature.CombatState.CreateCard(__newCard, base.Owner);");
+            w.Line($"await CardCmd.Transform({cardVar}, __made);");
+            EmitSpawnModifiers(w, e, "__made", tempUpVar);
+            w.Close();
+            return;
+        }
+        w.Line(target is null
+            ? $"await CardCmd.TransformToRandom({cardVar}, base.Owner.RunState.Rng.CombatCardSelection);"
+            : $"await CardCmd.Transform({cardVar}, base.CombatState.CreateCard<{target}>(base.Owner));");
     }
 
     /// <summary>
@@ -2743,6 +3100,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitTransformCard(w, e, useX);
                 break;
 
+            case "UpgradeCard":
+                EmitUpgradeCard(w, e, useX);
+                break;
+
+            case "Scry":
+                EmitScry(w, e, useX);
+                break;
+
+            case "Outbreak":
+                EmitOutbreak(w, e, amt, "this");
+                break;
+
+            case "TimesUp":
+                EmitTimesUp(w, e);
+                break;
+
             case "TakeFromDraw":
                 EmitTakeFromPile(w, e, "Draw", useX);
                 break;
@@ -2754,6 +3127,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AddCardGlobal":
             case "TransformCardGlobal":
             case "RemoveCardGlobal":
+            case "UpgradeCardGlobal":
                 EmitGlobalCardEffect(w, e, "base.Owner", useX);
                 break;
 
@@ -3724,8 +4098,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         };
 
         var w = new CodeWriter();
-        w.Line("// <auto-generated> 自定义遗物 </auto-generated>")
-         .Line($"namespace {n.Namespace};")
+        w.Line("// <auto-generated> 自定义遗物 </auto-generated>");
+        if (r.HasCustomDescription)
+            w.Line($"// CET:CustomDescReplace={(r.CustomDescriptionReplaces ? 1 : 0)} CET:CustomDescription={EscapeMarker(r.CustomDescription)}");
+        w.Line($"namespace {n.Namespace};")
          .Line()
          .Open($"public sealed class {cls} : RelicModel")
          .Line($"public override RelicRarity Rarity => RelicRarity.{r.Rarity};")
@@ -3852,7 +4228,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "GenerateCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，生成卡牌无法实现）"); break; }
-                EmitGenerateCard(w, e);
+                EmitGenerateCard(w, e, cardSource: "null");
                 break;
 
             case "ExhaustCard":
@@ -3863,6 +4239,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "DiscardCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，丢弃卡牌无法实现）"); break; }
                 EmitDiscardCard(w, e);
+                break;
+
+            case "UpgradeCard":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，升级卡牌无法实现）"); break; }
+                EmitUpgradeCard(w, e);
+                break;
+
+            case "Scry":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，预见无法实现）"); break; }
+                EmitScry(w, e);
+                break;
+
+            // 毒性爆发：只要拿到玩家和敌人列表就行（本体 PoisonPower 那一下伤害 dealer 是 null）
+            case "Outbreak":
+                EmitOutbreak(w, e, Lit.Dec(e.Amount), "null");
                 break;
 
             case "TransformCard":
@@ -3884,6 +4275,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AddCardGlobal":
             case "TransformCardGlobal":
             case "RemoveCardGlobal":
+            case "UpgradeCardGlobal":
                 EmitGlobalCardEffect(w, e, "base.Owner");
                 break;
 
@@ -4114,8 +4506,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string cls = n.PotionClassName(s, index);
 
         var w = new CodeWriter();
-        w.Line("// <auto-generated> 自定义药水 </auto-generated>")
-         .Line($"namespace {n.Namespace};")
+        w.Line("// <auto-generated> 自定义药水 </auto-generated>");
+        if (s.HasCustomDescription)
+            w.Line($"// CET:CustomDescReplace={(s.CustomDescriptionReplaces ? 1 : 0)} CET:CustomDescription={EscapeMarker(s.CustomDescription)}");
+        w.Line($"namespace {n.Namespace};")
          .Line()
          .Open($"public sealed class {cls} : PotionModel")
          .Line($"public override PotionRarity Rarity => PotionRarity.{s.Rarity};")
@@ -4607,6 +5001,57 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static bool UsesEnergyNextTurnDebt(CharacterProfile p) =>
         AllEffects(p).Any(e => e.Kind == "Energy" && e.NextTurn && e.Amount < 0 && !e.AmountIsX);
 
+    /// <summary>这个配置里有没有「生成 / 变化出来的卡：仅在本回合升级」（有才生成那个临时升级 Power）。</summary>
+    public static bool UsesTempUpgrade(CharacterProfile p) =>
+        AllEffects(p).Any(e => e.UsesSpawnOptions && e.SpawnUpgradedThisTurn);
+
+    /// <summary>
+    /// 「生成 / 变化出来的卡：仅在本回合升级」用的 Power。
+    ///
+    /// 为什么必须自己写：本体**没有**「临时升级」这种东西 ——
+    /// 只有视觉预览的 <c>CardUpgradePreviewType</c>（挂在克隆出来的卡上，不改真卡），
+    /// 以及一个反向的先例 <c>DampenPower</c>（挂上时把升级过的卡降级、移除时再升回去，自己记着等级）。
+    /// 这里就是 DampenPower 反过来用：<c>Track(card)</c> 里升级并记住「这次真的升上去的那几张」
+    /// （本来就升级过的牌不动它），回合结束时把它们降回来。
+    /// 战斗里的卡是牌组卡的克隆，所以就算没降回来也不会污染牌组 —— 这个状态只是让「本回合」的语义成立。
+    /// </summary>
+    public static string TempUpgradePowerSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 「生成 / 变化出来的卡：仅在本回合升级」用的临时升级 Power </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line()
+         .Line("/// <summary>记住这次临时升上去的那几张牌，回合结束时把它们降回来。</summary>")
+         .Open($"public sealed class {n.TempUpgradePowerClass} : PowerModel")
+         .Line("public override PowerType Type => PowerType.Buff;")
+         .Line()
+         .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+         .Line()
+         .Line("// 这次被我们升上去的牌（本来就是升级过的牌不会进这里）")
+         .Line("private readonly List<CardModel> _upgraded = [];")
+         .Line()
+         .Line("/// <summary>把一个刚生成 / 刚变化出来的卡临时升级（已经升级过的不动）。</summary>")
+         .Open("public void Track(CardModel card)")
+         .Line("if (card.IsUpgraded || !card.IsUpgradable) return;")
+         .Line("CardCmd.Upgrade(card);")
+         .Line("_upgraded.Add(card);")
+         .Close()
+         .Line()
+         .Line("// 回合结束：把它们降回没升级的样子（只降这次真的升上去的那几张）")
+         .Open("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
+         .Open("if (participants.Contains(base.Owner))")
+         .Open("foreach (CardModel card in _upgraded)")
+         .Line("if (card.IsUpgraded) CardCmd.Downgrade(card);")
+         .Close()
+         .Line("_upgraded.Clear();")
+         .Line("await PowerCmd.Remove(this);")
+         .Close()
+         .Close()
+         .Close();
+        return w.ToString();
+    }
+
     public static string ExtraTurnPowerSource(CharacterProfile p)
     {
         var n = Naming.From(p);
@@ -4669,7 +5114,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "GenerateCard":
-                EmitGenerateCard(w, e);
+                EmitGenerateCard(w, e, cardSource: "null");
                 break;
 
             case "ExhaustCard":
@@ -4678,6 +5123,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "DiscardCard":
                 EmitDiscardCard(w, e);
+                break;
+
+            case "UpgradeCard":
+                EmitUpgradeCard(w, e);
+                break;
+
+            case "Scry":
+                EmitScry(w, e);
+                break;
+
+            case "Outbreak":
+                EmitOutbreak(w, e, Lit.Dec(e.Amount), "null");
                 break;
 
             case "TransformCard":
@@ -4696,6 +5153,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AddCardGlobal":
             case "TransformCardGlobal":
             case "RemoveCardGlobal":
+            case "UpgradeCardGlobal":
                 EmitGlobalCardEffect(w, e, "base.Owner");
                 break;
 

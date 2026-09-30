@@ -137,6 +137,12 @@ public static class ProfileValidator
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条效果是「{e.Kind}」，"
                             + "这种效果需要卡牌上下文（选牌 / 结束回合），状态触发器里用不了。"
                             + $"能用的是：{string.Join(" / ", PowerTriggers.SupportedEffectKinds)}。"));
+                    // 「按范围随机 / 生成出来的卡怎么处理」：状态触发器里走的是另一套生成链（base.Owner 是 Creature），
+                    // 只支持「指定卡」那种写法 —— 说清楚，别让用户以为配了没生效（用户在自定义状态里配了会被静默忽略）
+                    if (e.UsesSpawnOptions && (e.IsSpawnRandom || e.HasSpawnModifier))
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
+                            + "用了「按范围随机」或「生成出来的卡怎么处理」，但**自定义状态的触发器里不支持**这两类设置 —— "
+                            + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
                     if (e.Kind is "ApplyPower" or "TempPower" && string.IsNullOrWhiteSpace(e.PowerId))
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」还没选状态。"));
                     else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
@@ -561,6 +567,7 @@ public static class ProfileValidator
         if (CSharpCodeGen.UsesExtraTurn(p)) mine.Add(n.ExtraTurnPowerClass);
         if (CSharpCodeGen.UsesEnergyDebt(p)) mine.Add(n.EnergyDebtPowerClass);
         if (CSharpCodeGen.UsesEnergyNextTurnDebt(p)) mine.Add(n.EnergyNextTurnDebtPowerClass);
+        if (CSharpCodeGen.UsesTempUpgrade(p)) mine.Add(n.TempUpgradePowerClass);
         if (CSharpCodeGen.UsesTempKeywordPower(p)) mine.Add(n.TempKeywordPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
@@ -1063,7 +1070,7 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」会弹一个选牌界面，"
                     + $"从{(e.Kind == "TakeFromDraw" ? "抽牌堆" : "弃牌堆")}里自己挑 {Math.Max(1, (int)e.Amount)} 张拿到手牌"
                     + "（本体「搜寻 / 全息影像 / 挖掘」的做法，界面提示语会一起生成）；那一摞里没牌时什么都不做。"));
-            if (!kind.NeedsTarget && e.TargetSide != "Self")
+            if (!kind.NeedsTarget && e.TargetSide != "Self" && e.Kind != "Outbreak")
                 issues.Add(new("警告", $"{owner} 的「{kind.Display}」作用对象固定为自己，选项将被忽略。"));
             if (e.RepeatCount is < 1 or > 20)
                 issues.Add(new("错误", $"{owner} 的重复次数 {e.RepeatCount} 超出范围（1~20）。"));
@@ -1102,7 +1109,53 @@ public static class ProfileValidator
                         + "（不经手牌，所以「奇巧」这种「从手牌被丢弃时」的效果**不会**触发）。"));
             }
 
-            // 强化指定卡牌（像「精准」）：没选目标卡就没意义（会变成「强化所有卡」，和这个效果的本意不符）
+            // 升级卡牌 / 预见：都要弹选牌界面，说明一下行为（数值 = 几张牌）
+            if (e.Kind == "UpgradeCard")
+            {
+                issues.Add(new("提示", $"{owner} 的「升级卡牌」会{EffectCatalog.CardPickZh(e.CardPick)}"
+                    + $"把{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {e.Amount:0.##} 张牌升级"
+                    + "（走本体 CardCmd.Upgrade：只能升级的牌会出现在选择里；战斗里的升级只影响本场战斗，"
+                    + "因为战斗牌是牌组牌的克隆）。"));
+            }
+            if (e.Kind == "Scry")
+            {
+                issues.Add(new("提示", $"{owner} 的「预见 {e.Amount:0.##}」会弹一个选牌界面，"
+                    + $"让你看抽牌堆顶的 {e.Amount:0.##} 张牌，并把其中**任意张**丢进弃牌堆（可以一张都不丢）。"
+                    + "本体没有「预见」这个机制，是工具按一代观者的效果自己拼的"
+                    + "（抽牌堆顶 = Cards 的前 N 个：本体索引 0 就是顶；选牌走 FromSimpleGrid）。"));
+            }
+            // 升级卡牌（全局）：直接改牌组（永久、写进存档），和「获得 / 变化 / 删除卡牌（全局）」同一档
+            if (e.Kind == "UpgradeCardGlobal")
+            {
+                issues.Add(new("提示", $"{owner} 的「升级卡牌（全局）」会{EffectCatalog.CardPickZh(e.CardPick)}"
+                    + $"把**牌组**里的 {e.Amount:0.##} 张牌永久升级（本体「香盒 Pomander / 混沌之香」那种，"
+                    + "写进存档、跨战斗生效）—— 和「升级卡牌」（只升级本场战斗的手牌 / 抽牌堆 / 弃牌堆）不是一回事。"));
+            }
+
+            if (e.Kind == "Outbreak")
+            {
+                issues.Add(new("提示", $"{owner} 的「毒性爆发」永远是**所有敌人**上 {e.Amount:0.##} 层中毒再立刻触发一次中毒"
+                    + "（本体 Outbreak 就是全体，作用对象那一栏会被忽略）；那一下触发伤害在本体里不算「你造成的伤害」。"));
+            }
+            // 大限已至：只能用在卡牌上，而且必须选「指定敌人」
+            if (e.Kind == "TimesUp")
+            {
+                if (ctx is not ("Card" or "Curse"))
+                    issues.Add(new("错误", $"{owner} 的「大限已至」只能用在**卡牌**上"
+                        + "（本体 Time's Up 是「指定敌人」的攻击牌，要的是「这张牌打出去时选中的那个敌人」）—— 请改用卡牌。"));
+                else if (e.TargetSide != "Enemy")
+                    issues.Add(new("警告", $"{owner} 的「大限已至」作用对象不是「指定敌人」："
+                        + "它实际只会打**这张牌选中的那个敌人**（本体这张牌是 AnyEnemy 目标，没选到目标就不生效）—— "
+                        + "建议把「作用对象」改成「指定敌人」。"));
+            }
+
+            // 「按范围随机 / 生成出来的卡的附加处理」：自定义状态的触发器里走的是另一套 emitter
+            // （那里的 base.Owner 是 Creature），只支持「指定卡」那种写法 —— 说清楚，别让用户以为配了没生效
+            if (ctx == "Power" && e.UsesSpawnOptions && (e.IsSpawnRandom || e.HasSpawnModifier))
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「按范围随机」或「生成出来的卡怎么处理」，"
+                    + "但**自定义状态的触发器里不支持**这两类设置（那里的生成链拿不到玩家那一侧的对象）—— "
+                    + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
+
             if (e.Kind == "BoostCard")
             {
                 if (string.IsNullOrWhiteSpace(e.SpawnCardId))

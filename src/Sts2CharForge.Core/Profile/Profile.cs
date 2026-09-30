@@ -268,6 +268,84 @@ public sealed class EffectSpec : SpecBase
     /// <summary>升级后增量（只有卡牌用得到，遗物/药水不能升级）</summary>
     public decimal UpgradeAmount { get => _upgradeAmount; set => Set(ref _upgradeAmount, value); }
 
+    // ===== 生成 / 变化卡牌：范围限定 + 「生成出来的卡」的附加处理 =====
+    private string _spawnPick = "Fixed";
+    private string _spawnFilter = "";
+    private bool _spawnUpgraded, _spawnFree, _spawnFreeThisTurn, _spawnUpgradedThisTurn;
+
+    /// <summary>
+    /// 生成 / 变化时是「指定卡」还是「按范围随机」：
+    /// <c>Fixed</c>（默认，老存档就是它）= 用「目标卡」那一栏选定的卡；
+    /// <c>Random</c> = 从卡池里按 <see cref="SpawnFilter"/> 随机抽（本体「炼制药水 / 发现」那种）。
+    /// </summary>
+    public string SpawnPick
+    {
+        get => _spawnPick;
+        set { if (Set(ref _spawnPick, value ?? "Fixed")) { Raise(nameof(IsSpawnRandom)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>是不是「按范围随机」（界面上后面那几行要不要显示也跟着它）。</summary>
+    [JsonIgnore]
+    public bool IsSpawnRandom => string.Equals(_spawnPick, "Random", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 随机生成 / 变化的**范围限定**：空 = 不限；Attack / Skill / Power = 攻击 / 技能 / 能力；
+    /// Curse / Status = 诅咒 / 状态（按稀有度 / 类型从对应卡池里挑）。
+    /// </summary>
+    public string SpawnFilter
+    {
+        get => _spawnFilter;
+        set { if (Set(ref _spawnFilter, value ?? "")) { Raise(nameof(SpawnFilterZh)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>范围限定的中文（界面 / 描述里用）。</summary>
+    [JsonIgnore]
+    public string SpawnFilterZh => EffectCatalog.SpawnFilterZh(SpawnFilter);
+
+    /// <summary>生成 / 变化的卡**直接升级**（本场战斗内一直有效）。</summary>
+    public bool SpawnUpgraded
+    {
+        get => _spawnUpgraded;
+        set { if (Set(ref _spawnUpgraded, value)) { Raise(nameof(HasSpawnModifier)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>生成 / 变化的卡**免费打出**（费用设为 0，本场战斗内有效）。</summary>
+    public bool SpawnFree
+    {
+        get => _spawnFree;
+        set { if (Set(ref _spawnFree, value)) { Raise(nameof(HasSpawnModifier)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>生成 / 变化的卡**仅本回合免费**（回合结束自动恢复原费用）。</summary>
+    public bool SpawnFreeThisTurn
+    {
+        get => _spawnFreeThisTurn;
+        set { if (Set(ref _spawnFreeThisTurn, value)) { Raise(nameof(HasSpawnModifier)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>
+    /// 生成 / 变化的卡**仅本回合升级**（回合结束恢复成没升级的样子）。
+    /// 本体没有这种 API，靠生成的 <c>&lt;角色&gt;ForgeTempUpgradePower</c> 在回合结束时降回来
+    /// （只降「这次真的升上去的那几张」，本来就是升级过的牌不动它）。
+    /// </summary>
+    public bool SpawnUpgradedThisTurn
+    {
+        get => _spawnUpgradedThisTurn;
+        set { if (Set(ref _spawnUpgradedThisTurn, value)) { Raise(nameof(HasSpawnModifier)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>勾了任意一个「生成出来的卡怎么处理」（升级 / 免费…）。</summary>
+    [JsonIgnore]
+    public bool HasSpawnModifier => SpawnUpgraded || SpawnFree || SpawnFreeThisTurn || SpawnUpgradedThisTurn;
+
+    /// <summary>这些「生成 / 变化」相关的设置要不要显示（只有生成 / 变化 / 全局加牌这几种用得到）。</summary>
+    [JsonIgnore]
+    public bool UsesSpawnOptions => Kind is "GenerateCard" or "TransformCard" or "TransformCardGlobal" or "AddCardGlobal";
+
+    /// <summary>「范围限定」那一行要不要显示（只有选了「按范围随机」才有意义）。</summary>
+    [JsonIgnore]
+    public bool ShowSpawnFilter => UsesSpawnOptions && IsSpawnRandom;
+
     private bool _chanceEnabled;
     private decimal _chancePercent = 50m;
 
@@ -394,9 +472,9 @@ public sealed class EffectSpec : SpecBase
         _ => "手牌",
     };
 
-    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 给予关键词 / 丢弃用得到）。</summary>
+    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 丢弃 / 升级 / 给予关键词用得到）。</summary>
     [JsonIgnore]
-    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" or "GiveKeyword";
+    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" or "UpgradeCard" or "GiveKeyword";
 
     /// <summary>
     /// 这一条效果的可选牌堆（界面下拉的候选）。
@@ -407,11 +485,14 @@ public sealed class EffectSpec : SpecBase
     public IReadOnlyList<PileChoiceOption> SelectPileChoices =>
         Kind == "DiscardCard" ? EffectCatalog.DiscardPiles : EffectCatalog.SelectPiles;
 
-    /// <summary>「从哪里选牌」那一行的标题（「丢弃卡牌」的措辞不一样：是「丢哪一摞」）。</summary>
+    /// <summary>「从哪里选牌」那一行的标题（不同效果的措辞不一样：丢哪一摞 / 升级哪一摞）。</summary>
     [JsonIgnore]
-    public string SelectPileLabel => Kind == "DiscardCard"
-        ? "从哪里丢弃（手牌 / 抽牌堆）"
-        : "从哪里选牌（消耗 / 变化用）";
+    public string SelectPileLabel => Kind switch
+    {
+        "DiscardCard" => "从哪里丢弃（手牌 / 抽牌堆）",
+        "UpgradeCard" => "从哪里升级（手牌 / 抽牌堆 / 弃牌堆）",
+        _ => "从哪里选牌（消耗 / 变化用）",
+    };
 
     // ===== 给予卡牌关键词（GiveKeyword）=====
     private string _givenKeyword = "";
@@ -672,9 +753,13 @@ public sealed class EffectSpec : SpecBase
                 "ExhaustCard" => $" ｜ {CardPickZh} ｜ 从{SelectPileZh}",
                 // 丢弃：把「丢哪一摞 / 怎么选」显示出来（两种牌堆的行为差别挺大，值得一眼看到）
                 "DiscardCard" => $" ｜ 丢弃 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                // 升级卡牌 / 预见：都是「选 N 张牌」，把从哪一摞 / 怎么看写出来
+                "UpgradeCard" => $" ｜ 升级 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                "Scry" => " ｜ 预见（看抽牌堆顶，可丢任意张）",
                 "AddCardGlobal" => $" ｜ 加进牌组：{(SpawnCardId is { Length: > 0 } ac ? ac : "（未填→Shiv）")}",
                 "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")} ｜ {CardPickZh}",
                 "RemoveCardGlobal" => $" ｜ 从牌组删牌 ｜ {CardPickZh}",
+                "UpgradeCardGlobal" => $" ｜ 升级牌组里的牌 ｜ {CardPickZh}",
                 _ => "",
             };
             string side = TargetSide switch
@@ -710,7 +795,11 @@ public sealed class EffectSpec : SpecBase
                 "AddCardGlobal" => "获得卡牌（全局）",
                 "TransformCardGlobal" => "变化卡牌（全局）",
                 "RemoveCardGlobal" => "删除卡牌（全局）",
+                "UpgradeCardGlobal" => "升级卡牌（全局：牌组里的牌永久升级）",
                 "CardReward" => "获得卡牌奖励",
+                // 毒性爆发 / 大限已至：本体那两张牌的效果（界面上把关键说明写出来）
+                "Outbreak" => "毒性爆发（全体上毒并立即触发）",
+                "TimesUp" => "大限已至（伤害 = 目标灾厄层数）",
                 // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」。
                 // 这里写的是选中那只召唤物的**类名**（Profile 层拿不到中文名 —— 那要读召唤物列表，
                 // 由 LocalizationGen / 界面负责翻译成中文名）。
@@ -1225,6 +1314,31 @@ public sealed class RelicSpec : SpecBase
     public string? Icon { get; set; }
     /// <summary>遗物未发现时的描边图标（留空 = 复用图标本体）</summary>
     public string? IconOutline { get; set; }
+
+    // ===== 自定义描述（用户要求：遗物也能自己写描述）=====
+    private string _customDescription = "";
+    private bool _customDescriptionReplaces;
+
+    /// <summary>
+    /// 自定义描述（留空 = 用自动生成的那段）。
+    /// 可以写本体占位符：<c>{Damage:diff()}</c>（升级后会显示升级值）/ <c>{PoisonPower}</c> 之类，
+    /// 变量名要和效果里用到的动态变量一致 —— 界面上的「填入参数」按钮会列出能用的那些。
+    /// </summary>
+    public string CustomDescription
+    {
+        get => _customDescription;
+        set { if (Set(ref _customDescription, value ?? "")) Raise(nameof(HasCustomDescription)); }
+    }
+
+    /// <summary>勾上 = 只用你写的这段（不勾 = 自动描述 + 换行 + 你写的这段）。</summary>
+    public bool CustomDescriptionReplaces
+    {
+        get => _customDescriptionReplaces;
+        set { if (Set(ref _customDescriptionReplaces, value)) Raise(nameof(Display)); }
+    }
+
+    [JsonIgnore]
+    public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
     [JsonIgnore]
     public string Display =>
@@ -1802,6 +1916,27 @@ public sealed class PotionSpec : SpecBase
     public string? IconOutline { get; set; }
 
     public ObservableCollection<EffectSpec> Effects { get; set; } = new();
+
+    // ===== 自定义描述（用户要求：药水也能自己写描述）=====
+    private string _customDescription = "";
+    private bool _customDescriptionReplaces;
+
+    /// <summary>自定义描述（留空 = 用自动生成的那段）。支持 <c>{PoisonPower}</c> 这类本体占位符。</summary>
+    public string CustomDescription
+    {
+        get => _customDescription;
+        set { if (Set(ref _customDescription, value ?? "")) Raise(nameof(HasCustomDescription)); }
+    }
+
+    /// <summary>勾上 = 只用你写的这段（不勾 = 自动描述 + 换行 + 你写的这段）。</summary>
+    public bool CustomDescriptionReplaces
+    {
+        get => _customDescriptionReplaces;
+        set { if (Set(ref _customDescriptionReplaces, value)) Raise(nameof(Display)); }
+    }
+
+    [JsonIgnore]
+    public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
     [JsonIgnore]
     public string Display =>

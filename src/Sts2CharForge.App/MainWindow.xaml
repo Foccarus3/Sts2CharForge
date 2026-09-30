@@ -433,14 +433,19 @@
                                        Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                             <!-- 卡牌自定义描述：留空 = 只用自动生成的那段 -->
                             <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用上面那些效果自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
-                            <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                            <TextBox x:Name="CardCustomDesc" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                      VerticalScrollBarVisibility="Auto" IsEnabled="{Binding ValueEditable}"
                                      Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
                                      ToolTip="可以写风味文字，也可以照常写本体占位符：{Damage:diff()} 会显示成升级后的数字，[gold]…[/gold] 是金色富文本。"/>
-                            <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
-                                      Content="替换掉自动生成的描述（不勾 = 追加在后面）"
-                                      IsChecked="{Binding CustomDescriptionReplaces}"
-                                      ToolTip="不勾：上面那段自动描述 + 换行 + 你写的这段（推荐，数字会跟着升级变）。勾上：卡面上只有你写的这段（想完全自己写就用它）。"/>
+                            <StackPanel Orientation="Horizontal" Margin="6,2,0,0">
+                                <Button Content="填入参数…" Padding="8,4" IsEnabled="{Binding ValueEditable}"
+                                        Click="OnInsertParam" Tag="{Binding ElementName=CardCustomDesc}"
+                                        ToolTip="列出这张牌里能用的数值占位符（{Damage:diff()} 这种），点一下插到光标处。"/>
+                                <CheckBox Margin="10,0,0,0" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
+                                          Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                          IsChecked="{Binding CustomDescriptionReplaces}"
+                                          ToolTip="不勾：上面那段自动描述 + 换行 + 你写的这段（推荐，数字会跟着升级变）。勾上：卡面上只有你写的这段（想完全自己写就用它）。"/>
+                            </StackPanel>
                         </StackPanel>
                         </ScrollViewer>
 
@@ -524,7 +529,7 @@
                                         IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
                             </WrapPanel>
                             <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <ListBox x:Name="RelicEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
                                 <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=RelicEffectList}">
@@ -571,6 +576,22 @@
                                                   DisplayMemberPath="Display" SelectedValuePath="Id"
                                                   SelectedValue="{Binding Condition.Target}"/>
                                     </Grid>
+                                </GroupBox>
+
+                                <!-- 遗物自定义描述（用户要求：遗物也能自己写描述）；「填入参数」列出可用的 {变量} -->
+                                <GroupBox Grid.Row="4" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
+                                    <StackPanel Margin="4">
+                                        <TextBox x:Name="RelicCustomDesc" Style="{StaticResource Field}" MinHeight="56" AcceptsReturn="True" TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="可以写风味文字，也可以写本体占位符：{Damage} 显示当前数值、{Damage:diff()} 显示升级后的值（遗物不可升级，一般用 {Damage} 就行）。"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Button Content="填入参数…" Padding="8,4" Click="OnInsertParam" Tag="{Binding ElementName=RelicCustomDesc}"
+                                                    ToolTip="列出这只遗物里能用的数值占位符，点一下插到光标处。"/>
+                                            <CheckBox Margin="10,0,0,0" Style="{StaticResource Check}" Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                                      IsChecked="{Binding CustomDescriptionReplaces}"/>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </GroupBox>
                             </Grid>
                         </DockPanel>
@@ -637,12 +658,27 @@
                                         IsEnabled="{Binding CanUndoPotion}" ToolTip="{Binding UndoPotionHint}"/>
                             </WrapPanel>
                             <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
                                 <ListBox x:Name="PotionEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
                                 <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=PotionEffectList}">
                                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotion}"/>
                                 </Border>
+                                <!-- 药水自定义描述（用户要求：药水也能自己写描述） -->
+                                <GroupBox Grid.Row="3" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
+                                    <StackPanel Margin="4">
+                                        <TextBox x:Name="PotionCustomDesc" Style="{StaticResource Field}" MinHeight="56" AcceptsReturn="True" TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="可以写风味文字，也可以写本体占位符：{Damage} 显示当前数值。"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                            <Button Content="填入参数…" Padding="8,4" Click="OnInsertParam" Tag="{Binding ElementName=PotionCustomDesc}"
+                                                    ToolTip="列出这瓶药水里能用的数值占位符，点一下插到光标处。"/>
+                                            <CheckBox Margin="10,0,0,0" Style="{StaticResource Check}" Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                                      IsChecked="{Binding CustomDescriptionReplaces}"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </GroupBox>
                             </Grid>
                         </DockPanel>
                     </Grid>

@@ -81,6 +81,12 @@ public static class PowerTriggers
         "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal",
         // 强化指定卡牌：只是给自己挂一张强化 Power（不需要卡牌上下文），状态触发器里也能用
         "BoostCard",
+        // 毒性爆发：全是本体 API（PowerCmd.Apply<PoisonPower> + PoisonPower.Trigger()），状态里也能用。
+        // 「大限已至 / 升级卡牌 / 预见」不在这个清单里：前两个要「玩家选中的目标」或选牌界面，
+        // 状态触发器里没有这些上下文，校验会拦住。
+        "Outbreak",
+        // 「升级卡牌（全局）」= 直接改牌组（本体「香盒 Pomander」那种），不需要卡牌上下文，状态里也能用
+        "UpgradeCardGlobal",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>
@@ -176,6 +182,10 @@ public static class PowerTriggers
             // 丢弃卡牌（状态触发器里用不了，但描述里还是要写对，不然界面会印出 Kind 原文）
             "DiscardCard" => $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 [blue]{n}[/blue] 张"
                 + (e.SelectPile == "Hand" ? "手牌" : $"（{EffectCatalog.SelectPileZh(e.SelectPile)}）牌"),
+            // 毒性爆发 / 大限已至：本体那两张牌的说明（大限已至用不了，但描述也要对）
+            "Outbreak" => $"给予所有敌人 [blue]{n}[/blue] 层中毒，并立即触发中毒",
+            "TimesUp" => "造成等于目标身上灾厄层数的伤害",
+            "UpgradeCardGlobal" => $"{EffectCatalog.CardPickZh(e.CardPick)}升级牌组里的 [blue]{n}[/blue] 张牌",
             "ExtraTurn" => "额外获得一个回合",
             _ => e.Kind,
         };

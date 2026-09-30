@@ -181,6 +181,38 @@
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding BoostStat}"
                                   ToolTip="像本体的「精准」那样给指定的那张卡加伤害，或者像「敏捷」那样加格挡。上面「目标卡」选的那张牌就是要强化的牌；「数值」= 加多少（本场战斗内一直有效，填负数就是削弱）。"/>
                     </Grid>
+                    <!-- 生成 / 变化卡牌：取卡方式 + 范围限定 + 「生成出来的卡」的附加处理（用户要求） -->
+                    <Grid Visibility="{Binding UsesSpawnOptions, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="取卡方式（生成 / 变化）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding SpawnPicks, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnPick}"
+                                  ToolTip="「指定卡」= 用上面「目标卡」里选的那张；「按范围随机」= 从卡池里按下面的范围限定抽（本体「发现 / 炼制药水」那种）。"/>
+                    </Grid>
+                    <Grid Visibility="{Binding ShowSpawnFilter, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="范围限定（随机出什么）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding SpawnFilters, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnFilter}"
+                                  ToolTip="攻击 / 技能 / 能力按牌的类型挑；诅咒 / 状态从那两个本体卡池 + 你自己的卡池里挑（你自己的诅咒 / 状态牌也在候选里）。"/>
+                    </Grid>
+                    <StackPanel Visibility="{Binding UsesSpawnOptions, Converter={StaticResource BoolToVis}}">
+                        <CheckBox Content="生成 / 变化出来的卡：直接升级" Style="{StaticResource Check}" IsChecked="{Binding SpawnUpgraded}"
+                                  ToolTip="本体 CardCmd.Upgrade：战斗里的升级只影响本场战斗（战斗牌是牌组牌的克隆）。"/>
+                        <CheckBox Content="生成 / 变化出来的卡：免费打出（本场战斗内 0 费）" Style="{StaticResource Check}" IsChecked="{Binding SpawnFree}"
+                                  ToolTip="本体 card.SetToFreeThisCombat()：这张牌在本场战斗里一直是 0 费。"/>
+                        <CheckBox Content="生成 / 变化出来的卡：仅本回合免费" Style="{StaticResource Check}" IsChecked="{Binding SpawnFreeThisTurn}"
+                                  ToolTip="本体 card.SetToFreeThisTurn()：回合结束自动恢复原费用。"/>
+                        <CheckBox Content="生成 / 变化出来的卡：仅本回合升级" Style="{StaticResource Check}" IsChecked="{Binding SpawnUpgradedThisTurn}"
+                                  ToolTip="本体没有「临时升级」API，工具会生成一个临时状态记着这几张牌，回合结束时把它们降回来。"/>
+                    </StackPanel>
+
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->

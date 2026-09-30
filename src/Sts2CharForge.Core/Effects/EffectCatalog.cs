@@ -57,6 +57,12 @@ public sealed record ConditionTargetOption(string Id, string Display);
 /// <summary>「从哪里选牌」一条：手牌 / 抽牌堆 / 弃牌堆。</summary>
 public sealed record PileChoiceOption(string Id, string Display);
 
+/// <summary>「生成 / 变化卡牌」的范围限定的一个选项（Id = 空 / Attack / Skill / Power / Curse / Status）。</summary>
+public sealed record SpawnFilterOption(string Id, string Display, string Zh);
+
+/// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
+public sealed record SpawnPickOption(string Id, string Display);
+
 /// <summary>「升级后的关键字」三态：不变 / 升级后获得 / 升级后失去。</summary>
 public sealed record KeywordStateOption(string Id, string Display);
 
@@ -596,10 +602,24 @@ public static class EffectCatalog
         // 弃牌堆里的牌本来就在那儿，丢它没有意义（界面上那一行也只给这两项）。
         new EffectKindOption("DiscardCard",   "丢弃卡牌", "张", 1, 9,  false, false),
         new EffectKindOption("TransformCard", "变化卡牌", "张", 1, 9,  false, false),
+        // 升级卡牌：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级（本体「武装 Armaments」的升级部分 + 自选牌堆）。
+        // 生成的是 CardCmd.Upgrade（本体自己也是这么升级卡牌的：Apotheosis / Armaments / Whetstone）。
+        new EffectKindOption("UpgradeCard",   "升级卡牌", "张", 1, 9,  false, false),
+        // 预见（一代观者的 Scry）：看抽牌堆顶的 N 张牌，把其中任意张丢进弃牌堆（本体没有这个机制，自己拼）。
+        new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 1, 9, false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
         new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
         new EffectKindOption("TakeFromDiscard", "从弃牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
+        // ===== 单体/群体「成吨」的两种特殊牌（用户点名的本体效果）=====
+        // 毒性爆发（本体 Outbreak，静默猎手稀有技能）：给**所有敌人**上 N 层中毒，然后立刻把中毒触发一次。
+        // 走的是本体 PowerCmd.Apply<PoisonPower> + PoisonPower.Trigger()（那一下伤害 dealer 是 null，
+        // 所以不会算成「你造成的伤害」、也不吃力量）。
+        new EffectKindOption("Outbreak", "毒性爆发（全体上毒并立即触发）", "层", 1, 99, false, false),
+        // 大限已至（本体 Time's Up，亡灵缚者稀有攻击）：造成等于**目标身上灾厄层数**的伤害。
+        // 本体用 CalculatedDamageVar + WithMultiplier(target => target.GetPowerAmount<DoomPower>())，
+        // 数值那一栏没有意义（伤害完全由目标的灾厄决定），所以范围是 0~0。
+        new EffectKindOption("TimesUp", "大限已至（伤害 = 目标身上的灾厄层数）", "—", 0, 0, false, true),
         // 给予卡牌关键词：数值 = 选几张牌（**0 = 这张牌自己**），从「选牌方式 / 从哪里选牌」挑，
         // 给它们加上「给予关键词」里选的那个关键词（可以是自定义关键词）；勾「是否为临时关键词」
         // 就只本回合有效（保留 / 奇巧走本体单回合标记，其余的由生成的临时 Power 在回合结束摘掉）。
@@ -611,6 +631,10 @@ public static class EffectCatalog
         new EffectKindOption("AddCardGlobal",       "获得卡牌（全局：加进牌组）",     "张", 1, 5, false, false),
         new EffectKindOption("TransformCardGlobal", "变化卡牌（全局：改牌组里的牌）", "张", 1, 5, false, false),
         new EffectKindOption("RemoveCardGlobal",    "删除卡牌（全局：从牌组删牌）",   "张", 1, 5, false, false),
+        // 升级卡牌（全局）：升级**牌组**里的牌（永久，跨战斗）。本体「香盒 Pomander / 混沌之香」那种。
+        // 和上面那个「升级卡牌」的区别：那个升级的是战斗里的手牌 / 抽牌堆 / 弃牌堆（只影响本场战斗），
+        // 这个直接改玩家的牌组（写进存档，和「获得卡牌（全局）」同一档）。
+        new EffectKindOption("UpgradeCardGlobal",   "升级卡牌（全局：升级牌组里的牌）", "张", 1, 5, false, false),
         // 获得卡牌奖励：按本体的奖励卡生成规则抽 N 张（用你角色自己的卡池），让玩家选一张加进牌组。
         // 挂在「战斗胜利后」（状态 / 遗物）时走本体的战斗奖励：room.AddExtraReward(new CardReward(...))，
         // 打赢后结算界面多一条「选一张卡」；挂在其它时机（战斗中）就是当场弹选牌界面。
@@ -717,6 +741,35 @@ public static class EffectCatalog
     /// <summary>「消耗卡牌 / 变化卡牌」的选牌方式。</summary>
     public static IReadOnlyList<string> CardPickModes { get; } = new[] { "Random", "Chosen" };
     public static string CardPickZh(string v) => v == "Chosen" ? "自己选" : "随机";
+
+    /// <summary>
+    /// 「生成 / 变化卡牌」的**范围限定**（用户要求：可以决定是攻击、技能还是能力，或者是诅咒和状态）。
+    /// 空 = 不限（本体卡池里的都能出）。攻击 / 技能 / 能力按 <c>CardType</c> 过滤，
+    /// 诅咒 / 状态按 <c>CardRarity</c> 过滤（本体的诅咒 / 状态是另外两个卡池）。
+    /// </summary>
+    public static IReadOnlyList<SpawnFilterOption> SpawnFilters { get; } = new[]
+    {
+        new SpawnFilterOption("", "不限（本体卡池里的都能出）", "不限"),
+        new SpawnFilterOption("Attack", "攻击牌（本体「发现 / 炼制药水」那种）", "攻击"),
+        new SpawnFilterOption("Skill", "技能牌", "技能"),
+        new SpawnFilterOption("Power", "能力牌", "能力"),
+        new SpawnFilterOption("Curse", "诅咒牌（从诅咒卡池 + 你自己的诅咒里挑）", "诅咒"),
+        new SpawnFilterOption("Status", "状态牌（伤口 / 灼伤那种）", "状态"),
+    };
+
+    public static string SpawnFilterZh(string? v)
+    {
+        foreach (var f in SpawnFilters)
+            if (string.Equals(f.Id, v ?? "", StringComparison.Ordinal)) return f.Zh;
+        return "不限";
+    }
+
+    /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
+    public static IReadOnlyList<SpawnPickOption> SpawnPicks { get; } = new[]
+    {
+        new SpawnPickOption("Fixed", "指定卡（用上面的「目标卡」）"),
+        new SpawnPickOption("Random", "按范围随机（用下面的「范围限定」）"),
+    };
 
     public static EffectKindOption FindKind(string kind) =>
         EffectKinds.FirstOrDefault(k => string.Equals(k.Kind, kind, StringComparison.OrdinalIgnoreCase)) ?? EffectKinds[0];

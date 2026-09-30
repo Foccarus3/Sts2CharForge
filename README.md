@@ -37,6 +37,11 @@
 | 生成卡牌 | 参考静默猎手的剑舞·小刀：`CombatState.CreateCard<T>` + `CardPileCmd.AddGeneratedCardsToCombat`；可选生成的卡（本体卡或本模组的卡）与去处（手牌/抽牌堆/弃牌堆） |
 | 消耗卡牌 | 参考铁甲战士的坚毅：可选「自己选」（`CardSelectCmd.FromHand` + `CardCmd.Exhaust`）或「随机」（`Rng.CombatCardSelection.NextItem`）；「从哪里选牌」可选 手牌 / 抽牌堆 / 弃牌堆 |
 | 丢弃卡牌 | 丢进弃牌堆（洗牌后会回来）：`CardCmd.Discard` + `CardSelectCmd.FromHandForDiscard` / `FromCombatPile`；「从哪里丢弃」可选 手牌 / 抽牌堆（见下文「丢弃卡牌」） |
+| 升级卡牌 | 从手牌 / 抽牌堆 / 弃牌堆挑 N 张升级（`CardCmd.Upgrade` + `UpgradeSelectionPrompt`，只列能升级的牌）；见下文「升级卡牌」 |
+| 升级卡牌（全局） | 升级**牌组**里的 N 张（永久、写进存档）：本体「香盒 Pomander」的写法 `CardSelectCmd.FromDeckForUpgrade` |
+| 毒性爆发 | 本体 Outbreak：给所有敌人上 N 层中毒，然后立刻把中毒触发一次（`PoisonPower.Trigger()`） |
+| 大限已至 | 本体 Time's Up：造成等于**目标身上灾厄层数**的伤害（`CalculatedDamage` + `GetPowerAmount<DoomPower>()`），只能用在卡牌上、目标必须选「指定敌人」 |
+| 预见 | 一代观者的 Scry（本体没有这个机制）：看抽牌堆顶 N 张，把其中任意张丢进弃牌堆（可以一张都不丢） |
 | 变化卡牌 | 参考储君的下去：填了目标卡 → `CardCmd.Transform`；留空 → `CardCmd.TransformToRandom`；同样支持「从哪里选牌」 |
 | 从抽牌堆 / 弃牌堆拿牌到手牌 | 参考本体的「搜寻 / 全息影像 / 挖掘」：`CardSelectCmd.FromCombatPile` + `CardPileCmd.Add(选中, PileType.Hand)`，弹自己的选牌界面（提示语 `<ENTRY>.selectionScreenPrompt` 会一起生成） |
 | 获得卡牌 / 变化卡牌 / 删除卡牌（全局） | 直接改**牌组**（跨战斗永久生效）：`RunState.CreateCard` + `CardPileCmd.Add(card, PileType.Deck)` / `CardCmd.Transform` / `CardSelectCmd.FromDeckForRemoval` + `CardPileCmd.RemoveFromDeck` |
@@ -98,6 +103,62 @@
 - 解包工程里能回读：`CardCmd.Discard` + `DiscardSelectionPrompt` 认「自己选 / 随机」，
   选牌那句里的 `FromHandForDiscard` / `PileType.X` 认「从哪一摞」（顺手把「消耗 / 变化」以前**根本没回读**
   「从哪里选牌」、以及 `CardCmd.TransformToRandom` 被记成「认不出来」两个老问题一起修了）。
+
+### 升级卡牌（战斗内 / 全局）
+
+「升级卡牌」和「升级卡牌（全局）」**不是一回事**：
+
+| | 升级卡牌 | 升级卡牌（全局） |
+|---|---|---|
+| 改的是哪里的牌 | 战斗里的**手牌 / 抽牌堆 / 弃牌堆**（「从哪里升级」三摞都能选） | 玩家的**牌组**（永久，写进存档、跨战斗） |
+| 生成的东西 | `CardSelectCmd.FromHand` / `FromCombatPile(… UpgradeSelectionPrompt, N)…` + `CardCmd.Upgrade(c)`（选牌时带上 `c => c.IsUpgradable`，只列能升级的） | `CardSelectCmd.FromDeckForUpgrade(owner, new CardSelectorPrefs(UpgradeSelectionPrompt, N))` + `CardCmd.Upgrade(c)`（本体「香盒 Pomander / 混沌之香」的写法） |
+| 持续多久 | 只本场战斗 —— 战斗里的卡是牌组卡的**克隆**，所以不会污染牌组 | 永久（改的就是牌组本身） |
+| 用在哪 | 卡牌 / 遗物 / 药水（要选牌界面，状态触发器里用不了） | 卡牌 / 遗物 / 药水 / 自定义状态触发器都能用（只要拿到玩家就行） |
+
+### 生成 / 变化卡牌：范围限定 + 生成出来的卡怎么处理
+
+「生成卡牌」「变化卡牌」「变化卡牌（全局）」「获得卡牌（全局）」多了两组设置：
+
+- **取卡方式**：「指定卡」= 用「目标卡」那一栏选定的那张（老存档就是它）；
+  **「按范围随机」** = 从卡池里按「范围限定」抽（本体「发现 Discovery / 攻击药水 AttackPotion」那种）。
+- **范围限定**（只在「按范围随机」时出现）：不限 / 攻击 / 技能 / 能力 / **诅咒** / **状态**。
+  攻击 / 技能 / 能力按 `CardType` 过滤；诅咒 / 状态会**把本体的诅咒池、状态池一起算进来**
+  （`ModelDb.CardPool<CurseCardPool>()` / `StatusCardPool` + 你自己的卡池），所以你自己做的诅咒 / 状态牌也在候选里。
+  随机取卡走 `CardFactory.GetDistinctForCombat(player, 池, N, Rng.CombatCardGeneration)`。
+- **生成 / 变化出来的卡怎么处理**（可多选）：
+  - **直接升级** → `CardCmd.Upgrade(card)`（本场战斗内有效）；
+  - **免费打出** → `card.SetToFreeThisCombat()`（本场战斗内 0 费）；
+  - **仅本回合免费** → `card.SetToFreeThisTurn()`（回合结束恢复原费用）；
+  - **仅本回合升级** → 本体**没有**「临时升级」这种 API（只有视觉预览 `CardUpgradePreviewType`），
+    所以工具生成一个 `<角色>ForgeTempUpgradePower`：把这张牌交给它（`Track` 里升级并记住），
+    回合结束时把**这次真的升上去的那几张**降回来（本来就是升级过的牌不碰）。
+
+两点注意：
+- 「按范围随机」和这几个附加处理**只能用在卡牌 / 遗物 / 药水**上 ——
+  自定义状态的触发器里走的是另一套生成链（那里 `base.Owner` 是 `Creature`），校验会拦下来并说明。
+- 带附加处理时生成器会自己 `CreateCard` 再逐张处理（`AddToCombatAndPreview` 内部拿不到那些卡实例），
+  最后仍然走 `CardPileCmd.AddGeneratedCardToCombat` 进牌堆。
+
+### 自定义描述（卡牌 / 遗物 / 药水）
+
+三处的「自定义描述」是同一套规则：**留空 = 用自动生成的那段**；写了以后默认**追加**在自动描述后面，
+勾上「替换掉自动生成的描述」就只用你写的那段。可以写本体占位符：
+`{Damage}` 显示当前数值、`{Damage:diff()}` 显示升级后的值（卡牌才有升级增量）、`[gold]…[/gold]` 是金色富文本。
+
+描述框下面的 **「填入参数…」** 按钮会列出这条模型**真的声明过**的动态变量（只列能用的，抄错键会显示不出来）：
+卡牌给 `{Damage:diff()}` 这种，遗物 / 药水给 `{Damage}`。一个候选直接插入，多个就弹菜单让你挑，
+插到光标处（选中一段就替换那段）。
+
+回读靠生成代码里的 `// CET:CustomDescReplace=0/1 CET:CustomDescription=…` 标记
+（本地化表里是「自动 + 你写的」拼起来的，认不出来）。
+
+### 自定义状态造成的伤害不算「你造成的伤害」
+
+本体的伤害归因只看 `CreatureCmd.Damage` 的 **`dealer`** 参数
+（`if (dealer != null && dealer.Player != null && target.Player == null) dealer.Player.ExtraFields.DamageDealt += …`，
+也就是「伤害最高」那类统计用的）。所以自定义状态的触发器里造成的伤害一律传 **`dealer: null`**：
+不计入「你造成的伤害」、战斗记录写成「XX 受到了 N 点伤害」，同时保留 `ValueProp.Unpowered`
+（力量 / 虚弱只对 `IsPoweredAttack` 生效）—— 和本体「中毒跳伤 / 灭亡 / 窒息 / 闹鬼」那些状态的做法一致。
 
 ## 卡牌关键字
 

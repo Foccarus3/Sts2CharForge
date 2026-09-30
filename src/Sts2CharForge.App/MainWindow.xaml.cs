@@ -375,6 +375,59 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public IReadOnlyList<string> CardPickModes => EffectCatalog.CardPickModes;
 
+	/// <summary>
+	/// 「填入参数…」：把这条模型能用的数值占位符插进自定义描述里（用户要求）。
+	///
+	/// 候选来自 <see cref="CSharpCodeGen.ParamHints"/>（只列这条模型**真的声明过**的动态变量）：
+	/// 卡牌给 <c>{Damage:diff()}</c> 这种（升级后显示升级值），遗物 / 药水给 <c>{Damage}</c>。
+	/// 一个候选就直接插，多个弹一个菜单让你挑。
+	/// </summary>
+	private void OnInsertParam(object sender, RoutedEventArgs e)
+	{
+		if (sender is not Button btn || btn.Tag is not TextBox box) return;
+		string which = box.Name;
+		IEnumerable<EffectSpec>? effects = which switch
+		{
+			"RelicCustomDesc" => (RelicList?.SelectedItem as RelicSpec)?.Effects,
+			"PotionCustomDesc" => (PotionList?.SelectedItem as PotionSpec)?.Effects,
+			_ => ActivePortraitCard()?.Effects,
+		};
+		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
+		var hints = CSharpCodeGen.ParamHints(effects ?? Enumerable.Empty<EffectSpec>(), isCard);
+		if (hints.Count == 0)
+		{
+			SetStatus("这条还没有能填的数值参数：先给它加一条带数值的效果（伤害 / 格挡 / 抽牌 / 状态层数…）。");
+			return;
+		}
+		if (hints.Count == 1) { InsertAtCaret(box, hints[0].Token); return; }
+		var menu = new ContextMenu { PlacementTarget = btn };
+		foreach (var (token, desc) in hints)
+		{
+			var item = new MenuItem { Header = $"{token} — {desc}" };
+			item.Click += delegate { InsertAtCaret(box, token); };
+			menu.Items.Add(item);
+		}
+		menu.IsOpen = true;
+	}
+
+	/// <summary>把参数插到光标处（有选中就把选中的那段替换掉），然后把光标放到参数后面。</summary>
+	private static void InsertAtCaret(TextBox box, string token)
+	{
+		string text = box.Text ?? "";
+		int at = Math.Clamp(box.SelectionStart, 0, text.Length);
+		int len = Math.Clamp(box.SelectionLength, 0, text.Length - at);
+		box.Text = text.Remove(at, len).Insert(at, token);
+		box.SelectionStart = at + token.Length;
+		box.SelectionLength = 0;
+		box.Focus();
+	}
+
+	/// <summary>「生成 / 变化卡牌」的两档：指定卡 / 按范围随机。</summary>
+	public IReadOnlyList<SpawnPickOption> SpawnPicks => EffectCatalog.SpawnPicks;
+
+	/// <summary>「生成 / 变化卡牌」的范围限定：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态。</summary>
+	public IReadOnlyList<SpawnFilterOption> SpawnFilters => EffectCatalog.SpawnFilters;
+
 	/// <summary>「从哪里选牌」下拉（消耗 / 变化卡牌用）：手牌 / 抽牌堆 / 弃牌堆。</summary>
 	public IReadOnlyList<PileChoiceOption> SelectPiles => EffectCatalog.SelectPiles;
 
@@ -9966,6 +10019,169 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			{
 				try { if (Directory.Exists(negRoot)) Directory.Delete(negRoot, recursive: true); } catch { }
 			}
+		}
+
+		// ===== 本轮新增：自定义状态伤害归属 / 毒性爆发 / 大限已至 / 预见 / 升级卡牌 / 范围限定 / 自定义描述 =====
+		{
+			// ① 自定义状态造成的伤害不算「角色造成的伤害」：dealer 传 null（本体就是靠它归因的）
+			CharacterProfile dmgProbe = ProfileFactory.Sample();
+			dmgProbe.CustomPowers.Clear();
+			dmgProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检状态伤害", ClassName = "UiCheckDmgPower", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "AllEnemies" } } } },
+			});
+			string dmgSrc = CustomPowerGen.Source(dmgProbe, dmgProbe.CustomPowers[0], 0);
+			Check("自定义状态造成的伤害不归因到角色（dealer 传 null，本体靠它算「你造成的伤害」）",
+				dmgSrc.Contains("CreatureCmd.Damage(choiceContext, other, 5m, ValueProp.Unpowered, null, null, null)")
+				&& !dmgSrc.Contains("ValueProp.Unpowered, base.Owner)"), "dealer=null");
+			Check("（对照）本体的归因条件：dealer 非空才会计入 DamageDealt",
+				File.Exists(Path.Combine(Profile.Paths.VanillaProject, "src/Core/Commands/CreatureCmd.cs"))
+					? File.ReadAllText(Path.Combine(Profile.Paths.VanillaProject, "src/Core/Commands/CreatureCmd.cs"), Encoding.UTF8)
+						.Contains("dealer.Player.ExtraFields.DamageDealt")
+					: true, "源码里就是这么写的");
+
+			// ② 毒性爆发（本体 Outbreak）：全体上毒 + 立刻触发一次；走本体 PoisonPower.Trigger
+			CharacterProfile outProbe = ProfileFactory.Sample();
+			CardSpec outCard = new CardSpec { Name = "自检毒性爆发", ClassName = "UiCheckOutbreak", Rarity = "Common", Cost = 1, InCardPool = true };
+			outCard.Effects.Add(new EffectSpec { Kind = "Outbreak", Amount = 7m, TargetSide = "Self" });
+			outProbe.Cards.Add(outCard);
+			string outSrc = CSharpCodeGen.CardSource(outProbe, outCard, 0);
+			Check("毒性爆发：给所有敌人上毒 + 立刻触发中毒（本体 Outbreak 的写法）",
+				outSrc.Contains("CET:Effect=Outbreak")
+				&& outSrc.Contains("await PowerCmd.Apply<PoisonPower>(choiceContext, foe,")
+				&& outSrc.Contains("PoisonPower? poison = foe.GetPower<PoisonPower>();")
+				&& outSrc.Contains("await poison.Trigger();"), "对");
+			Check("毒性爆发的卡面描述照本体原文（给所有敌人 N 层中毒，并立即触发中毒）",
+				LocalizationGen.CardsJson(outProbe).Contains("给予所有敌人 {PoisonPower:diff()} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。"), "描述对");
+
+			// ③ 大限已至（本体 Time's Up）：伤害 = 目标的灾厄层数（计算变量三件套 + 目标倍率）
+			CharacterProfile upProbe = ProfileFactory.Sample();
+			CardSpec upCard = new CardSpec { Name = "自检大限", ClassName = "UiCheckTimesUp", CardType = "Attack", Rarity = "Common", Cost = 2, InCardPool = true };
+			upCard.Effects.Add(new EffectSpec { Kind = "TimesUp", TargetSide = "Enemy" });
+			upProbe.Cards.Add(upCard);
+			string upSrc = CSharpCodeGen.CardSource(upProbe, upCard, 0);
+			Check("大限已至：伤害 = 目标身上的灾厄层数（CalculatedDamage + GetPowerAmount<DoomPower>）",
+				upSrc.Contains("GetPowerAmount<DoomPower>()")
+				&& upSrc.Contains("DamageCmd.Attack(base.DynamicVars.CalculatedDamage)")
+				&& upSrc.Contains(".Targeting(cardPlay.Target)"), "对");
+			Check("大限已至会把这张牌变成「指定敌人」目标（不然打出去时没有目标）",
+				CSharpCodeGen.CardSource(upProbe, upCard, 0).Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			Check("大限已至只能用在卡牌上（遗物 / 药水里报错拦住）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					Relics = { new RelicSpec
+					{
+						Name = "自检大限遗物", ClassName = "UiCheckTimesUpRelic", Trigger = "PlayerTurnStart",
+						Effects = { new EffectSpec { Kind = "TimesUp", TargetSide = "Enemy" } },
+					} },
+				}).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能用在**卡牌**上")), "拦住了");
+
+			// ④ 预见（一代观者的 Scry）：看抽牌堆顶 N 张、丢任意张（本体没有这个机制，自己拼）
+			CharacterProfile scryProbe = ProfileFactory.Sample();
+			CardSpec scryCard = new CardSpec { Name = "自检预见", ClassName = "UiCheckScry", Rarity = "Common", Cost = 1, InCardPool = true };
+			scryCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 3m, TargetSide = "Self" });
+			scryProbe.Cards.Add(scryCard);
+			string scrySrc = CSharpCodeGen.CardSource(scryProbe, scryCard, 0);
+			Check("预见：抽牌堆顶 = Cards 的前 N 个（本体索引 0 就是顶），选牌走 FromSimpleGrid（min 0 = 可以一张都不丢）",
+				scrySrc.Contains("PileType.Draw.GetPile(base.Owner).Cards.Take(3).ToList()")
+				&& scrySrc.Contains("CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))"), "对");
+			Check("预见：丢牌走 CardCmd.Discard（派发被丢弃钩子，奇巧照常触发）",
+				scrySrc.Contains("await CardCmd.Discard(choiceContext, __scryDiscard);"), "对");
+
+			// ⑤ 升级卡牌（战斗内 / 全局）
+			CharacterProfile ugProbe = ProfileFactory.Sample();
+			CardSpec ugCard = new CardSpec { Name = "自检升级", ClassName = "UiCheckUpgrade", Rarity = "Common", Cost = 1, InCardPool = true };
+			ugCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Discard" });
+			ugCard.Effects.Add(new EffectSpec { Kind = "UpgradeCardGlobal", Amount = 1m, CardPick = "Chosen" });
+			ugProbe.Cards.Add(ugCard);
+			string ugSrc = CSharpCodeGen.CardSource(ugProbe, ugCard, 0);
+			Check("升级卡牌（战斗内）：从选定的那一摞挑，只列能升级的牌，走本体 CardCmd.Upgrade",
+				ugSrc.Contains("CardSelectCmd.FromCombatPile(choiceContext, PileType.Discard.GetPile(base.Owner), base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, 2), c => c.IsUpgradable)")
+				&& ugSrc.Contains("foreach (CardModel c in toUpgrade) CardCmd.Upgrade(c);"), "对");
+			Check("升级卡牌（全局）：走 FromDeckForUpgrade（本体的「香盒 Pomander」写法），改的是牌组",
+				ugSrc.Contains("CardSelectCmd.FromDeckForUpgrade(base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, 1))")
+				&& ugSrc.Contains("foreach (CardModel c in toUpgradeDeck) CardCmd.Upgrade(c);"), "对");
+			Check("两种升级卡牌在列表里都能一眼区分（战斗内 / 全局）",
+				ugCard.Effects[0].Display.Contains("升级") && !ugCard.Effects[0].Display.Contains("全局")
+				&& ugCard.Effects[1].Display.Contains("全局"), ugCard.Effects[1].Display);
+
+			// ⑥ 生成 / 变化：范围限定 + 生成出来的卡的附加处理
+			CharacterProfile spProbe = ProfileFactory.Sample();
+			CardSpec spCard = new CardSpec { Name = "自检范围", ClassName = "UiCheckSpawn", Rarity = "Common", Cost = 1, InCardPool = true };
+			spCard.Effects.Add(new EffectSpec
+			{
+				Kind = "GenerateCard", Amount = 2m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand",
+				SpawnUpgraded = true, SpawnFreeThisTurn = true,
+			});
+			spCard.Effects.Add(new EffectSpec
+			{
+				Kind = "TransformCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Curse", CardPick = "Chosen",
+				SelectPile = "Hand", SpawnUpgradedThisTurn = true,
+			});
+			spProbe.Cards.Add(spCard);
+			string spSrc = CSharpCodeGen.CardSource(spProbe, spCard, 0);
+			Check("按范围随机生成：从角色卡池按牌的类型挑（攻击 / 技能 / 能力），走本体 GetDistinctForCombat",
+				spSrc.Contains("CardFactory.GetDistinctForCombat(base.Owner, __genPool, 2, base.Owner.RunState.Rng.CombatCardGeneration)")
+				&& spSrc.Contains(".Where(c => c.Type == CardType.Attack)"), "对");
+			Check("按范围随机变化：诅咒范围会把本体诅咒卡池一起算进来（你自己的诅咒也在角色卡池里）",
+				spSrc.Contains("ModelDb.CardPool<CurseCardPool>().GetUnlockedCards")
+				&& spSrc.Contains(".Where(c => c.Rarity == CardRarity.Curse)"), "对");
+			Check("生成出来的卡「直接升级 / 仅本回合免费」按本体的 API 生成",
+				spSrc.Contains("CardCmd.Upgrade(__gen);") && spSrc.Contains("__gen.SetToFreeThisTurn();"), "对");
+			Check("「仅本回合升级」用生成的临时升级状态（本体没有临时升级 API），并在里面记住那几张牌",
+				CSharpCodeGen.UsesTempUpgrade(spProbe)
+				&& CSharpCodeGen.TempUpgradePowerSource(spProbe).Contains("public void Track(CardModel card)")
+				&& CSharpCodeGen.TempUpgradePowerSource(spProbe).Contains("CardCmd.Downgrade(card);"), "对");
+			Check("范围限定 / 取卡方式的下拉选项齐全（不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态）",
+				SpawnFilters.Count == 6 && SpawnPicks.Count == 2
+				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" }),
+				string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
+			Check("自定义状态的触发器里不支持「按范围随机 / 附加处理」（那边的生成链不一样）→ 报错拦住",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					CustomPowers =
+					{
+						new CustomPowerSpec
+						{
+							Name = "自检范围状态",
+							Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack" } } } },
+						},
+					},
+				}).Any((ValidationIssue i) => i.IsError && i.Message.Contains("按范围随机")), "拦住了");
+
+			// ⑦ 遗物 / 药水自定义描述 + 「填入参数」
+			CharacterProfile cdProbe = ProfileFactory.Sample();
+			var cdRelic = new RelicSpec
+			{
+				Name = "自检自述遗物", ClassName = "UiCheckDescRelic", Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 6m, TargetSide = "Self" } },
+				CustomDescription = "每回合给你一点安全感。", CustomDescriptionReplaces = true,
+			};
+			cdProbe.Relics.Add(cdRelic);
+			var cdPotion = new PotionSpec
+			{
+				Name = "自检自述药水", ClassName = "UiCheckDescPotion", TargetType = "Self",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 9m, TargetSide = "Self" } },
+				CustomDescription = "喝下去就不疼了。",
+			};
+			cdProbe.Potions.Add(cdPotion);
+			Check("遗物自定义描述：勾「替换」时描述就是你写的那段",
+				LocalizationGen.RelicsJson(cdProbe).Contains("\"UI_CHECK_DESC_RELIC.description\": \"每回合给你一点安全感。\""), "替换");
+			Check("药水自定义描述：不勾「替换」时是「自动描述 + 换行 + 你写的」（不是整段替换）",
+				LocalizationGen.PotionsJson(cdProbe).Contains("喝下去就不疼了。")
+				&& LocalizationGen.PotionsJson(cdProbe).Contains("\\n喝下去就不疼了。")
+				&& !LocalizationGen.PotionsJson(cdProbe).Contains("description\": \"喝下去就不疼了。\""),
+				LocalizationGen.PotionsJson(cdProbe).Split('\n').FirstOrDefault(l => l.Contains("UI_CHECK_DESC_POTION.description")) ?? "(没找到)");
+			Check("遗物 / 药水自定义描述也会写进生成代码的标记（回读靠它，本地化表里认不出来）",
+				CSharpCodeGen.RelicSource(cdProbe, cdRelic, 0).Contains("CET:CustomDescription=每回合给你一点安全感。")
+				&& CSharpCodeGen.PotionSource(cdProbe, cdPotion, 0).Contains("CET:CustomDescription=喝下去就不疼了。"), "标记在");
+			var pHintCard = new[] { new EffectSpec { Kind = "Damage", Amount = 8m, TargetSide = "Enemy" }, new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" } };
+			Check("「填入参数」列出这条模型真正声明过的变量（卡牌带 :diff()、遗物 / 药水不带）",
+				CSharpCodeGen.ParamHints(pHintCard, isCard: true).Any(x => x.Token == "{Damage:diff()}")
+				&& CSharpCodeGen.ParamHints(cdRelic.Effects, isCard: false).Any(x => x.Token == "{Block}")
+				&& CSharpCodeGen.ParamHints(new[] { new EffectSpec { Kind = "Stun" } }, isCard: false).Count == 0,
+				string.Join("、", CSharpCodeGen.ParamHints(pHintCard, isCard: true).Select(x => x.Token)));
 		}
 		Check("「选人界面背景大图」的说明是横图（本体画面 1920×1080，以前写成「1000×1400 的竖图」了）",
 			ArtSlots.Any((ArtSlot s) => s.Name == "选人界面背景大图"

@@ -380,11 +380,10 @@ public static class ProjectRecovery
 
         // 卡牌自定义描述：生成时写的是 `// CET:CustomDescReplace=0/1 CET:CustomDescription=<换行转义过的文本>`
         // （见 CSharpCodeGen.CardSource）—— 从本地化表里认不出来（那张表里是「自动描述 + 你写的」拼起来的）
-        var customDesc = Regex.Match(text, @"CET:CustomDescReplace=(\d) CET:CustomDescription=(.*)$", RegexOptions.Multiline);
-        if (customDesc.Success)
+        if (ParseCustomDescription(text) is var (cdText, cdReplace))
         {
-            card.CustomDescription = CSharpCodeGen.UnescapeMarker(customDesc.Groups[2].Value.TrimEnd());
-            card.CustomDescriptionReplaces = customDesc.Groups[1].Value == "1";
+            card.CustomDescription = cdText;
+            card.CustomDescriptionReplaces = cdReplace;
         }
 
         // 费用可能是负数（诅咒固定 -1），所以数字部分要允许前导 -
@@ -542,6 +541,14 @@ public static class ProjectRecovery
         // 之后那几行（AddKeyword / 临时 Power / foreach…）全部跳过，免得被当成别的效果。
         bool skipGivenKeywordBody = false;
 
+        // 「自己搞定一整段」的新效果（CET:Effect=…，见 CSharpCodeGen.SelfContainedMarker）：
+        // 标记行收尾之后，把它的实现代码整段跳过（不跳的话预见的 CardCmd.Discard 会被当成「丢弃卡牌」、
+        // 毒性爆发的 PowerCmd.Apply<PoisonPower> 会被当成「施加中毒」）。
+        bool skipSelfContainedBody = false;
+
+        // 「生成 / 变化卡牌」的附加设置（CET:SpawnPick= 标记）：标记行先存着，等真正那条效果出现时配上。
+        EffectSpec? pendingSpawn = null;
+
         // 「从哪里选牌」：消耗 / 变化 / 丢弃的选牌语句里带着它（FromHand* = 手牌，PileType.X = 那一摞）。
         // 记在暂存里，等真正的动作语句（CardCmd.Exhaust / Transform / Discard）出现时再配给那条效果 ——
         // 以前完全没回读这个字段，回读出来的「从抽牌堆消耗 / 变化」会静默退回手牌。
@@ -562,6 +569,17 @@ public static class ProjectRecovery
         void Done(EffectSpec e)
         {
             e.Condition = CondTop() ?? new ConditionSpec();
+            // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上
+            if (pendingSpawn is not null && e.UsesSpawnOptions)
+            {
+                e.SpawnPick = pendingSpawn.SpawnPick;
+                e.SpawnFilter = pendingSpawn.SpawnFilter;
+                e.SpawnUpgraded = pendingSpawn.SpawnUpgraded;
+                e.SpawnFree = pendingSpawn.SpawnFree;
+                e.SpawnFreeThisTurn = pendingSpawn.SpawnFreeThisTurn;
+                e.SpawnUpgradedThisTurn = pendingSpawn.SpawnUpgradedThisTurn;
+                pendingSpawn = null;
+            }
             if (pendingPetAllGroup is not null)
             {
                 string grp = pendingPetAllGroup;
@@ -734,6 +752,47 @@ public static class ProjectRecovery
                     Done(gk);
                     skipGivenKeywordBody = true;
                 }
+                // 「自己搞定一整段」的新效果（毒性爆发 / 预见 / 升级卡牌 / 大限已至）：
+                // 标记那一行就带着全部信息（种类 / 数值 / 选牌方式 / 哪一摞），后面那几行是它的实现，整段跳过。
+                string? scRaw = Match(line, @"CET:Effect=(\w+)");
+                if (scRaw is not null)
+                {
+                    var sc = new EffectSpec
+                    {
+                        Kind = scRaw,
+                        Amount = Dec(line, @"CET:Amount=(-?[\d.]+)", 0),
+                        CardPick = Match(line, @"CET:Pick=(\w+)") ?? "Chosen",
+                        SelectPile = Match(line, @"CET:Pile=(\w+)") ?? "Hand",
+                        AmountIsStack = line.Contains("CET:Stack=1", StringComparison.Ordinal),
+                        AmountIsX = line.Contains("CET:X=1", StringComparison.Ordinal),
+                    };
+                    if (sc.Kind == "Outbreak") sc.TargetSide = "AllEnemies";
+                    if (sc.Kind == "TimesUp") sc.TargetSide = "Enemy";
+                    // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
+                    // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
+                    if (sc.Kind is "UpgradeCard" or "Scry") NextVar(vars, ref varIdx, "Cards");
+                    if (sc.Kind == "Outbreak") NextVar(vars, ref varIdx, "Power:PoisonPower");
+                    // 「大限已至」的变量是计算三件套，ParseEffects 开头已经把 calcVars 摘出去了，不用认领
+                    ApplyLoop(sc, frames);
+                    Done(sc);
+                    skipSelfContainedBody = true;
+                }
+                // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：
+                // 标记那一行先存成一份「只填了这几个字段」的效果，等真正那条效果出现时再配上（见 ApplySpawnOpts）。
+                string? spawnPick = Match(line, @"CET:SpawnPick=(\w+)");
+                if (spawnPick is not null)
+                {
+                    string? flt = Match(line, @"CET:SpawnFilter=(\w+)");
+                    pendingSpawn = new EffectSpec
+                    {
+                        SpawnPick = spawnPick,
+                        SpawnFilter = flt is null or "-" ? "" : flt,
+                        SpawnUpgraded = line.Contains("CET:SpawnUp=1", StringComparison.Ordinal),
+                        SpawnFree = line.Contains("CET:SpawnFree=1", StringComparison.Ordinal),
+                        SpawnFreeThisTurn = line.Contains("CET:SpawnFreeTurn=1", StringComparison.Ordinal),
+                        SpawnUpgradedThisTurn = line.Contains("CET:SpawnUpTurn=1", StringComparison.Ordinal),
+                    };
+                }
                 continue;
             }
 
@@ -801,6 +860,57 @@ public static class ProjectRecovery
                 if (gkBody) continue;
                 skipGivenKeywordBody = false;
             }
+
+            // 「自己搞定一整段」的效果实现（见上面的 CET:Effect 标记）：整段跳过。
+            // 这些行都是生成器为这四种效果固定写出来的（循环 / 施加 / 触发 / 选牌 / 丢掉 / 攻击链）。
+            if (skipSelfContainedBody)
+            {
+                bool scBody = line.StartsWith("var __scryTop", StringComparison.Ordinal)
+                    || line.StartsWith("if (__scryTop.Count", StringComparison.Ordinal)
+                    || line.StartsWith("var __scryDiscard", StringComparison.Ordinal)
+                    || line.StartsWith("if (__scryDiscard.Count", StringComparison.Ordinal)
+                    || line.StartsWith("await CardCmd.Discard(choiceContext, __scryDiscard)", StringComparison.Ordinal)
+                    || line.StartsWith("var toUpgrade", StringComparison.Ordinal)
+                    || line.EndsWith("CardCmd.Upgrade(c);", StringComparison.Ordinal)
+                    || line.StartsWith("CardCmd.Upgrade(pick);", StringComparison.Ordinal)
+                    || line.StartsWith("PoisonPower? poison = ", StringComparison.Ordinal)
+                    || line.StartsWith("if (poison is not null)", StringComparison.Ordinal)
+                    || line.StartsWith("await PowerCmd.Apply<PoisonPower>(", StringComparison.Ordinal)
+                    || line.StartsWith("await DamageCmd.Attack(base.DynamicVars.CalculatedDamage)", StringComparison.Ordinal)
+                    || line.StartsWith(".FromCard(this, cardPlay)", StringComparison.Ordinal)
+                    || line.StartsWith(".Targeting(cardPlay.Target)", StringComparison.Ordinal)
+                    || line.StartsWith(".WithHitFx(", StringComparison.Ordinal)
+                    || line.StartsWith(".Execute(choiceContext);", StringComparison.Ordinal)
+                    // 「生成 / 变化出来的卡」的附加处理（升级 / 免费 / 仅本回合…）以及随机生成的辅助变量：
+                    // 这些行都是生成器为那几种设置固定写的（__gen / __made / __tempUp / __transformPool …），
+                    // 效果本身已经从池子 / CreateCard 那一行认出来了，这里整段跳过。
+                    || line.Contains("__tempUp", StringComparison.Ordinal)
+                    || line.StartsWith("CardCmd.Upgrade(gained);", StringComparison.Ordinal)
+                    || line.StartsWith("CardCmd.Upgrade(__", StringComparison.Ordinal);
+                if (scBody) continue;
+                skipSelfContainedBody = false;
+            }
+
+            // 「生成 / 变化卡牌」的按范围随机 + 附加处理生成的**辅助语句**：这些行不是任何一条效果本身
+            // （效果在 `CardModel __gen = ` / `GetDistinctForCombat` / `CardCmd.Transform` 那几行认），
+            // 所以无条件跳过 —— 不能等「标记跳过」那个开关：它们可能在识别行**之前**就出现了。
+            // 注意：**不能**笼统地跳过「含 __made 的行」——`await CardCmd.Transform(c, __made);` 正是识别行；
+            // 只有「声明它」和「升级它」两行要跳。
+            if (line.StartsWith("CardModel __made = ", StringComparison.Ordinal)
+                || line.StartsWith("CardCmd.Upgrade(__made)", StringComparison.Ordinal)
+                || line.Contains("__newCard", StringComparison.Ordinal)
+                || line.Contains("__newDeck", StringComparison.Ordinal)
+                || line.Contains("__transformPool", StringComparison.Ordinal)
+                || line.Contains("__addPool", StringComparison.Ordinal)
+                || line.StartsWith("CardModel? __pickCard = ", StringComparison.Ordinal)
+                || line.StartsWith("var __tempUp", StringComparison.Ordinal)
+                || line.Contains("__tempUp.Track(", StringComparison.Ordinal)
+                || line.Contains("AddGeneratedCardToCombat(__gen", StringComparison.Ordinal)
+                || line.Contains("__gen.SetToFree", StringComparison.Ordinal)
+                || line.StartsWith("CardCmd.Upgrade(__gen)", StringComparison.Ordinal)
+                || line.StartsWith("CardCmd.Upgrade(gained);", StringComparison.Ordinal)
+                || line.Contains("else CardCmd.Upgrade(__gen)", StringComparison.Ordinal))
+                continue;
 
             // 召唤伙伴：生成的是 `<X>Cmd.Summon(choiceContext, base.Owner, <血量>); // CET:PetHp=…`
             //
@@ -1141,8 +1251,22 @@ public static class ProjectRecovery
 
             if (line.StartsWith("await CreatureCmd.Damage(choiceContext, base.Owner", StringComparison.Ordinal))
             {
-                // 自己吃伤害：本体里 Heal(负数) 和 HpLoss 生成的是同一段代码，这里统一按「失去生命」
-                // （能被包在敌人的 foreach 里时 SideOfTarget 会给 AllEnemies/RandomEnemies，自己的默认 Self）
+                // 「自己吃伤害」这一句是**三种效果共用**的生成代码：
+                //   · 失去生命 HpLoss      → base.DynamicVars["HpLoss"]
+                //   · 造成伤害 + 作用对象=自己 → base.DynamicVars.Damage（就是这一条，本体的伤害链走不了自己）
+                //   · 回复生命填负数        → base.DynamicVars["Heal"]（负数 = 扣血）
+                // 怎么区分：看**这条效果声明的那个变量**（CanonicalVars 的顺序 = 效果顺序）。
+                // 以前一律当成「失去生命」→ 「造成伤害（自己）」的卡回读后变成失去生命，
+                // 而且它的 DamageVar 没人认领 → 还会多报一句「升级增量找不到对应效果」（用户 SparkleMod 的打击踩到了）。
+                var peek = PeekVar(vars, varIdx);
+                if (peek?.Kind == "Damage")
+                {
+                    var dmg = new EffectSpec { Kind = "Damage", TargetSide = "Self" };
+                    FillAmountOrExpr(dmg, ArgAt(line, 2), NextVar(vars, ref varIdx, "Damage"), nameToPowerId, "Damage");
+                    ApplyLoop(dmg, frames);
+                    Done(dmg);
+                    continue;
+                }
                 var e = new EffectSpec { Kind = "HpLoss", TargetSide = SideOfTarget(line) };
                 // 生成的是 base.DynamicVars["HpLoss"].BaseValue（同样没有同名属性，走索引器）
                 FillAmountOrExpr(e, ArgAt(line, 2), NextVar(vars, ref varIdx, "HpLoss"), nameToPowerId, "HpLoss");
@@ -1343,18 +1467,65 @@ public static class ProjectRecovery
                 continue;
             }
 
+            // 「生成卡牌」带附加处理（升级 / 免费 / 仅本回合…）时的写法：
+            //   指定卡：CardModel __gen = …CombatState.CreateCard(ModelDb.Card<X>(), base.Owner);
+            //   按范围：foreach (CardModel __gen in CardFactory.GetDistinctForCombat(base.Owner, __genPool, N, …))
+            // 两种都是「效果已经在这行认出来了」，后面那些 __gen / __tempUp 的处理行交给
+            // skipSelfContainedBody 整段跳过；「放进哪一摞」从后面那句 AddGeneratedCardToCombat 里 peek 出来。
+            if (line.StartsWith("CardModel __gen = ", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec
+                {
+                    Kind = "GenerateCard",
+                    SpawnCardId = Match(line, @"ModelDb\.Card<(\w+)>"),
+                    SpawnTo = PeekSpawnToPile(lines, i),
+                };
+                // 生成张数 = 里面那层 for (__genIdx) 的上限（外层 for(i) 才是「生效次数」）
+                e.Amount = LoopValue(LoopTop() ?? "1");
+                e.Times = OuterRepeatTimes(frames);
+                Done(e);
+                skipSelfContainedBody = true;
+                continue;
+            }
+            if (line.Contains("CardFactory.GetDistinctForCombat(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec
+                {
+                    Kind = "GenerateCard",
+                    SpawnTo = PeekSpawnToPile(lines, i),
+                };
+                string? cnt = Match(line, @"GetDistinctForCombat\(base\.Owner, __genPool, (\w+),");
+                if (cnt == "x") e.AmountIsX = true;
+                else if (cnt is not null) e.Amount = decimal.Parse(cnt, CultureInfo.InvariantCulture);
+                e.Times = OuterRepeatTimes(frames);
+                Done(e);
+                skipSelfContainedBody = true;
+                continue;
+            }
+            if (line.StartsWith("var __genPool = ", StringComparison.Ordinal)) continue;   // 上面那条的池子
+
             // 变化卡牌：填了目标卡 → CardCmd.Transform(原卡, 新卡)；留空 → CardCmd.TransformToRandom。
             // **两种都要认**（以前只认 Transform，留空那种会被记成「没认出来」）。
             if (line.StartsWith("await CardCmd.Transform(", StringComparison.Ordinal)
                 || line.StartsWith("await CardCmd.TransformToRandom(", StringComparison.Ordinal))
             {
-                // 「自己选」走 foreach (… in toTransform)；「随机」走循环 + TransformToRandom
-                bool chosenTransform = body.Contains("in toTransform");
+                // 「自己选」走 foreach (… in toTransform / toTransformDeck)；「随机」走循环 + TransformToRandom。
+                // 全局（改牌组）那一种：自己选的局部变量是 toTransformDeck，随机那支抓的是 PileType.Deck。
+                // 判据用**离当前行最近的那一条选牌语句**，不能拿整段 body.Contains ——
+                // 同一张牌上同时有「战斗里的变化」和「牌组里的变化」时，整段判断会把前者误判成全局（实测踩过）。
+                bool globalTransform = false, chosenTransform = false;
+                for (int back = 1; back <= 30 && i - back >= 0; back++)
+                {
+                    string prev = lines[i - back];
+                    if (prev.Contains("in toTransformDeck", StringComparison.Ordinal)) { globalTransform = true; chosenTransform = true; break; }
+                    if (prev.Contains("in toTransform", StringComparison.Ordinal)) { chosenTransform = true; break; }
+                }
+                if (!chosenTransform && pendingSelectPile == "Deck") globalTransform = true;
                 var e = new EffectSpec
                 {
-                    Kind = "TransformCard",
+                    Kind = globalTransform ? "TransformCardGlobal" : "TransformCard",
                     CardPick = chosenTransform ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile ?? "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? target = Match(line, @"CreateCard<(\w+)>");
@@ -1362,7 +1533,10 @@ public static class ProjectRecovery
                 string? count = chosenTransform ? Match(body, @"TransformSelectionPrompt, (\d+)") : null;
                 if (count is not null) e.Amount = decimal.Parse(count, CultureInfo.InvariantCulture);
                 else e.Amount = LoopValue(LoopTop() ?? "1");
+                bool randomTransform = e.IsSpawnRandom || body.Contains("__transformPool", StringComparison.Ordinal);
                 Done(e);
+                // 「按范围随机变化」那一支后面还有 __newCard / __made / CardCmd.Upgrade(__made) 几行 → 整段跳过
+                if (randomTransform) skipSelfContainedBody = true;
                 continue;
             }
 
@@ -1374,7 +1548,7 @@ public static class ProjectRecovery
                 {
                     Kind = "ExhaustCard",
                     CardPick = chosenExhaust ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile ?? "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenExhaust ? Match(body, @"ExhaustSelectionPrompt, (\d+)") : null;
@@ -1394,7 +1568,7 @@ public static class ProjectRecovery
                 {
                     Kind = "DiscardCard",
                     CardPick = chosenDiscard ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile ?? "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenDiscard ? Match(body, @"DiscardSelectionPrompt, (\d+)") : null;
@@ -1442,6 +1616,153 @@ public static class ProjectRecovery
             }
             if (line.StartsWith("if (__taken.Count > 0) await CardPileCmd.Add(", StringComparison.Ordinal))
                 continue;   // 上面那条效果的收尾语句（效果已经在 __taken 那一行收尾了）
+
+            // 药水 / 遗物造成的伤害：生成的是
+            //   await CreatureCmd.Damage(choiceContext, target, base.DynamicVars.Damage.BaseValue, ValueProp.Move, base.Owner.Creature);
+            //   （全体敌人那条是同一个调用，只是第 2 个参数是 CombatState.HittableEnemies）
+            // 卡牌走的是 DamageCmd.Attack 链（上面那条分支），所以这里只剩「药水 / 遗物」这种直接调用。
+            // 判据用**结尾的「ValueProp.Move, base.Owner.Creature)」**（只有这一处这么写）——
+            // 不能笼统地认「CreatureCmd.Damage(choiceContext, X, …)」，那会把「失去生命（对敌人）」也吞进来
+            // （它长这样：…, ValueProp.Unblockable | Unpowered | Move, this, null)）。
+            // 以前没有这条分支 → 药水里的伤害回读后会丢（只在「没认出来」里列一行）。
+            if (line.StartsWith("await CreatureCmd.Damage(choiceContext, ", StringComparison.Ordinal)
+                && line.Contains("ValueProp.Move, base.Owner.Creature)", StringComparison.Ordinal))
+            {
+                string targetArg = ArgAt(line, 1);
+                var e = new EffectSpec
+                {
+                    Kind = "Damage",
+                    TargetSide = targetArg.Contains("HittableEnemies") ? "AllEnemies"
+                        : targetArg == "target" ? "Enemy" : "Self",
+                };
+                // 数值：变量优先（生成时声明的是 DamageVar），认不出表达式就按字面量
+                FillAmount(e, NextVar(vars, ref varIdx, "Damage"), nameToPowerId, fallbackExpr: ArgAt(line, 2));
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 「失去生命（对象不是自己）」：生成的是
+            //   await CreatureCmd.Damage(choiceContext, foe, 值, ValueProp.Unblockable | Unpowered | Move, this, null);
+            // （对敌人 / 全体 / 随机都是这一句，目标参数是循环变量。）
+            // 数值同样可能来自 HpLossVar，也可能被「回复生命填负数」共用 → 看下一个变量是谁。
+            if (line.StartsWith("await CreatureCmd.Damage(choiceContext, ", StringComparison.Ordinal)
+                && line.Contains("Unblockable | ValueProp.Unpowered | ValueProp.Move", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "HpLoss", TargetSide = SideOfTarget(line) };
+                var peekLoss = PeekVar(vars, varIdx);
+                if (peekLoss?.Kind == "Damage")
+                {
+                    // 同一个写法、但这条效果声明的是 DamageVar → 是「造成伤害（作用对象 = 自己/敌人）」
+                    var dmg = new EffectSpec { Kind = "Damage", TargetSide = e.TargetSide };
+                    FillAmountOrExpr(dmg, ArgAt(line, 2), NextVar(vars, ref varIdx, "Damage"), nameToPowerId, "Damage");
+                    ApplyLoop(dmg, frames);
+                    Done(dmg);
+                    continue;
+                }
+                FillAmountOrExpr(e, ArgAt(line, 2), NextVar(vars, ref varIdx, "HpLoss"), nameToPowerId, "HpLoss");
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 自定义状态触发器里造成的伤害：生成的是
+            //   await CreatureCmd.Damage(choiceContext, other, 值, ValueProp.Unpowered, null, null, null);
+            // （dealer 传 null = 不算「你造成的伤害」，见 CustomPowerGen.EmitDamage；
+            //   目标是自己 / 全体 / 随机 / 单个敌人靠目标参数与所在的循环区分）
+            if (line.StartsWith("await CreatureCmd.Damage(choiceContext, ", StringComparison.Ordinal)
+                && line.Contains("ValueProp.Unpowered, null, null, null)", StringComparison.Ordinal))
+            {
+                string targetArg = ArgAt(line, 1);
+                var e = new EffectSpec
+                {
+                    Kind = "Damage",
+                    TargetSide = targetArg.Contains("base.Owner,") || targetArg == "base.Owner" ? "Self"
+                        : targetArg.Contains("HittableEnemies") ? "AllEnemies"
+                        : frames.Any(f => f.IsLoop) ? (randomFoes ? "RandomEnemies" : "AllEnemies")
+                        : "Enemy",
+                };
+                if (e.TargetSide == "RandomEnemies") e.AllowDuplicates = !foesRemoved;
+                // 数值：状态触发器里写的是 base.Amount（= 状态层数）或字面量，没有动态变量要认领
+                FillExpr(e, ArgAt(line, 2));
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // ===== 全局改牌组那三种效果（获得 / 变化 / 删除卡牌（全局））=====
+            // 以前**完全没回读** → 用了它们的存档（例如 SparkleMod 的「幕后黑手」）会掉效果。
+            // 生成代码：
+            //   获得：  CardModel gained = base.Owner.RunState.CreateCard(ModelDb.Card<X>(), base.Owner);
+            //           await CardPileCmd.Add(gained, PileType.Deck);
+            //   删除：  var toRemove = (await CardSelectCmd.FromDeckForRemoval(…RemoveSelectionPrompt, N…)).ToList();
+            //           foreach (CardModel c in toRemove) await CardPileCmd.RemoveFromDeck(c);
+            //           随机：CardModel? pick = …NextItem(PileType.Deck.GetPile(…).Cards.Where(c => c.IsRemovable)); → RemoveFromDeck(pick)
+            //   变化：  var toTransformDeck = (await CardSelectCmd.FromDeckGeneric(…TransformSelectionPrompt, N…)).ToList();
+            //           foreach (CardModel c in toTransformDeck) { await CardCmd.Transform[ToRandom](c, …) }
+            if (line.StartsWith("CardModel gained = ", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec
+                {
+                    Kind = "AddCardGlobal",
+                    SpawnCardId = Match(line, @"ModelDb\.Card<(\w+)>"),
+                };
+                e.Amount = LoopValue(LoopTop() ?? "1");
+                Done(e);
+                skipSelfContainedBody = true;   // 随机那支后面还有 __pickCard / CardCmd.Upgrade(gained) 几行
+                continue;
+            }
+            if (line.Contains("CardPileCmd.Add(gained, PileType.Deck)")) continue;      // 上面那条的收尾
+
+            if (line.StartsWith("var toRemove = ", StringComparison.Ordinal))
+            {
+                // 「自己选从牌组删牌」：数值在 prefs 里，真正的动作在下面那行
+                var e = new EffectSpec { Kind = "RemoveCardGlobal", CardPick = "Chosen" };
+                string? n = Match(line, @"RemoveSelectionPrompt, (\d+)\)");
+                e.Amount = n is not null ? decimal.Parse(n, CultureInfo.InvariantCulture) : 1m;
+                Done(e);
+                continue;
+            }
+            if (line.EndsWith("CardPileCmd.RemoveFromDeck(c);", StringComparison.Ordinal))
+                continue;                                                              // 上面那条的收尾
+            if (line.StartsWith("await CardPileCmd.RemoveFromDeck(", StringComparison.Ordinal))
+            {
+                // 随机删牌（在 for 循环里）
+                var e = new EffectSpec { Kind = "RemoveCardGlobal", CardPick = "Random" };
+                e.Amount = LoopValue(LoopTop() ?? "1");
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 升级牌组里的牌（全局）：生成的是
+            //   自己选：var toUpgradeDeck = (await CardSelectCmd.FromDeckForUpgrade(…UpgradeSelectionPrompt, N…)).ToList();
+            //           foreach (CardModel c in toUpgradeDeck) CardCmd.Upgrade(c);
+            //   随机：  CardModel? pick = …NextItem(PileType.Deck…Where(c => c.IsUpgradable)); → CardCmd.Upgrade(pick);
+            // （战斗里的「升级卡牌」是标记认的 CET:Effect=UpgradeCard，所以这里剩下的只有全局那一种）
+            if (line.StartsWith("var toUpgradeDeck = ", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "UpgradeCardGlobal", CardPick = "Chosen" };
+                string? n = Match(line, @"UpgradeSelectionPrompt, (\d+)\)");
+                e.Amount = n is not null ? decimal.Parse(n, CultureInfo.InvariantCulture) : 1m;
+                Done(e);
+                continue;
+            }
+            if (line.EndsWith("CardCmd.Upgrade(c);", StringComparison.Ordinal)) continue;   // 上面那条的收尾
+            if (line.StartsWith("CardCmd.Upgrade(pick);", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "UpgradeCardGlobal", CardPick = "Random" };
+                e.Amount = LoopValue(LoopTop() ?? "1");
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 自定义状态里「回合结束时移除自己」那一行：`await PowerCmd.Remove(this);` 是生成器按
+            // 「勾了回合结束移除」自动写的（ParseCustomPower 已经按它设了 RemoveAtTurnEnd），
+            // 不是一条用户配的效果 —— 以前它会被记成「没认出来」，让用户以为配置丢了。
+            if (ctx == EffectCtx.Power && line.StartsWith("await PowerCmd.Remove(this);", StringComparison.Ordinal))
+                continue;
 
             // 认不出来的语句 → 记下来让用户核对（不静默丢）
             if (line.Contains("await ") || line.Contains("PlayerCmd.") || line.Contains("CardCmd.") || line.Contains("CreatureCmd.")
@@ -1506,6 +1827,31 @@ public static class ProjectRecovery
     private static int LoopValue(string s) => int.TryParse(s, out int n) ? n : 1;
 
     /// <summary>
+    /// 往后几行里找「生成出来的卡放进哪一摞」（<c>AddGeneratedCardToCombat(__gen, PileType.X, …)</c>）。
+    /// 为什么往后看：带附加处理的生成卡写法里，那一句在升级 / 免费那几行**之后**。
+    /// </summary>
+    private static string PeekSpawnToPile(List<string> lines, int from, int window = 8)
+    {
+        foreach (string l in lines.Skip(from).Take(window))
+        {
+            string? pile = Match(l, @"AddGeneratedCardToCombat\(\w+, PileType\.(\w+)");
+            if (pile is not null) return pile;
+        }
+        return "Hand";
+    }
+
+    /// <summary>
+    /// 外面那层「生效次数」的重复次数：frames 里最里面那个循环是「生成几张」或 foreach，
+    /// 倒数第二个（如果有）才是 EmitRepeated 包的 <c>for (int i = 0; i &lt; N; i++)</c>。
+    /// </summary>
+    private static int OuterRepeatTimes(IReadOnlyList<Block> frames)
+    {
+        var loops = frames.Where(f => f.IsLoop).ToList();
+        if (loops.Count < 2) return 1;
+        return Math.Max(1, LoopValue(loops[^2].Count));
+    }
+
+    /// <summary>
     /// 从生成的临时 Power 类名（<c>&lt;角色&gt;ForgeTemp&lt;状态&gt;</c>）里把真正的状态名抠回来。
     /// 生成时后缀就是那个状态的类名（例：SparkleForgeTempStrengthPower → StrengthPower），
     /// 所以「ForgeTemp」之后那一段就是 <see cref="EffectSpec.PowerId"/>。
@@ -1538,6 +1884,9 @@ public static class ProjectRecovery
             }
         return null;
     }
+
+    /// <summary>看一眼「下一个还没被认领的变量」是谁（不消费它）。用于区分生成代码一样、但变量不同的效果。</summary>
+    private static Var? PeekVar(List<Var> vars, int idx) => idx >= 0 && idx < vars.Count ? vars[idx] : null;
 
     private static Var? NextVar(List<Var> vars, ref int idx, string kind)
     {
@@ -1675,6 +2024,13 @@ public static class ProjectRecovery
         CSharpCodeGen.IsAllPetsInlineCalc(e) ? false : e.Kind switch
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false && !e.AmountIsX,
+        // 升级卡牌 / 预见：都用本体的 CardsVar（键 = Cards）
+        "UpgradeCard" or "Scry" => !e.AmountIsX,
+        // 毒性爆发：PowerVar<PoisonPower>（键 = PoisonPower），升级增量落在它上面
+        "Outbreak" => true,
+        // 大限已至：计算三件套（CalculationBase + ExtraDamage + CalculatedDamage），
+        // 升级增量按 CalculationBase 走（和「按生命值算的伙伴攻击」同一套，见 IsCalcVar 的处理）
+        "TimesUp" => true,
         // 金币：生成侧确实会声明 GoldVar（HasNoDynamicVar 没有排除它）——这里以前漏了它，
         // 于是「金币」后面那条带变量的效果会整体错位一格，升级增量会加到别的效果上。
         "Gold" => e.AmountIsStack == false && !e.AmountIsX,
@@ -1716,7 +2072,9 @@ public static class ProjectRecovery
     /// 所以回读时把 <c>CalculationBase</c> 的增量配给那张牌里第一条这种效果。
     /// </summary>
     private static bool IsCalcPetKindName(string kind) =>
-        kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp" or "PetSacrifice";
+        kind is "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp" or "PetSacrifice"
+            // 「大限已至」用的也是这套计算三件套（伤害 = 目标的灾厄层数），升级增量同样落在 CalculationBase 上
+            or "TimesUp";
 
     private static void ParseKeywords(CardSpec card, string text)
     {
@@ -1886,6 +2244,12 @@ public static class ProjectRecovery
         };
         var vars = ParseVars(text);
         ParseEffects(relic.Effects, BodyOfHook(text), vars, nameToPowerId, EffectCtx.Relic, result, cls, result.PetClassNames);
+        // 遗物自定义描述（和卡牌同一套标记：本地化表里是拼好的，认不出来）
+        if (ParseCustomDescription(text) is var (rdText, rdReplace))
+        {
+            relic.CustomDescription = rdText;
+            relic.CustomDescriptionReplaces = rdReplace;
+        }
         string? comment = Match(text, @"// 条件：(.+)");
         string? expr = Match(text, @"if \(!\((.+)\)\) return;") ?? Match(text, @"if \((_condUsedThisCombat)\)");
         var cond = ConditionFrom(comment, expr, nameToPowerId) ?? ConditionFromExpr(expr, nameToPowerId);
@@ -1909,7 +2273,26 @@ public static class ProjectRecovery
         };
         var vars = ParseVars(text);
         ParseEffects(potion.Effects, BodyOf(text, "OnUse"), vars, nameToPowerId, EffectCtx.Potion, result, cls, result.PetClassNames);
+        // 药水自定义描述（和卡牌同一套标记）
+        if (ParseCustomDescription(text) is var (pdText, pdReplace))
+        {
+            potion.CustomDescription = pdText;
+            potion.CustomDescriptionReplaces = pdReplace;
+        }
         return potion;
+    }
+
+    /// <summary>
+    /// 认「自定义描述」标记：生成时写的是
+    /// <c>// CET:CustomDescReplace=0/1 CET:CustomDescription=&lt;换行转义过的文本&gt;</c>
+    /// （卡牌 / 遗物 / 药水三处共用）。没有标记返回 null。
+    /// </summary>
+    private static (string Text, bool Replaces)? ParseCustomDescription(string text)
+    {
+        var m = Regex.Match(text, @"CET:CustomDescReplace=(\d) CET:CustomDescription=(.*)$", RegexOptions.Multiline);
+        return m.Success
+            ? (CSharpCodeGen.UnescapeMarker(m.Groups[2].Value.TrimEnd()), m.Groups[1].Value == "1")
+            : null;
     }
 
     /// <summary>
@@ -2472,7 +2855,7 @@ public static class ProjectRecovery
     {
         string? pile = Match(line, @"FromCombatPile\(choiceContext, PileType\.(\w+)")
             ?? Match(line, @"NextItem\(PileType\.(\w+)");
-        if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", _ => "Hand" };
+        if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", "Deck" => "Deck", _ => "Hand" };
         if (line.Contains("CardSelectCmd.FromHand", StringComparison.Ordinal)) return "Hand";
         return null;
     }

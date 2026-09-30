@@ -53,6 +53,9 @@ public sealed record Naming(
     /// <summary>「强化指定卡牌」用的 Power 类名（兜底用当前角色）。</summary>
     public static string AmbientBoostPowerClass(EffectSpec e) => _currentCharClass + BoostPowerSuffix(e);
 
+    /// <summary>「仅本回合升级」用的 Power 类名（兜底用当前角色）。</summary>
+    public static string AmbientTempUpgradePowerClass => _currentCharClass + "ForgeTempUpgradePower";
+
     public string CardClassName(CardSpec c, int index) =>
         IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
 
@@ -82,6 +85,12 @@ public sealed record Naming(
 
     /// <summary>「透支能量」用的负债 Power（下回合少 N 点能量；本体的 GainEnergy 会忽略负数，只能自己扣）。</summary>
     public string EnergyDebtPowerClass => CharClass + "ForgeEnergyDebtPower";
+
+    /// <summary>
+    /// 「生成 / 变化出来的卡：仅在此回合升级」用的 Power：记住这次真的升上去的那几张，
+    /// 回合结束时把它们降回来（本体没有「临时升级」API，只能自己记）。
+    /// </summary>
+    public string TempUpgradePowerClass => CharClass + "ForgeTempUpgradePower";
 
     /// <summary>
     /// 「获得能量」填了负数 + 勾了「下回合生效」时用的 Power：下回合能量重置后扣掉 N 点。

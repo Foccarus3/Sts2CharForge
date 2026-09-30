@@ -1043,6 +1043,9 @@ region = Rect2(0, 0, {rw}, {rh})
             wanted.Add((n.EnergyDebtPowerClass, "energy_next_turn_power.png", "透支能量"));
         if (CSharpCodeGen.UsesEnergyNextTurnDebt(p))
             wanted.Add((n.EnergyNextTurnDebtPowerClass, "energy_next_turn_power.png", "下回合少能量"));
+        if (CSharpCodeGen.UsesTempUpgrade(p))
+            // 本体没有「升级」主题的状态图，用「学习 / 掌握」这张最接近的（imitation_learning 那张书页）
+            wanted.Add((n.TempUpgradePowerClass, "imitation_learning_power.png", "仅本回合升级"));
         if (CSharpCodeGen.UsesExtraTurn(p))
             wanted.Add((n.ExtraTurnPowerClass, "borrowed_time_power.png", "额外回合"));
 

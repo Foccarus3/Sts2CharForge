@@ -113,7 +113,14 @@ public static class LocalizationGen
             dict[$"{entry}.title"] = r.Name;
             if (NeedsSelectPrompt(r.Effects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(r.Effects);
-            dict[$"{entry}.description"] = Describe(r.Effects, p) + ConditionSuffix(r.Condition, isCard: false, p);
+            // 遗物自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
+            string relicBody = Describe(r.Effects, p) + ConditionSuffix(r.Condition, isCard: false, p);
+            string relicCustom = (r.CustomDescription ?? "").Trim();
+            if (relicCustom.Length > 0)
+                relicBody = r.CustomDescriptionReplaces
+                    ? relicCustom
+                    : (relicBody.Length == 0 ? relicCustom : relicBody + "\n" + relicCustom);
+            dict[$"{entry}.description"] = relicBody;
             dict[$"{entry}.flavor"] = "由 Sts2CharForge 生成的自定义遗物。";
         }
         // 额外资源量的载体遗物也要有名字，否则遗物栏里会显示成缺键
@@ -280,7 +287,14 @@ public static class LocalizationGen
             // 所以描述也必须按它写，否则会出现「描述说打单体、实际打了全体」这种不一致。
             if (NeedsSelectPrompt(s.Effects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(s.Effects);
-            dict[$"{entry}.description"] = Describe(s.Effects, p, PotionTargetPhrase(s.TargetType));
+            // 药水自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
+            string potionBody = Describe(s.Effects, p, PotionTargetPhrase(s.TargetType));
+            string potionCustom = (s.CustomDescription ?? "").Trim();
+            dict[$"{entry}.description"] = potionCustom.Length == 0
+                ? potionBody
+                : (s.CustomDescriptionReplaces
+                    ? potionCustom
+                    : (potionBody.Length == 0 ? potionCustom : potionBody + "\n" + potionCustom));
         }
         return JsonSerializer.Serialize(dict, JsonOpts);
     }
@@ -650,6 +664,15 @@ public static class LocalizationGen
             "DiscardCard" => e.SelectPile == "Hand"
                 ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
                 : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+            // 升级卡牌：从哪一摞选、自己选还是随机（本体「武装」那种）
+            "UpgradeCard" => e.SelectPile == "Hand"
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {var} 张手牌（升级不了的牌不会出现在选择里）。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌。",
+            // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
+            "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）。",
+            // 毒性爆发 / 大限已至：照本体两张牌的原文写
+            "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
+            "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
             "TransformCard" => (e.SelectPile == "Hand"
                     ? $"{EffectCatalog.CardPickZh(e.CardPick)}将 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌变化为"
                     : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为")
@@ -684,6 +707,10 @@ public static class LocalizationGen
             "TransformCardGlobal" => (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
                 + $"{(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
+            // 升级牌组里的牌（永久、跨战斗）：本体「香盒 Pomander」那种
+            "UpgradeCardGlobal" => e.CardPick == "Chosen"
+                ? $"从牌组中自己选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌升级。"
+                : $"从牌组中随机升级 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
             // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
             // 数值 0 = 用「召唤物」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
             "SummonPet" => (e.AmountIsX && isCard)
