@@ -8129,6 +8129,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						+ "void F() { _ = base.DynamicVars.Damage.BaseValue; _ = base.DynamicVars[\"Damage2\"].BaseValue; }").Count == 0,
 					"不误报");
 
+				// ===== 两条同样的「给伙伴施加状态」：第二条声明成别名，运行时必须读同一个别名 =====
+				// 用户实测报过（本体的 DynamicVars 按名字取，取不到就 KeyNotFoundException → 牌组界面打不开）：
+				// 两条同种效果时 CanonicalVars 里第二条是 PetPowerStrengthPower2（否则 DynamicVarSet 撞名），
+				// 而生成代码仍固定读 PetPowerStrengthPower → 生成后自检直接报「引用了没有声明的动态变量」。
+				CardSpec petPow2 = new CardSpec { Name = "发力两次", ClassName = "UiCheckPetPow2", CardType = "Skill", Cost = 1, InCardPool = true };
+				petPow2.Effects.Add(new EffectSpec { Kind = "PetApplyPower", Amount = 2m, PowerId = "StrengthPower", TargetSide = "Self", PetSummon = "UiCheckPet" });
+				petPow2.Effects.Add(new EffectSpec { Kind = "PetApplyPower", Amount = 2m, PowerId = "StrengthPower", TargetSide = "Self", PetSummon = "UiCheckPet" });
+				string petPow2Src = CSharpCodeGen.CardSource(petSrc, petPow2, 0);
+				Check("两条「给伙伴施加状态」：第二条运行时读的是它的**别名**变量（PetPowerStrengthPower2），不是第一条的名字",
+					petPow2Src.Contains("base.DynamicVars[\"PetPowerStrengthPower2\"].BaseValue")
+					&& CSharpCodeGen.MissingDynamicVars(petPow2Src).Count == 0,
+					"缺失=[" + string.Join(",", CSharpCodeGen.MissingDynamicVars(petPow2Src)) + "]");
+
+				// —— 生成后自检遇到「不认识的那一项」时，只能跳过那一项，不能放弃整张卡 ——
+				// 本体 PowerVar.cs 的匿名构造是 base(typeof(T).Name, …)，所以匿名 PowerVar<T> 的键就是 T 的名字。
+				// 以前这里写成 return Array.Empty<string>()（整张卡放弃检查）→ 真正的漏声明全被放过。
+				Check("生成后自检（MissingDynamicVars）：看不懂的变量类型只跳过那一项，不放弃整张卡（否则真漏报）",
+					CSharpCodeGen.MissingDynamicVars(
+						"CanonicalVars => [ new PowerVar<StrengthPower>(2m), new SomethingUnknownVar(1m) ];\n"
+						+ "void F() { _ = base.DynamicVars.CalculationBase.BaseValue; }")
+						.SequenceEqual(new[] { "CalculationBase" }),
+					string.Join(",", CSharpCodeGen.MissingDynamicVars(
+						"CanonicalVars => [ new PowerVar<StrengthPower>(2m), new SomethingUnknownVar(1m) ];\n"
+						+ "void F() { _ = base.DynamicVars.CalculationBase.BaseValue; }")));
+				Check("生成后自检（MissingDynamicVars）：匿名 PowerVar<T> 的键按本体规则 = T 的名字，不误报",
+					CSharpCodeGen.MissingDynamicVars(
+						"CanonicalVars => [ new PowerVar<StrengthPower>(2m) ];\n"
+						+ "void F() { _ = base.DynamicVars[\"StrengthPower\"].BaseValue; }").Count == 0,
+					"缺失=[" + string.Join(",", CSharpCodeGen.MissingDynamicVars(
+						"CanonicalVars => [ new PowerVar<StrengthPower>(2m) ];\n"
+						+ "void F() { _ = base.DynamicVars[\"StrengthPower\"].BaseValue; }")) + "]");
+
 				// —— 「全部召唤物」：一条效果按**每一只启用的召唤物**逐只展开（用户要求：下拉加「全选」）——
 				CardSpec allPet = new CardSpec { Name = "全体出动", ClassName = "UiCheckPetAll", CardType = "Skill", Cost = 1, InCardPool = true };
 				allPet.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self", PetSummon = PetGen.AllId });

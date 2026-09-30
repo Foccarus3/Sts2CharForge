@@ -2498,8 +2498,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 string tn = ty.Groups[1].Value;
                 if (tn == "PowerVar")
                 {
+                    // 没起名字的 PowerVar<T>：键就是 T 的名字 —— 必须**认出来**，
+                    // 否则整张卡的自检会放弃（见下面 def is null 那条），真正的漏声明就漏报了。
                     var pw = System.Text.RegularExpressions.Regex.Match(s, @"PowerVar<(\w+)>");
-                    if (!pw.Success) return Array.Empty<string>();      // 认不出来 → 放弃这张卡的检查
+                    if (!pw.Success) continue;                          // 认不出来这一项 → 跳过这一项即可
                     declared.Add(pw.Groups[1].Value);
                     continue;
                 }
@@ -2521,7 +2523,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     "CalculatedBlockVar" => "CalculatedBlock",
                     _ => null,
                 };
-                if (def is null) return Array.Empty<string>();          // 认不出来 → 放弃这张卡的检查
+                if (def is null)
+                {
+                    // 认不出来的**这一项**只跳过自己，不要放弃整张卡的检查 ——
+                    // 以前是 return Array.Empty<string>()，等于「有一项看不懂，就把这张卡的漏声明全放过」，
+                    // 那正是漏报的来源（本次就是被匿名 PowerVar 触发的）。宁可漏报一项，不能漏整张卡。
+                    continue;
+                }
                 declared.Add(def);
             }
         }
@@ -2646,7 +2654,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "PetApplyPower":
-                EmitPetApplyPower(w, p, e, petVar ?? "__pet", amt);
+                EmitPetApplyPower(w, p, e, petVar ?? "__pet", amt, varMap);
                 break;
 
             case "PetGuardOn":
@@ -3200,12 +3208,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 下回合生效时走现有的「延迟状态」类（<c>ForgeDelayed&lt;PowerId&gt;</c>）挂在宠物身上，
     /// 那个类自己的钩子里会把真正的状态施加到**它的主人**（也就是这只宠物）上 —— 和普通「下回合生效」一致。
     /// </summary>
-    private static void EmitPetApplyPower(CodeWriter w, CharacterProfile p, EffectSpec e, string petVar, string amt)
+    private static void EmitPetApplyPower(CodeWriter w, CharacterProfile p, EffectSpec e, string petVar, string amt,
+        Dictionary<EffectSpec, string>? map = null)
     {
         _ = amt;
         // 数值**不**用外面传来的表达式：PetApplyPower 的变量名是 PetPower<PowerId>（不是本体的属性），
         // 这里按名字取 —— 回读也照这一行把数值配回去（升级增量同样生效）。
-        string calc = $"base.DynamicVars[{Lit.Str(VarNameOf(e))}].BaseValue";
+        // 注意必须用**带别名映射**的 VarNameOf(e, map)：同一张牌上两条同样的「给伙伴施加状态」时，
+        // 第二条在 CanonicalVars 里声明成 PetPowerStrengthPower2（否则 DynamicVarSet 撞名会抛异常），
+        // 以前这里固定读第一条的名字 → 第二条的变量取不到 → 牌组界面打不开（KeyNotFoundException）。
+        string calc = $"base.DynamicVars[{Lit.Str(VarNameOf(e, map))}].BaseValue";
         if (e.NextTurn)
         {
             w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
