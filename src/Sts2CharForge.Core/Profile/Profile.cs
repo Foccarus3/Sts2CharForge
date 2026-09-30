@@ -132,6 +132,28 @@ public sealed class CharacterProfile
     public ObservableCollection<CardSpec> AncientCards { get; set; } = new();
 
     /// <summary>
+    /// 「诅咒 / 先古卡」页里**诅咒**的外观（卡牌边框颜色）。
+    /// 生成时会单独造一个「外观池」给诅咒用（本体只允许从**池**上取边框材质：<c>CardModel.FrameMaterial</c>
+    /// 就是 <c>VisualCardPool.FrameMaterial</c>，卡本身改不了 —— 本体 Clash / DualWield 也是靠覆写
+    /// <c>VisualCardPool</c> 借外观的）。留空 = 完全按老样子（用本体的诅咒卡框）。
+    /// </summary>
+    public SpecialCardStyleSpec CurseStyle
+    {
+        get => _curseStyle;
+        set => _curseStyle = value ?? new SpecialCardStyleSpec();
+    }
+
+    /// <summary>「诅咒 / 先古卡」页里**先古卡**的外观（卡牌边框颜色）。留空 = 跟角色的卡牌配色一样。</summary>
+    public SpecialCardStyleSpec AncientStyle
+    {
+        get => _ancientStyle;
+        set => _ancientStyle = value ?? new SpecialCardStyleSpec();
+    }
+
+    private SpecialCardStyleSpec _curseStyle = new();
+    private SpecialCardStyleSpec _ancientStyle = new();
+
+    /// <summary>
     /// 这个存档里**所有会生成出来的卡**（普通卡 + 诅咒 + 先古卡）。
     /// 生成 / 本地化 / 卡面素材 / 卡池 / 回读一律遍历它，别再各自去拼 <see cref="Cards"/>。
     /// </summary>
@@ -955,9 +977,72 @@ public sealed class CardSpec : SpecBase
 /// 「升级后的关键字」：整张牌的设置，每个关键字三态 —— 不变 / 升级后获得 / 升级后失去。
 /// 生成 <c>OnUpgrade()</c> 里的 <c>AddKeyword / RemoveKeyword</c>（本体「残影 / 幻影 / 寒冰」就是这么写的）。
 /// </summary>
-public sealed class KeywordUpgradeSpec : SpecBase
+/// <summary>
+/// 「诅咒 / 先古卡」页里每一类牌（诅咒 / 先古卡）自己的**外观**：卡牌边框颜色。
+///
+/// 为什么只能改边框：本体的卡面外观分几处取，其中
+///   · 边框材质 = <c>CardModel.FrameMaterial</c> → <c>VisualCardPool.FrameMaterial</c>（**能**按牌/按类改）；
+///   · 能量图标 = <c>CardModel.EnergyIconPath</c> → <c>VisualCardPool.EnergyIconPath</c>（能改，但我们固定用角色自己的）；
+///   · 能量图标描边 = <c>NCard</c> 里的 <c>Model.Pool.EnergyOutlineColor</c>、牌堆底色 = <c>card.Pool.DeckEntryCardColor</c>
+///     —— 这两个取的是**真实卡池**（卡必须属于它），所以按类改不了，只能跟角色配色。
+/// 所以这里只暴露「卡牌边框」，不暴露那两个改不动的（免得给一个填了没反应的选项）。
+///
+/// 另外先古卡还自带本体的一套「先古外观」：稀有度 Ancient 会换成 beta 卡框贴图 + 先古边框 + 先古横幅
+/// （见 <c>CardModel.FramePath</c> / <c>BannerMaterialPath</c> / <c>AncientTextBgPath</c>），
+/// 这里的 RRGGBB 是给那套贴图**染色**（和角色配色用的是同一个 hsv 材质机制）。
+/// </summary>
+public sealed class SpecialCardStyleSpec : SpecBase
 {
-    /// <summary>三态取值：Keep（不变）/ Add（升级后获得）/ Remove（升级后失去）</summary>
+    /// <summary>「自定义颜色」这个选项的值（<see cref="Frame"/> 用它表示「用 FrameColor」）。</summary>
+    public const string CustomFrame = "custom";
+
+    private string _frame = "";
+    private string _frameColor = "";
+
+    /// <summary>
+    /// 框色：<c>""</c> = 跟角色配色（默认）；本体框色名（card_frame_blue 等）；
+    /// <c>"custom"</c> = 用下面的 RRGGBB。
+    /// </summary>
+    public string Frame
+    {
+        get => _frame;
+        set { if (Set(ref _frame, value ?? "")) { Raise(nameof(IsCustomFrame)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>自定义边框颜色（RRGGBB，<see cref="Frame"/> == "custom" 时生效）。</summary>
+    public string FrameColor
+    {
+        get => _frameColor;
+        set { if (Set(ref _frameColor, value ?? "")) { Raise(nameof(IsCustomFrame)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>选了「自定义颜色」那一项。</summary>
+    [JsonIgnore]
+    public bool IsCustomFrame => string.Equals(_frame, CustomFrame, StringComparison.Ordinal);
+
+    /// <summary>配色色块预览用（没填就返回空串，界面显示成透明）。</summary>
+    [JsonIgnore]
+    public string PreviewHex => IsCustomFrame ? CardColorSpec.NormalizeHex(_frameColor) : "";
+
+    /// <summary>有没有做任何外观设置（没设置 = 生成时不加任何东西，和以前完全一样）。</summary>
+    [JsonIgnore]
+    public bool Any => IsCustomFrame
+        ? CardColorSpec.NormalizeHex(_frameColor).Length > 0
+        : _frame.Length > 0;
+
+    [JsonIgnore]
+    public string Display
+    {
+        get
+        {
+            if (!Any) return "";
+            return IsCustomFrame ? $"边框 #{CardColorSpec.NormalizeHex(_frameColor)}" : $"边框 {_frame}";
+        }
+    }
+}
+
+public sealed class KeywordUpgradeSpec : SpecBase
+{    /// <summary>三态取值：Keep（不变）/ Add（升级后获得）/ Remove（升级后失去）</summary>
     public const string Keep = "Keep";
     public const string Add = "Add";
     public const string Remove = "Remove";

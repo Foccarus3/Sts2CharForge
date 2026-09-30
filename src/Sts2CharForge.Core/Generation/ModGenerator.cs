@@ -63,6 +63,22 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, "GlobalUsings.cs"), CSharpCodeGen.GlobalUsings(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.CharClass + ".cs"), CSharpCodeGen.CharacterSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.CardPoolClass + ".cs"), CSharpCodeGen.CardPoolSource(profile));
+        // 「诅咒 / 先古卡」的外观池：只在那一页给它们设了边框颜色时才生成
+        // （池里没有卡，只负责让这两类牌的 FrameMaterial 有个地方取）
+        if (profile.CurseStyle.Any)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, n.CurseStylePoolClass + ".cs"),
+                CSharpCodeGen.SpecialStylePoolSource(profile, profile.CurseStyle, n.CurseStylePoolClass, "诅咒",
+                    CSharpCodeGen.SpecialFrameMaterialOf(profile, profile.CurseStyle, "curse")!));
+            Log($"  已生成诅咒的外观池（卡框 = {profile.CurseStyle.Display}）");
+        }
+        if (profile.AncientStyle.Any)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, n.AncientStylePoolClass + ".cs"),
+                CSharpCodeGen.SpecialStylePoolSource(profile, profile.AncientStyle, n.AncientStylePoolClass, "先古卡",
+                    CSharpCodeGen.SpecialFrameMaterialOf(profile, profile.AncientStyle, "ancient")!));
+            Log($"  已生成先古卡的外观池（卡框 = {profile.AncientStyle.Display}）");
+        }
         ProjectFilesGen.WriteText(Path.Combine(cs, n.RelicPoolClass + ".cs"), CSharpCodeGen.RelicPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.PotionPoolClass + ".cs"), CSharpCodeGen.PotionPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile));

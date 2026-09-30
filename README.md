@@ -197,12 +197,44 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
   2. 或者你自己的效果：「生成卡牌 / 获得卡牌（全局）/ 获得卡牌奖励」里选它。
 - 详情面板里**没有**「稀有度」下拉：这一页的牌写死是 Ancient（诅咒那栏写死 Curse），省得配错。
 
-### 三、回读（从工程恢复存档）
+### 三、外观：用 RRGGBB 给这两类牌换卡框颜色
+
+「诅咒 / 先古卡」页每一栏都有一行 **「诅咒卡框 / 先古卡框」**：
+
+- 默认 **「跟角色配色（默认）」** —— 和以前完全一样（诅咒用本体的灰色诅咒框，先古卡用角色的卡框）；
+- 也可以直接选**本体的 8 种框色**（铁甲红 / 无色灰 / 诅咒紫灰 / 任务深蓝…）；
+- 或者选 **「自定义」**，在下面的 **RRGGBB** 输入框里填 6 位十六进制（右边有色块预览）。
+
+生成出来的东西：
+
+| 填的东西 | 生成什么 |
+|---|---|
+| 自定义颜色 `8A5CF6` | `materials/cards/frames/<角色>_curse_frame_mat.tres`（按颜色的 HSV 写一份 `hsv.gdshader` 材质）+ 一个**外观池** `<角色>CurseStylePool`，诅咒的 `VisualCardPool` 指过去 |
+| 本体框色 `card_frame_blue` | 只生成外观池，`CardFrameMaterialPath` 直接用那个本体框色（不用写材质） |
+| 跟角色配色 | 什么都不生成（诅咒仍用本体 `CurseCardPool`，先古卡用角色卡池） |
+
+**为什么是「外观池」**：本体的边框材质只能从**池**上取 ——
+`CardModel.FrameMaterial => VisualCardPool.FrameMaterial` → `CardPoolModel.FrameMaterialPath` →
+`res://materials/cards/frames/<名字>_mat.tres`，卡本身没有可覆写的口子。
+本体自己也是这么干的（Clash / DualWield 覆写 `VisualCardPool` 借铁甲战士的卡框）。
+这个外观池**不装任何卡**（`GenerateAllCards() => []`），也不进 `ModelDb.AllCardPools` ——
+所以它不会在卡牌图鉴里多出一个空分类。
+
+**改不了的那两项**：牌堆底色（`card.Pool.DeckEntryCardColor`）和能量图标描边
+（`NCard` 里的 `Model.Pool.EnergyOutlineColor`）取的都是**真实卡池**，而真实卡池必须装这张卡 ——
+所以按「类」改不了，外观池里照抄角色的那份（工具里也就不给这两个填框，免得填了没反应）。
+先古卡自带的「先古外观」（beta 卡框贴图 + 先古边框 + 先古横幅，见 `CardModel.FramePath` /
+`BannerMaterialPath` / `AncientTextBgPath`）也不受影响，RRGGBB 是给它们**染色**。
+
+### 四、回读（从工程恢复存档）
 
 - 诅咒：构造函数里的 `-1 / Curse` + `OnTurnEndInHand` 里的语句会把它还原回「诅咒」列表；
   「战斗结束自删」按 `CardPileCmd.RemoveFromDeck(this)` 认出来。
 - 先古卡：按构造函数里的 `CardRarity.Ancient` 还原回「先古卡」列表。
 - 两者都按**稀有度**分回各自的列表（不是按它原来在哪个列表），所以老存档里手改过稀有度的卡也对得上。
+- 卡框颜色：从外观池的 `CardFrameMaterialPath` 认（自定义色再去材质文件里按 h/s/v 反算回 RRGGBB）。
+  顺带修了一个老 bug：以前那个反算函数的路径少了两层、还按 `shader_parameter/color` 找颜色，
+  所以**角色自己的自定义边框颜色从来没读回来过**（静默退回默认红）—— 现在角色 / 诅咒 / 先古卡三处都能读回来了。
 
 ## 自定义关键词（「自定义关键词」页）
 

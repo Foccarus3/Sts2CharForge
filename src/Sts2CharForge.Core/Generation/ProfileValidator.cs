@@ -323,6 +323,21 @@ public static class ProfileValidator
             issues.Add(new("错误", $"「头像描边颜色」不是合法的十六进制颜色：{p.Art.IconOutlineColor}（应为 RRGGBB，留空表示不自动生成描边）。"));
         if (!string.IsNullOrWhiteSpace(p.Colors.CardFrame) && !CardColorSpec.Frames.Contains(p.Colors.CardFrame))
             issues.Add(new("警告", $"卡牌边框「{p.Colors.CardFrame}」不在本体自带素材里（{string.Join(" / ", CardColorSpec.Frames)}），游戏里可能显示不出边框。"));
+        // 「诅咒 / 先古卡」两类牌各自的卡框颜色（生成的是「外观池」+ 一份 hsv 染色材质）
+        foreach (var (style, what) in new[] { (p.CurseStyle, "诅咒"), (p.AncientStyle, "先古卡") })
+        {
+            if (style is null) continue;
+            if (style.IsCustomFrame)
+            {
+                // 填了内容但不是合法颜色 → 报错（空着 = 没设样式，不报）
+                if (style.FrameColor.Trim().Length > 0 && CardColorSpec.NormalizeHex(style.FrameColor).Length == 0)
+                    issues.Add(new("错误", $"{what}的自定义卡框颜色「{style.FrameColor}」不是合法的颜色（要 6 位 RRGGBB，例如 8A5CF6）。"));
+            }
+            else if (style.Frame.Length > 0 && !CardColorSpec.Frames.Contains(style.Frame))
+            {
+                issues.Add(new("警告", $"{what}的卡框「{style.Frame}」不在本体自带素材里（{string.Join(" / ", CardColorSpec.Frames)}），游戏里可能显示不出边框。"));
+            }
+        }
         if (!Naming.IsValidIdentifier(p.CharacterClass))
             issues.Add(new("错误", "角色英文类名必须是纯英文/数字且以字母开头（决定模型 ID 与所有资源文件名）。"));
         if (string.IsNullOrWhiteSpace(p.DisplayName))

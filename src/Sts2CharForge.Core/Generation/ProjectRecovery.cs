@@ -116,6 +116,10 @@ public static class ProjectRecovery
                 removedFromPool.Add(m.Groups[1].Value);
         }
 
+        // ---- 「诅咒 / 先古卡」两类牌各自的卡框颜色（外观池） ----
+        ParseSpecialStyle(p, projectDir, cs, Naming.From(p).CurseStylePoolClass, p.CurseStyle, "curse");
+        ParseSpecialStyle(p, projectDir, cs, Naming.From(p).AncientStylePoolClass, p.AncientStyle, "ancient");
+
         // ---- 起始卡组 / 起始遗物 ----
         var starting = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (Match m in Regex.Matches(charText, @"ModelDb\.Card<(\w+)>\(\)"))
@@ -2160,18 +2164,68 @@ public static class ProjectRecovery
             ? int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)
             : 0).ThenBy(f => f, StringComparer.Ordinal).ToArray();
 
+    /// <summary>
+    /// 回读「诅咒 / 先古卡」某一类的外观：工程里有没有那个外观池文件，以及它的卡框材质名。
+    ///   · 材质名 = <c>&lt;角色&gt;_&lt;类&gt;_frame</c> → 是自定义 RRGGBB，颜色从材质文件的 HSV 反算；
+    ///   · 别的名字 → 本体框色（card_frame_blue 这种）。
+    /// </summary>
+    private static void ParseSpecialStyle(CharacterProfile p, string projectDir, string cs,
+        string poolClass, SpecialCardStyleSpec style, string stem)
+    {
+        style.Frame = "";
+        style.FrameColor = "";
+        string file = Path.Combine(cs, poolClass + ".cs");
+        if (!File.Exists(file)) return;
+        string? frame = Match(File.ReadAllText(file, Encoding.UTF8), @"CardFrameMaterialPath => ""([^""]+)""");
+        if (string.IsNullOrWhiteSpace(frame)) return;
+        if (string.Equals(frame, Naming.From(p).SpecialFrameMaterial(stem), StringComparison.Ordinal))
+        {
+            style.Frame = SpecialCardStyleSpec.CustomFrame;
+            style.FrameColor = FrameColorFromMaterial(projectDir, frame) ?? "";
+        }
+        else
+        {
+            style.Frame = frame;
+        }
+    }
+
+    /// <summary>
+    /// 从生成出来的**卡框材质**反推颜色。
+    ///
+    /// 本体的卡框材质是 <c>shaders/hsv.gdshader</c> 的 ShaderMaterial，参数是 <c>h / s / v</c>
+    /// （**不是** color），文件在 <c>materials/cards/frames/&lt;名字&gt;_mat.tres</c>。
+    ///
+    /// 这里以前有两个错：路径少了两层（写成 <c>materials/&lt;名字&gt;_mat.tres</c>）、
+    /// 还按 <c>shader_parameter/color</c> 找颜色 —— 所以**从来没读成功过**：
+    /// 恢复出来的「自定义边框颜色」会静默退回默认红（D62000）。现在按 h/s/v 反算 RGB。
+    /// </summary>
     private static string FrameColorFromMaterial(string projectDir, string frameName)
     {
-        string file = Path.Combine(projectDir, "materials", frameName + "_mat.tres");
+        string file = Path.Combine(projectDir, "materials", "cards", "frames", frameName + "_mat.tres");
         if (!File.Exists(file)) return null!;
         string text = File.ReadAllText(file, Encoding.UTF8);
-        string? hex = Match(text, @"shader_parameter/color = Color\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)");
-        if (hex is null) return null!;
-        var m = Regex.Match(text, @"shader_parameter/color = Color\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)");
-        int r = (int)Math.Round(double.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture) * 255);
-        int g = (int)Math.Round(double.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture) * 255);
-        int b = (int)Math.Round(double.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture) * 255);
-        return $"{r:X2}{g:X2}{b:X2}";
+
+        // 老工程 / 别的写法：直接写了 color
+        var color = Regex.Match(text, @"shader_parameter/color = Color\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)");
+        if (color.Success)
+        {
+            static string Byte(double v) => ((int)Math.Round(v * 255)).ToString("X2", CultureInfo.InvariantCulture);
+            return Byte(double.Parse(color.Groups[1].Value, CultureInfo.InvariantCulture))
+                 + Byte(double.Parse(color.Groups[2].Value, CultureInfo.InvariantCulture))
+                 + Byte(double.Parse(color.Groups[3].Value, CultureInfo.InvariantCulture));
+        }
+
+        // 本体和生成器用的都是 h/s/v
+        var hsv = Regex.Match(text,
+            @"shader_parameter/h = ([\d.]+)[\s\S]*?shader_parameter/s = ([\d.]+)[\s\S]*?shader_parameter/v = ([\d.]+)");
+        if (!hsv.Success) return null!;
+        PngUtil.HsvToRgb(
+            double.Parse(hsv.Groups[1].Value, CultureInfo.InvariantCulture),
+            double.Parse(hsv.Groups[2].Value, CultureInfo.InvariantCulture),
+            double.Parse(hsv.Groups[3].Value, CultureInfo.InvariantCulture),
+            out double r, out double g, out double b);
+        static string Hex(double v) => ((int)Math.Round(Math.Clamp(v, 0, 1) * 255)).ToString("X2", CultureInfo.InvariantCulture);
+        return Hex(r) + Hex(g) + Hex(b);
     }
 
     private static Dictionary<string, string> BuildPowerNameMap(CharacterProfile p)

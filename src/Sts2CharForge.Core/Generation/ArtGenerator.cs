@@ -753,14 +753,44 @@ grow_vertical = 2
     /// </summary>
     private static void WriteCardFrameMaterial(CharacterProfile p, string projectRoot, Action<string>? log)
     {
+        var n = Naming.From(p);
         string hex = CardColorSpec.NormalizeHex(p.Colors.CardFrameColor);
-        if (hex.Length == 0) return;
+        if (hex.Length > 0)
+        {
+            WriteFrameMaterialFile(projectRoot, $"{n.CharSlug}_frame", hex);
+            var (r, g, b) = HexToRgb(hex);
+            PngUtil.RgbToHsv(r / 255.0, g / 255.0, b / 255.0, out double hh, out double ss, out double vv);
+            log?.Invoke($"  卡牌边框：按 #{hex} 生成自定义材质（HSV {hh:0.###}/{ss:0.###}/{vv:0.###}）");
+        }
+        // 「诅咒 / 先古卡」页给这两类牌单独设的颜色：各自生成一份材质（池子指过去）
+        WriteSpecialFrameMaterial(p, projectRoot, p.CurseStyle, "curse", "诅咒", log);
+        WriteSpecialFrameMaterial(p, projectRoot, p.AncientStyle, "ancient", "先古卡", log);
+    }
 
+    /// <summary>「诅咒 / 先古卡」某一类的自定义边框材质（选了本体框色 / 没设样式时什么都不写）。</summary>
+    private static void WriteSpecialFrameMaterial(CharacterProfile p, string projectRoot,
+        SpecialCardStyleSpec style, string stem, string what, Action<string>? log)
+    {
+        if (!style.Any || !style.IsCustomFrame) return;
+        string hex = CardColorSpec.NormalizeHex(style.FrameColor);
+        if (hex.Length == 0) return;
+        var n = Naming.From(p);
+        string mat = n.SpecialFrameMaterial(stem);
+        WriteFrameMaterialFile(projectRoot, mat, hex);
         var (r, g, b) = HexToRgb(hex);
         PngUtil.RgbToHsv(r / 255.0, g / 255.0, b / 255.0, out double hh, out double ss, out double vv);
-        var n = Naming.From(p);
+        log?.Invoke($"  {what}边框：按 #{hex} 生成自定义材质 {mat}（HSV {hh:0.###}/{ss:0.###}/{vv:0.###}）");
+    }
 
-        ProjectFilesGen.WriteText(Path.Combine(projectRoot, "materials/cards/frames", $"{n.CharSlug}_frame_mat.tres"), $"""
+    /// <summary>
+    /// 一份「按颜色染色」的卡框材质：本体边框用的是 hsv.gdshader 的 ShaderMaterial（h/s/v 三个参数），
+    /// 所以只写这三个参数就能得到任意颜色的卡框（角色配色 / 诅咒 / 先古卡共用这一份生成逻辑）。
+    /// </summary>
+    private static void WriteFrameMaterialFile(string projectRoot, string name, string hex)
+    {
+        var (r, g, b) = HexToRgb(hex);
+        PngUtil.RgbToHsv(r / 255.0, g / 255.0, b / 255.0, out double hh, out double ss, out double vv);
+        ProjectFilesGen.WriteText(Path.Combine(projectRoot, "materials/cards/frames", name + "_mat.tres"), $"""
 [gd_resource type="ShaderMaterial" load_steps=2 format=3]
 
 [ext_resource type="Shader" path="res://shaders/hsv.gdshader" id="1_hsv"]
@@ -772,7 +802,6 @@ shader_parameter/h = {hh.ToString("0.####", System.Globalization.CultureInfo.Inv
 shader_parameter/s = {ss.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}
 shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}
 """);
-        log?.Invoke($"  卡牌边框：按 #{hex} 生成自定义材质（HSV {hh:0.###}/{ss:0.###}/{vv:0.###}）");
     }
 
     /// <summary>

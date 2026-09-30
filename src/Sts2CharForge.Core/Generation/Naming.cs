@@ -128,6 +128,20 @@ public sealed record Naming(
     public string GuardianPowerClass => CharClass + "ForgePetGuardianPower";
 
     /// <summary>
+    /// 诅咒的「外观池」类名（只用来换卡牌边框材质，不装卡）。
+    /// 注意**故意不叫** <c>…CardPool</c>：回读（从工程恢复存档）和卡池顺序解析都用
+    /// <c>Directory.GetFiles(cs, "*CardPool.cs")</c> 找「角色卡池」，名字里再带 CardPool 会把它一起匹配到
+    /// （自检里踩过：挑中的是外观池 → 卡池顺序 / 配色全读错）。
+    /// </summary>
+    public string CurseStylePoolClass => CharClass + "CurseStylePool";
+
+    /// <summary>先古卡的「外观池」类名（同上，故意不带 CardPool）。</summary>
+    public string AncientStylePoolClass => CharClass + "AncientStylePool";
+
+    /// <summary>自定义边框颜色生成出来的材质名（<c>materials/cards/frames/&lt;它&gt;_mat.tres</c>）。</summary>
+    public string SpecialFrameMaterial(string stem) => $"{CharSlug}_{stem}_frame";
+
+    /// <summary>
     /// 卡牌类名（没填类名时，按「这是第几张自有卡」自动编号）。
     /// 为什么要单独一个重载：初始卡组里的本体卡（打击 / 防御）排在卡牌列表最上面，
     /// 如果按<b>列表下标</b>编号，没填类名的卡会因为前面多了两条本体卡而集体改名

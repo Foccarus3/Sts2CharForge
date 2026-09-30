@@ -673,6 +673,28 @@
                                     <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCurse"
                                             IsEnabled="{Binding CanUndoCurse}" ToolTip="{Binding UndoCurseHint}"/>
                                 </WrapPanel>
+                                <!-- 诅咒的卡框颜色（RRGGBB）——生成本体那套 hsv 染色材质 + 一个只给诅咒用的外观池 -->
+                                <Grid DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="诅咒卡框" Style="{StaticResource Label}" MinWidth="72"/>
+                                    <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding SpecialFrameItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Name"
+                                              SelectedItem="{Binding CurseFrameSelection, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              ToolTip="诅咒这一类的卡牌边框颜色：默认跟角色配色；也可以直接选本体的框色，或者选「自定义」后用下面的 RRGGBB。"/>
+                                    <Border Grid.Column="2" Width="26" Margin="6,0,0,0" BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding Profile.CurseStyle.PreviewHex, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource HexBrush}}"
+                                            ToolTip="当前卡框颜色的色块"/>
+                                </Grid>
+                                <DockPanel DockPanel.Dock="Bottom" Margin="0,2,0,0">
+                                    <TextBlock Text="自定义颜色（RRGGBB）" Style="{StaticResource Label}" MinWidth="140"/>
+                                    <TextBox Style="{StaticResource Field}"
+                                             IsEnabled="{Binding Profile.CurseStyle.IsCustomFrame, RelativeSource={RelativeSource AncestorType=Window}}"
+                                             Text="{Binding Profile.CurseStyle.FrameColor, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="填 6 位十六进制（例如 8A5CF6）。生成时会按它算 HSV 写一份卡框材质，只有诅咒用这个框色。"/>
+                                </DockPanel>
                                 <ListBox x:Name="CurseList" ItemsSource="{Binding Profile.Curses}" DisplayMemberPath="Display"
                                          SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          SelectionChanged="OnSpecialCardSelectionChanged"
@@ -692,6 +714,28 @@
                                     <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoAncientCard"
                                             IsEnabled="{Binding CanUndoAncient}" ToolTip="{Binding UndoAncientHint}"/>
                                 </WrapPanel>
+                                <!-- 先古卡的卡框颜色（RRGGBB）——和诅咒那一栏同一套机制 -->
+                                <Grid DockPanel.Dock="Bottom" Margin="0,4,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="先古卡框" Style="{StaticResource Label}" MinWidth="72"/>
+                                    <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding SpecialFrameItems, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Name"
+                                              SelectedItem="{Binding AncientFrameSelection, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              ToolTip="先古卡这一类的卡牌边框颜色：默认跟角色配色；也可以选本体的框色，或者选「自定义」后用下面的 RRGGBB。"/>
+                                    <Border Grid.Column="2" Width="26" Margin="6,0,0,0" BorderBrush="#999" BorderThickness="1"
+                                            Background="{Binding Profile.AncientStyle.PreviewHex, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource HexBrush}}"
+                                            ToolTip="当前卡框颜色的色块"/>
+                                </Grid>
+                                <DockPanel DockPanel.Dock="Bottom" Margin="0,2,0,0">
+                                    <TextBlock Text="自定义颜色（RRGGBB）" Style="{StaticResource Label}" MinWidth="140"/>
+                                    <TextBox Style="{StaticResource Field}"
+                                             IsEnabled="{Binding Profile.AncientStyle.IsCustomFrame, RelativeSource={RelativeSource AncestorType=Window}}"
+                                             Text="{Binding Profile.AncientStyle.FrameColor, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="填 6 位十六进制（例如 E0B24C）。生成时会按它算 HSV 写一份卡框材质，只有先古卡用这个框色。"/>
+                                </DockPanel>
                                 <ListBox x:Name="AncientCardList" ItemsSource="{Binding Profile.AncientCards}" DisplayMemberPath="Display"
                                          SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          SelectionChanged="OnSpecialCardSelectionChanged"

@@ -361,6 +361,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public IReadOnlyList<FrameItem> FrameItems { get; }
 
+	// ===== 「诅咒 / 先古卡」页：这两类牌各自的卡框颜色（RRGGBB）=====
+	private readonly FrameItem _followRoleFrame = new FrameItem("", "跟角色配色（默认）");
+
+	/// <summary>「诅咒 / 先古卡」页那两个下拉的候选：多一项「跟角色配色（默认）」。</summary>
+	public IReadOnlyList<FrameItem> SpecialFrameItems { get; }
+
+	/// <summary>诅咒的卡框下拉（写进 <see cref="CharacterProfile.CurseStyle"/>）。</summary>
+	public FrameItem CurseFrameSelection
+	{
+		get => SpecialFrameSelectionOf(Profile.CurseStyle);
+		set { ApplySpecialFrame(Profile.CurseStyle, value, "CurseFrameSelection"); }
+	}
+
+	/// <summary>先古卡的卡框下拉（写进 <see cref="CharacterProfile.AncientStyle"/>）。</summary>
+	public FrameItem AncientFrameSelection
+	{
+		get => SpecialFrameSelectionOf(Profile.AncientStyle);
+		set { ApplySpecialFrame(Profile.AncientStyle, value, "AncientFrameSelection"); }
+	}
+
+	private FrameItem SpecialFrameSelectionOf(SpecialCardStyleSpec style)
+	{
+		if (style.IsCustomFrame) return _customFrame;
+		if (style.Frame.Length == 0) return _followRoleFrame;
+		return FrameItems.FirstOrDefault((FrameItem i) => i.Value == style.Frame) ?? _followRoleFrame;
+	}
+
+	private void ApplySpecialFrame(SpecialCardStyleSpec style, FrameItem value, string prop)
+	{
+		if (value is null) return;
+		if (value.Value == _customFrame.Value)                    // null = 自定义颜色
+		{
+			style.Frame = SpecialCardStyleSpec.CustomFrame;
+			if (CardColorSpec.NormalizeHex(style.FrameColor).Length == 0)
+				style.FrameColor = CardColorSpec.SeedColorForFrame(Profile.Colors.CardFrame);
+		}
+		else
+		{
+			style.Frame = value.Value ?? "";                      // "" = 跟角色配色
+			style.FrameColor = "";
+		}
+		Raise(prop);
+		Raise("Profile");
+	}
+
 	public PresetItem PresetSelection
 	{
 		get
@@ -1019,6 +1064,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		BuildAncientRows();
 		PresetItems = CardColorSpec.Presets.Select((CardColorSpec.Preset pz) => new PresetItem(pz, pz.Name)).Append(_customPreset).ToList();
 		FrameItems = CardColorSpec.Frames.Select((string f) => new FrameItem(f, f)).Append(_customFrame).ToList();
+		// 「诅咒 / 先古卡」页那两个下拉：第一项是「跟角色配色（默认）」，其余和上面的框色一样。
+		// 复用同一个 _customFrame 实例，自检里就能用引用比较认出「自定义」。
+		SpecialFrameItems = new[] { _followRoleFrame }.Concat(FrameItems).ToList();
 		HookProfileColors();
 		// 启动时那份配置也要先把「本体关键词改名」的 7 行补齐（Profile 的 setter 只在换存档时跑）
 		EnsureKeywordRenameRows();
@@ -6996,6 +7044,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			};
 			recAncient.Effects.Add(new EffectSpec { Kind = "Block", Amount = 11m, UpgradeAmount = 4m, TargetSide = "Self" });
 			recSrc.AncientCards.Add(recAncient);
+			// 两类牌各自的卡框颜色（RRGGBB）+ 角色自己的自定义框色，回读时要能从材质文件的 h/s/v 反算回来
+			recSrc.CurseStyle.Frame = SpecialCardStyleSpec.CustomFrame;
+			recSrc.CurseStyle.FrameColor = "8A5CF6";
+			recSrc.AncientStyle.Frame = "card_frame_blue";
+			recSrc.Colors.CardFrameColor = "123456";
 			var gen = ModGenerator.Generate(recSrc);
 			// 失败时把「为什么」打出来（校验错误 + 日志尾部）—— 不然这条 FAIL 只有空细节，根本没法查
 			Check("（准备）能从示例配置生成工程", gen.Success && Directory.Exists(gen.ProjectRoot),
@@ -7245,6 +7298,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					: rec.Profile.AncientCards[0].Effects[0].Amount + "+" + rec.Profile.AncientCards[0].Effects[0].UpgradeAmount);
 			Check("从工程恢复：诅咒 / 先古卡不会被算成普通卡（三张列表各归各位）",
 				rec.Profile.Cards.All(x => x.Rarity != "Curse" && x.Rarity != "Ancient"), "各归各位");
+			Check("从工程恢复：诅咒的自定义卡框颜色（RRGGBB）找回来了",
+				rec.Profile.CurseStyle.Frame == SpecialCardStyleSpec.CustomFrame && rec.Profile.CurseStyle.FrameColor == "8A5CF6",
+				$"{rec.Profile.CurseStyle.Frame} / {rec.Profile.CurseStyle.FrameColor}");
+			Check("从工程恢复：先古卡选了本体框色（card_frame_blue）也认得出来",
+				rec.Profile.AncientStyle.Frame == "card_frame_blue" && rec.Profile.AncientStyle.FrameColor.Length == 0,
+				$"{rec.Profile.AncientStyle.Frame} / '{rec.Profile.AncientStyle.FrameColor}'");
+			Check("从工程恢复：角色自己的自定义边框颜色也读回来了（以前路径写错，一直静默退回默认红）",
+				rec.Profile.Colors.CardFrameColor == "123456", rec.Profile.Colors.CardFrameColor);
 		}
 		catch (Exception ex)
 		{
@@ -10434,6 +10495,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			UpdateLayout();
 			Check("诅咒 / 先古卡列表能正常删除（自检收尾）",
 				Profile.Curses.Count == curseBefore && Profile.AncientCards.Count == ancientBefore, "已清理");
+
+			// ---- 样式（RRGGBB 卡框颜色）----
+			Check("「诅咒 / 先古卡」页的两个卡框下拉多一项「跟角色配色（默认）」",
+				SpecialFrameItems.Count == FrameItems.Count + 1 && SpecialFrameItems[0].Value == "", SpecialFrameItems[0].Name);
+			Check("默认（没设样式）时下拉显示「跟角色配色」、也不生成外观池",
+				CurseFrameSelection == SpecialFrameItems[0] && AncientFrameSelection == SpecialFrameItems[0]
+				&& !Profile.CurseStyle.Any && !Profile.AncientStyle.Any, CurseFrameSelection.Name);
+			CharacterProfile styleProbe = ProfileFactory.Sample();
+			styleProbe.CurseStyle.Frame = SpecialCardStyleSpec.CustomFrame;
+			styleProbe.CurseStyle.FrameColor = "8A5CF6";
+			styleProbe.AncientStyle.Frame = "card_frame_blue";
+			// 诅咒：自定义颜色 → 生成外观池 + hsv 材质 + VisualCardPool 指过去
+			string curseStyleSrc = CSharpCodeGen.CurseSource(styleProbe, curse, 0);
+			Check("给诅咒设了卡框颜色后，VisualCardPool 指向生成的外观池（不再用本体的诅咒框）",
+				curseStyleSrc.Contains($"public override CardPoolModel VisualCardPool => ModelDb.CardPool<{Naming.From(styleProbe).CurseStylePoolClass}>();")
+				&& !curseStyleSrc.Contains("CardPool<CurseCardPool>()"), "外观池");
+			string cursePoolSrc = CSharpCodeGen.SpecialStylePoolSource(styleProbe, styleProbe.CurseStyle,
+				Naming.From(styleProbe).CurseStylePoolClass, "诅咒", CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.CurseStyle, "curse")!);
+			Check("外观池里没有卡（GenerateAllCards 返回空，不会在卡牌图鉴里多出空分类）",
+				cursePoolSrc.Contains("protected override CardModel[] GenerateAllCards() => [];"), "空池");
+			Check("外观池的卡框材质名 = <角色>_curse_frame（RRGGBB 生成的那份）、能量图标仍用角色自己的",
+				cursePoolSrc.Contains($"CardFrameMaterialPath => \"{Naming.From(styleProbe).CharSlug}_curse_frame\"")
+				&& cursePoolSrc.Contains($"EnergyColorName => \"{Naming.From(styleProbe).CharSlug}\";"), "材质名");
+			Check("选了本体框色（先古卡 = card_frame_blue）时直接用那个名字、不生成新材质",
+				CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.AncientStyle, "ancient") == "card_frame_blue",
+				CSharpCodeGen.SpecialFrameMaterialOf(styleProbe, styleProbe.AncientStyle, "ancient")!);
+			string ancientStyleSrc = CSharpCodeGen.CardSource(styleProbe, ancient, 0);
+			Check("给先古卡设了卡框后也覆写 VisualCardPool",
+				ancientStyleSrc.Contains($"public override CardPoolModel VisualCardPool => ModelDb.CardPool<{Naming.From(styleProbe).AncientStylePoolClass}>();"), "外观池");
+			Check("样式色块预览用 PreviewHex（自定义色才有值）",
+				styleProbe.CurseStyle.PreviewHex == "8A5CF6" && styleProbe.AncientStyle.PreviewHex == "", "色块");
+			Check("校验：自定义色填成乱码 → 报错",
+				ProfileValidator.Validate(new CharacterProfile { CurseStyle = { Frame = SpecialCardStyleSpec.CustomFrame, FrameColor = "ZZZZZZ" } })
+					.Any(i => i.IsError && i.Message.Contains("不是合法的颜色")), "有错误");
+			Check("校验：选了不存在的本体框色 → 警告",
+				ProfileValidator.Validate(new CharacterProfile { AncientStyle = { Frame = "card_frame_nope" } })
+					.Any(i => i.Message.Contains("不在本体自带素材里")), "有警告");
+			Check("没设样式时生成的诅咒还是用本体诅咒卡池（老存档行为不变）",
+				CSharpCodeGen.CurseSource(ProfileFactory.Sample(), curse, 0).Contains("CardPool<CurseCardPool>()"), "老样子");
 		}
 
 		RecheckEnvironment();
