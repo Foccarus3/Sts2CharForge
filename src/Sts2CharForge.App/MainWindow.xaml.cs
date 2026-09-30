@@ -7741,6 +7741,36 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("替主人承伤：保留 ShouldAllowHitting（自己死了以后不再接受攻击，本体 DieForYouPower 的写法）",
 				petCs.Contains("public override bool ShouldAllowHitting(Creature creature)"), "还在");
 
+			// ①-f 回归：只用了「伙伴替主人承伤（开 / 关）」效果、但那只召唤物**没勾**勾选框
+			// （用户实测：生成出来的卡牌引用了 <角色>ForgePetGuardianPower，类却没生成 → CS0246 构建失败）
+			{
+				CharacterProfile guardOnly = ProfileFactory.Sample();
+				guardOnly.Summons.Clear();
+				guardOnly.Summons.Add(new SummonSpec { Enabled = true, ClassName = "UiCheckGuardPet", Name = "自检守卫宠", Hp = 20, TakesDamageForOwner = false });
+				var guardCard = new CardSpec { Name = "自检开启承伤", ClassName = "UiCheckGuardOn", Cost = 1, InCardPool = true };
+				guardCard.Effects.Add(new EffectSpec { Kind = "PetGuardOn", PetSummon = "UiCheckGuardPet" });
+				guardCard.Effects.Add(new EffectSpec { Kind = "PetGuardOff", PetSummon = "UiCheckGuardPet" });
+				guardOnly.Cards.Add(guardCard);
+				string guardPetCs = PetGen.Source(guardOnly);
+				string guardCardCs = CSharpCodeGen.CardSource(guardOnly, guardCard, 0);
+				string guardCls = Naming.From(guardOnly).GuardianPowerClass;
+				Check("只用了「替主人承伤（开 / 关）」效果、勾选框没勾时，守卫 Power 类照样生成（否则卡牌里那句 Apply<T> 会 CS0246 编译不过）",
+					guardCardCs.Contains($"PowerCmd.Apply<{guardCls}>(") && guardPetCs.Contains($"public sealed class {guardCls} : PowerModel"),
+					guardCardCs.Contains($"PowerCmd.Apply<{guardCls}>(") ? (guardPetCs.Contains(guardCls) ? "类也生成了" : "类没生成 ← 就是那个 CS0246") : "卡牌没引用");
+				Check("没勾勾选框时守卫的说明里写清「由效果在战斗中开启」（不写「谁」会是一句空话）",
+					guardPetCs.Contains("会在战斗中开启"), "说明在");
+				Check("一只都没用守卫时**不**生成守卫类（不给模组塞没用的类）",
+					!PetGen.Source(ProfileFactory.Sample()).Contains(Naming.From(ProfileFactory.Sample()).GuardianPowerClass), "没生成");
+				Check("UsesGuardianEffect 认得出卡牌 / 遗物 / 药水 / 自定义状态四条路上的守卫效果",
+					PetGen.UsesGuardianEffect(guardOnly)
+					&& PetGen.UsesGuardianEffect(new CharacterProfile { Relics = { new RelicSpec { Name = "r", Trigger = "PlayerTurnStart", Effects = { new EffectSpec { Kind = "PetGuardOn" } } } } })
+					&& PetGen.UsesGuardianEffect(new CharacterProfile { Potions = { new PotionSpec { Name = "p", Effects = { new EffectSpec { Kind = "PetGuardOff" } } } } })
+					&& PetGen.UsesGuardianEffect(new CharacterProfile { CustomPowers = { new CustomPowerSpec { Name = "cp", Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "PetGuardOn" } } } } } } })
+					&& !PetGen.UsesGuardianEffect(ProfileFactory.Sample()), "四条路都认");
+				Check("勾选框没勾 + 用了守卫效果 → 校验给一句提示（说清「效果照样有效，只是开场不自动承伤」）",
+					ProfileValidator.Validate(guardOnly).Any(i => i.Message.Contains("效果照样有效")), "有提示");
+			}
+
 			// ①-e bug④/⑤：死亡语义 + 召唤命令（Get 判活 + 每个分支都重排全体）
 			Check("召唤命令：Get 扫列表**判活**（player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is X && p.IsAlive)），不再用 GetPet<T>() —— 它会返回已经死掉的那只，于是每次召唤都新建一只",
 				petCs.Contains("return player.PlayerCombatState?.Pets.FirstOrDefault(p => p.Monster is UiCheckPet && p.IsAlive);")
@@ -10595,6 +10625,100 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				typedStyle.IsCustomFrame && typedStyle.Any && typedStyle.PreviewHex == "8A5CF6",
 				$"{typedStyle.Frame} / {typedStyle.PreviewHex}");
 			Check("填了乱码不会误切成「自定义」", !new SpecialCardStyleSpec { FrameColor = "ZZ" }.IsCustomFrame, "没切");
+		}
+
+		// ===== 通用回归：生成出来的源码里「引用到的生成类」必须真的都被生成了 =====
+		// 这一类不一致的表现就是 dotnet 报 CS0246（引用了一个没生成的类）→ 整个模组编译不过。
+		// 用户实测踩过两次：
+		//   ① 卡牌用了「伙伴替主人承伤（开）」效果、但那只召唤物没勾「替主人承伤」勾选框 → 守卫 Power 没生成；
+		//   ② 诅咒 / 先古卡里的效果不在 p.Cards 里 → 各种「用到才生成」的辅助类（负债 Power / 额外回合 /
+		//      临时增益 / 强化 / 延迟 / 临时关键词…）都会被漏掉统计。
+		// 所以这里拿一份「把每种用到才生成的效果都用上」的满配存档真生成一遍，逐个核对类名。
+		{
+			string sinkRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_sink_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile sink = ProfileFactory.Sample();
+				sink.Paths.OutputDir = sinkRoot;
+				sink.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				sink.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				sink.Summons.Add(new SummonSpec { Enabled = true, ClassName = "UiCheckSinkPet", Name = "自检满配宠", Hp = 12, TakesDamageForOwner = false });
+				// 关键：这些效果全部挂在**诅咒**上（不在 p.Cards 里），外加先古卡 / 遗物 / 药水 / 自定义状态各一份
+				var sinkCurse = new CardSpec { Name = "自检满配诅咒", ClassName = "UiCheckSinkCurse", Rarity = "Curse", CardType = "Curse", Cost = -1 };
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "OverdraftEnergy", Amount = 2m, TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "ExtraTurn", TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "BoostCard", Amount = 1m, SpawnCardId = "SevenCrush", BoostStat = "Damage", TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain", TempKeyword = true, TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Self", NextTurn = true });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "SlowPower", Amount = 1m, SlowPercent = 30m, TargetSide = "Self" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "PetGuardOn", PetSummon = "UiCheckSinkPet" });
+				sinkCurse.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 5m, PetSummon = "UiCheckSinkPet", TargetSide = "Enemy" });
+				sink.Curses.Add(sinkCurse);
+				sink.AncientCards.Add(new CardSpec
+				{
+					Name = "自检满配先古卡", ClassName = "UiCheckSinkAncient", Rarity = "Ancient", CardType = "Skill", Cost = 1,
+					Effects =
+					{
+						new EffectSpec { Kind = "TempPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Self" },
+						new EffectSpec { Kind = "BoostCard", Amount = 1m, SpawnCardId = "SevenSlash", BoostStat = "Block", TargetSide = "Self" },
+					},
+				});
+				sink.Relics.Add(new RelicSpec
+				{
+					Name = "自检满配遗物", Trigger = "PlayerTurnStart",
+					Effects =
+					{
+						new EffectSpec { Kind = "OverdraftEnergy", Amount = 1m, TargetSide = "Self" },
+						new EffectSpec { Kind = "ExtraTurn", TargetSide = "Self" },
+						new EffectSpec { Kind = "TempPower", PowerId = "DexterityPower", Amount = 1m, TargetSide = "Self" },
+						new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 1m, TargetSide = "Enemy", NextTurn = true },
+						new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Ethereal", TempKeyword = true, TargetSide = "Self" },
+					},
+				});
+				sink.Potions.Add(new PotionSpec
+				{
+					Name = "自检满配药水", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self",
+					Effects = { new EffectSpec { Kind = "OverdraftEnergy", Amount = 1m, TargetSide = "Self" } },
+				});
+				sink.CustomPowers.Add(new CustomPowerSpec
+				{
+					Name = "自检满配状态",
+					Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "ExtraTurn", TargetSide = "Self" } } } },
+				});
+				Check("（准备）满配存档能生成工程（覆盖诅咒 / 先古卡 / 遗物 / 药水 / 自定义状态里的每一种「用到才生成」效果）",
+					ModGenerator.Generate(sink).Success, sinkRoot);
+				var sinkSrc = new StringBuilder();
+				foreach (string file in Directory.GetFiles(Path.Combine(ModGenerator.ProjectRootOf(sink), "cs"), "*.cs", SearchOption.AllDirectories))
+					sinkSrc.Append(File.ReadAllText(file, Encoding.UTF8)).Append('\n');
+				string sinkAll = sinkSrc.ToString();
+				var sinkNaming = Naming.From(sink);
+				var expect = new List<string>
+				{
+					sinkNaming.EnergyDebtPowerClass, sinkNaming.ExtraTurnPowerClass,
+					sinkNaming.TempKeywordPowerClass, sinkNaming.GuardianPowerClass,
+				};
+				foreach (var e in CSharpCodeGen.CollectTempPowerEffects(sink)) expect.Add(sinkNaming.TempPowerClass(e));
+				foreach (var e in CSharpCodeGen.CollectDelayedEffects(sink)) expect.Add(sinkNaming.DelayedPowerClass(e));
+				foreach (var e in CSharpCodeGen.CollectBoostEffects(sink)) expect.Add(sinkNaming.BoostPowerClass(e));
+				var dangling = expect.Where(x => !sinkAll.Contains("class " + x, StringComparison.Ordinal)).ToList();
+				Check("生成工程里「引用到的生成类」全都被生成了（差一个就是 CS0246，整个模组编译不过）",
+					dangling.Count == 0, dangling.Count == 0 ? $"{expect.Count} 个类都在" : "缺：" + string.Join("、", dangling));
+				Check("满配存档用的效果都被识别出来了（诅咒 / 先古卡里的也算数）",
+					CSharpCodeGen.UsesEnergyDebt(sink) && CSharpCodeGen.UsesExtraTurn(sink)
+					&& CSharpCodeGen.UsesTempKeywordPower(sink) && CSharpCodeGen.NeedsSlowPowerHelper(sink)
+					&& sinkAll.Contains("class SlowPowerHelper"), "都认得出");
+				Check("「伙伴攻击」扩展方法在「只用诅咒里的伙伴攻击」时也会生成（否则 CS1061）",
+					File.Exists(Path.Combine(ModGenerator.ProjectRootOf(sink), "cs", "PetAttackExtensions.cs")), "生成了");
+			}
+			catch (Exception ex)
+			{
+				Check("（满配存档）生成 + 类名核对（整体）", ok: false, ex.GetType().Name + ": " + ex.Message);
+			}
+			finally
+			{
+				try { Directory.Delete(sinkRoot, true); } catch { }
+			}
 		}
 
 		RecheckEnvironment();

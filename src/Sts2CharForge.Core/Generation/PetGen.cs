@@ -223,10 +223,10 @@ public static class PetGen
     /// <summary>
     /// 这个配置有没有任何「伙伴攻击」效果（有就说明要用扩展方法 FromPetAttacker，
     /// 也就必须生成 <c>cs/PetAttackExtensions.cs</c> —— 否则生成的卡牌会引用一个不存在的扩展方法，CS1061）。
-    /// 只看卡牌：遗物上的「伙伴攻击」本来就生成不了（没有玩家选中的目标，生成时会被忽略）。
+    /// 只看卡牌（含诅咒 / 先古卡）：遗物上的「伙伴攻击」本来就生成不了（没有玩家选中的目标，生成时会被忽略）。
     /// </summary>
     public static bool UsesAttackExtension(CharacterProfile p) =>
-        IsActive(p) && p.Cards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)));
+        IsActive(p) && p.AllCards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)));
 
     /// <summary>
     /// 哪些效果是「由宠物发起攻击」（都会生成 <c>.FromPetAttacker(...)</c>）。
@@ -368,10 +368,26 @@ position = Vector2(2, -{spriteH + 60})
         foreach (var d in defs) EmitSummonCmd(w, d, powerClass);
         // 守卫 Power **只生成一个共用类**（勾了几只都用它）：仲裁要跨宠物查「谁也有守卫」，
         // 而 Creature.HasPower<T>() 只认同一类型 —— 每只一个类的话互相查不出来。
-        if (defs.Any(x => x.Guardian)) EmitGuardianPower(w, defs, powerClass);
+        //
+        // 只要**有人要用它**就得生成：召唤物勾了「替主人承伤」，**或者**有卡牌 / 遗物 / 药水 /
+        // 自定义状态的「伙伴替主人承伤（开 / 关）」效果。后者以前漏了 ——
+        // 用户实测报过「卡牌引用了 <角色>ForgePetGuardianPower，但那只召唤物没勾承伤 → 类没生成 → CS0246 构建失败」。
+        if (defs.Any(x => x.Guardian) || UsesGuardianEffect(p)) EmitGuardianPower(w, defs, powerClass);
         EmitPetLayout(w, defs);
         return w.ToString();
     }
+
+    /// <summary>
+    /// 有没有哪条效果会在**战斗中**开关「替主人承伤」（PetGuardOn / PetGuardOff）。
+    /// 有就必须生成守卫 Power 类：生成代码里那句
+    /// <c>PowerCmd.Apply&lt;&lt;角色&gt;ForgePetGuardianPower&gt;(…)</c> 是**直接引用类型**的，
+    /// 类不存在就是 CS0246，整个模组编译不过（用户实测踩过）。
+    ///
+    /// 运行时的行为本来就不看勾选框：守卫的钩子是「谁活着 + 谁挂着这个 Power」自己仲裁的，
+    /// 效果把它挂到某只宠物身上，那只就开始承伤 —— 所以这里只管「类在不在」。
+    /// </summary>
+    public static bool UsesGuardianEffect(CharacterProfile p) =>
+        CSharpCodeGen.UsesKind(p, "PetGuardOn", "PetGuardOff");
 
     /// <summary>一只宠物的 <c>MonsterModel</c> 子类（含站位覆写 + 血条覆写）。</summary>
     private static void EmitPetClass(CodeWriter w, PetDef d)
@@ -569,7 +585,11 @@ position = Vector2(2, -{spriteH + 60})
     {
         string power = powerClass;
         List<PetDef> guarded = defs.Where(x => x.Guardian).ToList();
-        string who = string.Join("、", guarded.Select(d => d.DisplayName));
+        // 勾选框一只都没勾、但有「伙伴替主人承伤（开）」效果时，这里就没有名字可写 ——
+        // 说明是由效果在战斗中开启的（运行时按「谁挂着这个 Power」仲裁，和勾选框无关）。
+        string who = guarded.Count > 0
+            ? string.Join("、", guarded.Select(d => d.DisplayName))
+            : "（你配的「伙伴替主人承伤」效果会在战斗中开启）";
 
         w.Line("/// <summary>")
          .Line($"/// 「替主人承伤」：{who}挡在主人前面（照抄本体 DieForYouPower）。**所有召唤物共用这一个类**。")

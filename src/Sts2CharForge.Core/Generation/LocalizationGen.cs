@@ -242,10 +242,7 @@ public static class LocalizationGen
         else
             bits.Add("开场不发放，靠卡牌 / 遗物 / 药水获得");
 
-        bool spends = p.Cards.SelectMany(c => c.Effects)
-            .Concat(p.Relics.SelectMany(r => r.Effects))
-            .Concat(p.Potions.SelectMany(s => s.Effects))
-            .Any(e => e.Kind == "ExtraResource" && e.Amount < 0);
+        bool spends = CSharpCodeGen.AllEffects(p).Any(e => e.Kind == "ExtraResource" && e.Amount < 0);
         if (spends)
             bits.Add("打出需要消耗它的牌时会扣除，数量不足时无法打出");
 

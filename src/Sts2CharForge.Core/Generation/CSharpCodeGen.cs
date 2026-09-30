@@ -1023,13 +1023,30 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>这条效果是不是「直接把缓慢设成 N%」。</summary>
     internal static bool IsSlowPercentEffect(EffectSpec e) => e.SlowPercentEffective > 0 && e.IsSlowPower;
 
+    /// <summary>
+    /// 存档里**所有**效果：普通卡 + 诅咒 + 先古卡 + 遗物 + 药水 + 自定义状态的触发器。
+    ///
+    /// 为什么要有这个统一入口：生成那些「只在用到时才生成」的辅助类（负债 Power / 额外回合 /
+    /// 下回合生效 / 临时增益 / 强化指定卡牌 / 临时关键词 / 缓慢助手…）之前，都要先问一句「有没有人用」。
+    /// 这些判断以前**各写一遍、而且大多只扫 p.Cards** —— 漏掉任何一个来源，生成出来的代码就会引用
+    /// 一个没生成的类，dotnet 直接报 CS0246，整个模组编译不过。用户实测踩过两次：
+    ///   · 卡牌用了「伙伴替主人承伤」效果、但那只召唤物没勾那个勾选框 → 守卫 Power 类没生成；
+    ///   · 诅咒 / 先古卡（后加的两栏）里的效果不在 p.Cards 里 → 同样漏。
+    /// 所以以后凡是「用到才生成」的判断，一律走这里，别自己再拼一遍。
+    /// </summary>
+    public static IEnumerable<EffectSpec> AllEffects(CharacterProfile p) =>
+        p.AllCards.SelectMany(c => c.Effects)
+            .Concat(p.Relics.SelectMany(r => r.Effects))
+            .Concat(p.Potions.SelectMany(s => s.Effects))
+            .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects));
+
+    /// <summary>存档里有没有这几种效果（「用到才生成」的判断统一用它）。</summary>
+    public static bool UsesKind(CharacterProfile p, params string[] kinds) =>
+        AllEffects(p).Any(e => kinds.Contains(e.Kind, StringComparer.Ordinal));
+
     /// <summary>这个存档里所有「直接把缓慢设成 N%」的效果（用于统计/生成助手文件）。</summary>
     internal static IEnumerable<EffectSpec> SlowPercentEffects(CharacterProfile p) =>
-        p.Cards.SelectMany(c => c.Effects)
-            .Concat(p.Relics.SelectMany(r => r.Effects))
-            .Concat(p.Potions.SelectMany(x => x.Effects))
-            .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects))
-            .Where(IsSlowPercentEffect);
+        AllEffects(p).Where(IsSlowPercentEffect);
 
     /// <summary>需要生成「缓慢」数值助手文件吗。</summary>
     public static bool NeedsSlowPowerHelper(CharacterProfile p) => SlowPercentEffects(p).Any();
@@ -3253,9 +3270,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static IEnumerable<EffectSpec> CollectDelayedEffects(CharacterProfile p)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var e in p.Cards.SelectMany(c => c.Effects)
-                     .Concat(p.Relics.SelectMany(r => r.Effects))
-                     .Concat(p.Potions.SelectMany(s => s.Effects)))
+        foreach (var e in AllEffects(p))
         {
             if (e.Kind != "ApplyPower" || !e.NextTurn) continue;
             if (seen.Add(e.PowerId ?? "")) yield return e;
@@ -3269,10 +3284,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static IEnumerable<EffectSpec> CollectTempPowerEffects(CharacterProfile p)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var e in p.Cards.SelectMany(c => c.Effects)
-                     .Concat(p.Relics.SelectMany(r => r.Effects))
-                     .Concat(p.Potions.SelectMany(s => s.Effects))
-                     .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects)))
+        foreach (var e in AllEffects(p))
         {
             if (e.Kind != "TempPower") continue;
             if (seen.Add(e.PowerId ?? "")) yield return e;
@@ -3357,10 +3369,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static IEnumerable<EffectSpec> CollectBoostEffects(CharacterProfile p)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var e in p.Cards.SelectMany(c => c.Effects)
-                     .Concat(p.Relics.SelectMany(r => r.Effects))
-                     .Concat(p.Potions.SelectMany(s => s.Effects))
-                     .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects)))
+        foreach (var e in AllEffects(p))
         {
             if (e.Kind != "BoostCard") continue;
             if (seen.Add(Naming.BoostPowerSuffix(e))) yield return e;
@@ -3983,9 +3992,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>是否有配置用到「额外获得一回合」。</summary>
-    public static bool UsesExtraTurn(CharacterProfile p) =>
-        p.Cards.SelectMany(c => c.Effects).Concat(p.Relics.SelectMany(r => r.Effects))
-            .Concat(p.Potions.SelectMany(s => s.Effects)).Any(e => e.Kind == "ExtraTurn");
+    public static bool UsesExtraTurn(CharacterProfile p) => UsesKind(p, "ExtraTurn");
 
     // ==================== 给予卡牌关键词 ====================
 
@@ -4147,11 +4154,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>存档里所有「给予卡牌关键词」效果（卡的 / 遗物的 / 药水的 / 自定义状态触发的）。</summary>
     public static IEnumerable<EffectSpec> GiveKeywordEffects(CharacterProfile p) =>
-        p.Cards.SelectMany(c => c.Effects)
-            .Concat(p.Relics.SelectMany(r => r.Effects))
-            .Concat(p.Potions.SelectMany(s => s.Effects))
-            .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects))
-            .Where(e => e.Kind == "GiveKeyword");
+        AllEffects(p).Where(e => e.Kind == "GiveKeyword");
 
     /// <summary>存档里有没有给「自定义关键词」的（有才生成注册表 + 那个补丁）。</summary>
     public static bool UsesGivenCustomKeyword(CharacterProfile p) =>
@@ -4368,8 +4371,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>额外回合用的 Power（照抄本体 MockExtraTurnPower 的写法）。</summary>
     /// <summary>这个配置里有没有「透支能量」效果（有才生成那个负债 Power；只做卡牌）。</summary>
-    public static bool UsesEnergyDebt(CharacterProfile p) =>
-        p.Cards.Any(c => c.Effects.Any(e => e.Kind == "OverdraftEnergy"));
+    public static bool UsesEnergyDebt(CharacterProfile p) => UsesKind(p, "OverdraftEnergy");
 
     /// <summary>
     /// 「透支能量」用的负债 Power：施加时立刻把 N 点能量给玩家；下回合能量重置后再扣掉 N 点，然后自毁。

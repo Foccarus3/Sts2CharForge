@@ -48,7 +48,8 @@ public static class ProfileValidator
             if (string.IsNullOrWhiteSpace(spec.Description))
                 issues.Add(new("警告", $"{who} 没写说明：鼠标悬停在用到它的卡上会弹出一个空面板。"));
         }
-        foreach (var card in p.Cards)
+        // 自定义关键词的引用检查：普通卡 + 诅咒 + 先古卡都要查（三栏都可能勾关键词）
+        foreach (var card in p.AllCards)
         {
             if (card is null) continue;
             foreach (string r in card.CustomKeywordList)
@@ -922,6 +923,13 @@ public static class ProfileValidator
                 + string.Join("、", guardians.Select(s => $"「{PetGen.DisplayNameOf(s, PetGen.ClassNameOf(p, s))}」"))
                 + "）：承伤的是召唤物列表里第一只活着的，它死后会自动换下一只。"
                 + "本体的伤害重定向是链式遍历，所以由生成代码自己仲裁，行为是确定的。"));
+        // 用「伙伴替主人承伤（开 / 关）」效果、但那只召唤物没勾「替主人承伤」勾选框：
+        // 不是错误（效果照样生效，生成时会一起把守卫 Power 类生成出来），但要说清差别，
+        // 否则用户会以为「勾选框没勾 = 这个效果没用」。
+        if (guardians.Count == 0 && PetGen.UsesGuardianEffect(p))
+            issues.Add(new("提示", "你用了「伙伴替主人承伤（开 / 关）」效果，但没有任何召唤物勾「替主人承伤」勾选框："
+                + "效果照样有效（打出那张牌 / 触发那只遗物时现场挂上守卫，它就开始替你承伤），"
+                + "差别只在「开场不会自动承伤」—— 想让某只一上场就挡在你前面，就去「召唤物」页勾上它的「替主人承伤」。"));
         else if (guardians.Count == 1)
             issues.Add(new("提示", $"「{PetGen.DisplayNameOf(guardians[0], PetGen.ClassNameOf(p, guardians[0]))}」会在主人受可格挡攻击时替主人承伤"
                 + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
@@ -976,7 +984,15 @@ public static class ProfileValidator
             }
             var kind = EffectCatalog.FindKind(e.Kind);
             if (e.Amount < kind.Min || e.Amount > kind.Max)
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
+            {
+                // 有些效果种类**根本没有数值**（击晕 / 结束回合 / 额外回合 / 伙伴承伤开关…：
+                // 允许范围就是个 0~0 的空区间）。这种填什么都不影响生成，别拿「超出范围」把用户拦住 ——
+                // 用户实测踩过：卡牌里的「伙伴替主人承伤（开）」数值是 1，被这条错误挡住，得自己想到要填 0。
+                if (kind.Min == kind.Max)
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」没有数值这一说：填的 {e.Amount} 会被忽略（生成时不看它）。"));
+                else
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
+            }
             if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
             else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的增益/减益未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));
