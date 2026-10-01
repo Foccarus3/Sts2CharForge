@@ -63,6 +63,9 @@ public sealed record ConditionTargetOption(string Id, string Display);
 /// <summary>「从哪里选牌」一条：手牌 / 抽牌堆 / 弃牌堆。</summary>
 public sealed record PileChoiceOption(string Id, string Display);
 
+/// <summary>「生成卡牌」放到哪一摞（界面上那个「生成到」下拉）。</summary>
+public sealed record SpawnTargetOption(string Id, string Display);
+
 /// <summary>「生成 / 变化卡牌」的范围限定的一个选项（Id = 空 / Attack / Skill / Power / Curse / Status）。</summary>
 public sealed record SpawnFilterOption(string Id, string Display, string Zh);
 
@@ -713,8 +716,27 @@ public static class EffectCatalog
     public static bool IsPetKind(string? kind) => kind is not null && PetKindIds.Contains(kind);
 
     /// <summary>「生成卡牌」的放置位置。</summary>
-    public static IReadOnlyList<string> SpawnTargets { get; } = new[] { "Hand", "Draw", "Discard" };
-    public static string SpawnTargetZh(string v) => v switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", _ => "手牌" };
+    /// <summary>
+    /// 「生成卡牌」生成出来的牌放进哪一摞（界面上那个「生成到（生成卡牌用）」下拉）。
+    /// 手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 —— 四者都是本体的「战斗内牌堆」（<c>PileType.IsCombatPile()</c>），
+    /// 所以走的是同一套 <c>CardPileCmd.AddToCombatAndPreview / AddGeneratedCardToCombat</c>；
+    /// 消耗牌堆的用法是「生成出来就直接用掉 / 不参与抽牌」（例如只是拿它计数或触发消耗类效果）。
+    /// </summary>
+    public static IReadOnlyList<SpawnTargetOption> SpawnTargets { get; } = new[]
+    {
+        new SpawnTargetOption("Hand", "手牌（本体默认）"),
+        new SpawnTargetOption("Draw", "抽牌堆"),
+        new SpawnTargetOption("Discard", "弃牌堆"),
+        new SpawnTargetOption("Exhaust", "消耗牌堆（生成出来就直接消耗掉，不参与抽牌）"),
+    };
+
+    public static string SpawnTargetZh(string? v) => v switch
+    {
+        "Draw" => "抽牌堆",
+        "Discard" => "弃牌堆",
+        "Exhaust" => "消耗牌堆",
+        _ => "手牌",
+    };
 
     /// <summary>
     /// 「消耗卡牌 / 变化卡牌」从哪一摞牌里选（界面上那个下拉）。

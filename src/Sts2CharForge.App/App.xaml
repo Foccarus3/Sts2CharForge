@@ -116,7 +116,8 @@
                 <TextBlock Grid.Row="7" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"/>
                 <ComboBox Grid.Row="7" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding SpawnTargets, RelativeSource={RelativeSource AncestorType=Window}}"
-                          SelectedItem="{Binding SpawnTo}"/>
+                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                          SelectedValue="{Binding SpawnTo}"/>
 
                 <TextBlock Grid.Row="8" Grid.Column="0" Text="选牌方式（消耗 / 变化 / 丢弃用）" Style="{StaticResource Label}" MinWidth="96"/>
                 <ComboBox Grid.Row="8" Grid.Column="1" Style="{StaticResource Pick}"

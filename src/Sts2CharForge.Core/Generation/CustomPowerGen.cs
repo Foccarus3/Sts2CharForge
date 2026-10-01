@@ -446,7 +446,8 @@ public static class CustomPowerGen
                 {
                     string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
                     string count = e.AmountIsStack ? "(int)base.Amount" : Math.Max(1, (int)e.Amount).ToString();
-                    w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner, PileType.{e.SpawnTo}, {count}, base.Owner.Player);");
+                    // 用 SpawnToPile（白名单归一化）而不是原始的 SpawnTo：存档里万一是个老值 / 怪值也不会写出编不过的代码
+                    w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner, PileType.{e.SpawnToPile}, {count}, base.Owner.Player);");
                     break;
                 }
 

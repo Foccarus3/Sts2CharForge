@@ -34,7 +34,7 @@
 | 造成伤害 / 获得格挡 / 抽牌 / 获得能量 / 回复生命 / 失去生命 / 最大生命 / 获得金币 | 基础效果；其中**格挡 / 回复生命 / 失去生命 / 最大生命**也能作用在敌人身上（见下） |
 | 施加增益 / 减益 | 目标取自本体 Power 列表（运行时从你本机的解包工程读取） |
 | 结束回合 / 额外获得一回合 | `PlayerCmd.EndTurn` / 自动生成 `ForgeExtraTurnPower` |
-| 生成卡牌 | 参考静默猎手的剑舞·小刀：`CombatState.CreateCard<T>` + `CardPileCmd.AddGeneratedCardsToCombat`；可选生成的卡（本体卡或本模组的卡）与去处（手牌/抽牌堆/弃牌堆） |
+| 生成卡牌 | 参考静默猎手的剑舞·小刀：`CombatState.CreateCard<T>` + `CardPileCmd.AddGeneratedCardsToCombat`；可选生成的卡（本体卡或本模组的卡）与去处（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆） |
 | 消耗卡牌 | 参考铁甲战士的坚毅：可选「自己选」（`CardSelectCmd.FromHand` + `CardCmd.Exhaust`）或「随机」（`Rng.CombatCardSelection.NextItem`）；「从哪里选牌」可选 手牌 / 抽牌堆 / 弃牌堆 |
 | 丢弃卡牌 | 丢进弃牌堆（洗牌后会回来）：`CardCmd.Discard` + `CardSelectCmd.FromHandForDiscard` / `FromCombatPile`；「从哪里丢弃」可选 手牌 / 抽牌堆（见下文「丢弃卡牌」） |
 | 升级卡牌 | 从手牌 / 抽牌堆 / 弃牌堆挑 N 张升级（`CardCmd.Upgrade` + `UpgradeSelectionPrompt`，只列能升级的牌）；见下文「升级卡牌」 |
@@ -138,6 +138,20 @@
   自定义状态的触发器里走的是另一套生成链（那里 `base.Owner` 是 `Creature`），校验会拦下来并说明。
 - 带附加处理时生成器会自己 `CreateCard` 再逐张处理（`AddToCombatAndPreview` 内部拿不到那些卡实例），
   最后仍然走 `CardPileCmd.AddGeneratedCardToCombat` 进牌堆。
+
+### 「生成到」：手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆
+
+「生成卡牌」那一条效果编辑器里有「**生成到（生成卡牌用）**」下拉，四摞都是本体的**战斗内牌堆**
+（`PileType.IsCombatPile()` 认 Hand / Draw / Discard / Exhaust / Play），所以走同一套本体 API：
+
+| 生成到 | 生成的代码 | 游戏里的表现 |
+|---|---|---|
+| 手牌（默认） | `CardPileCmd.AddToCombatAndPreview<T>(…, PileType.Hand, N, …)` | 直接进手牌（本体会等一下，让你看清） |
+| 抽牌堆 | 同上，`PileType.Draw` | 进抽牌堆底，之后抽到 |
+| 弃牌堆 | 同上，`PileType.Discard` | 进弃牌堆，洗牌后会回到抽牌堆 |
+| **消耗牌堆** | 同上，`PileType.Exhaust` | **直接进消耗堆**：不经过手牌 / 抽牌堆（抽不到它），本场战斗结束也不会回来 —— 适合「生成出来就立刻消耗掉」、或者只是拿它触发「消耗时 / 消耗堆里的牌」这类效果、做个计数 |
+
+「生成到」的值是 `Hand / Draw / Discard / Exhaust`，界面上显示中文；回读（从工程恢复存档）四种都认得。
 
 ### 自定义描述（卡牌 / 遗物 / 药水）
 

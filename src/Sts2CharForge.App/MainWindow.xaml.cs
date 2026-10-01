@@ -371,7 +371,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public ObservableCollection<PowerEntry> AllCards { get; } = new ObservableCollection<PowerEntry>();
 
 
-	public IReadOnlyList<string> SpawnTargets => EffectCatalog.SpawnTargets;
+	public IReadOnlyList<SpawnTargetOption> SpawnTargets => EffectCatalog.SpawnTargets;
 
 	public IReadOnlyList<string> CardPickModes => EffectCatalog.CardPickModes;
 
@@ -10345,7 +10345,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("效果种类含「额外获得一回合」", Kinds.Any((EffectKindOption k) => k.Kind == "ExtraTurn"));
 		Check("效果种类含 生成/消耗/变化卡牌", Kinds.Any((EffectKindOption k) => k.Kind == "GenerateCard") && Kinds.Any((EffectKindOption k) => k.Kind == "ExhaustCard") && Kinds.Any((EffectKindOption k) => k.Kind == "TransformCard"), string.Join("·", Kinds.Select((EffectKindOption k) => k.Display)));
 		Check("目标卡目录非空（本体卡 + 自己的卡）", AllCards.Count > 0, $"{AllCards.Count} 张");
-		Check("生成到 / 选牌方式选项齐全", SpawnTargets.Count == 3 && CardPickModes.Count == 2, string.Join("/", SpawnTargets) + " ｜ " + string.Join("/", CardPickModes));
+		Check("生成到 / 选牌方式选项齐全",
+			SpawnTargets.Count == 4 && SpawnTargets.Any((SpawnTargetOption o) => o.Id == "Exhaust" && o.Display.Contains("消耗牌堆"))
+			&& CardPickModes.Count == 2,
+			string.Join("/", SpawnTargets.Select((SpawnTargetOption o) => o.Display)) + " ｜ " + string.Join("/", CardPickModes));
+		Check("「生成到」下拉显示的是中文（值还是 Hand/Draw/Discard/Exhaust）",
+			SpawnTargets.All((SpawnTargetOption o) => o.Display != o.Id) && SpawnTargets.Select((SpawnTargetOption o) => o.Id).SequenceEqual(new[] { "Hand", "Draw", "Discard", "Exhaust" }),
+			string.Join(",", SpawnTargets.Select((SpawnTargetOption o) => o.Id + "=" + o.Display)));
 		CardSpec cardSpec23 = (CardSpec)CardList.SelectedItem;
 		int count15 = cardSpec23.Effects.Count;
 		OnAddEffect(new Button
@@ -12354,6 +12360,67 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			{
 				Check("（跳过）遗物条件 M 框的双向绑定检查：没有可用的遗物 / M 框", ok: false,
 					RelicList.SelectedItem is null ? "没选中遗物" : "没有 M 框");
+			}
+		}
+		// ===== 本轮新增：「生成卡牌」的「生成到」增加「消耗牌堆」 =====
+		{
+			Check("「生成到」里有消耗牌堆（值 = Exhaust、界面显示中文）",
+				EffectCatalog.SpawnTargets.Any((SpawnTargetOption o) => o.Id == "Exhaust" && o.Display.Contains("消耗牌堆"))
+				&& EffectCatalog.SpawnTargetZh("Exhaust") == "消耗牌堆", EffectCatalog.SpawnTargetZh("Exhaust"));
+			CharacterProfile spawnProbe = ProfileFactory.Sample();
+			CardSpec exhaustGen = new CardSpec { Name = "自检生成到消耗堆", ClassName = "UiCheckSpawnExhaust", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			exhaustGen.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv", SpawnTo = "Exhaust" });
+			spawnProbe.Cards.Add(exhaustGen);
+			string exhaustSrc = CSharpCodeGen.CardSource(spawnProbe, exhaustGen, 0);
+			Check("生成到消耗牌堆 → 走本体那套 CardPileCmd + PileType.Exhaust（消耗牌堆也是战斗内牌堆，本体允许直接放）",
+				exhaustSrc.Contains("CardPileCmd.AddToCombatAndPreview<Shiv>(base.Owner.Creature, PileType.Exhaust, 2, base.Owner)"),
+				exhaustSrc.Contains("PileType.Exhaust") ? "对" : "没写 Exhaust");
+			Check("卡面描述写「放入消耗牌堆」", LocalizationGen.CardsJson(spawnProbe).Contains("放入消耗牌堆"), "描述对");
+			Check("校验器会提示「生成到消耗牌堆 = 不经过手牌 / 抽牌堆，抽不到它」",
+				ProfileValidator.Validate(spawnProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("直接进消耗牌堆")), "提示在");
+			// 带附加处理（升级 / 免费 / 仅本回合升级）的那条路径也要用 Exhaust
+			CardSpec exhaustGen2 = new CardSpec { Name = "自检生成到消耗堆2", ClassName = "UiCheckSpawnExhaust2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			exhaustGen2.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Exhaust", SpawnUpgraded = true });
+			spawnProbe.Cards.Add(exhaustGen2);
+			Check("带附加处理的那条路径也用 PileType.Exhaust",
+				CSharpCodeGen.CardSource(spawnProbe, exhaustGen2, 0).Contains("AddGeneratedCardToCombat(__gen, PileType.Exhaust, base.Owner)"), "对");
+			// 状态触发器里的「生成卡牌」也用归一化后的值
+			CharacterProfile spawnPowerProbe = ProfileFactory.Sample();
+			spawnPowerProbe.CustomPowers.Clear();
+			spawnPowerProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检生成状态", ClassName = "UiCheckSpawnPower", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Exhaust" } } } },
+			});
+			Check("（状态触发器里也一样）生成到消耗牌堆写的是 PileType.Exhaust",
+				CustomPowerGen.Source(spawnPowerProbe, spawnPowerProbe.CustomPowers[0], 0).Contains("PileType.Exhaust"), "对");
+			// 生成 → 回读：SpawnTo 要原样回来（两种写法都要认）
+			string spawnRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_spawn_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile spawnGenProbe = ProfileFactory.Sample();
+				spawnGenProbe.Paths.OutputDir = spawnRoot;
+				spawnGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				spawnGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec genA = new CardSpec { Name = "自检生成到消耗堆", ClassName = "UiCheckSpawnExhaust", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genA.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv", SpawnTo = "Exhaust" });
+				CardSpec genB = new CardSpec { Name = "自检生成到消耗堆2", ClassName = "UiCheckSpawnExhaust2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genB.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Exhaust", SpawnUpgraded = true });
+				spawnGenProbe.Cards.Add(genA);
+				spawnGenProbe.Cards.Add(genB);
+				Check("（准备）生成到消耗牌堆的存档能生成工程", ModGenerator.Generate(spawnGenProbe).Success, spawnRoot);
+				var spawnRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(spawnGenProbe));
+				var recGenA = spawnRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckSpawnExhaust");
+				var recGenB = spawnRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckSpawnExhaust2");
+				Check("回读：生成到消耗牌堆原样回来（带附加处理那种写法也认）",
+					recGenA is not null && recGenA.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard" && e.SpawnTo == "Exhaust")
+					&& recGenB is not null && recGenB.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard" && e.SpawnTo == "Exhaust"),
+					$"A={(recGenA is null ? "?" : recGenA.Effects.FirstOrDefault()?.SpawnTo)} B={(recGenB is null ? "?" : recGenB.Effects.FirstOrDefault()?.SpawnTo)}");
+				Check("回读没有认不出来的语句", !spawnRec.HasUnparsed, spawnRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(spawnRoot)) Directory.Delete(spawnRoot, true); } catch { }
 			}
 		}
 		Close();

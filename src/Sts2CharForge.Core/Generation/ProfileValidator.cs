@@ -1108,6 +1108,11 @@ public static class ProfileValidator
             // 生成 / 消耗 / 变化卡牌
             if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("警告", $"{owner} 的「生成卡牌」没填目标卡，将默认生成 Shiv（静默猎手的小刀）。"));
+            // 生成到「消耗牌堆」：说明一下它和另外三摞的区别（不参与抽牌，本场战斗结束也不会回来）
+            if (e.Kind == "GenerateCard" && e.SpawnToPile == "Exhaust")
+                issues.Add(new("提示", $"{owner} 的「生成卡牌」生成出来的牌会**直接进消耗牌堆**"
+                    + "（不经过手牌 / 抽牌堆，所以抽不到它；用来触发「消耗时」「消耗牌堆里的牌」这类效果，"
+                    + "或者只是做个计数）。"));
             if (e.Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" && e.Amount is < 1 or > 9)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（1~9）。"));
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))

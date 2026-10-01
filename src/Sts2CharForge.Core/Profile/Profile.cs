@@ -716,6 +716,9 @@ public sealed class EffectSpec : SpecBase
     {
         "Draw" => "Draw",
         "Discard" => "Discard",
+        // 消耗牌堆：也是本体的「战斗内牌堆」（PileType.IsCombatPile() 认它），
+        // 所以走同一套 CardPileCmd 就能把生成出来的牌直接放进去（不经过手牌 / 抽牌堆）。
+        "Exhaust" => "Exhaust",
         _ => "Hand",
     };
 
@@ -766,7 +769,7 @@ public sealed class EffectSpec : SpecBase
             // 生成 / 消耗 / 变化卡牌：把「哪张卡、放哪、怎么选」显示出来，方便一眼看出有没有填漏
             string extra = Kind switch
             {
-                "GenerateCard" => $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → {SpawnToPile}",
+                "GenerateCard" => $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}",
                 "TransformCard" => $" ｜ 变为 {(SpawnCardId is { Length: > 0 } tc ? tc : "随机卡")} ｜ {CardPickZh}",
                 "ExhaustCard" => $" ｜ {CardPickZh} ｜ 从{SelectPileZh}",
                 // 丢弃：把「丢哪一摞 / 怎么选」显示出来（两种牌堆的行为差别挺大，值得一眼看到）

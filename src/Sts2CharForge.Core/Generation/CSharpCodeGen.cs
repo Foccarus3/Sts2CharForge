@@ -2818,6 +2818,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         "Draw" => "抽牌堆",
         "Discard" => "弃牌堆",
+        "Exhaust" => "消耗牌堆",
         _ => "手牌",
     };
 
