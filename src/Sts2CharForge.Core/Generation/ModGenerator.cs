@@ -296,6 +296,13 @@ public static class ModGenerator
             Log("  已生成「给予自定义关键词」的运行时支持（注册表 + 卡面文字 / 悬停说明两个补丁）");
         }
 
+        // 「回合结束时自动打出」：挂一个记住那几张牌的内置 Power，回合结束时逐张 AutoPlay
+        if (CSharpCodeGen.UsesTurnEndPlay(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "TurnEndPlayPower.cs"), CSharpCodeGen.TurnEndPlayPowerSource(profile));
+            Log("  已生成「回合结束时自动打出」用的 Power（BeforeSideTurnEnd 里逐张 AutoPlay，然后自毁）");
+        }
+
         // 本体「缓慢」数值助手：只有配了「直接把缓慢设成 N%」才生成
         if (CSharpCodeGen.NeedsSlowPowerHelper(profile))
         {

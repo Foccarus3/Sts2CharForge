@@ -767,12 +767,14 @@ public static class ProjectRecovery
                         AmountIsStack = line.Contains("CET:Stack=1", StringComparison.Ordinal),
                         AmountIsX = line.Contains("CET:X=1", StringComparison.Ordinal),
                         Copies = Math.Max(1, (int)Dec(line, @"CET:Copies=(-?[\d.]+)", 1)),
+                        ReplayTimes = Math.Max(1, (int)Dec(line, @"CET:Replay=(-?[\d.]+)", 1)),
                     };
                     if (sc.Kind == "Outbreak") sc.TargetSide = "AllEnemies";
                     if (sc.Kind == "TimesUp") sc.TargetSide = "Enemy";
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
-                    if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard") NextVar(vars, ref varIdx, "Cards");
+                    if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay")
+                        NextVar(vars, ref varIdx, "Cards");
                     if (sc.Kind == "Outbreak") NextVar(vars, ref varIdx, "Power:PoisonPower");
                     // 「大限已至」的变量是计算三件套，ParseEffects 开头已经把 calcVars 摘出去了，不用认领
                     ApplyLoop(sc, frames);
@@ -902,7 +904,12 @@ public static class ProjectRecovery
                     // 「卡牌奖励」（非战斗胜利后那种）的实现行：识别行是 CreateForReward 那一行
                     // （所以 __rewardCards / __rewardOptions 那两行**不能**放进这个跳过名单）。
                     || line.Contains("__pickedReward", StringComparison.Ordinal)
-                    || line.Contains("__granted", StringComparison.Ordinal);
+                    || line.Contains("__granted", StringComparison.Ordinal)
+                    // 「重放卡牌」/「回合结束时自动打出」的实现行（识别行是各自的标记行）
+                    || line.Contains("__replayFrom", StringComparison.Ordinal)
+                    || line.Contains("__replayCard", StringComparison.Ordinal)
+                    || line.Contains("__tePicks", StringComparison.Ordinal)
+                    || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
                 if (scBody) continue;
                 skipSelfContainedBody = false;
             }
@@ -921,6 +928,11 @@ public static class ProjectRecovery
                 || line.StartsWith("CardModel? __pickCard = ", StringComparison.Ordinal)
                 || line.StartsWith("var __tempUp", StringComparison.Ordinal)
                 || line.Contains("__tempUp.Track(", StringComparison.Ordinal)
+                // 斩杀条件那两行辅助语句（效果本身在 DamageCmd.Attack 那一行认）
+                || line.StartsWith("__fatalOk = ", StringComparison.Ordinal)
+                || line.StartsWith("__lastAttack = null;", StringComparison.Ordinal)
+                || line.StartsWith("bool __fatalOk = false;", StringComparison.Ordinal)
+                || line.StartsWith("MegaCrit.Sts2.Core.Commands.Builders.AttackCommand? __lastAttack", StringComparison.Ordinal)
                 || line.Contains("AddGeneratedCardToCombat(__gen", StringComparison.Ordinal)
                 || line.Contains("__gen.SetToFree", StringComparison.Ordinal)
                 || line.StartsWith("CardCmd.Upgrade(__gen)", StringComparison.Ordinal)
@@ -976,9 +988,13 @@ public static class ProjectRecovery
                 continue;
             }
 
-            // 攻击链：多行
-            if (line.StartsWith("await DamageCmd.Attack(", StringComparison.Ordinal))
+            // 攻击链：多行。
+            // 带「斩杀」条件的卡把结果记进 __lastAttack（`__lastAttack = await DamageCmd.Attack(…)`），
+            // 所以两种前缀都要认。
+            if (line.StartsWith("await DamageCmd.Attack(", StringComparison.Ordinal)
+                || line.StartsWith("__lastAttack = await DamageCmd.Attack(", StringComparison.Ordinal))
             {
+                // 斩杀那条判据（__fatalOk = …）不是效果，跳过
                 var chain = new StringBuilder(line);
                 while (!line.EndsWith(";") && i < lines.Count)
                 {
@@ -1556,7 +1572,7 @@ public static class ProjectRecovery
                 {
                     Kind = globalTransform ? "TransformCardGlobal" : "TransformCard",
                     CardPick = chosenTransform ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? target = Match(line, @"CreateCard<(\w+)>");
@@ -1579,7 +1595,7 @@ public static class ProjectRecovery
                 {
                     Kind = "ExhaustCard",
                     CardPick = chosenExhaust ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenExhaust ? Match(body, @"ExhaustSelectionPrompt, (\d+)") : null;
@@ -1599,7 +1615,7 @@ public static class ProjectRecovery
                 {
                     Kind = "DiscardCard",
                     CardPick = chosenDiscard ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenDiscard ? Match(body, @"DiscardSelectionPrompt, (\d+)") : null;
@@ -1656,7 +1672,7 @@ public static class ProjectRecovery
             if (line.StartsWith("var __taken = ", StringComparison.Ordinal))
             {
                 string pile = Match(line, @"PileType\.(\w+)\.GetPile") ?? "Draw";
-                var e = new EffectSpec { Kind = pile == "Discard" ? "TakeFromDiscard" : "TakeFromDraw" };
+                var e = new EffectSpec { Kind = pile switch { "Discard" => "TakeFromDiscard", "Exhaust" => "TakeFromExhaust", _ => "TakeFromDraw" } };
                 string? n = Match(line, @"SelectionScreenPrompt, (\w+)\)");
                 if (n == "x") e.AmountIsX = true;
                 else if (n is not null) e.Amount = decimal.Parse(n, CultureInfo.InvariantCulture);
@@ -2313,6 +2329,9 @@ public static class ProjectRecovery
         var turn = Regex.Match(e, @"TurnNumber % ([\d.]+) == 0");
         if (turn.Success) return new ConditionSpec { Kind = "EveryNTurns", Amount = Num(turn.Groups[1].Value) };
         if (e.Contains("_condUsedThisCombat")) return new ConditionSpec { Kind = "OncePerCombat" };
+        // 斩杀（本体 Fatal）：生成的是
+        //   __lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled)
+        if (e.Contains("__lastAttack") && e.Contains("WasTargetKilled")) return new ConditionSpec { Kind = "Fatal" };
         return null;
     }
 
@@ -2950,7 +2969,7 @@ public static class ProjectRecovery
     {
         string? pile = Match(line, @"FromCombatPile\(choiceContext, PileType\.(\w+)")
             ?? Match(line, @"NextItem\(PileType\.(\w+)");
-        if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", "Deck" => "Deck", _ => "Hand" };
+        if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", "Exhaust" => "Exhaust", "Deck" => "Deck", _ => "Hand" };
         if (line.Contains("CardSelectCmd.FromHand", StringComparison.Ordinal)) return "Hand";
         return null;
     }

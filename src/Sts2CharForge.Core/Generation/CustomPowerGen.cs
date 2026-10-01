@@ -492,9 +492,12 @@ public static class CustomPowerGen
                 CSharpCodeGen.EmitGlobalCardEffectPublic(w, e, "base.Owner.Player", e.AmountIsStack, p);
                 break;
 
-            // 复制卡牌：状态里不支持（这个钩子里没有「玩家选牌」的上下文，本体也是卡牌 / 药水才做这件事）
+            // 复制卡牌 / 重放卡牌 / 回合结束时自动打出：状态里不支持
+            //（这几个都要「打出这张牌时选牌」的上下文，本体的状态钩子里没有）
             case "CopyCard":
-                w.Line("// 「复制卡牌」不支持放在自定义状态里 —— 请把它放到卡牌或药水上。已忽略。");
+            case "ReplayCard":
+            case "TurnEndPlay":
+                w.Line($"// 「{EffectCatalog.FindKind(e.Kind).Display}」不支持放在自定义状态里 —— 请把它放到卡牌或药水上。已忽略。");
                 break;
 
             case "CardReward":

@@ -9744,7 +9744,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			new EffectSpec { Kind = "ExhaustCard" }.SelectPile == "Hand"
 			&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileZh == "手牌"
 			&& CSharpCodeGen.CardSource(handProbe, handCard, 0).Contains("CardSelectCmd.FromHand(")
-			&& EffectCatalog.SelectPiles.Count == 3, $"选项 {EffectCatalog.SelectPiles.Count} 个");
+			&& EffectCatalog.SelectPiles.Count == 4, $"选项 {EffectCatalog.SelectPiles.Count} 个");
 		Check("「从哪里选牌」只有消耗 / 变化 / 丢弃 / 给予关键词用得到",
 			new EffectSpec { Kind = "ExhaustCard" }.UsesSelectPile && new EffectSpec { Kind = "TransformCard" }.UsesSelectPile
 			&& new EffectSpec { Kind = "DiscardCard" }.UsesSelectPile && new EffectSpec { Kind = "GiveKeyword" }.UsesSelectPile
@@ -9754,14 +9754,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 		// ===== 丢弃卡牌（用户要求的新效果：手牌 / 抽牌堆里丢 N 张进弃牌堆）=====
 		{
-			Check("效果种类里有「丢弃卡牌」（张数 1~9）",
+			Check("效果种类里有「丢弃卡牌」（张数 0~9，0 = 不生效）",
 				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "DiscardCard")
-				&& EffectCatalog.FindKind("DiscardCard").Min == 1m && EffectCatalog.FindKind("DiscardCard").Max == 9m,
+				&& EffectCatalog.FindKind("DiscardCard").Min == 0m && EffectCatalog.FindKind("DiscardCard").Max == 9m,
 				EffectCatalog.FindKind("DiscardCard").Display);
-			Check("丢弃只能选「手牌 / 抽牌堆」两摞（弃牌堆里的牌本来就在那儿，没有意义）",
-				new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Count == 2
-				&& new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.All((PileChoiceOption o) => o.Id is "Hand" or "Draw")
-				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileChoices.Count == 3,
+			Check("丢弃能选四摞（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 —— 用户要求把消耗牌堆加进来）",
+				new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Count == 4
+				&& new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.All((PileChoiceOption o) => o.Id is "Hand" or "Draw" or "Discard" or "Exhaust")
+				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileChoices.Count == 4,
 				string.Join("/", new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Select((PileChoiceOption o) => o.Id)));
 			Check("丢弃那一行的标题是「从哪里丢弃」（不是「从哪里选牌」）",
 				new EffectSpec { Kind = "DiscardCard" }.SelectPileLabel.Contains("丢弃")
@@ -12949,6 +12949,224 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			CardList.SelectedIndex = 0;
 			UpdateLayout();
 			Check("（收尾）自检加的那张复制卡已清掉", !Profile.Cards.Contains(copyUiCard));
+		}
+		// ===== 本轮新增：消耗牌堆可选中 + 数值 0 一律允许（= 不生效）+ 获得最大生命 + 重放 +
+		//              回合结束时自动打出 + 斩杀条件 =====
+		{
+			// ① 所有能选牌堆的地方都加上「消耗牌堆」（它和另外三摞一样是**战斗牌堆**）
+			Check("「从哪里选牌」四摞齐全：手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆",
+				EffectCatalog.SelectPiles.Count == 4
+				&& EffectCatalog.SelectPiles.Any((PileChoiceOption o) => o.Id == "Exhaust")
+				&& EffectCatalog.SelectPileZh("Exhaust") == "消耗牌堆"
+				&& new EffectSpec { SelectPile = "Exhaust" }.SelectPileZh == "消耗牌堆", "四摞");
+			Check("消耗 / 变化 / 升级 / 丢弃 / 复制 / 重放 / 给关键词 都能选消耗牌堆（四摞）",
+				new[] { "ExhaustCard", "TransformCard", "UpgradeCard", "DiscardCard", "CopyCard", "ReplayCard", "GiveKeyword" }
+					.All(k => new EffectSpec { Kind = k }.UsesSelectPile && new EffectSpec { Kind = k }.SelectPileChoices.Count == 4), "都行");
+			Check("效果种类里有「从消耗牌堆拿牌到手牌」（和另外两摞一个写法）",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "TakeFromExhaust"), "在");
+			CharacterProfile exProbe = ProfileFactory.Sample();
+			CardSpec exCard = new CardSpec { Name = "自检消耗堆", ClassName = "UiCheckExhaustPile", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			exCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Exhaust" });
+			exCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Exhaust" });
+			exCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Random", SelectPile = "Exhaust" });
+			exCard.Effects.Add(new EffectSpec { Kind = "TakeFromExhaust", Amount = 2m });
+			exProbe.Cards.Add(exCard);
+			string exSrc = CSharpCodeGen.CardSource(exProbe, exCard, 0);
+			Check("从消耗牌堆消耗 / 升级 / 丢弃：都是 PileType.Exhaust.GetPile(base.Owner)",
+				exSrc.Split(new[] { "PileType.Exhaust.GetPile(base.Owner)" }, StringSplitOptions.None).Length - 1 >= 3, "三处");
+			Check("「从消耗牌堆拿牌到手牌」走 FromCombatPile + Add(…, Hand)，描述也写「消耗牌堆」",
+				exSrc.Contains("CardSelectCmd.FromCombatPile(choiceContext, PileType.Exhaust.GetPile(base.Owner), base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 2))")
+				&& exSrc.Contains("if (__taken.Count > 0) await CardPileCmd.Add(__taken, PileType.Hand);")
+				&& LocalizationGen.CardsJson(exProbe).Contains("从消耗牌堆里选 2 张牌拿到手牌。"), "对");
+			Check("自己选消耗牌堆里的牌 → 也会生成 <卡>.selectionScreenPrompt（不然本体直接抛异常、游戏卡死）",
+				LocalizationGen.NeedsSelectPrompt(exCard.Effects)
+				&& LocalizationGen.CardsJson(exProbe).Contains("UI_CHECK_EXHAUST_PILE.selectionScreenPrompt")
+				&& LocalizationGen.SelectPromptText(new[] { new EffectSpec { Kind = "TakeFromExhaust" } }) == "从消耗牌堆选择要拿到手牌的牌", "有提示语");
+
+			// ② 数值一律允许填 0（0 = 不生效）
+			var badMin = EffectCatalog.EffectKinds.Where((EffectKindOption k) => k.Min > 0m).ToList();
+			Check("所有效果种类的数值范围都允许 0（用户要求：不能填 0 的也能填 0）",
+				badMin.Count == 0, badMin.Count == 0 ? "全部 ≤ 0" : string.Join("/", badMin.Select((EffectKindOption k) => $"{k.Kind}:{k.Min}")));
+			Check("0 值效果一律「不显示也不执行」（以前不能填 0 的那些也一样）",
+				new[] { "GenerateCard", "ExhaustCard", "TransformCard", "DiscardCard", "UpgradeCard", "Scry",
+						"CopyCard", "ReplayCard", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
+						"AddCardGlobal", "CardReward", "ApplyPower", "Draw" }
+					.All(k => CSharpCodeGen.IsInertZero(new EffectSpec { Kind = k, Amount = 0m })), "都算不生效");
+			Check("三种「0 有别的含义」的效果**不**算不生效（召唤伙伴用配置血量 / 给予关键词=这张牌自己 / 回合结束=这张牌自己）",
+				!CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "SummonPet", Amount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "GiveKeyword", Amount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TurnEndPlay", Amount = 0m }), "有含义");
+			CharacterProfile zeroProbe = ProfileFactory.Sample();
+			CardSpec zeroCard = new CardSpec { Name = "自检零值", ClassName = "UiCheckZero", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			zeroCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 0m, SpawnCardId = "Shiv" });
+			zeroCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 0m });
+			zeroCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m });
+			zeroProbe.Cards.Add(zeroCard);
+			string zeroSrc = CSharpCodeGen.CardSource(zeroProbe, zeroCard, 0);
+			Check("数值 0 的效果：描述里不写、代码里也不生成（其余效果照常）",
+				!LocalizationGen.CardsJson(zeroProbe).Contains("生成 0 张") && !zeroSrc.Contains("AddToCombatAndPreview")
+				&& !zeroSrc.Contains("PileType.Exhaust.GetPile") && zeroSrc.Contains("CreatureCmd.GainBlock"), "丢掉 0 值那条");
+			var zeroIssues = ProfileValidator.Validate(zeroProbe);
+			Check("校验器对 0 值给的是「不生效」提示，而不是「超出范围」错误",
+				!zeroIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("超出允许范围"))
+				&& zeroIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("不显示、也不会执行")), "提示在");
+
+			// ③ 「获得最大生命」（用户找的就是这个名字）
+			Check("效果种类里的「获得最大生命（负数 = 失去）」（用户报过找不到）",
+				EffectCatalog.FindKind("MaxHp").Display.Contains("获得最大生命")
+				&& EffectCatalog.FindKind("MaxHp").Min < 0m, EffectCatalog.FindKind("MaxHp").Display);
+
+			// ④ 重放卡牌（本体 CardModel.BaseReplayCount）
+			Check("效果种类里有「重放卡牌」，而且只有它显示「重放次数」那一栏",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "ReplayCard")
+				&& new EffectSpec { Kind = "ReplayCard" }.ShowReplayTimes
+				&& !new EffectSpec { Kind = "CopyCard" }.ShowReplayTimes, "在");
+			CharacterProfile rpProbe = ProfileFactory.Sample();
+			CardSpec rpCard = new CardSpec { Name = "自检重放", ClassName = "UiCheckReplay", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			rpCard.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, ReplayTimes = 2, CardPick = "Chosen", SelectPile = "Hand" });
+			CardSpec rpRandCard = new CardSpec { Name = "自检重放随机", ClassName = "UiCheckReplayRand", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			rpRandCard.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 2m, ReplayTimes = 1, CardPick = "Random", SelectPile = "Exhaust" });
+			rpProbe.Cards.Add(rpCard);
+			rpProbe.Cards.Add(rpRandCard);
+			string rpSrc = CSharpCodeGen.CardSource(rpProbe, rpCard, 0);
+			string rpRandSrc = CSharpCodeGen.CardSource(rpProbe, rpRandCard, 0);
+			Check("重放（自己选）：选出来的每张 BaseReplayCount += N，并给一次预览（本体 HiddenGem 的做法）",
+				rpSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 1)")
+				&& rpSrc.Contains("__replayCard.BaseReplayCount += 2;")
+				&& rpSrc.Contains("CardCmd.Preview(__replayCard);"), "对");
+			Check("重放（随机）：从那一摞（这里是消耗牌堆）随机拿 N 张再加",
+				rpRandSrc.Contains("TakeRandom(PileType.Exhaust.GetPile(base.Owner).Cards, 2, base.Owner.RunState.Rng.CombatCardSelection)")
+				&& rpRandSrc.Contains("__replayCard.BaseReplayCount += 1;"), "对");
+			Check("重放的卡面描述写清「额外打出 N 次」",
+				LocalizationGen.CardsJson(rpProbe).Contains("本场战斗内额外打出 2 次"), "描述对");
+			Check("校验器说清「重放只能给别的牌加」（自己这张牌的重放次数是本体的 OnPlay 之前算好的）",
+				ProfileValidator.Validate(rpProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("只能给别的牌")), "有说明");
+			CharacterProfile rpPowerProbe = ProfileFactory.Sample();
+			rpPowerProbe.CustomPowers.Clear();
+			rpPowerProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检重放状态", ClassName = "UiCheckReplayPower", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "ReplayCard", Amount = 1m, ReplayTimes = 1 } } } },
+			});
+			Check("自定义状态里放重放 → 校验器给警告（生成时留一行说明）",
+				ProfileValidator.Validate(rpPowerProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("重放卡牌")), "有警告");
+
+			// ⑤ 回合结束时自动打出
+			Check("效果种类里有「回合结束时自动打出」，数值 0 有含义（不是「不生效」）",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "TurnEndPlay")
+				&& EffectCatalog.FindKind("TurnEndPlay").Min == 0m
+				&& new EffectSpec { Kind = "TurnEndPlay" }.IsTurnEndPlay
+				&& new EffectSpec { Kind = "TurnEndPlay" }.ShowTurnEndPlay, "在");
+			CharacterProfile teProbe = ProfileFactory.Sample();
+			CardSpec teSelf = new CardSpec { Name = "自检回合末自己", ClassName = "UiCheckTurnEndSelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			teSelf.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 0m });
+			CardSpec tePick = new CardSpec { Name = "自检回合末选牌", ClassName = "UiCheckTurnEndPick", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			tePick.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 2m, CardPick = "Chosen", SelectPile = "Exhaust" });
+			CardSpec teRand = new CardSpec { Name = "自检回合末随机", ClassName = "UiCheckTurnEndRand", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			teRand.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Random", SelectPile = "Hand" });
+			teProbe.Cards.Add(teSelf);
+			teProbe.Cards.Add(tePick);
+			teProbe.Cards.Add(teRand);
+			string teSelfSrc = CSharpCodeGen.CardSource(teProbe, teSelf, 0);
+			string tePickSrc = CSharpCodeGen.CardSource(teProbe, tePick, 0);
+			string teRandSrc = CSharpCodeGen.CardSource(teProbe, teRand, 0);
+			Check("数值 0：挂上内置 Power 并把**这张牌自己**交给它（本回合结束时再打一次）",
+				teSelfSrc.Contains(".Create(new CardModel[] { this })")
+				&& teSelfSrc.Contains("ForgeTurnEndPlayPower.Create"), "对");
+			Check("数值 ≥ 1 + 自己选：先选好（走本体选牌界面），再把选出来的牌交给那个 Power",
+				tePickSrc.Contains("CardSelectCmd.FromCombatPile(choiceContext, PileType.Exhaust.GetPile(base.Owner), base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 2))")
+				&& tePickSrc.Contains("if (__tePicks.Count > 0) await PowerCmd.Apply(choiceContext,")
+				&& tePickSrc.Contains("ForgeTurnEndPlayPower.Create(__tePicks)"), "对");
+			Check("数值 ≥ 1 + 随机：直接从那一摞随机拿 N 张",
+				teRandSrc.Contains("TakeRandom(PileType.Hand.GetPile(base.Owner).Cards, 1,"), "随机对");
+			Check("那个内置 Power 在 BeforeSideTurnEnd 里逐张 CardCmd.AutoPlay（那时本体还没结算手牌）",
+				CSharpCodeGen.UsesTurnEndPlay(teProbe)
+				&& CSharpCodeGen.TurnEndPlayPowerSource(teProbe).Contains("public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
+				&& CSharpCodeGen.TurnEndPlayPowerSource(teProbe).Contains("await CardCmd.AutoPlay(choiceContext, __c, null);")
+				&& CSharpCodeGen.TurnEndPlayPowerSource(teProbe).Contains("protected override bool IsVisibleInternal => false;"), "对");
+			Check("描述：0 写「回合结束时自动打出这张牌」；≥1 写「…回合结束时自动打出它们」",
+				LocalizationGen.CardsJson(teProbe).Contains("回合结束时自动打出这张牌。")
+				&& LocalizationGen.CardsJson(teProbe).Contains("回合结束时自动打出它们。"), "描述对");
+			CharacterProfile teRelicProbe = ProfileFactory.Sample();
+			teRelicProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检回合末遗物", ClassName = "UiCheckTurnEndRelic", Rarity = "Common", Trigger = "CombatStart",
+				Effects = { new EffectSpec { Kind = "TurnEndPlay", Amount = 0m } },
+			});
+			Check("遗物上填 0（= 这张牌自己）会被校验器拦住（遗物没有「自己这张牌」）",
+				ProfileValidator.Validate(teRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只有卡牌才有「自己」"))
+				&& CSharpCodeGen.RelicSource(teRelicProbe, teRelicProbe.Relics[^1], 0).Contains("只有卡牌才有「自己」"), "拦住了");
+
+			// ⑥ 条件选项「斩杀」（本体 Fatal）
+			Check("条件选项里有「斩杀（这一次攻击杀死了目标）」，而且只给卡牌用",
+				EffectCatalog.Conditions.Any((ConditionOption o) => o.Id == "Fatal" && o.ForCard && !o.ForRelic), "在");
+			CharacterProfile faProbe = ProfileFactory.Sample();
+			CardSpec faCard = new CardSpec { Name = "自检斩杀", ClassName = "UiCheckFatal", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			faCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 10m, TargetSide = "Enemy" });
+			faCard.Effects.Add(new EffectSpec { Kind = "Gold", Amount = 20m, Condition = new ConditionSpec { Kind = "Fatal" } });
+			faProbe.Cards.Add(faCard);
+			string faSrc = CSharpCodeGen.CardSource(faProbe, faCard, 0);
+			Check("斩杀：OnPlay 开头声明两个变量（上一条攻击 / 打之前记下的「目标允许触发斩杀」）",
+				faSrc.Contains("MegaCrit.Sts2.Core.Commands.Builders.AttackCommand? __lastAttack = null;")
+				&& faSrc.Contains("bool __fatalOk = false;"), "声明了");
+			Check("斩杀：打之前先算 shouldTriggerFatal（本体 Feed / HandOfGreed 的顺序），并把这次攻击记进 __lastAttack",
+				faSrc.Contains("__fatalOk = cardPlay.Target is null || cardPlay.Target.Powers.All(pm => pm.ShouldOwnerDeathTriggerFatal());")
+				&& faSrc.Contains("__lastAttack = await DamageCmd.Attack(base.DynamicVars.Damage.BaseValue)"), "对");
+			Check("斩杀：判据就是本体那套（Results 里 WasTargetKilled）",
+				faSrc.Contains("if (__lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled))"), "对");
+			Check("斩杀：卡牌会挂上本体的「斩杀」悬停说明（StaticHoverTip.Fatal）",
+				faSrc.Contains("HoverTipFactory.Static(MegaCrit.Sts2.Core.HoverTips.StaticHoverTip.Fatal)"), "有说明");
+			Check("斩杀：卡面描述照本体的写法写「[gold]斩杀[/gold]时，…」", LocalizationGen.CardsJson(faProbe).Contains("[gold]斩杀[/gold]时，获得"), "描述对");
+			CharacterProfile faBadProbe = ProfileFactory.Sample();
+			CardSpec faBad = new CardSpec { Name = "自检斩杀无伤害", ClassName = "UiCheckFatalBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			faBad.Effects.Add(new EffectSpec { Kind = "Gold", Amount = 20m, Condition = new ConditionSpec { Kind = "Fatal" } });
+			faBadProbe.Cards.Add(faBad);
+			Check("斩杀：前面没有造成伤害的效果 → 报错拦住（不然永远不成立）",
+				ProfileValidator.Validate(faBadProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("前面没有任何造成伤害的效果")), "拦住了");
+			CharacterProfile faRelicProbe = ProfileFactory.Sample();
+			faRelicProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检斩杀遗物", ClassName = "UiCheckFatalRelic", Rarity = "Common", Trigger = "CombatStart",
+				Effects = { new EffectSpec { Kind = "Damage", Amount = 5m, Condition = new ConditionSpec { Kind = "Fatal" } } },
+			});
+			Check("斩杀：遗物上用 → 报错（只能用在卡牌上，本体那几个都是攻击牌）",
+				ProfileValidator.Validate(faRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能用在**卡牌**上")), "拦住了");
+
+			// 生成 → 回读：本轮六件事的字段都要原样回来
+			string roundRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_r30_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile r30Probe = ProfileFactory.Sample();
+				r30Probe.Paths.OutputDir = roundRoot;
+				r30Probe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				r30Probe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec r30Card = new CardSpec { Name = "自检往返", ClassName = "UiCheckRound30", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				r30Card.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 10m, TargetSide = "Enemy" });
+				r30Card.Effects.Add(new EffectSpec { Kind = "MaxHp", Amount = 3m, Condition = new ConditionSpec { Kind = "Fatal" } });
+				r30Card.Effects.Add(new EffectSpec { Kind = "TakeFromExhaust", Amount = 2m });
+				r30Card.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, ReplayTimes = 3, CardPick = "Random", SelectPile = "Exhaust" });
+				r30Card.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 2m, CardPick = "Chosen", SelectPile = "Draw" });
+				r30Card.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 0m, SpawnCardId = "Shiv" });
+				r30Probe.Cards.Add(r30Card);
+				Check("（准备）本轮六件事的存档能生成工程", ModGenerator.Generate(r30Probe).Success, roundRoot);
+				var r30Rec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(r30Probe));
+				var rec30 = r30Rec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckRound30");
+				Check("回读：消耗牌堆 / 重放次数 / 回合结束时自动打出（0 值那条被丢掉）都原样回来",
+					rec30 is not null
+					&& rec30.Effects.Any((EffectSpec e) => e.Kind == "TakeFromExhaust" && e.Amount == 2m)
+					&& rec30.Effects.Any((EffectSpec e) => e.Kind == "ReplayCard" && e.ReplayTimes == 3 && e.SelectPile == "Exhaust")
+					&& rec30.Effects.Any((EffectSpec e) => e.Kind == "TurnEndPlay" && e.Amount == 2m && e.SelectPile == "Draw" && e.CardPick == "Chosen")
+					&& !rec30.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard"),
+					rec30 is null ? "(没回读出来)" : string.Join(" / ", rec30.Effects.Select((EffectSpec e) => $"{e.Kind} {e.Amount}")));
+				Check("回读：「斩杀」条件认回 Fatal",
+					rec30 is not null && rec30.Effects.Any((EffectSpec e) => e.Condition is { Kind: "Fatal" }),
+					rec30 is null ? "?" : string.Join(" / ", rec30.Effects.Select((EffectSpec e) => e.Kind + ":" + (e.Condition?.Kind ?? "-"))));
+				Check("回读没有认不出来的语句", !r30Rec.HasUnparsed, r30Rec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(roundRoot)) Directory.Delete(roundRoot, true); } catch { }
+			}
 		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），

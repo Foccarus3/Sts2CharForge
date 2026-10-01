@@ -676,6 +676,78 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
 - 「获得卡牌奖励」放在这里（或其它非「战斗胜利后」的时机）是**当场弹 N 选一**、选中即进牌组；
   挂在「战斗胜利后」才是「结算界面多一条奖励」。
 
+## 牌堆：四种都能选（含消耗牌堆）
+
+「从哪里选牌」有**四摞**：手牌 / 抽牌堆 / 弃牌堆 / **消耗牌堆**。
+四摞都是本体的**战斗牌堆**（`PileType.IsCombatPile()` 认 Hand / Draw / Discard / Exhaust / Play），
+所以走同一套 API：手牌 = `CardSelectCmd.FromHand`，其余三摞 = `CardSelectCmd.FromCombatPile(context, PileType.X.GetPile(player), …)`。
+
+| 效果 | 从消耗牌堆选会怎样 |
+|---|---|
+| 消耗卡牌 | 没有变化（那摞里的牌本来就已经消耗了，校验器会给一句提示） |
+| 变化卡牌 / 升级卡牌 | 把消耗掉的牌变成别的牌 / 升级（升级只影响本场战斗的这一份） |
+| 丢弃卡牌 | 把消耗掉的牌挪回**弃牌堆**（洗牌后会回到抽牌堆） |
+| 复制卡牌 | 克隆一张已经消耗的牌（本体 `CreateClone` 只要求原牌在战斗牌堆里，消耗堆算） |
+| 重放卡牌 | 让消耗掉的牌获得「重放 N 次」（它下次被打出时才体现） |
+| 给予卡牌关键词 | 给消耗掉的牌加关键词 |
+| **从消耗牌堆拿牌到手牌** | 专门的一条效果（和「从抽牌堆 / 弃牌堆拿牌到手牌」并列）：把消耗掉的牌**拿回来** |
+
+## 数值填 0 = 这条效果「不存在」
+
+所有效果种类的数值都允许填 **0**，填 0 就是**这条效果不生效**：卡面描述里不写这一行、
+生成的代码里也整条不执行（不会被力量 / 敏捷 / 状态加成）。以前有些种类（生成卡牌 / 消耗卡牌 /
+施加状态…）的下限是 1，现在全部放宽到 0。
+
+三个例外 —— 它们的 0 有别的含义，照样生效：
+- **召唤伙伴**：0 = 用「召唤物」页里配置的血量；
+- **给予卡牌关键词**：0 = 这张牌自己；
+- **回合结束时自动打出**：0 = 这张牌自己。
+
+## 回合结束时自动打出
+
+效果种类里的「**回合结束时自动打出**」：
+
+- **数值 0 = 这张牌自己**：打出它之后挂一个内置状态，本回合结束时**再自动打出它一次**；
+- **数值 ≥ 1**：打出它时先让你（或随机）从「从哪里选牌」那一摞里挑好 N 张，
+  本回合结束时把这 N 张逐张自动打出去（**不弹选牌界面** —— 选择发生在打出这张牌的时候）；
+- 实现：生成 `<角色>ForgeTurnEndPlayPower`（不可见、每次挂一个实例、记住那几张牌），
+  它在 `BeforeSideTurnEnd` 里逐张 `CardCmd.AutoPlay(choiceContext, card, null)` 然后自毁。
+  挑这个钩子是因为本体的回合结束流程是
+  `Hook.BeforeSideTurnEnd`（CombatManager.cs:1559）→ `DoTurnEnd`（:1570，处理手牌里的
+  `OnTurnEndInHand` 卡 + 弃手牌）—— 跑在前面，自动打出的牌会正常离开手牌，不会和弃牌流程抢同一张牌。
+- 只能用在卡牌 / 遗物 / 药水上；数值 0（这张牌自己）只有**卡牌**能用（遗物 / 药水没有「自己这张牌」）。
+
+## 重放卡牌
+
+效果种类里的「**重放卡牌**」：让选中的牌获得「重放 N 次」——本体机制是 `CardModel.BaseReplayCount`
+（打出时 `GeneratePlayCount = GetEnchantedReplayCount() + 1`，所以**重放 1 次 = 打出去时连着打 2 次**）。
+本体「转化 Transfigure / 隐藏宝石 HiddenGem / 剑圣 SwordSagePower / 士兵炖菜 SoldiersStew」
+做的都是同一句 `card.BaseReplayCount += N`（HiddenGem 还会 `CardCmd.Preview` 一下）。
+
+- 数值 = 从牌堆里选几张（四摞都能选），效果底下的「**重放次数**」= 每一张额外打出几次；
+- 只能给**别的**牌加 —— 自己这张牌的重放次数在本体里是 `OnPlay` **之前**就算好的
+  （`GeneratePlayCount` 在 `OnPlayWrapper` 里、进 `OnPlay` 循环之前调用），改它没有作用（校验器会提示）。
+
+## 条件选项「斩杀」（本体 Fatal）
+
+本体那几张「[gold]斩杀[/gold]时，…」的牌（「进食 FEED / 贪婪之手 HAND_OF_GREED / 狩猎 THE_HUNT」）
+用的判据是这样的：
+
+```csharp
+bool shouldTriggerFatal = cardPlay.Target.Powers.All(p => p.ShouldOwnerDeathTriggerFatal());   // 打之前算
+AttackCommand attackCommand = await DamageCmd.Attack(...).FromCard(this, cardPlay).Targeting(cardPlay.Target).Execute(choiceContext);
+if (shouldTriggerFatal && attackCommand.Results.SelectMany(r => r).Any(r => r.WasTargetKilled)) { … }
+```
+
+条件里选了「**斩杀（这一次攻击杀死了目标）**」就生成这套：
+打伤害那一条会把 `AttackCommand` 记进 `__lastAttack`（并先算好 `__fatalOk`），
+条件那一条判 `__lastAttack.Results…Any(r => r.WasTargetKilled)`。
+
+- 只能用在**卡牌**上，而且要写在「造成伤害」那一条效果**后面**（它判的是上一条攻击的结果；校验器会拦住）；
+- 卡面描述照本体写成「[gold]斩杀[/gold]时，…」，并自动挂上本体的「斩杀」悬停说明（`StaticHoverTip.Fatal`）；
+- 小怪 / 会复活的目标打不死（本体 `MinionPower` / `ReattachPower` 让 `ShouldOwnerDeathTriggerFatal()` 返回 false），
+  这一点也照着本体判了。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

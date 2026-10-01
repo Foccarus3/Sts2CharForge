@@ -266,6 +266,10 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(ShowSpawnPickHint));
                 Raise(nameof(ShowSpawnChoice));   // 「多选1」那一行的显隐绑的就是它
                 Raise(nameof(ShowCopies));        // 「复制的份数」那一行的显隐绑的就是它
+                Raise(nameof(ShowReplayTimes));   // 「重放次数」那一行的显隐绑的就是它
+                Raise(nameof(ShowTurnEndPlay));   // 「回合结束时自动打出」那几行的显隐绑的就是它
+                Raise(nameof(IsTurnEndPlay));
+                Raise(nameof(ShowTurnEndPlay));   // 「回合结束时自动打出」那几行的显隐绑的就是它
                 Raise(nameof(IsSlowPower));
                 Raise(nameof(Display));
             }
@@ -358,6 +362,33 @@ public sealed class EffectSpec : SpecBase
     /// <summary>「复制的份数」那个输入框要不要显示。</summary>
     [JsonIgnore]
     public bool ShowCopies => Kind == "CopyCard";
+
+    // ===== 重放卡牌：额外打出几次 =====
+    private int _replayTimes = 1;
+
+    /// <summary>
+    /// 「重放卡牌」的**重放次数**：数值（<see cref="Amount"/>）= 从牌堆里选几张，
+    /// 这个 = 每张**额外打出几次**（本体 <c>CardModel.BaseReplayCount</c>：打出时
+    /// <c>GeneratePlayCount = GetEnchantedReplayCount() + 1</c>，所以「重放 1」= 一共打 2 次）。
+    /// 本体「转化 Transfigure / 隐藏宝石 HiddenGem」就是 <c>card.BaseReplayCount += N</c>。
+    /// </summary>
+    public int ReplayTimes
+    {
+        get => _replayTimes;
+        set { if (Set(ref _replayTimes, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>「重放次数」那个输入框要不要显示。</summary>
+    [JsonIgnore]
+    public bool ShowReplayTimes => Kind == "ReplayCard";
+
+    /// <summary>是不是「回合结束时自动打出」（数值 0 = 这张牌自己；≥ 1 = 从牌堆里选 N 张）。</summary>
+    [JsonIgnore]
+    public bool IsTurnEndPlay => Kind == "TurnEndPlay";
+
+    /// <summary>「回合结束时自动打出」的说明那一行要不要显示（跟着效果种类走）。</summary>
+    [JsonIgnore]
+    public bool ShowTurnEndPlay => Kind == "TurnEndPlay";
 
     /// <summary>生成 / 变化的卡**直接升级**（本场战斗内一直有效）。</summary>
     public bool SpawnUpgraded
@@ -530,12 +561,14 @@ public sealed class EffectSpec : SpecBase
     {
         "Draw" => "抽牌堆",
         "Discard" => "弃牌堆",
+        "Exhaust" => "消耗牌堆",
         _ => "手牌",
     };
 
-    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 丢弃 / 升级 / 给予关键词用得到）。</summary>
+    /// <summary>这条效果要不要显示「从哪里选牌」（消耗 / 变化 / 丢弃 / 升级 / 给予关键词 / 复制 / 重放 / 回合结束用得到）。</summary>
     [JsonIgnore]
-    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" or "UpgradeCard" or "GiveKeyword";
+    public bool UsesSelectPile => Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" or "UpgradeCard"
+        or "GiveKeyword" or "CopyCard" or "ReplayCard" or "TurnEndPlay";
 
     /// <summary>
     /// 这一条效果的可选牌堆（界面下拉的候选）。

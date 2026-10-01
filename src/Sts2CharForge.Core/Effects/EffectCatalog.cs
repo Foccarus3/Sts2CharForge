@@ -582,16 +582,16 @@ public static class EffectCatalog
         // 非正数什么都不做，所以负数必须改走 PlayerCmd.LoseEnergy，见 CSharpCodeGen.IsNegativeAmount）。
         new EffectKindOption("Energy",  "获得能量（负数 = 失去）", "点", -10, 10, true,  false),
         // 透支：现在拿 N 点能量，下回合少 N 点（本体的 GainEnergy 会忽略负数，所以走我们生成的负债 Power）
-        new EffectKindOption("OverdraftEnergy", "透支能量（下回合少）", "点", 1, 10, true, false),
+        new EffectKindOption("OverdraftEnergy", "透支能量（下回合少）", "点", 0, 10, true, false),
         new EffectKindOption("Heal",    "回复生命",     "点", -999, 999, false, true),
         new EffectKindOption("HpLoss",  "失去生命",     "点", 0,    999, false, true),
-        new EffectKindOption("MaxHp",   "最大生命",     "点", -999, 999, false, true),
+        new EffectKindOption("MaxHp",   "获得最大生命（负数 = 失去）", "点", -999, 999, false, true),
         // 负数 = 扣除 N 枚金币（同上：GainGold 对非正数直接 return，负数走 PlayerCmd.LoseGold，会夹到 0）
         new EffectKindOption("Gold",    "获得金币（负数 = 扣除）", "枚", -999, 999, false, false),
             // 额外资源量（本体的星星计数器）：正数 = 获得、负数 = 卡牌费用（花费）。
         // 支持「下回合生效」：正数走本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars + 自毁）。
         new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, true, false),
-        new EffectKindOption("ApplyPower", "施加增益/减益", "层", 1, 99, true, true),
+        new EffectKindOption("ApplyPower", "施加增益/减益", "层", 0, 99, true, true),
         // 击晕：本体的「击晕」不是状态（Power），而是**怪物意图**（StunIntent）——
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
         // 我们照它生成：被打晕的敌人这一回合什么都不做。
@@ -603,37 +603,56 @@ public static class EffectCatalog
         // 临时增益：本回合内 +X 层，回合结束时把这次加的 X 层撤掉（本体 FlexPotion 的
         // TemporaryStrengthPower 就是这套 —— 生成的 <角色>ForgeTemp<状态> 也是照它写的）。
         // 数值 = 层数（不按回合计时），作用对象沿用「施加增益/减益」那一套（自己 / 指定敌人 / 全体敌人）。
-        new EffectKindOption("TempPower", "临时增益（本回合 +X，回合结束消失）", "层", 1, 99, false, true),
+        new EffectKindOption("TempPower", "临时增益（本回合 +X，回合结束消失）", "层", 0, 99, false, true),
         new EffectKindOption("EndTurn",   "结束回合",       "—", 0, 0, false, false),
         new EffectKindOption("ExtraTurn", "额外获得一回合", "—", 0, 0, false, false),
-        new EffectKindOption("GenerateCard",  "生成卡牌", "张", 1, 10, false, false),
-        new EffectKindOption("ExhaustCard",   "消耗卡牌", "张", 1, 9,  false, false),
+        new EffectKindOption("GenerateCard",  "生成卡牌", "张", 0, 10, false, false),
+        new EffectKindOption("ExhaustCard",   "消耗卡牌", "张", 0, 9,  false, false),
         // 丢弃卡牌：把手牌 / 抽牌堆里的 N 张牌丢进弃牌堆（不是「消耗」—— 它们还会被洗回来）。
         // 走本体的 CardCmd.Discard（内部 CardPileCmd.Add(card, 弃牌堆) + 派发 AfterCardDiscarded 钩子），
         // 所以「奇巧」这类跟弃牌有关的东西照常触发。可丢的牌堆只有手牌 / 抽牌堆：
         // 弃牌堆里的牌本来就在那儿，丢它没有意义（界面上那一行也只给这两项）。
-        new EffectKindOption("DiscardCard",   "丢弃卡牌", "张", 1, 9,  false, false),
-        new EffectKindOption("TransformCard", "变化卡牌", "张", 1, 9,  false, false),
+        new EffectKindOption("DiscardCard",   "丢弃卡牌", "张", 0, 9,  false, false),
+        new EffectKindOption("TransformCard", "变化卡牌", "张", 0, 9,  false, false),
         // 升级卡牌：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级（本体「武装 Armaments」的升级部分 + 自选牌堆）。
         // 生成的是 CardCmd.Upgrade（本体自己也是这么升级卡牌的：Apotheosis / Armaments / Whetstone）。
-        new EffectKindOption("UpgradeCard",   "升级卡牌", "张", 1, 9,  false, false),
+        new EffectKindOption("UpgradeCard",   "升级卡牌", "张", 0, 9,  false, false),
         // 复制卡牌（用户要求的新效果）：数值 = 从牌堆里**选几张**，下面「复制的份数」= 每一张复制几份。
         // 走的是本体「二刀流 DualWield」的做法（那个界面就是「选 1 张、复制 N 份」）：
         // CardSelectCmd.FromHand / FromCombatPile 选出原牌 → card.CreateClone() → CardPileCmd.AddGeneratedCardToCombat(手牌)。
         // 本体 CreateClone 要求那张牌在**战斗牌堆**里（不在战斗牌堆会直接抛异常），
         // 所以「从哪里选牌」只给 手牌 / 抽牌堆 / 弃牌堆 这三摞。
-        new EffectKindOption("CopyCard",      "复制卡牌", "张", 1, 5,  false, false),
+        new EffectKindOption("CopyCard",      "复制卡牌", "张", 0, 5,  false, false),
+        // 重放卡牌（用户要求的新效果）：给选中的牌加上「重放 N 次」——
+        // 本体的机制是 CardModel.BaseReplayCount（打出时 GeneratePlayCount = GetEnchantedReplayCount() + 1，
+        // 所以「重放 2」= 这张牌打出去时连着打 3 次）。本体「转化 Transfigure / 隐藏宝石 HiddenGem /
+        // 剑圣 SwordSagePower / 士兵炖菜 SoldiersStew」都是 `card.BaseReplayCount += N` 这一句。
+        // 数值 = 从牌堆里选几张（自己选 / 随机），效果底下的「重放次数」= 每张额外打出几次。
+        new EffectKindOption("ReplayCard",    "重放卡牌（让选中的牌本场战斗内额外打出 N 次）", "张", 0, 5,  false, false),
+        // 回合结束时自动打出（用户要求的新效果）：
+        //   · 数值 0 = **这张牌自己**：打出它之后，本回合结束时再自动打出它一次；
+        //   · 数值 ≥ 1 = 打出这张牌时先让你（或随机）从「从哪里选牌」那一摞里挑 N 张，
+        //     本回合结束时把这 N 张自动打出去。
+        // 实现：挂一个生成的内置 Power（<角色>ForgeTurnEndPlayPower，不可见），
+        // 它在 BeforeSideTurnEnd 里对记住的那几张牌调 CardCmd.AutoPlay ——
+        // BeforeSideTurnEnd 跑在「手牌结算（DoTurnEnd：先 OnTurnEndInHand、再丢弃手牌）」之前，
+        // 所以自动打出的牌会正常离开手牌，不会和回合结束的弃牌流程打架。
+        new EffectKindOption("TurnEndPlay",   "回合结束时自动打出（数值 0 = 这张牌自己）", "张", 0, 5,  false, false),
         // 预见（一代观者的 Scry）：看抽牌堆顶的 N 张牌，把其中任意张丢进弃牌堆（本体没有这个机制，自己拼）。
-        new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 1, 9, false, false),
+        new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 0, 9, false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
-        new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
-        new EffectKindOption("TakeFromDiscard", "从弃牌堆拿牌到手牌（自己选）", "张", 1, 5, false, false),
+        new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
+        new EffectKindOption("TakeFromDiscard", "从弃牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
+        // 从消耗牌堆拿牌到手牌（用户要求：消耗牌堆也能选牌）。
+        // 消耗牌堆和另外两摞一样是**战斗牌堆**（PileType.IsCombatPile() 认 Exhaust），
+        // 所以走同一个本体 API：CardSelectCmd.FromCombatPile(PileType.Exhaust.GetPile(...)) + CardPileCmd.Add(…, Hand)。
+        new EffectKindOption("TakeFromExhaust", "从消耗牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
         // ===== 单体/群体「成吨」的两种特殊牌（用户点名的本体效果）=====
         // 毒性爆发（本体 Outbreak，静默猎手稀有技能）：给**所有敌人**上 N 层中毒，然后立刻把中毒触发一次。
         // 走的是本体 PowerCmd.Apply<PoisonPower> + PoisonPower.Trigger()（那一下伤害 dealer 是 null，
         // 所以不会算成「你造成的伤害」、也不吃力量）。
-        new EffectKindOption("Outbreak", "毒性爆发（全体上毒并立即触发）", "层", 1, 99, false, false),
+        new EffectKindOption("Outbreak", "毒性爆发（全体上毒并立即触发）", "层", 0, 99, false, false),
         // 大限已至（本体 Time's Up，亡灵缚者稀有攻击）：造成等于**目标身上灾厄层数**的伤害。
         // 本体用 CalculatedDamageVar + WithMultiplier(target => target.GetPowerAmount<DoomPower>())，
         // 数值那一栏没有意义（伤害完全由目标的灾厄决定），所以范围是 0~0。
@@ -646,17 +665,17 @@ public static class EffectCatalog
         // 「全局」= 直接动玩家的牌组（PileType.Deck），不是战斗里的手牌 / 抽牌堆。
         // 参考本体：篝火「烹饪」用 CardSelectCmd.FromDeckForRemoval + CardPileCmd.RemoveFromDeck 删牌；
         // 事件 / 遗物往牌组塞牌用 owner.RunState.CreateCard(...) + CardPileCmd.Add(card, PileType.Deck)。
-        new EffectKindOption("AddCardGlobal",       "获得卡牌（全局：加进牌组）",     "张", 1, 5, false, false),
-        new EffectKindOption("TransformCardGlobal", "变化卡牌（全局：改牌组里的牌）", "张", 1, 5, false, false),
-        new EffectKindOption("RemoveCardGlobal",    "删除卡牌（全局：从牌组删牌）",   "张", 1, 5, false, false),
+        new EffectKindOption("AddCardGlobal",       "获得卡牌（全局：加进牌组）",     "张", 0, 5, false, false),
+        new EffectKindOption("TransformCardGlobal", "变化卡牌（全局：改牌组里的牌）", "张", 0, 5, false, false),
+        new EffectKindOption("RemoveCardGlobal",    "删除卡牌（全局：从牌组删牌）",   "张", 0, 5, false, false),
         // 升级卡牌（全局）：升级**牌组**里的牌（永久，跨战斗）。本体「香盒 Pomander / 混沌之香」那种。
         // 和上面那个「升级卡牌」的区别：那个升级的是战斗里的手牌 / 抽牌堆 / 弃牌堆（只影响本场战斗），
         // 这个直接改玩家的牌组（写进存档，和「获得卡牌（全局）」同一档）。
-        new EffectKindOption("UpgradeCardGlobal",   "升级卡牌（全局：升级牌组里的牌）", "张", 1, 5, false, false),
+        new EffectKindOption("UpgradeCardGlobal",   "升级卡牌（全局：升级牌组里的牌）", "张", 0, 5, false, false),
         // 获得卡牌奖励：按本体的奖励卡生成规则抽 N 张（用你角色自己的卡池），让玩家选一张加进牌组。
         // 挂在「战斗胜利后」（状态 / 遗物）时走本体的战斗奖励：room.AddExtraReward(new CardReward(...))，
         // 打赢后结算界面多一条「选一张卡」；挂在其它时机（战斗中）就是当场弹选牌界面。
-        new EffectKindOption("CardReward",          "获得卡牌奖励（N 选一）", "张", 1, 5, false, false),
+        new EffectKindOption("CardReward",          "获得卡牌奖励（N 选一）", "张", 0, 5, false, false),
         // ===== 召唤伙伴（完全不需要 Harmony 补丁）=====
         // 走本体的通用宠物 API（PlayerCmd.AddPet<T>，Byrdpip / Pael's Legion 就是这么用的），
         // 所以只要有一个 MonsterModel 子类就能上场。用法见「召唤物」页（列表 + 详情）。
@@ -681,12 +700,12 @@ public static class EffectCatalog
         new EffectKindOption("PetHeal",     "治疗伙伴",     "点", 0, 999, false, false),
         new EffectKindOption("PetLoseHp",   "伙伴失去生命", "点", 0, 999, false, false),
         // 注意：本体的 GainMaxHp 内部最后会 Heal 等量 → 当前生命也跟着涨（卡面描述里写明了）。
-        new EffectKindOption("PetGainMaxHp", "伙伴最大生命 +N", "点", 1, 999, false, false),
+        new EffectKindOption("PetGainMaxHp", "伙伴最大生命 +N", "点", 0, 999, false, false),
         // 牺牲伙伴：收益类型（格挡 / 伤害）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
         // 生成顺序不能反：**先算收益、再杀宠物**（宠物死了就取不到生命值）。
         new EffectKindOption("PetSacrifice", "牺牲伙伴换收益", "点", 0, 999, false, true),
         // 给伙伴施加状态：复用现有的「增益 / 减益」下拉（PowerId）+ 层数（Amount）。
-        new EffectKindOption("PetApplyPower", "给伙伴施加状态", "层", 1, 99, false, false),
+        new EffectKindOption("PetApplyPower", "给伙伴施加状态", "层", 0, 99, false, false),
         // 替主人承伤 开 / 关：用我们自己的共用守卫类 ForgePetGuardianPower（不是本体的 DieForYouPower）。
         new EffectKindOption("PetGuardOn",  "伙伴替主人承伤（开）", "—", 0, 0, false, false),
         new EffectKindOption("PetGuardOff", "取消伙伴替主人承伤（关）", "—", 0, 0, false, false),
@@ -748,32 +767,33 @@ public static class EffectCatalog
     };
 
     /// <summary>
-    /// 「消耗卡牌 / 变化卡牌」从哪一摞牌里选（界面上那个下拉）。
-    /// 手牌 = 本体 CardSelectCmd.FromHand；抽牌堆 / 弃牌堆 = 本体 CardSelectCmd.FromCombatPile。
+    /// 「消耗卡牌 / 变化卡牌 / 升级卡牌 / 丢弃卡牌 / 复制卡牌 / 给予关键词」从哪一摞牌里选（界面上那个下拉）。
+    /// 手牌 = 本体 CardSelectCmd.FromHand；其余三摞 = 本体 CardSelectCmd.FromCombatPile。
+    /// **消耗牌堆也算战斗牌堆**（本体的 <c>PileType.IsCombatPile()</c> 认 Hand / Draw / Discard / Exhaust / Play），
+    /// 所以四摞都能选牌（用户要求把消耗牌堆也加进来：可以从消耗牌堆里把牌拿回来 / 复制 / 给关键词…）。
     /// </summary>
     public static IReadOnlyList<PileChoiceOption> SelectPiles { get; } = new[]
     {
         new PileChoiceOption("Hand", "手牌（本体默认）"),
         new PileChoiceOption("Draw", "抽牌堆（本体「充能 / 净化」那种）"),
         new PileChoiceOption("Discard", "弃牌堆（本体「全息影像 / 头槌 / 挖掘」那种）"),
+        new PileChoiceOption("Exhaust", "消耗牌堆（本场战斗已经被消耗掉的牌）"),
     };
 
     public static string SelectPileZh(string? v) => v switch
     {
         "Draw" => "抽牌堆",
         "Discard" => "弃牌堆",
+        "Exhaust" => "消耗牌堆",
         _ => "手牌",
     };
 
     /// <summary>
-    /// 「丢弃卡牌」能丢的那几摞牌：只有手牌 / 抽牌堆。
-    /// 为什么没有弃牌堆：那摞里的牌本来就已经被丢了，再「丢弃」一次没有任何意义。
+    /// 「丢弃卡牌」能丢的那几摞牌：手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆。
+    /// 从消耗牌堆丢弃 = 把已经消耗掉的牌挪回弃牌堆（洗牌后会回到抽牌堆）—— 是一条有用的效果
+    /// （用户要求把消耗牌堆加进来），所以不再限制成只有前两摞。
     /// </summary>
-    public static IReadOnlyList<PileChoiceOption> DiscardPiles { get; } = new[]
-    {
-        new PileChoiceOption("Hand", "手牌（本体默认）"),
-        new PileChoiceOption("Draw", "抽牌堆（把抽牌堆里的牌丢进弃牌堆）"),
-    };
+    public static IReadOnlyList<PileChoiceOption> DiscardPiles { get; } = SelectPiles;
 
     /// <summary>「消耗卡牌 / 变化卡牌」的选牌方式。</summary>
     public static IReadOnlyList<string> CardPickModes { get; } = new[] { "Random", "Chosen" };
@@ -947,6 +967,17 @@ public static class EffectCatalog
             + "填负数 = 反向（拥有的额外资源量**少于** N 点）。", true, false, false, "拥有的额外资源量少于 N 点", true),
         new ConditionOption("NoHurtThisTurn", "本回合还没受到过未格挡伤害", true, true, false, false,
             "本体「Spite」的做法：查本回合是否吃到过没被格挡的伤害。", true),
+        // 斩杀（用户要求）：本体先古卡 / 稀有卡里那句「[gold]斩杀[/gold]时，…」。
+        // 本体源码里就是这三件事（Feed / HandOfGreed / TheHunt 一模一样）：
+        //   ① 打之前记下 `cardPlay.Target.Powers.All(p => p.ShouldOwnerDeathTriggerFatal())`
+        //      （小怪 / 会复活的目标返回 false —— 本体 MinionPower / ReattachPower）；
+        //   ② 伤害走 AttackCommand，然后 `attackCommand.Results.SelectMany(r => r).Any(r => r.WasTargetKilled)`；
+        //   ③ 两个都成立才算「斩杀」。
+        // 所以这条条件只能给卡牌用，而且要写在**造成伤害那一条效果之后**（它判的是上一条攻击的结果）。
+        new ConditionOption("Fatal", "斩杀（这一次攻击杀死了目标）", true, false, false, false,
+            "本体「斩杀 Fatal」：这一次攻击**真的把目标打死了**才算满足 —— 生成的是本体那套判据"
+            + "（AttackCommand.Results 里 WasTargetKilled，且目标的 Power 都允许触发斩杀，小怪 / 会复活的打不死不算）。"
+            + "只能用在卡牌上，而且要写在「造成伤害」那一条效果**后面**（它看的是上一条攻击的结果）。", true),
         // 抽牌堆被洗过牌（用户要求：像本体先古遗物「大～抱抱 BiiigHug」那样）。
         // 本体**没有**任何可查询的「洗过牌」状态（没有事件、没有历史记录、没有计数器），
         // 大~抱抱自己是靠 `override AfterShuffle` 在洗牌那一刻反应的。所以这里分两种给：

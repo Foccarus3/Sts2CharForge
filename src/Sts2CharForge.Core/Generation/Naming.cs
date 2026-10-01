@@ -118,6 +118,12 @@ public sealed record Naming(
     public string TempKeywordPowerClass => CharClass + "ForgeTempKeywordPower";
 
     /// <summary>
+    /// 「回合结束时自动打出」用的 Power：记住「本回合结束时要把哪几张牌自动打出去」
+    /// （数值 0 = 这张牌自己），在 BeforeSideTurnEnd 里逐张 <c>CardCmd.AutoPlay</c> 之后自毁。
+    /// </summary>
+    public string TurnEndPlayPowerClass => CharClass + "ForgeTurnEndPlayPower";
+
+    /// <summary>
     /// 「强化指定卡牌」（像本体「精准」）用的 Power：
     /// <c>&lt;角色&gt;ForgeBoost&lt;目标卡类名&gt;&lt;Damage|Block&gt;Power</c>。
     /// 它挂在自己身上，只给**那一张卡**的伤害 / 格挡加 N。

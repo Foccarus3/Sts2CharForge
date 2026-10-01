@@ -240,6 +240,25 @@
                                    Text="（「数值」= 从牌堆里选几张牌，这里 = 每一张复制几份。例：数值 1 + 份数 2 = 选一张牌复制两份。本体「二刀流 DualWield」就是「选 1 张、复制 N 份」）"/>
                     </StackPanel>
 
+                    <!-- 重放卡牌专用：重放次数（数值 = 选几张，这个 = 每张额外打出几次）。只有选这个效果时才出现。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowReplayTimes, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">重放次数</TextBlock>
+                        <TextBox Width="70" Style="{StaticResource Field}"
+                                 Text="{Binding ReplayTimes, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="次 / 张"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（「数值」= 从牌堆里选几张牌，这里 = 每一张额外打出几次。重放 1 次 = 打出去时连着打 2 次，本体 CardModel.BaseReplayCount 就是这么算的。只能给别的牌加，对自己这张牌没用）"/>
+                    </StackPanel>
+
+                    <!-- 回合结束时自动打出专用：数值 0 = 这张牌自己；填 1 以上 = 先选好 N 张、回合结束时打出去。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowTurnEndPlay, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">回合结束时</TextBlock>
+                        <TextBlock VerticalAlignment="Center" Foreground="#444" FontSize="11" TextWrapping="Wrap"
+                                   Text="数值 0 = 打出这张牌后，本回合结束时再自动打出它一次；填 1 以上 = 先按「选牌方式 / 从哪里选牌」挑好 N 张，本回合结束时逐张自动打出它们（不弹选牌界面）。注意：填 0 时只有卡牌能用「这张牌自己」"/>
+                    </StackPanel>
+
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->

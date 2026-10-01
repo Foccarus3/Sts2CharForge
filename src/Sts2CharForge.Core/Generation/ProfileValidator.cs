@@ -156,6 +156,15 @@ public static class ProfileValidator
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条效果是「{e.Kind}」，"
                             + "这种效果需要卡牌上下文（选牌 / 结束回合），状态触发器里用不了。"
                             + $"能用的是：{string.Join(" / ", PowerTriggers.SupportedEffectKinds)}。"));
+                    // 复制 / 重放 / 回合结束时自动打出，以及「斩杀」条件：都要「打出某张牌」的上下文，
+                    // 状态触发器里没有 —— 生成时会留一行「已忽略」，这里也说清楚（不静默丢）。
+                    if (e.Kind is "CopyCard" or "ReplayCard" or "TurnEndPlay")
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
+                            + "在**自定义状态**里用不了（它要「打出这张牌时选牌」的上下文）—— 生成时会被忽略，"
+                            + "请把它放到卡牌 / 遗物 / 药水上。"));
+                    if (e.Condition is { Kind: "Fatal" })
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条用了「斩杀」条件，但它只能用在**卡牌**上 —— "
+                            + "请把这条效果放到攻击牌上（判的是「这一次攻击有没有把目标打死」）。"));
                     // 「按范围随机 / 生成出来的卡怎么处理」：状态触发器里走的是另一套生成链（base.Owner 是 Creature），
                     // 只支持「指定卡」那种写法 —— 说清楚，别让用户以为配了没生效（用户在自定义状态里配了会被静默忽略）
                     if (e.UsesSpawnOptions && (e.IsSpawnRandom || e.HasSpawnModifier))
@@ -342,6 +351,30 @@ public static class ProfileValidator
             if (c.Effects.Any(e => e.AmountIsX && e.UpgradeAmount != 0))
                 issues.Add(new("警告", $"卡牌「{c.Name}」有一条「数值 = X」的效果填了「升级增量」：X 的数值不能直接升级（会被忽略），"
                     + "要升级请用卡牌上的「升级后 X +1」。"));
+            // 斩杀条件：判的是「上一条攻击有没有把目标打死」，所以要写在造成伤害那一条**后面**，
+            // 而且只能写在单条效果上（写在整张牌的条件上时，包裹的那段代码跑在伤害之前，永远不成立）。
+            if (c.Condition is { Kind: "Fatal" })
+                issues.Add(new("错误", $"卡牌「{c.Name}」把「斩杀」当成了**整张牌**的条件：整张牌的条件是在效果跑之前判的，"
+                    + "那时伤害还没发生、「斩杀」永远不成立。请把「斩杀」写到**造成伤害那一条效果后面**的那条效果上"
+                    + "（本体 Feed / HandOfGreed 就是「造成伤害 → 斩杀时…」）。"));
+            bool fatalWithoutDamage = false;
+            foreach (var e in c.Effects)
+            {
+                if (e.Condition is not { Kind: "Fatal" }) continue;
+                // 这条效果**前面**有没有「造成伤害」（卡牌自己的攻击 / 对敌人失去生命都算）
+                int idx = c.Effects.IndexOf(e);
+                bool hasDamageBefore = c.Effects.Take(idx).Any(x => x.Kind == "Damage"
+                    || (x.Kind == "HpLoss" && x.TargetSide is "Enemy" or "AllEnemies" or "RandomEnemies"));
+                if (!hasDamageBefore)
+                {
+                    fatalWithoutDamage = true;
+                    break;
+                }
+            }
+            if (fatalWithoutDamage)
+                issues.Add(new("错误", $"卡牌「{c.Name}」有一条效果勾了「斩杀」，但它**前面没有任何造成伤害的效果** —— "
+                    + "「斩杀」判的是「上一条攻击有没有把目标打死」，前面没有伤害就永远不成立。"
+                    + "请在这条效果前面加一条「造成伤害」，或者去掉这个条件。"));
         }
 
         // 卡牌配色
@@ -612,6 +645,7 @@ public static class ProfileValidator
         if (CSharpCodeGen.UsesEnergyNextTurnDebt(p)) mine.Add(n.EnergyNextTurnDebtPowerClass);
         if (CSharpCodeGen.UsesTempUpgrade(p)) mine.Add(n.TempUpgradePowerClass);
         if (CSharpCodeGen.UsesTempKeywordPower(p)) mine.Add(n.TempKeywordPowerClass);
+        if (CSharpCodeGen.UsesTurnEndPlay(p)) mine.Add(n.TurnEndPlayPowerClass);
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p)) mine.Add(n.DelayedPowerClass(e));
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p)) mine.Add(n.TempPowerClass(e));
         if (PetGen.IsActive(p))
@@ -1127,7 +1161,7 @@ public static class ProfileValidator
             // 「从哪里选牌」只有消耗 / 变化卡牌用得到；别的效果上填了会被忽略（界面里那一行也不显示）
             if (!e.UsesSelectPile && e.SelectPile != "Hand")
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」填了「从哪里选牌 = {e.SelectPileZh}」，"
-                    + "但这个选项只有「消耗卡牌 / 变化卡牌」用得到 —— 这条会被忽略。"));
+                    + "但这个选项只有「消耗卡牌 / 变化卡牌 / 升级卡牌 / 丢弃卡牌 / 给予卡牌关键词 / 复制卡牌 / 重放卡牌 / 回合结束时自动打出」用得到 —— 这条会被忽略。"));
             // 「从牌堆拿牌到手牌」：本体「搜寻 / 全息影像 / 挖掘」那种
             if (e.Kind is "TakeFromDraw" or "TakeFromDiscard")
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」会弹一个选牌界面，"
@@ -1163,8 +1197,13 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{owner} 的「生成卡牌」生成出来的牌会**直接进消耗牌堆**"
                     + "（不经过手牌 / 抽牌堆，所以抽不到它；用来触发「消耗时」「消耗牌堆里的牌」这类效果，"
                     + "或者只是做个计数）。"));
-            if (e.Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" && e.Amount is < 1 or > 9)
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（1~9）。"));
+            // 张数范围：0 也允许（用户要求：所有效果种类都能填 0，0 = 不生效，由 IsInertZero 整条丢掉）
+            if (e.Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" && e.Amount is < 0 or > 9)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（0~9，0 = 这条效果不生效）。"));
+            // 从消耗牌堆「消耗」：那摞里的牌本来就已经消耗掉了，再消耗一次没有意义（不拦，只提示）
+            if (e.Kind == "ExhaustCard" && e.SelectPile == "Exhaust")
+                issues.Add(new("提示", $"{owner} 的「消耗卡牌」选的是**消耗牌堆**：那摞里的牌本来就已经被消耗了，"
+                    + "再「消耗」一次没有任何变化（想要「把消耗牌堆里的牌拿回来」请用「从消耗牌堆拿牌到手牌」）。"));
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
 
@@ -1203,7 +1242,56 @@ public static class ProfileValidator
                     + "（指定卡的话几张候选都是同一张，没意义）—— 想用多选1 请把取卡方式改成「按范围随机」。"));
             }
 
-            // ===== 复制卡牌（用户要求的新效果）=====
+            // ===== 重放卡牌（用户要求的新效果）=====
+            if (e.Kind == "ReplayCard")
+            {
+                if (e.Amount is < 1m or > 5m)
+                    issues.Add(new("错误", $"{owner} 的「重放卡牌」张数 {e.Amount:0.##} 超出范围（1~5）。"));
+                if (e.ReplayTimes is < 1 or > 20)
+                    issues.Add(new("错误", $"{owner} 的「重放卡牌」重放次数 {e.ReplayTimes} 超出范围（1~20）。"));
+                issues.Add(new("提示", $"{owner} 的「重放卡牌」会{EffectCatalog.CardPickZh(e.CardPick)}"
+                    + $"从{EffectCatalog.SelectPileZh(e.SelectPile)}里拿 {e.Amount:0.##} 张牌，让它们本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次"
+                    + "（本体 CardModel.BaseReplayCount：重放 N 次 = 打出去时连着打 N+1 次）。"
+                    + "本体「转化 Transfigure / 隐藏宝石 HiddenGem / 剑圣 SwordSagePower」都是这一句。"
+                    + "**只能给别的牌**加 —— 自己这张牌的重放次数在本体里是 OnPlay 之前就算好的，改它没有作用。"));
+                if (ctx == "Power")
+                    issues.Add(new("警告", $"{owner} 的「重放卡牌」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌 / 遗物 / 药水上。"));
+            }
+
+            // ===== 回合结束时自动打出（用户要求的新效果）=====
+            if (e.Kind == "TurnEndPlay")
+            {
+                if (e.Amount is < 0m or > 5m)
+                    issues.Add(new("错误", $"{owner} 的「回合结束时自动打出」数值 {e.Amount:0.##} 超出范围（0~5）。"));
+                if (e.Amount <= 0m && !e.AmountIsX)
+                {
+                    if (ctx is not ("Card" or "Curse"))
+                        issues.Add(new("错误", $"{owner} 的「回合结束时自动打出」数值 0 = **这张牌自己**，只有卡牌才有「自己」—— "
+                            + "遗物 / 药水 / 自定义状态请填 1 以上（从牌堆里选 N 张）。"));
+                    else
+                        issues.Add(new("提示", $"{owner} 的「回合结束时自动打出」数值 0 = **这张牌自己**："
+                            + "打出它之后，本回合结束时再自动打出它一次（自动打出时目标由本体随机挑）。"));
+                }
+                else
+                {
+                    issues.Add(new("提示", $"{owner} 的「回合结束时自动打出」会先{EffectCatalog.CardPickZh(e.CardPick)}"
+                        + $"从{EffectCatalog.SelectPileZh(e.SelectPile)}里选 {e.Amount:0.##} 张牌，"
+                        + "**本回合结束时**逐张自动打出（先选好再打：回合结束那一刻不弹选牌界面）。"
+                        + "生成的 <角色>ForgeTurnEndPlayPower 挂在 BeforeSideTurnEnd —— 那个时机在本体「结算手牌」之前，"
+                        + "所以自动打出的牌会正常离开手牌。"));
+                }
+                if (ctx == "Power")
+                    issues.Add(new("警告", $"{owner} 的「回合结束时自动打出」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌 / 遗物 / 药水上。"));
+            }
+
+            // ===== 斩杀条件（本体 Fatal）=====
+            foreach (var ce in new[] { e }.Where(x => x.Condition is { Kind: "Fatal" }))
+            {
+                if (ctx is not ("Card" or "Curse"))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「斩杀」条件，但它只能用在**卡牌**上"
+                        + "（本体 Feed / HandOfGreed / TheHunt 都是攻击牌：判的是「这一次攻击有没有把目标打死」）。"));
+            }
+
             if (e.Kind == "CopyCard")
             {
                 if (e.Amount is < 1m or > 5m)
@@ -1218,8 +1306,8 @@ public static class ProfileValidator
                         + "生成时会被忽略 —— 请把它放到卡牌或药水上。"));
                 if (ctx == "Power")
                     issues.Add(new("警告", $"{owner} 的「复制卡牌」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌或药水上。"));
-                if (e.SelectPile == "Deck" || e.SelectPile is not ("Hand" or "Draw" or "Discard"))
-                    issues.Add(new("错误", $"{owner} 的「复制卡牌」只能从手牌 / 抽牌堆 / 弃牌堆里复制"
+                if (e.SelectPile == "Deck" || e.SelectPile is not ("Hand" or "Draw" or "Discard" or "Exhaust"))
+                    issues.Add(new("错误", $"{owner} 的「复制卡牌」只能从手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆里复制"
                         + "（本体 CreateClone 要求原牌在战斗牌堆里，牌组里的牌不能直接克隆）。"));
             }
             // 丢弃卡牌：丢进弃牌堆（洗牌后会回来，不是「消耗」）；丢哪一摞行为差得挺多，说明清楚

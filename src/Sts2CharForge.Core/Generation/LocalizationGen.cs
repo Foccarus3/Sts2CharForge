@@ -178,12 +178,16 @@ public static class LocalizationGen
     /// 所以凡是生成代码里出现 <c>base.SelectionScreenPrompt</c> 的效果种类，都必须列在这里。
     /// </summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
-        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "Scry"
+        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry"
             || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen")
             // 「生成卡牌 + 按范围随机 + 多选1（候选 > 3 张时走网格选牌界面）」会读 base.SelectionScreenPrompt；
             // 另外「复制卡牌」自己选牌也要（CardSelectCmd.FromHand 那条）。
             || (e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m)
-            || (e.Kind == "CopyCard" && e.CardPick == "Chosen"));
+            || (e.Kind == "CopyCard" && e.CardPick == "Chosen")
+            // 「重放」自己选牌也一样（走 CardSelectCmd.FromHand / FromCombatPile）
+            || (e.Kind == "ReplayCard" && e.CardPick == "Chosen")
+            // 「回合结束时自动打出」填了 1 以上 + 自己选：选牌是**打出这张牌时**做的，读的是它的提示语
+            || (e.Kind == "TurnEndPlay" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen"));
 
     /// <summary>选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。</summary>
     public static string SelectPromptText(IEnumerable<EffectSpec> effects)
@@ -191,6 +195,8 @@ public static class LocalizationGen
         var list = effects as IList<EffectSpec> ?? effects.ToList();
         if (list.Any(e => e.Kind == "Scry")) return "选择要丢进弃牌堆的牌";
         if (list.Any(e => e.Kind == "CopyCard" && e.CardPick == "Chosen")) return "选择要复制的牌";
+        if (list.Any(e => e.Kind == "ReplayCard" && e.CardPick == "Chosen")) return "选择要重放的牌";
+        if (list.Any(e => e.Kind == "TurnEndPlay" && e.Amount > 0 && e.CardPick == "Chosen")) return "选择回合结束时自动打出的牌";
         // 多选1 的提示要跟着候选张数走（「在 3 张中选一张」）
         var choice = list.FirstOrDefault(e => e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m);
         if (choice is not null)
@@ -198,9 +204,14 @@ public static class LocalizationGen
             int m = Math.Max(2, (int)choice.SpawnChoice);
             return $"从 {m} 张中选一张";
         }
-        var e = list.FirstOrDefault(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard");
+        var e = list.FirstOrDefault(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust");
         if (e is null) return "选择要拿到手牌的牌";
-        string pile = e.Kind == "TakeFromDiscard" ? "弃牌堆" : "抽牌堆";
+        string pile = e.Kind switch
+        {
+            "TakeFromDiscard" => "弃牌堆",
+            "TakeFromExhaust" => "消耗牌堆",
+            _ => "抽牌堆",
+        };
         return $"从{pile}选择要拿到手牌的牌";
     }
 
@@ -476,10 +487,14 @@ public static class LocalizationGen
             if (CSharpCodeGen.IsInertZero(e)) continue;
             var one = new StringBuilder();
             string text = DescribeEffect(e, p, potionTarget, isCard, starCostIsX, varMap);
+            // 斩杀条件写在**这句效果的最前面**（本体 FEED「造成…伤害。\n[gold]斩杀[/gold]时，永久获得…最大生命值。」），
+            // 不跟别的条件一样单独占一行 —— 那样读起来像「另一条效果」。
+            if (text.Length > 0 && e.Condition is { Kind: "Fatal" })
+                text = EffectConditionInline(e.Condition, p) + text;
             if (text.Length > 0) one.Append(text).Append('\n');
             // 条件选项是「每条效果各自一份」的，所以条件说明紧跟在它管的那条效果后面
-            // （药水不支持条件，所以药水不写）
-            if (potionTarget is null)
+            // （药水不支持条件，所以药水不写；斩杀那句已经在上面拼到最前面了）
+            if (potionTarget is null && e.Condition is not { Kind: "Fatal" })
             {
                 string cond = EffectConditionInline(e.Condition, p);
                 if (cond.Length > 0) one.Append(cond).Append('\n');
@@ -503,8 +518,14 @@ public static class LocalizationGen
         ConditionInline(condition, isCard ? (condition?.UnplayableWhenUnmet == true ? "（不满足时无法打出）" : "（不满足时这张牌的效果不生效）") : "（不满足时不触发）", p);
 
     /// <summary>每条效果自己的条件：紧跟在那条效果的描述后面。</summary>
-    private static string EffectConditionInline(ConditionSpec? condition, CharacterProfile? p = null) =>
-        ConditionInline(condition, "（不满足时这条效果不生效）", p);
+    private static string EffectConditionInline(ConditionSpec? condition, CharacterProfile? p = null)
+    {
+        // 斩杀（本体 Fatal）：照本体那几张牌的写法写成「[gold]斩杀[/gold]时，…」
+        // （本体 FEED「[gold]斩杀[/gold]时，永久获得…」/ HAND_OF_GREED「[gold]斩杀[/gold]时，获得…金币」），
+        // 而不是通用的「条件：…（不满足时这条效果不生效）」——那句话在攻击牌上读起来很怪。
+        if (condition is { Kind: "Fatal" }) return "[gold]斩杀[/gold]时，";
+        return ConditionInline(condition, "（不满足时这条效果不生效）", p);
+    }
 
     private static string ConditionInline(ConditionSpec? condition, string tail, CharacterProfile? p = null)
     {
@@ -725,6 +746,21 @@ public static class LocalizationGen
                     ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
                     : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
                 + (Math.Max(1, e.Copies) == 1 ? "（每张复制一份到手牌）。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）。"),
+            // 重放卡牌：本体 CardModel.BaseReplayCount（重放 1 = 打出去时连着打 2 次）
+            "ReplayCard" => (e.SelectPile == "Hand"
+                    ? $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的 {var} 张手牌"
+                    : $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌")
+                + (Math.Max(1, e.ReplayTimes) == 1
+                    ? "本场战斗内额外打出一次。"
+                    : $"本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次。"),
+            // 回合结束时自动打出：0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去。
+            // 这里**写数字字面量**（不用 {Cards:diff()}）：这一条效果不声明动态变量
+            // （数值 0 有特殊含义，不能当成「0 = 不生效」），写成占位符的话游戏里替换不出来。
+            "TurnEndPlay" => e.Amount <= 0m && !e.AmountIsX
+                ? "回合结束时自动打出这张牌。"
+                : (e.SelectPile == "Hand"
+                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们。"
+                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们。"),
             // 毒性爆发 / 大限已至：照本体两张牌的原文写
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
@@ -735,6 +771,7 @@ public static class LocalizationGen
             // 本体「搜寻 / 全息影像 / 挖掘」那种：从牌堆里挑牌拿到手牌
             "TakeFromDraw" => $"从抽牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
             "TakeFromDiscard" => $"从弃牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
+            "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
             "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
                 ? $"{repeat}{when}{target}施加{PowerNameFor(p, e.PowerId)}（受到伤害 +{e.SlowPercentEffective}%）。"
