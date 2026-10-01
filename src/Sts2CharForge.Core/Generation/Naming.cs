@@ -56,6 +56,9 @@ public sealed record Naming(
     /// <summary>「仅本回合升级」用的 Power 类名（兜底用当前角色）。</summary>
     public static string AmbientTempUpgradePowerClass => _currentCharClass + "ForgeTempUpgradePower";
 
+    /// <summary>「抽牌堆洗过牌」记录器类名（兜底用当前角色）。</summary>
+    public static string AmbientShuffleTrackerClass => _currentCharClass + "ForgeShuffleTracker";
+
     public string CardClassName(CardSpec c, int index) =>
         IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
 
@@ -91,6 +94,9 @@ public sealed record Naming(
     /// 回合结束时把它们降回来（本体没有「临时升级」API，只能自己记）。
     /// </summary>
     public string TempUpgradePowerClass => CharClass + "ForgeTempUpgradePower";
+
+    /// <summary>「抽牌堆洗过牌」记录器（+ 一个打在 Hook.AfterShuffle 上的补丁）。</summary>
+    public string ShuffleTrackerClass => CharClass + "ForgeShuffleTracker";
 
     /// <summary>
     /// 「获得能量」填了负数 + 勾了「下回合生效」时用的 Power：下回合能量重置后扣掉 N 点。

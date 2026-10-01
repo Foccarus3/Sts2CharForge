@@ -703,18 +703,36 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string n = Lit.Dec(c.Amount);
         // 计数类条件用整数（读起来清楚，也不会出现 ">= 3m" 这种），并且至少压到 1，
         // 免得「每 N 回合」填 0 时生成 % 0 直接抛异常。
-        string ni = Lit.Int(Math.Max(1m, c.Amount));
+        // **填负数 = 反向**（用户要求）：这里的数值一律先取绝对值，方向由 inverted 决定。
+        string ni = Lit.Int(Math.Max(1m, Math.Abs(c.Amount)));
+        // 生命区间（HpInRange）：下界 / 上界（都取绝对值），任一为负 = 判断成「区间外」
+        decimal rangeLo = Math.Abs(c.Amount), rangeHi = Math.Abs(c.Amount2);
+        if (rangeLo > rangeHi) (rangeLo, rangeHi) = (rangeHi, rangeLo);
+        string lo = Lit.Int(Math.Max(1m, rangeLo));
+        string hi = Lit.Int(Math.Max(1m, rangeHi));
+        bool inverted = c.Amount < 0;
+        bool outside = c.Amount < 0 || c.Amount2 < 0;
         string power = Lit.Identifier(c.PowerId ?? "VulnerablePower", "VulnerablePower");
         string target = string.IsNullOrWhiteSpace(c.Target) ? "Self" : c.Target;
 
         // 「指向对象」：状态层数 / 生命值百分比 这两个条件可以看别人
-        string PowerAmount(string creature) => $"{creature}.GetPowerAmount<{power}>() >= {ni}";
-        string HpBelow(string creature) => $"{creature}.CurrentHp * 100 <= {creature}.MaxHp * {ni}";
+        string PowerAmount(string creature) => inverted
+            ? $"{creature}.GetPowerAmount<{power}>() < {ni}"          // 负数 = 少于 N 层
+            : $"{creature}.GetPowerAmount<{power}>() >= {ni}";
+        string HpBelow(string creature) => inverted
+            ? $"{creature}.CurrentHp * 100 >= {creature}.MaxHp * {ni}" // 负数 = 高于 N%
+            : $"{creature}.CurrentHp * 100 <= {creature}.MaxHp * {ni}";
+        // 生命区间：在 [lo, hi] 之内 / 之外（含端点）
+        string HpInRange(string creature) => outside
+            ? $"({creature}.CurrentHp * 100 < {creature}.MaxHp * {lo} || {creature}.CurrentHp * 100 > {creature}.MaxHp * {hi})"
+            : $"({creature}.CurrentHp * 100 >= {creature}.MaxHp * {lo} && {creature}.CurrentHp * 100 <= {creature}.MaxHp * {hi})";
         // 敌人列表：过滤掉死掉的（「全部敌人」= 每个活着的敌人都满足，且至少有一个活着的）
         string anyEnemyPower = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive && {PowerAmount("c")})";
         string allEnemyPower = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive) && {st}.Enemies.All(c => !c.IsAlive || {PowerAmount("c")})";
         string anyEnemyHp = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive && {HpBelow("c")})";
         string allEnemyHp = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive) && {st}.Enemies.All(c => !c.IsAlive || {HpBelow("c")})";
+        string anyEnemyRange = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive && {HpInRange("c")})";
+        string allEnemyRange = $"{st} is not null && {st}.Enemies.Any(c => c.IsAlive) && {st}.Enemies.All(c => !c.IsAlive || {HpInRange("c")})";
         // 「指定敌人」= 玩家给这张牌选的目标（cardPlay.Target）。
         // 只有写在 OnPlay 里才拿得到目标；IsPlayable / 描金边那会儿还没选目标，
         // 所以那里会退回「任意一个敌人」（并且校验器会提醒一句）。
@@ -724,6 +742,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string targetEnemyHp = inOnPlay
             ? $"cardPlay.Target is not null && {HpBelow("cardPlay.Target")}"
             : anyEnemyHp;
+        string targetEnemyRange = inOnPlay
+            ? $"cardPlay.Target is not null && {HpInRange("cardPlay.Target")}"
+            : anyEnemyRange;
 
         return c.Kind switch
         {
@@ -732,9 +753,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "NotPlayedThisCombat" =>
                 "!CombatManager.Instance.History.CardPlaysFinished.Any(e => e.CardPlay.Card == this)",
             "PlayedAtLeast" =>
-                $"{st} is not null && CombatManager.Instance.History.CardPlaysFinished.Count(e => e.Actor == {ownerCreature} && e.HappenedThisTurn({st})) >= {ni}",
-            "HandAtLeast" => $"{hand}.Count() >= {ni}",
-            "HandAtMost" => $"{hand}.Count() <= {ni}",
+                $"{st} is not null && CombatManager.Instance.History.CardPlaysFinished.Count(e => e.Actor == {ownerCreature} && e.HappenedThisTurn({st})) {(inverted ? "<" : ">=")} {ni}",
+            "HandAtLeast" => inverted ? $"{hand}.Count() < {ni}" : $"{hand}.Count() >= {ni}",
+            "HandAtMost" => inverted ? $"{hand}.Count() > {ni}" : $"{hand}.Count() <= {ni}",
             "HandOnlyAttack" => $"{hand}.All(c => c.Type == CardType.Attack)",
             "HandOnlySkill" => $"{hand}.All(c => c.Type == CardType.Skill)",
             "DrawPileEmpty" => $"{player} is not null && !PileType.Draw.GetPile({player}).Cards.Any()",
@@ -754,8 +775,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 "AllEnemies" => allEnemyPower,
                 _ => PowerAmount(ownerCreature),
             },
-            // 额外资源量（本体星星那个计数器）：只有玩家有，所以不看敌人
-            "ExtraResourceAtLeast" => $"(({player}?.PlayerCombatState?.Stars) ?? 0) >= {ni}",
+            // 生命区间（含「区间外」）：和上面一样按指向对象选看谁
+            "HpInRange" => target switch
+            {
+                "Enemy" => targetEnemyRange,
+                "AnyEnemy" => anyEnemyRange,
+                "AllEnemies" => allEnemyRange,
+                _ => HpInRange(ownerCreature),
+            },
+            // 额外资源量（本体星星那个计数器）：只有玩家有，所以不看敌人。填负数 = 少于 N 点
+            "ExtraResourceAtLeast" => inverted
+                ? $"(({player}?.PlayerCombatState?.Stars) ?? 0) < {ni}"
+                : $"(({player}?.PlayerCombatState?.Stars) ?? 0) >= {ni}",
+            // 抽牌堆被洗过牌：本体没有可查询的状态，靠工具生成的记录器（Harmony 补丁记「谁 / 哪一回合 / 洗了几次」）
+            "ShuffledThisTurn" => $"{player} is not null && {Naming.AmbientShuffleTrackerClass}.ShuffledThisTurn({player})",
+            "ShuffledThisCombat" => $"{player} is not null && {Naming.AmbientShuffleTrackerClass}.ShuffledThisCombat({player})",
             "NoHurtThisTurn" =>
                 $"{st} is not null && !CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>().Any(e => e.Receiver == {ownerCreature} && e.Result.UnblockedDamage > 0 && e.HappenedThisTurn({st}))",
             "EveryNTurns" =>
@@ -1252,20 +1286,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// resourceName：额外资源量在游戏里的名字（用户自己填的，如「冰附魔」）——传了就把条件里的
     /// 「额外资源量」换成它，否则卡面上会出现「拥有额外资源量至少 4 点」和计数器上的「冰附魔」两个名字。
     /// </summary>
-    public static string ConditionText(ConditionSpec c, string? resourceName = null)
-    {
-        var opt = EffectCatalog.FindCondition(c.Kind);
-        if (opt is null || c.IsNone) return "";
-        string text = opt.Display;
-        if (opt.NeedsAmount) text = text.Replace("N", c.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
-        if (opt.NeedsPower) text = text.Replace("某状态", EffectCatalog.PowerName(c.PowerId, "某状态"));
-        if (opt.NeedsTarget && !string.Equals(c.Target, "Self", StringComparison.OrdinalIgnoreCase))
-            text += $"（{c.TargetZh}）";
-        // 条件里说的「额外资源量」= 界面上那个自定义计数器（用户可能给它起了别的名字）
-        if (!string.IsNullOrWhiteSpace(resourceName) && resourceName.Trim() != "额外资源量")
-            text = text.Replace("额外资源量", resourceName.Trim());
-        return text;
-    }
+    public static string ConditionText(ConditionSpec c, string? resourceName = null) =>
+        EffectCatalog.ConditionZh(c.Kind, c.Amount, c.Amount2, c.PowerId, c.TargetZh, resourceName);
 
     // ==================== 三个池 ====================
     public static string CardPoolSource(CharacterProfile p)
@@ -4094,6 +4116,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "CombatVictory" => "public override async Task AfterCombatVictory(CombatRoom room)",
             "DamageReceived" => "public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)",
             "GoldGained" => "public override async Task AfterGoldGained(Player player)",
+            // 抽牌堆打乱洗牌时（本体先古遗物「大～抱抱 BiiigHug」就是这条）：参数名必须是 shuffler，
+            // 生成的效果体会先判 `if (shuffler != base.Owner) return;`（只看自己洗的牌）。
+            "Shuffle" => "public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)",
             _ => "public override async Task BeforeCombatStart()",
         };
 
@@ -4150,6 +4175,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "GoldGained":
                 w.Line("if (player != base.Owner) return;");
                 break;
+            // 洗牌：只看**自己**的抽牌堆被洗（本体 BiiigHug / TheAbacus 都是这个判法）。
+            // 条件「本回合 / 本场战斗洗过牌」不靠这里记 —— 那是 ShuffleTracker 的补丁负责的（用到才生成）。
+            case "Shuffle":
+                w.Line("if (shuffler != base.Owner) return;");
+                break;
         }
 
         if (hasCond)
@@ -4202,7 +4232,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>该触发时机的钩子是否带 choiceContext。</summary>
     internal static bool HasContext(string triggerId) =>
-        triggerId is "CombatStart" or "PlayerTurnStart" or "PlayerTurnEnd" or "DamageReceived";
+        triggerId is "CombatStart" or "PlayerTurnStart" or "PlayerTurnEnd" or "DamageReceived" or "Shuffle";
 
     private static void EmitRelicEffect(CodeWriter w, CharacterProfile p, EffectSpec e, bool hasContext,
         Dictionary<EffectSpec, string>? varMap = null, string? roomVar = null, string? petAllGroup = null) =>
@@ -5004,6 +5034,100 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>这个配置里有没有「生成 / 变化出来的卡：仅在本回合升级」（有才生成那个临时升级 Power）。</summary>
     public static bool UsesTempUpgrade(CharacterProfile p) =>
         AllEffects(p).Any(e => e.UsesSpawnOptions && e.SpawnUpgradedThisTurn);
+
+    /// <summary>这个配置里有没有用「抽牌堆洗过牌」的条件（有才生成记录器 + 补丁）。</summary>
+    public static bool UsesShuffleCondition(CharacterProfile p) => UsesCondition(p, "ShuffledThisTurn", "ShuffledThisCombat");
+
+    /// <summary>存档里有没有用到这几种条件（卡牌 / 遗物 / 药水 / 自定义状态的触发器都算）。</summary>
+    public static bool UsesCondition(CharacterProfile p, params string[] kinds)
+    {
+        bool Hit(ConditionSpec? c) => c is not null && !c.IsNone && kinds.Contains(c.Kind, StringComparer.Ordinal);
+        foreach (var card in p.AllCards)
+        {
+            if (Hit(card.Condition)) return true;
+            if (card.Effects.Any(e => Hit(e.Condition))) return true;
+        }
+        foreach (var r in p.Relics)
+        {
+            if (Hit(r.Condition)) return true;
+            if (r.Effects.Any(e => Hit(e.Condition))) return true;
+        }
+        foreach (var s in p.Potions)
+            if (s.Effects.Any(e => Hit(e.Condition))) return true;
+        foreach (var cp in CustomPowerGen.Active(p))
+            foreach (var t in cp.Triggers)
+                if (t.Effects.Any(e => Hit(e.Condition))) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// 「抽牌堆被洗过牌」的记录器 + 补丁。
+    ///
+    /// 为什么要自己记：本体**没有**任何「洗过牌」的可查询状态 ——
+    /// 没有事件、没有战斗历史条目、没有计数器（读源码确认）；
+    /// 本体先古遗物「大～抱抱 BiiigHug」自己是靠 `override AfterShuffle(choiceContext, shuffler)`
+    /// 在洗牌那一刻反应的，而**条件**要在别的地方（IsPlayable / 遗物效果门控…）随时查询，
+    /// 所以这里用一个 Harmony 后缀补丁把「谁洗的、哪一回合、洗了几次」记在静态表里：
+    ///   · 本回合洗过 = 记录的回合号 == 当前回合号；
+    ///   · 本场战斗洗过 = 记录的 ICombatState 还是当前这一场（换一场自然就 false）。
+    /// 注意（本体机制）：开局的洗牌不算（那次只走 ModifyShuffleOrder，不触发 AfterShuffle），
+    /// 战斗结束/收尾阶段也不触发。
+    /// </summary>
+    public static string ShuffleTrackerSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 「抽牌堆洗过牌」记录器 + 补丁（本体没有这个状态，只能自己记） </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line()
+         .Line("/// <summary>记住「谁、哪一回合、洗了几次」，供条件（ShuffledThisTurn / ShuffledThisCombat）查询。</summary>")
+         .Open($"internal static class {n.ShuffleTrackerClass}")
+         // 每个玩家一条记录：换成另一场战斗（ICombatState 换实例）就重新开始记。
+         .Open("private sealed class Rec")
+         .Line("public ICombatState? State;")
+         .Line("public int Turn;")
+         .Line("public int Count;")
+         .Close()
+         .Line()
+         .Line("private static readonly Dictionary<ulong, Rec> ByPlayer = new();")
+         .Line()
+         .Line("/// <summary>Hook.AfterShuffle 触发时调用（本体的「大～抱抱」也是在这个时机反应的）。</summary>")
+         .Open("public static void Note(Player? shuffler)")
+         .Line("if (shuffler?.Creature.CombatState is not { } state) return;")
+         .Open("if (!ByPlayer.TryGetValue(shuffler.NetId, out Rec? rec) || rec.State != state)")
+         .Line("rec = new Rec { State = state };")
+         .Line("ByPlayer[shuffler.NetId] = rec;")
+         .Close()
+         .Line("rec.Turn = shuffler.PlayerCombatState?.TurnNumber ?? 0;")
+         .Line("rec.Count++;")
+         .Close()
+         .Line()
+         .Open("private static Rec? Get(Player? player)")
+         .Line("if (player?.Creature.CombatState is not { } state) return null;")
+         .Line("return ByPlayer.TryGetValue(player.NetId, out Rec? rec) && rec.State == state ? rec : null;")
+         .Close()
+         .Line()
+         .Line("/// <summary>本回合洗过牌（开局的洗牌不算）。</summary>")
+         .Line("public static bool ShuffledThisTurn(Player? player) => Get(player) is { } rec && player?.PlayerCombatState is { } pcs && rec.Turn == pcs.TurnNumber;")
+         .Line()
+         .Line("/// <summary>本场战斗洗过牌（换一场战斗就重新算）。</summary>")
+         .Line("public static bool ShuffledThisCombat(Player? player) => Get(player) is not null;")
+         .Line()
+         .Line("/// <summary>本场战斗洗了几次。</summary>")
+         .Line("public static int ShuffleCountThisCombat(Player? player) => Get(player)?.Count ?? 0;")
+         .Close()
+         .Line()
+         .Line("/// <summary>打在 Hook.AfterShuffle 上的后缀补丁：本体的「洗牌之后」那一刻把记录更新掉。</summary>")
+         .Line("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Hooks.Hook), \"AfterShuffle\")]")
+         .Open($"internal static class {n.ShuffleTrackerClass}Patch")
+         .Line("[HarmonyLib.HarmonyPostfix]")
+         .Open("private static void After(Player shuffler)")
+         .Line($"try {{ {n.ShuffleTrackerClass}.Note(shuffler); }}")
+         .Line("catch (Exception e) { Log.Warn(\"洗牌记录失败：\" + e.Message); }   // 纯记录，出错也不能影响洗牌本身")
+         .Close()
+         .Close();
+        return w.ToString();
+    }
 
     /// <summary>
     /// 「生成 / 变化出来的卡：仅在本回合升级」用的 Power。

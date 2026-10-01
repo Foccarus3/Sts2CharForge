@@ -11738,6 +11738,299 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			PotionList.SelectedIndex = 0;
 			Check("切换药水后右侧详情跟随", PotionDetail.DataContext == PotionList.SelectedItem);
 		}
+		// ===== 本轮新增：条件「填负数 = 反向」/ 生命区间（含区间外）/ 抽牌堆洗过牌 =====
+		{
+			// ① 数量类条件支持「填负数 = 反向」：负数 → 比较符翻过来、数值取绝对值
+			string[] negKinds = { "PlayedAtLeast", "HandAtLeast", "HandAtMost", "HpBelowPercent", "HasPowerAtLeast", "ExtraResourceAtLeast" };
+			Check("条件列表里所有「至少 / 至多 N」类条件都标了「支持填负数 = 反向」",
+				negKinds.All(k => EffectCatalog.FindCondition(k) is { SupportsNegative: true }),
+				string.Join("、", negKinds.Where(k => EffectCatalog.FindCondition(k) is not { SupportsNegative: true })));
+			Check("每条支持反向的条件都写了一句中文的反向说法",
+				negKinds.All(k => !string.IsNullOrWhiteSpace(EffectCatalog.FindCondition(k)?.InvertedDisplay)),
+				string.Join("、", negKinds.Where(k => string.IsNullOrWhiteSpace(EffectCatalog.FindCondition(k)?.InvertedDisplay))));
+			Check("支持反向的条件的说明里都写了「填负数」",
+				negKinds.All(k => (EffectCatalog.FindCondition(k)?.Hint ?? "").Contains("填负数")),
+				string.Join("、", negKinds.Where(k => !(EffectCatalog.FindCondition(k)?.Hint ?? "").Contains("填负数"))));
+			Check("生命值低于 -20% → 生成的是「生命值高于 20%」（比较符翻过来、数值取绝对值）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpBelowPercent", Amount = -20m }, isCard: true)
+					== "base.Owner.Creature.CurrentHp * 100 >= base.Owner.Creature.MaxHp * 20", ">=");
+			Check("拥有某状态至少 -2 层 → 生成「少于 2 层」（GetPowerAmount < 2）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HasPowerAtLeast", Amount = -2m, PowerId = "VulnerablePower" }, isCard: true)
+					== "base.Owner.Creature.GetPowerAmount<VulnerablePower>() < 2", "<");
+			Check("拥有额外资源量至少 -2 点 → 生成「少于 2 点」",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = -2m }, isCard: true)
+					== "((base.Owner?.PlayerCombatState?.Stars) ?? 0) < 2", "<");
+			Check("手牌数不少于 -3 张 → 生成「少于 3 张」",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HandAtLeast", Amount = -3m }, isCard: true)
+					== "base.Owner is not null && CardPile.GetCards(base.Owner, PileType.Hand).Count() < 3", "<");
+			Check("手牌数不多于 -3 张 → 生成「多于 3 张」",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HandAtMost", Amount = -3m }, isCard: true)
+					== "base.Owner is not null && CardPile.GetCards(base.Owner, PileType.Hand).Count() > 3", ">");
+			Check("本回合已打出至少 -4 张 → 生成「少于 4 张」",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "PlayedAtLeast", Amount = -4m }, isCard: true)
+					.Contains("HappenedThisTurn(base.CombatState)) < 4"), "少了");
+			Check("填负数时中文文案也跟着反过来（不会照抄 -20）",
+				CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpBelowPercent", Amount = -20m }) == "生命值高于 20%"
+				&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HasPowerAtLeast", Amount = -2m, PowerId = "VulnerablePower" }) == "拥有易伤少于 2 层"
+				&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = -2m }) == "拥有的额外资源量少于 2 点"
+				&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HandAtMost", Amount = -3m }) == "手牌数多于 3 张"
+				&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "PlayedAtLeast", Amount = -4m }) == "本回合打出的牌少于 4 张",
+				CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpBelowPercent", Amount = -20m }));
+			Check("不填负数时文案 / 表达式还是老样子（没被反向逻辑带偏）",
+				CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpBelowPercent", Amount = 20m }) == "生命值低于 20%"
+				&& CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpBelowPercent", Amount = 20m }, isCard: true)
+					== "base.Owner.Creature.CurrentHp * 100 <= base.Owner.Creature.MaxHp * 20", "老样子");
+			var invIssues = ProfileValidator.Validate(new CharacterProfile
+			{
+				Relics = { new RelicSpec
+				{
+					Name = "自检反向遗物", ClassName = "UiCheckInvRelic", Trigger = "PlayerTurnStart",
+					Condition = new ConditionSpec { Kind = "HpBelowPercent", Amount = -20m },
+					Effects = { new EffectSpec { Kind = "Block", Amount = 1m } },
+				} },
+			});
+			Check("校验器会提示「填了负数 → 判断反过来」，并写出实际生效的文案",
+				invIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("反过来") && i.Message.Contains("生命值高于 20%")),
+				invIssues.FirstOrDefault((ValidationIssue i) => i.Message.Contains("反过来"))?.Message ?? "(没有提示)");
+			var everyIssues = ProfileValidator.Validate(new CharacterProfile
+			{
+				Relics = { new RelicSpec
+				{
+					Name = "自检每N回合", ClassName = "UiCheckEveryN", Trigger = "PlayerTurnStart",
+					Condition = new ConditionSpec { Kind = "EveryNTurns", Amount = -3m },
+					Effects = { new EffectSpec { Kind = "Block", Amount = 1m } },
+				} },
+			});
+			Check("不支持反向的条件填负数会**警告**（说清按绝对值处理），不会悄悄按反向生成",
+				everyIssues.Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("不支持「填负数 = 反向」")),
+				everyIssues.FirstOrDefault((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("反向"))?.Message ?? "(没有警告)");
+
+			// ② 生命区间：两个数值（N~M），任一填负数 = 区间外
+			var rangeOpt = EffectCatalog.FindCondition("HpInRange");
+			Check("条件列表里有「生命值在 N%~M% 之间」，而且它要两个数值 + 能选看谁",
+				rangeOpt is { NeedsAmount: true, NeedsAmount2: true, NeedsTarget: true } && rangeOpt.Display.Contains("N%~M%"),
+				rangeOpt?.Display ?? "(没有)");
+			Check("生命区间（区间内）：两个比较用 && 串起来，含端点",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = 25m, Amount2 = 75m }, isCard: true)
+					== "(base.Owner.Creature.CurrentHp * 100 >= base.Owner.Creature.MaxHp * 25 && base.Owner.Creature.CurrentHp * 100 <= base.Owner.Creature.MaxHp * 75)", "&&");
+			Check("生命区间（任一填负数 = 区间外）：两个比较用 || 串起来",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = -30m, Amount2 = 60m }, isCard: true)
+					== "(base.Owner.Creature.CurrentHp * 100 < base.Owner.Creature.MaxHp * 30 || base.Owner.Creature.CurrentHp * 100 > base.Owner.Creature.MaxHp * 60)", "||");
+			Check("上界填负数也算区间外（负号填在哪个数上都一样）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = 30m, Amount2 = -60m }, isCard: true)
+					.Contains("MaxHp * 30 || base.Owner.Creature.CurrentHp * 100 > base.Owner.Creature.MaxHp * 60"), "||");
+			Check("两个数值写反了会自动排好（60~30 和 30~60 生成一模一样）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = 60m, Amount2 = 30m }, isCard: true)
+					== CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = 30m, Amount2 = 60m }, isCard: true), "已排序");
+			Check("生命区间的中文文案：区间内写「在 N%~M% 之间」、区间外写「之外（区间外）」",
+				CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpInRange", Amount = 25m, Amount2 = 75m }) == "生命值在 25%~75% 之间"
+				&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpInRange", Amount = -30m, Amount2 = 60m }) == "生命值在 30%~60% 之外（区间外）",
+				CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "HpInRange", Amount = -30m, Amount2 = 60m }));
+			Check("生命区间也能看敌人（指向对象照常拼进去）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "HpInRange", Amount = 25m, Amount2 = 75m, Target = "AllEnemies" }, isCard: true)
+					.Contains("Enemies.All(c => !c.IsAlive || (c.CurrentHp * 100 >= c.MaxHp * 25 && c.CurrentHp * 100 <= c.MaxHp * 75))"), "看敌人");
+			var rangeIssues = ProfileValidator.Validate(new CharacterProfile
+			{
+				Relics = { new RelicSpec
+				{
+					Name = "自检区间遗物", ClassName = "UiCheckRangeRelic", Trigger = "PlayerTurnStart",
+					Condition = new ConditionSpec { Kind = "HpInRange", Amount = -30m, Amount2 = 60m },
+					Effects = { new EffectSpec { Kind = "Block", Amount = 1m } },
+				} },
+			});
+			Check("校验器会提示「生命区间填了负数 → 判断成区间外」，并写出区间",
+				rangeIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("区间外") && i.Message.Contains("30%~60%")),
+				rangeIssues.FirstOrDefault((ValidationIssue i) => i.Message.Contains("区间外"))?.Message ?? "(没有提示)");
+			var rangeOkIssues = ProfileValidator.Validate(new CharacterProfile
+			{
+				Relics = { new RelicSpec
+				{
+					Name = "自检区间遗物2", ClassName = "UiCheckRangeRelic2", Trigger = "PlayerTurnStart",
+					Condition = new ConditionSpec { Kind = "HpInRange", Amount = 30m, Amount2 = 60m },
+					Effects = { new EffectSpec { Kind = "Block", Amount = 1m } },
+				} },
+			});
+			Check("两个数值都是正数时不会有「区间外」提示（就是普通的区间内）",
+				!rangeOkIssues.Any((ValidationIssue i) => i.Message.Contains("区间外")), "没有提示");
+
+			// ③ 界面上：选了「生命区间」才会出现第二个数值输入框
+			SelectTabRoot("卡牌");
+			int uiCardIndex = -1;
+			for (int ci = 0; ci < CardList.Items.Count; ci++)
+				if (CardList.Items[ci] is CardSpec cc && cc.Effects.Count > 0) { uiCardIndex = ci; break; }
+			if (uiCardIndex >= 0) CardList.SelectedIndex = uiCardIndex;
+			PumpDispatcher(120);
+			// 效果编辑面板的 DataContext 是「效果列表里选中的那一条」——不选就没有数据（以前也是这个行为）
+			if (CardEffectList.Items.Count > 0) CardEffectList.SelectedIndex = 0;
+			PumpDispatcher(150);
+			List<TextBox> condBoxes = new List<TextBox>();
+			CollectTextBoxes(this, condBoxes);
+			var nBox = condBoxes.FirstOrDefault((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == "Condition.Amount");
+			List<TextBox> mBoxes = condBoxes.Where((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == "Condition.Amount2").ToList();
+			Check("条件编辑区里有「数值 N」和「~ 数值 M（%）」两个输入框", nBox is not null && mBoxes.Count > 0,
+				$"数值 N={(nBox is not null)} / 数值 M={mBoxes.Count} 个");
+			Check("第二个数值框的显示绑在「这个条件需不需要第二个数值」上（别的条件时收起来）",
+				mBoxes.Count > 0 && mBoxes.All((TextBox t) => BindingOperations.GetBinding(t, UIElement.VisibilityProperty)?.Path?.Path == "Condition.NeedsAmount2"),
+				mBoxes.Count == 0 ? "(没找到)" : string.Join(" / ", mBoxes.Select((TextBox t) => BindingOperations.GetBinding(t, UIElement.VisibilityProperty)?.Path?.Path ?? "(没绑上)")));
+			Check("「数值 N」输入框的悬停提示写了「填负数 = 判断反过来」",
+				nBox?.ToolTip is string negTip && negTip.Contains("填负数") && negTip.Contains("反过来"), nBox?.ToolTip as string ?? "(没有提示)");
+			// 真按界面逻辑走一遍：选到需要第二个数值的条件才展开（这里直接改选中卡的第一条效果的条件）
+			CardSpec rangeUiCard = CardList.SelectedItem as CardSpec;
+			if (rangeUiCard is not null && rangeUiCard.Effects.Count > 0)
+			{
+				ConditionSpec uiCond = rangeUiCard.Effects[0].Condition;
+				// 只认「这一条效果自己的」那个框（界面上别的条件编辑区也可能有同名的框）
+				bool IsMine(TextBox t) => t.DataContext switch
+				{
+					EffectSpec es => ReferenceEquals(es.Condition, uiCond),
+					ConditionSpec cs => ReferenceEquals(cs, uiCond),
+					_ => false,
+				};
+				TextBox mineBox = mBoxes.FirstOrDefault(IsMine);
+				// 效果列表没选中时，编辑面板的 DataContext 是 null（绑定全部落空 → 控件按默认值显示），这些框不算数
+				List<TextBox> liveBoxes = mBoxes.Where((TextBox t) => t.DataContext is not null).ToList();
+				uiCond.Kind = "HandAtLeast";
+				uiCond.Amount = 2m;
+				PumpDispatcher(150);
+				bool hiddenWhenNotNeeded = mineBox is not null ? !mineBox.IsVisible : liveBoxes.All((TextBox t) => !t.IsVisible);
+				uiCond.Kind = "HpInRange";
+				uiCond.Amount = 25m;
+				uiCond.Amount2 = 75m;
+				PumpDispatcher(150);
+				bool shownWhenNeeded = mineBox is not null ? mineBox.IsVisible : liveBoxes.Any((TextBox t) => t.IsVisible);
+				Check("选「生命值在 N%~M% 之间」时第二个数值框才出现（选别的条件时是收起来的）",
+					shownWhenNeeded && hiddenWhenNotNeeded,
+					$"这个条件 NeedsAmount2={uiCond.NeedsAmount2} / 选生命区间时可见={shownWhenNeeded} / 选手牌条件时收起来={hiddenWhenNotNeeded}（找到对应输入框={(mineBox is not null)}）"
+					+ $" ｜ 面板上的卡={((CardDetail.DataContext as CardSpec)?.Name ?? "(空)")} 选中的卡={rangeUiCard.Name} ｜ 诊断="
+					+ string.Join(" ; ", mBoxes.Select((TextBox t) => $"{(t.DataContext?.GetType().Name ?? "null")}"
+						+ $"/{(t.DataContext is EffectSpec e2 ? e2.Kind + ":" + e2.Condition.Kind : t.DataContext is ConditionSpec c2 ? c2.Kind : "?")}"
+						+ $"/{(t.Parent as FrameworkElement)?.GetType().Name ?? "?"}/可见={t.IsVisible}")));
+				uiCond.Kind = "None";
+				uiCond.Amount = 0m;
+				uiCond.Amount2 = 0m;
+				PumpDispatcher(150);
+			}
+			else
+			{
+				Check("（跳过）界面上展开第二个数值框的检查：卡牌列表里没选中带效果的卡", ok: false, $"选中={(rangeUiCard?.Name ?? "(空)")} / 效果={rangeUiCard?.Effects.Count ?? 0} 条");
+			}
+
+			// ④ 抽牌堆洗过牌：条件（生成的记录器 + 补丁）和遗物触发时机（override AfterShuffle）
+			var shuffleTrigger = EffectCatalog.RelicTriggers.FirstOrDefault((TriggerOption t) => t.Id == "Shuffle");
+			Check("遗物触发时机里有「抽牌堆打乱洗牌时」（本体「大～抱抱」用的就是 AfterShuffle）",
+				shuffleTrigger is not null && shuffleTrigger.Display == "抽牌堆打乱洗牌时" && shuffleTrigger.HookSignature.Contains("AfterShuffle"),
+				shuffleTrigger?.Display ?? "(没有)");
+			Check("两条洗牌条件都不需要填数值（问的只是「洗过没有」）",
+				EffectCatalog.FindCondition("ShuffledThisTurn") is { NeedsAmount: false }
+				&& EffectCatalog.FindCondition("ShuffledThisCombat") is { NeedsAmount: false }, "不需要数值");
+			Check("洗牌条件的说明里写明了「开局的洗牌不算」（本体开局走 ModifyShuffleOrder）",
+				(EffectCatalog.FindCondition("ShuffledThisTurn")?.Hint ?? "").Contains("开局的洗牌不算"), "写了");
+			CardSpec shuffleCard = new CardSpec { Name = "自检洗牌", ClassName = "UiCheckShuffle", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			shuffleCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+			shuffleCard.Condition.Kind = "ShuffledThisCombat";
+			RelicSpec shuffleRelic = new RelicSpec { Name = "自检洗牌遗物", ClassName = "UiCheckShuffleRelic", Rarity = "Common", Trigger = "Shuffle" };
+			shuffleRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m });
+			CharacterProfile shuffleProbe = ProfileFactory.Sample();
+			shuffleProbe.Cards.Add(shuffleCard);
+			shuffleProbe.Relics.Add(shuffleRelic);
+			Naming shuffleNaming = Naming.From(shuffleProbe);
+			Check("只有真的用到洗牌条件才生成记录器（没用到就不多生成文件）",
+				CSharpCodeGen.UsesShuffleCondition(shuffleProbe) && !CSharpCodeGen.UsesShuffleCondition(ProfileFactory.Sample()), "认得出来");
+			Check("洗牌条件生成的表达式走的是工具生成的记录器（本体没有可查询的洗牌状态）",
+				CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ShuffledThisTurn" }, isCard: true)
+					== $"base.Owner is not null && {shuffleNaming.ShuffleTrackerClass}.ShuffledThisTurn(base.Owner)"
+				&& CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ShuffledThisCombat" }, isCard: true)
+					== $"base.Owner is not null && {shuffleNaming.ShuffleTrackerClass}.ShuffledThisCombat(base.Owner)", shuffleNaming.ShuffleTrackerClass);
+			string shuffleRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_shuffle_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				shuffleProbe.Paths.OutputDir = shuffleRoot;
+				shuffleProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				shuffleProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				Check("（准备）带洗牌条件的存档能生成工程", ModGenerator.Generate(shuffleProbe).Success, shuffleRoot);
+				string shuffleDir = ModGenerator.ProjectRootOf(shuffleProbe);
+				string trackerPath = Path.Combine(shuffleDir, "cs", "ShuffleTracker.cs");
+				Check("用到洗牌条件 → 生成了「抽牌堆洗过牌」记录器 + 补丁", File.Exists(trackerPath), trackerPath);
+				string trackerSrc = File.Exists(trackerPath) ? File.ReadAllText(trackerPath, Encoding.UTF8) : "";
+				Check("记录器的补丁打在本体 Hook.AfterShuffle 上",
+					trackerSrc.Contains("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Hooks.Hook), \"AfterShuffle\")]")
+					&& trackerSrc.Contains("[HarmonyLib.HarmonyPostfix]"), "补丁在");
+				Check("记录器只用「表达式体 + 单行 if」写法（曾经写成 `=> {` 导致生成出来的代码编不过）",
+					trackerSrc.Contains("public static bool ShuffledThisTurn(Player? player) =>")
+					&& trackerSrc.Contains("public static bool ShuffledThisCombat(Player? player) =>")
+					&& trackerSrc.Contains("public static int ShuffleCountThisCombat(Player? player) =>")
+					&& !trackerSrc.Contains(") => {"), "语法对");
+				Check("记录器用「这一场战斗的 ICombatState + 当前回合号」区分（换一场战斗自动重算）",
+					trackerSrc.Contains("rec.State != state") && trackerSrc.Contains("rec.Turn == pcs.TurnNumber"), "对");
+				string shuffleCardSrc = File.ReadAllText(Path.Combine(shuffleDir, "cs", "Cards", "UiCheckShuffle.cs"), Encoding.UTF8);
+				Check("卡牌条件读记录器（本场战斗洗过牌）",
+					shuffleCardSrc.Contains($"{shuffleNaming.ShuffleTrackerClass}.ShuffledThisCombat(base.Owner)"), "读了记录器");
+				string shuffleRelicSrc = File.ReadAllText(Path.Combine(shuffleDir, "cs", "Relics", "UiCheckShuffleRelic.cs"), Encoding.UTF8);
+				Check("遗物「抽牌堆打乱洗牌时」= override AfterShuffle + 只看自己洗的牌（和大～抱抱一模一样）",
+					shuffleRelicSrc.Contains("public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)")
+					&& shuffleRelicSrc.Contains("if (shuffler != base.Owner) return;"), "对");
+				var shuffleRec = ProjectRecovery.FromProject(shuffleDir);
+				Check("回读：洗牌条件 / 遗物触发时机都认得出来（没有认不出来的语句）",
+					!shuffleRec.HasUnparsed, shuffleRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				var recShuffleCard = shuffleRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckShuffle");
+				Check("回读：卡牌的「本场战斗洗过牌」条件原样回来",
+					recShuffleCard is not null && recShuffleCard.Condition.Kind == "ShuffledThisCombat",
+					recShuffleCard?.Condition.Kind ?? "(没回读出来)");
+				var recShuffleRelic = shuffleRec.Profile.Relics.FirstOrDefault((RelicSpec r) => r.ClassName == "UiCheckShuffleRelic");
+				Check("回读：遗物触发时机「抽牌堆打乱洗牌时」原样回来",
+					recShuffleRelic is not null && recShuffleRelic.Trigger == "Shuffle", recShuffleRelic?.Trigger ?? "(没回读出来)");
+			}
+			finally
+			{
+				try { if (Directory.Exists(shuffleRoot)) Directory.Delete(shuffleRoot, true); } catch { }
+			}
+
+			// ⑤ 回读：反向 / 生命区间也要原样认回来（存档被误覆盖时救命）
+			string condRecRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_condrec_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile recProbe = ProfileFactory.Sample();
+				recProbe.Paths.OutputDir = condRecRoot;
+				recProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				recProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec recInv = new CardSpec { Name = "自检反向回读", ClassName = "UiCheckRecInv", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				recInv.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+				recInv.Condition.Kind = "HpBelowPercent";
+				recInv.Condition.Amount = -20m;
+				CardSpec recRange = new CardSpec { Name = "自检区间回读", ClassName = "UiCheckRecRange", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				recRange.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+				recRange.Condition.Kind = "HpInRange";
+				recRange.Condition.Amount = -30m;
+				recRange.Condition.Amount2 = 60m;
+				CardSpec recPower = new CardSpec { Name = "自检状态反向回读", ClassName = "UiCheckRecPower", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				recPower.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+				recPower.Condition.Kind = "HasPowerAtLeast";
+				recPower.Condition.Amount = -2m;
+				recPower.Condition.PowerId = "VulnerablePower";
+				recProbe.Cards.Add(recInv);
+				recProbe.Cards.Add(recRange);
+				recProbe.Cards.Add(recPower);
+				Check("（准备）反向 / 生命区间的存档能生成工程", ModGenerator.Generate(recProbe).Success, condRecRoot);
+				var condRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(recProbe));
+				Check("回读没有认不出来的语句", !condRec.HasUnparsed, condRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				var rrInv = condRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckRecInv");
+				var rrRange = condRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckRecRange");
+				var rrPower = condRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckRecPower");
+				Check("回读：生命值低于 -20%（反向）原样回来",
+					rrInv is not null && rrInv.Condition.Kind == "HpBelowPercent" && rrInv.Condition.Amount == -20m,
+					rrInv is null ? "(没回读出来)" : $"{rrInv.Condition.Kind} {rrInv.Condition.Amount}");
+				Check("回读：生命区间 -30~60（区间外）原样回来",
+					rrRange is not null && rrRange.Condition.Kind == "HpInRange" && rrRange.Condition.Amount == -30m && rrRange.Condition.Amount2 == 60m,
+					rrRange is null ? "(没回读出来)" : $"{rrRange.Condition.Kind} {rrRange.Condition.Amount}/{rrRange.Condition.Amount2}");
+				Check("回读：拥有虚弱至少 -2 层（反向）原样回来",
+					rrPower is not null && rrPower.Condition.Kind == "HasPowerAtLeast" && rrPower.Condition.Amount == -2m && rrPower.Condition.PowerId == "VulnerablePower",
+					rrPower is null ? "(没回读出来)" : $"{rrPower.Condition.Kind} {rrPower.Condition.Amount}");
+			}
+			finally
+			{
+				try { if (Directory.Exists(condRecRoot)) Directory.Delete(condRecRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

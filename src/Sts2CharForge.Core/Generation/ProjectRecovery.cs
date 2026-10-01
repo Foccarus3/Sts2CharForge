@@ -2200,29 +2200,68 @@ public static class ProjectRecovery
     {
         if (string.IsNullOrWhiteSpace(expr)) return null;
         string e = expr.Trim();
+        // 条件里的「填负数 = 反向」是**生成时**把比较符翻过来的（>= ↔ <、<= ↔ >），
+        // 所以回读要把翻转过的那些形式也认出来，并把数值取成负数（用户看到的还是原来那个 -N）。
+        // 顺序：先认「区间外 / 区间内」（生命区间），再认翻转形式，最后认普通形式。
+        decimal Num(string s) => decimal.Parse(s, CultureInfo.InvariantCulture);
+
+        // 生命区间（在区间内 / 区间外）：生成的是
+        //   (hp * 100 >= max * lo && hp * 100 <= max * hi)          ← 区间内
+        //   (hp * 100 <  max * lo || hp * 100 >  max * hi)          ← 区间外（任一数值填了负数）
+        var range = Regex.Match(e,
+            @"CurrentHp \* 100 (?<o1>>=|<=|<|>) .*?MaxHp \* (?<lo>[\d.]+) (?<join>&&|\|\|) .*?CurrentHp \* 100 (?<o2>>=|<=|<|>) .*?MaxHp \* (?<hi>[\d.]+)");
+        if (range.Success)
+        {
+            decimal lo = Num(range.Groups["lo"].Value), hi = Num(range.Groups["hi"].Value);
+            bool outside = range.Groups["join"].Value == "||";
+            return new ConditionSpec
+            {
+                Kind = "HpInRange",
+                Amount = outside ? -lo : lo,
+                Amount2 = hi,
+            };
+        }
+        // 状态层数：>= N 是「至少 N 层」；< N 是「少于 N 层」（生成时填了负数）
         var power = Regex.Match(e, @"GetPowerAmount<(\w+)>\(\) >= ([\d.]+)");
-        if (power.Success) return new ConditionSpec { Kind = "HasPowerAtLeast", PowerId = power.Groups[1].Value, Amount = decimal.Parse(power.Groups[2].Value, CultureInfo.InvariantCulture) };
+        if (power.Success) return new ConditionSpec { Kind = "HasPowerAtLeast", PowerId = power.Groups[1].Value, Amount = Num(power.Groups[2].Value) };
+        power = Regex.Match(e, @"GetPowerAmount<(\w+)>\(\) < ([\d.]+)");
+        if (power.Success) return new ConditionSpec { Kind = "HasPowerAtLeast", PowerId = power.Groups[1].Value, Amount = -Num(power.Groups[2].Value) };
         var cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) <= ([\d.]+)");
-        if (cards.Success) return new ConditionSpec { Kind = "HandAtMost", Amount = decimal.Parse(cards.Groups[1].Value, CultureInfo.InvariantCulture) };
+        if (cards.Success) return new ConditionSpec { Kind = "HandAtMost", Amount = Num(cards.Groups[1].Value) };
+        cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) > ([\d.]+)");
+        if (cards.Success) return new ConditionSpec { Kind = "HandAtMost", Amount = -Num(cards.Groups[1].Value) };
         cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) >= ([\d.]+)");
-        if (cards.Success) return new ConditionSpec { Kind = "HandAtLeast", Amount = decimal.Parse(cards.Groups[1].Value, CultureInfo.InvariantCulture) };
-        // 「拥有额外资源量至少 N 点」：生成的是 ((base.Owner?.PlayerCombatState?.Stars) ?? 0) >= N。
-        // 少了这一条，带这个条件的卡（SparkleMod 的「匕首 / 双倍 / 守护」）回读时会被记成「条件没认出来」。
+        if (cards.Success) return new ConditionSpec { Kind = "HandAtLeast", Amount = Num(cards.Groups[1].Value) };
+        cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) < ([\d.]+)");
+        if (cards.Success) return new ConditionSpec { Kind = "HandAtLeast", Amount = -Num(cards.Groups[1].Value) };
+        // 「拥有额外资源量至少 N 点」：生成的是 ((base.Owner?.PlayerCombatState?.Stars) ?? 0) >= N；
+        // < N 那个是填了负数（反向）
         var stars = Regex.Match(e, @"PlayerCombatState\?\.Stars\) \?\? 0\) >= ([\d.]+)");
-        if (stars.Success) return new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = decimal.Parse(stars.Groups[1].Value, CultureInfo.InvariantCulture) };
+        if (stars.Success) return new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = Num(stars.Groups[1].Value) };
+        stars = Regex.Match(e, @"PlayerCombatState\?\.Stars\) \?\? 0\) < ([\d.]+)");
+        if (stars.Success) return new ConditionSpec { Kind = "ExtraResourceAtLeast", Amount = -Num(stars.Groups[1].Value) };
+        // 抽牌堆洗过牌（靠生成的记录器，见 CSharpCodeGen.ShuffleTrackerSource）
+        if (e.Contains("ShuffleTracker", StringComparison.Ordinal) && e.Contains("ShuffledThisTurn", StringComparison.Ordinal))
+            return new ConditionSpec { Kind = "ShuffledThisTurn" };
+        if (e.Contains("ShuffleTracker", StringComparison.Ordinal) && e.Contains("ShuffledThisCombat", StringComparison.Ordinal))
+            return new ConditionSpec { Kind = "ShuffledThisCombat" };
         if (e.Contains("CardType.Attack") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlyAttack" };
         if (e.Contains("CardType.Skill") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlySkill" };
         if (e.Contains("PileType.Draw")) return new ConditionSpec { Kind = "DrawPileEmpty" };
         if (e.Contains("PileType.Discard") && e.Contains("Any()")) return new ConditionSpec { Kind = "DiscardPileEmpty" };
         var hp = Regex.Match(e, @"CurrentHp \* 100 <= .*MaxHp \* ([\d.]+)");
-        if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = decimal.Parse(hp.Groups[1].Value, CultureInfo.InvariantCulture) };
+        if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = Num(hp.Groups[1].Value) };
+        hp = Regex.Match(e, @"CurrentHp \* 100 >= .*MaxHp \* ([\d.]+)");
+        if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = -Num(hp.Groups[1].Value) };
         // 生成的是 `…CardPlaysFinished.Count(e => e.Actor == … && e.HappenedThisTurn(base.CombatState)) >= N`，
         // 里面**套着括号**，所以不能写 [^)]*（那样只能匹配到内层那个右括号 → 整条条件认不出来）。
         var played = Regex.Match(e, @"CardPlaysFinished\.Count\(.*?\)\s*>=\s*([\d.]+)");
-        if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = decimal.Parse(played.Groups[1].Value, CultureInfo.InvariantCulture) };
+        if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = Num(played.Groups[1].Value) };
+        played = Regex.Match(e, @"CardPlaysFinished\.Count\(.*?\)\s*<\s*([\d.]+)");
+        if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = -Num(played.Groups[1].Value) };
         if (e.Contains("CardPlaysFinished.Any") && e.Contains("== this")) return new ConditionSpec { Kind = "NotPlayedThisCombat" };
         var turn = Regex.Match(e, @"TurnNumber % ([\d.]+) == 0");
-        if (turn.Success) return new ConditionSpec { Kind = "EveryNTurns", Amount = decimal.Parse(turn.Groups[1].Value, CultureInfo.InvariantCulture) };
+        if (turn.Success) return new ConditionSpec { Kind = "EveryNTurns", Amount = Num(turn.Groups[1].Value) };
         if (e.Contains("_condUsedThisCombat")) return new ConditionSpec { Kind = "OncePerCombat" };
         return null;
     }
@@ -2812,6 +2851,8 @@ public static class ProjectRecovery
         "AfterCombatEnd" => "CombatVictory",
         "AfterDamageReceived" => "DamageReceived",
         "AfterGoldGained" => "GoldGained",
+        // 抽牌堆打乱洗牌时（本体先古遗物「大～抱抱 BiiigHug」那条钩子）
+        "AfterShuffle" => "Shuffle",
         "AfterCardPlayed" => "CardPlayed",
         "AfterCardExhausted" => "CardExhausted",
         "AfterCardDrawn" => "CardDrawn",

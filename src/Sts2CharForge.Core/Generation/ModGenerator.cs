@@ -181,6 +181,12 @@ public static class ModGenerator
             Log("  已生成「仅本回合升级」用的临时升级 Power（生成 / 变化出来的卡回合结束降回来）");
         }
 
+        if (CSharpCodeGen.UsesShuffleCondition(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "ShuffleTracker.cs"), CSharpCodeGen.ShuffleTrackerSource(profile));
+            Log("  已生成「抽牌堆洗过牌」记录器 + Hook.AfterShuffle 补丁（本体没有这个状态，条件靠它查）");
+        }
+
         if (profile.ExtraResource.Enabled)
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResource.cs"), CSharpCodeGen.ExtraResourceSource(profile));

@@ -289,7 +289,16 @@
                                Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
                              Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
-                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="填负数 = 判断反过来（例：生命值低于 -20 → 高于 20%；至少 -2 层 → 少于 2 层）。"/>
+                    <!-- 生命区间：第二个数值（M%）。任一填负数 = 判断成「区间外」（用户要求） -->
+                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="80,0,0,0" HorizontalAlignment="Left"
+                               Text="~ 数值 M（%）" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" Margin="180,0,0,0" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                             Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
+                             Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="生命区间的上界（%）。任意一个数值填负数 = 判断成「区间外」。"/>
                     <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
                     <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
@@ -337,7 +346,16 @@
                                Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
                     <TextBox Grid.Row="1" Grid.Column="1" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
                              Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
-                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                             Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="填负数 = 判断反过来（例：生命值低于 -20 → 高于 20%；至少 -2 层 → 少于 2 层）。"/>
+                    <!-- 生命区间：第二个数值（M%）。任一填负数 = 判断成「区间外」（用户要求） -->
+                    <TextBlock Grid.Row="1" Grid.Column="1" Margin="80,0,0,0" HorizontalAlignment="Left"
+                               Text="~ 数值 M（%）" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" Margin="180,0,0,0" Width="70" HorizontalAlignment="Left" Style="{StaticResource Field}"
+                             Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
+                             Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="生命区间的上界（%）。任意一个数值填负数 = 判断成「区间外」。"/>
                     <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
                     <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"

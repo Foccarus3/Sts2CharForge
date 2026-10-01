@@ -49,7 +49,13 @@ public sealed record TriggerOption(string Id, string Display, string HookSignatu
 /// NeedsTarget = 还需要选「指向对象」（自己 / 敌人 / 全部敌人）。
 /// </summary>
 public sealed record ConditionOption(string Id, string Display, bool ForCard, bool ForRelic,
-    bool NeedsAmount, bool NeedsPower, string Hint, bool ForPower = false, bool NeedsTarget = false);
+    bool NeedsAmount, bool NeedsPower, string Hint, bool ForPower = false, bool NeedsTarget = false,
+    // 第二个数值（目前只有「生命区间」用得到：N = 下界、M = 上界）
+    bool NeedsAmount2 = false,
+    // 填负数 = 反向时的说法（null = 这个条件不支持填负数）。界面 / 卡面描述都按它写。
+    string? InvertedDisplay = null,
+    // 这个条件支持「填负数 = 反向」吗（校验器用它提醒）
+    bool SupportsNegative = false);
 
 /// <summary>条件的「指向对象」一条：看自己 / 任意一个敌人 / 全部敌人。</summary>
 public sealed record ConditionTargetOption(string Id, string Display);
@@ -790,9 +796,12 @@ public static class EffectCatalog
         new ConditionOption("NotPlayedThisCombat", "本场战斗还没打出过这张牌", true, false, false, false,
             "查战斗历史：这局战斗里这张牌一次都还没被打出过。"),
         new ConditionOption("PlayedAtLeast", "本回合已打出至少 N 张牌", true, true, true, false,
-            "本体「怀表」的做法：数本回合打出的牌数（含其他牌）。", true),
-        new ConditionOption("HandAtLeast", "手牌数不少于 N 张", true, true, true, false, "数当前手牌张数。", true),
-        new ConditionOption("HandAtMost", "手牌数不多于 N 张", true, true, true, false, "数当前手牌张数。", true),
+            "本体「怀表」的做法：数本回合打出的牌数（含其他牌）。填负数 = 反向（本回合打出的牌少于 N 张）。",
+            true, false, false, "本回合打出的牌少于 N 张", true),
+        new ConditionOption("HandAtLeast", "手牌数不少于 N 张", true, true, true, false,
+            "数当前手牌张数。填负数 = 反向（手牌数少于 N 张）。", true, false, false, "手牌数少于 N 张", true),
+        new ConditionOption("HandAtMost", "手牌数不多于 N 张", true, true, true, false,
+            "数当前手牌张数。填负数 = 反向（手牌数多于 N 张）。", true, false, false, "手牌数多于 N 张", true),
         new ConditionOption("HandOnlyAttack", "手牌里只有攻击牌", true, true, false, false,
             "本体「Clash」的做法：手牌里全是攻击牌（含这张）。", true),
         new ConditionOption("HandOnlySkill", "手牌里只有技能牌", true, true, false, false, "手牌里全是技能牌（含这张）。", true),
@@ -800,13 +809,34 @@ public static class EffectCatalog
             "本体「GrandFinale」的做法：抽牌堆已经抽空。", true),
         new ConditionOption("DiscardPileEmpty", "弃牌堆为空", true, true, false, false, "弃牌堆里一张牌都没有。", true),
         new ConditionOption("HpBelowPercent", "生命值低于 N%", true, true, true, false,
-            "按最大生命的百分比判断（含等于）。可以选看谁：自己 / 任意一个敌人 / 全部敌人。", true, true),
+            "按最大生命的百分比判断（含等于）。填负数 = 反向（生命值**高于** N%）。可以选看谁：自己 / 任意一个敌人 / 全部敌人。",
+            true, true, false, "生命值高于 N%", true),
+        // 生命区间：两个数值（下界 N% / 上界 M%）。**任一填负数 = 判断成「区间外」**（用户要求）：
+        // 例如 20~50 = 生命在 20%~50% 之间；-20~50 = 生命低于 20% 或高于 50%。
+        new ConditionOption("HpInRange", "生命值在 N%~M% 之间", true, true, true, false,
+            "两个数值都填百分比（下界 / 上界，顺序无所谓，会自动排好）。**任意一个填负数 = 判断成「区间外」**。"
+            + "可以选看谁：自己 / 任意一个敌人 / 全部敌人。", true, true, true, "生命值在 N%~M% 之外（区间外）", true),
         new ConditionOption("HasPowerAtLeast", "拥有某状态至少 N 层", true, true, true, true,
-            "本体「死亡之门 / 拆解」这类做法：读增益/减益层数。可以选看谁：自己 / 任意一个敌人 / 全部敌人。", true, true),
+            "本体「死亡之门 / 拆解」这类做法：读增益/减益层数。填负数 = 反向（拥有某状态**少于** N 层）。"
+            + "可以选看谁：自己 / 任意一个敌人 / 全部敌人。", true, true, false, "拥有某状态少于 N 层", true),
         new ConditionOption("ExtraResourceAtLeast", "拥有额外资源量至少 N 点", true, true, true, false,
-            "额外资源量就是「角色」页里那个自定义资源（界面上那个计数器）。只有你自己才有，所以不用选指向对象。", true),
+            "额外资源量就是「角色」页里那个自定义资源（界面上那个计数器）。只有你自己才有，所以不用选指向对象。"
+            + "填负数 = 反向（拥有的额外资源量**少于** N 点）。", true, false, false, "拥有的额外资源量少于 N 点", true),
         new ConditionOption("NoHurtThisTurn", "本回合还没受到过未格挡伤害", true, true, false, false,
             "本体「Spite」的做法：查本回合是否吃到过没被格挡的伤害。", true),
+        // 抽牌堆被洗过牌（用户要求：像本体先古遗物「大～抱抱 BiiigHug」那样）。
+        // 本体**没有**任何可查询的「洗过牌」状态（没有事件、没有历史记录、没有计数器），
+        // 大~抱抱自己是靠 `override AfterShuffle` 在洗牌那一刻反应的。所以这里分两种给：
+        //   · 条件（这两条）= 工具生成一个 **Harmony 补丁**记下「谁、哪一回合、洗了几次」，
+        //     于是「本回合洗过 / 本场战斗洗过」能被任何地方查询（卡牌打不出判定、遗物效果门控…）；
+        //   · 遗物的触发时机「抽牌堆打乱洗牌时」= 直接覆写 AfterShuffle，**在洗牌那一刻**触发（和大~抱抱一样）。
+        // 共同注意点（本体机制）：开局的洗牌不算（走的是 ModifyShuffleOrder，不触发 AfterShuffle）、
+        // 战斗结束/收尾阶段也不触发。
+        new ConditionOption("ShuffledThisTurn", "抽牌堆本回合被打乱洗过牌", true, true, false, false,
+            "本体没有任何「洗过牌」的状态可查，工具会生成一个补丁 + 记录器（记谁、哪一回合、洗了几次）。"
+            + "注意：**开局的洗牌不算**（本体开战那次只走 ModifyShuffleOrder），战斗结束阶段也不算。", true),
+        new ConditionOption("ShuffledThisCombat", "抽牌堆本场战斗被打乱洗过牌", true, true, false, false,
+            "同上，但看的是「这一场战斗里洗过没有」（战斗换一场就重新算）。"),
         new ConditionOption("EveryNTurns", "每 N 回合触发一次", false, true, true, false,
             "按战斗回合数取余（第 N、2N、3N…回合满足）。"),
         new ConditionOption("OncePerCombat", "每场战斗只触发一次", false, true, false, false,
@@ -893,6 +923,45 @@ public static class EffectCatalog
         string.IsNullOrWhiteSpace(kind) ? null
         : Conditions.FirstOrDefault(c => string.Equals(c.Id, kind, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// 条件的中文说明（界面列表 / 卡面描述 / 生成代码注释都用这一份，别各写一遍）。
+    ///
+    /// 处理四件事：
+    ///   ① N 的替换；
+    ///   ② **填负数 = 反向**（用户要求）：生命值低于 -20 → 「生命值高于 20%」、
+    ///      「拥有某状态至少 -2 层」→「拥有某状态少于 2 层」，等等（文案取 <see cref="ConditionOption.InvertedDisplay"/>）；
+    ///   ③ 「生命区间」两个数值（N~M，任一为负 = 区间外）；
+    ///   ④ 指向对象 / 「额外资源量」的显示名。
+    /// </summary>
+    public static string ConditionZh(string kind, decimal amount, decimal amount2, string? powerId,
+        string targetZh, string? resourceName = null)
+    {
+        var opt = FindCondition(kind);
+        if (opt is null || string.Equals(opt.Id, "None", StringComparison.Ordinal)) return "";
+        bool inverted = amount < 0 || (opt.NeedsAmount2 && amount2 < 0);
+        string text = inverted && opt.InvertedDisplay is not null ? opt.InvertedDisplay : opt.Display;
+        string Abs(decimal v) => Math.Abs(v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        if (opt.NeedsAmount2)
+        {
+            // 生命区间：两个数值都按绝对值写（谁填了负数只是表示「区间外」，数值本身还是那个正数），顺序写反了自动排好
+            decimal lo = Math.Abs(amount), hi = Math.Abs(amount2);
+            if (lo > hi) (lo, hi) = (hi, lo);
+            text = text.Replace("N", lo.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))
+                       .Replace("M", hi.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        }
+        else if (opt.NeedsAmount)
+        {
+            text = text.Replace("N", Abs(amount));
+        }
+        if (opt.NeedsPower) text = text.Replace("某状态", PowerName(powerId, "某状态"));
+        if (opt.NeedsTarget && !string.IsNullOrWhiteSpace(targetZh) && targetZh != "自己")
+            text += $"（{targetZh}）";
+        // 「额外资源量」用界面 / 游戏里真正显示的那个名字（用户可能叫它「冰附魔」）
+        if (!string.IsNullOrWhiteSpace(resourceName) && resourceName.Trim() != "额外资源量")
+            text = text.Replace("额外资源量", resourceName.Trim());
+        return text;
+    }
+
     public static IReadOnlyList<string> CardTypes { get; } = new[] { "Attack", "Skill", "Power" };
     /// <summary>
     /// 卡牌稀有度。除了本体那三档奖励稀有度（含 Basic），还有：
@@ -916,6 +985,11 @@ public static class EffectCatalog
         new TriggerOption("CombatVictory",  "战斗胜利时",   "AfterCombatVictory(room)"),
         new TriggerOption("DamageReceived", "受到伤害时",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
         new TriggerOption("GoldGained",     "获得金币时",   "AfterGoldGained(player)"),
+        // 抽牌堆打乱洗牌时（用户要求：本体先古遗物「大～抱抱 BiiigHug」就是这条 ——
+        // `public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)`
+        // 里判 `shuffler == base.Owner`）。本体只在**战斗中途洗牌**时触发：
+        // 开局那次洗牌走的是 ModifyShuffleOrder（不触发 AfterShuffle），战斗结束阶段也不触发。
+        new TriggerOption("Shuffle",        "抽牌堆打乱洗牌时", "AfterShuffle(choiceContext, shuffler)"),
     };
 
     /// <summary>内置的开发用效果库（发布版仓库里不含这个文件，见 .gitignore）。</summary>

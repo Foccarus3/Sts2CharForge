@@ -1244,8 +1244,29 @@ public static class ProfileValidator
             issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」还没选状态。"));
         else if (opt.NeedsPower && EffectCatalog.FindPower(cond.PowerId) is null && !EffectCatalog.IsCustomPower(cond.PowerId))
             issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」里的状态找不到：{cond.PowerId}。"));
-        if (opt.NeedsAmount && cond.Amount <= 0)
+        // 「填负数 = 反向」（用户要求）：支持的条件给一句提示，不支持的说清「会被当成正数用」
+        if (opt.SupportsNegative)
+        {
+            if (opt.NeedsAmount2 && cond.IsOutsideRange)
+                issues.Add(new("提示", $"{owner} 的条件「{opt.Display}」填了负数 → 判断成**区间外**："
+                    + $"生命不在 {Math.Abs(cond.Amount):0.##}%~{Math.Abs(cond.Amount2):0.##}% 之间时才成立。"));
+            else if (cond.IsInverted)
+                issues.Add(new("提示", $"{owner} 的条件「{opt.Display}」填了负数 → 判断**反过来**："
+                    + $"实际生效的是「{EffectCatalog.ConditionZh(cond.Kind, cond.Amount, cond.Amount2, cond.PowerId, cond.TargetZh)}」。"));
+        }
+        else if (opt.NeedsAmount && cond.Amount < 0)
+        {
+            issues.Add(new("警告", $"{owner} 的条件「{opt.Display}」填了负数：这个条件不支持「填负数 = 反向」，"
+                + $"生成时按绝对值 {Math.Abs(cond.Amount):0.##} 处理。"));
+        }
+        if (opt.NeedsAmount && cond.Amount <= 0 && !opt.SupportsNegative && !opt.NeedsAmount2)
             issues.Add(new("警告", $"{owner} 的条件「{opt.Display}」填的数值是 {cond.Amount}，条件会永远不成立。"));
+        else if (opt.NeedsAmount && cond.Amount == 0 && opt.SupportsNegative)
+            issues.Add(new("警告", $"{owner} 的条件「{opt.Display}」填的数值是 0（0 既不是正数也不是负数）——"
+                + "生成出来的是「>= 0 / 低于 0」这种恒真条件，确认这是你想要的。"));
+        if (opt.NeedsAmount2 && cond.Amount2 == 0 && cond.Amount != 0)
+            issues.Add(new("提示", $"{owner} 的条件「{opt.Display}」第二个数值是 0："
+                + $"按下界 0% / 上界 {Math.Abs(cond.Amount):0.##}% 处理（顺序写反了也没关系，工具会自己排好）。"));
         if (opt.NeedsTarget && !EffectCatalog.ConditionTargets.Any(t => t.Id == cond.Target))
             issues.Add(new("错误", $"{owner} 的条件的「指向对象」非法：{cond.Target}。"));
         // 「指定敌人」= 玩家给这张牌选的目标：只有写在效果里才知道结果

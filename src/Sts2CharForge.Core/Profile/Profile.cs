@@ -1790,6 +1790,7 @@ public sealed class ConditionSpec : SpecBase
 {
     private string _kind = "None";
     private decimal _amount = 1;
+    private decimal _amount2;
     private string? _powerId;
     private string _whenUnmet = "Unplayable";
     private string _target = "Self";
@@ -1803,9 +1804,12 @@ public sealed class ConditionSpec : SpecBase
             if (Set(ref _kind, value))
             {
                 Raise(nameof(NeedsAmount));
+                Raise(nameof(NeedsAmount2));
                 Raise(nameof(NeedsPower));
                 Raise(nameof(NeedsTarget));
                 Raise(nameof(IsNone));
+                Raise(nameof(IsInverted));
+                Raise(nameof(IsOutsideRange));
                 Raise(nameof(DisplayShort));
                 Raise(nameof(Summary));
             }
@@ -1835,8 +1839,27 @@ public sealed class ConditionSpec : SpecBase
     public decimal Amount
     {
         get => _amount;
-        set { if (Set(ref _amount, value)) Raise(nameof(Summary)); }
+        set { if (Set(ref _amount, value)) { Raise(nameof(Summary)); Raise(nameof(DisplayShort)); Raise(nameof(IsInverted)); Raise(nameof(IsOutsideRange)); } }
     }
+
+    /// <summary>
+    /// 第二个数值（目前只有「生命值在 N%~M% 之间」用得到：N = 下界、M = 上界）。
+    /// **任一填负数 = 判断成「区间外」**（用户要求）。
+    /// </summary>
+    public decimal Amount2
+    {
+        get => _amount2;
+        set { if (Set(ref _amount2, value)) { Raise(nameof(Summary)); Raise(nameof(DisplayShort)); Raise(nameof(IsOutsideRange)); } }
+    }
+
+    /// <summary>这个条件填了负数 = 反向（生命值高于 N% / 少于 N 层…）。</summary>
+    [JsonIgnore]
+    public bool IsInverted => _amount < 0;
+
+    /// <summary>「生命区间」这类条件填了负数 = 判断成区间外。</summary>
+    [JsonIgnore]
+    public bool IsOutsideRange =>
+        EffectCatalog.FindCondition(_kind)?.NeedsAmount2 == true && (_amount < 0 || _amount2 < 0);
 
     /// <summary>「拥有某状态」用的增益/减益（本体的 Power 类名）</summary>
     public string? PowerId
@@ -1862,8 +1885,13 @@ public sealed class ConditionSpec : SpecBase
 
     [JsonIgnore] public bool IsNone => string.IsNullOrWhiteSpace(_kind) || _kind == "None";
     [JsonIgnore] public bool NeedsAmount => EffectCatalog.FindCondition(_kind)?.NeedsAmount == true;
+    /// <summary>要不要显示第二个数值框（「生命值在 N%~M% 之间」用得到）。</summary>
+    [JsonIgnore] public bool NeedsAmount2 => EffectCatalog.FindCondition(_kind)?.NeedsAmount2 == true;
     [JsonIgnore] public bool NeedsPower => EffectCatalog.FindCondition(_kind)?.NeedsPower == true;
     [JsonIgnore] public bool NeedsTarget => EffectCatalog.FindCondition(_kind)?.NeedsTarget == true;
+
+    /// <summary>界面上「填负数 = 反向」那一句提示要不要显示（条件支持填负数、而且当前没填负数时提示怎么写）。</summary>
+    [JsonIgnore] public bool SupportsNegative => EffectCatalog.FindCondition(_kind)?.SupportsNegative == true;
 
     /// <summary>指向对象的中文（界面上/描述里显示）。</summary>
     [JsonIgnore]
@@ -1875,27 +1903,11 @@ public sealed class ConditionSpec : SpecBase
         _ => "自己",
     };
 
-    /// <summary>列表里显示的短名（带参数）</summary>
+    /// <summary>列表里显示的短名（带参数）。
+    /// 措辞（含「填负数 = 反向」「生命区间」）统一走 <see cref="EffectCatalog.ConditionZh"/>，界面和卡面描述不会两套说法。</summary>
     [JsonIgnore]
-    public string DisplayShort
-    {
-        get
-        {
-            var opt = EffectCatalog.FindCondition(_kind);
-            if (opt is null || IsNone) return "";
-            string text = opt.Display;
-            if (opt.NeedsAmount) text = text.Replace("N", _amount.ToString("0.##"));
-            if (opt.NeedsPower) text = text.Replace("某状态", EffectCatalog.PowerName(_powerId, "某状态"));
-            // 指向对象不是「自己」时补一句（「全部敌人」这种条件光看名字不知道看谁）
-            if (opt.NeedsTarget && !string.Equals(_target, "Self", StringComparison.OrdinalIgnoreCase))
-                text += $"（{TargetZh}）";
-            // 「额外资源量」用界面/游戏里真正显示的那个名字（用户可能叫它「冰附魔」）——
-            // 生成卡面描述走的是 LocalizationGen（那边显式传名字），这里是界面列表里的显示。
-            if (ResourceDisplayName.Length > 0 && ResourceDisplayName != "额外资源量")
-                text = text.Replace("额外资源量", ResourceDisplayName);
-            return text;
-        }
-    }
+    public string DisplayShort =>
+        EffectCatalog.ConditionZh(_kind, _amount, _amount2, _powerId, TargetZh, ResourceDisplayName);
 
     /// <summary>
     /// 「额外资源量」在界面上的名字（「额外资源量/状态」页里用户填的那个）。
