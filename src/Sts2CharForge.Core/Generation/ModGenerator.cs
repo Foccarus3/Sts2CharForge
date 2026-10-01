@@ -372,6 +372,14 @@ public static class ModGenerator
             + (PetGen.IsActive(profile) ? " / monsters（召唤物的名字）" : ""));
 
         ArtGenerator.Generate(profile, root, Log);
+        // 图集精灵补丁必须在美术生成**之后**写：它要按刚写出来的药水图标实际尺寸算区域。
+        // 为什么改成这样：以前每个模组都往工程里塞一份完整的 ui_atlas.tpsheet（本体 102 条 + 自己那条），
+        // 而模组的 pck 同路径只有一个能生效（后挂载的盖掉前面的）—— 同时装两个自建角色时，
+        // 另一个角色的能量图标就变成 "Missing sprite 'card/energy_xxx' in ui_atlas"，游戏里图标直接消失
+        //（ui_atlas 在图集加载器里没有回退路径）。现在改成运行时把「我们自己的精灵」直接供给 AtlasManager，
+        // 纹理文件名每个模组唯一，永远不会互相覆盖。
+        ProjectFilesGen.WriteText(Path.Combine(cs, "AtlasSpritePatch.cs"), ArtGenerator.AtlasSpritePatchSource(profile, root));
+        Log($"  已生成图集精灵补丁：能量图标 + 药水图标由本模组自己的图供给（{ArtGenerator.AtlasSpriteEntries(profile, root).Count} 条，不再改本体的图集精灵表）");
         ProjectFilesGen.CopyLocalDependencies(profile, root, Log);
         ProjectFilesGen.WriteText(Path.Combine(root, "README.md"), Readme(profile, n));
 

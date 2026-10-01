@@ -83,6 +83,12 @@ public sealed record Naming(
     /// <summary>「额外资源量」的隐藏承载遗物（每个模组必须有自己的一份）。</summary>
     public string ExtraResourceRelicClass => CharClass + "ExtraResourceRelic";
 
+    /// <summary>
+    /// 图集精灵补丁：能量图标 / 药水图标由本模组自己的图直接供给 AtlasManager
+    /// （不写本体的 ui_atlas.tpsheet —— 那份表多个模组会互相覆盖，见 ArtGenerator.AtlasSpritePatchSource）。
+    /// </summary>
+    public string AtlasSpritePatchClass => CharClass + "ForgeAtlasSpritePatch";
+
     /// <summary>「额外获得一个回合」用的 Power。</summary>
     public string ExtraTurnPowerClass => CharClass + "ForgeExtraTurnPower";
 

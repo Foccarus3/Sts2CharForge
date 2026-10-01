@@ -866,9 +866,27 @@ protected override IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip> ExtraHove
 |---|---|---|
 | 自定义状态 / 能力牌 | `images/atlases/power_atlas.sprites/<状态>.tres` | `images/powers/<状态>.png`（`BigIcon` 施加特效那张大图也读这里） |
 | 额外资源量（隐藏起始遗物） | `images/atlases/relic_atlas.sprites/extra_resource_relic.tres` | `images/relics/extra_resource_relic.png`（不然遗物栏那格是紫色占位） |
-| 自定义遗物 / 药水 | 各自的 `*_atlas.sprites/<id>.tres` | `images/relics/<id>.png` / `images/potions/<id>.png`，并且 `*.tpsheet` 里要有对应精灵条目 |
+| 自定义遗物 / 药水 | 各自的 `*_atlas.sprites/<id>.tres` | `images/relics/<id>.png` / `images/potions/<id>.png` |
 
 「本体状态改写」的图标走的是 Harmony 补丁（`PowerModel.Icon` / `BigIcon`），覆盖的是**本体已有**的状态，不需要回退路径。
+
+### 同时装多个自建角色：能量图标 / 药水图标为什么不会互相盖掉
+
+**能量图标**（卡面费用、能量悬停提示）和**药水图标**在图集加载器里是「按精灵名字去图集的 `.tpsheet` 里查」的
+（`AtlasResourceLoader` → `AtlasManager.GetSprite`）。而 `res://` 下**同一个路径只有一个文件能生效** ——
+早期版本每个模组都往自己工程里塞一份完整的 `ui_atlas.tpsheet`（本体 102 条 + 自己那条能量图标），
+于是同时装两个自建角色时，后加载的那个 pck 会把前一个盖掉，另一个角色的能量图标就变成
+`Missing sprite 'card/energy_xxx' in ui_atlas`，**游戏里图标直接消失**
+（`ui_atlas` 在图集加载器里**没有**回退路径，找不到就是没有；药水有回退图所以看着正常）。
+
+现在生成器**不再写任何 `.tpsheet`**，改成生成一个补丁 `cs/AtlasSpritePatch.cs`：
+运行时给本体的 `AtlasManager.HasSprite` / `GetSprite` 挂前缀，把「我们自己的那几个精灵」
+直接返回我们自己的纹理（能量图标用 `<颜色>_energy_page_0.png`，药水用 `images/potions/large/<id>.png`）。
+文件名每个模组都是独有的，所以装多少个自建角色都不会互相覆盖；本体的那几份图集表也保持原样。
+
+另外：**没上传额外资源量图标**时，那个隐藏起始遗物的回退图也会写出来（用本体的星星图标），
+不然遗物栏那一格会报 `Missing sprite` 并显示紫色占位。
+
 
 ### 关于动画
 

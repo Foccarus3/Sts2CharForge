@@ -125,7 +125,7 @@ public static class ArtGenerator
         WriteCardFrameMaterial(p, projectRoot, log);
         WriteEnergyCounterRecolor(p, projectRoot, log);
 
-        WriteEnergyIcon(p, projectRoot);
+        WriteEnergyIcon(p, projectRoot, log);
         WriteExtraResourceIcon(p, projectRoot, log);
         WriteVanillaPowerIcons(p, projectRoot, log);
         WriteGeneratedPowerIcons(p, projectRoot, log);
@@ -134,8 +134,9 @@ public static class ArtGenerator
         WriteCardPortraits(p, projectRoot, log);
         WriteRelicIcons(p, projectRoot, log);
         WritePotionIcons(p, projectRoot, log);
-        PatchPotionAtlasSheets(p, projectRoot, log);
-        PatchUiAtlasSheet(p, projectRoot, log);
+        // 注意：这里**不再**写 ui_atlas.tpsheet / potion_atlas.tpsheet ——
+        // 那份图集精灵表每个模组各带一份、同路径只有一个能生效（后挂载的盖掉前面的），
+        // 两个自建角色一起装就会有一个的能量图标消失。改成由生成的 AtlasSpritePatch 运行时供给。
     }
 
     /// <summary>
@@ -267,76 +268,6 @@ region = Rect2(0, 0, {ow}, {oh})
 """);
         }
         log?.Invoke($"  药水图标：{p.Potions.Count} 个（未上传的用本体药水图占位，建议自己上传）");
-    }
-
-    /// <summary>
-    /// 给药水的图集精灵表补条目。本体用 AtlasResourceLoader 按 tpsheet 找精灵：
-    /// 只写 potion_atlas.sprites/<id>.tres 不够，日志会报 "Missing sprite 'xxx' in potion_atlas" 且图标不显示。
-    /// 做法同能量图标：上传了图 → 新建一页（页图就是上传的图）+ 同名精灵；没上传 → 复制本体某个药水条目当占位。
-    /// </summary>
-    private static void PatchPotionAtlasSheets(CharacterProfile p, string projectRoot, Action<string>? log)
-    {
-        if (p.Potions.Count == 0) return;
-        var n = Naming.From(p);
-
-        foreach (string sheet in new[] { "potion_atlas", "potion_outline_atlas" })
-        {
-            string src = Path.Combine(p.Paths.VanillaProject, "images/atlases", sheet + ".tpsheet");
-            if (!File.Exists(src)) { log?.Invoke($"  [警告] 找不到 {sheet}.tpsheet，药水图标可能显示不出来"); continue; }
-
-            var node = JsonNode.Parse(File.ReadAllText(src))!;
-            var textures = node["textures"]!.AsArray();
-            string outPath = Path.Combine(projectRoot, "images/atlases", sheet + ".tpsheet");
-
-            for (int i = 0; i < p.Potions.Count; i++)
-            {
-                var s = p.Potions[i];
-                string entry = Naming.EntryOf(n.PotionClassName(s, i)).ToLowerInvariant();
-                string spriteName = entry + ".png";
-
-                bool exists = textures.Any(t => t!["sprites"]!.AsArray()
-                    .Any(sp => string.Equals((string?)sp!["filename"], spriteName, StringComparison.Ordinal)));
-                if (exists) continue;
-
-                string? userArt = sheet == "potion_atlas" ? s.Icon : s.IconOutline;
-                bool hasUserArt = !string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt);
-
-                if (hasUserArt)
-                {
-                    var (w, h) = ReadPngSize(userArt!, 77, 78);
-                    string pageName = $"{entry}_page_0.png";
-                    File.Copy(userArt!, Path.Combine(projectRoot, "images/atlases", pageName), overwrite: true);
-                    textures.Add(new JsonObject
-                    {
-                        ["image"] = pageName,
-                        ["size"] = new JsonObject { ["w"] = w, ["h"] = h },
-                        ["sprites"] = new JsonArray(new JsonObject
-                        {
-                            ["filename"] = spriteName,
-                            ["region"] = new JsonObject { ["x"] = 0, ["y"] = 0, ["w"] = w, ["h"] = h },
-                            ["margin"] = new JsonObject { ["x"] = 0, ["y"] = 0, ["w"] = 0, ["h"] = 0 },
-                        }),
-                    });
-                }
-                else
-                {
-                    bool cloned = false;
-                    foreach (var tex in textures)
-                    {
-                        var arr = tex!["sprites"]!.AsArray();
-                        if (arr.Count == 0) continue;
-                        var clone = arr[0]!.DeepClone().AsObject();
-                        clone["filename"] = spriteName;
-                        arr.Add(clone);
-                        cloned = true;
-                        break;
-                    }
-                    if (!cloned) log?.Invoke($"  [警告] {sheet}.tpsheet 没有可复制条目，药水「{s.Name}」图标可能异常");
-                }
-            }
-            ProjectFilesGen.WriteText(outPath, node.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
-        }
-        log?.Invoke("  药水图集：已按 tpsheet 补上精灵条目（否则游戏里会报 Missing sprite）");
     }
 
     /// <summary>
@@ -978,28 +909,67 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
     {
         if (!p.ExtraResource.Enabled) return;
         string? src = p.ExtraResource.Icon;
-        if (string.IsNullOrWhiteSpace(src)) return;
-        if (!File.Exists(src)) { log?.Invoke($"  [警告] 额外资源量图标不存在：{src}"); return; }
+        bool hasUserIcon = !string.IsNullOrWhiteSpace(src) && File.Exists(src);
+        if (!string.IsNullOrWhiteSpace(src) && !hasUserIcon)
+            log?.Invoke($"  [警告] 额外资源量图标不存在：{src}");
+
+        // 没上传（或文件没了）时用本体的星星图标当占位：遗物栏那个格子总得有图，
+        // 不给文件的话日志会报 Missing sprite 'xxx_extra_resource_relic'、格子显示紫色占位。
+        if (!hasUserIcon)
+        {
+            string star = Path.Combine(p.Paths.VanillaProject, "images/packed/sprite_fonts/star_icon.png");
+            if (!File.Exists(star))
+            {
+                string dir = Path.Combine(p.Paths.VanillaProject, "images/packed/sprite_fonts");
+                star = Directory.Exists(dir) ? Directory.GetFiles(dir, "*.png").FirstOrDefault() ?? "" : "";
+            }
+            WriteExtraResourceRelicFallback(p, projectRoot, File.Exists(star) ? star : null);
+            log?.Invoke("  额外资源量图标：没上传（或文件不存在），计数器 / 遗物栏沿用本体的星星图标");
+            return;
+        }
 
         string dst = Path.Combine(projectRoot, ExtraResourceIconRelPath(p).Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-        File.Copy(src, dst, overwrite: true);
+        File.Copy(src!, dst, overwrite: true);
 
         string inlineRel = ExtraResourceIconInlineRelPath(p);
         string inlineDst = Path.Combine(projectRoot, inlineRel.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(inlineDst)!);
-        if (!PngUtil.Resize(src, inlineDst, 24, 24))
-            File.Copy(src, inlineDst, overwrite: true);
+        if (!PngUtil.Resize(src!, inlineDst, 24, 24))
+            File.Copy(src!, inlineDst, overwrite: true);
 
-        // 「额外资源量」是靠一个隐藏的起始遗物（ExtraResourceRelic）承载的，它也在遗物栏里显示，
-        // 图标路径是本体规则 res://images/atlases/relic_atlas.sprites/<entry>.tres →
-        // 图集里没有这个精灵，AtlasResourceLoader 会回退到 res://images/relics/<entry>.png。
-        // 不给这个文件，遗物栏那个格子就是 missing_power（紫色占位）+ 日志里 Missing sprite 'extra_resource_relic'。
+        WriteExtraResourceRelicFallback(p, projectRoot, src);
+
+        // 方图最好看（计数器是个 128×128 的方框），顺便提醒一下
+        var size = PngUtil.Decode(src!);
+        string hint = size is { } s && s.W != s.H ? $"，[警告] 这张图是 {s.W}×{s.H}，不是方图，建议换成方图" : "";
+        string small = size is { } s2 && (s2.W != 24 || s2.H != 24) ? $"；文字里的内联图标已自动缩成 24×24（原图 {s2.W}×{s2.H}）" : "";
+        log?.Invoke($"  额外资源量图标：已使用你上传的图 {Path.GetFileName(src)}{hint}{small}");
+    }
+
+    /// <summary>
+    /// 「额外资源量」那个隐藏起始遗物的图标文件。
+    ///
+    /// 它也在遗物栏里显示，图标路径是本体规则 <c>relic_atlas.sprites/&lt;entry&gt;.tres</c>；
+    /// 图集里没有这个精灵时，AtlasResourceLoader 会回退到 <c>images/relics/&lt;entry&gt;.png</c>。
+    /// <b>不给这个文件</b>，遗物栏那个格子就是 missing_power（紫色占位）+ 日志里
+    /// <c>Missing sprite 'xxx_extra_resource_relic'</c>（用户实测报过）。
+    /// </summary>
+    private static void WriteExtraResourceRelicFallback(CharacterProfile p, string projectRoot, string? src)
+    {
         string relicEntry = Naming.EntryOf(Naming.From(p).ExtraResourceRelicClass).ToLowerInvariant();
         string relicDst = Path.Combine(projectRoot, "images/relics", relicEntry + ".png");
         Directory.CreateDirectory(Path.GetDirectoryName(relicDst)!);
-        File.Copy(src, relicDst, overwrite: true);
-        var (rw, rh) = ReadPngSize(relicDst, 256, 256);
+        if (src is not null && File.Exists(src))
+        {
+            if (!PngUtil.Resize(src, relicDst, 128, 128))
+                File.Copy(src, relicDst, overwrite: true);
+        }
+        else if (!PngUtil.Resize(relicDst, relicDst, 128, 128) && !File.Exists(relicDst))
+        {
+            WriteNeutralPng(relicDst, 128, 128);
+        }
+        var (rw, rh) = ReadPngSize(relicDst, 128, 128);
         ProjectFilesGen.WriteText(Path.Combine(projectRoot, "images/atlases/relic_atlas.sprites", relicEntry + ".tres"), $"""
 [gd_resource type="AtlasTexture" load_steps=2 format=3]
 
@@ -1009,12 +979,6 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
 atlas = ExtResource("1_relic")
 region = Rect2(0, 0, {rw}, {rh})
 """);
-
-        // 方图最好看（计数器是个 128×128 的方框），顺便提醒一下
-        var size = PngUtil.Decode(src);
-        string hint = size is { } s && s.W != s.H ? $"，[警告] 这张图是 {s.W}×{s.H}，不是方图，建议换成方图" : "";
-        string small = size is { } s2 && (s2.W != 24 || s2.H != 24) ? $"；文字里的内联图标已自动缩成 24×24（原图 {s2.W}×{s2.H}）" : "";
-        log?.Invoke($"  额外资源量图标：已使用你上传的图 {Path.GetFileName(src)}{hint}{small}");
     }
 
     /// <summary>
@@ -1167,26 +1131,158 @@ region = Rect2(0, 0, {w}, {h})
 """);
     }
 
-    private static void WriteEnergyIcon(CharacterProfile p, string projectRoot)
+    /// <summary>一条「由我们自己供给」的图集精灵（本体 AtlasManager 里的精灵表不会有它）。</summary>
+    public readonly record struct AtlasSpriteEntry(string Atlas, string Sprite, string TexturePath, int X, int Y, int W, int H);
+
+    /// <summary>
+    /// 能量图标（卡面费用 / 能量悬停提示那个）的图片来源：本体 ui_atlas 里的能量精灵是 74×74。
+    /// 三种情况（和 <see cref="WriteEnergyIcon"/> 写出来的文件一一对应）：
+    ///   · 上传了图标   → 我们自己的图集页 <c>&lt;color&gt;_energy_page_0.png</c>（缩成 74×74）
+    ///   · 用本体素材占位 → 直接引用本体 ui_atlas_0.png 里铁甲战士那一块（1440,1948,74,74）
+    ///   · 中性占位     → 我们自己的 <c>&lt;color&gt;_neutral_atlas_0.png</c>
+    /// </summary>
+    public static AtlasSpriteEntry EnergySpriteEntry(CharacterProfile p)
     {
         var n = Naming.From(p);
         bool userIcon = !string.IsNullOrWhiteSpace(p.Art.EnergyIcon) && File.Exists(p.Art.EnergyIcon);
         bool neutral = !userIcon && !p.Art.UseVanillaPlaceholders;
+        string tex = neutral ? $"res://images/atlases/{n.EnergyColor}_neutral_atlas_0.png"
+            : userIcon ? $"res://images/atlases/{n.EnergyColor}_energy_page_0.png"
+            : "res://images/atlases/ui_atlas_0.png";
+        return new AtlasSpriteEntry("ui_atlas", $"card/energy_{n.EnergyColor}", tex,
+            userIcon || neutral ? 0 : 1440, userIcon || neutral ? 0 : 1948, 74, 74);
+    }
 
-        // 中性占位时用自己的图集页，不再指向本体 ui_atlas_0.png
-        string atlasTex = neutral ? $"res://images/atlases/{n.EnergyColor}_neutral_atlas_0.png"
-                                  : "res://images/atlases/ui_atlas_0.png";
+    /// <summary>
+    /// 本模组需要「自己供给」的全部图集精灵：能量图标 1 条 + 每支药水 2 条（普通 / 描边）。
+    /// 必须在美术生成**之后**调用（药水图标的区域要按刚写出来的 PNG 实际尺寸算）。
+    /// </summary>
+    public static IReadOnlyList<AtlasSpriteEntry> AtlasSpriteEntries(CharacterProfile p, string projectRoot)
+    {
+        var n = Naming.From(p);
+        var list = new List<AtlasSpriteEntry> { EnergySpriteEntry(p) };
+        for (int i = 0; i < p.Potions.Count; i++)
+        {
+            string entry = Naming.EntryOf(n.PotionClassName(p.Potions[i], i)).ToLowerInvariant();
+            string bigRel = $"images/potions/large/{entry}.png";
+            string outlineRel = $"images/potions/large/{entry}_outline.png";
+            var (w, h) = ReadPngSize(Path.Combine(projectRoot, bigRel.Replace('/', Path.DirectorySeparatorChar)), 77, 78);
+            var (ow, oh) = ReadPngSize(Path.Combine(projectRoot, outlineRel.Replace('/', Path.DirectorySeparatorChar)), w, h);
+            list.Add(new AtlasSpriteEntry("potion_atlas", entry, "res://" + bigRel, 0, 0, w, h));
+            list.Add(new AtlasSpriteEntry("potion_outline_atlas", entry, "res://" + outlineRel, 0, 0, ow, oh));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 「图集精灵由我们自己供给」的补丁。
+    ///
+    /// 为什么需要它（用户实测）：本体查能量图标 / 药水图标是
+    /// <c>AtlasResourceLoader</c> → <c>AtlasManager.GetSprite(atlas, sprite)</c>，
+    /// 而精灵名只存在于图集的 <c>.tpsheet</c> 里 —— 每个模组各带一份 <c>ui_atlas.tpsheet</c> 时，
+    /// 同一个路径只会生效一份（后挂载的 pck 盖掉前面的），于是另一个角色的能量图标变成
+    /// <c>Missing sprite 'card/energy_xxx' in ui_atlas</c>，游戏里图标直接消失
+    ///（<c>ui_atlas</c> 在图集加载器里**没有**回退路径，找不到就是没有）。
+    ///
+    /// 所以生成时不再写任何 tpsheet，改成在运行时给 AtlasManager 挂前后缀：
+    /// 我们自己的精灵直接返回我们自己的纹理 —— 文件名每个模组唯一，永远不会互相覆盖。
+    /// </summary>
+    public static string AtlasSpritePatchSource(CharacterProfile p, string projectRoot)
+    {
+        var n = Naming.From(p);
+        var entries = AtlasSpriteEntries(p, projectRoot);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 能量 / 药水图标：由本模组自己的图直接供给 AtlasManager（不改本体的图集精灵表） </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line()
+         .Line("/// <summary>")
+         .Line("/// 本体查图集精灵走 AtlasManager.GetSprite / HasSprite。")
+         .Line("/// 如果去改本体的 ui_atlas.tpsheet：每个模组各带一份、同路径只能生效一份，")
+         .Line("/// 同时装两个自建角色时其中一个的能量图标就会 Missing sprite（用户实测）。")
+         .Line("/// 所以这里把「我们自己的精灵」在内存里直接供给本体，纹理用各自模组独有的文件。")
+         .Line("/// </summary>")
+         .Open($"internal static class {n.AtlasSpritePatchClass}")
+         .Line("// (图集, 精灵) → (纹理路径, 区域)。键就是图集精灵表里的 filename（本体查的时候会去掉 .png）")
+         .Line("private static readonly Dictionary<(string Atlas, string Sprite), (string Path, Rect2 Region)> Table = new()")
+         .Line("{");
+        foreach (var e in entries)
+            w.Line($"    [({Lit.Str(e.Atlas)}, {Lit.Str(e.Sprite)})] = ({Lit.Str(e.TexturePath)}, new Rect2({e.X}, {e.Y}, {e.W}, {e.H})),");
+        w.Line("};")
+         .Line()
+         .Line("private static readonly Dictionary<(string Atlas, string Sprite), AtlasTexture> Cache = new();")
+         .Line()
+         .Open("private static bool TryGet(string atlasName, string spriteName, out AtlasTexture? texture)")
+         .Line("texture = null;")
+         .Line("string sprite = spriteName.EndsWith(\".png\", StringComparison.OrdinalIgnoreCase) ? spriteName[..^4] : spriteName;")
+         .Line("if (!Table.TryGetValue((atlasName, sprite), out var e)) return false;")
+         .Open("lock (Cache)")
+         .Open("if (Cache.TryGetValue((atlasName, sprite), out AtlasTexture? cached) && GodotObject.IsInstanceValid(cached))")
+         .Line("texture = cached;")
+         .Line("return true;")
+         .Close()
+         .Line("Texture2D? tex = ResourceLoader.Load<Texture2D>(e.Path, null, ResourceLoader.CacheMode.Reuse);")
+         .Line("if (tex is null) return false;")
+         .Line("var made = new AtlasTexture { Atlas = tex, Region = e.Region };")
+         .Line("Cache[(atlasName, sprite)] = made;")
+         .Line("texture = made;")
+         .Line("return true;")
+         .Close()
+         .Close()
+         .Line()
+         .Line("// _Exists 走的是 HasSprite：不拦这一下，本体连 _Load 都不会调用")
+         .Line("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Assets.AtlasManager), nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.HasSprite))]")
+         .Line("[HarmonyLib.HarmonyPrefix]")
+         .Open("private static bool HasSpritePrefix(string atlasName, string spriteName, ref bool __result)")
+         .Line("if (!TryGet(atlasName, spriteName, out _)) return true;   // 不是我们的精灵：交回本体")
+         .Line("__result = true;")
+         .Line("return false;")
+         .Close()
+         .Line()
+         .Line("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Assets.AtlasManager), nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.GetSprite))]")
+         .Line("[HarmonyLib.HarmonyPrefix]")
+         .Open("private static bool GetSpritePrefix(string atlasName, string spriteName, ref AtlasTexture? __result)")
+         .Line("if (!TryGet(atlasName, spriteName, out AtlasTexture? texture)) return true;   // 不是我们的精灵：交回本体")
+         .Line("__result = texture;")
+         .Line("return false;")
+         .Close()
+         .Close();
+        return w.ToString();
+    }
+
+    private static void WriteEnergyIcon(CharacterProfile p, string projectRoot, Action<string>? log)
+    {
+        var n = Naming.From(p);
+        bool userIcon = !string.IsNullOrWhiteSpace(p.Art.EnergyIcon) && File.Exists(p.Art.EnergyIcon);
+        bool neutral = !userIcon && !p.Art.UseVanillaPlaceholders;
+        var sprite = EnergySpriteEntry(p);
+
+        // 74×74 的那张图（卡面费用 / 悬停提示用）。
+        // **不再**去改本体的 ui_atlas.tpsheet：那份表每个模组各带一份、同路径只有一个能生效，
+        // 两个自建角色一起装就会有一个的能量图标消失（用户实测）。现在由生成的
+        // AtlasSpritePatch 直接把这张图供给本体（见 AtlasSpritePatchSource）。
         if (neutral)
+        {
             WriteNeutralPng(Path.Combine(projectRoot, "images/atlases", $"{n.EnergyColor}_neutral_atlas_0.png"), 74, 74);
+        }
+        else if (userIcon)
+        {
+            // 本体这张精灵就是 74×74：原样塞大图会让卡面上的能量图标尺寸失控（描述 / 布局一起变形）
+            string pagePath = Path.Combine(projectRoot, "images/atlases", $"{n.EnergyColor}_energy_page_0.png");
+            Directory.CreateDirectory(Path.GetDirectoryName(pagePath)!);
+            if (!PngUtil.Resize(p.Art.EnergyIcon!, pagePath, 74, 74))
+                File.Copy(p.Art.EnergyIcon!, pagePath, overwrite: true);
+            log?.Invoke($"  能量图标：用上传的图片缩成 74×74 存成自己的图集页 {Path.GetFileName(pagePath)}（文字内联图标另存 24×24）");
+        }
+        // 用本体素材占位时不写自己的页：直接引用本体的 ui_atlas_0.png（铁甲战士那一块）
 
         ProjectFilesGen.WriteText(Path.Combine(projectRoot, "images/atlases/ui_atlas.sprites/card", $"energy_{n.EnergyColor}.tres"), $"""
 [gd_resource type="AtlasTexture" load_steps=2 format=3]
 
-[ext_resource type="Texture2D" path="{atlasTex}" id="1_ui"]
+[ext_resource type="Texture2D" path="{sprite.TexturePath}" id="1_ui"]
 
 [resource]
 atlas = ExtResource("1_ui")
-region = Rect2({(neutral ? "0, 0" : "1440, 1948")}, 74, 74)
+region = Rect2({sprite.X}, {sprite.Y}, {sprite.W}, {sprite.H})
 """);
 
         string dst = Path.Combine(projectRoot, "images/packed/sprite_fonts", $"{n.EnergyColor}_energy_icon.png");

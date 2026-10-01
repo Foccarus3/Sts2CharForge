@@ -12153,6 +12153,80 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(zeroRoot)) Directory.Delete(zeroRoot, true); } catch { }
 			}
 		}
+		// ===== 本轮新增：能量 / 药水图标不再靠「改本体的图集精灵表」（多个模组会互相覆盖） =====
+		{
+			// 为什么改：每个模组各带一份 ui_atlas.tpsheet（本体 102 条 + 自己那条），
+			// 而模组 pck 的同一个路径只有一个能生效（后挂载的盖掉前面的）—— 同时装两个自建角色时，
+			// 另一个角色的能量图标就变成 "Missing sprite 'card/energy_xxx' in ui_atlas"，游戏里直接消失
+			//（ui_atlas 在图集加载器里没有回退路径）。现在改成运行时把「我们自己的精灵」供给 AtlasManager。
+			string atlasRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_atlas_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile atlasProbe = ProfileFactory.Sample();
+				atlasProbe.Paths.OutputDir = atlasRoot;
+				atlasProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				atlasProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				Directory.CreateDirectory(atlasRoot);
+				string energySrc = Path.Combine(atlasRoot, "energy_src.png");
+				byte[] energyPx = new byte[64 * 64 * 4];
+				for (int pi = 0; pi < energyPx.Length; pi += 4)
+				{
+					energyPx[pi] = 210; energyPx[pi + 1] = 60; energyPx[pi + 2] = 90; energyPx[pi + 3] = 255;
+				}
+				PngUtil.WriteRgba(energySrc, 64, 64, energyPx);
+				atlasProbe.Art.EnergyIcon = energySrc;
+				// 额外资源量开着、但**不传图标**：遗物栏那个隐藏遗物也得有回退图
+				atlasProbe.ExtraResource.Enabled = true;
+				atlasProbe.ExtraResource.Name = "自检资源";
+				atlasProbe.ExtraResource.Icon = "";
+				Check("（准备）带能量图标 / 药水 / 额外资源量的存档能生成工程", ModGenerator.Generate(atlasProbe).Success, atlasRoot);
+				string atlasProject = ModGenerator.ProjectRootOf(atlasProbe);
+				var atlasNaming = Naming.From(atlasProbe);
+
+				string[] leftovers = Directory.EnumerateFiles(atlasProject, "*.tpsheet", SearchOption.AllDirectories).ToArray();
+				Check("生成出来的工程里**不再**有图集精灵表（.tpsheet）—— 那正是多个模组互相覆盖的根源",
+					leftovers.Length == 0, leftovers.Length == 0 ? "没有 tpsheet" : string.Join(" / ", leftovers.Select(Path.GetFileName)));
+
+				var atlasEntries = ArtGenerator.AtlasSpriteEntries(atlasProbe, atlasProject);
+				Check("能量 / 药水图标都进了「我们自己供给」的清单（能量 1 条 + 每支药水 2 条）",
+					atlasEntries.Any((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "ui_atlas" && e.Sprite == $"card/energy_{atlasNaming.EnergyColor}")
+					&& atlasEntries.Count((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "potion_atlas") == atlasProbe.Potions.Count
+					&& atlasEntries.Count((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "potion_outline_atlas") == atlasProbe.Potions.Count,
+					$"{atlasEntries.Count} 条：" + string.Join(" / ", atlasEntries.Select((ArtGenerator.AtlasSpriteEntry e) => e.Atlas + ":" + e.Sprite)));
+				Check("能量图标用我们自己的图集页（不再指向本体 ui_atlas_0.png 里铁甲战士那一块），区域 74×74",
+					atlasEntries.Any((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "ui_atlas"
+						&& e.TexturePath.EndsWith($"{atlasNaming.EnergyColor}_energy_page_0.png", StringComparison.Ordinal) && e.W == 74 && e.H == 74),
+					atlasEntries.First((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "ui_atlas").TexturePath);
+				string energyTres = File.ReadAllText(Path.Combine(atlasProject, "images", "atlases", "ui_atlas.sprites", "card", $"energy_{atlasNaming.EnergyColor}.tres"));
+				Check("能量图标的 .tres 也指向我们自己的图集页（内容与补丁一致）",
+					energyTres.Contains($"{atlasNaming.EnergyColor}_energy_page_0.png") && energyTres.Contains("Rect2(0, 0, 74, 74)"),
+					energyTres.Replace("\n", " "));
+
+				string atlasPatchPath = Path.Combine(atlasProject, "cs", "AtlasSpritePatch.cs");
+				string atlasPatchSrc = File.Exists(atlasPatchPath) ? File.ReadAllText(atlasPatchPath) : "";
+				Check("生成了图集精灵补丁 cs/AtlasSpritePatch.cs", File.Exists(atlasPatchPath),
+					File.Exists(atlasPatchPath) ? atlasNaming.AtlasSpritePatchClass : "没找到");
+				Check("补丁拦的是本体 AtlasManager 的 HasSprite / GetSprite（_Exists 走前者，不拦连 _Load 都不会调用）",
+					atlasPatchSrc.Contains("nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.HasSprite)")
+					&& atlasPatchSrc.Contains("nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.GetSprite)")
+					&& atlasPatchSrc.Contains("[HarmonyLib.HarmonyPrefix]"), "两个都拦了");
+				Check("补丁的表里有能量图标 + 药水（键就是图集精灵表里的 filename）",
+					atlasPatchSrc.Contains($"(\"ui_atlas\", \"card/energy_{atlasNaming.EnergyColor}\")")
+					&& atlasPatchSrc.Contains("(\"potion_atlas\",")
+					&& atlasPatchSrc.Contains("(\"potion_outline_atlas\","), "表齐了");
+				string atlasPatchNoMatch = CSharpCodeGen.CardPoolSource(atlasProbe);   // 对照：别的源码里没有这段
+				Check("（对照）补丁只在需要时才存在，别的生成代码里没有这一段", !atlasPatchNoMatch.Contains("AtlasManager"), "对照通过");
+
+				string exRelicIcon = Path.Combine(atlasProject, "images", "relics",
+					Naming.EntryOf(atlasNaming.ExtraResourceRelicClass).ToLowerInvariant() + ".png");
+				Check("额外资源量**没上传图标**时，那个隐藏遗物的回退图也会写出来（否则遗物栏 Missing sprite + 紫色占位）",
+					File.Exists(exRelicIcon), File.Exists(exRelicIcon) ? Path.GetFileName(exRelicIcon) : "没找到");
+			}
+			finally
+			{
+				try { if (Directory.Exists(atlasRoot)) Directory.Delete(atlasRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
