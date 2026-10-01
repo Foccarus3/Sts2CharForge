@@ -1390,6 +1390,8 @@ public static class ProjectRecovery
                 if (power == "BlockNextTurnPower") { e.Kind = "Block"; e.NextTurn = true; }
                 else if (power == "DrawCardsNextTurnPower" || power.Contains("ForgeDelayedDraw", StringComparison.Ordinal)) { e.Kind = "Draw"; e.NextTurn = true; }
                 else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
+                // 额外资源量 + 下回合生效：本体 StarNextTurnPower（回合开始时 GainStars 再自毁）
+                else if (power == "StarNextTurnPower") { e.Kind = "ExtraResource"; e.NextTurn = true; }
                 else if (power.Contains("ForgeDelayed", StringComparison.Ordinal)) { e.NextTurn = true; }
                 // 临时增益：打的是我们生成的临时 Power（<角色>ForgeTemp<状态>）——
                 // 从类名里把真正的状态名抠回来（前缀 ForgeTemp，后缀 Power），从而认回「临时增益」这一条。
@@ -1441,6 +1443,8 @@ public static class ProjectRecovery
                     "Block" => "Block",
                     "Draw" => "Cards",
                     "Energy" => "Energy",
+                    // 额外资源量：CanonicalVars 里声明的是 StarsVar（键 Stars；同名多条会起别名 Stars2，NextVar 自己往后找）
+                    "ExtraResource" => "Stars",
                     // 临时增益：CanonicalVars 里声明的是**真正那个状态**的 PowerVar（不是临时 Power 的），
                     // 所以按 e.PowerId 找；别的（含延迟）用生成代码里那个 Power 名找。
                     "TempPower" => "Power:" + (e.PowerId ?? power),

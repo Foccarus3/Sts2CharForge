@@ -587,7 +587,9 @@ public static class EffectCatalog
         new EffectKindOption("MaxHp",   "最大生命",     "点", -999, 999, false, true),
         // 负数 = 扣除 N 枚金币（同上：GainGold 对非正数直接 return，负数走 PlayerCmd.LoseGold，会夹到 0）
         new EffectKindOption("Gold",    "获得金币（负数 = 扣除）", "枚", -999, 999, false, false),
-            new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, false, false),
+            // 额外资源量（本体的星星计数器）：正数 = 获得、负数 = 卡牌费用（花费）。
+        // 支持「下回合生效」：正数走本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars + 自毁）。
+        new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, true, false),
         new EffectKindOption("ApplyPower", "施加增益/减益", "层", 1, 99, true, true),
         // 击晕：本体的「击晕」不是状态（Power），而是**怪物意图**（StunIntent）——
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，

@@ -435,7 +435,11 @@ public static class CustomPowerGen
                 break;
 
             case "ExtraResource":
-                w.Line($"await PlayerCmd.GainStars({amt}, base.Owner.Player);");
+                // 下回合生效：本体的 StarNextTurnPower（它的 GainStars 拒绝负数，所以只有「获得」走这条）
+                if (e.NextTurn && (e.Amount > 0 || e.AmountIsStack))
+                    w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner, {amt}, base.Owner, null);   // 下回合开始时获得 {amt} 点额外资源量");
+                else
+                    w.Line($"await PlayerCmd.GainStars({amt}, base.Owner.Player);");
                 break;
 
             case "ExtraTurn":

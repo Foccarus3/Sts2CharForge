@@ -12423,6 +12423,96 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(spawnRoot)) Directory.Delete(spawnRoot, true); } catch { }
 			}
 		}
+		// ===== 本轮新增：预见卡不再卡死（选牌界面提示语）+ 额外资源量支持「下回合生效」 =====
+		{
+			// ① 预见：本体 CardModel.SelectionScreenPrompt 在键不存在时**直接抛异常**
+			//    （"No selection screen prompt for CARD.XXX."），而生成的代码是打出时读它的 →
+			//    抛在效果中间 = 这张牌永远打不完、游戏卡死（用户实测「预见的卡无法丢弃、卡死」）。
+			//    以前 NeedsSelectPrompt 只列了「从牌堆拿牌 / 给予关键词」，漏了预见。
+			CharacterProfile scryProbe = ProfileFactory.Sample();
+			CardSpec scryFix = new CardSpec { Name = "自检预见提示", ClassName = "UiCheckScryPrompt", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scryFix.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 3m, TargetSide = "Self" });
+			scryProbe.Cards.Add(scryFix);
+			Check("预见这种要弹选牌界面的效果，会一起生成 <卡>.selectionScreenPrompt（不然本体直接抛异常、游戏卡死）",
+				LocalizationGen.NeedsSelectPrompt(scryFix.Effects), "认得出来");
+			string scryJson = LocalizationGen.CardsJson(scryProbe);
+			Check("预见的卡真的写出了 selectionScreenPrompt（而且写的是「丢进弃牌堆」那句）",
+				scryJson.Contains("UI_CHECK_SCRY_PROMPT.selectionScreenPrompt")
+				&& scryJson.Contains("选择要丢进弃牌堆的牌"), "写出来了");
+			Check("（对照）不会弹选牌界面的效果不会多生成这一条（避免脏表）",
+				!LocalizationGen.CardsJson(new CharacterProfile
+				{
+					Cards = { new CardSpec { Name = "无界面", ClassName = "UiCheckNoPrompt", Cost = 1, Effects = { new EffectSpec { Kind = "Block", Amount = 3m } } } },
+				}).Contains("selectionScreenPrompt"), "没多生成");
+			// 凡是生成代码里读 base.SelectionScreenPrompt 的效果种类，都必须在这条名单里
+			string[] promptKinds = { "Scry", "TakeFromDraw", "TakeFromDiscard" };
+			Check("生成代码里读 base.SelectionScreenPrompt 的三条效果都在「要生成提示语」的名单里",
+				promptKinds.All(k => LocalizationGen.NeedsSelectPrompt(new[] { new EffectSpec { Kind = k, Amount = 1m, CardPick = "Chosen" } }))
+				&& LocalizationGen.NeedsSelectPrompt(new[] { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, CardPick = "Chosen" } }),
+				string.Join("、", promptKinds));
+			Check("预见的生成代码仍然用本体那条 SelectionScreenPrompt（现在键一定存在了）",
+				CSharpCodeGen.CardSource(scryProbe, scryFix, 0).Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count)"), "对");
+
+			// ② 额外资源量 + 下回合生效：本体有现成的 StarNextTurnPower（回合开始时 GainStars 再自毁）
+			Check("「获得额外资源量」标了支持「下回合生效」",
+				EffectCatalog.FindKind("ExtraResource").SupportsNextTurn, "支持");
+			CharacterProfile starProbe = ProfileFactory.Sample();
+			CardSpec starNext = new CardSpec { Name = "自检下回合资源", ClassName = "UiCheckStarNext", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			starNext.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = 3m, NextTurn = true });
+			starProbe.Cards.Add(starNext);
+			string starNextSrc = CSharpCodeGen.CardSource(starProbe, starNext, 0);
+			Check("额外资源量 + 下回合生效 → 生成本体 StarNextTurnPower（不是立即 GainStars）",
+				starNextSrc.Contains("PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, base.DynamicVars.Stars.BaseValue, base.Owner.Creature, this)")
+				&& !starNextSrc.Contains("PlayerCmd.GainStars"), "对");
+			Check("卡面描述写「下回合开始时，获得 …点…」",
+				LocalizationGen.CardsJson(starProbe).Contains("下回合开始时，获得 {Stars:diff()} 点额外资源量"), "描述对");
+			var starIssues = ProfileValidator.Validate(starProbe);
+			Check("校验器不再报「不支持下回合生效」错，而是给一句「下回合开始时发放」提示",
+				!starIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("不支持「下回合生效」"))
+				&& starIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("下回合开始时**获得")), "对");
+			// 负数（= 卡牌费用「需要 N 点」）+ 下回合生效：给警告说清会被忽略
+			CharacterProfile starNegProbe = ProfileFactory.Sample();
+			CardSpec starNeg = new CardSpec { Name = "自检下回合花费", ClassName = "UiCheckStarNeg", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			starNeg.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = -2m, NextTurn = true });
+			starNegProbe.Cards.Add(starNeg);
+			var starNegIssues = ProfileValidator.Validate(starNegProbe);
+			Check("「需要 N 点」+ 下回合生效 → 警告说清费用跟下回合无关、这一勾会被忽略",
+				starNegIssues.Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("费用和「下回合生效」没关系")), "警告在");
+			Check("这种（负数）情况生成的还是费用判定，不会去挂 StarNextTurnPower（本体 GainStars 拒绝负数）",
+				!CSharpCodeGen.CardSource(starNegProbe, starNeg, 0).Contains("StarNextTurnPower"), "没挂");
+			// 遗物也支持
+			CharacterProfile starRelicProbe = ProfileFactory.Sample();
+			starRelicProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检下回合资源遗物", ClassName = "UiCheckStarNextRelic", Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "ExtraResource", Amount = 2m, NextTurn = true } },
+			});
+			Check("遗物上的「获得额外资源量 + 下回合生效」也走 StarNextTurnPower",
+				CSharpCodeGen.RelicSource(starRelicProbe, starRelicProbe.Relics[^1], 0).Contains("PowerCmd.Apply<StarNextTurnPower>"), "对");
+			// 生成 → 回读
+			string starRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_starnext_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile starGenProbe = ProfileFactory.Sample();
+				starGenProbe.Paths.OutputDir = starRoot;
+				starGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				starGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec genStarNext = new CardSpec { Name = "自检下回合资源", ClassName = "UiCheckStarNext", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genStarNext.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = 3m, NextTurn = true });
+				starGenProbe.Cards.Add(genStarNext);
+				Check("（准备）额外资源量 + 下回合生效的存档能生成工程", ModGenerator.Generate(starGenProbe).Success, starRoot);
+				var starRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(starGenProbe));
+				var recStarNext = starRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckStarNext");
+				Check("回读：额外资源量 + 下回合生效原样回来",
+					recStarNext is not null && recStarNext.Effects.Any((EffectSpec e) => e.Kind == "ExtraResource" && e.NextTurn && e.Amount == 3m),
+					recStarNext is null ? "(没回读出来)" : string.Join(" / ", recStarNext.Effects.Select((EffectSpec e) => $"{e.Kind} {e.Amount} 下回合={e.NextTurn}")));
+				Check("回读没有认不出来的语句", !starRec.HasUnparsed, starRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(starRoot)) Directory.Delete(starRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

@@ -3348,6 +3348,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 //       升级增量写在 OnUpgrade 里（UpgradeValueBy），卡面描述用 {Stars:diff()} 跟着变。
                 // 负数（花费）：不在这里扣，而是通过 CanonicalStarCost 声明成卡牌费用，
                 //       本体自带的判定会让「资源不够就打不出去」，并且卡面会显示红色的费用数字。
+                if (e.NextTurn && (e.Amount > 0 || e.AmountIsX))
+                {
+                    // 下回合生效：本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars 再自毁）。
+                    // 注意它的 GainStars 拒绝负数（本体直接抛 ArgumentException），所以只有「获得」走这条；
+                    // 「需要 N 点」是卡牌费用，跟下回合无关（校验器会提醒）。
+                    string gainNext = useX && e.AmountIsX ? XVar : VarAccess(e, varMap);
+                    w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {gainNext}, base.Owner.Creature, this);   // 下回合开始时获得 {gainNext} 点额外资源量");
+                    break;
+                }
                 if (e.Amount > 0)
                 {
                     // 有 StarsVar 就用它（升级增量由 OnUpgrade 的 UpgradeValueBy 处理），
@@ -4482,7 +4491,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。遗物/药水没有「费用」概念，负数直接扣（不会扣成负数）。
                 // 这里用字面量而不是 DynamicVar：ExtraResource 不声明变量，访问 DynamicVars 会抛 KeyNotFoundException。
-                if (e.Amount >= 0)
+                // 下回合生效：正数走本体的 StarNextTurnPower（它的 GainStars 拒绝负数）。
+                if (e.NextTurn && e.Amount > 0)
+                    w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {Lit.Dec(e.Amount)}, base.Owner.Creature, null);   // 下回合开始时获得 {Lit.Dec(e.Amount)} 点额外资源量");
+                else if (e.Amount >= 0)
                     w.Line($"await PlayerCmd.GainStars({Lit.Dec(e.Amount)}, base.Owner);");
                 else
                     w.Line($"await PlayerCmd.SetStars(System.Math.Max(0m, (decimal)base.Owner.PlayerCombatState.Stars - {Lit.Dec(-e.Amount)}), base.Owner);");
@@ -5382,7 +5394,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。药水没有费用概念，负数直接扣（不会扣成负数）。
-                if (e.Amount >= 0)
+                // 下回合生效：正数走本体的 StarNextTurnPower（它的 GainStars 拒绝负数）。
+                if (e.NextTurn && e.Amount > 0)
+                    w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {Lit.Dec(e.Amount)}, base.Owner.Creature, null);   // 下回合开始时获得 {Lit.Dec(e.Amount)} 点额外资源量");
+                else if (e.Amount >= 0)
                     w.Line($"await PlayerCmd.GainStars({Lit.Dec(e.Amount)}, base.Owner);");
                 else
                     w.Line($"await PlayerCmd.SetStars(System.Math.Max(0m, (decimal)base.Owner.PlayerCombatState.Stars - {Lit.Dec(-e.Amount)}), base.Owner);");

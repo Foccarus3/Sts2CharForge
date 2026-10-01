@@ -1074,6 +1074,16 @@ public static class ProfileValidator
             }
             if (e.NextTurn && !kind.SupportsNextTurn)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」不支持「下回合生效」。"));
+            // 额外资源量 + 下回合生效：正数走本体的 StarNextTurnPower；「需要 N 点」（负数）是卡牌费用，跟下回合无关
+            if (e.Kind == "ExtraResource" && e.NextTurn)
+            {
+                if (e.Amount > 0)
+                    issues.Add(new("提示", $"{owner} 的「获得额外资源量」会在**下回合开始时**获得 {e.Amount:0.##} 点"
+                        + "（本体 StarNextTurnPower：回合开始时发放并自毁）。"));
+                else if (!e.AmountIsX)
+                    issues.Add(new("警告", $"{owner} 的「获得额外资源量」填的是 {e.Amount:0.##}（负数 = 卡牌费用「需要 N 点」），"
+                        + "费用和「下回合生效」没关系 —— 这一勾会被忽略（想扣资源请用正数 + 负的升级增量，或直接改基础数值）。"));
+            }
             // 「从哪里选牌」只有消耗 / 变化卡牌用得到；别的效果上填了会被忽略（界面里那一行也不显示）
             if (!e.UsesSelectPile && e.SelectPile != "Hand")
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」填了「从哪里选牌 = {e.SelectPileZh}」，"

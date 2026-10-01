@@ -168,10 +168,29 @@ public static class LocalizationGen
         return name == "额外资源量" || text.Length == 0 ? text : text.Replace("额外资源量", name);
     }
 
-    /// <summary>这组效果里有没有「从牌堆拿牌到手牌」或「自己选牌给予关键词」（那种会弹自己的选牌界面，需要一句提示语）。</summary>
+    /// <summary>
+    /// 这组效果里有没有会弹出**自己的**选牌界面的（那种必须有 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c> 这一条本地化）。
+    ///
+    /// 为什么要盯死这件事：本体的 <c>CardModel.SelectionScreenPrompt</c> 在键不存在时**直接抛异常**
+    /// （<c>throw new InvalidOperationException($"No selection screen prompt for {Id}.")</c>），
+    /// 而生成的代码是在打出那张牌的时候读它的 —— 抛在效果中间 = 这张牌永远打不完，游戏卡死。
+    /// 用户实测：预见的卡「无法丢弃、游戏卡死」就是这么来的（预见当时漏在这条名单外）。
+    /// 所以凡是生成代码里出现 <c>base.SelectionScreenPrompt</c> 的效果种类，都必须列在这里。
+    /// </summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
-        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard"
+        effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "Scry"
             || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen"));
+
+    /// <summary>选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。</summary>
+    public static string SelectPromptText(IEnumerable<EffectSpec> effects)
+    {
+        var list = effects as IList<EffectSpec> ?? effects.ToList();
+        if (list.Any(e => e.Kind == "Scry")) return "选择要丢进弃牌堆的牌";
+        var e = list.FirstOrDefault(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard");
+        if (e is null) return "选择要拿到手牌的牌";
+        string pile = e.Kind == "TakeFromDiscard" ? "弃牌堆" : "抽牌堆";
+        return $"从{pile}选择要拿到手牌的牌";
+    }
 
     /// <summary>「给予卡牌关键词」的一句话描述。</summary>
     private static string GiveKeywordText(CharacterProfile p, EffectSpec e, string repeat, string when)
@@ -218,18 +237,6 @@ public static class LocalizationGen
         }
         var hit = KeywordGen.Find(p, raw);
         return hit is null ? raw : KeywordGen.DisplayName(hit.Value.Spec, hit.Value.Key);
-    }
-
-    /// <summary>
-    /// 选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。
-    /// 本体每条卡牌 / 遗物 / 药水都有这么一条，所以这里自己写一句。
-    /// </summary>
-    public static string SelectPromptText(IEnumerable<EffectSpec> effects)
-    {
-        var e = effects.FirstOrDefault(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard");
-        if (e is null) return "选择要拿到手牌的牌";
-        string pile = e.Kind == "TakeFromDiscard" ? "弃牌堆" : "抽牌堆";
-        return $"从{pile}选择要拿到手牌的牌";
     }
 
     /// <summary>
@@ -667,14 +674,15 @@ public static class LocalizationGen
                 ? $"失去 {-e.Amount} 枚金币。"
                 : $"获得 {var} 枚金币。",
             // 额外资源量：正数获得用 {Stars:diff()} —— 卡面会在升级后自动显示升级值（用户报过升级后仍显示原值）；
-            // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣
+            // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣；
+            // 「下回合生效」（正数）走本体 StarNextTurnPower，描述里要写清是下回合开始时发
             "ExtraResource" => starCostIsX && e.Amount < 0 && isCard
                 ? $"需要 X 点{ResourceName(p)}（打出时消耗全部）。"
                 : e.AmountIsX && isCard
                 ? $"{(e.Amount < 0 ? "需要" : "获得")} X 点{ResourceName(p)}。"
                 : e.Amount < 0
                     ? (isCard ? $"需要 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。" : $"失去 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。")
-                    : $"{repeat}获得 {var} 点{ResourceName(p)}。",
+                    : $"{repeat}{when}获得 {var} 点{ResourceName(p)}。",
             "EndTurn" => "结束你的回合。",
             "ExtraTurn" => "本回合结束后，额外获得一个回合。",
             "GenerateCard" => $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
