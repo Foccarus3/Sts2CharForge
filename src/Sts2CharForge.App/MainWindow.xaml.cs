@@ -12264,6 +12264,98 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(atlasRoot)) Directory.Delete(atlasRoot, true); } catch { }
 			}
 		}
+		// ===== 本轮新增：遗物的「条件选项（整只遗物）」也要能填生命区间的第二个数值 M =====
+		{
+			// 用户报：遗物的条件选项里选了「生命值在 N%~M% 之间」，却只有一个 N 可填。
+			// 原因：卡牌 / 效果那两个条件模板在 V0.2.23 加过 M 框，而遗物页这只「整只遗物条件」
+			// 是 MainWindow.xaml 里单独写的一块，当时漏了。
+			SelectTabRoot("遗物");
+			if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+			PumpDispatcher(150);
+
+			// 全窗口扫一遍：每个「条件选项」面板都必须有第二个数值框
+			//（绑定 Condition.Amount2、按 Condition.NeedsAmount2 显示）。
+			// 注意：WPF 的 TabControl 只把**当前选中页**的内容放进可视树，所以卡牌页 / 遗物页要分别扫。
+			void CollectCondGroups(DependencyObject root, List<GroupBox> into)
+			{
+				int childCount = VisualTreeHelper.GetChildrenCount(root);
+				for (int ci = 0; ci < childCount; ci++)
+				{
+					DependencyObject child = VisualTreeHelper.GetChild(root, ci);
+					if (child is GroupBox gb && (gb.Header as string ?? "").Contains("条件选项", StringComparison.Ordinal)) into.Add(gb);
+					CollectCondGroups(child, into);
+				}
+			}
+			(int Count, string Missing) ScanCondGroups()
+			{
+				List<GroupBox> groups = new List<GroupBox>();
+				CollectCondGroups(this, groups);
+				if (RelicConditionBox is not null && RelicConditionBox.IsVisible && !groups.Contains(RelicConditionBox)) groups.Add(RelicConditionBox);
+				string missing = "";
+				foreach (GroupBox gb in groups)
+				{
+					List<TextBox> inner = new List<TextBox>();
+					CollectTextBoxes(gb, inner);
+					TextBox? mBoxIn = inner.FirstOrDefault((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == "Condition.Amount2");
+					if (mBoxIn is null || BindingOperations.GetBinding(mBoxIn, UIElement.VisibilityProperty)?.Path?.Path != "Condition.NeedsAmount2")
+						missing += (missing.Length == 0 ? "" : " / ") + (gb.Header as string ?? "(无标题)");
+				}
+				return (groups.Count, missing);
+			}
+			var relicScan = ScanCondGroups();
+			Check("遗物页的每个「条件选项」面板都有第二个数值框（整只遗物 + 每条效果各一块；生命区间要 N 和 M 都填）",
+				relicScan.Count >= 2 && relicScan.Missing.Length == 0,
+				$"扫到 {relicScan.Count} 个面板" + (relicScan.Missing.Length == 0 ? "，都有 M 框" : "；缺 M 框：" + relicScan.Missing));
+			SelectTabRoot("卡牌");
+			if (CardList.Items.Count > 0) CardList.SelectedIndex = 0;
+			PumpDispatcher(150);
+			var cardScan = ScanCondGroups();
+			Check("卡牌页的「条件选项」面板也都有第二个数值框",
+				cardScan.Count >= 1 && cardScan.Missing.Length == 0,
+				$"扫到 {cardScan.Count} 个面板" + (cardScan.Missing.Length == 0 ? "，都有 M 框" : "；缺 M 框：" + cardScan.Missing));
+			SelectTabRoot("遗物");
+			if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+			PumpDispatcher(150);
+
+			// 遗物那只：真的能填 M，而且改完写回存档（双向绑定）
+			List<TextBox> relicCondBoxes = new List<TextBox>();
+			if (RelicConditionBox is not null) CollectTextBoxes(RelicConditionBox, relicCondBoxes);
+			TextBox? relicMBox = relicCondBoxes.FirstOrDefault((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == "Condition.Amount2");
+			Check("遗物的「条件选项（整只遗物）」里有 M 框", relicMBox is not null, relicMBox is null ? "没找到" : "有");
+			// 下拉里真的能选到「生命值在 N%~M% 之间」（遗物能用的条件列表里要有它）
+			List<ComboBox> relicCondCombos = new List<ComboBox>();
+			if (RelicConditionBox is not null) CollectCombos(RelicConditionBox, relicCondCombos);
+			ComboBox? relicKindCombo = relicCondCombos.FirstOrDefault((ComboBox c) => c.ItemsSource == RelicConditions);
+			Check("遗物条件的下拉里能选到「生命值在 N%~M% 之间」",
+				relicKindCombo is not null && relicKindCombo.Items.OfType<ConditionOption>().Any((ConditionOption o) => o.Id == "HpInRange"),
+				relicKindCombo is null ? "没找到下拉" : relicKindCombo.Items.Count + " 个条件");
+			if (RelicList.SelectedItem is RelicSpec relicCond && relicMBox is not null)
+			{
+				string oldKind = relicCond.Condition.Kind;
+				decimal oldAmount = relicCond.Condition.Amount;
+				decimal oldAmount2 = relicCond.Condition.Amount2;
+				relicCond.Condition.Kind = "HpInRange";
+				relicCond.Condition.Amount = 25m;
+				relicCond.Condition.Amount2 = 75m;
+				PumpDispatcher(150);
+				Check("遗物选了「生命值在 N%~M% 之间」后 M 框会显示出来并带上当前值",
+					relicMBox.IsVisible && relicMBox.Text.Trim() == "75", $"可见={relicMBox.IsVisible} 文本={relicMBox.Text}");
+				relicMBox.Text = "60";
+				PumpDispatcher(150);
+				Check("在遗物的 M 框里输入能写回存档（N=25 / M=60）",
+					relicCond.Condition.Amount2 == 60m && relicCond.Condition.Amount == 25m,
+					$"N={relicCond.Condition.Amount} M={relicCond.Condition.Amount2}");
+				relicCond.Condition.Kind = oldKind;
+				relicCond.Condition.Amount = oldAmount;
+				relicCond.Condition.Amount2 = oldAmount2;
+				PumpDispatcher(150);
+			}
+			else
+			{
+				Check("（跳过）遗物条件 M 框的双向绑定检查：没有可用的遗物 / M 框", ok: false,
+					RelicList.SelectedItem is null ? "没选中遗物" : "没有 M 框");
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
