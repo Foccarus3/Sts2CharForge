@@ -425,8 +425,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// <summary>「生成 / 变化卡牌」的两档：指定卡 / 按范围随机。</summary>
 	public IReadOnlyList<SpawnPickOption> SpawnPicks => EffectCatalog.SpawnPicks;
 
-	/// <summary>「生成 / 变化卡牌」的范围限定：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态。</summary>
-	public IReadOnlyList<SpawnFilterOption> SpawnFilters => EffectCatalog.SpawnFilters;
+	/// <summary>
+	/// 「生成 / 变化卡牌」的范围限定：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 + **每个自定义关键词一组**
+	/// （把自定义关键词当成「卡的组」用 —— 只从带这个关键词的牌里随机出）。
+	/// 关键词是配置里随时能改的，所以这里每次都重新取一份（绑的是窗口属性，改完关键词 Raise 一下就行）。
+	/// </summary>
+	public IReadOnlyList<SpawnFilterOption> SpawnFilters => EffectCatalog.SpawnFiltersFor(_profile);
 
 	/// <summary>「从哪里选牌」下拉（消耗 / 变化卡牌用）：手牌 / 抽牌堆 / 弃牌堆。</summary>
 	public IReadOnlyList<PileChoiceOption> SelectPiles => EffectCatalog.SelectPiles;
@@ -1236,6 +1240,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
 		Raise("KeywordChoices");
+		// 关键词改了名字 / 加了删了 → 「范围限定」里那一组选项跟着变（生成 / 变化卡牌能只从这一组里出牌）
+		RefreshCustomKeywordRegistry();
 		Raise("HasCustomKeywords");
 		Raise("NoCustomKeywords");
 		Raise("SelectedCardUpgradeCost");
@@ -2437,6 +2443,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 	/// <summary>
+	/// 把「自定义关键词」登记到 <see cref="EffectCatalog"/> 里，并让「范围限定」那个下拉重新取一次候选
+	/// （每个关键词多一条「自定义关键词：××（带这个关键词的那一组牌）」）。
+	/// 关键词的显示名 / 有没有都是配置里随时能改的，所以每次刷新都重新登记。
+	/// </summary>
+	public void RefreshCustomKeywordRegistry()
+	{
+		EffectCatalog.SetCustomKeywords(KeywordGen.All(_profile)
+			.Select(x => (x.Key, KeywordGen.DisplayName(x.Spec, x.Key))));
+		Raise("SpawnFilters");
+	}
+
+	/// <summary>
 	/// 新建一条替换时给它挑一个默认「换成哪个遗物」：
 	/// 优先挑你自己做的遗物（这才是这个功能最常见的用法），其次挑一个和「原本的遗物」不同的，
 	/// 绝不把默认值设成和原本一样 —— 那样生成出来等于没改（踩过：用户以为「替换无效」）。
@@ -2658,6 +2676,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		SyncPowerOverrideDetail();
 		RefreshCustomPowerRegistry();
 		SyncCustomPowerDetail();
+		RefreshCustomKeywordRegistry();
 		HookCardCount();
 		Raise("UpgradeKeywordRows");
 		RefreshIssues();
@@ -12513,6 +12532,424 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(starRoot)) Directory.Delete(starRoot, true); } catch { }
 			}
 		}
+		// ===== 本轮新增：自定义关键词当「卡的组」+ 生成卡牌「多选1」+「复制卡牌」+ 遗物「获得时」 =====
+		{
+			// ① 自定义关键词 = 一套可复用的「卡的组」：范围限定里每个关键词多一条选项，
+			//    按它随机生成时把这一组牌列成**显式牌表**（关键词只是我们自己的文案 + 悬停提示，
+			//    游戏的 CardKeyword 是封闭枚举，运行时过滤不出来 —— 只能在生成期按配置查）。
+			CharacterProfile kwProbe = ProfileFactory.Sample();
+			kwProbe.CustomKeywords.Clear();
+			kwProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运" });
+			kwProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "ECHO", Name = "回声" });
+			CardSpec kwA = new CardSpec { Name = "自检命运一", ClassName = "UiCheckFateA", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			kwA.KeywordIds.Add("FATE");
+			CardSpec kwB = new CardSpec { Name = "自检命运二", ClassName = "UiCheckFateB", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			kwB.KeywordIds.Add("FATE");
+			CardSpec kwC = new CardSpec { Name = "自检不分组", ClassName = "UiCheckFateC", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			CardSpec kwGen = new CardSpec { Name = "自检按组生成", ClassName = "UiCheckFateGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			kwGen.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:FATE", SpawnTo = "Hand" });
+			kwProbe.Cards.Add(kwA);
+			kwProbe.Cards.Add(kwB);
+			kwProbe.Cards.Add(kwC);
+			kwProbe.Cards.Add(kwGen);
+
+			var kwFilters = EffectCatalog.SpawnFiltersFor(kwProbe);
+			Check("「范围限定」的候选 = 内置 6 条 + 每个自定义关键词一组（把关键词当卡的组用）",
+				kwFilters.Count == 8
+				&& kwFilters.Take(6).Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" })
+				&& kwFilters.Any((SpawnFilterOption f) => f.Id == "Keyword:FATE" && f.Zh == "命运" && f.Display.Contains("那一组牌")),
+				string.Join("/", kwFilters.Select((SpawnFilterOption f) => f.Id)));
+			Check("这一组里有哪些牌能在生成期查出来（只算自己的牌，本体卡带不了自定义关键词）",
+				EffectCatalog.KeywordGroupCards(kwProbe, "Keyword:FATE").Count == 2
+				&& EffectCatalog.KeywordGroupCards(kwProbe, "Keyword:FATE").All((CardSpec c) => c.ClassName is "UiCheckFateA" or "UiCheckFateB"),
+				string.Join("/", EffectCatalog.KeywordGroupCards(kwProbe, "Keyword:FATE").Select((CardSpec c) => c.ClassName)));
+			Check("「Keyword:XXX」这种范围限定认得出来（Id 前缀 + 取键 + 不管大小写）",
+				EffectCatalog.IsKeywordFilter("Keyword:FATE") && !EffectCatalog.IsKeywordFilter("Attack")
+				&& EffectCatalog.KeywordFilterKey("Keyword:FATE") == "FATE", "认得出");
+			string kwSrc = CSharpCodeGen.CardSource(kwProbe, kwGen, 0);
+			Check("按关键词组随机生成 → 直接列出这一组牌（走 GetDistinctForCombat 抽，不重复）",
+				kwSrc.Contains("var __genPool = new List<CardModel> { ModelDb.Card<UiCheckFateA>(), ModelDb.Card<UiCheckFateB>() };")
+				&& kwSrc.Contains("CardFactory.GetDistinctForCombat(base.Owner, __genPool, 1,"), "显式牌表");
+			Check("卡面描述里写的是这一组的名字（「命运」），不是「不限」",
+				LocalizationGen.CardsJson(kwProbe).Contains("「命运」"), "描述对");
+			// 登记表（没有 profile 参数的地方靠它显示中文名）
+			EffectCatalog.SetCustomKeywords(new[] { ("FATE", "命运") });
+			Check("登记表能让 SpawnFilterZh 显示出关键词的中文名", EffectCatalog.SpawnFilterZh("Keyword:FATE") == "命运", EffectCatalog.SpawnFilterZh("Keyword:FATE"));
+			Check("范围限定的候选序列化进存档（回读才能原样回来）",
+				System.Text.Json.JsonSerializer.Serialize(kwGen.Effects[0]).Contains("Keyword:FATE"), "写进 JSON 了");
+			// 空组：选了关键词分组但没有任何牌带它 → 报错（不然效果什么都不做，用户以为没生效）
+			CharacterProfile kwEmptyProbe = ProfileFactory.Sample();
+			kwEmptyProbe.CustomKeywords.Clear();
+			kwEmptyProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "VOID", Name = "虚空" });
+			CardSpec kwEmptyCard = new CardSpec { Name = "自检空组", ClassName = "UiCheckEmptyGroup", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			kwEmptyCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:VOID" });
+			kwEmptyProbe.Cards.Add(kwEmptyCard);
+			Check("选了关键词分组但一张牌都没带这个关键词 → 报错拦住（这一组是空的）",
+				ProfileValidator.Validate(kwEmptyProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("这一组是空的")), "拦住了");
+			// 生成 → 回读：`Keyword:FATE` 里的冒号不能被老正则（\w）截断
+			string kwRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_kwgroup_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile kwGenProbe = ProfileFactory.Sample();
+				kwGenProbe.Paths.OutputDir = kwRoot;
+				kwGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				kwGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				kwGenProbe.CustomKeywords.Clear();
+				kwGenProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运" });
+				CardSpec genFate = new CardSpec { Name = "自检命运牌", ClassName = "UiCheckFateCard", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				genFate.KeywordIds.Add("FATE");
+				CardSpec genFateGen = new CardSpec { Name = "自检按组生成", ClassName = "UiCheckFateGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genFateGen.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:FATE", SpawnTo = "Hand", SpawnChoice = 3m });
+				kwGenProbe.Cards.Add(genFate);
+				kwGenProbe.Cards.Add(genFateGen);
+				Check("（准备）关键词分组 + 多选1 的存档能生成工程", ModGenerator.Generate(kwGenProbe).Success, kwRoot);
+				var kwRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(kwGenProbe));
+				var recFateGen = kwRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckFateGen");
+				var recFate = recFateGen?.Effects.FirstOrDefault((EffectSpec e) => e.Kind == "GenerateCard");
+				Check("回读：范围限定 Keyword:FATE 原样回来（老正则 \\w 会把冒号截掉 → 变回「不限」）",
+					recFate is not null && recFate.SpawnFilter == "Keyword:FATE" && recFate.SpawnPick == "Random",
+					$"Filter={recFate?.SpawnFilter} Pick={recFate?.SpawnPick}");
+				Check("回读：多选1 的候选张数（数值 = 1 = 只生成一张）；两组候选的标记都带回来了",
+					recFate is not null && recFate.SpawnChoice == 3m && recFate.Amount == 1m,
+					$"SpawnChoice={recFate?.SpawnChoice} Amount={recFate?.Amount}");
+				Check("回读没有认不出来的语句", !kwRec.HasUnparsed, kwRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(kwRoot)) Directory.Delete(kwRoot, true); } catch { }
+				RefreshCustomKeywordRegistry();   // 登记表还原成真实配置（自检改过它）
+			}
+
+			// ② 生成卡牌「多选1」：候选 ≤ 3 走本体的「发现」界面（FromChooseACardScreen 超过 3 张会抛异常），
+			//    > 3 走网格选牌（本体「抉择悖论 ChoicesParadox」那种），提示语读 <卡>.selectionScreenPrompt。
+			CharacterProfile chProbe = ProfileFactory.Sample();
+			CardSpec chCard = new CardSpec { Name = "自检多选一", ClassName = "UiCheckChoice", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			chCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 3m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnChoice = 3m, SpawnTo = "Hand" });
+			CardSpec chBig = new CardSpec { Name = "自检多选五大", ClassName = "UiCheckChoiceBig", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			chBig.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 5m, SpawnPick = "Random", SpawnFilter = "Skill", SpawnChoice = 5m, SpawnTo = "Hand" });
+			chProbe.Cards.Add(chCard);
+			chProbe.Cards.Add(chBig);
+			string chSrc = CSharpCodeGen.CardSource(chProbe, chCard, 0);
+			string chBigSrc = CSharpCodeGen.CardSource(chProbe, chBig, 0);
+			Check("多选1（候选 3 张）：先抽 3 张候选 → 本体「发现」的界面 → 只生成选中的那一张",
+				chSrc.Contains("List<CardModel> __candidates = MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat(base.Owner, __genPool, 3,")
+				&& chSrc.Contains("CardModel? __picked = await CardSelectCmd.FromChooseACardScreen(choiceContext, __candidates, base.Owner, canSkip: false);")
+				&& chSrc.Contains("await CardPileCmd.AddGeneratedCardToCombat(__picked, PileType.Hand, base.Owner);")
+				&& !chSrc.Contains("foreach (CardModel __gen in"), "对");
+			Check("多选1（候选 > 3 张）：本体 FromChooseACardScreen 超过 3 张会直接抛异常 → 改走网格选牌 + <卡>.selectionScreenPrompt",
+				chBigSrc.Contains("CardSelectCmd.FromSimpleGrid(choiceContext, __candidates, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 1))")
+				&& chBigSrc.Contains(").FirstOrDefault();"), "对");
+			Check("多选1 外面有「候选一张都没有就整条跳过」的守卫（本体这一步是 ReportSoftlock = 卡死）",
+				chSrc.Contains("if (__candidates.Count > 0)") && chSrc.Contains("if (__picked is not null)"), "有守卫");
+			Check("多选1 一定生成 <卡>.selectionScreenPrompt（本体 SelectionScreenPrompt 键不存在时直接抛异常 → 游戏卡死）",
+				LocalizationGen.NeedsSelectPrompt(chCard.Effects)
+				&& LocalizationGen.CardsJson(chProbe).Contains("UI_CHECK_CHOICE.selectionScreenPrompt"), "有提示语");
+			Check("多选1 的提示语跟着候选张数走（「从 N 张中选一张」）",
+				LocalizationGen.SelectPromptText(chCard.Effects) == "从 3 张中选一张", LocalizationGen.SelectPromptText(chCard.Effects));
+			Check("多选1 的卡面描述写「从 3 张『攻击』中选一张生成」，不写成「生成 3 张」",
+				LocalizationGen.CardsJson(chProbe).Contains("从 3 张「攻击」中选一张生成"), "描述对");
+			Check("默认（候选张数 = 1）还是原来那条「生成 N 张」的路，界面输入框也只在「生成卡牌 + 按范围随机」出现",
+				new EffectSpec { Kind = "GenerateCard" }.SpawnChoice == 1m
+				&& !new EffectSpec { Kind = "GenerateCard" }.ShowSpawnChoice
+				&& new EffectSpec { Kind = "GenerateCard", SpawnPick = "Random" }.ShowSpawnChoice
+				&& !new EffectSpec { Kind = "TransformCard", SpawnPick = "Random" }.ShowSpawnChoice, "显隐对");
+			// 多选1 + 指定卡：没意义 → 警告
+			CharacterProfile chFixedProbe = ProfileFactory.Sample();
+			CardSpec chFixed = new CardSpec { Name = "自检多选指定", ClassName = "UiCheckChoiceFixed", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			chFixed.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnChoice = 3m });
+			chFixedProbe.Cards.Add(chFixed);
+			Check("取卡方式是「指定卡」时多选1 会被忽略 → 给警告（几张候选都是同一张，没意义）",
+				ProfileValidator.Validate(chFixedProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("多选1 不会生效")), "有警告");
+			// 生成 → 回读
+			string chRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_choice_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile chGenProbe = ProfileFactory.Sample();
+				chGenProbe.Paths.OutputDir = chRoot;
+				chGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				chGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec genChoice = new CardSpec { Name = "自检多选一", ClassName = "UiCheckChoice", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genChoice.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 3m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnChoice = 3m, SpawnTo = "Hand", SpawnUpgraded = true });
+				chGenProbe.Cards.Add(genChoice);
+				Check("（准备）多选1 的存档能生成工程", ModGenerator.Generate(chGenProbe).Success, chRoot);
+				var chRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(chGenProbe));
+				var recChoice = chRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckChoice")?.Effects
+					.FirstOrDefault((EffectSpec e) => e.Kind == "GenerateCard");
+				Check("回读：多选1（候选 3 张）+ 附加处理原样回来，而且「数值」= 1（不是候选张数 3）",
+					recChoice is not null && recChoice.SpawnChoice == 3m && recChoice.IsSpawnRandom
+					&& recChoice.SpawnFilter == "Attack" && recChoice.SpawnUpgraded && recChoice.Amount == 1m,
+					$"Choice={recChoice?.SpawnChoice} Amount={recChoice?.Amount} Up={recChoice?.SpawnUpgraded}");
+				Check("回读没有认不出来的语句", !chRec.HasUnparsed, chRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(chRoot)) Directory.Delete(chRoot, true); } catch { }
+			}
+
+			// ③ 新效果「复制卡牌」：数值 = 选几张，效果底下还有一个「复制的份数」（只有它才出现）。
+			//    实现照本体「二刀流 DualWield」：CreateClone + 加进手牌。
+			Check("「复制卡牌」这种效果种类在列表里（而且只有它显示「复制的份数」那一栏）",
+				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "CopyCard")
+				&& new EffectSpec { Kind = "CopyCard" }.ShowCopies
+				&& !new EffectSpec { Kind = "GenerateCard" }.ShowCopies, "在");
+			CharacterProfile copyProbe = ProfileFactory.Sample();
+			CardSpec cpCard = new CardSpec { Name = "自检复制", ClassName = "UiCheckCopy", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			cpCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 2, CardPick = "Chosen", SelectPile = "Hand" });
+			CardSpec cpRandCard = new CardSpec { Name = "自检复制随机", ClassName = "UiCheckCopyRand", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			cpRandCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 2m, Copies = 1, CardPick = "Random", SelectPile = "Draw" });
+			copyProbe.Cards.Add(cpCard);
+			copyProbe.Cards.Add(cpRandCard);
+			string cpSrc = CSharpCodeGen.CardSource(copyProbe, cpCard, 0);
+			string cpRandSrc = CSharpCodeGen.CardSource(copyProbe, cpRandCard, 0);
+			Check("复制卡牌（自己选）：选出来的每张克隆「复制的份数」份放进手牌（本体 CreateClone + AddGeneratedCardToCombat）",
+				cpSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 1)")
+				&& cpSrc.Contains("foreach (CardModel __src in __copyFrom)")
+				&& cpSrc.Contains("for (int __copyIdx = 0; __copyIdx < 2; __copyIdx++)")
+				&& cpSrc.Contains("CardModel __clone = __src.CreateClone();")
+				&& cpSrc.Contains("await CardPileCmd.AddGeneratedCardToCombat(__clone, PileType.Hand, base.Owner);"), "对");
+			Check("复制卡牌（随机）：从选定那一摞随机拿，同样每张复制 N 份",
+				cpRandSrc.Contains("PileType.Draw.GetPile(base.Owner).Cards")
+				&& cpRandSrc.Contains("for (int __copyPickIdx = 0; __copyPickIdx < 2; __copyPickIdx++)")
+				&& cpRandSrc.Contains("CardModel __clone = __src.CreateClone();"), "对");
+			Check("复制卡牌的卡面描述写清「每张复制几份」",
+				LocalizationGen.CardsJson(copyProbe).Contains("每张复制 2 份到手牌"), "描述对");
+			Check("复制卡牌自己选牌 → 也会生成 <卡>.selectionScreenPrompt（不然本体直接抛异常、游戏卡死）",
+				LocalizationGen.NeedsSelectPrompt(cpCard.Effects)
+				&& LocalizationGen.CardsJson(copyProbe).Contains("UI_CHECK_COPY.selectionScreenPrompt"), "有提示语");
+			// 校验器：份数 / 张数范围 + 遗物上用不了
+			CharacterProfile cpBadProbe = ProfileFactory.Sample();
+			CardSpec cpBad = new CardSpec { Name = "自检复制越界", ClassName = "UiCheckCopyBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			cpBad.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 9m, Copies = 99 });
+			cpBadProbe.Cards.Add(cpBad);
+			var cpBadIssues = ProfileValidator.Validate(cpBadProbe);
+			Check("复制卡牌的「张数 / 复制的份数」超出范围会报错",
+				cpBadIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("「复制卡牌」张数"))
+				&& cpBadIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("复制的份数")), "报错了");
+			CharacterProfile cpRelicProbe = ProfileFactory.Sample();
+			cpRelicProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检复制遗物", ClassName = "UiCheckCopyRelic", Trigger = "CombatStart",
+				Effects = { new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 1 } },
+			});
+			Check("复制卡牌放在遗物上 → 生成时给一句「用不了」的注释，校验器也警告（不静默丢）",
+				CSharpCodeGen.RelicSource(cpRelicProbe, cpRelicProbe.Relics[^1], 0).Contains("遗物上用不了")
+				&& ProfileValidator.Validate(cpRelicProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("复制卡牌")), "有说明");
+			Check("复制卡牌在药水上能用（喝药水复制）",
+				CSharpCodeGen.PotionSource(copyProbe, new PotionSpec
+				{
+					Name = "自检复制药水", ClassName = "UiCheckCopyPotion", Rarity = "Common",
+					Effects = { new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 2, SelectPile = "Hand" } },
+				}, 0).Contains("__src.CreateClone()"), "药水支持");
+			// 生成 → 回读
+			string cpRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_copy_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile cpGenProbe = ProfileFactory.Sample();
+				cpGenProbe.Paths.OutputDir = cpRoot;
+				cpGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				cpGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec genCopy = new CardSpec { Name = "自检复制", ClassName = "UiCheckCopy", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				genCopy.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 3, CardPick = "Random", SelectPile = "Discard" });
+				cpGenProbe.Cards.Add(genCopy);
+				Check("（准备）复制卡牌的存档能生成工程", ModGenerator.Generate(cpGenProbe).Success, cpRoot);
+				var cpRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(cpGenProbe));
+				var recCopy = cpRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckCopy")?.Effects
+					.FirstOrDefault((EffectSpec e) => e.Kind == "CopyCard");
+				Check("回读：复制卡牌的张数 / 复制的份数 / 选牌方式 / 哪一摞都原样回来",
+					recCopy is not null && recCopy.Amount == 1m && recCopy.Copies == 3 && recCopy.CardPick == "Random" && recCopy.SelectPile == "Discard",
+					$"Amount={recCopy?.Amount} Copies={recCopy?.Copies} Pick={recCopy?.CardPick} Pile={recCopy?.SelectPile}");
+				Check("回读没有认不出来的语句", !cpRec.HasUnparsed, cpRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(cpRoot)) Directory.Delete(cpRoot, true); } catch { }
+			}
+
+			// ④ 遗物触发时机多一条「获得时」（本体 AfterObtained：本体的「好吃饼干 / 磨刀石 / 爪子」都是它）
+			Check("遗物触发时机里有「获得时」，而且排在第一位（第一个选项也是原来那条「战斗开始时」的兜底不受影响）",
+				EffectCatalog.RelicTriggers.Any((TriggerOption t) => t.Id == "Obtained" && t.Display == "获得时")
+				&& EffectCatalog.RelicTriggers.First((TriggerOption t) => t.Id == "Obtained").HookSignature == "AfterObtained()", "在");
+			Check("「获得时」没有 choiceContext，但生成端会自己造一个（本体 BlockingPlayerChoiceContext 就是为遗物 AfterObtained 准备的）",
+				!CSharpCodeGen.HasContext("Obtained") && CSharpCodeGen.CanBootstrapContext("Obtained")
+				&& !CSharpCodeGen.CanBootstrapContext("GoldGained"), "会补上下文");
+			CharacterProfile obProbe = ProfileFactory.Sample();
+			obProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检获得时遗物", ClassName = "UiCheckOnObtain", Rarity = "Common", Trigger = "Obtained",
+				Effects =
+				{
+					new EffectSpec { Kind = "Draw", Amount = 1m },
+					new EffectSpec { Kind = "CardReward", Amount = 3m },
+				},
+			});
+			CharacterProfile obSimpleProbe = ProfileFactory.Sample();
+			obSimpleProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检获得时遗物简单", ClassName = "UiCheckOnObtainSimple", Rarity = "Common", Trigger = "Obtained",
+				Effects = { new EffectSpec { Kind = "Gold", Amount = 50m } },
+			});
+			string obSrc = CSharpCodeGen.RelicSource(obProbe, obProbe.Relics[^1], 0);
+			string obSimpleSrc = CSharpCodeGen.RelicSource(obSimpleProbe, obSimpleProbe.Relics[^1], 0);
+			Check("「获得时」生成的是本体的 AfterObtained() 钩子 + HasUponPickupEffect（拾取时生效的遗物都这么声明）",
+				obSrc.Contains("public override async Task AfterObtained()")
+				&& obSrc.Contains("public override bool HasUponPickupEffect => true;"), "对");
+			Check("需要选牌上下文的效果（抽牌 / 卡牌奖励）→ 生成端自己造一个阻塞式 choiceContext",
+				obSrc.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext();")
+				&& obSrc.Contains("CardPileCmd.Draw(choiceContext,") && obSrc.Contains("CardSelectCmd.FromChooseACardScreen(choiceContext,"), "造了");
+			Check("不需要上下文的效果不会多造一个用不上的变量（免得编译告警）",
+				!obSimpleSrc.Contains("BlockingPlayerChoiceContext") && obSimpleSrc.Contains("PlayerCmd.GainGold"), "不会");
+			Check("校验器给「获得时」一句说明，而且不再报「缺少 choiceContext」那种警告",
+				ProfileValidator.Validate(obProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("获得时"))
+				&& !ProfileValidator.Validate(obProbe).Any((ValidationIssue i) => i.Message.Contains("缺少 choiceContext")), "有说明");
+			// 生成 → 回读：AfterObtained 要能认回「获得时」
+			string obRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_obtain_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile obGenProbe = ProfileFactory.Sample();
+				obGenProbe.Paths.OutputDir = obRoot;
+				obGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				obGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				obGenProbe.Relics.Add(new RelicSpec
+				{
+					Name = "自检获得时遗物", ClassName = "UiCheckOnObtain", Rarity = "Common", Trigger = "Obtained",
+					Effects = { new EffectSpec { Kind = "Draw", Amount = 2m }, new EffectSpec { Kind = "CardReward", Amount = 3m } },
+				});
+				Check("（准备）「获得时」遗物的存档能生成工程", ModGenerator.Generate(obGenProbe).Success, obRoot);
+				var obRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(obGenProbe));
+				var recOb = obRec.Profile.Relics.FirstOrDefault((RelicSpec r) => r.ClassName == "UiCheckOnObtain");
+				Check("回读：AfterObtained 认回「获得时」，效果也在",
+					recOb is not null && recOb.Trigger == "Obtained" && recOb.Effects.Any((EffectSpec e) => e.Kind == "Draw" && e.Amount == 2m),
+					$"Trigger={recOb?.Trigger} 效果数={recOb?.Effects.Count}");
+				Check("回读：其它时机上的「获得卡牌奖励」也认得出来（以前只认「战斗胜利后」那种 AddExtraReward 写法）",
+					recOb is not null && recOb.Effects.Any((EffectSpec e) => e.Kind == "CardReward" && e.Amount == 3m),
+					string.Join(" / ", recOb?.Effects.Select((EffectSpec e) => $"{e.Kind} {e.Amount}") ?? Array.Empty<string>()));
+				Check("回读没有认不出来的语句", !obRec.HasUnparsed, obRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(obRoot)) Directory.Delete(obRoot, true); } catch { }
+			}
+
+			// ④b 「受到伤害时」是每一下都触发（用户报「5 点伤害触发了五次」）→ 新增「受到攻击后（连击只算一次）」，
+			//     走本体的 AfterAttack（AbstractModel 注释写明 multi-attack 时它在所有命中结束后只跑一次），
+			//     并给原来那条补上本体的判据 result.UnblockedDamage > 0（全被格挡的那一下不算）。
+			Check("遗物触发时机里有「受到攻击后（连击只算一次）」，用的就是本体的 AfterAttack",
+				EffectCatalog.RelicTriggers.Any((TriggerOption t) => t.Id == "Attacked" && t.Display.Contains("连击只算一次"))
+				&& CSharpCodeGen.HasContext("Attacked"), "在");
+			Check("自定义状态的触发时机里也有它（同名两条：每一下 / 连击只算一次）",
+				PowerTriggers.All.Any((PowerTriggerOption t) => t.Kind == "Attacked" && t.Display.Contains("连击只算一次"))
+				&& PowerTriggers.All.Any((PowerTriggerOption t) => t.Kind == "DamageTaken" && t.Display.Contains("每一下")), "在");
+			CharacterProfile atkProbe = ProfileFactory.Sample();
+			atkProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检挨打遗物", ClassName = "UiCheckAttacked", Rarity = "Common", Trigger = "Attacked",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 3m } },
+			});
+			atkProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检每一下遗物", ClassName = "UiCheckPerHit", Rarity = "Common", Trigger = "DamageReceived",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 3m } },
+			});
+			string atkSrc = CSharpCodeGen.RelicSource(atkProbe, atkProbe.Relics[^2], 0);
+			string perHitSrc = CSharpCodeGen.RelicSource(atkProbe, atkProbe.Relics[^1], 0);
+			Check("「受到攻击后」生成 AfterAttack + 「这一次攻击真的打到我」的判据（连击只跑一次）",
+				atkSrc.Contains("public override async Task AfterAttack(PlayerChoiceContext choiceContext, MegaCrit.Sts2.Core.Commands.Builders.AttackCommand command)")
+				&& atkSrc.Contains("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner.Creature).Sum(r => r.UnblockedDamage);")
+				&& atkSrc.Contains("if (__takenThisAttack <= 0) return;"), "对");
+			Check("「受到伤害时（每一下）」补上了本体那句判据：全被格挡 / 0 伤害不算（和本体原体黏土一致）",
+				perHitSrc.Contains("if (result.UnblockedDamage <= 0) return;"), "补上了");
+			CharacterProfile atkPowerProbe = ProfileFactory.Sample();
+			atkPowerProbe.CustomPowers.Clear();
+			atkPowerProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检挨打状态", ClassName = "UiCheckAttackedPower", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "Attacked", Effects = { new EffectSpec { Kind = "Block", Amount = 2m } } } },
+			});
+			atkPowerProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检每一下状态", ClassName = "UiCheckPerHitPower", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "DamageTaken", Effects = { new EffectSpec { Kind = "Block", Amount = 2m } } } },
+			});
+			string atkPowerSrc = CustomPowerGen.Source(atkPowerProbe, atkPowerProbe.CustomPowers[0], 0);
+			string perHitPowerSrc = CustomPowerGen.Source(atkPowerProbe, atkPowerProbe.CustomPowers[1], 0);
+			Check("自定义状态里的「自己受到攻击后」也走 AfterAttack（连击只算一次），并且带 same 判据",
+				atkPowerSrc.Contains("public override async Task AfterAttack(PlayerChoiceContext choiceContext, MegaCrit.Sts2.Core.Commands.Builders.AttackCommand command)")
+				&& atkPowerSrc.Contains("Where(r => r.Receiver == base.Owner)"), "对");
+			Check("自定义状态里的「自己受到伤害后（每一下）」也有 UnblockedDamage > 0 的判据",
+				perHitPowerSrc.Contains("if (result.UnblockedDamage <= 0) return;"), "有");
+			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
+				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
+				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),
+				string.Join(" ｜ ", ProfileValidator.Validate(atkProbe).Where((ValidationIssue i) => i.Message.Contains("触发时机")).Select((ValidationIssue i) => i.Level + ":" + i.Message)));
+			CharacterProfile atkStackProbe = ProfileFactory.Sample();
+			atkStackProbe.CustomPowers.Clear();
+			atkStackProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检挨打叠层状态", ClassName = "UiCheckAttackedStack", Type = "Buff",
+				Triggers =
+				{
+					new PowerTriggerSpec
+					{
+						Kind = "DamageTaken",
+						Effects = { new EffectSpec { Kind = "Block", Amount = 2m, Times = 5, TimesIsStack = true } },
+					},
+				},
+			});
+			Check("「每一下都触发」×「按层数重复」会相乘 → 校验器直接把算式写出来（一次 5 连击 × 5 层 = 25 次）",
+				ProfileValidator.Validate(atkStackProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("相乘")),
+				"警告在");
+			// 生成 → 回读：AfterAttack 要能认回「受到攻击后」
+			string atkRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_attacked_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile atkGenProbe = ProfileFactory.Sample();
+				atkGenProbe.Paths.OutputDir = atkRoot;
+				atkGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				atkGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				atkGenProbe.Relics.Add(new RelicSpec
+				{
+					Name = "自检挨打遗物", ClassName = "UiCheckAttacked", Rarity = "Common", Trigger = "Attacked",
+					Effects = { new EffectSpec { Kind = "Block", Amount = 3m } },
+				});
+				Check("（准备）「受到攻击后」遗物的存档能生成工程", ModGenerator.Generate(atkGenProbe).Success, atkRoot);
+				var atkRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(atkGenProbe));
+				var recAtk = atkRec.Profile.Relics.FirstOrDefault((RelicSpec r) => r.ClassName == "UiCheckAttacked");
+				Check("回读：AfterAttack 认回「受到攻击后（连击只算一次）」",
+					recAtk is not null && recAtk.Trigger == "Attacked", $"Trigger={recAtk?.Trigger}");
+				Check("回读没有认不出来的语句", !atkRec.HasUnparsed, atkRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(atkRoot)) Directory.Delete(atkRoot, true); } catch { }
+			}
+
+			// ⑤ 界面：这两栏只在选到对应效果时出现（用户要求「只有选择这个效果时才出现」）
+			DependencyObject newCardRoot = SelectTabRoot("卡牌");
+			CardSpec copyUiCard = new CardSpec { Name = "自检复制界面", ClassName = "UiCheckCopyUi", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			copyUiCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 2 });
+			Profile.Cards.Add(copyUiCard);
+			CardList.SelectedItem = copyUiCard;
+			CardEffectList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("选「复制卡牌」时界面上出现「复制的份数」那一栏",
+				HasBox("Copies") && VisibleTextsIn(newCardRoot).Any((string t) => t.Contains("复制的份数")), "在");
+			copyUiCard.Effects[0].Kind = "GenerateCard";
+			copyUiCard.Effects[0].SpawnPick = "Random";
+			copyUiCard.Effects[0].SpawnFilter = "Attack";
+			UpdateLayout();
+			Check("不是复制卡牌时「复制的份数」那一栏不出现（只有选这个效果才出现）",
+				!VisibleTextsIn(newCardRoot).Any((string t) => t.Contains("份 / 张")), "没出现");
+			Check("换成「生成卡牌 + 按范围随机」后，「多选1」那一栏出现（默认 1 = 直接生成）",
+				HasBox("SpawnChoice") && VisibleTextsIn(newCardRoot).Any((string t) => t.Contains("多选1"))
+				&& VisibleTextsIn(newCardRoot).Any((string t) => t.Contains("张中选一张")), "在");
+			Check("「多选1」那一栏填 3 → 列表里的说明立刻变成「3 张中选一张」",
+				SetSpawnChoiceAndDisplay(copyUiCard.Effects[0], 3m).Contains("3 张中选一张"),
+				SetSpawnChoiceAndDisplay(copyUiCard.Effects[0], 3m));
+			Profile.Cards.Remove(copyUiCard);
+			CardList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("（收尾）自检加的那张复制卡已清掉", !Profile.Cards.Contains(copyUiCard));
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
@@ -12537,6 +12974,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			characterProfile34.Paths.OutputDir = Path.Combine(artRoot, vanilla ? "on" : "off");
 			Directory.CreateDirectory(characterProfile34.Paths.OutputDir);
 			return ModGenerator.Generate(characterProfile34).ProjectRoot;
+		}
+		// 自检用：把「多选1」的候选张数填进去，并返回列表里那行说明（用来确认说明跟着变）
+		string SetSpawnChoiceAndDisplay(EffectSpec e, decimal choice)
+		{
+			e.SpawnChoice = choice;
+			return e.Display;
 		}
 		void Check(string name, bool ok, string detail = "")
 		{

@@ -574,6 +574,7 @@ public static class ProjectRecovery
             {
                 e.SpawnPick = pendingSpawn.SpawnPick;
                 e.SpawnFilter = pendingSpawn.SpawnFilter;
+                e.SpawnChoice = pendingSpawn.SpawnChoice;
                 e.SpawnUpgraded = pendingSpawn.SpawnUpgraded;
                 e.SpawnFree = pendingSpawn.SpawnFree;
                 e.SpawnFreeThisTurn = pendingSpawn.SpawnFreeThisTurn;
@@ -765,12 +766,13 @@ public static class ProjectRecovery
                         SelectPile = Match(line, @"CET:Pile=(\w+)") ?? "Hand",
                         AmountIsStack = line.Contains("CET:Stack=1", StringComparison.Ordinal),
                         AmountIsX = line.Contains("CET:X=1", StringComparison.Ordinal),
+                        Copies = Math.Max(1, (int)Dec(line, @"CET:Copies=(-?[\d.]+)", 1)),
                     };
                     if (sc.Kind == "Outbreak") sc.TargetSide = "AllEnemies";
                     if (sc.Kind == "TimesUp") sc.TargetSide = "Enemy";
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
-                    if (sc.Kind is "UpgradeCard" or "Scry") NextVar(vars, ref varIdx, "Cards");
+                    if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard") NextVar(vars, ref varIdx, "Cards");
                     if (sc.Kind == "Outbreak") NextVar(vars, ref varIdx, "Power:PoisonPower");
                     // 「大限已至」的变量是计算三件套，ParseEffects 开头已经把 calcVars 摘出去了，不用认领
                     ApplyLoop(sc, frames);
@@ -782,11 +784,14 @@ public static class ProjectRecovery
                 string? spawnPick = Match(line, @"CET:SpawnPick=(\w+)");
                 if (spawnPick is not null)
                 {
-                    string? flt = Match(line, @"CET:SpawnFilter=(\w+)");
+                    // 范围限定可能是自定义关键词分组（`Keyword:FATE`），所以这里不能只认 \w（冒号会被截断）
+                    string? flt = Match(line, @"CET:SpawnFilter=([^\s]+)");
+                    string? choice = Match(line, @"CET:SpawnChoice=(\d+)");
                     pendingSpawn = new EffectSpec
                     {
                         SpawnPick = spawnPick,
                         SpawnFilter = flt is null or "-" ? "" : flt,
+                        SpawnChoice = choice is not null && int.TryParse(choice, out int ch) && ch > 1 ? ch : 1m,
                         SpawnUpgraded = line.Contains("CET:SpawnUp=1", StringComparison.Ordinal),
                         SpawnFree = line.Contains("CET:SpawnFree=1", StringComparison.Ordinal),
                         SpawnFreeThisTurn = line.Contains("CET:SpawnFreeTurn=1", StringComparison.Ordinal),
@@ -886,7 +891,18 @@ public static class ProjectRecovery
                     // 效果本身已经从池子 / CreateCard 那一行认出来了，这里整段跳过。
                     || line.Contains("__tempUp", StringComparison.Ordinal)
                     || line.StartsWith("CardCmd.Upgrade(gained);", StringComparison.Ordinal)
-                    || line.StartsWith("CardCmd.Upgrade(__", StringComparison.Ordinal);
+                    || line.StartsWith("CardCmd.Upgrade(__", StringComparison.Ordinal)
+                    // 「复制卡牌」那一段的实现（选牌 / 取原牌 / 克隆 / 放进手牌）：
+                    // 效果本身已经由标记行 CET:Effect=CopyCard 收尾了，这里整段跳过。
+                    || line.Contains("__copyFrom", StringComparison.Ordinal)
+                    || line.Contains("__src", StringComparison.Ordinal)
+                    || line.Contains("__clone", StringComparison.Ordinal)
+                    || line.Contains("__copyIdx", StringComparison.Ordinal)
+                    || line.Contains("__copyPickIdx", StringComparison.Ordinal)
+                    // 「卡牌奖励」（非战斗胜利后那种）的实现行：识别行是 CreateForReward 那一行
+                    // （所以 __rewardCards / __rewardOptions 那两行**不能**放进这个跳过名单）。
+                    || line.Contains("__pickedReward", StringComparison.Ordinal)
+                    || line.Contains("__granted", StringComparison.Ordinal);
                 if (scBody) continue;
                 skipSelfContainedBody = false;
             }
@@ -909,7 +925,14 @@ public static class ProjectRecovery
                 || line.Contains("__gen.SetToFree", StringComparison.Ordinal)
                 || line.StartsWith("CardCmd.Upgrade(__gen)", StringComparison.Ordinal)
                 || line.StartsWith("CardCmd.Upgrade(gained);", StringComparison.Ordinal)
-                || line.Contains("else CardCmd.Upgrade(__gen)", StringComparison.Ordinal))
+                || line.Contains("else CardCmd.Upgrade(__gen)", StringComparison.Ordinal)
+                // 「多选1」生成的辅助行：候选列表那行**是**识别行（下面那条 GetDistinctForCombat），
+                // 所以这里只跳「判断候选数 / 弹选牌界面 / 拿到选中的那张」这几种固定写法。
+                || line.StartsWith("if (__candidates.Count", StringComparison.Ordinal)
+                || line.StartsWith("CardModel? __picked = ", StringComparison.Ordinal)
+                || line.StartsWith("if (__picked is not null)", StringComparison.Ordinal)
+                || line.Contains("__picked", StringComparison.Ordinal)
+                || line.StartsWith("CardCmd.Upgrade(__", StringComparison.Ordinal))
                 continue;
 
             // 召唤伙伴：生成的是 `<X>Cmd.Summon(choiceContext, base.Owner, <血量>); // CET:PetHp=…`
@@ -1499,7 +1522,11 @@ public static class ProjectRecovery
                     SpawnTo = PeekSpawnToPile(lines, i),
                 };
                 string? cnt = Match(line, @"GetDistinctForCombat\(base\.Owner, __genPool, (\w+),");
-                if (cnt == "x") e.AmountIsX = true;
+                // 多选1（标记里写了 CET:SpawnChoice=M，M > 1）：这一行里的数字是**候选张数**，
+                // 真正生成出来只有 1 张 —— 所以「数值」要写回 1，候选张数由标记里的 SpawnChoice 带着。
+                bool isChoice = pendingSpawn?.SpawnChoice > 1m;
+                if (isChoice) e.Amount = 1;
+                else if (cnt == "x") e.AmountIsX = true;
                 else if (cnt is not null) e.Amount = decimal.Parse(cnt, CultureInfo.InvariantCulture);
                 e.Times = OuterRepeatTimes(frames);
                 Done(e);
@@ -1598,6 +1625,25 @@ public static class ProjectRecovery
                 // 勾了「生效次数 = 层数」时外面包着 for (int i = 0; i < (int)base.Amount; i++)
                 ApplyLoop(e, frames);
                 Done(e);
+                continue;
+            }
+
+            // 其它时机上的卡牌奖励（战斗中当场弹 N 选一 / 遗物「获得时」发一张）：生成的是四行
+            //   var __rewardOptions = CardCreationOptions.ForNonCombatWithDefaultOdds(…);
+            //   List<CardModel> __rewardCards = CardFactory.CreateForReward(owner, N, __rewardOptions)…;
+            //   CardModel? __pickedReward = await CardSelectCmd.FromChooseACardScreen(choiceContext, __rewardCards, owner, canSkip: true);
+            //   CardModel __granted = __pickedReward ?? __rewardCards.FirstOrDefault();
+            //   if (__granted is not null) { await CardPileCmd.Add(__granted, PileType.Deck); … }
+            // 这一支以前**没有回读**（只认了「战斗胜利后」那种 AddExtraReward 写法），
+            // 于是「获得时」这种新触发时机上放卡牌奖励会留下一行「没认出来」。
+            if (line.Contains("CardFactory.CreateForReward(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "CardReward", TargetSide = "Self" };
+                string? n = Match(line, @"CreateForReward\([^,]+, (\d+),");
+                e.Amount = n is not null ? decimal.Parse(n, CultureInfo.InvariantCulture) : LoopValue(LoopTop() ?? "1");
+                ApplyLoop(e, frames);
+                Done(e);
+                skipSelfContainedBody = true;   // 后面那几行（选牌 / 加进牌组）都是它的实现
                 continue;
             }
 
@@ -1834,7 +1880,7 @@ public static class ProjectRecovery
     /// 往后几行里找「生成出来的卡放进哪一摞」（<c>AddGeneratedCardToCombat(__gen, PileType.X, …)</c>）。
     /// 为什么往后看：带附加处理的生成卡写法里，那一句在升级 / 免费那几行**之后**。
     /// </summary>
-    private static string PeekSpawnToPile(List<string> lines, int from, int window = 8)
+    private static string PeekSpawnToPile(List<string> lines, int from, int window = 12)
     {
         foreach (string l in lines.Skip(from).Take(window))
         {
@@ -2847,6 +2893,8 @@ public static class ProjectRecovery
 
     private static string TriggerOfHook(string hook) => hook switch
     {
+        // 获得时（拾取时生效的遗物钩子）
+        "AfterObtained" => "Obtained",
         "BeforeSideTurnStart" => "CombatStart",
         "AfterPlayerTurnStart" => "PlayerTurnStart",
         "BeforeSideTurnEnd" => "TurnEnd",
@@ -2854,6 +2902,8 @@ public static class ProjectRecovery
         // 自定义状态的「战斗胜利后」现在生成的是 AfterCombatEnd（本体发战斗奖励的钩子就是它）
         "AfterCombatEnd" => "CombatVictory",
         "AfterDamageReceived" => "DamageReceived",
+        // 受到攻击后（一次攻击只触发一次的那个钩子）
+        "AfterAttack" => "Attacked",
         "AfterGoldGained" => "GoldGained",
         // 抽牌堆打乱洗牌时（本体先古遗物「大～抱抱 BiiigHug」那条钩子）
         "AfterShuffle" => "Shuffle",

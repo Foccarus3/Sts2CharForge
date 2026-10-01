@@ -82,22 +82,23 @@ public static class CustomPowerGen
             if (kind == "TurnEnd")
             {
                 // 和衰减 / 移除合并成一个方法
-                EmitTurnEndMethod(w, map[kind], power);
+                EmitTurnEndMethod(w, map[kind], power, profile);
                 continue;
             }
-            EmitTriggerMethod(w, kind, map[kind]);
+            EmitTriggerMethod(w, kind, map[kind], profile);
         }
 
         // 只配了衰减 / 移除、没有 TurnEnd 触发时机时，也要有那个方法
         if (!map.ContainsKey("TurnEnd") && (power.RemoveAtTurnEnd || power.DecayPerTurn > 0))
-            EmitTurnEndMethod(w, new List<PowerTriggerSpec>(), power);
+            EmitTurnEndMethod(w, new List<PowerTriggerSpec>(), power, profile);
 
         w.Close();
         return w.ToString();
     }
 
     /// <summary>「玩家回合结束时」：TurnEnd 触发器的效果先跑，然后才是衰减 / 移除。</summary>
-    private static void EmitTurnEndMethod(CodeWriter w, List<PowerTriggerSpec> items, CustomPowerSpec power)
+    private static void EmitTurnEndMethod(CodeWriter w, List<PowerTriggerSpec> items, CustomPowerSpec power,
+        CharacterProfile? p = null)
     {
         w.Line();
         w.Line("// ===== 触发时机：玩家回合结束时（触发器效果跑完再做衰减 / 移除）=====");
@@ -106,7 +107,7 @@ public static class CustomPowerGen
         {
             w.Open("public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)");
             w.Line("if (side != CombatSide.Player) return;");
-            foreach (var t in items) EmitEffects(w, t);
+            foreach (var t in items) EmitEffects(w, t, p: p);
             w.Line();
             w.Line("await PowerCmd.Remove(this);   // 临时状态：本回合结束就没了");
             w.Close();
@@ -115,7 +116,7 @@ public static class CustomPowerGen
 
         w.Open("public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)");
         w.Line("if (side != CombatSide.Player) return;");
-        foreach (var t in items) EmitEffects(w, t);
+        foreach (var t in items) EmitEffects(w, t, p: p);
 
         if (power.DecayPerTurn > 0)
         {
@@ -133,7 +134,8 @@ public static class CustomPowerGen
     }
 
     /// <summary>把一种触发时机（可能配了好几条）生成成一个钩子方法。</summary>
-    private static void EmitTriggerMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items)
+    private static void EmitTriggerMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items,
+        CharacterProfile? p = null)
     {
         string when = PowerTriggers.Find(kind)?.Display ?? kind;
         w.Line();
@@ -144,7 +146,7 @@ public static class CustomPowerGen
             case "TurnStart":
                 w.Open("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)");
                 w.Line("if (player != base.Owner.Player) return;");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -153,11 +155,11 @@ public static class CustomPowerGen
                 w.Line("if (cardPlay.Player != base.Owner.Player) return;");
                 // 不挑牌型的先无条件跑；挑牌型的各自包一层 if
                 foreach (var t in items.Where(x => x.CardFilter == "Any"))
-                    EmitEffects(w, t, foeFrom: "cardPlay.Target");
+                    EmitEffects(w, t, foeFrom: "cardPlay.Target", p: p);
                 foreach (var t in items.Where(x => x.CardFilter != "Any"))
                 {
                     w.Open($"if (cardPlay.Card.Type == CardType.{t.CardFilter})");
-                    EmitEffects(w, t, foeFrom: "cardPlay.Target");
+                    EmitEffects(w, t, foeFrom: "cardPlay.Target", p: p);
                     w.Close();
                 }
                 w.Close();
@@ -165,47 +167,64 @@ public static class CustomPowerGen
 
             case "CardExhausted":
                 w.Open("public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
             case "CardDrawn":
                 w.Open("public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
             case "CardDiscarded":
                 w.Open("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
             case "DamageTaken":
                 w.Open("public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)");
                 w.Line("if (target != base.Owner) return;");
-                foreach (var t in items) EmitEffects(w, t, foeFrom: "dealer");
+                // 本体「原体黏土 SelfFormingClay」就是这么多判一句的：全被格挡 / 0 伤害的那一下不算「受到伤害」。
+                // 注意这个钩子**每一下伤害都会进**：敌人一次「1 点 × 5 下」的连击会触发 5 次
+                //（想「一次攻击只算一次」用下面的「自己受到攻击后」）。
+                w.Line("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "dealer", p: p);
+                w.Close();
+                break;
+
+            // 自己受到攻击后（连击只算一次）：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次
+            //（AbstractModel.AfterAttack 的注释就是这么写的），所以敌人的多次连击在这里只触发一次。
+            case "Attacked":
+                // AttackCommand 在 MegaCrit.Sts2.Core.Commands.Builders，生成的 GlobalUsings 里没有这个命名空间
+                //（卡牌代码只用到 DamageCmd）—— 必须写全名，不然生成的工程 CS0246。
+                w.Open("public override async Task AfterAttack(PlayerChoiceContext choiceContext, MegaCrit.Sts2.Core.Commands.Builders.AttackCommand command)");
+                w.Line("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
+                w.Line("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner).Sum(r => r.UnblockedDamage);");
+                w.Line("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "command.Attacker", p: p);
                 w.Close();
                 break;
 
             case "DamageDealt":
                 w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
                 w.Line("if (dealer != base.Owner) return;");
-                foreach (var t in items) EmitEffects(w, t, foeFrom: "target");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "target", p: p);
                 w.Close();
                 break;
 
             case "BlockGained":
                 w.Open("public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)");
                 w.Line("if (creature != base.Owner) return;");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
             case "EnemyDeath":
                 w.Open("public override async Task AfterDeath(PlayerChoiceContext choiceContext, Creature creature, bool wasRemovalPrevented, float deathAnimLength)");
                 w.Line("if (!creature.IsEnemy) return;");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -213,7 +232,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task BeforeCombatStart()");
                 EmitChoiceContextBootstrap(w, "CombatStart", items);
                 w.Line("await Task.CompletedTask;   // 钩子是 async 的，保持签名一致");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -221,7 +240,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterEnergySpent(CardModel card, int amount)");
                 EmitChoiceContextBootstrap(w, "EnergySpent", items);
                 w.Line("await Task.CompletedTask;");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -229,7 +248,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterStarsSpent(int amount, Player spender)");
                 EmitChoiceContextBootstrap(w, "StarsSpent", items);
                 w.Line("if (spender != base.Owner.Player) return;");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -239,7 +258,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterCombatEnd(CombatRoom room)");
                 EmitChoiceContextBootstrap(w, "CombatVictory", items, roomInScope: true);
                 w.Line("// 战斗胜利后（打输了不走这里）：给卡牌奖励之类用这个");
-                foreach (var tr in items) EmitEffects(w, tr, roomVar: "room");
+                foreach (var tr in items) EmitEffects(w, tr, roomVar: "room", p: p);
                 w.Close();
                 break;
 
@@ -247,7 +266,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterSideTurnStart(CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)");
                 EmitChoiceContextBootstrap(w, "EnemyTurnStart", items);
                 w.Line("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -255,7 +274,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)");
                 EmitChoiceContextBootstrap(w, "EnemyTurnEnd", items);
                 w.Line("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
-                foreach (var t in items) EmitEffects(w, t);
+                foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
                 break;
 
@@ -263,7 +282,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyDamaged", items);
                 w.Line("if (target == base.Owner || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
-                foreach (var t in items) EmitEffects(w, t, foeFrom: "target");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "target", p: p);
                 w.Close();
                 break;
 
@@ -271,7 +290,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyDealtDamage", items);
                 w.Line("if (dealer is null || dealer == base.Owner) return;   // 打人的是敌人（自己不算）");
-                foreach (var t in items) EmitEffects(w, t, foeFrom: "dealer");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "dealer", p: p);
                 w.Close();
                 break;
 
@@ -279,7 +298,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyBlockGained", items);
                 w.Line("if (creature == base.Owner) return;   // 拿格挡的是敌人（自己不算）");
-                foreach (var t in items) EmitEffects(w, t, foeFrom: "creature");
+                foreach (var t in items) EmitEffects(w, t, foeFrom: "creature", p: p);
                 w.Close();
                 break;
 
@@ -299,7 +318,7 @@ public static class CustomPowerGen
                     string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
                     w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}");
                     w.Open($"if ({guard})");
-                    EmitEffects(w, t);
+                    EmitEffects(w, t, p: p);
                     w.Close();
                 }
                 w.Close();
@@ -310,7 +329,8 @@ public static class CustomPowerGen
                 break;
         }
     }
-    private static void EmitEffects(CodeWriter w, PowerTriggerSpec t, string? foeFrom = null, string? roomVar = null)
+    private static void EmitEffects(CodeWriter w, PowerTriggerSpec t, string? foeFrom = null, string? roomVar = null,
+        CharacterProfile? p = null)
     {
         if (t.Effects.Count == 0)
         {
@@ -330,7 +350,7 @@ public static class CustomPowerGen
                 w.Line($"// 条件（只对「{EffectCatalog.FindKind(e.Kind).Display}」这条效果）：{CSharpCodeGen.ConditionText(e.Condition)}（不满足时这条效果不生效）");
                 w.Open(cond);
             }
-            EmitEffect(w, e, foeFrom, roomVar);
+            EmitEffect(w, e, foeFrom, roomVar, p);
             if (cond is not null) w.Close();
         }
     }
@@ -378,7 +398,8 @@ public static class CustomPowerGen
 
     /// <summary>一条效果在状态钩子里的写法（上下文：choiceContext + base.Owner 是 Creature）。
     /// roomVar 非空 = 钩子里有 CombatRoom（战斗胜利后），卡牌奖励走本体的战斗奖励。</summary>
-    private static void EmitEffect(CodeWriter w, EffectSpec e, string? foeFrom, string? roomVar = null)
+    private static void EmitEffect(CodeWriter w, EffectSpec e, string? foeFrom, string? roomVar = null,
+        CharacterProfile? p = null)
     {
         // 数值 0 且升级也不加数值：整条丢掉（用户要求：不显示、也不执行 —— 0 点会被力量/敏捷加成）
         if (CSharpCodeGen.IsInertZero(e)) return;
@@ -468,7 +489,12 @@ public static class CustomPowerGen
             case "TransformCardGlobal":
             case "RemoveCardGlobal":
             case "UpgradeCardGlobal":
-                CSharpCodeGen.EmitGlobalCardEffectPublic(w, e, "base.Owner.Player", e.AmountIsStack);
+                CSharpCodeGen.EmitGlobalCardEffectPublic(w, e, "base.Owner.Player", e.AmountIsStack, p);
+                break;
+
+            // 复制卡牌：状态里不支持（这个钩子里没有「玩家选牌」的上下文，本体也是卡牌 / 药水才做这件事）
+            case "CopyCard":
+                w.Line("// 「复制卡牌」不支持放在自定义状态里 —— 请把它放到卡牌或药水上。已忽略。");
                 break;
 
             case "CardReward":

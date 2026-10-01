@@ -264,6 +264,8 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(UsesSpawnOptions));
                 Raise(nameof(ShowSpawnFilter));
                 Raise(nameof(ShowSpawnPickHint));
+                Raise(nameof(ShowSpawnChoice));   // 「多选1」那一行的显隐绑的就是它
+                Raise(nameof(ShowCopies));        // 「复制的份数」那一行的显隐绑的就是它
                 Raise(nameof(IsSlowPower));
                 Raise(nameof(Display));
             }
@@ -276,6 +278,8 @@ public sealed class EffectSpec : SpecBase
     // ===== 生成 / 变化卡牌：范围限定 + 「生成出来的卡」的附加处理 =====
     private string _spawnPick = "Fixed";
     private string _spawnFilter = "";
+    // 「多选1（候选张数）」：1 = 直接生成；> 1 = 抽这么多张候选让玩家挑 1 张
+    private decimal _spawnChoice = 1m;
     private bool _spawnUpgraded, _spawnFree, _spawnFreeThisTurn, _spawnUpgradedThisTurn;
 
     /// <summary>
@@ -293,6 +297,7 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(IsSpawnRandom));
                 Raise(nameof(ShowSpawnFilter));   // 「范围限定」那一行的显隐绑的是它（不通知就不会出现）
                 Raise(nameof(ShowSpawnPickHint));
+                Raise(nameof(ShowSpawnChoice));   // 「多选1」只在「按范围随机」时出现
                 Raise(nameof(Display));
             }
         }
@@ -315,6 +320,44 @@ public sealed class EffectSpec : SpecBase
     /// <summary>范围限定的中文（界面 / 描述里用）。</summary>
     [JsonIgnore]
     public string SpawnFilterZh => EffectCatalog.SpawnFilterZh(SpawnFilter);
+
+    /// <summary>
+    /// 「多选1（候选张数）」：默认 1 = 直接生成（现在的行为）；
+    /// 填 3 就是「先抽 3 张候选、玩家挑 1 张生成」（本体「发现 Discovery」那种界面）。
+    /// 只对「生成卡牌 + 按范围随机」有意义（指定卡的话 3 张候选都是同一张，没意义）。
+    /// </summary>
+    public decimal SpawnChoice
+    {
+        get => _spawnChoice;
+        set { if (Set(ref _spawnChoice, value)) { Raise(nameof(HasSpawnChoice)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>要不要用「多选1」（> 1 才是）。</summary>
+    [JsonIgnore]
+    public bool HasSpawnChoice => SpawnChoice > 1m;
+
+    /// <summary>「多选1」那个输入框要不要显示（只有「生成卡牌 + 按范围随机」用得到）。</summary>
+    [JsonIgnore]
+    public bool ShowSpawnChoice => Kind == "GenerateCard" && IsSpawnRandom;
+
+    // ===== 复制卡牌：复制的份数 =====
+    private int _copies = 1;
+
+    /// <summary>
+    /// 「复制卡牌」的**复制的份数**：数值（<see cref="Amount"/>）= 从牌堆里选几张，
+    /// 这个 = 每一张复制几份（本体「二刀流 DualWield」就是「选 1 张，复制 CardsVar 份」：
+    /// <c>selection.CreateClone()</c> + <c>CardPileCmd.AddGeneratedCardToCombat</c>）。
+    /// 只有「复制卡牌」这条效果用得到，界面上的输入框也只在选它的时候出现。
+    /// </summary>
+    public int Copies
+    {
+        get => _copies;
+        set { if (Set(ref _copies, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>「复制的份数」那个输入框要不要显示。</summary>
+    [JsonIgnore]
+    public bool ShowCopies => Kind == "CopyCard";
 
     /// <summary>生成 / 变化的卡**直接升级**（本场战斗内一直有效）。</summary>
     public bool SpawnUpgraded
@@ -769,13 +812,18 @@ public sealed class EffectSpec : SpecBase
             // 生成 / 消耗 / 变化卡牌：把「哪张卡、放哪、怎么选」显示出来，方便一眼看出有没有填漏
             string extra = Kind switch
             {
-                "GenerateCard" => $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}",
+                // 「按范围随机」时不显示目标卡（那时候用的是范围限定），多选1 的候选张数也写出来
+                "GenerateCard" => IsSpawnRandom
+                    ? $" ｜ 生成「{SpawnFilterZh}」{(HasSpawnChoice ? $"（{SpawnChoice:0.##} 张中选一张）" : "")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}"
+                    : $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}",
                 "TransformCard" => $" ｜ 变为 {(SpawnCardId is { Length: > 0 } tc ? tc : "随机卡")} ｜ {CardPickZh}",
                 "ExhaustCard" => $" ｜ {CardPickZh} ｜ 从{SelectPileZh}",
                 // 丢弃：把「丢哪一摞 / 怎么选」显示出来（两种牌堆的行为差别挺大，值得一眼看到）
                 "DiscardCard" => $" ｜ 丢弃 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
                 // 升级卡牌 / 预见：都是「选 N 张牌」，把从哪一摞 / 怎么看写出来
                 "UpgradeCard" => $" ｜ 升级 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                // 复制卡牌：选几张 / 从哪一摞 / 每张复制几份（份数是它独有的那一栏）
+                "CopyCard" => $" ｜ 复制 ｜ {CardPickZh} ｜ 从{SelectPileZh} ｜ 每张 {Math.Max(1, Copies)} 份",
                 "Scry" => " ｜ 预见（看抽牌堆顶，可丢任意张）",
                 "AddCardGlobal" => $" ｜ 加进牌组：{(SpawnCardId is { Length: > 0 } ac ? ac : "（未填→Shiv）")}",
                 "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")} ｜ {CardPickZh}",

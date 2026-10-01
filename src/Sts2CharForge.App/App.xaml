@@ -205,8 +205,19 @@
                         <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
                                   ItemsSource="{Binding SpawnFilters, RelativeSource={RelativeSource AncestorType=Window}}"
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnFilter}"
-                                  ToolTip="攻击 / 技能 / 能力按牌的类型挑；诅咒 / 状态从那两个本体卡池 + 你自己的卡池里挑（你自己的诅咒 / 状态牌也在候选里）。"/>
+                                  ToolTip="攻击 / 技能 / 能力按牌的类型挑；诅咒 / 状态从那两个本体卡池 + 你自己的卡池里挑（你自己的诅咒 / 状态牌也在候选里）；下面「自定义关键词：…」那些 = 把某个自定义关键词当成一套**卡的组**，只从带这个关键词的牌里出（这一组牌在卡牌页勾关键词就能改）。"/>
                     </Grid>
+                    <!-- 多选1（用户要求）：候选张数 > 1 时，先随机抽这么多张候选、玩家挑 1 张生成。
+                         默认 1 = 直接生成（原来的行为）。只对「生成卡牌 + 按范围随机」出现。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowSpawnChoice, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">多选1</TextBlock>
+                        <TextBox Width="70" Margin="0,0,0,0" Style="{StaticResource Field}"
+                                 Text="{Binding SpawnChoice, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="张中选一张"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（默认 1 = 直接生成；填 3 = 先抽 3 张候选让你挑 1 张，只生成选中的那一张 —— 这时「数值」里的张数不生效，它就是候选张数。本体「发现 Discovery」就是这个界面）"/>
+                    </StackPanel>
                     <StackPanel Visibility="{Binding UsesSpawnOptions, Converter={StaticResource BoolToVis}}">
                         <CheckBox Content="生成 / 变化出来的卡：直接升级" Style="{StaticResource Check}" IsChecked="{Binding SpawnUpgraded}"
                                   ToolTip="本体 CardCmd.Upgrade：战斗里的升级只影响本场战斗（战斗牌是牌组牌的克隆）。"/>
@@ -216,6 +227,17 @@
                                   ToolTip="本体 card.SetToFreeThisTurn()：回合结束自动恢复原费用。"/>
                         <CheckBox Content="生成 / 变化出来的卡：仅本回合升级" Style="{StaticResource Check}" IsChecked="{Binding SpawnUpgradedThisTurn}"
                                   ToolTip="本体没有「临时升级」API，工具会生成一个临时状态记着这几张牌，回合结束时把它们降回来。"/>
+                    </StackPanel>
+
+                    <!-- 复制卡牌专用：复制的份数（数值 = 选几张，这个 = 每张复制几份）。只有选这个效果时才出现。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowCopies, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">复制的份数</TextBlock>
+                        <TextBox Width="70" Style="{StaticResource Field}"
+                                 Text="{Binding Copies, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="份 / 张"/>
+                        <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（「数值」= 从牌堆里选几张牌，这里 = 每一张复制几份。例：数值 1 + 份数 2 = 选一张牌复制两份。本体「二刀流 DualWield」就是「选 1 张、复制 N 份」）"/>
                     </StackPanel>
 
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>

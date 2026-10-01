@@ -31,7 +31,14 @@ public static class PowerTriggers
         new PowerTriggerOption("CardExhausted", "消耗一张牌后",       "AfterCardExhausted：本体无痛感（获得格挡）用这个"),
         new PowerTriggerOption("CardDrawn",     "抽一张牌后",         "AfterCardDrawn"),
         new PowerTriggerOption("CardDiscarded", "弃掉一张牌后",       "AfterCardDiscarded"),
-        new PowerTriggerOption("DamageTaken",   "自己受到伤害后",     "AfterDamageReceived"),
+        // 「自己受到伤害后」= 本体 AfterDamageReceived：**每一下伤害都会触发一次**。
+        // 本体的敌人攻击很多是「1 点 × 5 下」这种多次连击（AttackCommand.WithHitCount /
+        // MultiAttackIntent），所以一次「5 点伤害」的攻击会触发 5 次（本体的原体黏土 SelfFormingClay
+        // 也是这个行为）。想「一次攻击只算一次」用下面那条「自己受到攻击后」。
+        new PowerTriggerOption("DamageTaken",   "自己受到伤害后（每一下）", "AfterDamageReceived：多次连击会触发多次"),
+        // 一次攻击只触发一次：本体的 AfterAttack 注释里写明了 —— multi-attack 时它在**所有命中结束之后**
+        // 只跑一次（AfterDamageGiven / AfterDamageReceived 是每一下都跑）。
+        new PowerTriggerOption("Attacked",      "自己受到攻击后（连击只算一次）", "AfterAttack：一次攻击的所有命中结束后只跑一次"),
         new PowerTriggerOption("DamageDealt",   "自己造成伤害后",     "AfterDamageGiven"),
         new PowerTriggerOption("BlockGained",   "自己获得格挡后",     "AfterBlockGained"),
         new PowerTriggerOption("EnemyDeath",    "一个敌人死亡后",     "AfterDeath"),

@@ -179,13 +179,25 @@ public static class LocalizationGen
     /// </summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
         effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "Scry"
-            || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen"));
+            || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen")
+            // 「生成卡牌 + 按范围随机 + 多选1（候选 > 3 张时走网格选牌界面）」会读 base.SelectionScreenPrompt；
+            // 另外「复制卡牌」自己选牌也要（CardSelectCmd.FromHand 那条）。
+            || (e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m)
+            || (e.Kind == "CopyCard" && e.CardPick == "Chosen"));
 
     /// <summary>选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。</summary>
     public static string SelectPromptText(IEnumerable<EffectSpec> effects)
     {
         var list = effects as IList<EffectSpec> ?? effects.ToList();
         if (list.Any(e => e.Kind == "Scry")) return "选择要丢进弃牌堆的牌";
+        if (list.Any(e => e.Kind == "CopyCard" && e.CardPick == "Chosen")) return "选择要复制的牌";
+        // 多选1 的提示要跟着候选张数走（「在 3 张中选一张」）
+        var choice = list.FirstOrDefault(e => e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m);
+        if (choice is not null)
+        {
+            int m = Math.Max(2, (int)choice.SpawnChoice);
+            return $"从 {m} 张中选一张";
+        }
         var e = list.FirstOrDefault(x => x.Kind is "TakeFromDraw" or "TakeFromDiscard");
         if (e is null) return "选择要拿到手牌的牌";
         string pile = e.Kind == "TakeFromDiscard" ? "弃牌堆" : "抽牌堆";
@@ -685,7 +697,13 @@ public static class LocalizationGen
                     : $"{repeat}{when}获得 {var} 点{ResourceName(p)}。",
             "EndTurn" => "结束你的回合。",
             "ExtraTurn" => "本回合结束后，额外获得一个回合。",
-            "GenerateCard" => $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
+            // 生成卡牌：三种取卡方式（指定卡 / 按范围随机 N 张 / 多选1）分别有各自的说法。
+            // 多选1 的「数值」是**候选张数**，生成出来永远只有 1 张，所以这里不能写「生成 3 张」。
+            "GenerateCard" => e.IsSpawnRandom && e.SpawnChoice > 1m
+                ? $"从 {Math.Max(2, (int)e.SpawnChoice)} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」中选一张生成，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
+                : e.IsSpawnRandom
+                ? $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
+                : $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
             "ExhaustCard" => e.SelectPile == "Hand"
                 ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
@@ -701,6 +719,12 @@ public static class LocalizationGen
                 : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌。",
             // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
             "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）。",
+            // 复制卡牌（本体「二刀流 DualWield」那种）：选 / 随机拿 N 张，每张复制 M 份到手牌。
+            // 份数 = 1 时按本体的说法写「复制一份」而不是「复制 1 份」（卡面更顺）。
+            "CopyCard" => (e.SelectPile == "Hand"
+                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
+                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
+                + (Math.Max(1, e.Copies) == 1 ? "（每张复制一份到手牌）。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）。"),
             // 毒性爆发 / 大限已至：照本体两张牌的原文写
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",

@@ -119,6 +119,22 @@ public static class ProfileValidator
                     issues.Add(new("警告", $"{who}「{when}」盯的状态找不到：{t.PowerId}"
                         + "（可以选本体的状态类名，或「自定义状态」页里自己造的那个；留空 = 除自己以外任意状态变层数都触发）。"));
 
+                // 「自己受到伤害后」= 本体 AfterDamageReceived：**每一下**伤害都会触发一次。
+                // 用户报过「敌人一次 5 点伤害触发了五次」—— 本体的敌人攻击很多是「1 点 × N 下」的连击，
+                // 所以这里直接说清楚，并指路「自己受到攻击后（连击只算一次）」。这两句是**触发时机级**的说明，
+                // 放在效果循环外面（不然一个触发时机配了三条效果就会重复三遍）。
+                if (t.Kind == "DamageTaken")
+                    issues.Add(new("提示", $"{who}「{when}」是**每一下伤害都会触发一次**（本体钩子 AfterDamageReceived）："
+                        + "敌人的多次连击会触发多次（本体很多攻击是「1 点 × 5 下」，一次「5 点伤害」就是 5 次）。"
+                        + "想让「一次攻击只触发一次」，请把触发时机改成「自己受到攻击后（连击只算一次）」"
+                        + "（本体钩子 AfterAttack，在所有命中都结束之后才跑一次）。"
+                        + "全被格挡 / 0 伤害的那一下不算（生成时会判 UnblockedDamage > 0，和本体原体黏土一致）。"));
+                if (t.Kind == "Attacked")
+                    issues.Add(new("提示", $"{who}「{when}」在**一次攻击的所有命中都结束之后只触发一次**"
+                        + "（本体钩子 AfterAttack）—— 敌人的「1 点 × 5 下」连击也只算一次。"
+                        + "判据是这一次攻击真的打到了你身上（全被格挡 / 打的是别人时不触发）；"
+                        + "注意它只认「攻击」：中毒、事件掉血这类不是攻击的伤害不会触发它。"));
+
                 for (int j = 0; j < t.Effects.Count; j++)
                 {
                     var e = t.Effects[j];
@@ -178,6 +194,12 @@ public static class ProfileValidator
                     if ((e.TimesIsStack || e.RepeatIsStack) && cp.DecayPerTurn == 0 && !cp.RemoveAtTurnEnd)
                         issues.Add(new("警告", $"{who}「{when}」按层数重复执行、而且这个状态不会衰减："
                             + "层数越高执行次数越多（可能卡顿），建议配一点「每回合衰减」，或让卡牌只给少量层数。"));
+                    // 「每一下伤害都触发」× 「按层数重复执行」= 相乘：用户的「一次 5 点伤害触发了五次」
+                    // 有可能是连击，也有可能是这里相乘 —— 直接算给他看。
+                    if (t.Kind == "DamageTaken" && (e.TimesIsStack || e.RepeatIsStack))
+                        issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条同时勾了「按层数重复执行」："
+                            + "「每一下伤害都触发」会和层数**相乘** —— 敌人的一次 5 连击 × 这个状态 5 层 = 一次攻击执行 25 次。"
+                            + "想「一次攻击只算一次」请把触发时机改成「自己受到攻击后（连击只算一次）」并取消「按层数重复」。"));
                     // 「获得卡牌奖励」按层数重复：层数是几，结算界面就多几条奖励（每条都是「N 选一」）
                     if (roomReward && e.TimesIsStack)
                         issues.Add(new("提示", $"{who}「{when}」的「获得卡牌奖励」勾了「生效次数 = 本状态的层数」："
@@ -465,11 +487,29 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"遗物「{r.Name}」稀有度非法：{r.Rarity}"));
             if (!EffectCatalog.RelicTriggers.Any(t => t.Id == r.Trigger))
                 issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{r.Trigger}"));
+            if (r.Trigger == "Obtained")
+                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「获得时」：拿到这只遗物的那一刻触发一次"
+                    + "（本体钩子 AfterObtained —— 本体的「好吃饼干 YummyCookie / 磨刀石 Whetstone / 爪子 Claws」"
+                    + "这些「拾取时生效」的遗物都是它）。这个钩子本体没给选牌上下文，需要的那几条效果"
+                    + "（生成卡牌 / 抽牌 / 卡牌奖励…）生成时会自己造一个阻塞式上下文，能用。"));
+            // 「受到伤害时」是**每一下**都触发的钩子：本体的敌人攻击很多是「1 点 × N 下」的连击，
+            // 所以一次「5 点伤害」的攻击会触发 5 次（本体原体黏土 SelfFormingClay 也是这样）。
+            // 用户报过「5 点伤害触发了五次」——这里直接说清楚，并指路「受到攻击后（连击只算一次）」。
+            if (r.Trigger == "DamageReceived")
+                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「受到伤害时（每一下）」：**每一下伤害都会触发一次** —— "
+                    + "敌人的多次连击（本体很多攻击是「1 点 × 5 下」，意图上也写着次数）会触发多次。"
+                    + "想让「一次攻击只触发一次」请把触发时机改成「受到攻击后（连击只算一次）」（本体钩子 AfterAttack，"
+                    + "在所有命中都结束之后才跑一次）。全被格挡 / 0 伤害的那一下不算（生成时会判 UnblockedDamage > 0）。"));
+            if (r.Trigger == "Attacked")
+                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「受到攻击后（连击只算一次）」："
+                    + "一次攻击的**所有命中都结束之后**只触发一次（本体钩子 AfterAttack），"
+                    + "所以「1 点 × 5 下」的连击也只算一次。判据是这一次攻击真的打到了你身上"
+                    + "（全被格挡 / 打的是别人时不触发）。注意它只认「攻击」：中毒、事件掉血这类不是攻击的伤害不会触发它。"));
             ValidateEffects(issues, $"遗物「{r.Name}」", r.Effects, ctx: "Relic", p: p);
             AddDuplicateVarNotice(issues, $"遗物「{r.Name}」", r.Effects);
             ValidateCondition(issues, $"遗物「{r.Name}」（整只遗物的触发条件）", r.Condition, "Relic");
 
-            if (!CSharpCodeGen.HasContext(r.Trigger))
+            if (!CSharpCodeGen.HasContext(r.Trigger) && !CSharpCodeGen.CanBootstrapContext(r.Trigger))
             {
                 foreach (var e in r.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower" or "TempPower"
                                                        || (x.Kind == "MaxHp" && x.Amount < 0)))
@@ -1127,6 +1167,61 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（1~9）。"));
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
+
+            // ===== 范围限定里的「自定义关键词那一组」（用户要求：把自定义关键词当卡的组用）=====
+            if (e.IsSpawnRandom && EffectCatalog.IsKeywordFilter(e.SpawnFilter))
+            {
+                string groupName = EffectCatalog.KeywordFilterName(e.SpawnFilter);
+                var group = EffectCatalog.KeywordGroupCards(p, e.SpawnFilter);
+                if (group.Count == 0)
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」范围限定选了自定义关键词「{groupName}」，"
+                        + "但**没有任何一张你自己的牌带这个关键词** —— 这一组是空的，效果会什么都不做。"
+                        + "请到卡牌页给这一组牌勾上这个关键词，或者换一个范围限定。"));
+                else
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」范围限定 = 自定义关键词「{groupName}」那一组，"
+                        + $"共 {group.Count} 张牌（{string.Join("、", group.Take(6).Select(c => c.Name))}"
+                        + (group.Count > 6 ? " …" : "") + "）。"
+                        + "生成时会把这些牌直接列进候选表（关键词是我们自己的标注，游戏里没有对应枚举，"
+                        + "只能在生成时按配置查出来）。"
+                        + "注意：本体的候选过滤会排除「基础 / 先古 / 事件」稀有度的牌，所以起始的打击 / 防御不会出现在这一组里。"));
+            }
+
+            // ===== 「多选1」（候选张数 > 1）=====
+            if (e.IsSpawnRandom && e.SpawnChoice > 1m)
+            {
+                if (e.SpawnChoice is < 2m or > 60m)
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」多选1 的候选张数 {e.SpawnChoice:0.##} 超出范围（2~60）。"));
+                issues.Add(new("提示", $"{owner} 的「生成卡牌」勾了「多选1」：会先随机抽 {(int)e.SpawnChoice} 张候选"
+                    + "（互不重复）弹选牌界面让你挑 1 张，**只生成选中那一张** —— 所以「数值」里的张数这时用不上"
+                    + "（它就是候选张数）；候选池里的牌不够时有多少给多少。"));
+                if (e.SpawnToPile == "Exhaust")
+                    issues.Add(new("提示", $"{owner} 的「生成卡牌」生成到消耗牌堆 + 多选1：选中的那张会直接进消耗牌堆。"));
+            }
+            else if (e.Kind == "GenerateCard" && e.SpawnChoice > 1m && !e.IsSpawnRandom)
+            {
+                issues.Add(new("警告", $"{owner} 的「生成卡牌」取卡方式是「指定卡」，多选1 不会生效"
+                    + "（指定卡的话几张候选都是同一张，没意义）—— 想用多选1 请把取卡方式改成「按范围随机」。"));
+            }
+
+            // ===== 复制卡牌（用户要求的新效果）=====
+            if (e.Kind == "CopyCard")
+            {
+                if (e.Amount is < 1m or > 5m)
+                    issues.Add(new("错误", $"{owner} 的「复制卡牌」张数 {e.Amount:0.##} 超出范围（1~5）。"));
+                if (e.Copies is < 1 or > 20)
+                    issues.Add(new("错误", $"{owner} 的「复制卡牌」复制的份数 {e.Copies} 超出范围（1~20）。"));
+                issues.Add(new("提示", $"{owner} 的「复制卡牌」会{EffectCatalog.CardPickZh(e.CardPick)}"
+                    + $"从{EffectCatalog.SelectPileZh(e.SelectPile)}里拿 {e.Amount:0.##} 张牌，每张复制 {Math.Max(1, e.Copies)} 份放进手牌"
+                    + "（本体「二刀流 DualWield」的官方做法：CreateClone + 加进手牌；复制出来的牌跟着原牌的升级 / 附魔走）。"));
+                if (ctx == "Relic")
+                    issues.Add(new("警告", $"{owner} 的「复制卡牌」在**遗物**上用不了（遗物没有「战斗里选牌」的时刻），"
+                        + "生成时会被忽略 —— 请把它放到卡牌或药水上。"));
+                if (ctx == "Power")
+                    issues.Add(new("警告", $"{owner} 的「复制卡牌」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌或药水上。"));
+                if (e.SelectPile == "Deck" || e.SelectPile is not ("Hand" or "Draw" or "Discard"))
+                    issues.Add(new("错误", $"{owner} 的「复制卡牌」只能从手牌 / 抽牌堆 / 弃牌堆里复制"
+                        + "（本体 CreateClone 要求原牌在战斗牌堆里，牌组里的牌不能直接克隆）。"));
+            }
             // 丢弃卡牌：丢进弃牌堆（洗牌后会回来，不是「消耗」）；丢哪一摞行为差得挺多，说明清楚
             if (e.Kind == "DiscardCard")
             {

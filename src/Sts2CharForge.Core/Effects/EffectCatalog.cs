@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
+using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Effects;
 
@@ -616,6 +617,12 @@ public static class EffectCatalog
         // 升级卡牌：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级（本体「武装 Armaments」的升级部分 + 自选牌堆）。
         // 生成的是 CardCmd.Upgrade（本体自己也是这么升级卡牌的：Apotheosis / Armaments / Whetstone）。
         new EffectKindOption("UpgradeCard",   "升级卡牌", "张", 1, 9,  false, false),
+        // 复制卡牌（用户要求的新效果）：数值 = 从牌堆里**选几张**，下面「复制的份数」= 每一张复制几份。
+        // 走的是本体「二刀流 DualWield」的做法（那个界面就是「选 1 张、复制 N 份」）：
+        // CardSelectCmd.FromHand / FromCombatPile 选出原牌 → card.CreateClone() → CardPileCmd.AddGeneratedCardToCombat(手牌)。
+        // 本体 CreateClone 要求那张牌在**战斗牌堆**里（不在战斗牌堆会直接抛异常），
+        // 所以「从哪里选牌」只给 手牌 / 抽牌堆 / 弃牌堆 这三摞。
+        new EffectKindOption("CopyCard",      "复制卡牌", "张", 1, 5,  false, false),
         // 预见（一代观者的 Scry）：看抽牌堆顶的 N 张牌，把其中任意张丢进弃牌堆（本体没有这个机制，自己拼）。
         new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 1, 9, false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
@@ -787,11 +794,103 @@ public static class EffectCatalog
         new SpawnFilterOption("Status", "状态牌（伤口 / 灼伤那种）", "状态"),
     };
 
+    // ==================== 「自定义关键词」当作「卡的组」用 ====================
+    // 范围限定里除了上面那 6 条内置的，还会按配置里的每个自定义关键词多一条
+    //（Id = "Keyword:<关键词的英文标识>"）—— 于是「带某个关键词的一批牌」就成了一套可复用的组，
+    // 随机生成 / 变化都能只从这一组里出牌。
+    /// <summary>范围限定里「自定义关键词」那一类选项的 Id 前缀。</summary>
+    public const string KeywordFilterPrefix = "Keyword:";
+
+    /// <summary>关键词标识 → 显示名（登记表：Profile 变化时由界面 / 生成器更新）。</summary>
+    private static readonly Dictionary<string, string> CustomKeywordNames = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>按配置里的自定义关键词更新登记表（界面刷新 / 生成前各调一次），让没有 profile 参数的地方也能显示名字。</summary>
+    public static void SetCustomKeywords(IEnumerable<(string Key, string Display)>? keywords)
+    {
+        CustomKeywordNames.Clear();
+        if (keywords is null) return;
+        foreach (var (key, name) in keywords)
+            if (!string.IsNullOrWhiteSpace(key))
+                CustomKeywordNames[key.Trim()] = string.IsNullOrWhiteSpace(name) ? key.Trim() : name.Trim();
+    }
+
+    /// <summary>这个范围限定的值是不是「按自定义关键词分组」。</summary>
+    public static bool IsKeywordFilter(string? v) =>
+        v is not null && v.StartsWith(KeywordFilterPrefix, StringComparison.Ordinal);
+
+    /// <summary>「Keyword:XXX」里的关键词标识（不是关键词过滤就返回 null）。</summary>
+    public static string? KeywordFilterKey(string? v) =>
+        IsKeywordFilter(v) ? v![KeywordFilterPrefix.Length..].Trim() : null;
+
+    /// <summary>自定义关键词的显示名（登记表里查不到就用标识本身，绝不返回空）。</summary>
+    public static string KeywordFilterName(string? v)
+    {
+        string? key = KeywordFilterKey(v);
+        if (string.IsNullOrWhiteSpace(key)) return "自定义关键词";
+        return CustomKeywordNames.TryGetValue(key, out string? name) && name.Length > 0 ? name : key;
+    }
+
+    /// <summary>
+    /// 范围限定的全部选项（内置 6 条 + 每个自定义关键词一组）。
+    /// 界面那个「范围限定」下拉绑这个，所以配置里加 / 删关键词后要重新取一次（见 MainWindow 的刷新）。
+    /// </summary>
+    public static IReadOnlyList<SpawnFilterOption> SpawnFiltersFor(CharacterProfile? p)
+    {
+        var list = SpawnFilters.ToList();
+        if (p is null) return list;
+        foreach (var (spec, key) in KeywordGen.All(p))
+        {
+            string name = string.IsNullOrWhiteSpace(spec.Name) ? key : spec.Name.Trim();
+            list.Add(new SpawnFilterOption(KeywordFilterPrefix + key,
+                $"自定义关键词：{name}（带这个关键词的那一组牌）", name));
+        }
+        return list;
+    }
+
     public static string SpawnFilterZh(string? v)
     {
+        if (IsKeywordFilter(v)) return KeywordFilterName(v);
         foreach (var f in SpawnFilters)
             if (string.Equals(f.Id, v ?? "", StringComparison.Ordinal)) return f.Zh;
         return "不限";
+    }
+
+    /// <summary>
+    /// 范围限定的中文名（**手上有配置时用这个**）：自定义关键词优先按 profile 里的名字查，
+    /// 查不到才退回登记表 —— 生成 / 卡面描述那几条路都是拿着 profile 的，
+    /// 不能依赖「界面刚才刷新过登记表」这个前提（不然描述里会写成英文标识）。
+    /// </summary>
+    public static string SpawnFilterZhFor(CharacterProfile? p, string? v)
+    {
+        if (IsKeywordFilter(v) && p is not null)
+        {
+            string? key = KeywordFilterKey(v);
+            foreach (var (spec, k) in KeywordGen.All(p))
+                if (string.Equals(k, key ?? "", StringComparison.OrdinalIgnoreCase))
+                    return string.IsNullOrWhiteSpace(spec.Name) ? k : spec.Name.Trim();
+        }
+        return SpawnFilterZh(v);
+    }
+
+    /// <summary>
+    /// 「按自定义关键词分组」时，这一组里到底有哪些牌。
+    ///
+    /// 生成端拿它写成**显式牌表**（关键词只是我们自己的文案 + 悬停提示，游戏里没有对应枚举，
+    /// 运行时过滤不出来，所以只能在生成期查配置）；校验器拿它报「这一组是空的 / 比候选张数还少」。
+    /// 只统计**自己的牌**（本体卡带不了自定义关键词），和卡池里的口径一致。
+    /// </summary>
+    public static List<CardSpec> KeywordGroupCards(CharacterProfile? p, string? filterId)
+    {
+        var list = new List<CardSpec>();
+        string? key = KeywordFilterKey(filterId);
+        if (p is null || string.IsNullOrWhiteSpace(key)) return list;
+        foreach (var c in p.AllCards)
+        {
+            if (c is null || c.IsVanillaCard) continue;
+            if (c.CustomKeywordList.Any(k => string.Equals((k ?? "").Trim(), key, StringComparison.OrdinalIgnoreCase)))
+                list.Add(c);
+        }
+        return list;
     }
 
     /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
@@ -1003,11 +1102,21 @@ public static class EffectCatalog
 
     public static IReadOnlyList<TriggerOption> RelicTriggers { get; } = new[]
     {
+        // 获得时（拿到这只遗物的那一刻，本体钩子 AfterObtained —— 不加参数、局内一次性）：
+        // 本体「好吃饼干 YummyCookie / 磨刀石 Whetstone / 爪子 Claws」这些「拾取时生效」的遗物都是它。
+        // 钩子签名里没有 choiceContext，需要的那几条效果由生成端自己造一个阻塞式 context
+        // （本体的 BlockingPlayerChoiceContext 注释里点名的第一个场景就是 "Relic AfterObtained callbacks"）。
+        new TriggerOption("Obtained",       "获得时",       "AfterObtained()"),
         new TriggerOption("CombatStart",    "战斗开始时",   "BeforeSideTurnStart(choiceContext, side, participants, combatState)"),
         new TriggerOption("PlayerTurnStart","每回合开始时", "AfterPlayerTurnStart(choiceContext, player)"),
         new TriggerOption("PlayerTurnEnd",  "每回合结束时", "AfterSideTurnEnd(choiceContext, side, participants)"),
         new TriggerOption("CombatVictory",  "战斗胜利时",   "AfterCombatVictory(room)"),
-        new TriggerOption("DamageReceived", "受到伤害时",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
+        // 受到伤害时 = 本体 AfterDamageReceived：**每一下伤害都触发一次**（14 个本体遗物用的是它）。
+        // 本体的敌人攻击很多是「1 点 × N 下」的连击，所以一次「5 点伤害」的攻击会触发 5 次。
+        new TriggerOption("DamageReceived", "受到伤害时（每一下）",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
+        // 受到攻击后 = 本体 AfterAttack：AbstractModel 的注释写明了 multi-attack 时它在**所有命中结束后只跑一次**，
+        // 而且它同样带 choiceContext（AttackContext / AttackCommand 都把它传下去了）。
+        new TriggerOption("Attacked",       "受到攻击后（连击只算一次）", "AfterAttack(choiceContext, command)"),
         new TriggerOption("GoldGained",     "获得金币时",   "AfterGoldGained(player)"),
         // 抽牌堆打乱洗牌时（用户要求：本体先古遗物「大～抱抱 BiiigHug」就是这条 ——
         // `public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)`

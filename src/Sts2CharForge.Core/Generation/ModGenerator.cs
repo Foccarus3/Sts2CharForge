@@ -25,6 +25,11 @@ public static class ModGenerator
             .Where(x => x.Active && !string.IsNullOrWhiteSpace(x.Name))
             .Select(x => (x.Item1, x.Name)));
 
+        // 自定义关键词登记：范围限定里的「自定义关键词那一组」要用它显示中文名
+        // （正式生成走的是 SpawnFiltersFor(profile)，登记表只是给没有 profile 参数的提示文案兜底）。
+        EffectCatalog.SetCustomKeywords(KeywordGen.All(profile)
+            .Select(x => (x.Key, KeywordGen.DisplayName(x.Spec, x.Key))));
+
         var issues = ProfileValidator.Validate(profile);
         if (issues.Any(i => i.IsError))
         {

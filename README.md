@@ -139,10 +139,33 @@
 
 - **取卡方式**：「指定卡」= 用「目标卡」那一栏选定的那张（老存档就是它）；
   **「按范围随机」** = 从卡池里按「范围限定」抽（本体「发现 Discovery / 攻击药水 AttackPotion」那种）。
-- **范围限定**（只在「按范围随机」时出现）：不限 / 攻击 / 技能 / 能力 / **诅咒** / **状态**。
+- **范围限定**（只在「按范围随机」时出现）：不限 / 攻击 / 技能 / 能力 / **诅咒** / **状态**，
+  再加上**每个自定义关键词一组**。
   攻击 / 技能 / 能力按 `CardType` 过滤；诅咒 / 状态会**把本体的诅咒池、状态池一起算进来**
   （`ModelDb.CardPool<CurseCardPool>()` / `StatusCardPool` + 你自己的卡池），所以你自己做的诅咒 / 状态牌也在候选里。
   随机取卡走 `CardFactory.GetDistinctForCombat(player, 池, N, Rng.CombatCardGeneration)`。
+- **自定义关键词 = 一套可复用的「卡的组」**：在「自定义关键词」页加的关键词，每个都会在「范围限定」里多出一条
+  「自定义关键词：××（带这个关键词的那一组牌）」。选它 = 只从**带这个关键词的那批牌**里随机出。
+  卡牌页勾关键词就能改这一组里有哪些牌。
+  实现上生成的是**显式牌表**（`new List<CardModel> { ModelDb.Card<A>(), ModelDb.Card<B>() }`）——
+  关键词只是本工具自己的标注（卡面文字 + 悬停说明），游戏的 `CardKeyword` 是封闭枚举、模组加不了，
+  运行时过滤不出来，所以只能在生成期按配置把这些牌列出来。
+  两个注意：**这一组是空的**（没有任何牌带这个关键词）校验器会**报错**拦住；
+  本体的候选过滤会排除「基础 / 先古 / 事件」稀有度，所以起始的打击 / 防御不会出现在这一组里。
+- **多选1（候选张数）**：「生成卡牌 + 按范围随机」时效果底下多一栏，**默认 1 = 直接生成**（原来的行为）；
+  填 3 就是「先随机抽 3 张候选（互不重复），玩家挑 1 张，只生成选中的那一张」——
+  这时「数值」里的张数不生效（它就是候选张数），校验器会给一句提示。
+  候选 ≤ 3 走本体「发现 Discovery」那个界面（`CardSelectCmd.FromChooseACardScreen`，
+  本体**超过 3 张会直接抛 `ArgumentException`**）；候选 > 3 走简单网格选牌
+  （`FromSimpleGrid` + `new CardSelectorPrefs(base.SelectionScreenPrompt, 1)`，本体「抉择悖论 ChoicesParadox」那种），
+  所以这种卡必须一起生成 `<卡>.selectionScreenPrompt`（`NeedsSelectPrompt` 管这件事）。
+  候选一张都没有时整条效果**安全跳过**（本体在这一步是 `ReportSoftlock()` = 卡死）。
+- **复制卡牌**（效果种类里那一条）：**数值 = 从牌堆里选几张**，效果底下的**「复制的份数」= 每一张复制几份**，
+  复制出来的进**手牌**。自己选 / 随机、手牌 / 抽牌堆 / 弃牌堆都能选。
+  实现就是本体「二刀流 DualWield」的做法：`CardSelectCmd.FromHand / FromCombatPile` 选出原牌 →
+  `card.CreateClone()` → `CardPileCmd.AddGeneratedCardToCombat(clone, PileType.Hand, owner)`。
+  注意 `CreateClone` 只允许**战斗牌堆**里的牌（本体源码里非战斗牌堆直接抛异常），所以牌组不能选；
+  复制出来的牌跟着原牌的升级 / 附魔走。遗物 / 自定义状态上用不了（那里没有「战斗里选牌」的上下文），生成时会留一行说明。
 - **生成 / 变化出来的卡怎么处理**（可多选）：
   - **直接升级** → `CardCmd.Upgrade(card)`（本场战斗内有效）；
   - **免费打出** → `card.SetToFreeThisCombat()`（本场战斗内 0 费）；
@@ -613,6 +636,45 @@ await CreatureCmd.Stun(cardPlay.Target);   // 本体 Whistle.OnPlay 的原样写
   （`FlavorSynchronizer`），单人游戏看不到；所以这个键照旧写，另外再加这个阵亡气泡。
 
 > 初始遗物只有一个来源：**「遗物」页里勾了「起始遗物」的遗物**（`StartWithBurningBlood` 只是老存档字段，生成时不读取）。
+
+## 触发时机：「受到伤害时（每一下）」vs「受到攻击后（连击只算一次）」
+
+遗物页和自定义状态页的触发时机里都有这两条，差别很重要：
+
+| 触发时机 | 本体钩子 | 触发次数 | 什么时候用 |
+|---|---|---|---|
+| 受到伤害时（每一下） | `AfterDamageReceived` | **每一下伤害都触发一次** | 原版的「受到伤害后」语义（本体原体黏土 `SelfFormingClay`、残存之心 `BeatingRemnant` 都是它） |
+| 受到攻击后（连击只算一次） | `AfterAttack` | **一次攻击的所有命中结束后只触发一次** | 想「一次攻击只算一次」时用它 |
+
+- 本体的敌人攻击很多是**多次连击**（`AttackCommand.WithHitCount` / `MultiAttackIntent`，
+  意图上写着「1 点 × 5 下」这种），所以一次「造成 5 点伤害」的攻击会让「每一下」那条触发 5 次 ——
+  这是本体语义，不是生成器重复执行（本体用这个钩子的遗物也是这个行为）。
+  用户实测报过「敌人造成 5 点伤害，这个触发时机会生效五次」，就是这种情况。
+- 生成代码里「每一下」那条会判 **`if (result.UnblockedDamage <= 0) return;`**（全被格挡 / 0 伤害的那一下不算「受到伤害」），
+  和本体原体黏土的判法一致。
+- 「受到攻击后（连击只算一次）」生成的是
+  `public override async Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command)`，
+  判据是**这一次攻击真的打到了我身上**：
+  `command.Results.SelectMany(hits => hits).Where(r => r.Receiver == 我的生物).Sum(r => r.UnblockedDamage)` > 0。
+  本体 `AbstractModel.AfterAttack` 的注释写明了：multi-attack 时它在**所有命中结束之后只跑一次**
+  （而 `AfterDamageGiven` / `AfterDamageReceived` 是每一下都跑）。它只认「攻击」——
+  中毒、事件掉血这类不是攻击的伤害不会触发它（那种用「每一下」那条）。
+- 自定义状态里「每一下」× 「生效次数 = 本状态的层数」会**相乘**（敌人的一次 5 连击 × 5 层 = 一次攻击执行 25 次），
+  校验器会把算式写出来提醒。
+
+## 遗物触发时机「获得时」
+
+遗物页多了一个触发时机「**获得时**」：拿到这只遗物的那一刻触发一次，
+对应本体钩子 `AfterObtained()`（本体的「好吃饼干 YummyCookie / 磨刀石 Whetstone / 爪子 Claws」
+这些「拾取时生效」的遗物都是它），生成时同时声明 `public override bool HasUponPickupEffect => true;`。
+
+- 这个钩子本体**没给 `choiceContext`**，但本体允许在获得遗物时做需要它的操作
+  （本体「爪子 Claws」就在获得时让玩家选牌变化）。所以需要上下文的那些效果
+  （生成卡牌 / 抽牌 / 卡牌奖励 / 施加状态…）生成时**自己造一个**
+  `new BlockingPlayerChoiceContext()` —— 本体 `BlockingPlayerChoiceContext` 的注释里点名的
+  第一个场景就是 "Relic AfterObtained callbacks"；不需要的效果不会多造那个变量。
+- 「获得卡牌奖励」放在这里（或其它非「战斗胜利后」的时机）是**当场弹 N 选一**、选中即进牌组；
+  挂在「战斗胜利后」才是「结算界面多一条奖励」。
 
 ## 存档安全：自动备份 + 从工程恢复
 
