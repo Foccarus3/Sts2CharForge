@@ -12210,6 +12210,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					atlasPatchSrc.Contains("nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.HasSprite)")
 					&& atlasPatchSrc.Contains("nameof(MegaCrit.Sts2.Core.Assets.AtlasManager.GetSprite)")
 					&& atlasPatchSrc.Contains("[HarmonyLib.HarmonyPrefix]"), "两个都拦了");
+				// 【踩过的坑】[HarmonyPatch] 写在**方法**上时 PatchAll 会静默跳过整个类：
+				// 模组加载日志一切正常、补丁却完全没生效（实测：方法级注解的补丁不会被打上，也不报错）。
+				// 所以这里强制检查「注解贴在类上」+「参数用 __args 注入（不看本体形参名）」。
+				// 注解可能跨多行，所以要跳到属性结束（以 )] 收尾）再看下一行。
+				bool ClassLevelPatchOnly(string path, out string bad)
+				{
+					bad = "";
+					string[] ls = File.ReadAllText(path).Split('\n');
+					for (int li = 0; li < ls.Length; li++)
+					{
+						if (!ls[li].Contains("[HarmonyLib.HarmonyPatch(", StringComparison.Ordinal)) continue;
+						int nj = li;
+						while (nj < ls.Length && !ls[nj].Contains(")]", StringComparison.Ordinal)) nj++;
+						nj++;
+						while (nj < ls.Length && ls[nj].Trim().Length == 0) nj++;
+						string next = nj < ls.Length ? ls[nj].Trim() : "";
+						if (!next.StartsWith("internal static class", StringComparison.Ordinal) && !next.StartsWith("public static class", StringComparison.Ordinal))
+						{
+							bad = Path.GetFileName(path) + "：" + ls[li].Trim() + " → " + next;
+							return false;
+						}
+					}
+					return true;
+				}
+				Check("[HarmonyPatch] 必须贴在**类**上（写在方法上会被 PatchAll 静默跳过、补丁完全不生效）",
+					ClassLevelPatchOnly(atlasPatchPath, out string badAtlasPatch),
+					badAtlasPatch.Length == 0 ? "两条都贴在类上" : badAtlasPatch);
+				Check("补丁参数用 __args 注入（本体形参名字变了也不会静默失效）",
+					atlasPatchSrc.Contains("object[] __args"), "用了 __args");
+				// 全工程再扫一遍：以后任何一个补丁生成器写成方法级注解都会在这里被抓住
+				string methodLevel = "";
+				foreach (string csFile in Directory.EnumerateFiles(Path.Combine(atlasProject, "cs"), "*.cs", SearchOption.AllDirectories))
+					if (!ClassLevelPatchOnly(csFile, out string badFile)) { methodLevel = badFile; break; }
+				Check("整个生成工程里没有一个「方法级注解」的 HarmonyPatch（那种补丁会被 PatchAll 静默跳过）",
+					methodLevel.Length == 0, methodLevel.Length == 0 ? "全部都是类级注解" : methodLevel);
+				Check("补丁参数用 __args 注入（本体形参名字变了也不会静默失效）",
+					atlasPatchSrc.Contains("object[] __args"), "用了 __args");
 				Check("补丁的表里有能量图标 + 药水（键就是图集精灵表里的 filename）",
 					atlasPatchSrc.Contains($"(\"ui_atlas\", \"card/energy_{atlasNaming.EnergyColor}\")")
 					&& atlasPatchSrc.Contains("(\"potion_atlas\",")
