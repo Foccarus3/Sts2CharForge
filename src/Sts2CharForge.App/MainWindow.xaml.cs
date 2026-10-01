@@ -12031,6 +12031,128 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(condRecRoot)) Directory.Delete(condRecRoot, true); } catch { }
 			}
 		}
+		// ===== 本轮新增：描述里的富文本标签自动纠正 + 数值 0 的效果不显示 / 不执行 =====
+		{
+			// ① 富文本标签体检：用户在游戏里看到的「[gold] 被原样印出来」其实是他把标签写成了 [god]
+			//    —— 本体的 MegaLabelHelper.ParseBbcode 对标签是严格的，拼错 / 没闭合 / 交叉嵌套都会抛异常
+			//    （日志里的 "Found end tag gold, expected god"），那一次自动字号算崩，方括号就原样显示。
+			var fix1 = RichTextFix.Repair("[god]中文[/gold]");
+			Check("拼错的标签（[god]）会被改成最接近的那个（[gold]）",
+				fix1.Text == "[gold]中文[/gold]" && fix1.Notes.Any(n => n.Contains("[god]") && n.Contains("[gold]")),
+				fix1.Text + " ｜ " + string.Join(" / ", fix1.Notes));
+			var fix2 = RichTextFix.Repair("[gold]没闭合的文字");
+			Check("没闭合的标签会在结尾自动补上闭合标签", fix2.Text == "[gold]没闭合的文字[/gold]", fix2.Text);
+			var fix3 = RichTextFix.Repair("多余的[/gold]闭合");
+			Check("多出来的闭合标签会被删掉（本体解析器会为它抛异常）", fix3.Text == "多余的闭合", fix3.Text);
+			var fix4 = RichTextFix.Repair("[gold][blue]交叉[/gold][/blue]");
+			Check("交叉嵌套会被理顺成正确顺序（内容一个字不动）",
+				fix4.Text == "[gold][blue]交叉[/blue][/gold]" && fix4.Text.Replace("[", "").Replace("]", "").Contains("交叉"),
+				fix4.Text);
+			var fix5 = RichTextFix.Repair("正常[gold]金色[/gold]、[blue]{Damage:diff()}[/blue]");
+			Check("正常写法的标签一个字都不改（也不会误报）",
+				fix5.Text == "正常[gold]金色[/gold]、[blue]{Damage:diff()}[/blue]" && fix5.Notes.Count == 0,
+				fix5.Text + " ｜ 提示数=" + fix5.Notes.Count);
+			var fix6 = RichTextFix.Repair("[lb]方括号[rb]和 [color=#EFC851]原生颜色[/color]");
+			Check("[lb]/[rb]（本体的方括号转义）和带参数的 Godot 原生标签都不动",
+				fix6.Text == "[lb]方括号[rb]和 [color=#EFC851]原生颜色[/color]" && fix6.Notes.Count == 0, fix6.Text);
+			// 生成出来的本地化表里必须已经是修好的文本（原始文本仍留在 CET 标记里，回读不受影响）
+			CharacterProfile richProbe = ProfileFactory.Sample();
+			CardSpec richCard = new CardSpec
+			{
+				Name = "自检富文本", ClassName = "UiCheckRich", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true,
+				CustomDescription = "写错的[god]中文[/gold]，还有没闭合的[gold]金色",
+			};
+			richCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m });
+			richProbe.Cards.Add(richCard);
+			string richCardsJson = LocalizationGen.CardsJson(richProbe);
+			Check("生成出来的卡面描述里 [god] 已经变成 [gold]、没闭合的也补上了",
+				richCardsJson.Contains("[gold]中文[/gold]") && richCardsJson.Contains("[gold]金色[/gold]")
+				&& !richCardsJson.Contains("[god]"), "已修好");
+			Check("校验器会把「标签写错了」报出来（用户能知道游戏里为什么显示方括号）",
+				ProfileValidator.Validate(richProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("富文本标签有问题")),
+				"报了");
+			Check("名字里没有方括号时不会误报富文本问题",
+				!ProfileValidator.Validate(ProfileFactory.Sample()).Any((ValidationIssue i) => i.Message.Contains("富文本标签")), "没误报");
+
+			// ② 数值 0 的效果：不显示、也不执行（不然 0 点伤害会被力量加成、0 点格挡会被敏捷加成）
+			Check("数值 0 + 升级也不加数值 → 整条丢掉；数值 0 + 有升级增量 → 只有升级后才存在",
+				CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "Damage", Amount = 0m, UpgradeAmount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "Damage", Amount = 0m, UpgradeAmount = 6m })
+				&& CSharpCodeGen.IsUpgradeOnlyZero(new EffectSpec { Kind = "Damage", Amount = 0m, UpgradeAmount = 6m })
+				&& !CSharpCodeGen.IsUpgradeOnlyZero(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 0m }), "分类对");
+			Check("0 有意义的那些效果不会被误判（召唤伙伴填 0 = 用「召唤物」页的血量；数值 = X 也不是 0）",
+				!CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "SummonPet", Amount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TimesUp", Amount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "Damage", Amount = 0m, AmountIsX = true }), "没误判");
+			CharacterProfile zeroProbe = ProfileFactory.Sample();
+			CardSpec zeroBlock = new CardSpec { Name = "自检零格挡", ClassName = "UiCheckZeroBlock", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			zeroBlock.Effects.Add(new EffectSpec { Kind = "Block", Amount = 0m, TargetSide = "Self" });
+			zeroBlock.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+			zeroProbe.Cards.Add(zeroBlock);
+			string zeroBlockSrc = CSharpCodeGen.CardSource(zeroProbe, zeroBlock, 0);
+			Check("数值 0 的「获得格挡」整条不生成（不会被敏捷加成）",
+				!zeroBlockSrc.Contains("GainBlock") && zeroBlockSrc.Contains("DamageCmd.Attack"), "格挡没了 / 伤害还在");
+			string zeroBlockJson = LocalizationGen.CardsJson(zeroProbe);
+			int zeroBlockAt = zeroBlockJson.IndexOf("\"UI_CHECK_ZERO_BLOCK.description\"", StringComparison.Ordinal);
+			string zeroBlockSeg = zeroBlockAt < 0 ? "" : zeroBlockJson.Substring(zeroBlockAt, Math.Min(160, zeroBlockJson.Length - zeroBlockAt));
+			Check("数值 0 的「获得格挡」也不写进卡面描述",
+				zeroBlockAt >= 0 && zeroBlockSeg.Contains("造成") && !zeroBlockSeg.Contains("格挡"),
+				zeroBlockSeg.Replace("\n", " ").Replace("\r", ""));
+			CardSpec zeroTiny = new CardSpec { Name = "自检全零", ClassName = "UiCheckZeroTiny", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			zeroTiny.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, TargetSide = "Enemy" });
+			Check("只剩 0 值效果时这张牌不再变成「要选目标」的攻击牌",
+				CSharpCodeGen.CardSource(zeroProbe, zeroTiny, 0).Contains("TargetType.Self"), "TargetType.Self");
+			CardSpec zeroUp = new CardSpec { Name = "自检零伤升级", ClassName = "UiCheckZeroUp", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			zeroUp.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, UpgradeAmount = 6m, TargetSide = "Enemy" });
+			zeroProbe.Cards.Add(zeroUp);
+			zeroProbe.Cards.Add(zeroTiny);
+			string zeroUpSrc = CSharpCodeGen.CardSource(zeroProbe, zeroUp, 0);
+			Check("数值 0 + 升级增量 6：生成出来的伤害被 if (base.IsUpgraded) 包住（没升级时一点都不打）",
+				zeroUpSrc.Contains("if (base.IsUpgraded)") && zeroUpSrc.Contains("UpgradeValueBy(6m)")
+				&& zeroUpSrc.Contains("DamageCmd.Attack"), "有守卫");
+			Check("这张牌仍然是要选目标的攻击牌（升级后要用）",
+				zeroUpSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			string zeroUpDesc = LocalizationGen.CardsJson(zeroProbe);
+			Check("数值 0 + 升级增量：描述用本体的 {IfUpgraded:show:…} 包住（没升级时不显示这一行）",
+				zeroUpDesc.Contains("{IfUpgraded:show:对指定敌人造成 {Damage:diff()} 点伤害。}"), "藏起来了");
+			var zeroIssues = ProfileValidator.Validate(zeroProbe);
+			Check("校验器会提示「数值 0 的效果不显示也不执行」以及「升级后才生效」",
+				zeroIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("不显示、也不会执行"))
+				&& zeroIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("升级之后才出现并生效")), "提示在");
+			// 遗物 / 药水上的 0 值效果同样整条丢掉
+			CharacterProfile zeroRelicProbe = ProfileFactory.Sample();
+			zeroRelicProbe.Relics.Add(new RelicSpec
+			{
+				Name = "自检零回复遗物", ClassName = "UiCheckZeroHeal", Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "Heal", Amount = 0m } },
+			});
+			Check("遗物上的 0 值效果也不生成、不写描述",
+				!CSharpCodeGen.RelicSource(zeroRelicProbe, zeroRelicProbe.Relics[^1], 0).Contains("CreatureCmd.Heal")
+				&& !LocalizationGen.RelicsJson(zeroRelicProbe).Contains("回复 0 点生命"), "丢掉了");
+			// 生成 → 回读：升级增量要原样回来（数值 0 的那条效果本来就不进代码，回读自然也没有它）
+			string zeroRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_zero_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile zeroGenProbe = ProfileFactory.Sample();
+				zeroGenProbe.Paths.OutputDir = zeroRoot;
+				zeroGenProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				zeroGenProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec genZeroUp = new CardSpec { Name = "自检零伤升级", ClassName = "UiCheckZeroUp", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				genZeroUp.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, UpgradeAmount = 6m, TargetSide = "Enemy" });
+				zeroGenProbe.Cards.Add(genZeroUp);
+				Check("（准备）带 0 值效果 / 升级增量的存档能生成工程", ModGenerator.Generate(zeroGenProbe).Success, zeroRoot);
+				var zeroRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(zeroGenProbe));
+				var recUp = zeroRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckZeroUp");
+				Check("回读：数值 0 + 升级增量 6 原样回来（回读不会把它当成「有伤害的普通卡」）",
+					recUp is not null && recUp.Effects.Any((EffectSpec e) => e.Kind == "Damage" && e.Amount == 0m && e.UpgradeAmount == 6m),
+					recUp is null ? "(没回读出来)" : string.Join(" / ", recUp.Effects.Select((EffectSpec e) => $"{e.Kind} {e.Amount}/+{e.UpgradeAmount}")));
+				Check("回读没有认不出来的语句", !zeroRec.HasUnparsed, zeroRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(zeroRoot)) Directory.Delete(zeroRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

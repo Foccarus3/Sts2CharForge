@@ -14,6 +14,19 @@ public static class LocalizationGen
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
+    /// <summary>
+    /// 本地化表 → JSON。写盘前统一过一遍 <see cref="RichTextFix"/>：标签拼错（[god]）、
+    /// 没闭合（[gold]文字）、交叉嵌套都会让本体的 BBCode 解析**抛异常**，
+    /// 后果是自动字号中断 + 卡面上那串方括号被原样印出来（用户实测报过）。
+    /// 修好的文本进本地化表；改了什么由校验器/生成日志报给用户（原始文本仍留在 CET 标记里，回读不受影响）。
+    /// </summary>
+    internal static string LocJson(Dictionary<string, string> dict)
+    {
+        foreach (string key in dict.Keys.ToList())
+            dict[key] = RichTextFix.Repair(dict[key]).Text;
+        return JsonSerializer.Serialize(dict, JsonOpts);
+    }
+
     public static string CharactersJson(CharacterProfile p)
     {
         var n = Naming.From(p);
@@ -42,7 +55,7 @@ public static class LocalizationGen
             [$"{n.CharEntry}.banter.dead.endTurnPing"] = string.IsNullOrWhiteSpace(p.DeadBanterText) ? "……" : p.DeadBanterText,
             [$"{n.CharEntry}.unlockText"] = "完成 {Prerequisite} 的条件后解锁。",
         };
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     public static string CardsJson(CharacterProfile p)
@@ -77,7 +90,7 @@ public static class LocalizationGen
                 ? cardBody
                 : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
         }
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     /// <summary>
@@ -135,7 +148,7 @@ public static class LocalizationGen
                 : $"每场战斗开始时获得 {x.Initial} 点{res}（战斗结束清空）。";
             dict[$"{entry}.flavor"] = RenameResource("由 Sts2CharForge 生成的隐藏起始遗物，用来承载额外资源量。", p);
         }
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     /// <summary>
@@ -231,7 +244,7 @@ public static class LocalizationGen
     public static string StaticHoverTipsJson(CharacterProfile p)
     {
         var dict = new Dictionary<string, string>();
-        if (!p.ExtraResource.Enabled) return JsonSerializer.Serialize(dict, JsonOpts);
+        if (!p.ExtraResource.Enabled) return LocJson(dict);
 
         string name = ResourceName(p);
         dict["STAR_COUNT.title"] = name;
@@ -254,7 +267,7 @@ public static class LocalizationGen
             bits.Add("打出需要消耗它的牌时会扣除，数量不足时无法打出");
 
         dict["STAR_COUNT.description"] = $"{iconPrefix}{name}：{string.Join("；", bits)}。";
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     /// <summary>
@@ -271,7 +284,7 @@ public static class LocalizationGen
         // 本体关键词改名：只写用户真的改了的键（留空 / 和本体一样都不写，见 VanillaKeywordGen.LocEntries）
         foreach (var kv in VanillaKeywordGen.LocEntries(p))
             dict[kv.Key] = kv.Value;
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     public static string PotionsJson(CharacterProfile p)
@@ -296,7 +309,7 @@ public static class LocalizationGen
                     ? potionCustom
                     : (potionBody.Length == 0 ? potionCustom : potionBody + "\n" + potionCustom));
         }
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     /// <summary>
@@ -330,7 +343,7 @@ public static class LocalizationGen
             }
         }
 
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
     /// <summary>
     /// 把「本体状态改名」要一起换掉的本体条目合进某张表（键相同就覆盖）。
@@ -343,7 +356,7 @@ public static class LocalizationGen
 
         var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new Dictionary<string, string>();
         foreach (var r in hit) dict[r.Key] = r.Text;
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     /// <summary>延迟 Power 的名称与描述；外加「本体状态改写」要覆盖的本体键（改名/改描述）。</summary>
@@ -428,7 +441,7 @@ public static class LocalizationGen
             dict[$"{entry}.description"] = desc;
             dict[$"{entry}.smartDescription"] = desc;   // 战斗里的悬停提示优先用它
         }
-        return JsonSerializer.Serialize(dict, JsonOpts);
+        return LocJson(dict);
     }
 
     // ---------- 描述自动生成 ----------
@@ -440,15 +453,25 @@ public static class LocalizationGen
         var varMap = CSharpCodeGen.VarNamesOf(list);
         foreach (var e in list)
         {
+            // 数值 0 且升级也不加数值：连描述都不写（用户要求：游戏里不显示这条效果）
+            if (CSharpCodeGen.IsInertZero(e)) continue;
+            var one = new StringBuilder();
             string text = DescribeEffect(e, p, potionTarget, isCard, starCostIsX, varMap);
-            if (text.Length > 0) sb.Append(text).Append('\n');
+            if (text.Length > 0) one.Append(text).Append('\n');
             // 条件选项是「每条效果各自一份」的，所以条件说明紧跟在它管的那条效果后面
             // （药水不支持条件，所以药水不写）
             if (potionTarget is null)
             {
                 string cond = EffectConditionInline(e.Condition, p);
-                if (cond.Length > 0) sb.Append(cond).Append('\n');
+                if (cond.Length > 0) one.Append(cond).Append('\n');
             }
+            if (one.Length == 0) continue;
+            string block = one.ToString().TrimEnd('\n');
+            // 数值 0、靠升级增量才有数值：用本体的 {IfUpgraded:show:…} 包起来 ——
+            // 没升级时整条不显示（升级预览里本体自己会用绿色写出来）。逐行包：格式串里跨行不好读也不好查。
+            if (CSharpCodeGen.IsUpgradeOnlyZero(e))
+                block = string.Join("\n", block.Split('\n').Select(line => "{IfUpgraded:show:" + line + "}"));
+            sb.Append(block).Append('\n');
         }
         return sb.ToString().TrimEnd('\n');
     }

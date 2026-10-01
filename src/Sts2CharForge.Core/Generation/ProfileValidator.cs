@@ -61,6 +61,9 @@ public static class ProfileValidator
         // 本体关键词改名：id 必须是那 7 个之一、名字不能带富文本标记、不能和别的本体关键词撞名
         ValidateVanillaKeywordRenames(issues, p);
 
+        // 描述里的富文本标签体检（拼错 / 没闭合 / 交叉嵌套会让游戏里的方括号原样印出来）
+        ValidateRichText(issues, p);
+
         // ===== 召唤物（列表；本体的通用宠物 API，不需要 Harmony 补丁）=====
         // 为什么要在这里拦：卡牌 / 遗物上的「召唤伙伴 / 伙伴攻击」生成出来的代码会引用宠物类，
         // 没启用召唤物的话那个类根本不存在 → dotnet 直接报 CS0103，而用户看不懂。
@@ -1008,6 +1011,16 @@ public static class ProfileValidator
                 else
                     issues.Add(new("错误", $"{owner} 的「{kind.Display}」数值 {e.Amount} 超出允许范围 [{kind.Min} ~ {kind.Max}]。"));
             }
+            // 数值 0 的效果（用户要求）：游戏里**不显示、也不执行**。
+            // 为什么不做成「写个 0 摆着」：本体的伤害 / 格挡会被力量 / 敏捷加成
+            //（0 点伤害 + 3 点力量 = 3 点伤害），所以 0 必须真的「不存在」。
+            if (CSharpCodeGen.IsInertZero(e))
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 0、升级也不加数值："
+                    + "按你的要求这条效果在游戏里**不显示、也不会执行**（描述里不写、代码也不生成）。"
+                    + "想让它升级后才生效，就填「升级增量」；不需要它就删掉这条效果。"));
+            else if (CSharpCodeGen.IsUpgradeOnlyZero(e))
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 0、升级增量 {e.UpgradeAmount:0.##}："
+                    + "没升级时这条**不显示、也不执行**（不会被力量 / 敏捷加成），升级之后才出现并生效。"));
             // 「获得能量 / 获得金币」填了负数 = 扣除（本体 GainEnergy / GainGold 对非正数直接返回，
             // 所以生成的是 LoseEnergy / LoseGold，数值会夹到 0、不会扣成负数）。这里是让用户确认一下语义。
             if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && !e.AmountIsX)
@@ -1279,5 +1292,49 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{owner} 的条件指向对象是「指定敌人」：按你给这张牌选的那个目标判断，效果条生效；"
                     + "（「不满足时打不出去」那种整张牌判定用不了这个对象。）"));
         }
+    }
+
+    /// <summary>
+    /// 描述类文本的**富文本标签体检**。
+    ///
+    /// 为什么要单列一条：本体的 <c>MegaLabelHelper.ParseBbcode</c> 对标签是严格的，
+    /// 拼错（写成 <c>[god]</c>）、没闭合（<c>[gold]文字</c>）、交叉嵌套都会**抛异常**
+    /// （游戏日志里的 "Found end tag gold, expected god" 就是这么来的），
+    /// 一旦抛了，本体的自动字号计算中断、卡面上那串方括号还会被原样印出来。
+    /// 生成时已经用 <see cref="RichTextFix"/> 自动修好了，这里把「修了什么」报给用户看清楚
+    /// （用户实测就是写成了 [god]，看到卡面上一堆方括号以为富文本坏了）。
+    /// </summary>
+    private static void ValidateRichText(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        void Check(string who, string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return;
+            foreach (string note in RichTextFix.Repair(text).Notes)
+                issues.Add(new("警告", $"{who} 的富文本标签有问题：{note}"
+                    + "（生成时会自动修好，但建议你回去把它改对）"));
+        }
+
+        Check("角色描述", p.Description);
+        Check("死亡描述文本", p.DeathText);
+        Check("阵亡后台词", p.DeadBanterText);
+        Check($"额外资源量「{p.ExtraResource.Name}」的名字", p.ExtraResource.Name);
+        foreach (var c in p.AllCards)
+        {
+            if (c is null) continue;
+            Check($"卡牌「{c.Name}」的自定义描述", c.CustomDescription);
+        }
+        foreach (var r in p.Relics) Check($"遗物「{r.Name}」的自定义描述", r.CustomDescription);
+        foreach (var s in p.Potions) Check($"药水「{s.Name}」的自定义描述", s.CustomDescription);
+        foreach (var k in KeywordGen.All(p))
+            Check($"自定义关键词「{k.Spec.Name}」的名字/说明", (k.Spec.Name ?? "") + "\n" + (k.Spec.Description ?? ""));
+        foreach (var cp in p.CustomPowers)
+        {
+            if (!cp.Enabled) continue;
+            Check($"自定义状态「{cp.Name}」的名字/描述", (cp.Name ?? "") + "\n" + (cp.Description ?? ""));
+        }
+        foreach (var o in VanillaPowerGen.Active(p))
+            Check($"本体状态「{o.PowerId}」的新名字/新描述", (o.Name ?? "") + "\n" + (o.Description ?? ""));
+        foreach (var s in p.Summons)
+            Check($"召唤物「{s.Name}」的名字", s.Name);
     }
 }

@@ -2420,9 +2420,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             || PetAttackKind(e.Kind)
             || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
-        if (c.Effects.Any(e => HitsEnemy(e) && e.TargetSide == "Enemy")) return "AnyEnemy";
-        if (c.Effects.Any(e => HitsEnemy(e) && e.TargetSide == "AllEnemies")) return "AllEnemies";
-        if (c.Effects.Any(e => HitsEnemy(e) && e.TargetSide == "RandomEnemies")) return "RandomEnemy";
+        // 「数值 0 且升级也不加数值」的效果整条不生成（用户要求），所以它也不该让这张牌变成「要选目标」的
+        if (c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "Enemy")) return "AnyEnemy";
+        if (c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "AllEnemies")) return "AllEnemies";
+        if (c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "RandomEnemies")) return "RandomEnemy";
         return "Self";
     }
 
@@ -2856,6 +2857,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 「数值就是这条效果的强度」的效果种类（数值填 0 = 这条效果什么都没做）。
+    ///
+    /// 用户要求：这些效果填 0 时，在游戏里**不显示、也不执行** ——
+    /// 因为本体的伤害 / 格挡会被力量 / 敏捷加成（0 点伤害 + 3 点力量 = 3 点伤害，
+    /// 0 点格挡 + 2 点敏捷 = 2 点格挡），所以不能只是「写个 0 摆着」；
+    /// 只有升级增量给了数值（升级后 > 0）时，这条效果才真的存在。
+    ///
+    /// 不在名单里的要小心：召唤伙伴（0 = 用「召唤物」页配置的血量）、大限已至（伤害 = 目标灾厄层数）、
+    /// 三个「按生命值算」的伙伴攻击 / 牺牲伙伴（0 只是 CalculationBase 的固定加值）——
+    /// 这些的 0 都是有意义的，不能当「没填」处理。
+    /// </summary>
+    private static bool AmountIsStrength(EffectSpec e) =>
+        e.Kind is "Damage" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "Draw" or "Gold" or "Energy"
+            or "OverdraftEnergy" or "ExtraResource" or "ApplyPower" or "TempPower" or "Outbreak"
+            or "BoostCard" or "UpgradeCard" or "Scry"
+        && !e.AmountIsX && !e.AmountIsStack;
+
+    /// <summary>数值 0、升级也不加数值 → 整条效果丢掉：描述不写、代码也不生成。</summary>
+    public static bool IsInertZero(EffectSpec e) =>
+        e.Amount == 0m && e.UpgradeAmount == 0m && AmountIsStrength(e);
+
+    /// <summary>
+    /// 数值 0、只有升级增量才给得出数值 → 没升级时整条不执行（<c>if (base.IsUpgraded)</c>）、
+    /// 描述里也用本体的 <c>{IfUpgraded:show:…}</c> 藏起来（用户要求：只有升级后才有这个效果）。
+    /// 要求它有动态变量（升级增量写在那个变量上）—— 没有变量的种类（额外资源量 0）不走这条。
+    /// </summary>
+    public static bool IsUpgradeOnlyZero(EffectSpec e) =>
+        e.Amount == 0m && e.UpgradeAmount != 0m && AmountIsStrength(e) && !HasNoDynamicVar(e);
+
+    /// <summary>「升级之后才有的效果」的运行时守卫（只对卡牌有意义：遗物 / 药水 / 状态没有升级这回事）。</summary>
+    private static string? UpgradeOnlyGuard(EffectSpec e, bool isCard) =>
+        isCard && IsUpgradeOnlyZero(e) ? "if (base.IsUpgraded)" : null;
+
+    /// <summary>
     /// 这些效果不产生 DynamicVar（数值直接写在代码里），所以 CanonicalVars 与 OnUpgrade 都必须跳过它们。
     /// 漏掉 OnUpgrade 会导致升级时 base.DynamicVars["Value"] 抛 KeyNotFoundException，
     /// 而牌组界面会为每张卡调用 UpgradeInternal → 整个牌组界面打不开。
@@ -2934,7 +2969,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static void EmitCardEffect(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
-        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null) =>
+        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null)
+    {
+        // 数值 0 且升级也不加数值：整条丢掉（用户要求：不显示、也不执行）
+        if (IsInertZero(e)) return;
+        // 数值 0、靠升级才有数值：没升级时整条跳过（不然 0 点伤害会被力量加成、0 点格挡会被敏捷加成）
+        string? zeroGuard = UpgradeOnlyGuard(e, isCard: true);
+        if (zeroGuard is not null) w.Open(zeroGuard);
         EmitRepeated(w, e, x =>
         {
             // 宠物类效果：在这条效果的**第一行**写一行标记（单行，回读按它认种类与公式，见 MarkerText）
@@ -2942,6 +2983,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 x.Line($"// CET:PetEffect={MarkerText(e)}");
             EmitCardEffectOnce(x, p, e, useX, varMap, petVar, petDef, effectComment, petLookup);
         }, useX);
+        if (zeroGuard is not null) w.Close();
+    }
 
     /// <summary>
     /// 「全部召唤物」+「按生命值算收益」的宠物效果：改用**内联计算**（<c>(decimal)pet.MaxHp</c> 这种）。
@@ -4235,8 +4278,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         triggerId is "CombatStart" or "PlayerTurnStart" or "PlayerTurnEnd" or "DamageReceived" or "Shuffle";
 
     private static void EmitRelicEffect(CodeWriter w, CharacterProfile p, EffectSpec e, bool hasContext,
-        Dictionary<EffectSpec, string>? varMap = null, string? roomVar = null, string? petAllGroup = null) =>
+        Dictionary<EffectSpec, string>? varMap = null, string? roomVar = null, string? petAllGroup = null)
+    {
+        if (IsInertZero(e)) return;   // 数值 0：整条丢掉（用户要求：不显示、也不执行）
         EmitRepeated(w, e, x => EmitRelicEffectOnce(x, p, e, hasContext, varMap, roomVar, petAllGroup));
+    }
 
     private static void EmitRelicEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, bool hasContext,
         Dictionary<EffectSpec, string>? varMap = null, string? roomVar = null, string? petAllGroup = null)
@@ -5200,8 +5246,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     private static void EmitPotionEffect(CodeWriter w, CharacterProfile p, EffectSpec e, string potionTarget,
-        Dictionary<EffectSpec, string>? varMap = null) =>
+        Dictionary<EffectSpec, string>? varMap = null)
+    {
+        if (IsInertZero(e)) return;   // 数值 0：整条丢掉（用户要求：不显示、也不执行）
         EmitRepeated(w, e, x => EmitPotionEffectOnce(x, p, e, potionTarget, varMap));
+    }
 
     /// <summary>药水：按「药水作用目标」展开（自己 / 指定敌人 / 全体敌人）。</summary>
     private static void EmitPotionPerCreature(CodeWriter w, string potionTarget, string allEnemies, Func<string, string> body)

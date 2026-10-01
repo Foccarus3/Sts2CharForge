@@ -380,6 +380,8 @@ public static class CustomPowerGen
     /// roomVar 非空 = 钩子里有 CombatRoom（战斗胜利后），卡牌奖励走本体的战斗奖励。</summary>
     private static void EmitEffect(CodeWriter w, EffectSpec e, string? foeFrom, string? roomVar = null)
     {
+        // 数值 0 且升级也不加数值：整条丢掉（用户要求：不显示、也不执行 —— 0 点会被力量/敏捷加成）
+        if (CSharpCodeGen.IsInertZero(e)) return;
         string amt = e.AmountIsStack ? "base.Amount" : Lit.Dec(e.Amount);
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 直接 return（状态根本挂不上）

@@ -333,11 +333,8 @@ position = Vector2(2, -{spriteH + 60})
     {
         var dict = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var d in All(p)) dict[d.Entry + ".name"] = d.DisplayName;
-        return System.Text.Json.JsonSerializer.Serialize(dict, new System.Text.Json.JsonSerializerOptions
-        {
-            WriteIndented = true,
-            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-        });
+        // 名字里也可能有富文本（[gold]…）：和其它本地化表一样过一遍 RichTextFix
+        return LocalizationGen.LocJson(dict);
     }
 
     // ==================== C# 源码 ====================
