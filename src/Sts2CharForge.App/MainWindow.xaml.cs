@@ -6297,6 +6297,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		string text20 = CSharpCodeGen.PotionSource(characterProfile8, potionSpec2, 0);
 		Check("药水的「扣额外资源量」能生成且不会扣成负数", text20.Contains("SetStars") && text20.Contains("System.Math.Max"), text20.Contains("SetStars") ? "OK" : "没找到 SetStars");
 		Check("遗物/药水不碰 DynamicVars（ExtraResource 没有声明变量）", !text19.Contains("DynamicVars.Stars") && !text20.Contains("DynamicVars.Stars"));
+		// ===== 商店黑屏：每种牌型都要有一张能上商店的卡 =====
+		// 本体给 Attack / Skill / Power 各摆一个货架，某牌型的卡稀有度全是 Basic（或 Ancient/Curse）时，
+		// CardFactory.CreateForMerchant 找不到可用稀有度 → 抛异常 → MerchantRoom.EnterInternal 直接炸 → 进商店黑屏。
+		CharacterProfile mchProf = ProfileFactory.Sample();
+		mchProf.Cards.Clear();
+		mchProf.Cards.Add(new CardSpec { Name = "砍", ClassName = "MchAtkBasic", CardType = "Attack", Cost = 1, Rarity = "Basic", InCardPool = true });
+		mchProf.Cards.Add(new CardSpec { Name = "防", ClassName = "MchSkl1", CardType = "Skill", Cost = 1, Rarity = "Common", InCardPool = true });
+		mchProf.Cards.Add(new CardSpec { Name = "防2", ClassName = "MchSkl2", CardType = "Skill", Cost = 1, Rarity = "Uncommon", InCardPool = true });
+		mchProf.Cards.Add(new CardSpec { Name = "防3", ClassName = "MchSkl3", CardType = "Skill", Cost = 1, Rarity = "Rare", InCardPool = true });
+		Check("攻击牌稀有度全是 Basic 时：校验器报「攻击牌一张都上不了商店」（否则进商店黑屏）",
+			CSharpCodeGen.MerchantMissingTypes(mchProf).SequenceEqual(new[] { "Attack" })
+			&& ProfileValidator.Validate(mchProf).Any(i => i.IsError && i.Message.Contains("上不了商店")),
+			string.Join(",", CSharpCodeGen.MerchantMissingTypes(mchProf)));
+		mchProf.Cards.Add(new CardSpec { Name = "砍2", ClassName = "MchAtk2", CardType = "Attack", Cost = 1, Rarity = "Common", InCardPool = true });
+		Check("攻击牌补一张 Common 之后就不再报错",
+			CSharpCodeGen.MerchantMissingTypes(mchProf).Count == 0,
+			string.Join(",", CSharpCodeGen.MerchantMissingTypes(mchProf)));
+		mchProf.Cards.Add(new CardSpec { Name = "不进池", ClassName = "MchAtk3", CardType = "Attack", Cost = 1, Rarity = "Basic", InCardPool = false });
+		Check("没勾「加入卡池」的 Basic 攻击牌不算数（不参与商店，也不该让校验失效）",
+			CSharpCodeGen.MerchantMissingTypes(mchProf).Count == 0,
+			string.Join(",", CSharpCodeGen.MerchantMissingTypes(mchProf)));
 		characterProfile8.Cards.Add(cardSpec11);
 		characterProfile8.Cards.Add(cardSpec13);
 		string text21 = LocalizationGen.CardsJson(characterProfile8);

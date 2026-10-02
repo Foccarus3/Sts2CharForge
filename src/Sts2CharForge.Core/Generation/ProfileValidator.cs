@@ -274,6 +274,16 @@ public static class ProfileValidator
                 + "解决办法：把「加入卡池」的卡加到至少 3 张（Basic 不参与奖励；上限不限，越多奖励越丰富）。"));
         }
 
+        // 每种牌型都要有一张能上商店的卡，否则进商店直接黑屏（本体 CardFactory.CreateForMerchant 会抛异常）
+        var missingTypes = CSharpCodeGen.MerchantMissingTypes(p);
+        if (missingTypes.Count > 0)
+        {
+            issues.Add(new("错误", $"卡池里的「{string.Join(" / ", missingTypes)}」牌一张都上不了商店："
+                + "本体会给每种牌型各摆一个货架，摆不出来会直接抛异常 → **进商店黑屏**（战斗奖励不受影响，所以很容易漏掉）。"
+                + "原因：那个牌型的卡稀有度全是「Basic（基础）」（其它 Ancient / Curse 也不进商店）。"
+                + "解决办法：把该牌型的卡稀有度至少改成 Common（普通）/ Uncommon（罕见）/ Rare（稀有）各一张，再重新生成。"));
+        }
+
         // 本体状态改写：键要对得上、颜色要合法、图标文件要存在
         for (int i = 0; i < p.VanillaPowerOverrides.Count; i++)
         {

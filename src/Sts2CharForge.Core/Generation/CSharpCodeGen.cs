@@ -3068,6 +3068,28 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return $"{pool.Count} 张可用（Common {byRarity("Common")} / Uncommon {byRarity("Uncommon")} / Rare {byRarity("Rare")}）";
     }
 
+    /// <summary>
+    /// 卡池里哪些牌型**一张都上不了商店**。
+    ///
+    /// 为什么必须查：本体 <c>MerchantInventory.PopulateCharacterCardEntries()</c> 会为
+    /// <c>Player.Character.CardPool</c> **每一种牌型**（Attack / Skill / Power）各建一个货架，
+    /// 而 <c>CardFactory.CreateForMerchant</c> 先把 <c>CardRarity.Basic</c> 全部滤掉，
+    /// 再从掷出的稀有度开始 <c>GetNextAllowedRarity</c> 绕圈找一个「这个牌型真的存在的稀有度」；
+    /// 一圈绕完（含 Basic / Ancient / Curse / Event / Token 这些**不参与**商店的档）都找不到 →
+    /// <c>CardRarity.None</c> → 抛 <c>InvalidOperationException</c>（"Can't generate valid rarity for
+    /// merchant card type Attack with card options: …"）。
+    ///
+    /// 这个异常抛在 <c>MerchantRoom.EnterInternal</c> 里（进商店**之前**就炸），
+    /// 商店界面根本建不起来 → 表现就是**进商店黑屏**。而战斗奖励只抽「任意牌型」，
+    /// 所以卡池只要 ≥3 张 Common/Uncommon/Rare 奖励就正常 —— 这解释了「奖励没事、商店黑」。
+    /// </summary>
+    public static List<string> MerchantMissingTypes(CharacterProfile p) =>
+        EffectCatalog.CardTypes
+            .Where(t => p.Cards.Any(c => !c.IsVanillaCard && c.InCardPool && c.CardType == t)
+                        && !p.Cards.Any(c => !c.IsVanillaCard && c.InCardPool && c.CardType == t
+                                             && c.Rarity is "Common" or "Uncommon" or "Rare"))
+            .ToList();
+
     /// <summary>卡牌配色的十六进制值（非法就退回默认）。</summary>
     private static string Hex(string? value, string fallback)
     {
