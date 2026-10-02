@@ -377,15 +377,33 @@ public static class CustomPowerGen
     private static void EmitChoiceContextBootstrap(CodeWriter w, string kind, IEnumerable<PowerTriggerSpec> items, bool roomInScope = false)
     {
         if (TriggerHasChoiceContext(kind)) return;
-        if (!items.Any(t => t.Effects.Any(x => NeedsChoiceContext(x.Kind) && !(roomInScope && x.Kind == "CardReward")))) return;
+        if (!items.Any(t => t.Effects.Any(x => NeedsChoiceContext(x) && !(roomInScope && x.Kind == "CardReward")))) return;
         w.Line("// 这个钩子本体没给 choiceContext：按本体的做法自己造一个（不然造成伤害 / 施加状态 / 抽牌用不了）");
         w.Line("ulong __netId = MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL;");
         w.Line("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
     }
 
-    /// <summary>这些效果必须要有 choiceContext 才能生成（校验器也用它）。</summary>
+    /// <summary>
+    /// 这些效果生成出来的代码里**会用** choiceContext，所以落在「本体钩子不带 choiceContext」的
+    /// 触发时机里时必须先 bootstrap 一个（否则 CS0103）。
+    ///
+    /// 用户实测报过两次：第一次是漏了「自己获得格挡后」那条分支的 bootstrap，
+    /// 第二次是这份清单本身漏了 HpLoss / MaxHp / 下回合生效的 ExtraResource ——
+    /// 「敌人回合开始时：失去 3 点生命」正好是 HpLoss，于是照样 CS0103。
+    /// 以后新增任何在 EmitEffect 里写 choiceContext 的效果种类，都要加进这里（有自检兜底）。
+    /// </summary>
     internal static bool NeedsChoiceContext(string? kind) =>
-        kind is "Damage" or "Draw" or "ApplyPower" or "TempPower" or "ExtraTurn" or "CardReward";
+        kind is "Damage" or "Draw" or "ApplyPower" or "TempPower" or "ExtraTurn" or "CardReward"
+            or "HpLoss" or "MaxHp" or "ExtraResource";
+
+    /// <summary>同 <see cref="NeedsChoiceContext(string)"/>，但能按效果本身细化。</summary>
+    internal static bool NeedsChoiceContext(EffectSpec e) => e.Kind switch
+    {
+        // 「额外资源量」只有「下回合生效」才走 PowerCmd.Apply&lt;StarNextTurnPower&gt;(choiceContext, …)；
+        // 普通获得走 PlayerCmd.GainStars（不需要），花费用负数额度也不占变量。
+        "ExtraResource" => e.NextTurn && (e.Amount > 0 || e.AmountIsStack),
+        _ => NeedsChoiceContext(e.Kind),
+    };
 
     /// <summary>
     /// 「随机挑一个敌人」那一行。

@@ -9536,6 +9536,55 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				!(uses && !declares),
 				declares ? "自己造了 choiceContext" : (uses ? "★用了但没声明★" : "这条钩子没用到"));
 		}
+		// ===== 复现用户那份「敌人回合开始时失去生命 + 每回合减 1 层」的状态（SevenPower2.cs 那条 CS0103） =====
+		{
+			CharacterProfile reproProf = ProfileFactory.Sample();
+			CustomPowerSpec reproPower = new CustomPowerSpec { Name = "复现新状态2", Type = "Debuff", RemoveAtTurnEnd = false };
+			PowerTriggerSpec reproStart = new PowerTriggerSpec { Kind = "EnemyTurnStart" };
+			reproStart.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 3m, TargetSide = "Self" });
+			PowerTriggerSpec reproEnd = new PowerTriggerSpec { Kind = "TurnEnd" };
+			reproPower.DecayPerTurn = 1;
+			reproPower.Triggers.Add(reproStart);
+			reproPower.Triggers.Add(reproEnd);
+			reproProf.CustomPowers.Add(reproPower);
+			string reproSrc = CustomPowerGen.Source(reproProf, reproPower, 1);
+			bool reproDeclares = reproSrc.Contains("var choiceContext =");
+			bool reproUses = reproSrc.Contains("choiceContext");
+			Check("复现：敌人回合开始时失去生命（HpLoss）+ 玩家回合结束时衰减 → 自己造 choiceContext，不会再 CS0103",
+				reproUses && reproDeclares,
+				reproDeclares ? "造了" : "★没造★");
+			Check("复现：衰减那条方法用的是它**自己的** choiceContext 参数（本体钩子自带）",
+				reproSrc.Contains("BeforeSideTurnEnd(PlayerChoiceContext choiceContext"),
+				"参数在");
+		}
+		// ===== 每一种「代码里会用到 choiceContext」的效果，都要能落在不带它的钩子里 =====
+		// 光用「造成伤害」试探不够：HpLoss / MaxHp / 下回合生效的额外资源量 是另一批用法，
+		// 清单漏掉它们时会照样 CS0103（用户实测报过两次）。
+		foreach (var spec in new (string Kind, string Label, Action<EffectSpec>? Setup)[]
+		{
+			("Damage",           "造成伤害",         null),
+			("HpLoss",           "失去生命",         null),
+			("MaxHp",            "失去最大生命",     e => e.Amount = -5m),
+			("ExtraResource",    "下回合获得额外资源量", e => { e.NextTurn = true; e.Amount = 2m; }),
+			("Draw",             "抽牌",             null),
+			("ApplyPower",       "施加状态",         e => e.PowerId = "StrengthPower"),
+			("TempPower",        "临时增益",         e => e.PowerId = "StrengthPower"),
+			("ExtraTurn",        "额外获得一回合",   null),
+		})
+		{
+			CharacterProfile needsProf = ProfileFactory.Sample();
+			CustomPowerSpec needsPower = new CustomPowerSpec { Name = "探针" + spec.Kind, Type = "Buff" };
+			PowerTriggerSpec needsTrig = new PowerTriggerSpec { Kind = "EnemyTurnStart" };
+			EffectSpec needsEffect = new EffectSpec { Kind = spec.Kind, Amount = 3m, TargetSide = "Self" };
+			spec.Setup?.Invoke(needsEffect);
+			needsTrig.Effects.Add(needsEffect);
+			needsPower.Triggers.Add(needsTrig);
+			needsProf.CustomPowers.Add(needsPower);
+			string needsSrc = CustomPowerGen.Source(needsProf, needsPower, 0);
+			bool needsDeclares = needsSrc.Contains("var choiceContext =");
+			Check("「敌人回合开始时」+「" + spec.Label + "」会自己造 choiceContext（不会 CS0103）",
+				needsDeclares, needsDeclares ? "造了" : "★没造★");
+		}
 		Check("「打出牌后」的行标记为需要选牌型（不选状态）",
 			PowerTriggers.Find("CardPlayed")!.NeedCardFilter && !PowerTriggers.Find("CardPlayed")!.NeedPower, "CardPlayed 需要牌型");
 		CharacterProfile watchProfile = ProfileFactory.Sample();
