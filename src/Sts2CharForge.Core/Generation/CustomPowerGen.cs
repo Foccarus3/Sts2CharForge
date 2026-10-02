@@ -216,6 +216,10 @@ public static class CustomPowerGen
 
             case "BlockGained":
                 w.Open("public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)");
+                // 本体的 AfterBlockGained **不带 choiceContext**：这条分支以前漏了 bootstrap，
+                // 于是「自己获得格挡后」只要配了「造成伤害 / 抽牌 / 施加状态 / 额外回合」，
+                // 生成出来的代码就会 CS0103（当前上下文中不存在名称"choiceContext"）——用户实测报过。
+                EmitChoiceContextBootstrap(w, "BlockGained", items);
                 w.Line("if (creature != base.Owner) return;");
                 foreach (var t in items) EmitEffects(w, t, p: p);
                 w.Close();
@@ -362,7 +366,7 @@ public static class CustomPowerGen
     /// AfterEnergySpent(int, Player)、AfterStarsSpent(int, Player)。
     /// </summary>
     internal static bool TriggerHasChoiceContext(string? kind) =>
-        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory");
+        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory");
 
     /// <summary>
     /// 这个钩子没有 choiceContext 时，自己造一个再往下跑。

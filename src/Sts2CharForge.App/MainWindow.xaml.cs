@@ -9495,6 +9495,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("没选状态时说明写「任意状态」（盯的对象也一起写出来）",
 			powerChangedAny.Display.Contains("任意状态") && powerChangedAny.Display.Contains("自己"), powerChangedAny.Display);
 		Check("触发时机选项里标了「需要选状态」", PowerTriggers.Find("PowerChanged")!.NeedPower && !PowerTriggers.Find("TurnStart")!.NeedPower, "PowerChanged 需要选状态");
+		// ===== 每个触发时机都要能用「需要 choiceContext 的效果」 =====
+		// 用户实测报过（CS0103 当前上下文中不存在名称"choiceContext"）：本体有几个钩子本身**不带**
+		// choiceContext 参数（AfterBlockGained / AfterSideTurnStart / BeforeCombatStart / AfterEnergySpent /
+		// AfterStarsSpent / AfterCombatEnd），生成器要在方法开头按本体的做法自己造一个。
+		// 漏了哪一个，那个触发时机只要配「造成伤害 / 抽牌 / 施加状态 / 额外回合」就会编译不过。
+		foreach (var opt in PowerTriggers.All)
+		{
+			CharacterProfile trigProfile = ProfileFactory.Sample();
+			CustomPowerSpec trigPower = new CustomPowerSpec { Name = "探针" + opt.Kind, Type = "Buff" };
+			PowerTriggerSpec trig = new PowerTriggerSpec { Kind = opt.Kind, PowerId = "StrengthPower" };
+			trig.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Self" });
+			trigPower.Triggers.Add(trig);
+			trigProfile.CustomPowers.Add(trigPower);
+			string trigSrc = CustomPowerGen.Source(trigProfile, trigPower, 0);
+			bool declares = trigSrc.Contains("var choiceContext =") || trigSrc.Contains("PlayerChoiceContext choiceContext");
+			bool uses = trigSrc.Contains("choiceContext");
+			Check("触发时机「" + opt.Display + "」能用需要 choiceContext 的效果（不会 CS0103）",
+				!(uses && !declares),
+				declares ? "自己造了 choiceContext" : (uses ? "★用了但没声明★" : "这条钩子没用到"));
+		}
 		Check("「打出牌后」的行标记为需要选牌型（不选状态）",
 			PowerTriggers.Find("CardPlayed")!.NeedCardFilter && !PowerTriggers.Find("CardPlayed")!.NeedPower, "CardPlayed 需要牌型");
 		CharacterProfile watchProfile = ProfileFactory.Sample();
