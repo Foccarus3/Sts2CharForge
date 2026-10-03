@@ -1645,7 +1645,31 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return VarAccess(e, map);
     }
 
-    internal static string VarDeclaration(EffectSpec e, Dictionary<EffectSpec, string>? map = null)
+    /// <summary>
+    /// 一个效果的动态变量声明。
+    ///
+    /// <paramref name="p"/> 非空时，「按生命值算」的宠物效果会把里面的 <c>&lt;Pet&gt;Cmd</c> 占位符
+    /// **就地换成真正的那只宠物**（一张牌可以指多只宠物，所以只能逐条换，不能全文替换）。
+    /// 以前只有普通卡那条路做了替换，诅咒 / 先古卡 / 遗物 / 药水的 CanonicalVars 会把
+    /// <c>__PETCMD__</c> 原样写进生成代码 → <c>CS0103</c>（用户实测：「一键构建」老是在编译这一步失败）。
+    /// 现在统一在这里做，而且**找不到那只召唤物时退成「固定 0」的普通变量** ——
+    /// 占位符绝不会再进生成代码（这种情况校验器本来就会报错拦住，这只是兜底）。
+    /// </summary>
+    internal static string VarDeclaration(EffectSpec e, Dictionary<EffectSpec, string>? map = null,
+        CharacterProfile? p = null)
+    {
+        string decl = VarDeclarationCore(e, map);
+        if (!decl.Contains(PetCmdPlaceholder, StringComparison.Ordinal)) return decl;
+        string? petCls = p is null ? null : PetGen.Resolve(p, e.PetSummon)?.ClassName;
+        if (petCls is not null) return PatchPetPlaceholder(decl, petCls);
+        string name = VarNameOf(e, map);
+        bool named = name != VarNameOf(e);
+        string prefix = named ? Lit.Str(name) + ", " : "";
+        bool block = e.Kind == "PetSacrifice" && e.PetSacrificeGain != "Damage";
+        return block ? $"new BlockVar({prefix}0m, ValueProp.Move)" : $"new DamageVar({prefix}0m, ValueProp.Move)";
+    }
+
+    private static string VarDeclarationCore(EffectSpec e, Dictionary<EffectSpec, string>? map = null)
     {
         string name = VarNameOf(e, map);
         bool named = name != VarNameOf(e);
@@ -2006,7 +2030,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line()
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
-        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, curseVars)},");
+        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, curseVars, p)},");
         w.Line("];");
 
         // 悬停说明（描述里提到的状态 / 自定义关键词）
@@ -2092,18 +2116,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 声明那一刻还不知道是哪只（一张牌可以同时指向两只不同的宠物）→ 先写占位符，
         // 这里按**每条效果自己的**召唤物逐个替换（不能全文替换，否则多只宠物会串）。
         bool needsPetCmd = c.Effects.Any(x => !HasNoDynamicVar(x) && CanonicalVarNeedsPetCmd(x));
-        bool anyPetCmdMissing = false;
+        bool anyPetCmdMissing = c.Effects.Any(x => CanonicalVarNeedsPetCmd(x) && PetGen.Resolve(p, x.PetSummon) is null);
         foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x)))
-        {
-            string decl = VarDeclaration(e, cardVars);
-            if (decl.Contains(PetCmdPlaceholder, StringComparison.Ordinal))
-            {
-                string? petCls = PetGen.Resolve(p, e.PetSummon)?.ClassName;
-                anyPetCmdMissing |= petCls is null;
-                decl = PatchPetPlaceholder(decl, petCls);
-            }
-            w.Line($"    {decl},");
-        }
+            w.Line($"    {VarDeclaration(e, cardVars, p)},");
         w.Line("];");
         if (needsPetCmd && anyPetCmdMissing)
             w.Line("// ⚠ 上面这条「按生命值算」的宠物效果没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」"
@@ -4488,7 +4503,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
         var relicVars = VarNamesOf(r.Effects);
-        foreach (var e in r.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars)},");
+        foreach (var e in r.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars, p)},");
         w.Line("];");
 
         // 鼠标悬停遗物描述里的状态 → 弹出那条说明（自定义状态 / 被改写的本体状态都有）
@@ -4968,7 +4983,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
         var potionVars = VarNamesOf(s.Effects);
-        foreach (var e in s.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, potionVars)},");
+        foreach (var e in s.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, potionVars, p)},");
         w.Line("];")
          .Line();
 

@@ -3256,6 +3256,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try
 				{
 					SyncArt();
+					// 「自动编号的英文类名 / 关键词键」先固定下来、并把失效的引用修好 —— 必须在这里做
+					// （快照之前）：留空类名时按位置编号，中间插 / 删一条会让后面的集体改名，
+					// 而效果里存的是类名 / 键的字符串 → 引用失效或串到别的模型上（用户实测：每次构建都要手工重排）。
+					// 修完顺手静默保存存档，这样「固定下来的名字」下次打开还在。
+					try
+					{
+						var stab = NameStabilizer.Stabilize(profile, ModGenerator.ProjectRootOf(profile));
+						foreach (string note in stab.Notes) AppendLog("  " + note);
+						if (stab.Changed)
+						{
+							AppendLog($"已固定英文类名 / 关键词键并修好失效引用（{stab.Notes.Count} 处），存档已更新。");
+							RefreshCardChoices();
+							RefreshCustomKeywordRegistry();
+							SaveCurrentProfileQuietly();
+						}
+					}
+					catch (Exception ex) { AppendLog("[警告] 类名固定 / 引用修复失败（继续构建）：" + ex.Message); }
 					CharacterProfile snapshot;
 					try
 					{
@@ -13256,6 +13273,101 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			finally
 			{
 				try { if (Directory.Exists(roundRoot)) Directory.Delete(roundRoot, true); } catch { }
+			}
+		}
+		// ===== 本轮新增：自动编号的英文类名 / 关键词键「每次构建都重排」导致引用失效、构建失败 =====
+		{
+			string stabRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_stab_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				string cls = Naming.From(ProfileFactory.Sample()).CharClass;
+				// 第一次构建：留空类名的卡（甲 / 乙）+ 留空类名的召唤物 + 两个留空键的自定义关键词
+				CharacterProfile stabA = ProfileFactory.Sample();
+				stabA.Paths.OutputDir = stabRoot;
+				stabA.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				stabA.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				stabA.Summons.Clear();
+				stabA.Summons.Add(new SummonSpec { Name = "大运", ClassName = "", Enabled = true, Hp = 50 });
+				stabA.CustomKeywords.Clear();
+				stabA.CustomKeywords.Add(new CustomKeywordSpec { Key = "", Name = "命运" });
+				stabA.CustomKeywords.Add(new CustomKeywordSpec { Key = "", Name = "回声" });
+				CardSpec stabJia = new CardSpec { Name = "甲", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				stabJia.KeywordIds.Add("KEYWORD_2");
+				stabJia.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Fixed", SpawnCardId = cls + "Card4", SpawnTo = "Hand" });
+				stabJia.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:KEYWORD_2", SpawnTo = "Hand" });
+				stabJia.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, PetSummon = cls + "Pet" });
+				CardSpec stabYi = new CardSpec { Name = "乙", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				stabYi.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "KEYWORD_1", CardPick = "Chosen", SelectPile = "Hand" });
+				stabA.Cards.Add(stabJia);
+				stabA.Cards.Add(stabYi);
+				string stabProject = ModGenerator.ProjectRootOf(stabA);
+				var repA = NameStabilizer.Stabilize(stabA, stabProject);
+				string jiaA = stabJia.ClassName, yiA = stabYi.ClassName;   // 自动编号出来的名字（甲 / 乙）
+				Check("留空的英文类名 / 关键词键会被**固定**下来（不再每次按位置漂移）",
+					repA.Changed && jiaA.StartsWith(cls + "Card") && yiA != jiaA
+					&& stabA.Summons[0].ClassName == cls + "Pet"
+					&& stabA.CustomKeywords[0].Key == "KEYWORD_1" && stabA.CustomKeywords[1].Key == "KEYWORD_2",
+					$"甲={jiaA} 乙={yiA} 宠={stabA.Summons[0].ClassName} 键={stabA.CustomKeywords[0].Key}/{stabA.CustomKeywords[1].Key}");
+				string? stabMap = NameStabilizer.MapPathOf(stabProject, Naming.From(stabA).ModId);
+				Check("固定结果写进「类名表」（下一次构建靠它按名字把引用认回来）",
+					stabMap is not null && File.Exists(stabMap)
+					&& File.ReadAllText(stabMap).Contains("命运") && File.ReadAllText(stabMap).Contains("甲"), stabMap ?? "?");
+				Check("类名表写在工程目录的**上一级**（不会被导出进 pck）",
+					stabMap is not null && string.Equals(Path.GetDirectoryName(stabMap), Path.GetDirectoryName(stabProject), StringComparison.OrdinalIgnoreCase), "上一级");
+
+				// 模拟用户的第二次编辑：① 前面插一张卡（自动编号整体后移）② 召唤物类名填成 BigJian
+				// ③ 最前面插一个新关键词（后面那些键整体后移）—— 三处老引用都不动
+				CharacterProfile stabB = ProfileFactory.Sample();
+				stabB.Paths.OutputDir = stabRoot;
+				stabB.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				stabB.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				stabB.Summons.Clear();
+				stabB.Summons.Add(new SummonSpec { Name = "大运", ClassName = "BigJian", Enabled = true, Hp = 50 });
+				stabB.CustomKeywords.Clear();
+				stabB.CustomKeywords.Add(new CustomKeywordSpec { Key = "", Name = "新插的组" });
+				stabB.CustomKeywords.Add(new CustomKeywordSpec { Key = "", Name = "命运" });
+				stabB.CustomKeywords.Add(new CustomKeywordSpec { Key = "", Name = "回声" });
+				CardSpec bJia = new CardSpec { Name = "甲", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				bJia.KeywordIds.Add("KEYWORD_2");
+				bJia.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Fixed", SpawnCardId = yiA, SpawnTo = "Hand" });
+				bJia.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:KEYWORD_2", SpawnTo = "Hand" });
+				bJia.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, PetSummon = cls + "Pet" });
+				CardSpec bInsert = new CardSpec { Name = "插队卡", ClassName = "", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				CardSpec bYi = new CardSpec { Name = "乙", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				bYi.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "KEYWORD_1", CardPick = "Chosen", SelectPile = "Hand" });
+				stabB.Cards.Add(bJia);
+				stabB.Cards.Add(bInsert);
+				stabB.Cards.Add(bYi);
+				var repB = NameStabilizer.Stabilize(stabB, ModGenerator.ProjectRootOf(stabB));
+				Check("（前提）插队卡顶掉了乙原来的编号（乙被挤到了下一个号）",
+					bInsert.ClassName == yiA && bYi.ClassName != yiA,
+					$"插队卡={bInsert.ClassName}（乙原来是 {yiA}）；乙现在={bYi.ClassName}");
+				Check("失效的**卡牌**引用按上一次构建的名字自动改回原来那张（不然会静默指到别的卡上）",
+					bJia.Effects[0].SpawnCardId == bYi.ClassName && repB.Notes.Any(n => n.Contains("已自动改成")),
+					$"目标卡={bJia.Effects[0].SpawnCardId}（应该改回乙 = {bYi.ClassName}）");
+				Check("失效的**召唤物**引用也自动改回来（用户日志里那次「引用的召唤物 DaogePet 找不到」）",
+					bJia.Effects[2].PetSummon == "BigJian", bJia.Effects[2].PetSummon ?? "?");
+				Check("卡牌上勾的**关键词**、以及「范围限定 = 关键词那一组」都跟着键的重排改回来",
+					bJia.KeywordIds[0] == "KEYWORD_3" && bJia.Effects[1].SpawnFilter == "Keyword:KEYWORD_3",
+					$"卡上={bJia.KeywordIds[0]} 范围={bJia.Effects[1].SpawnFilter}");
+				Check("「给予卡牌关键词」里存的键也改回来",
+					bYi.Effects[0].GivenKeyword == "KEYWORD_2", bYi.Effects[0].GivenKeyword ?? "?");
+				Check("修完之后校验器不再报「找不到」这类错（以前每次构建都卡在这里）",
+					!ProfileValidator.Validate(stabB).Any((ValidationIssue i) => i.IsError
+						&& (i.Message.Contains("找不到") || i.Message.Contains("不存在的自定义关键词"))),
+					string.Join(" ｜ ", ProfileValidator.Validate(stabB).Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message)));
+				var stabGen = ModGenerator.Generate(stabB);
+				Check("（准备）修完引用的存档能直接生成工程", stabGen.Success, stabRoot);
+				string genCard = Path.Combine(stabGen.ProjectRoot, "cs", "Cards", bJia.ClassName + ".cs");
+				Check("生成出来的代码引用的是修好之后的类名 / 召唤物",
+					File.Exists(genCard) && File.ReadAllText(genCard).Contains("AddToCombatAndPreview<" + bYi.ClassName + ">")
+					&& File.ReadAllText(genCard).Contains("BigJianCmd.Summon"), genCard);
+				Check("校验器对宠物效果的「按生命值算」用的是修好之后的引用（不再是 __PETCMD__ 占位符）",
+					!File.ReadAllText(genCard).Contains("__PETCMD__"), "没有占位符");
+			}
+			finally
+			{
+				try { if (Directory.Exists(stabRoot)) Directory.Delete(stabRoot, true); } catch { }
 			}
 		}
 		Close();

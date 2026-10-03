@@ -30,6 +30,23 @@ public static class ModGenerator
         EffectCatalog.SetCustomKeywords(KeywordGen.All(profile)
             .Select(x => (x.Key, KeywordGen.DisplayName(x.Spec, x.Key))));
 
+        // 先算出工程目录（类名表就在它上一级），再做「修引用 + 冻结类名」——
+        // **必须在校验之前**：用户报的那些「引用的召唤物 / 卡牌找不到」是**错误级**的校验项，
+        // 先修好引用，校验才不会把这些已经能自动修好的问题当成拦路虎。
+        var n = Naming.From(profile);
+        if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
+            profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
+        string root = ProjectRootOf(profile);
+        try
+        {
+            var stabilize = NameStabilizer.Stabilize(profile, root);
+            foreach (string note in stabilize.Notes) Log("  " + note);
+            if (stabilize.Changed)
+                Log($"  已固定英文类名 / 关键词键并修好失效引用（{stabilize.Notes.Count} 处）："
+                    + "以后再加 / 删 / 拖动条目，已经固定的名字都不会变");
+        }
+        catch (Exception ex) { Log("  [警告] 类名固定 / 引用修复失败（继续生成）：" + ex.Message); }
+
         var issues = ProfileValidator.Validate(profile);
         if (issues.Any(i => i.IsError))
         {
@@ -39,11 +56,7 @@ public static class ModGenerator
         }
         foreach (var i in issues) Log("  " + i);
 
-        var n = Naming.From(profile);
-        if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
-            profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
 
-        string root = ProjectRootOf(profile);
 
         // 每次生成都先清掉旧工程：上一次生成留下的 cs 文件（删掉的卡/状态/遗物）如果留着，
         // 会引用已经不存在的类 → 编译直接失败。清干净重新写，保证「生成出来的 = 当前配置」。
