@@ -72,12 +72,22 @@ Write-Host "版本号：$Version    tag：$Tag"
 
 # ---------- 2) 发布前自检 ----------
 Step "发布前自检"
-foreach ($f in @($bundle, $update)) {
+# 要有哪些包：只传更新包时（-SkipBundle）不该强制要求整合包也在（以前会直接失败，
+# 而整合包 371 MB 常常是「这次没打」，-SkipBundle 本来就允许不发它）。
+$required = @()
+if (-not $SkipBundle -or $OnlyBundle) { $required += $bundle }
+if (-not $OnlyBundle) { $required += $update }
+foreach ($f in $required) {
     if (-not (Test-Path $f)) { Fail "找不到打包产物：$f（先跑 tools\make_bundle.ps1 / tools\make_update.ps1）" }
 }
-$bundleMB = [math]::Round((Get-Item $bundle).Length / 1MB, 1)
+if (Test-Path $bundle) {
+    $bundleMB = [math]::Round((Get-Item $bundle).Length / 1MB, 1)
+    Write-Host ("  整合包 {0} MB" -f $bundleMB)
+} else {
+    Write-Host "  [提示] 这次不发整合包（-SkipBundle 或文件不存在）"
+}
 $updateMB = [math]::Round((Get-Item $update).Length / 1MB, 1)
-Write-Host ("  整合包 {0} MB / 更新包 {1} MB" -f $bundleMB, $updateMB)
+Write-Host ("  更新包 {0} MB" -f $updateMB)
 
 $exe = Join-Path (Join-Path $App "程序文件") "Sts2CharForge.exe"
 if (Test-Path $exe) {
@@ -88,16 +98,18 @@ if (Test-Path $exe) {
     Write-Host "  [提示] 没找到 $exe，跳过程序版本核对"
 }
 
-$zipB = [System.IO.Compression.ZipFile]::OpenRead($bundle)
-try {
-    $names = $zipB.Entries | ForEach-Object { $_.FullName }
-    if ($names -match '^自定义角色存档/' ) { Fail "整合包里出现了用户存档（不该发出去）" }
-    if ($names -match 'sts2\.dll$' -or $names -match '0Harmony\.dll$') { Fail "整合包里出现了游戏文件（不能分发）" }
-    if (-not ($names -contains '程序文件/Sts2CharForge.exe')) { Fail "整合包里没有 程序文件/Sts2CharForge.exe" }
-    if (-not ($names | Where-Object { $_ -like '！首次使用先点这个！/GDRE/*.zip' })) { Fail "整合包里没带 GDRE 解包工具 zip（玩家解包本体要用）" }
-    if (-not ($names -contains '使用说明.txt')) { Fail "整合包里没有 使用说明.txt" }
-    Write-Host ("  整合包自检通过：{0} 个条目（含 GDRE 工具 + 使用说明，无存档 / 无游戏文件）" -f $names.Count)
-} finally { $zipB.Dispose() }
+if (Test-Path $bundle) {
+    $zipB = [System.IO.Compression.ZipFile]::OpenRead($bundle)
+    try {
+        $names = $zipB.Entries | ForEach-Object { $_.FullName }
+        if ($names -match '^自定义角色存档/' ) { Fail "整合包里出现了用户存档（不该发出去）" }
+        if ($names -match 'sts2\.dll$' -or $names -match '0Harmony\.dll$') { Fail "整合包里出现了游戏文件（不能分发）" }
+        if (-not ($names -contains '程序文件/Sts2CharForge.exe')) { Fail "整合包里没有 程序文件/Sts2CharForge.exe" }
+        if (-not ($names | Where-Object { $_ -like '！首次使用先点这个！/GDRE/*.zip' })) { Fail "整合包里没带 GDRE 解包工具 zip（玩家解包本体要用）" }
+        if (-not ($names -contains '使用说明.txt')) { Fail "整合包里没有 使用说明.txt" }
+        Write-Host ("  整合包自检通过：{0} 个条目（含 GDRE 工具 + 使用说明，无存档 / 无游戏文件）" -f $names.Count)
+    } finally { $zipB.Dispose() }
+}
 
 $zipU = [System.IO.Compression.ZipFile]::OpenRead($update)
 try {
