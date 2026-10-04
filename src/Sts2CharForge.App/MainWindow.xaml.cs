@@ -14656,8 +14656,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Check("Slots 只 yield 填了路径的槽位，顺序与动作名都对（idle_loop/attack/cast/hurt/die/overgrowth_loop/relaxed_loop）",
 					string.Join(",", animAll.Slots.Select((ValueTuple<string, string> s) => s.Item1))
 						== "idle_loop,attack,cast,hurt,die,overgrowth_loop,relaxed_loop"
-					&& !new AnimationSpec { Attack = "a.gif" }.Slots.Any()
-					&& new AnimationSpec { Merchant = "m.gif" }.Slots.Count() == 1,
+					&& !new AnimationSpec().Slots.Any()
+					&& new AnimationSpec { Attack = "a.gif" }.Slots.Select((ValueTuple<string, string> s) => s.Item1)
+						.SequenceEqual(new[] { "attack" })
+					&& new AnimationSpec { Merchant = "m.gif" }.Slots.Select((ValueTuple<string, string> s) => s.Item1)
+						.SequenceEqual(new[] { "relaxed_loop" }),
 					string.Join(",", animAll.Slots.Select((ValueTuple<string, string> s) => s.Item1)));
 				Check("HasAny 只看待机（只填了攻击 = 没有素材；待机是回退目标）",
 					!new AnimationSpec { Attack = "a.gif" }.HasAny && new AnimationSpec { Idle = "i.gif" }.HasAny,
@@ -14750,6 +14753,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					string animLegacyPath = Path.Combine(animGifDir, "legacy_no_animation.json");
 					File.WriteAllText(animLegacyPath, animLegacyJson, new UTF8Encoding(false));
 					CharacterProfile animOffLegacy = ProfileFactory.Load(animLegacyPath);
+					// 两份输出一定要落在**不同**的目录里：否则「逐字一样」这条等于自己跟自己比，
+					// 什么都验不出来（第一版就是这么写的，删目录时才发现第二个根根本没建出来）。
+					animOffLegacy.Paths.OutputDir = animOffLegacyRoot;
+					animOffLegacy.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					animOffLegacy.Paths.GameDataDir = Profile.Paths.GameDataDir;
 					Check("老存档（JSON 里**没有** Animation 段）读出来就是「不勾总开关、一个素材都没有」",
 						!animLegacyJson.Contains("\"Animation\"", StringComparison.Ordinal)
 						&& !animOffLegacy.Animation.Enabled && !animOffLegacy.Animation.Slots.Any()
@@ -14772,10 +14780,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						"没生成任何动画资源");
 					Check("老存档（JSON 里没有 Animation 段）走的就是「不勾总开关」那条路：ModEntry.cs 与本轮的输出逐字一样",
 						File.ReadAllText(Path.Combine(animOffLegacyCs, "ModEntry.cs")) == animOffEntry
-						&& !File.Exists(Path.Combine(animOffLegacyCs, "FrameAnimRuntime.cs")),
+						&& !File.Exists(Path.Combine(animOffLegacyCs, "FrameAnimRuntime.cs"))
+						&& !string.Equals(ModGenerator.ProjectRootOf(animOffLegacy), ModGenerator.ProjectRootOf(animOffModern),
+							StringComparison.OrdinalIgnoreCase),
 						"两份 ModEntry.cs 逐字相同");
-					Directory.Delete(animOffModernRoot, true);
-					Directory.Delete(animOffLegacyRoot, true);
+					try { if (Directory.Exists(animOffModernRoot)) Directory.Delete(animOffModernRoot, true); } catch { }
+					try { if (Directory.Exists(animOffLegacyRoot)) Directory.Delete(animOffLegacyRoot, true); } catch { }
 
 					// ---------- ⑧ 待机解不开：计划作废、一个动画资源都不写，但模组照常能生成 ----------
 					string animBadRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animbad_" + Guid.NewGuid().ToString("N").Substring(0, 8));
@@ -14799,7 +14809,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						&& !Directory.Exists(Path.Combine(ModGenerator.ProjectRootOf(animBad), "images", "characters", "anim"))
 						&& !File.ReadAllText(Path.Combine(animBadCs, "ModEntry.cs")).Contains("FrameAnimRegistry"),
 						"一个文件都没写");
-					Directory.Delete(animBadRoot, true);
+					try { if (Directory.Exists(animBadRoot)) Directory.Delete(animBadRoot, true); } catch { }
 
 					// ---------- ⑨ 抠底 / 剥描边真的改像素，而且不影响裁剪框 ----------
 					string animKeyFrame = Path.Combine(animFrameDir, animSlug + "_idle_loop_000.png");
