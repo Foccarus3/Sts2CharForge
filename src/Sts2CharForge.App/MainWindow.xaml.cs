@@ -712,11 +712,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	// 「召唤物（哪一只）」下拉会显示出来（Visibility 绑 EffectSpec.PetAction）。
 	// 以前那个「召唤物卡牌」选项卡（列表 + 专属效果栏）已按用户要求整页删除。
 
-	/// <summary>牺牲伙伴的收益类型下拉（格挡 / 伤害）。</summary>
+	/// <summary>
+	/// 牺牲伙伴的收益类型下拉（格挡 / 伤害 / 获得增益·减益）。
+	///
+	/// 三档共用同一个「收益公式」（固定 N / 最大生命 × 倍率 / 当前生命）：格挡与伤害是收益本身，
+	/// 「获得增益 / 减益」把它当成要挂的**层数**（状态挂在自己身上，选的是哪一个是 PowerId）。
+	/// </summary>
 	public IReadOnlyList<PetOption> PetSacrificeGains { get; } = new PetOption[]
 	{
 		new PetOption("Block", "格挡（给自己）"),
 		new PetOption("Damage", "伤害（打敌人）"),
+		new PetOption("Power", "获得增益 / 减益（状态挂在自己身上）"),
 	};
 
 	/// <summary>牺牲伙伴的收益公式下拉（固定 N / 最大生命 × 倍率 / 当前生命）。</summary>
@@ -8726,6 +8732,54 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						+ "void F() { _ = base.DynamicVars.Damage.BaseValue; _ = base.DynamicVars[\"Damage2\"].BaseValue; }").Count == 0,
 					"不误报");
 
+				// ===== 需求 ⑧：牺牲伙伴的收益新增「获得增益 / 减益」那一档 =====
+				// 层数复用同一个「收益公式」（固定 N / 最大生命 × 倍率 / 当前生命），状态挂在自己身上；
+				// 选的是哪个状态复用「给伙伴施加状态」那一个字段（PowerId）与同一份候选列表。
+				Check("牺牲伙伴的收益下拉里有「获得增益 / 减益」这一档（Id = Power）",
+					PetSacrificeGains.Any(o => o.Id == "Power" && o.Display.Contains("增益")) && PetSacrificeGains.Count == 3,
+					string.Join(" · ", PetSacrificeGains.Select(o => o.Id + "=" + o.Display)));
+				CardSpec sacPower = new CardSpec { Name = "献祭得力", ClassName = "UiCheckPetNewSacPower", CardType = "Skill", Cost = 1, InCardPool = true };
+				sacPower.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "Self", PetSummon = "UiCheckPet", PetSacrificeGain = "Power", PetSacrificeFormula = "Fixed", Amount = 4m, UpgradeAmount = 2m, PowerId = "StrengthPower" });
+				CardSpec sacPowerMul = new CardSpec { Name = "献祭取巧", ClassName = "UiCheckPetNewSacPowerMul", CardType = "Skill", Cost = 1, InCardPool = true };
+				sacPowerMul.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "Self", PetSummon = "UiCheckPet", PetSacrificeGain = "Power", PetSacrificeFormula = "MaxHp", PetSacrificeMultiplier = 3m, PowerId = "DexterityPower" });
+				string sacPowerSrc = CSharpCodeGen.CardSource(petSrc, sacPower, 0);
+				string sacPowerMulSrc = CSharpCodeGen.CardSource(petSrc, sacPowerMul, 0);
+				Check("新档「牺牲伙伴 → 获得增益 / 减益」：有它自己的变量（固定 N 走 BlockVar(\"PetSacrificePower\")，升级增量也落在它身上）",
+					sacPowerSrc.Contains("new BlockVar(\"PetSacrificePower\", 4m, ValueProp.Move)")
+					&& sacPowerSrc.Contains("base.DynamicVars[\"PetSacrificePower\"].UpgradeValueBy(2m);")
+					&& CSharpCodeGen.VarNameOf(sacPower.Effects[0]) == "PetSacrificePower"
+					&& CSharpCodeGen.MissingDynamicVars(sacPowerSrc).Count == 0,
+					"缺失=[" + string.Join(",", CSharpCodeGen.MissingDynamicVars(sacPowerSrc)) + "]");
+				Check("新档「牺牲伙伴 → 获得增益 / 减益」：顺序是 先算层数 → 杀宠物 → PowerCmd.Apply<状态>（挂在自己身上），生成的代码里写明了为什么是这个顺序",
+					sacPowerSrc.IndexOf("decimal layers = ", StringComparison.Ordinal) >= 0
+					&& sacPowerSrc.IndexOf("decimal layers = ", StringComparison.Ordinal) < sacPowerSrc.IndexOf("await CreatureCmd.Kill(__uiCheckPet);", StringComparison.Ordinal)
+					&& sacPowerSrc.IndexOf("await CreatureCmd.Kill(__uiCheckPet);", StringComparison.Ordinal) < sacPowerSrc.IndexOf("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, layers, base.Owner.Creature, this);", StringComparison.Ordinal)
+					&& sacPowerSrc.Contains("// 先算层数：宠物还活着才取得到它的生命值")
+					&& sacPowerSrc.Contains("// 再杀宠物")
+					&& sacPowerSrc.Contains("// 最后把状态挂到自己身上")
+					&& !sacPowerSrc.Contains("GainBlock") && !sacPowerSrc.Contains("DamageCmd.Attack"),
+					"顺序 + 三句注释都在");
+				Check("新档「牺牲伙伴 → 获得增益 / 减益」+ 按生命值算：层数走 CalculatedBlock 那套计算变量（本体没有「计算状态层数」的变量），卡面用 {CalculatedBlock:diff()}",
+					sacPowerMulSrc.Contains("new CalculatedBlockVar(ValueProp.Move).WithMultiplier(")
+					&& sacPowerMulSrc.Contains("decimal layers = base.DynamicVars.CalculatedBlock.Calculate(cardPlay.Target);")
+					&& sacPowerMulSrc.Contains("await PowerCmd.Apply<DexterityPower>(choiceContext, base.Owner.Creature, layers, base.Owner.Creature, this);")
+					&& CSharpCodeGen.DisplayVarNameOf(sacPowerMul.Effects[0]) == "CalculatedBlock"
+					&& CSharpCodeGen.MarkerText(sacPowerMul.Effects[0]) == "PetSacrificePower CET:PetFormula=maxhp CET:PetMul=3m CET:PetPower=DexterityPower",
+					CSharpCodeGen.MarkerText(sacPowerMul.Effects[0]));
+				// 默认档逐字钉死：加了第三档之后，格挡 / 伤害两档的标记行、变量声明、生成语句一个字符都不许变
+				Check("需求 ⑧ 不改默认档：格挡 / 伤害两档的标记行、变量名、生成语句逐字没变",
+					CSharpCodeGen.MarkerText(sacBlock.Effects[0]) == "PetSacrificeBlock CET:PetFormula=maxhp CET:PetMul=3m"
+					&& CSharpCodeGen.MarkerText(sacDmg.Effects[0]) == "PetSacrificeDamage CET:PetFormula=fixed"
+					&& CSharpCodeGen.MarkerText(sacCur.Effects[0]) == "PetSacrificeBlock CET:PetFormula=curhp"
+					&& CSharpCodeGen.VarNameOf(sacBlock.Effects[0]) == "PetSacrificeBlock"
+					&& CSharpCodeGen.VarNameOf(sacDmg.Effects[0]) == "PetSacrificeDamage"
+					&& sacBlockSrc.Contains("// 牺牲小石头换格挡：收益 等于小石头的最大生命 × 3（先算收益、再杀宠物 —— 顺序反了就取不到生命值）")
+					&& sacDmgSrc.Contains("// 牺牲小石头换伤害：收益 固定 7 点（先算收益、再杀宠物 —— 顺序反了就取不到生命值）")
+					&& sacBlockSrc.Contains("decimal gain = base.DynamicVars.CalculatedBlock.Calculate(cardPlay.Target);")
+					&& sacDmgSrc.Contains("decimal dmg = base.DynamicVars[\"PetSacrificeDamage\"].BaseValue;")
+					&& sacUpSrc.Contains("new BlockVar(\"PetSacrificeBlock\", 6m, ValueProp.Move)"),
+					"标记行：" + CSharpCodeGen.MarkerText(sacBlock.Effects[0]) + " ｜ " + CSharpCodeGen.MarkerText(sacDmg.Effects[0]));
+
 				// ===== 两条同样的「给伙伴施加状态」：第二条声明成别名，运行时必须读同一个别名 =====
 				// 用户实测报过（本体的 DynamicVars 按名字取，取不到就 KeyNotFoundException → 牌组界面打不开）：
 				// 两条同种效果时 CanonicalVars 里第二条是 PetPowerStrengthPower2（否则 DynamicVarSet 撞名），
@@ -8830,6 +8884,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				petSrc.Cards.Add(sacDmg);
 				petSrc.Cards.Add(sacCur);
 				petSrc.Cards.Add(sacUp);
+				petSrc.Cards.Add(sacPower);
+				petSrc.Cards.Add(sacPowerMul);
 				var petGenNew = ModGenerator.Generate(petSrc);
 				var petRecNew = ProjectRecovery.FromProject(petGenNew.ProjectRoot);
 				CardSpec? Rec(string cls) => petRecNew.Profile.Cards.FirstOrDefault(c => c.ClassName == cls);
@@ -8867,6 +8923,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					&& Rec("UiCheckPetNewSacUp")?.Effects[0].Amount == 6m
 					&& Rec("UiCheckPetNewSacUp")?.Effects[0].UpgradeAmount == 3m,
 					string.Join(" · ", Rec("UiCheckPetNewSacUp")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeFormula + "/" + e.Amount + "/升级" + e.UpgradeAmount) ?? Array.Empty<string>()));
+				Check("从工程恢复：牺牲伙伴（获得状态 / 固定 4 + 升级 2 / 力量）找回来了 —— 收益类型 + 公式 + 状态 + 升级增量",
+					Rec("UiCheckPetNewSacPower")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].Kind == "PetSacrifice"
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].PetSacrificeGain == "Power"
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].PetSacrificeFormula == "Fixed"
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].Amount == 4m
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].UpgradeAmount == 2m
+					&& Rec("UiCheckPetNewSacPower")?.Effects[0].PowerId == "StrengthPower",
+					string.Join(" · ", Rec("UiCheckPetNewSacPower")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeGain + "/" + e.PetSacrificeFormula + "/" + e.Amount + "/升级" + e.UpgradeAmount + "/" + e.PowerId) ?? Array.Empty<string>()));
+				Check("从工程恢复：牺牲伙伴（获得状态 / 最大生命×3 / 敏捷）也认回来了（倍率 + 状态）",
+					Rec("UiCheckPetNewSacPowerMul")?.Effects.Count == 1
+					&& Rec("UiCheckPetNewSacPowerMul")?.Effects[0].PetSacrificeGain == "Power"
+					&& Rec("UiCheckPetNewSacPowerMul")?.Effects[0].PetSacrificeFormula == "MaxHp"
+					&& Rec("UiCheckPetNewSacPowerMul")?.Effects[0].PetSacrificeMultiplier == 3m
+					&& Rec("UiCheckPetNewSacPowerMul")?.Effects[0].PowerId == "DexterityPower",
+					string.Join(" · ", Rec("UiCheckPetNewSacPowerMul")?.Effects.Select(e => e.Kind + "/" + e.PetSacrificeGain + "/" + e.PetSacrificeFormula + "/" + e.PetSacrificeMultiplier + "/" + e.PowerId) ?? Array.Empty<string>()));
 				Check("生成后自检：这一整批卡 + 遗物 + 药水都没有「引用未声明的动态变量」（否则游戏里牌组界面会打不开）",
 					!petGenNew.Issues.Any(i => i.Message.Contains("没有声明")),
 					string.Join(" ｜ ", petGenNew.Issues.Where(i => i.Message.Contains("没有声明")).Select(i => i.Message)));
@@ -8964,6 +9036,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					ProfileValidator.Validate(petSrc).Any(i => i.IsError && i.Message.Contains("倍率要大于 0")), "有错误");
 				petSrc.Cards.Remove(badSac);
 
+				var badSacPower = new CardSpec { Name = "牺牲没选状态", ClassName = "UiCheckPetBadSacPower", Cost = 1 };
+				badSacPower.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "Self", PetSummon = "UiCheckPet", PetSacrificeGain = "Power", PetSacrificeFormula = "Fixed", Amount = 3m });
+				petSrc.Cards.Add(badSacPower);
+				Check("校验：牺牲伙伴的收益选「获得增益 / 减益」但没选状态时报错拦住（否则生成的 PowerCmd.Apply<> 编译不过）",
+					ProfileValidator.Validate(petSrc).Any(i => i.IsError && i.Message.Contains("没有选状态")), "有错误");
+				petSrc.Cards.Remove(badSacPower);
+
 				var badPower = new CardSpec { Name = "施加状态没选", ClassName = "UiCheckPetBadPower", Cost = 1 };
 				badPower.Effects.Add(new EffectSpec { Kind = "PetApplyPower", Amount = 2m, TargetSide = "Self", PetSummon = "UiCheckPet", PowerId = null });
 				petSrc.Cards.Add(badPower);
@@ -9025,6 +9104,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 					+ " ｜ 描述里有 CalculatedBlock=" + newLoc.Contains("{CalculatedBlock:diff()}")
 					+ " 有 PetSacrificeDamage=" + newLoc.Contains("{PetSacrificeDamage:diff()}")
 					+ " 有内部名 PetSacrificeBlock=" + newLoc.Contains("PetSacrificeBlock"));
+				Check("卡面描述：牺牲伙伴选「获得增益 / 减益」时写「获得 N 层状态」"
+					+ "（固定值用 {PetSacrificePower:diff()}、按生命值算用 {CalculatedBlock:diff()}，状态名跟着「本体状态改写」走）",
+					newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后你获得{PetSacrificePower:diff()}层力量。")
+					&& newLoc.Contains("若[gold]小石头[/gold]存活：它死去，然后你获得{CalculatedBlock:diff()}层敏捷。")
+					&& !newLoc.Contains("获得{PetSacrificePower:diff()}点[gold]格挡[/gold]"),
+					"层力量=" + newLoc.Contains("层力量") + " ｜ 层敏捷=" + newLoc.Contains("层敏捷")
+					+ " ｜ 误写成格挡=" + newLoc.Contains("获得{PetSacrificePower:diff()}点[gold]格挡[/gold]"));
 				Check("PetAction / IsPetEffect 覆盖了那 10 个新 Kind（否则「召唤物（哪一只）」下拉不会显示）",
 					new[] { "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp", "PetHeal", "PetLoseHp",
 						"PetGainMaxHp", "PetSacrifice", "PetApplyPower", "PetGuardOn", "PetGuardOff" }
@@ -10150,6 +10236,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			$"模板里 {effectTplTexts.Length} 个文本");
 		Check("EffectSpec.IsSlowPower 只在选「缓慢」时为 true",
 			new EffectSpec { PowerId = "SlowPower" }.IsSlowPower && !new EffectSpec { PowerId = "PoisonPower" }.IsSlowPower, "判断对");
+		// 需求 ⑧ 的界面部分：「牺牲伙伴」的收益选「获得增益 / 减益」时多出一行选状态（复用的是同一个 PowerId 字段）
+		Check("效果编辑面板上有「状态（牺牲后获得）」那一行（和「增益 / 减益」共用同一个 PowerId 字段）",
+			effectTplTexts.Any((string t) => t.Contains("状态（牺牲后获得）")),
+			$"模板里 {effectTplTexts.Length} 个文本");
+		Check("EffectSpec.IsPetSacrificePower 只在「牺牲伙伴」且收益 = 获得增益 / 减益 时为 true（那一行显隐绑的就是它）",
+			new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Power" }.IsPetSacrificePower
+			&& !new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Block" }.IsPetSacrificePower
+			&& !new EffectSpec { Kind = "Block" }.IsPetSacrificePower,
+			"判断对");
 		// 「给予卡牌关键词」那两行：只在效果种类 = 给予卡牌关键词 时显示（和「直接把缓慢设成 %」同一套 Visibility 绑定）
 		Check("效果编辑面板上有「给予关键词」和「是否为临时关键词」两行（紧跟在「选牌方式」下面）",
 			effectTplTexts.Any((string t) => t.Contains("给予关键词"))

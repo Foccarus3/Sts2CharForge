@@ -646,29 +646,43 @@ public static class LocalizationGen
              + $"此伤害等于[gold]{who}[/gold]的{which}。";
     }
 
-    /// <summary>「牺牲伙伴」的卡面描述：先写「若伙伴存活」，再写收益（格挡 / 伤害）。</summary>
+    /// <summary>
+    /// 「牺牲伙伴」的卡面描述：先写「若伙伴存活」，再写收益（格挡 / 伤害 / 获得状态）。
+    ///
+    /// 收益选「获得增益 / 减益」时写「获得 N 层某个状态」—— 和另外两档同一个句式，
+    /// 数字一律用 <c>{变量:diff()}</c>（层数是打出时按伙伴生命值算出来的，写死就是错的）。
+    /// </summary>
     private static string PetSacrificeText(CharacterProfile p, EffectSpec e, string var)
     {
         string who = SummonName(p, e);
         bool block = e.PetSacrificeGain != "Damage";
+        bool power = e.PetSacrificeGain == "Power";
+        // 状态名（改过名 / 自定义状态都走同一个渲染，和「给伙伴施加状态」那条的措辞一致）
+        string powerZh = PowerNameFor(p, e.PowerId);
         if (PetGen.IsAll(e.PetSummon))
         {
             // 「全部召唤物」：每只各自牺牲一次，收益也各自算一遍（有几只活着就算几次）
+            // 注意：三种收益里「获得增益 / 减益」必须**先判**——它同时满足 block（非伤害就是给自己），
+            // 所以 block 放前面会把状态那一档吃掉（写成「获得 N 点格挡」）。
             string per = e.PetSacrificeFormula switch
             {
-                "Fixed" => block ? $"你就获得 {var} 点[gold]格挡[/gold]" : $"它就对指定敌人造成 {var} 点伤害",
-                "CurHp" => block
-                    ? "你就获得等同于它当前生命值的[gold]格挡[/gold]"
-                    : "它就对指定敌人造成等同于它当前生命值的伤害",
-                _ => block
-                    ? $"你就获得等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的[gold]格挡[/gold]"
-                    : $"它就对指定敌人造成等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的伤害",
+                "Fixed" => power
+                    ? $"你就获得 {var} 层{powerZh}"
+                    : block ? $"你就获得 {var} 点[gold]格挡[/gold]" : $"它就对指定敌人造成 {var} 点伤害",
+                "CurHp" => power
+                    ? $"你就获得等同于它当前生命值的{powerZh}层数"
+                    : block ? "你就获得等同于它当前生命值的[gold]格挡[/gold]"
+                            : "它就对指定敌人造成等同于它当前生命值的伤害",
+                _ => power
+                    ? $"你就获得等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的{powerZh}层数"
+                    : block ? $"你就获得等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的[gold]格挡[/gold]"
+                            : $"它就对指定敌人造成等同于它最大生命 × {e.PetSacrificeMultiplier:0.##} 的伤害",
             };
             return $"[gold]{SummonNameOrAll(p, e)}[/gold]各自牺牲：每死去一只，{per}。";
         }
-        string pay = block
-            ? $"然后你获得{var}点[gold]格挡[/gold]。"
-            : $"然后它对指定敌人造成{var}点伤害。";
+        string pay = power
+            ? $"然后你获得{var}层{powerZh}。"
+            : block ? $"然后你获得{var}点[gold]格挡[/gold]。" : $"然后它对指定敌人造成{var}点伤害。";
         return $"若[gold]{who}[/gold]存活：它死去，{pay}";
     }
 

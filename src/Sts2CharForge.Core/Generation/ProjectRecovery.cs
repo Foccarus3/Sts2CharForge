@@ -679,8 +679,14 @@ public static class ProjectRecovery
                     break;
                 case "PetSacrificeBlock":
                 case "PetSacrificeDamage":
+                case "PetSacrificePower":
                     e.Kind = "PetSacrifice";
-                    e.PetSacrificeGain = kindId == "PetSacrificeDamage" ? "Damage" : "Block";
+                    e.PetSacrificeGain = kindId switch
+                    {
+                        "PetSacrificeDamage" => "Damage",
+                        "PetSacrificePower" => "Power",
+                        _ => "Block",
+                    };
                     e.PetSacrificeFormula = formula switch
                     {
                         "fixed" => "Fixed",
@@ -688,6 +694,8 @@ public static class ProjectRecovery
                         _ => "MaxHp",
                     };
                     if (pendingPetMultiplier > 0) e.PetSacrificeMultiplier = pendingPetMultiplier;
+                    // 收益是「获得增益 / 减益」时，要挂的是哪个状态写在**同一行标记**里（CET:PetPower=…）
+                    if (e.PetSacrificeGain == "Power") e.PowerId = Match(pendingPetMarker, @"CET:PetPower=(\w+)");
                     break;
                 case "PetHeal": e.Kind = "PetHeal"; break;
                 case "PetLoseHp": e.Kind = "PetLoseHp"; break;
@@ -1455,6 +1463,25 @@ public static class ProjectRecovery
                 string args = m.Groups[2].Value;
                 var parts = SplitArgs(args);
                 string target = parts.Count > 1 ? parts[1].Trim() : "";
+
+                // 牺牲伙伴（收益是**获得增益 / 减益**）：Kill 已经在上一行出现过 → 这一句才是那条效果的收尾
+                //（生成顺序是「先算层数 → CreatureCmd.Kill → PowerCmd.Apply」，所以状态的目标恒为 base.Owner.Creature）。
+                // 不认下来的话，这一句会被当成一条普通的「施加增益 / 减益」→ 多回读一条、层数还对不上。
+                if (sacKillPet is not null && string.Equals(target, "base.Owner.Creature", StringComparison.Ordinal))
+                {
+                    string killed = sacKillPet;
+                    sacKillPet = null;
+                    var sacPower = PetEffectFromMarker(killed, out string? whySacPower);
+                    if (sacPower is null) { result.Unparsed.Add($"{where}: {line} {whySacPower}"); pendingPetMarker = null; pendingPetAllGroup = null; continue; }
+                    // 固定值那份声明的是普通 BlockVar（收益是状态时也走格挡那一套变量）；
+                    // 按生命值算的那份一样是计算三件套 → 升级增量落在 CalculationBase 上。
+                    if (sacPower.PetSacrificeFormula == "Fixed")
+                        FillAmount(sacPower, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                    else sacPower.Amount = CalcAmount("CalculationBase");
+                    ApplyLoop(sacPower, frames);
+                    Done(sacPower);
+                    continue;
+                }
 
                 // ===== 新增的那批宠物效果：给伙伴施加状态 / 替主人承伤（开）=====
                 // 目标参数是宠物局部变量（__xxx）而不是 base.Owner.Creature / cardPlay.Target / foe。

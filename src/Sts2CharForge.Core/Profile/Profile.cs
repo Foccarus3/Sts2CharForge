@@ -264,6 +264,7 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(PetSacrificeUsesMultiplier));
                 Raise(nameof(PetSacrificeFormulaZh));
                 Raise(nameof(IsPetSacrifice));   // 「收益 / 公式 / 倍率」三行的显隐绑的就是它
+                Raise(nameof(IsPetSacrificePower));   // 「状态（牺牲后获得）」那一行的显隐绑的就是它
                 Raise(nameof(IsGiveKeyword));    // 「给予关键词 / 是否为临时关键词」两行的显隐绑的就是它
                 Raise(nameof(IsBoostCard));      // 「强化什么（伤害 / 格挡）」那一行的显隐绑的就是它
                 // 「生成 / 变化」那几行（取卡方式 / 范围限定 / 四个附加处理勾选框）的显隐绑的是这两个 ——
@@ -810,6 +811,17 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public bool IsPetSacrifice => Kind == "PetSacrifice";
 
+    /// <summary>
+    /// 这条「牺牲伙伴」的收益是「获得增益 / 减益」（<c>Gain == "Power"</c>）—— 界面上只有这一档
+    /// 才显示「状态（牺牲后获得）」那一行。
+    ///
+    /// 和 <see cref="IsPetSacrifice"/> 一样是**界面 XAML 直接绑的**
+    /// （<c>Visibility="{Binding IsPetSacrificePower, …}"</c>），而且 <see cref="Kind"/> /
+    /// <see cref="PetSacrificeGain"/> 的 setter 都必须 Raise 它，否则换档时那一行不会出现 / 不会消失。
+    /// </summary>
+    [JsonIgnore]
+    public bool IsPetSacrificePower => Kind == "PetSacrifice" && PetSacrificeGain == "Power";
+
     private string? _petSummon;
 
     /// <summary>
@@ -832,13 +844,20 @@ public sealed class EffectSpec : SpecBase
     private decimal _petSacrificeMultiplier = 3m;
 
     /// <summary>
-    /// 「牺牲伙伴」的收益类型：<c>Block</c>（格挡）/ <c>Damage</c>（伤害）。
-    /// 两种都是「先算收益、再杀宠物」（顺序不能反：宠物死了就取不到生命值）。
+    /// 「牺牲伙伴」的收益类型：<c>Block</c>（格挡）/ <c>Damage</c>（伤害）/
+    /// <c>Power</c>（获得增益 / 减益 —— 层数按下面的收益公式算，状态挂在自己身上，<see cref="PowerId"/> 就是它）。
+    /// 三种都是「先算收益、再杀宠物」（顺序不能反：宠物死了就取不到生命值）。
     /// </summary>
     public string PetSacrificeGain
     {
         get => _petSacrificeGain;
-        set { if (Set(ref _petSacrificeGain, NormalizeGain(value))) Raise(nameof(Display)); }
+        set
+        {
+            if (!Set(ref _petSacrificeGain, NormalizeGain(value))) return;
+            Raise(nameof(Display));
+            // 收益换成「获得增益 / 减益」（或换走）时，「状态（牺牲后获得）」那一行要跟着显 / 隐。
+            Raise(nameof(IsPetSacrificePower));
+        }
     }
 
     /// <summary>
@@ -872,8 +891,16 @@ public sealed class EffectSpec : SpecBase
         set { if (Set(ref _petSacrificeMultiplier, value)) Raise(nameof(Display)); }
     }
 
-    private static string NormalizeGain(string? v) =>
-        string.Equals(v?.Trim(), "Damage", StringComparison.OrdinalIgnoreCase) ? "Damage" : "Block";
+    /// <summary>
+    /// 收益类型的归一化：认 <c>Damage</c> / <c>Power</c>，其余（含老存档里的 <c>Block</c>）一律当格挡。
+    /// 大小写不敏感（手改过 JSON 的老存档写成 <c>damage</c> 也照样认）。
+    /// </summary>
+    private static string NormalizeGain(string? v) => v?.Trim().ToLowerInvariant() switch
+    {
+        "damage" => "Damage",
+        "power" => "Power",
+        _ => "Block",
+    };
 
     private static string NormalizeFormula(string? v) => v?.Trim() switch
     {
@@ -884,7 +911,12 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>「牺牲伙伴」收益的中文（列表里显示）。</summary>
     [JsonIgnore]
-    public string PetSacrificeGainZh => PetSacrificeGain == "Damage" ? "伤害" : "格挡";
+    public string PetSacrificeGainZh => PetSacrificeGain switch
+    {
+        "Damage" => "伤害",
+        "Power" => "增益 / 减益",
+        _ => "格挡",
+    };
 
     /// <summary>「牺牲伙伴」收益公式的中文短说明（列表 / 界面提示用）。</summary>
     [JsonIgnore]

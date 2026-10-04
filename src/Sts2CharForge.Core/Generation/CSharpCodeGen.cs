@@ -1531,8 +1531,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "PetHeal" => "Heal",
         "PetLoseHp" => "HpLoss",
         "PetGainMaxHp" => "MaxHp",
-        // 牺牲伙伴：收益是格挡还是伤害各一套名字（同一张牌上两条牺牲也能靠别名区分）
-        "PetSacrifice" => e.PetSacrificeGain == "Damage" ? "PetSacrificeDamage" : "PetSacrificeBlock",
+        // 牺牲伙伴：收益是格挡 / 伤害 / 获得状态各一套名字（同一张牌上两条牺牲也能靠别名区分）
+        "PetSacrifice" => e.PetSacrificeGain switch
+        {
+            "Damage" => "PetSacrificeDamage",
+            "Power" => "PetSacrificePower",
+            _ => "PetSacrificeBlock",
+        },
         "PetApplyPower" => "PetPower" + (e.PowerId ?? ""),
         _ => "Value",
     };
@@ -1682,6 +1687,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string name = VarNameOf(e, map);
         bool named = name != VarNameOf(e);
         string prefix = named ? Lit.Str(name) + ", " : "";
+        // 连宠物都认不出来时退成「固定 0」的普通变量：收益是格挡 / 状态都声明 BlockVar，只有伤害声明 DamageVar。
         bool block = e.Kind == "PetSacrifice" && e.PetSacrificeGain != "Damage";
         return block ? $"new BlockVar({prefix}0m, ValueProp.Move)" : $"new DamageVar({prefix}0m, ValueProp.Move)";
     }
@@ -1814,7 +1820,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return code.Replace(PetCmdPlaceholder, cmd.Length == 0 ? "PetCmd" : cmd);
     }
 
-    /// <summary>牺牲伙伴的收益变量：固定值走普通 BlockVar / DamageVar，按生命值算走计算三件套。</summary>
+    /// <summary>
+    /// 牺牲伙伴的收益变量：固定值走普通 BlockVar / DamageVar，按生命值算走计算三件套。
+    ///
+    /// 收益是「获得增益 / 减益」时**也走格挡那一套**（<c>BlockVar</c> / <c>CalculatedBlockVar</c>）：
+    /// 本体只有 CalculatedDamage / CalculatedBlock 两套「计算变量」，没有「计算状态层数」这一种，
+    /// 而层数本来就只是一个数字 —— 复用现成的这一套，卡面占位符（固定值 <c>{PetSacrificePower:diff()}</c>、
+    /// 按生命值算 <c>{CalculatedBlock:diff()}</c>）与升级增量全都照旧生效，不用再造第三套变量。
+    /// </summary>
     private static string PetSacrificeVarDecl(EffectSpec e, string name)
     {
         bool block = e.PetSacrificeGain != "Damage";
@@ -1872,14 +1885,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string mul = e.Kind == "PetSacrifice" && e.PetSacrificeFormula == "MaxHp"
             ? " CET:PetMul=" + Lit.Dec(e.PetSacrificeMultiplier)
             : "";
-        return $"{kind} CET:PetFormula={formula}{mul}";
+        // 牺牲伙伴选「获得增益 / 减益」时还要把状态类名写进标记 —— 光看 PowerCmd.Apply<T> 里的 T
+        // 也能认出来，但那条语句同时被「施加增益 / 减益」用着，显式写全才能保证回读一对一还原。
+        string petPower = e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Power"
+            && !string.IsNullOrWhiteSpace(e.PowerId)
+            ? " CET:PetPower=" + e.PowerId!.Trim()
+            : "";
+        return $"{kind} CET:PetFormula={formula}{mul}{petPower}";
     }
 
     /// <summary>回读用的效果种类标记名（几种变体各自一个，回读时一对一还原）。</summary>
     internal static string KindMarker(EffectSpec e) => e.Kind switch
     {
         "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp" => "PetCalcAttack",
-        "PetSacrifice" => e.PetSacrificeGain == "Damage" ? "PetSacrificeDamage" : "PetSacrificeBlock",
+        "PetSacrifice" => e.PetSacrificeGain switch
+        {
+            "Damage" => "PetSacrificeDamage",
+            "Power" => "PetSacrificePower",
+            _ => "PetSacrificeBlock",
+        },
         _ => e.Kind,
     };
 
@@ -4375,7 +4399,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 牺牲伙伴：**先算收益、再杀宠物**（顺序绝不能反 —— 宠物死了就取不到它的生命值，
     /// 而且 CalculatedBlock/CalculatedDamage 是在宠物身上算的）。
     /// 收益是格挡：<c>CreatureCmd.GainBlock(主人, 收益, …)</c>；
-    /// 收益是伤害：先把收益算成数字存下来，再 <c>CreatureCmd.Kill</c>，最后用 <c>DamageCmd.Attack(数字)</c> 打出去。
+    /// 收益是伤害：先把收益算成数字存下来，再 <c>CreatureCmd.Kill</c>，最后用 <c>DamageCmd.Attack(数字)</c> 打出去；
+    /// 收益是「获得增益 / 减益」：同样先把层数算成数字存下来，再 Kill，最后
+    /// <c>PowerCmd.Apply&lt;状态&gt;(choiceContext, base.Owner.Creature, 层数, …)</c> 挂在自己身上。
     /// </summary>
     private static void EmitPetSacrifice(CodeWriter w, EffectSpec e, CharacterProfile p, string petVar,
         Dictionary<EffectSpec, string>? varMap, bool useX, PetGen.PetDef? petDef = null)
@@ -4388,8 +4414,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
 
-        bool block = e.PetSacrificeGain != "Damage";
-        string what = block ? "格挡" : "伤害";
+        bool block = e.PetSacrificeGain != "Damage";     // 「获得增益 / 减益」也走格挡那一套变量（见 PetSacrificeVarDecl）
+        bool power = e.PetSacrificeGain == "Power";
+        string what = e.PetSacrificeGain switch
+        {
+            "Damage" => "伤害",
+            "Power" => "状态 " + e.PowerId,
+            _ => "格挡",
+        };
         string valZh = e.PetSacrificeFormula switch
         {
             "Fixed" => $"固定 {e.Amount:0.##} 点",
@@ -4399,7 +4431,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「全部召唤物」展开出来的那一份：按生命值算的收益没有计算变量可用（一张牌只有一套固定名字的
         // 计算变量），改成**内联**读这只宠物自己的生命值；固定值那份仍然读共用的 Block/Damage 变量。
         bool inline = IsAllPetsInlineCalc(e);
-        w.Line($"// 牺牲{def.DisplayName}换{what}：收益 {valZh}（先算收益、再杀宠物 —— 顺序反了就取不到生命值）"
+        // 「为什么是这个顺序」写进生成出来的代码里：收益（层数）要按宠物**还活着时**的生命值算，
+        // 所以必须「先算成一个局部变量 → 再杀宠物 → 最后才用它」。默认档那两种的措辞照旧不改。
+        string orderZh = power
+            ? "（先算层数、再杀宠物、最后才挂状态 —— 顺序反了就取不到生命值）"
+            : "（先算收益、再杀宠物 —— 顺序反了就取不到生命值）";
+        w.Line($"// 牺牲{def.DisplayName}换{what}：收益 {valZh}{orderZh}"
             + (inline ? "【全部召唤物：每只各自算，卡面不显示具体数字】" : ""));
 
         // 收益是固定值时不需要计算变量（普通 BlockVar / DamageVar），直接读变量值即可。
@@ -4414,7 +4451,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     ? "base.DynamicVars.CalculatedBlock.Calculate(cardPlay.Target)"
                     : "base.DynamicVars.CalculatedDamage.Calculate(cardPlay.Target)");
 
-        if (block)
+        if (power)
+        {
+            if (string.IsNullOrWhiteSpace(e.PowerId))
+            {
+                // 校验器本来就会拦住这种配置（没选状态）；这里兜底成「只牺牲、不给状态」的注释，
+                // 绝不生成 PowerCmd.Apply<>（泛型参数是空的 → CS0305 编译不过）。
+                w.Line("// ⚠ 收益选了「获得增益 / 减益」却没选状态（「增益 / 减益」那一栏是空的）："
+                    + "这条只牺牲伙伴、不给任何状态 —— 到效果栏里补选一个状态");
+                w.Line($"await CreatureCmd.Kill({petVar});");
+                return;
+            }
+            // 三段各自的「为什么」：层数按伙伴的生命值算，宠物一死（CreatureCmd.Kill）就取不到生命值了，
+            // 所以先算成一个局部变量再动手；状态挂在自己身上（不跟「作用对象」那一栏走）。
+            w.Line($"decimal layers = {gainExpr};   // 先算层数：宠物还活着才取得到它的生命值");
+            w.Line($"await CreatureCmd.Kill({petVar});   // 再杀宠物");
+            w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, layers, base.Owner.Creature, this);"
+                + "   // 最后把状态挂到自己身上");
+        }
+        else if (block)
         {
             w.Line($"decimal gain = {gainExpr};");
             w.Line($"await CreatureCmd.Kill({petVar});");

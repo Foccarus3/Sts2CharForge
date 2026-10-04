@@ -1032,6 +1032,12 @@ public static class ProfileValidator
                             if (e.PetSacrificeGain == "Damage" && e.TargetSide == "Self")
                                 issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的收益是伤害，但「作用对象」选的是自己"
                                     + "—— 请把作用对象改成「单体敌人」或「全体敌人」。"));
+                            // 收益选「获得增益 / 减益」时必须选一个状态：没选的话生成不出 PowerCmd.Apply<T>
+                            //（泛型参数是空的 → CS0305），所以这里直接拦住，而不是生成一段编译不过的代码。
+                            if (e.PetSacrificeGain == "Power" && string.IsNullOrWhiteSpace(e.PowerId))
+                                issues.Add(new("错误", $"{owner} 的第 {i} 条「牺牲伙伴」的收益是「获得增益 / 减益」，"
+                                    + "但没有选状态 —— 到效果栏的「状态（牺牲后获得）」里选一个"
+                                    + "（例：力量 / 敏捷 / 中毒）。"));
                             // 按生命值算的收益（MaxHp / CurHp）没有可升级的变量：那个计算变量的名字是本体
                             // 固定死的，升级只能抬 CalculationBase，而「按生命值算」的基础值是 0 —— 所以这里的
                             // 升级增量生成时会**静默丢掉**（与其让用户以为加了，不如直接拦住）。

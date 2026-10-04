@@ -743,8 +743,9 @@ public static class EffectCatalog
         new EffectKindOption("PetLoseHp",   "伙伴失去生命", "点", 0, 999, false, false),
         // 注意：本体的 GainMaxHp 内部最后会 Heal 等量 → 当前生命也跟着涨（卡面描述里写明了）。
         new EffectKindOption("PetGainMaxHp", "伙伴最大生命 +N", "点", 0, 999, false, false),
-        // 牺牲伙伴：收益类型（格挡 / 伤害）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
-        // 生成顺序不能反：**先算收益、再杀宠物**（宠物死了就取不到生命值）。
+        // 牺牲伙伴：收益类型（格挡 / 伤害 / 获得增益·减益）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
+        // 生成顺序不能反：**先算收益（或层数）、再杀宠物**（宠物死了就取不到生命值）；
+        // 收益是「获得增益 / 减益」时最后再 PowerCmd.Apply 把状态挂到自己身上。
         new EffectKindOption("PetSacrifice", "牺牲伙伴换收益", "点", 0, 999, false, true),
         // 给伙伴施加状态：复用现有的「增益 / 减益」下拉（PowerId）+ 层数（Amount）。
         new EffectKindOption("PetApplyPower", "给伙伴施加状态", "层", 0, 99, false, false),
