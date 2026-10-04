@@ -795,6 +795,14 @@ public static class LocalizationGen
                 : e.IsSpawnRandom
                 ? $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
                 : $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
+            // 获得药水（需求 ⑨）：指定档写清是哪一瓶（药水名从「目标药水」目录里取中文名），
+            // 随机档写「随机一瓶药水」。句尾**必须**写明药水栏满时的行为（用户要求：不要静默）——
+            // 本体 TryToProcure 在栏满时返回 success=false，我们什么都不做。
+            "GainPotion" => e.IsPotionRandom
+                ? $"{repeat}{when}获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 瓶随机药水"
+                    + "（药水栏满时不会发生任何事）。"
+                : $"{repeat}{when}获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 瓶"
+                    + $"[gold]{EffectCatalog.FindPotionZh(e.PotionId)}[/gold]（药水栏满时不会发生任何事）。",
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
             // 范围界定（需求 ③）：范围非空时在句尾补一句「（只限攻击牌）」（空则不加，描述与旧版一致）
             "ExhaustCard" => e.SelectPile == "Hand"

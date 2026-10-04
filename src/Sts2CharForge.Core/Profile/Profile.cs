@@ -218,6 +218,9 @@ public sealed class EffectSpec : SpecBase
     private bool _nextTurn;
     private string? _powerId;
     private string? _spawnCardId;
+    // 需求 ⑨：「获得药水」那一栏 —— 指定哪一瓶 / 随机一瓶 + 目标药水（类名，和 SpawnCardId 同构）
+    private string _potionPick = "Fixed";
+    private string? _potionId;
     private string _spawnTo = "Hand";
     private string _cardPick = "Random";
     private bool _amountIsX;
@@ -286,6 +289,11 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(IsSlowPower));
                 // 「刮削」那两行（条件 / 操作）的显隐绑的就是它 —— 换成别的效果种类时要跟着消失。
                 Raise(nameof(ShowScrapeOptions));
+                // 需求 ⑨：「获得药水」的「取药方式 / 目标药水」两行的显隐绑的就是这两个 ——
+                // 不通知的话把「效果种类」改成「获得药水」时那两行**不会出现**。
+                Raise(nameof(UsesPotionOptions));
+                Raise(nameof(ShowPotionPicker));
+                Raise(nameof(PotionNameZh));
                 Raise(nameof(Display));
             }
         }
@@ -638,6 +646,54 @@ public sealed class EffectSpec : SpecBase
     /// TransformCard 用：变化成哪张卡；留空 = 随机变化。
     /// </summary>
     public string? SpawnCardId { get => _spawnCardId; set => Set(ref _spawnCardId, value); }
+
+    // ===== 需求 ⑨：获得指定 / 随机药水 =====
+    /// <summary>
+    /// 「获得药水」是「指定药水」还是「随机药水」：
+    /// <c>Fixed</c>（默认）= 用「目标药水」那一栏选定的那一瓶；<c>Random</c> = 本体随机一瓶
+    /// （本体卡「炼制药水 Alchemize」走的就是 <c>PotionFactory.CreateRandomPotionInCombat</c>）。
+    /// </summary>
+    public string PotionPick
+    {
+        get => _potionPick;
+        set
+        {
+            if (Set(ref _potionPick, value ?? "Fixed"))
+            {
+                Raise(nameof(IsPotionRandom));
+                Raise(nameof(ShowPotionPicker));   // 「目标药水」那一行的显隐绑的就是它
+                Raise(nameof(Display));
+            }
+        }
+    }
+
+    /// <summary>是不是「随机药水」（随机档不用选目标药水）。</summary>
+    [JsonIgnore]
+    public bool IsPotionRandom => string.Equals(_potionPick, "Random", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 「目标药水」：本体药水的**类名**（如 <c>BlockPotion</c>）。
+    /// 生成出来是 <c>PotionCmd.TryToProcure&lt;MegaCrit.Sts2.Core.Models.Potions.BlockPotion&gt;(玩家)</c> ——
+    /// 本体 <c>TryToProcure&lt;T&gt;</c> 内部就是 <c>ModelDb.Potion&lt;T&gt;().ToMutable()</c>，
+    /// 而模型 ID 是 <c>StringHelper.Slugify(类名)</c>，所以类名是这一栏的原生标识（见 EffectCatalog.PotionEntry）。
+    /// </summary>
+    public string? PotionId
+    {
+        get => _potionId;
+        set { if (Set(ref _potionId, value)) { Raise(nameof(PotionNameZh)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>「目标药水」的中文名（界面 / 列表里显示用；目录里查不到就显示类名）。</summary>
+    [JsonIgnore]
+    public string PotionNameZh => EffectCatalog.FindPotionZh(PotionId);
+
+    /// <summary>这些「获得药水」相关的行要不要显示（只有「获得药水」用得到）。</summary>
+    [JsonIgnore]
+    public bool UsesPotionOptions => Kind == "GainPotion";
+
+    /// <summary>「目标药水」那一行要不要显示（选了「随机药水」时它没有意义）。</summary>
+    [JsonIgnore]
+    public bool ShowPotionPicker => UsesPotionOptions && !IsPotionRandom;
 
     /// <summary>GenerateCard 用：生成的卡放到哪：Hand / Draw / Discard</summary>
     public string SpawnTo { get => _spawnTo; set => Set(ref _spawnTo, value); }
@@ -1046,6 +1102,10 @@ public sealed class EffectSpec : SpecBase
                 "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")} ｜ {CardPickZh}",
                 "RemoveCardGlobal" => $" ｜ 从牌组删牌 ｜ {CardPickZh}",
                 "UpgradeCardGlobal" => $" ｜ 升级牌组里的牌 ｜ {CardPickZh}",
+                // 需求 ⑨：获得药水 —— 把「哪一瓶 / 随机」写出来（只看「获得药水」看不出配了哪一档）
+                "GainPotion" => IsPotionRandom
+                    ? " ｜ 随机一瓶药水"
+                    : $" ｜ 获得「{(string.IsNullOrWhiteSpace(PotionId) ? "（未选）" : PotionNameZh)}」",
                 _ => "",
             };
             // 需求 ⑦：「生成 / 变化出来的卡带上关键词」在列表里也写出来（只说一句「生成卡牌」看不出配了它）
@@ -1086,6 +1146,10 @@ public sealed class EffectSpec : SpecBase
                 "RemoveCardGlobal" => "删除卡牌（全局）",
                 "UpgradeCardGlobal" => "升级卡牌（全局：牌组里的牌永久升级）",
                 "CardReward" => "获得卡牌奖励",
+                // 获得药水（需求 ⑨）：指定 / 随机两档都在这里说清楚（药水栏满 = 什么都不发生）
+                "GainPotion" => IsPotionRandom
+                    ? "获得随机药水"
+                    : "获得指定药水：" + (string.IsNullOrWhiteSpace(PotionId) ? "（还没选「目标药水」）" : PotionNameZh),
                 // 毒性爆发 / 大限已至：本体那两张牌的效果（界面上把关键说明写出来）
                 "Outbreak" => "毒性爆发（全体上毒并立即触发）",
                 "TimesUp" => "大限已至（伤害 = 目标灾厄层数）",

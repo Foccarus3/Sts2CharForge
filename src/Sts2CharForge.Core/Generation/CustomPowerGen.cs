@@ -527,6 +527,14 @@ public static class CustomPowerGen
                 }
                 break;
 
+            // 获得药水（需求 ⑨）：本体 PotionCmd.TryToProcure 不收 choiceContext，状态触发器里照样能用。
+            // 状态钩子里 base.Owner 是 **Creature**（不是 Player），所以玩家那一侧要取 base.Owner.Player；
+            // 「瓶数 = 本状态的层数」那一档直接传 base.Amount（和别的效果同一套口径）。
+            case "GainPotion":
+                CSharpCodeGen.EmitGainPotion(w, e, useX: false, playerExpr: "base.Owner.Player",
+                    countExpr: e.AmountIsStack ? "base.Amount" : null);
+                break;
+
             // 毒性爆发：状态里也能用（都是本体 API）。注意这里的 base.Owner 是 Creature（不是 Player），
             // 所以敌人列表 / 施加者都用它自己的形式（见 CSharpCodeGen.EmitOutbreak 的参数说明）。
             case "Outbreak":

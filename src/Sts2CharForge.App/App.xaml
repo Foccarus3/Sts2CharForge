@@ -256,6 +256,37 @@
                         </Grid>
                     </StackPanel>
 
+                    <!-- 需求 ⑨：「获得药水」专用 —— 取药方式（指定 / 随机）+ 目标药水。
+                         「目标药水」是一个**可搜索**的下拉，和「目标卡」完全同构（SearchComboBox，
+                         候选 = MainWindow.AllPotions = EffectCatalog.Potions：中文名 + 本体药水类名），
+                         按中文名打字就能搜到。它只在「指定药水」那一档出现：
+                         随机档要哪一瓶由本体的 PotionFactory 决定（本体卡「炼制药水」那套）。 -->
+                    <Grid Visibility="{Binding UsesPotionOptions, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="取药方式（获得药水）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding PotionPicks, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding PotionPick}"
+                                  ToolTip="「指定药水」= 用下面「目标药水」里选的那一瓶（生成 PotionCmd.TryToProcure&lt;那一瓶&gt;）；「随机药水」= 本体卡「炼制药水」那套随机（PotionFactory，按稀有度抽；战斗外自动换成非战斗药物池）。药水栏满时两种都不发生任何事（不会丢掉 / 替换你已有的药水）。"/>
+                    </Grid>
+                    <Grid Visibility="{Binding ShowPotionPicker, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="目标药水" Style="{StaticResource Label}" MinWidth="96"/>
+                        <local:SearchComboBox Grid.Column="1"
+                                              SearchPath="Display"
+                                              ItemsSource="{Binding AllPotions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              SelectedValuePath="Id" SelectedValue="{Binding PotionId, Mode=TwoWay}"
+                                              ToolTip="要获得的那一瓶本体药水（显示「中文名  (类名)」）：直接打字搜索中文名，点选项或按回车自动补全。候选来自本机解包工程的药水目录（读不到时从游戏 sts2.dll 反射）。药水栏满时这条效果什么都不发生。">
+                            <local:SearchComboBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                            </local:SearchComboBox.ItemTemplate>
+                        </local:SearchComboBox>
+                    </Grid>
+
                     <!-- 复制卡牌专用：复制的份数（数值 = 选几张，这个 = 每张复制几份）。只有选这个效果时才出现。 -->
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
                                 Visibility="{Binding ShowCopies, Converter={StaticResource BoolToVis}}">

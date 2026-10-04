@@ -101,6 +101,9 @@ public static class PowerTriggers
         "Outbreak",
         // 「升级卡牌（全局）」= 直接改牌组（本体「香盒 Pomander」那种），不需要卡牌上下文，状态里也能用
         "UpgradeCardGlobal",
+        // 获得药水（需求 ⑨）：本体 PotionCmd.TryToProcure 只收玩家（不收 choiceContext），
+        // 状态触发器里 base.Owner.Player 就是玩家，所以也能用。
+        "GainPotion",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>
@@ -193,6 +196,11 @@ public static class PowerTriggers
                 ? $"施加{EffectCatalog.PowerName(e.PowerId, "状态")}（受到伤害 +{e.SlowPercentEffective}%）"
                 : $"施加 [blue]{n}[/blue] 层{EffectCatalog.PowerName(e.PowerId, "状态")}",
             "GenerateCard" => $"生成 [blue]{n}[/blue] 张牌",
+            // 获得药水（需求 ⑨）：指定档写清是哪一瓶（中文名从「目标药水」目录里取），随机档写「随机」。
+            // 不写这一条的话状态描述里会原样印出「GainPotion」（界面 / 卡面都是给人看的）。
+            "GainPotion" => e.IsPotionRandom
+                ? $"获得 [blue]{n}[/blue] 瓶随机药水"
+                : $"获得 [blue]{n}[/blue] 瓶{EffectCatalog.FindPotionZh(e.PotionId)}",
             // 丢弃卡牌（状态触发器里用不了，但描述里还是要写对，不然界面会印出 Kind 原文）
             "DiscardCard" => $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 [blue]{n}[/blue] 张"
                 + (e.SelectPile == "Hand" ? "手牌" : $"（{EffectCatalog.SelectPileZh(e.SelectPile)}）牌"),

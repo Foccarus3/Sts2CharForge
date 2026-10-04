@@ -1382,6 +1382,33 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{owner} 的「生成卡牌」生成出来的牌会**直接进消耗牌堆**"
                     + "（不经过手牌 / 抽牌堆，所以抽不到它；用来触发「消耗时」「消耗牌堆里的牌」这类效果，"
                     + "或者只是做个计数）。"));
+            // 需求 ⑨：获得药水 —— 指定档必须选一瓶，而且选的必须是**认得出类名**的药水
+            //（生成的是 PotionCmd.TryToProcure<类名>，认不出来就会编译不过）。
+            // 药水目录读不到时（没解包工程 / 没 pck）不报「认不出来」，只提示去配路径 —— 否则换台电脑全是误报。
+            if (e.Kind == "GainPotion")
+            {
+                if (!e.IsPotionRandom && string.IsNullOrWhiteSpace(e.PotionId))
+                    issues.Add(new("错误", $"{owner} 的「获得药水」选了「指定药水」但没选「目标药水」"
+                        + "—— 请在那一栏里选一瓶（可以打字搜索中文名），或者把「取药方式」改成「随机药水」。"));
+                else if (!e.IsPotionRandom && !EffectCatalog.HasPotion(e.PotionId))
+                {
+                    if (EffectCatalog.Potions.Count == 0)
+                        issues.Add(new("提示", $"{owner} 的「获得药水」选了「{e.PotionId}」："
+                            + "本机读不到本体药水目录（没配本体工程目录 / 游戏 pck），这一栏的候选是空的，"
+                            + "生成前请在「路径」里指一下本体工程目录。"));
+                    else
+                        issues.Add(new("错误", $"{owner} 的「获得药水」选的「{e.PotionId}」不是一个本体药水类名"
+                            + $"（候选共 {EffectCatalog.Potions.Count} 项）—— 请从「目标药水」那一栏里选。"));
+                }
+                if (e.IsPotionRandom)
+                    issues.Add(new("提示", $"{owner} 的「获得药水」是**随机**一瓶："
+                        + "走本体卡「炼制药水」那套（PotionFactory，按稀有度抽；战斗外自动换成非战斗池，"
+                        + "战斗中治疗类药水不在随机范围内）。药水栏满时什么都不发生。"));
+                else if (!string.IsNullOrWhiteSpace(e.PotionId))
+                    issues.Add(new("提示", $"{owner} 的「获得药水」=「{EffectCatalog.FindPotionZh(e.PotionId)}」："
+                        + "药水栏满时**不会发生任何事**（本体 TryToProcure 返回失败，不会丢掉 / 替换你已有的药水），"
+                        + "卡面描述里已经写明了这一点。"));
+            }
             // 张数范围：0 也允许（用户要求：所有效果种类都能填 0，0 = 不生效，由 IsInertZero 整条丢掉）
             if (e.Kind is "ExhaustCard" or "TransformCard" or "DiscardCard" && e.Amount is < 0 or > 9)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」张数 {e.Amount} 超出范围（0~9，0 = 这条效果不生效）。"));

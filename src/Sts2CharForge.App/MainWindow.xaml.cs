@@ -392,8 +392,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public ObservableCollection<PowerEntry> AllCards { get; } = new ObservableCollection<PowerEntry>();
 
+	/// <summary>
+	/// 需求 ⑨：「目标药水」那一栏的候选（中文名 + 本体药水类名）。
+	/// 和 <see cref="AllCards"/> 一样是**稳定集合**（就地替换，不整体重置）：SearchComboBox 只在
+	/// ItemsSource 换实例时重灌候选，整表 Reset 会把用户已经选中的药水弹掉。
+	/// </summary>
+	public ObservableCollection<PotionEntry> AllPotions { get; } = new ObservableCollection<PotionEntry>();
+
 
 	public IReadOnlyList<SpawnTargetOption> SpawnTargets => EffectCatalog.SpawnTargets;
+
+	/// <summary>需求 ⑨：「获得药水」的取药方式（指定药水 / 随机药水）。</summary>
+	public IReadOnlyList<SpawnPickOption> PotionPicks => EffectCatalog.PotionPicks;
 
 	public IReadOnlyList<string> CardPickModes => EffectCatalog.CardPickModes;
 
@@ -1549,6 +1559,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			while (AllCards.Count > list.Count)
 			{
 				AllCards.RemoveAt(AllCards.Count - 1);
+			}
+		}
+		catch
+		{
+		}
+		// 需求 ⑨：「目标药水」的候选和卡牌候选同一个刷新时机（重新扫描效果库 / 配好路径之后各自同步一次）
+		RefreshPotionChoices();
+	}
+
+	/// <summary>
+	/// 需求 ⑨：把「目标药水」的候选灌进 <see cref="AllPotions"/>（源头 = <see cref="EffectCatalog.Potions"/>）。
+	/// 为什么不用整体 Reset：SearchComboBox 只在 ItemsSource 换实例时重灌候选，而且整表重置会把
+	/// 用户已选中的药水弹掉（「目标卡」那边踩过同一个坑，见 RefreshCardChoices 的注释）。
+	/// </summary>
+	public void RefreshPotionChoices()
+	{
+		try
+		{
+			List<PotionEntry> list = EffectCatalog.Potions.ToList();
+			for (int i = 0; i < list.Count; i++)
+			{
+				PotionEntry entry = list[i];
+				if (i >= AllPotions.Count || AllPotions[i].Id != entry.Id || AllPotions[i].Display != entry.Display)
+				{
+					if (i < AllPotions.Count)
+					{
+						AllPotions[i] = entry;
+					}
+					else
+					{
+						AllPotions.Add(entry);
+					}
+				}
+			}
+			while (AllPotions.Count > list.Count)
+			{
+				AllPotions.RemoveAt(AllPotions.Count - 1);
 			}
 		}
 		catch
@@ -10257,6 +10304,205 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			&& !new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Block" }.IsPetSacrificePower
 			&& !new EffectSpec { Kind = "Block" }.IsPetSacrificePower,
 			"判断对");
+		// ===== 需求 ⑨：效果种类「获得药水」（指定 / 随机）+ 可搜索的「目标药水」栏 =====
+		// ① 种类 / 两档 / 候选目录
+		Check("效果种类里有「获得药水」（数值 = 瓶数，单位「瓶」，允许填 0）",
+			Kinds.Any((EffectKindOption k) => k.Kind == "GainPotion" && k.Display.Contains("获得药水")
+				&& k.Unit == "瓶" && k.Min == 0m && k.Max >= 1m),
+			string.Join("·", Kinds.Where((EffectKindOption k) => k.Kind == "GainPotion").Select((EffectKindOption k) => $"{k.Kind}/{k.Unit}/{k.Min}~{k.Max}")));
+		Check("「获得药水」的两档：指定药水（Fixed，默认）/ 随机药水（Random）",
+			PotionPicks.Count == 2 && PotionPicks[0].Id == "Fixed" && PotionPicks[0].Display.Contains("指定药水")
+			&& PotionPicks[1].Id == "Random" && PotionPicks[1].Display.Contains("随机"),
+			string.Join(" · ", PotionPicks.Select((SpawnPickOption o) => o.Id + "=" + o.Display)));
+		Check("「目标药水」的候选 = 本体药水目录（类名 + 中文名），读得到解包工程时非空",
+			EffectCatalog.Potions.Count > 0
+			&& EffectCatalog.Potions.Any((PotionEntry x) => x.Id == "BlockPotion" && x.Zh == "格挡药水")
+			&& EffectCatalog.Potions.Any((PotionEntry x) => x.Display == "格挡药水  (BlockPotion)"),
+			$"{EffectCatalog.Potions.Count} 项，例：{EffectCatalog.Potions.FirstOrDefault((PotionEntry x) => x.Id == "BlockPotion")?.Display}");
+		Check("药水候选认的是**类名**（本体的 ModelId = Slugify(类名)，所以 BlockPotion ↔ BLOCK_POTION.title）",
+			EffectCatalog.FindPotionZh("BlockPotion") == "格挡药水" && EffectCatalog.HasPotion("BlockPotion")
+			&& !EffectCatalog.HasPotion("NoSuchPotion"), EffectCatalog.FindPotionZh("BlockPotion"));
+		Check("EffectSpec：只有「获得药水」显示那两行；「目标药水」只在指定档显示；列表文字写清哪一瓶",
+			new EffectSpec { Kind = "GainPotion" }.UsesPotionOptions
+			&& new EffectSpec { Kind = "GainPotion", PotionPick = "Fixed" }.ShowPotionPicker
+			&& !new EffectSpec { Kind = "GainPotion", PotionPick = "Random" }.ShowPotionPicker
+			&& new EffectSpec { Kind = "GainPotion", PotionPick = "Random" }.IsPotionRandom
+			&& !new EffectSpec { Kind = "Block" }.UsesPotionOptions
+			&& new EffectSpec { Kind = "GainPotion", PotionId = "BlockPotion" }.Display.Contains("格挡药水")
+			&& new EffectSpec { Kind = "GainPotion", PotionPick = "Random" }.Display.Contains("随机"),
+			new EffectSpec { Kind = "GainPotion", PotionId = "BlockPotion" }.Display);
+		Check("效果编辑面板上有「取药方式（获得药水）」和「目标药水」那两行",
+			effectTplTexts.Any((string t) => t.Contains("取药方式（获得药水）")) && effectTplTexts.Any((string t) => t.Contains("目标药水")),
+			$"模板里 {effectTplTexts.Length} 个文本");
+		// ② 界面：真的长出来的可搜索下拉 + 候选 + 能按中文名搜
+		DependencyObject potionUiRoot = SelectTabRoot("卡牌");
+		CardSpec potionUiCard = new CardSpec { Name = "自检药水界面", ClassName = "UiCheckPotionUi", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+		potionUiCard.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed", PotionId = "BlockPotion" });
+		Profile.Cards.Add(potionUiCard);
+		CardList.SelectedItem = potionUiCard;
+		CardEffectList.SelectedIndex = 0;
+		UpdateLayout();
+		var potionSearchBoxes = new List<SearchComboBox>();
+		CollectSearchCombos(potionUiRoot, potionSearchBoxes);
+		SearchComboBox? potionBox = potionSearchBoxes.FirstOrDefault((SearchComboBox b) =>
+			BindingOperations.GetBinding(b, SearchComboBox.SelectedValueProperty)?.Path?.Path == "PotionId");
+		Check("找到「目标药水」搜索框（和「目标卡」同构的可搜索下拉）", potionBox != null, $"{potionSearchBoxes.Count} 个搜索框");
+		if (potionBox != null)
+		{
+			Check("「目标药水」里灌的就是本体药水目录",
+				potionBox.FilteredCount == EffectCatalog.Potions.Count && EffectCatalog.Potions.Count > 0,
+				$"{potionBox.FilteredCount} / 目录 {EffectCatalog.Potions.Count}");
+			potionBox.ApplySearch("格挡");
+			Check("在「目标药水」里打「格挡」就能搜到「格挡药水」（按中文名搜）",
+				potionBox.FilteredCount >= 1 && potionBox.SuggestionTexts.Any((string t) => t.Contains("格挡药水")),
+				string.Join(" / ", potionBox.SuggestionTexts.Take(3)));
+			potionBox.ApplySearch("");
+		}
+		var potionCombos = new List<ComboBox>();
+		CollectCombos(potionUiRoot, potionCombos);
+		ComboBox? potionPickCombo = potionCombos.FirstOrDefault((ComboBox b) =>
+			BindingOperations.GetBinding(b, ComboBox.SelectedValueProperty)?.Path?.Path == "PotionPick");
+		Check("「取药方式」下拉绑上了 PotionPick，候选就是那两档",
+			potionPickCombo != null && potionPickCombo.Items.Count == 2,
+			potionPickCombo is null ? "没找到下拉" : $"{potionPickCombo.Items.Count} 项");
+		potionUiCard.Effects[0].PotionPick = "Random";
+		UpdateLayout();
+		Check("切成「随机药水」后「目标药水」那一行收起来（值留着，切回指定档还在）",
+			!potionUiCard.Effects[0].ShowPotionPicker && potionUiCard.Effects[0].PotionId == "BlockPotion", "收起来了");
+		potionUiCard.Effects[0].PotionPick = "Fixed";
+		UpdateLayout();
+		Profile.Cards.Remove(potionUiCard);
+		RefreshCardChoices();
+		UpdateLayout();
+		// ③ 校验器：指定档必须选、选错要拦住；随机档只提示（并写明药水栏满的行为）
+		CharacterProfile gpBadNoPotion = ProfileFactory.Sample();
+		CardSpec gpBadCard = new CardSpec { Name = "自检缺药水", ClassName = "UiCheckPotionBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+		gpBadCard.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed" });
+		gpBadNoPotion.Cards.Add(gpBadCard);
+		Check("校验器：指定档没选「目标药水」→ 错误（生成的是 TryToProcure<类名>，没得填就会编译不过）",
+			ProfileValidator.Validate(gpBadNoPotion).Any((ValidationIssue i) => i.Level == "错误" && i.Message.Contains("没选「目标药水」")),
+			"错误在");
+		CharacterProfile gpBadName = ProfileFactory.Sample();
+		CardSpec gpBadNameCard = new CardSpec { Name = "自检错药水", ClassName = "UiCheckPotionBad2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+		gpBadNameCard.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed", PotionId = "NoSuchPotion" });
+		gpBadName.Cards.Add(gpBadNameCard);
+		Check("校验器：选的药水类名认不出来 → 错误（不能静默生成一个不存在的类型）",
+			ProfileValidator.Validate(gpBadName).Any((ValidationIssue i) => i.Level == "错误" && i.Message.Contains("不是一个本体药水类名")),
+			"错误在");
+		CharacterProfile gpOkRandom = ProfileFactory.Sample();
+		CardSpec gpOkCard = new CardSpec { Name = "自检随机药水", ClassName = "UiCheckPotionOk", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+		gpOkCard.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Random" });
+		gpOkRandom.Cards.Add(gpOkCard);
+		Check("校验器：随机档不报错，而且提示里写明「药水栏满时什么都不发生」（不静默）",
+			!ProfileValidator.Validate(gpOkRandom).Any((ValidationIssue i) => i.Level == "错误" && i.Message.Contains("获得药水"))
+			&& ProfileValidator.Validate(gpOkRandom).Any((ValidationIssue i) => i.Message.Contains("随机") && i.Message.Contains("药水栏满")),
+			"没问题");
+		// ④ 生成 + 回读：四个上下文都放一条，逐条验生成文本与还原
+		string gpRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_potion_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+		try
+		{
+			CharacterProfile gpGen = ProfileFactory.Sample();
+			gpGen.Paths.OutputDir = gpRoot;
+			gpGen.Paths.VanillaProject = Profile.Paths.VanillaProject;
+			gpGen.Paths.GameDataDir = Profile.Paths.GameDataDir;
+			CardSpec gpFixed = new CardSpec { Name = "自检指定药水", ClassName = "UiCheckPotionFixed", CardType = "Skill", Rarity = "Common", Cost = 0, InCardPool = true };
+			gpFixed.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed", PotionId = "BlockPotion" });
+			gpGen.Cards.Add(gpFixed);
+			CardSpec gpRandom = new CardSpec { Name = "自检随机三瓶", ClassName = "UiCheckPotionRandom", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			gpRandom.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 3m, PotionPick = "Random" });
+			gpGen.Cards.Add(gpRandom);
+			CardSpec gpZero = new CardSpec { Name = "自检零瓶", ClassName = "UiCheckPotionZero", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			gpZero.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 0m, PotionPick = "Fixed", PotionId = "BlockPotion" });
+			gpGen.Cards.Add(gpZero);
+			// 需求 ⑨ 的回归红线：新种类**不许**动到别的种类的生成文本 ——
+			// 这里放一张只用「生成卡牌（指定卡）」的老写法卡，它的标记行必须与需求 ⑨ 之前逐字一致。
+			CardSpec gpLegacy = new CardSpec { Name = "自检老生成卡", ClassName = "UiCheckPotionLegacy", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			gpLegacy.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Fixed", SpawnCardId = "Shiv", SpawnTo = "Hand" });
+			gpGen.Cards.Add(gpLegacy);
+			gpGen.Relics.Add(new RelicSpec
+			{
+				Name = "自检药水遗物", ClassName = "UiCheckPotionRelic", Rarity = "Common", Trigger = "Obtained",
+				Effects = { new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Random" } },
+			});
+			gpGen.Potions.Add(new PotionSpec
+			{
+				Name = "自检药水瓶", ClassName = "UiCheckPotionFlask", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self",
+				InPotionPool = true,
+				Effects = { new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed", PotionId = "FirePotion" } },
+			});
+			gpGen.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检药水状态", ClassName = "UiCheckPotionPower", Type = "Buff", Enabled = true,
+				Triggers =
+				{
+					new PowerTriggerSpec
+					{
+						Kind = "TurnStart",
+						Effects = { new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionPick = "Fixed", PotionId = "BloodPotion" } },
+					},
+				},
+			});
+			Check("（准备）「获得药水」的存档能生成工程（卡牌 / 遗物 / 药水 / 自定义状态四个上下文都放了）",
+				ModGenerator.Generate(gpGen).Success, gpRoot);
+			string gpFixedSrc = CSharpCodeGen.CardSource(gpGen, gpFixed, 0);
+			string gpRandomSrc = CSharpCodeGen.CardSource(gpGen, gpRandom, 0);
+			string gpZeroSrc = CSharpCodeGen.CardSource(gpGen, gpZero, 0);
+			Check("指定档生成 PotionCmd.TryToProcure<本体药水类名>（泛型重载内部就是 ModelDb.Potion<T>().ToMutable()）",
+				gpFixedSrc.Contains("await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.BlockPotion>(base.Owner);"),
+				"有");
+			Check("指定档的标记行：有 CET:Effect=GainPotion + CET:Potion=BlockPotion，**没有** CET:PotionPick（默认档不写）",
+				gpFixedSrc.Contains("// CET:Effect=GainPotion") && gpFixedSrc.Contains(" CET:Potion=BlockPotion")
+				&& !gpFixedSrc.Contains("CET:PotionPick="), "标记对");
+			Check("随机档走 PotionFactory（本体「炼制药水」那套：战斗内 / 战斗外两支）+ ToMutable + TryToProcure，并写 CET:PotionPick=Random",
+				gpRandomSrc.Contains("MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionInCombat(base.Owner, base.Owner.RunState.Rng.CombatPotionGeneration)")
+				&& gpRandomSrc.Contains("MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionOutOfCombat(base.Owner, base.Owner.RunState.Rng.CombatPotionGeneration)")
+				&& gpRandomSrc.Contains("await PotionCmd.TryToProcure(__randPotion.ToMutable(), base.Owner);")
+				&& gpRandomSrc.Contains("CET:PotionPick=Random") && !gpRandomSrc.Contains("CET:Potion="), "写法对");
+			Check("数值 = 瓶数（3 瓶时套一层 for，变量名 __potionIdx）",
+				gpRandomSrc.Contains("for (int __potionIdx = 0; __potionIdx < 3; __potionIdx++)"), "有循环");
+			Check("药水栏满 = 什么都不发生，而且生成代码里写明了（不静默）",
+				gpFixedSrc.Contains("药水栏满时本体返回 success=false —— 这里什么都不发生"), "写明了");
+			Check("卡面描述写明「（药水栏满时不会发生任何事）」+ 指定档写药水中文名",
+				LocalizationGen.CardsJson(gpGen).Contains("获得 1 瓶[gold]格挡药水[/gold]（药水栏满时不会发生任何事）。")
+				&& LocalizationGen.CardsJson(gpGen).Contains("获得 3 瓶随机药水（药水栏满时不会发生任何事）。"), "描述对");
+			Check("「获得药水」不声明动态变量（瓶数写死在代码里）→ 生成后自检没有「引用了没声明的变量」",
+				!gpFixedSrc.Contains("new DynamicVar(") && CSharpCodeGen.MissingDynamicVars(gpFixedSrc).Count == 0,
+				"缺失=[" + string.Join(",", CSharpCodeGen.MissingDynamicVars(gpFixedSrc)) + "]");
+			Check("数值 0 瓶 = 这条效果不显示也不执行（和别的种类同一套规矩）",
+				CSharpCodeGen.IsInertZero(gpZero.Effects[0]) && !gpZeroSrc.Contains("TryToProcure")
+				&& !LocalizationGen.CardsJson(gpGen).Contains("获得 0 瓶"), "丢掉了");
+			Check("需求 ⑨ 不动别的种类：老写法（生成卡牌 / 指定卡）的标记行逐字没变、也不带任何 CET:Potion 项",
+				CSharpCodeGen.CardSource(gpGen, gpLegacy, 0).Contains(
+					"// CET:SpawnPick=Fixed CET:SpawnFilter=- CET:SpawnChoice=1 CET:SpawnUp=0 CET:SpawnFree=0 CET:SpawnFreeTurn=0 CET:SpawnUpTurn=0")
+				&& !CSharpCodeGen.CardSource(gpGen, gpLegacy, 0).Contains("CET:Potion"),
+				"老标记行没变");
+			// 回读：四个上下文 + 两档都要原样还原
+			var gpRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(gpGen));
+			Check("回读：没有认不出来的语句", !gpRec.HasUnparsed, gpRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			var gpRecFixed = gpRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckPotionFixed")?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "GainPotion");
+			Check("回读：指定档还原（PotionPick=Fixed + PotionId=BlockPotion）",
+				gpRecFixed is not null && gpRecFixed.PotionPick == "Fixed" && gpRecFixed.PotionId == "BlockPotion",
+				$"{gpRecFixed?.PotionPick} / {gpRecFixed?.PotionId}");
+			var gpRecRandom = gpRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckPotionRandom")?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "GainPotion");
+			Check("回读：随机档还原（PotionPick=Random + 瓶数 3 + PotionId 空）",
+				gpRecRandom is not null && gpRecRandom.PotionPick == "Random" && gpRecRandom.Amount == 3m
+				&& string.IsNullOrWhiteSpace(gpRecRandom.PotionId),
+				$"{gpRecRandom?.PotionPick} / {gpRecRandom?.Amount} / {gpRecRandom?.PotionId ?? "(空)"}");
+			var gpRecRelic = gpRec.Profile.Relics.FirstOrDefault((RelicSpec r) => r.ClassName == "UiCheckPotionRelic")?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "GainPotion");
+			Check("回读：遗物「获得时」（没有 choiceContext 的触发时机）那条也还原成随机档",
+				gpRecRelic is not null && gpRecRelic.PotionPick == "Random", gpRecRelic?.PotionPick ?? "(没认出来)");
+			var gpRecFlask = gpRec.Profile.Potions.FirstOrDefault((PotionSpec x) => x.ClassName == "UiCheckPotionFlask")?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "GainPotion");
+			Check("回读：药水那条还原成指定档 FirePotion",
+				gpRecFlask is not null && gpRecFlask.PotionId == "FirePotion", gpRecFlask?.PotionId ?? "(没认出来)");
+			var gpRecPower = gpRec.Profile.CustomPowers.FirstOrDefault((CustomPowerSpec cp) => cp.ClassName == "UiCheckPotionPower")
+				?.Triggers.SelectMany((PowerTriggerSpec t) => t.Effects).FirstOrDefault((EffectSpec x) => x.Kind == "GainPotion");
+			Check("回读：自定义状态触发器里那条也还原成指定档 BloodPotion",
+				gpRecPower is not null && gpRecPower.PotionId == "BloodPotion", gpRecPower?.PotionId ?? "(没认出来)");
+		}
+		finally
+		{
+			try { if (Directory.Exists(gpRoot)) Directory.Delete(gpRoot, true); } catch { }
+		}
 		// 「给予卡牌关键词」那两行：只在效果种类 = 给予卡牌关键词 时显示（和「直接把缓慢设成 %」同一套 Visibility 绑定）
 		Check("效果编辑面板上有「给予关键词」和「是否为临时关键词」两行（紧跟在「选牌方式」下面）",
 			effectTplTexts.Any((string t) => t.Contains("给予关键词"))

@@ -73,6 +73,20 @@ public sealed record SpawnFilterOption(string Id, string Display, string Zh);
 /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
 public sealed record SpawnPickOption(string Id, string Display);
 
+/// <summary>
+/// 「目标药水」下拉里的一项（需求 ⑨）。
+/// Id = <b>本体药水的类名</b>（如 <c>BlockPotion</c>）—— 生成代码里要的就是它：
+/// <c>PotionCmd.TryToProcure&lt;MegaCrit.Sts2.Core.Models.Potions.BlockPotion&gt;(玩家)</c>。
+/// 为什么不用本地化键（<c>BLOCK_POTION</c>）：本体的模型 ID 是 <c>ModelDb.GetId(type).Entry</c>
+/// = <c>StringHelper.Slugify(类名)</c>，而 <c>TryToProcure&lt;T&gt;</c> 只认类型；
+/// 扫描时正好是从类名反着算出 Slug 去查中文名的，所以类名才是这一栏的原生标识。
+/// </summary>
+public sealed record PotionEntry(string Id, string Zh)
+{
+    /// <summary>下拉里显示「中文名  (类名)」——「目标卡」就是这套写法（光看中文认不出类名）。</summary>
+    public string Display => string.IsNullOrWhiteSpace(Zh) || Zh == Id ? Id : $"{Zh}  ({Id})";
+}
+
 /// <summary>「升级后的关键字」三态：不变 / 升级后获得 / 升级后失去。</summary>
 public sealed record KeywordStateOption(string Id, string Display);
 
@@ -344,6 +358,85 @@ public static class EffectCatalog
         return hit is null ? cardId : $"{hit.Zh}（{cardId}）";
     }
 
+    // ==================== 药水目录（需求 ⑨「目标药水」那一栏的候选）====================
+    // 和 Cards 完全同构：从本机解包工程 src/Core/Models/Potions/*.cs 扫**类名**，
+    // 再用 StringHelper.Slugify 那套算法算出本地化键去 potions.json 里查中文名。
+    // 为什么不从 potions.json 反着扫：那份表里还有一个没有对应类的键（旧药水），
+    // 而且本体的 PotionModel 必须靠**类型**才能取出来（TryToProcure<T> / ModelDb.Potion<T>()）。
+    /// <summary>本体药水目录（类名 + 中文名）。读不到解包工程时从 sts2.dll 反射。</summary>
+    public static IReadOnlyList<PotionEntry> Potions { get; private set; } = Array.Empty<PotionEntry>();
+
+    /// <summary>药水类名 → 中文名（找不到就原样返回类名），卡面描述里写「获得一瓶格挡药水」用它。</summary>
+    public static string FindPotionZh(string? potionId)
+    {
+        if (string.IsNullOrWhiteSpace(potionId)) return "药水";
+        var hit = Potions.FirstOrDefault(x => string.Equals(x.Id, potionId.Trim(), StringComparison.Ordinal));
+        return hit is null || string.IsNullOrWhiteSpace(hit.Zh) ? potionId.Trim() : hit.Zh;
+    }
+
+    /// <summary>这个药水类名在目录里认不认得出来（认不出来时校验器要报错，不能静默生成不存在的类型）。</summary>
+    public static bool HasPotion(string? potionId) =>
+        !string.IsNullOrWhiteSpace(potionId)
+        && Potions.Any(x => string.Equals(x.Id, potionId.Trim(), StringComparison.Ordinal));
+
+    public static void InitializePotions(string? vanillaProjectDir, string? gameDataDir = null)
+    {
+        try
+        {
+            string dir = Path.Combine(vanillaProjectDir ?? "", "src/Core/Models/Potions");
+            if (string.IsNullOrWhiteSpace(vanillaProjectDir) || !Directory.Exists(dir))
+            {
+                LoadPotionsFromGameDll(gameDataDir);
+                return;
+            }
+            var zh = ReadLocalization(Path.Combine(vanillaProjectDir, "localization/zhs/potions.json"));
+            if (zh.Count == 0) zh = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/potions.json") ?? zh;
+
+            var list = new List<PotionEntry>();
+            foreach (string file in Directory.GetFiles(dir, "*.cs"))
+            {
+                string cls = Path.GetFileNameWithoutExtension(file);
+                if (cls.StartsWith("Mock", StringComparison.Ordinal)) continue;
+                string slug = Slugify(cls);
+                // 没有本地化名的通常不是正式药水（内部占位）
+                if (!zh.ContainsKey(slug + ".title")) continue;
+                list.Add(new PotionEntry(cls, zh[slug + ".title"]));
+            }
+            if (list.Count > 0)
+                Potions = list.OrderBy(x => x.Zh, StringComparer.Ordinal).ThenBy(x => x.Id, StringComparer.Ordinal).ToList();
+            else
+                LoadPotionsFromGameDll(gameDataDir);   // 工程里没有药水目录 / 没有中文表 → 退回游戏 dll
+        }
+        catch { LoadPotionsFromGameDll(gameDataDir); }
+    }
+
+    /// <summary>没有解包工程时的兜底：从游戏 sts2.dll 反射 PotionModel 子类（中文名从游戏 pck 里读）。</summary>
+    private static void LoadPotionsFromGameDll(string? gameDataDir)
+    {
+        if (Potions.Count > 0 || string.IsNullOrWhiteSpace(gameDataDir)) return;
+        try
+        {
+            string dll = Path.Combine(gameDataDir, "sts2.dll");
+            if (!File.Exists(dll)) return;
+            var zh = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/potions.json");
+            var asm = System.Reflection.Assembly.LoadFrom(dll);
+            Type? basePotion = asm.GetType("MegaCrit.Sts2.Core.Models.PotionModel");
+            if (basePotion is null) return;
+
+            var list = new List<PotionEntry>();
+            foreach (var type in asm.GetTypes())
+            {
+                if (type.IsAbstract || !basePotion.IsAssignableFrom(type)) continue;
+                string cls = type.Name;
+                if (cls.StartsWith("Mock", StringComparison.Ordinal)) continue;
+                list.Add(new PotionEntry(cls, ZhName(zh, Slugify(cls), cls)));
+            }
+            if (list.Count > 0)
+                Potions = list.OrderBy(x => x.Zh, StringComparer.Ordinal).ThenBy(x => x.Id, StringComparer.Ordinal).ToList();
+        }
+        catch { /* 反射失败就只留下空目录（界面上那一栏没有候选，校验器会提示） */ }
+    }
+
     public static void InitializeCards(string? vanillaProjectDir, string? gameDataDir = null)    {
         try
         {
@@ -421,6 +514,8 @@ public static class EffectCatalog
     public static void Initialize(string? vanillaProjectDir, string? gameDataDir = null)
     {
         InitializeCards(vanillaProjectDir, gameDataDir);
+        // 需求 ⑨：「目标药水」那一栏的候选（和卡牌目录一样从解包工程 / sts2.dll 里读）
+        InitializePotions(vanillaProjectDir, gameDataDir);
         RememberZhTables(vanillaProjectDir, gameDataDir);
         // 先古之民的对话槽位也跟着一起读（都在同一个解包工程里）
         AncientCatalog.Initialize(vanillaProjectDir, gameDataDir);
@@ -637,6 +732,11 @@ public static class EffectCatalog
         new EffectKindOption("EndTurn",   "结束回合",       "—", 0, 0, false, false),
         new EffectKindOption("ExtraTurn", "额外获得一回合", "—", 0, 0, false, false),
         new EffectKindOption("GenerateCard",  "生成卡牌", "张", 0, 10, false, false),
+        // 获得药水（需求 ⑨）：两档 —— 「指定药水」用下面那个可搜索的「目标药水」栏，
+        // 「随机药水」走本体 PotionFactory（本体卡「炼制药水 Alchemize」的做法）。
+        // 数值 = 瓶数（写死在生成代码里，和「生成卡牌」一样不声明动态变量，见 HasNoDynamicVar）。
+        // 药水栏满时本体 TryToProcure 返回 success=false —— 本效果**什么都不发生**，卡面描述里写明。
+        new EffectKindOption("GainPotion",    "获得药水（指定 / 随机一瓶）", "瓶", 0, 5, false, false),
         new EffectKindOption("ExhaustCard",   "消耗卡牌", "张", 0, 9,  false, false),
         // 丢弃卡牌：把手牌 / 抽牌堆里的 N 张牌丢进弃牌堆（不是「消耗」—— 它们还会被洗回来）。
         // 走本体的 CardCmd.Discard（内部 CardPileCmd.Add(card, 弃牌堆) + 派发 AfterCardDiscarded 钩子），
@@ -1056,6 +1156,17 @@ public static class EffectCatalog
     {
         new SpawnPickOption("Fixed", "指定卡（用上面的「目标卡」）"),
         new SpawnPickOption("Random", "按范围随机（用下面的「范围限定」）"),
+    };
+
+    /// <summary>
+    /// 「获得药水」（需求 ⑨）是「指定药水」还是「随机药水」。
+    /// 单独一份、不复用 <see cref="SpawnPicks"/>：那一份的文案是「用上面的「目标卡」」，
+    /// 套到药水上会指错栏位（「目标药水」那一行在效果面板里的位置不一样）。
+    /// </summary>
+    public static IReadOnlyList<SpawnPickOption> PotionPicks { get; } = new[]
+    {
+        new SpawnPickOption("Fixed", "指定药水（用「目标药水」那一栏）"),
+        new SpawnPickOption("Random", "随机药水（本体「炼制药水」那种随机）"),
     };
 
     public static EffectKindOption FindKind(string kind) =>

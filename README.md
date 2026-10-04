@@ -187,6 +187,28 @@
 - 带附加处理时生成器会自己 `CreateCard` 再逐张处理（`AddToCombatAndPreview` 内部拿不到那些卡实例），
   最后仍然走 `CardPileCmd.AddGeneratedCardToCombat` 进牌堆。
 
+### 获得指定 / 随机药水
+
+效果种类里多了一条「**获得药水（指定 / 随机一瓶）**」，取药方式两档：
+
+- **指定药水**（默认档）：效果底下多一栏「**目标药水**」，是个**可搜索**的下拉（和「目标卡」同构的 `SearchComboBox`，
+  按**中文名**打字就能搜，例：打「格挡」只剩「格挡药水 (BlockPotion)」，点它或回车补全）。
+  候选来自本机的本体药水目录：扫解包工程的 `src/Core/Models/Potions/*.cs` 拿到**类名**，
+  再用本体那套 `StringHelper.Slugify` 反算出本地化键 `BLOCK_POTION.title` 取中文名
+  （读不到解包工程时从游戏 `sts2.dll` 反射 `PotionModel` 子类）。
+  生成的是 `await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.BlockPotion>(玩家)` ——
+  本体的泛型版内部就是 `ModelDb.Potion<T>().ToMutable()`（带实例那条重载会 `AssertMutable()`，
+  所以不能直接把池子里的规范模型传进去）。数值 = 瓶数（> 1 时套一层 `for`，写死在代码里、不声明动态变量）。
+- **随机药水**：本体卡「炼制药水 Alchemize」的原样写法 ——
+  `PotionFactory.CreateRandomPotionInCombat(player, RunState.Rng.CombatPotionGeneration).ToMutable()` +
+  `TryToProcure(...)`；**不在战斗里**的触发时机（遗物「获得时」那种）自动换成 `CreateRandomPotionOutOfCombat`，
+  否则治疗类药水会被 `CanBeGeneratedInCombat` 挡掉。数值 = 瓶数。
+- **药水栏满 = 什么都不发生**：本体 `TryToProcure` 在栏满时返回 `success = false`
+  （源码注释 *Can fail if the potions bar is full*），我们**不丢弃、不替换**已有药水 ——
+  但**不静默**：卡面 / 药水 / 状态描述里一律写明「（药水栏满时不会发生任何事）」。
+- 四个上下文（**卡牌 / 遗物触发 / 药水 / 自定义状态的触发器**）都能用，也和别的效果一样支持
+  「生效次数 / 概率生效 / 每条效果自己的条件」。数值 0 = 这条效果不显示也不执行（和其他种类同一套规矩）。
+
 ### 选牌类效果：范围界定（只对哪一类牌 / 哪一组牌动手）
 
 上面那套「范围限定」现在**所有会挑牌 / 对牌动手的效果**都能用了（和「生成 / 变化卡牌」共用同一份选项表）：

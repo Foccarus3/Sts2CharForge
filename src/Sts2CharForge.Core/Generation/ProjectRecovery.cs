@@ -815,6 +815,14 @@ public static class ProjectRecovery
                         sc.ScrapeCond = Match(line, @"CET:ScrapeCond=([^\s]+)") ?? EffectCatalog.ScrapeCondNonZeroCost;
                         sc.ScrapeOp = Match(line, @"CET:ScrapeOp=([^\s]+)") ?? EffectCatalog.ScrapeOpDiscard;
                     }
+                    // 需求 ⑨：获得药水 —— 「指定还是随机 / 指定的是哪一瓶」只能靠标记还原
+                    //（随机档的代码里连药水名都没有）。生成时**只在非默认值**才写这两项，
+                    // 所以缺项按默认补：PotionPick 缺 = Fixed，Potion 缺 = 没选。
+                    if (sc.Kind == "GainPotion")
+                    {
+                        sc.PotionPick = Match(line, @"CET:PotionPick=(\w+)") ?? "Fixed";
+                        sc.PotionId = Match(line, @"CET:Potion=([A-Za-z_]\w*)");
+                    }
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
                     if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay" or "ScrapeDraw")
@@ -986,7 +994,15 @@ public static class ProjectRecovery
                     // 「抽到就减费」：整个实现就是一句 PowerCmd.Apply<角色>ForgeDrawCostPower（或负数的扣层数）
                     || (selfContainedKind == "CheapenDraw" && line.Contains("ForgeDrawCostPower", StringComparison.Ordinal))
                     // 「禁止生命回复」：同样是一句 PowerCmd.Apply<角色>ForgeNoHealPower
-                    || (selfContainedKind == "ForbidHeal" && line.Contains("ForgeNoHealPower", StringComparison.Ordinal));
+                    || (selfContainedKind == "ForbidHeal" && line.Contains("ForgeNoHealPower", StringComparison.Ordinal))
+                    // 「获得药水」（需求 ⑨）：标记行已经把效果收尾了，后面这几行是它的实现 ——
+                    // 固定档是一句 TryToProcure<T>（瓶数 > 1 时外面还有一层 for），
+                    // 随机档是 PotionFactory 那三行 + TryToProcure。
+                    || (selfContainedKind == "GainPotion"
+                        && (line.Contains("__potionIdx", StringComparison.Ordinal)
+                            || line.Contains("__randPotion", StringComparison.Ordinal)
+                            || line.Contains("PotionCmd.TryToProcure", StringComparison.Ordinal)
+                            || line.Contains("PotionFactory.CreateRandomPotion", StringComparison.Ordinal)));
                 if (scBody) continue;
                 skipSelfContainedBody = false;
             }

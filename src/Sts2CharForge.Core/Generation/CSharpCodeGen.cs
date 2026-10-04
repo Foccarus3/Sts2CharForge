@@ -2676,6 +2676,79 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 「获得药水」（需求 ⑨）。两档：
+    ///   · <b>指定药水</b>（默认档）→ <c>PotionCmd.TryToProcure&lt;本体药水类名&gt;(玩家)</c>。
+    ///     为什么用泛型版：本体源码里它就是 <c>ModelDb.Potion&lt;T&gt;().ToMutable()</c> 再走带实例的那条重载，
+    ///     而带实例的重载会 <c>potion.AssertMutable()</c> —— 直接把池子里的规范模型传进去会抛
+    ///     <c>CanonicalModelException</c>。泛型版把「取规范模型 + 变可变副本」一步做掉，最不容易写错。
+    ///     <c>PotionCmd</c> 在 <c>MegaCrit.Sts2.Core.Commands</c>（已有 global using），
+    ///     药水类名在 <c>MegaCrit.Sts2.Core.Models.Potions</c>（**没有** global using，所以这里写全名，
+    ///     和仓库里 <c>MegaCrit.Sts2.Core.Factories.CardFactory</c> 的写法一致 —— 也避免动全局 using 影响所有工程）。
+    ///   · <b>随机药水</b> → 本体卡「炼制药水 Alchemize」的原样写法：
+    ///     <c>PotionFactory.CreateRandomPotionInCombat(player, player.RunState.Rng.CombatPotionGeneration).ToMutable()</c>
+    ///     + <c>TryToProcure(...)</c>；不在战斗里（遗物「获得时」那种）换成 <c>CreateRandomPotionOutOfCombat</c>，
+    ///     否则会被 <c>CanBeGeneratedInCombat</c> 把治疗类药水全挡掉（随机范围白白变小）。
+    ///
+    /// <b>药水栏满</b>：本体 <c>TryToProcure</c> 会返回 <c>success = false</c>（源码注释：*Can fail if the
+    /// potions bar is full*），这里**什么都不做** —— 不丢弃、不替换已有药水、不弹提示（用户要求的行为），
+    /// 但卡面描述里写明了「（药水栏满时不会发生任何事）」，不静默。
+    ///
+    /// 数值 = 瓶数（写死在代码里，不声明动态变量，和「生成卡牌」同一套规矩）。
+    /// <paramref name="playerExpr"/> = 玩家那一侧：卡牌 / 遗物 / 药水三条链是 <c>base.Owner</c>，
+    /// 自定义状态触发器里是 <c>base.Owner.Player</c>（那里 base.Owner 是 Creature）。
+    /// </summary>
+    internal static void EmitGainPotion(CodeWriter w, EffectSpec e, bool useX = false, string playerExpr = "base.Owner",
+        string? countExpr = null)
+    {
+        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string nText = countExpr is null ? $" {n} 瓶" : "（瓶数 = 本状态的层数）";
+        string? potion = string.IsNullOrWhiteSpace(e.PotionId) ? null : e.PotionId!.Trim();
+        // 数值 1 时不套循环（生成出来的代码干净些）；> 1 / = X / = 层数时套一层 for。
+        bool loop = n != "1";
+        w.Line(PotionMarker(e));
+        if (!e.IsPotionRandom)
+        {
+            if (potion is null)
+            {
+                // 没选药水：不生成任何语句（参数面板上会显示「（未选）」，校验器另有错误拦住）。
+                // 只写注释 —— 回读靠上面那行标记，注释不会被当成别的效果。
+                w.Line("// ⚠ 没选「目标药水」：这条「获得药水」不会做任何事（请在效果面板上选一瓶，"
+                    + "或者把「取药方式」改成「随机药水」）。");
+                return;
+            }
+            w.Line($"// 获得{nText}「{EffectCatalog.FindPotionZh(potion)}」：本体 PotionCmd.TryToProcure<T>"
+                + "（内部就是 ModelDb.Potion<T>().ToMutable()）。");
+            w.Line("// 药水栏满时本体返回 success=false —— 这里什么都不发生（不会丢掉 / 替换你已经有的药水）。");
+            if (loop) w.Open($"for (int __potionIdx = 0; __potionIdx < {n}; __potionIdx++)");
+            w.Line($"await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.{potion}>({playerExpr});");
+            if (loop) w.Close();
+            return;
+        }
+        w.Line($"// 获得{nText}随机药水：本体卡「炼制药水」的原样写法（PotionFactory + ToMutable + TryToProcure）。");
+        w.Line("// 战斗外的触发时机（遗物「获得时」那种）走 OutOfCombat 版，否则治疗类药水会被排除在随机范围外。");
+        w.Line("// 药水栏满时本体返回 success=false —— 这里什么都不发生（不会丢掉 / 替换你已经有的药水）。");
+        if (loop) w.Open($"for (int __potionIdx = 0; __potionIdx < {n}; __potionIdx++)");
+        w.Line($"PotionModel __randPotion = {playerExpr}.Creature.CombatState is null");
+        w.Line($"    ? MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionOutOfCombat({playerExpr}, {playerExpr}.RunState.Rng.CombatPotionGeneration)");
+        w.Line($"    : MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionInCombat({playerExpr}, {playerExpr}.RunState.Rng.CombatPotionGeneration);");
+        w.Line($"await PotionCmd.TryToProcure(__randPotion.ToMutable(), {playerExpr});");
+        if (loop) w.Close();
+    }
+
+    /// <summary>
+    /// 「获得药水」的标记行（回读用，见 ProjectRecovery 的 <c>CET:Effect=</c> 分支）。
+    ///
+    /// 为什么要标记：这一档的实现就是一句 <c>TryToProcure</c>（随机档那句里还套着 PotionFactory），
+    /// 「指定还是随机 / 指定的是哪一瓶」都没法从语句里可靠反推 —— 随机档连药水名都没有。
+    /// <c>CET:PotionPick</c> 只在**不是默认档（Fixed）**时才追加、<c>CET:Potion</c> 只在真的选了药水时才写：
+    /// 缺项回读时按默认值补，老工程（没有这个种类）本来就不会有这一行。
+    /// </summary>
+    internal static string PotionMarker(EffectSpec e) =>
+        SelfContainedMarker(e)
+        + (e.IsPotionRandom ? " CET:PotionPick=Random" : "")
+        + (string.IsNullOrWhiteSpace(e.PotionId) ? "" : $" CET:Potion={e.PotionId!.Trim()}");
+
+    /// <summary>
     /// 勾了「仅在此回合升级」时，先挂上生成的那个「回合结束降回来」的状态（只挂一次，生成出来的卡都交给它）。
     /// </summary>
     private static void EmitTempUpgradePowerApply(CodeWriter w, string? tempUpVar, string cardSource,
@@ -3530,6 +3603,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 禁止生命回复：数值 = 回合数，0 = 这一条不生效
             or "ForbidHeal"
             or "GenerateCard" or "ExhaustCard" or "TransformCard" or "DiscardCard"
+            // 需求 ⑨：获得药水 —— 数值 = 瓶数，0 = 这一条不生效（和「生成卡牌」同一套规矩）
+            or "GainPotion"
             or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust"
             or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal" or "CardReward"
         && !e.AmountIsX && !e.AmountIsStack;
@@ -3560,6 +3635,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 丢弃卡牌：数值 = 丢几张（写在代码里），没有动态变量 —— 不列在这里的话兜底会生成
         // new DynamicVar("Value", N)，同一张牌两条丢弃就撞名/起别名，卡面还会多出个用不上的占位符。
         or "DiscardCard"
+        // 需求 ⑨：获得药水 —— 瓶数是循环次数（写死在代码里），不声明动态变量。
+        // **必须列在这里**：漏掉的话 VarDeclaration 的兜底会生成 new DynamicVar("Value", …)，
+        // 和别的「没有数值的效果」撞名 → 本体 DynamicVarSet 抛 duplicate key（开新局就崩）。
+        or "GainPotion"
         // 全局（牌组）类：获得 / 变化 / 删除牌组里的牌 —— 张数是循环次数，也不是动态变量。
         // **必须列在这里**：漏掉的话 VarDeclaration 的兜底会生成两个 new DynamicVar("Value", …)，
         // 本体的 DynamicVarSet 会直接抛 DynamicVarSet contains duplicate key 'Value'
@@ -3822,6 +3901,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "GenerateCard":
                 EmitGenerateCard(w, p, e, useX);
+                break;
+
+            // 获得药水（需求 ⑨）：不需要 choiceContext（本体 PotionCmd.TryToProcure 不收 context）
+            case "GainPotion":
+                EmitGainPotion(w, e, useX);
                 break;
 
             case "ExhaustCard":
@@ -5270,6 +5354,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitGenerateCard(w, p, e, tempUpSource: "null");
                 break;
 
+            // 获得药水（需求 ⑨）：本体 TryToProcure 不收 choiceContext，所以没有 choiceContext 的
+            // 触发时机（遗物「获得时 / 战斗胜利时」）照样能用 —— 这里**不加** hasContext 的判断。
+            case "GainPotion":
+                EmitGainPotion(w, e);
+                break;
+
             case "ExhaustCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，消耗卡牌无法实现）"); break; }
                 EmitExhaustCard(w, p, e);
@@ -6383,6 +6473,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "GenerateCard":
                 EmitGenerateCard(w, p, e, tempUpSource: "null");
+                break;
+
+            // 获得药水（需求 ⑨）：药水的 base.Owner 就是 Player
+            case "GainPotion":
+                EmitGainPotion(w, e);
                 break;
 
             case "ExhaustCard":
