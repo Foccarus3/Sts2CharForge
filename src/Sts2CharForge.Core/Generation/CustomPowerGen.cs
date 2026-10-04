@@ -564,15 +564,37 @@ public static class CustomPowerGen
                 break;
 
             case "ApplyPower":
+                // 施加状态：**复用**卡牌 / 遗物 / 药水那条同一份实现（CSharpCodeGen.ApplyPowerLine），
+                // 不在这里自己手写 PowerCmd.Apply —— 以前就是手写的，于是填负数时语义和另外三个上下文不一致：
+                //   本体 PowerCmd.Apply 收到负数会走 ApplyInternal(target, -N, …) **新建一个 -N 层的状态**
+                //   （等于凭空挂个负数），而不是「扣掉目标身上已有的 N 层」。
+                // 用户实测：同样填 -3，卡牌 / 遗物 / 药水都是扣 3 层，只有自定义状态触发器会挂出一个 -3 层的新状态。
+                // ApplyPowerLine 内部按 IsNegativeAmount 分流：负数先 GetPower<T>() 取已有实例再 ModifyAmount 扣。
+                //
+                // useX: false —— 这条链**不支持「数值 = X」**，所以不能也不该传 true：
+                //   · 界面：自定义状态触发器的效果编辑器是 App.xaml 的 EffectEditorPower，只有
+                //     「数值 / 生效次数 / 命中次数 = 本状态的层数」（AmountIsStack 那三个），
+                //     **没有**卡牌那套「= X」（AmountIsX / TimesIsX / RepeatIsX）；
+                //   · 生成：这个方法的 amt 只有两种来源 —— 勾了「= 本状态的层数」用 base.Amount，否则用填的数字；
+                //     全文件搜不到任何 AmountIsX 的读取。
+                // IsNegativeAmount(e, useX) 里 useX 只用来豁免「X 卡牌」（数值要到运行时才知道正负，不能按负数
+                // 生成扣除）。这里没有 X：传 false 意味着**任何**负数字面量都走扣除那条路，与卡牌 / 遗物 / 药水一致
+                //（同一条链里的 EmitStunPublic / EmitGiveKeyword / EmitGainPotion 也都传 useX: false）。
+                //
+                // cardSource 传 "null"：PowerCmd.Apply / ModifyAmount 的最后一个实参类型是 CardModel?，
+                // 而状态钩子里没有「这张牌」（遗物 / 药水同理，写 this 会选错重载、整个模组编译不过，
+                // 详见 CSharpCodeGen.ApplyPowerLine 重载的说明）。
+                // 目标 / 施加者都写 base.Owner：这条链里 base.Owner **本身就是 Creature**（不是 Player），
+                // 别自作主张加上 .Creature。
                 switch (e.TargetSide)
                 {
                     case "Self":
-                        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner, {amt}, base.Owner, null);");
+                        w.Line(CSharpCodeGen.ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner", amt, "base.Owner", cardSourceExpr: "null"));
                         CSharpCodeGen.EmitSlowPercentFix(w, e, "base.Owner");
                         break;
                     case "AllEnemies":
                         w.Open("foreach (Creature other in base.Owner.CombatState.HittableEnemies)")
-                         .Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, other, {amt}, base.Owner, null);");
+                         .Line(CSharpCodeGen.ApplyPowerLine(e, useX: false, e.PowerId, "other", amt, "base.Owner", cardSourceExpr: "null"));
                         CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
                         w.Close();
                         break;
@@ -582,15 +604,15 @@ public static class CustomPowerGen
                             w.Open($"for (int k = 0; k < {times2}; k++)");
                             w.Line(RandomTargetLine);
                             w.Line("if (other is null) break;");
-                            w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, other, {amt}, base.Owner, null);");
+                            w.Line(CSharpCodeGen.ApplyPowerLine(e, useX: false, e.PowerId, "other", amt, "base.Owner", cardSourceExpr: "null"));
                             CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
                             w.Close();
                             break;
                         }
                     default:
+                        // EmitFoeBlock 生成的变量就叫 other；下面的缓慢修正是同一批目标
                         EmitFoeBlock(w, foeFrom, foe =>
-                            $"await PowerCmd.Apply<{e.PowerId}>(choiceContext, {foe}, {amt}, base.Owner, null);");
-                        // EmitFoeBlock 生成的变量就叫 other
+                            CSharpCodeGen.ApplyPowerLine(e, useX: false, e.PowerId, foe, amt, "base.Owner", cardSourceExpr: "null"));
                         CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
                         break;
                 }

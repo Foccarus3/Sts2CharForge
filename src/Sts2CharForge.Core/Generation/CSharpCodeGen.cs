@@ -6024,11 +6024,37 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line(BoostMarker(e));
                 w.Line($"await PowerCmd.Apply<{BoostPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 break;
+
+            // ===== 兜底：这个效果种类在遗物上没做 =====
+            // 为什么**必须**有 default（问题②）：这个 switch 以前没有 default，卡牌那个大 switch
+            // （EmitCardEffectOnce）实现了、遗物这条链没实现的那批种类落在这里会**什么都不生成、也不报错**
+            // —— 用户以为配上了，实际那条效果在模组里一行代码都不存在。
+            // 现在「效果种类」下拉是所有上下文共用同一份 EffectCatalog.EffectKinds（界面不按上下文过滤），
+            // 所以用户真的能在遗物上选到它们；和上面「复制卡牌 / 宠物类」那几条显式 Warn 同一个风格：
+            // 生成里留一行看得见的注释，ProfileValidator 再在**生成前**把这几条拦下来（IsCardOnlyKind）。
+            default:
+                WarnUnsupportedKind(w, e, "遗物");
+                break;
         }
     }
 
     private static void Warn(CodeWriter w, EffectSpec e, string extra = "") =>
         w.Line($"// 该触发时机不支持「{EffectCatalog.FindKind(e.Kind).Display}」{extra}，已忽略。");
+
+    /// <summary>
+    /// 遗物 / 药水的 switch 落到 <c>default</c> 时写的那行告警注释。
+    ///
+    /// 为什么单独写一个而不是复用 <see cref="Warn"/>：<c>Warn</c> 的话术是「该**触发时机**不支持」，
+    /// 而这里和触发时机无关 —— 是这个**效果种类**在遗物 / 药水这条链上根本没实现（只做在卡牌上）。
+    /// 说错原因会把用户引到改触发时机上去。
+    ///
+    /// 为什么级别要「显眼」：这两条链以前静默落空（switch 没有 default），用户配完看不到任何反馈；
+    /// 光靠注释不够，所以 ProfileValidator 里还有一条专门的校验（见 IsCardOnlyKind：整只遗物 / 整瓶药水
+    /// 的效果全是这类种类时给**错误** = 生成出来是个空壳，只是其中一条时给**警告**）。
+    /// </summary>
+    private static void WarnUnsupportedKind(CodeWriter w, EffectSpec e, string where) =>
+        w.Line($"// ⚠⚠ 该效果种类在{where}上**没有实现**（只做在卡牌上）：「{EffectCatalog.FindKind(e.Kind).Display}」"
+            + "本次**一行代码都没生成**（以前是静默跳过）。请把它放到卡牌的效果里，或者删掉这条。");
 
     // ==================== 药水 ====================
     public static string PotionSource(CharacterProfile p, PotionSpec s, int index)
@@ -7091,6 +7117,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "PetGuardOn":
             case "PetGuardOff":
                 Warn(w, e, "（这一档的宠物效果只支持卡牌 —— 药水没有「玩家选中的目标」，请改用卡牌）");
+                break;
+
+            // ===== 兜底：这个效果种类在药水上没做（和遗物那条链同一个坑，说明见 EmitRelicEffectOnce 的 default）=====
+            default:
+                WarnUnsupportedKind(w, e, "药水");
                 break;
         }
     }

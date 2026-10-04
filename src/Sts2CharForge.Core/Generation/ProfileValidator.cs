@@ -190,6 +190,18 @@ public static class ProfileValidator
                     else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
                              && !EffectCatalog.IsCustomPower(e.PowerId) && EffectCatalog.FindPower(e.PowerId) is null)
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条要施加的状态找不到：{e.PowerId}。"));
+                    // 「施加状态」填负数 = 扣除目标身上已有的层数。
+                    // 为什么这一条以前没有、现在必须有：状态触发器那条链原来的「施加状态」是**手写**的
+                    // PowerCmd.Apply（不是 CSharpCodeGen.ApplyPowerLine），负数会被本体拿去**新建一个 -N 层的状态**
+                    //（ApplyInternal(target, -N, …)），和卡牌 / 遗物 / 药水（负数 = GetPower + ModifyAmount 扣层数）
+                    // 完全是两回事。现在那条链也改成复用 ApplyPowerLine 了，这里给一条提示说清语义，
+                    // 免得用户以为「-3 = 给目标挂一个 -3 层」。
+                    // 放成 else 之外的独立 if：没选状态时上面已经报了错误，这条提示跟着说一句也不冲突。
+                    if (e.Kind == "ApplyPower" && e.Amount < 0)
+                        issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」数值是 {e.Amount}："
+                            + $"会生成「{(e.TargetSide == "Self" ? "失去" : "扣除")} {-e.Amount} 层{EffectCatalog.PowerName(e.PowerId)}」"
+                            + "（先找目标身上那份状态实例再扣；目标身上没有这个状态时什么都不做）"
+                            + "—— 和卡牌 / 遗物 / 药水同一条实现，**不是**「给目标挂一个 " + e.Amount + " 层的新状态」。"));
                     // 每条效果自己的条件选项（能力/状态里的条件不支持「这张牌」类条件）
                     ValidateCondition(issues, $"{who}「{when}」第 {j + 1} 条", e.Condition, "Power");
                     if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
@@ -1192,6 +1204,25 @@ public static class ProfileValidator
         trigger is "CombatVictory" or "GoldGained";
 
     /// <summary>
+    /// 「只做在卡牌上」的效果种类：卡牌那个大 switch（CSharpCodeGen.EmitCardEffectOnce）实现了，
+    /// 遗物 / 药水那两条链（EmitRelicEffectOnce / EmitPotionEffectOnce）**连 case 都没有** ——
+    /// 配到遗物 / 药水上会落到它们的 default，只留一行告警注释（CSharpCodeGen.WarnUnsupportedKind），
+    /// 一行代码都不生成（用户看不到任何反馈、以为已经生效）。
+    ///
+    /// 这份清单不是猜的：把三个 switch 的顶层 case 用脚本抽出来做差集，
+    ///   卡牌 −（遗物 ∪ 药水）= Expose / ClearPowerOne / ClearPowerDebuffs / DoublePower /
+    ///                        ForbidBlock / ForbidHeal / TimesUp / OverdraftEnergy
+    /// 恰好这 8 个（遗物 / 药水的 case 集合是卡牌的真子集，没有多出来的种类）。
+    /// 以后任何一条链增删 case，都要重跑那个差集再改这里。
+    ///
+    /// 其中 TimesUp 在 ValidateEffects 里已经有自己的检查（连「作用对象要选指定敌人」一起管），
+    /// 所以调用点把它排除了（同一个问题不报两遍）；OverdraftEnergy 是这 8 个里**唯一**以前没有任何检查的。
+    /// </summary>
+    private static bool IsCardOnlyKind(string? kind) =>
+        kind is "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "DoublePower"
+            or "ForbidBlock" or "ForbidHeal" or "TimesUp" or "OverdraftEnergy";
+
+    /// <summary>
     /// 同一个模型里同种效果出现多次时提醒一句：动态变量会自动起别名（Damage2 这种）。
     /// 为什么重要：本体 <c>DynamicVarSet</c> 用变量名当键，重名会直接抛异常，
     /// 而且是在**构造卡牌**的时候抛（战斗一开始创建卡组就炸）→ 表现就是「抽不了牌、结束不了回合、
@@ -1263,15 +1294,31 @@ public static class ProfileValidator
             if (e.Kind is "Expose" or "ClearPowerOne" && string.IsNullOrWhiteSpace(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」"
                     + (e.Kind == "Expose" ? "（要施加哪个状态）。" : "（要清除哪个状态）。")));
-            if (e.Kind is "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock" or "ForbidHeal"
-                && (owner.Contains("遗物") || owner.Contains("药水")))
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」只做在卡牌上（它需要「选中的目标」——遗物 / 药水没有）。请把它放到卡牌的效果里。"));            if (e.Kind == "DoublePower")
+            if (e.Kind == "DoublePower" && string.IsNullOrWhiteSpace(e.PowerId))
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」（哪一栏填要翻倍的那个状态）。"));
+            // 「只做在卡牌上」的那批种类：遗物 / 药水两条链（EmitRelicEffectOnce / EmitPotionEffectOnce）
+            // 连 case 都没有 —— 配到遗物 / 药水上会落到它们的 default 上，只留一行告警注释、一行代码都不生成
+            //（CSharpCodeGen.WarnUnsupportedKind）。这里在**生成前**拦住 / 提醒。
+            //
+            // 级别怎么定（照「静默跳过会不会让这只遗物 / 这瓶药水完全没作用」这条判据）：
+            //   · 这只遗物 / 这瓶药水的**全部**效果都是这类种类 → **错误**：整只遗物 / 整瓶药水生成出来是个空壳，
+            //     用户会以为「配好了」，实际游戏里拿到它什么都不发生；
+            //   · 只是其中一条 → **警告**：其余效果照常工作，只是这一条静默消失，不该拦住整个生成
+            //     （也避免给老存档冒出一堆新错误）。
+            //
+            // 「大限已至」要排除：它在下面（TimesUp 那一段）已经有一条更细的检查了 —— 不但拦住非卡牌上下文，
+            // 还管「作用对象必须选指定敌人」。这里再报一条就是同一个问题报两遍。
+            else if (ctx is "Relic" or "Potion" && IsCardOnlyKind(e.Kind) && e.Kind != "TimesUp")
             {
-                if (string.IsNullOrWhiteSpace(e.PowerId))
-                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」（哪一栏填要翻倍的那个状态）。"));
-                else if (owner.Contains("遗物") || owner.Contains("药水"))
-                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」只做在卡牌上（它需要「选中的目标」——遗物 / 药水没有）。请把它放到卡牌的效果里。"));
-            }            if (e.Kind == "ApplyPower" && e.Amount < 0 && e.NextTurn)
+                bool wholeThingDead = effects.All(x => IsCardOnlyKind(x.Kind));
+                issues.Add(new(wholeThingDead ? "错误" : "警告", $"{owner} 的「{kind.Display}」只做在卡牌上"
+                    + "（它需要「选中的目标」，遗物 / 药水没有）—— 生成时会跳过、一行代码都不写"
+                    + (wholeThingDead
+                        ? "；这只遗物 / 这瓶药水的效果全是这一类，生成出来等于没有作用。"
+                        : "（其它效果照常生效）。")
+                    + "请把这一条放到卡牌的效果里。"));
+            }
+            if (e.Kind == "ApplyPower" && e.Amount < 0 && e.NextTurn)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」填了负数（扣除层数）又勾了「下回合生效」"
                     + "—— 下回合那套是给目标挂一个延迟状态（它的机制是加层数），扣层数没有对应的做法。"
                     + "请二选一：去掉「下回合生效」，或把数值改成正数。"));

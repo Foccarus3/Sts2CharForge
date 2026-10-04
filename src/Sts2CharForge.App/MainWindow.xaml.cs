@@ -11000,6 +11000,129 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				&& !argCpApplyLine.Contains(", this);", StringComparison.Ordinal), argCpApplyLine);
 		}
 
+		// ===== 本轮修复：① 自定义状态触发器「施加状态」填负数 / ② 遗物·药水落在没实现的种类上 =====
+		{
+			// ① 自定义状态触发器的「施加状态」现在和卡牌 / 遗物 / 药水走**同一条**实现
+			//（CSharpCodeGen.ApplyPowerLine：先 GetPower<T>() 取目标身上那份实例，再 PowerCmd.ModifyAmount 扣层数）。
+			// 旧写法是在 CustomPowerGen.EmitEffect 里手写 PowerCmd.Apply，负数会被本体拿去**新建一个 -3 层的状态**
+			//（ApplyInternal(target, -N, …)），和另外三个上下文（负数 = 扣层数）完全不一致 —— 用户实测报的就是这个。
+			CharacterProfile negPowProbe = ProfileFactory.Sample();
+			negPowProbe.CustomPowers.Clear();
+			negPowProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检负数状态", ClassName = "UiCheckNegPower", Type = "Buff",
+				Triggers =
+				{
+					new PowerTriggerSpec
+					{
+						Kind = "TurnStart",
+						Effects =
+						{
+							new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" },
+							new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -2m, TargetSide = "AllEnemies" },
+							new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" },
+						},
+					},
+					new PowerTriggerSpec
+					{
+						Kind = "Attacked",
+						Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "PoisonPower", Amount = -1m, TargetSide = "Enemy" } },
+					},
+				},
+			});
+			string negPowSrc = CustomPowerGen.Source(negPowProbe, negPowProbe.CustomPowers[0], 0);
+			Check("自定义状态触发器「施加状态」填负数 → 先取目标身上那份实例再 PowerCmd.ModifyAmount 扣层数（和卡牌 / 遗物 / 药水同一条实现）",
+				negPowSrc.Contains("PowerModel? __negPower = base.Owner.GetPower<StrengthPower>();", StringComparison.Ordinal)
+				&& negPowSrc.Contains("await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(-3m)), base.Owner, null);", StringComparison.Ordinal),
+				negPowSrc.Split('\n').FirstOrDefault((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))?.Trim() ?? "(没找到 ModifyAmount 那一行)");
+			int negModifyCount = negPowSrc.Split(new[] { "PowerCmd.ModifyAmount(" }, StringSplitOptions.None).Length - 1;
+			Check("（三条目标路都走负数分支）自己 / 全体敌人 / 单体敌人一共 3 处 ModifyAmount",
+				negModifyCount == 3, "ModifyAmount 出现 " + negModifyCount + " 次");
+			string[] negApplyBadLines = negPowSrc.Split('\n')
+				.Where((string l) => l.Contains("PowerCmd.Apply<", StringComparison.Ordinal) && l.Contains(", -", StringComparison.Ordinal)).ToArray();
+			Check("（防回归）负数那条不再生成「新建一个 -N 层状态」的 PowerCmd.Apply —— 生成里没有任何 PowerCmd.Apply 带负数值",
+				negApplyBadLines.Length == 0,
+				negApplyBadLines.Length == 0 ? "一处都没有（负数全走 ModifyAmount）" : string.Join(" ｜ ", negApplyBadLines.Select((string l) => l.Trim())));
+			Check("（对照）同一条链的正数仍然生成 PowerCmd.Apply<…>（只有负数换路）",
+				negPowSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, 2m, base.Owner, null);", StringComparison.Ordinal),
+				negPowSrc.Split('\n').FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<StrengthPower>", StringComparison.Ordinal))?.Trim() ?? "(没找到)");
+			string[] negModifyLines = negPowSrc.Split('\n')
+				.Where((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal)).ToArray();
+			Check("自定义状态触发器里负数那条的 cardSource 也是 null（状态不是 CardModel，写 this 会选错重载、编译不过）",
+				negModifyLines.Length > 0
+				&& negModifyLines.All((string l) => l.Contains(", null);", StringComparison.Ordinal) && !l.Contains(", this);", StringComparison.Ordinal)),
+				negModifyLines.FirstOrDefault()?.Trim() ?? "(没找到)");
+			Check("校验器：自定义状态触发器「施加状态」填负数 → 给一条提示说清「负数 = 扣目标身上已有的层数」（不是挂一个 -3 层的新状态）",
+				ProfileValidator.Validate(negPowProbe).Any(i => i.Message.Contains("给目标挂一个 -3 层的新状态")),
+				string.Join(" / ", ProfileValidator.Validate(negPowProbe).Where(i => i.Message.Contains("数值是")).Select(i => i.Level + ": " + i.Message)));
+
+			// ③ 自定义状态触发器的「施加状态」没选状态 → 校验器必须报错
+			//（生成的是 `PowerCmd.Apply<>`，泛型参数是空的 → dotnet 直接 CS0305）
+			CharacterProfile noPowerProbe = ProfileFactory.Sample();
+			noPowerProbe.CustomPowers.Clear();
+			noPowerProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检没选状态", ClassName = "UiCheckNoPowerState", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "ApplyPower", Amount = 2m, TargetSide = "Self" } } } },
+			});
+			var noPowerIssues = ProfileValidator.Validate(noPowerProbe);
+			Check("自定义状态触发器的「施加状态」没选状态 → 校验器报错",
+				noPowerIssues.Any(i => i.IsError && i.Message.Contains("还没选状态")),
+				noPowerIssues.Any(i => i.Message.Contains("还没选状态"))
+					? string.Join(" / ", noPowerIssues.Where(i => i.Message.Contains("还没选状态")).Select(i => i.Level + ": " + i.Message))
+					: "(校验器没说话)");
+
+			// ④ 遗物 / 药水遇到「只做在卡牌上」的效果种类：生成里必须留一行醒目告警注释
+			//（以前这两个 switch 没有 default：什么都不生成、也不报错，用户以为配上了）。
+			// 「只做在卡牌上」的确切清单 = 卡牌那个大 switch 的 case 减去遗物 / 药水两个 switch 的 case：
+			//   Expose / ClearPowerOne / ClearPowerDebuffs / DoublePower / ForbidBlock / ForbidHeal / TimesUp / OverdraftEnergy
+			//（TimesUp 本来就有自己的检查；OverdraftEnergy 是这 8 个里唯一以前完全没提示的，这里用它做代表。）
+			CharacterProfile cardOnlyProbe = ProfileFactory.Sample();
+			var cardOnlyRelic = new RelicSpec
+			{
+				Name = "自检遗物卡牌专属", ClassName = "UiCheckCardOnlyRelic", Rarity = "Common", InRelicPool = true, Trigger = "PlayerTurnStart",
+				Effects =
+				{
+					new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" },
+					new EffectSpec { Kind = "OverdraftEnergy", Amount = 2m, TargetSide = "Self" },
+				},
+			};
+			cardOnlyProbe.Relics.Add(cardOnlyRelic);
+			string cardOnlyRelicSrc = CSharpCodeGen.RelicSource(cardOnlyProbe, cardOnlyRelic, cardOnlyProbe.Relics.Count - 1);
+			Check("遗物上放「只做在卡牌上」的效果种类 → 生成里留下一行醒目告警注释（以前静默跳过、一行代码都不生成）",
+				cardOnlyRelicSrc.Contains("// ⚠⚠ 该效果种类在遗物上**没有实现**", StringComparison.Ordinal),
+				cardOnlyRelicSrc.Split('\n').FirstOrDefault((string l) => l.Contains("没有实现", StringComparison.Ordinal))?.Trim() ?? "(没找到告警注释)");
+			var cardOnlyRelicIssues = ProfileValidator.Validate(cardOnlyProbe);
+			Check("遗物上放「只做在卡牌上」的效果种类 → 校验器在生成前给警告（不是静默丢掉；其余效果照常工作）",
+				cardOnlyRelicIssues.Any(i => !i.IsError && i.Message.Contains("只做在卡牌上") && i.Message.Contains("遗物")),
+				string.Join(" / ", cardOnlyRelicIssues.Where(i => i.Message.Contains("只做在卡牌上")).Select(i => i.Level + ": " + i.Message)));
+			// 整只遗物的效果**全是**这类种类 → 生成出来是个空壳 → 必须是错误
+			var deadCardOnlyRelic = new RelicSpec
+			{
+				Name = "自检空壳遗物", ClassName = "UiCheckDeadRelic", Rarity = "Common", InRelicPool = true, Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "OverdraftEnergy", Amount = 2m, TargetSide = "Self" } },
+			};
+			cardOnlyProbe.Relics.Add(deadCardOnlyRelic);
+			var deadIssues = ProfileValidator.Validate(cardOnlyProbe);
+			Check("遗物上「全部效果」都是只做在卡牌上的种类 → 校验器报**错误**（整只遗物生成出来等于没有作用）",
+				deadIssues.Any(i => i.IsError && i.Message.Contains("全是这一类")),
+				string.Join(" / ", deadIssues.Where(i => i.Message.Contains("只做在卡牌上")).Select(i => i.Level + ": " + i.Message)));
+			// 药水同一份判据（药水同样没有「玩家选中的目标」）
+			CharacterProfile cardOnlyPotionProbe = ProfileFactory.Sample();
+			var cardOnlyPotion = new PotionSpec { Name = "自检药水卡牌专属", ClassName = "UiCheckCardOnlyPotion", Rarity = "Common" };
+			cardOnlyPotion.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy" });
+			cardOnlyPotion.Effects.Add(new EffectSpec { Kind = "Expose", Amount = 2m, PowerId = "StrengthPower", TargetSide = "Enemy" });
+			cardOnlyPotionProbe.Potions.Add(cardOnlyPotion);
+			string cardOnlyPotionSrc = CSharpCodeGen.PotionSource(cardOnlyPotionProbe, cardOnlyPotion, cardOnlyPotionProbe.Potions.Count - 1);
+			Check("药水同样：生成里留下一行醒目告警注释",
+				cardOnlyPotionSrc.Contains("// ⚠⚠ 该效果种类在药水上**没有实现**", StringComparison.Ordinal),
+				cardOnlyPotionSrc.Split('\n').FirstOrDefault((string l) => l.Contains("没有实现", StringComparison.Ordinal))?.Trim() ?? "(没找到告警注释)");
+			var cardOnlyPotionIssues = ProfileValidator.Validate(cardOnlyPotionProbe);
+			Check("药水同样：校验器给出警告",
+				cardOnlyPotionIssues.Any(i => !i.IsError && i.Message.Contains("只做在卡牌上") && i.Message.Contains("药水")),
+				string.Join(" / ", cardOnlyPotionIssues.Where(i => i.Message.Contains("只做在卡牌上")).Select(i => i.Level + ": " + i.Message)));
+		}
+
 		// ===== 本轮新增：自定义状态伤害归属 / 毒性爆发 / 大限已至 / 预见 / 升级卡牌 / 范围限定 / 自定义描述 =====
 		{
 			// ① 自定义状态造成的伤害不算「角色造成的伤害」：dealer 传 null（本体就是靠它归因的）
@@ -12437,7 +12560,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				sink.Potions.Add(new PotionSpec
 				{
 					Name = "自检满配药水", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self",
-					Effects = { new EffectSpec { Kind = "OverdraftEnergy", Amount = 1m, TargetSide = "Self" } },
+					Effects =
+					{
+						// 为什么这瓶药水除了「透支能量」还留一条格挡：
+						// 「透支能量」是**只做在卡牌上**的种类（卡牌那个大 switch 有 case，遗物 / 药水两条链没有），
+						// 所以它单独放在药水上时生成端会跳过（只留一行告警注释）—— 这一档现在还会被校验器判成
+						// **错误**（整瓶药水的效果全是这类 = 生成出来是个空壳）。这份自检存档的意图是
+						// 「把每种用到才生成的效果都用上，然后能生成」，所以这里补一条真会生效的效果，
+						// 让这瓶药水代表**老存档里那种正常的满配配置**（保留「透支能量在药水上」这条覆盖）。
+						new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" },
+						new EffectSpec { Kind = "OverdraftEnergy", Amount = 1m, TargetSide = "Self" },
+					},
 				});
 				sink.CustomPowers.Add(new CustomPowerSpec
 				{
