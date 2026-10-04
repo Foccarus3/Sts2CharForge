@@ -779,7 +779,10 @@ public static class LocalizationGen
             "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
             // 负数 = 扣除层数（生成的是 PowerCmd.ModifyAmount(-N)：本体 Apply 对负数会新建一个负层数的状态）
-            "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
+            // 翻倍状态层数（数值 = 倍数，2 = 翻倍；没有动态变量，所以直接写死数字）
+            "DoublePower" => (e.TargetSide == "Self"
+                    ? $"{repeat}{when}让自己身上 {PowerNameFor(p, e.PowerId).Trim()} 的层数变为 {Math.Clamp((int)e.Amount, 2, 5)} 倍。"
+                    : $"{repeat}{when}{target}身上 {PowerNameFor(p, e.PowerId).Trim()} 的层数变为 {Math.Clamp((int)e.Amount, 2, 5)} 倍。"),            "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
                 ? $"{repeat}{when}{target}施加{PowerNameFor(p, e.PowerId)}（受到伤害 +{e.SlowPercentEffective}%）。"
                 : (e.Amount < 0 && var != "X"
                     ? (e.TargetSide == "Self"

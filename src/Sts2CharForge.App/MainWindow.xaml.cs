@@ -13465,6 +13465,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			{
 				try { if (Directory.Exists(negRoot)) Directory.Delete(negRoot, true); } catch { }
 			}
+		}		// ===== 本轮新增：效果种类「翻倍目标身上的状态层数」=====
+		{
+			Check("（配置）有「翻倍状态层数」这个效果，数值 = 倍数（0 = 不生效，2 = 翻倍）",
+				EffectCatalog.FindKind("DoublePower") is not null
+				&& EffectCatalog.FindKind("DoublePower").Min == 0 && EffectCatalog.FindKind("DoublePower").Max == 5
+				&& EffectCatalog.FindKind("DoublePower").Display.Contains("翻倍"),
+				EffectCatalog.FindKind("DoublePower").Display);
+			CharacterProfile dblProbe = ProfileFactory.Sample();
+			dblProbe.VanillaPowerOverrides.Clear();
+			CardSpec dblCard = new CardSpec { Name = "翻倍探针", ClassName = "UiCheckDbl", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			dblCard.Effects.Add(new EffectSpec { Kind = "DoublePower", Amount = 2m, PowerId = "PoisonPower", TargetSide = "Enemy" });
+			dblCard.Effects.Add(new EffectSpec { Kind = "DoublePower", Amount = 3m, PowerId = "StrengthPower", TargetSide = "Self" });
+			dblProbe.Cards.Add(dblCard);
+			string dblSrc = CSharpCodeGen.CardSource(dblProbe, dblCard, 0);
+			Check("生成：先取目标身上那份状态实例，再 ModifyAmount(现有层数 ×(倍数-1))（本体没有「翻倍」API）",
+				dblSrc.Contains("PowerModel? __dblPower = cardPlay.Target.GetPower<PoisonPower>();")
+				&& dblSrc.Contains("await PowerCmd.ModifyAmount(choiceContext, __dblPower, __dblPower.Amount * 1, base.Owner.Creature, this);")
+				&& dblSrc.Contains("__dblPower = base.Owner.Creature.GetPower<StrengthPower>();")
+				&& dblSrc.Contains("__dblPower.Amount * 2"), "生成对");
+			Check("标记行带上「哪一个状态 / 打谁」（回读要用）",
+				dblSrc.Contains("CET:Effect=DoublePower") && dblSrc.Contains("CET:Power=\"PoisonPower\" CET:Side=Enemy")
+				&& dblSrc.Contains("CET:Side=Self"), "标记在");
+			string dblJson = LocalizationGen.CardsJson(dblProbe);
+			Check("卡面描述写「层数变为 N 倍」（不是占位符）",
+				dblJson.Contains("中毒") && dblJson.Contains("层数变为 2 倍") && dblJson.Contains("力量") && dblJson.Contains("3 倍"), "描述对");
+			var dblIssues = ProfileValidator.Validate(dblProbe);
+			Check("校验器：没选状态会拦",
+				dblIssues.All((ValidationIssue x) => x.Message.Contains("翻倍") == false || !x.IsError || x.Message.Contains("没有选")),
+				string.Join(" ｜ ", dblIssues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+			CardSpec dblBad = new CardSpec { Name = "翻倍没选状态", ClassName = "UiCheckDblBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			dblBad.Effects.Add(new EffectSpec { Kind = "DoublePower", Amount = 2m, TargetSide = "Enemy" });
+			dblProbe.Cards.Add(dblBad);
+			Check("校验器：翻倍没选「增益 / 减益」直接报错",
+				ProfileValidator.Validate(dblProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("没有选「增益 / 减益」")), "拦住了");
+			RelicSpec dblRelic = new RelicSpec { Name = "翻倍遗物", ClassName = "UiCheckDblRelic", Rarity = "Common", InRelicPool = true, Trigger = "PlayerTurnStart" };
+			dblRelic.Effects.Add(new EffectSpec { Kind = "DoublePower", Amount = 2m, PowerId = "PoisonPower", TargetSide = "Enemy" });
+			dblProbe.Relics.Add(dblRelic);
+			Check("校验器：翻倍只做在卡牌上（遗物没有「选中的目标」）",
+				ProfileValidator.Validate(dblProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("只做在卡牌上")), "拦住了");
 		}		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

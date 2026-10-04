@@ -1122,7 +1122,14 @@ public static class ProfileValidator
                     + "所以这条会按「获得 X」生成（负数被忽略）。"));
             // 负数 = 反向（扣除层数 / 失去格挡）：生成时会改走 PowerCmd.ModifyAmount(-N) / CreatureCmd.LoseBlock。
             // 两个组合它做不到，直接拦住并在提示里说清：
-            if (e.Kind == "ApplyPower" && e.Amount < 0 && e.NextTurn)
+            // 翻倍状态层数：只做在卡牌上（要「选中的目标」），而且必须选是哪个状态
+            if (e.Kind == "DoublePower")
+            {
+                if (string.IsNullOrWhiteSpace(e.PowerId))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」（哪一栏填要翻倍的那个状态）。"));
+                else if (owner.Contains("遗物") || owner.Contains("药水"))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」只做在卡牌上（它需要「选中的目标」——遗物 / 药水没有）。请把它放到卡牌的效果里。"));
+            }            if (e.Kind == "ApplyPower" && e.Amount < 0 && e.NextTurn)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」填了负数（扣除层数）又勾了「下回合生效」"
                     + "—— 下回合那套是给目标挂一个延迟状态（它的机制是加层数），扣层数没有对应的做法。"
                     + "请二选一：去掉「下回合生效」，或把数值改成正数。"));

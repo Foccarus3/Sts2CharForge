@@ -2852,7 +2852,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static string SelfContainedMarker(EffectSpec e) =>
         $"// CET:Effect={e.Kind} CET:Amount={Lit.Dec(e.Amount)} CET:Pick={e.CardPick} CET:Pile={e.SelectPile}"
-        + $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsX ? 1 : 0)} CET:Copies={Math.Max(1, e.Copies)}";
+        + $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsX ? 1 : 0)} CET:Copies={Math.Max(1, e.Copies)}"
+        // 自包含效果里「翻倍状态层数」要用到「哪一个状态 / 打谁」——顺手带上，回读时按它还原
+        + $" CET:Power={Lit.Str(e.PowerId ?? "")} CET:Side={e.TargetSide}";
 
     /// <summary>
     /// 复制卡牌（用户要求的新效果）：从手牌 / 抽牌堆 / 弃牌堆里选 N 张（或随机拿 N 张），
@@ -3211,6 +3213,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「回合结束时自动打出」：数值 0 = 这张牌自己（**不能**被当成「0 = 不生效」丢掉），
         // 数值写死在代码里，不声明动态变量（0 那一档描述里也不用占位符）
         or "TurnEndPlay"
+    // 「翻倍状态层数」：数值 = 倍数（写死在代码里），不声明动态变量
+    or "DoublePower"
         // 击晕：没有数值，也不用声明动态变量
         or "Stun"
         // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
@@ -3694,6 +3698,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         : VarAccess(e, varMap);
                     w.Line($"await PlayerCmd.GainStars({gain}, base.Owner);");
                 }
+                break;
+
+            // 翻倍当前特定状态（用户要求的新效果）：数值 = 倍数（2 = 翻倍），状态从「增益/减益」栏选。
+            // 先取目标身上那份实例再 ModifyAmount(+现有层数 ×(倍数-1)) —— 本体没有「翻倍」API，
+            // 加「(倍数-1) 倍现有层数」就是同一个意思，而且走的是本体自己的层数变更（会触发状态钩子）。
+            case "DoublePower":
+                w.Line(SelfContainedMarker(e));
+                int __dblTimes = Math.Clamp((int)e.Amount, 2, 5);   // 2 = 翻倍；生成期就定下来（不声明动态变量）
+                EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
+                    c => $"{{ PowerModel? __dblPower = {c}.GetPower<{e.PowerId}>(); if (__dblPower is not null && __dblPower.Amount != 0) await PowerCmd.ModifyAmount(choiceContext, __dblPower, __dblPower.Amount * {__dblTimes - 1}, base.Owner.Creature, this); }}   // 翻 {__dblTimes} 倍");
                 break;
 
             case "ApplyPower":

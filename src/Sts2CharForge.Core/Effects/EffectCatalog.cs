@@ -596,6 +596,12 @@ public static class EffectCatalog
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
         // 我们照它生成：被打晕的敌人这一回合什么都不做。
         new EffectKindOption("Stun", "击晕（敌人本回合不行动）", "—", 0, 0, false, true),
+    // 翻倍当前特定状态（用户要求的新效果）：数值 = 倍数（2 = 翻倍），
+    // 「增益 / 减益」那一栏填要翻倍的状态。生成的是先 GetPower<T>() 取那份实例，再
+    // PowerCmd.ModifyAmount(choiceContext, 实例, 实例.Amount * (倍数 - 1), 施加者, this)
+    // —— 加「(倍数-1) 倍现有层数」就等于翻倍（本体扣/加层数都是走 ModifyAmount）。
+    // 数值不声明动态变量（写死在生成代码里，见 CSharpCodeGen.HasNoDynamicVar）。
+    new EffectKindOption("DoublePower", "翻倍目标身上的状态层数（数值 = 倍数，2 = 翻倍；0 = 不生效）", "倍", 0, 5, true, true),
         // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
         // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
         // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。

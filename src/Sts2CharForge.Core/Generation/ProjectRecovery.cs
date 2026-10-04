@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
@@ -771,6 +771,12 @@ public static class ProjectRecovery
                     };
                     if (sc.Kind == "Outbreak") sc.TargetSide = "AllEnemies";
                     if (sc.Kind == "TimesUp") sc.TargetSide = "Enemy";
+                    // 标记行里顺手带上的「哪一个状态 / 打谁」（「翻倍状态层数」要用）
+                    string? scPower = Match(line, @"CET:Power=""?(\w+)");   // Lit.Str 会带引号
+                    if (scPower is not null)
+                        sc.PowerId = nameToPowerId.TryGetValue(scPower, out string? scPid) ? scPid : scPower;
+                    string? scSide = Match(line, @"CET:Side=(\w+)");
+                    if (scSide is not null) sc.TargetSide = scSide;
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
                     if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay")
@@ -915,6 +921,7 @@ public static class ProjectRecovery
                     || line.Contains("__tePicks", StringComparison.Ordinal)
                     // 负数 = 反向：扣层数（PowerCmd.ModifyAmount + __negPower）与失去格挡（LoseBlock）
                     || line.Contains("__negPower", StringComparison.Ordinal)
+                    || line.Contains("__dblPower", StringComparison.Ordinal)
                     || line.Contains("CreatureCmd.LoseBlock(", StringComparison.Ordinal)
                     || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
                 if (scBody) continue;
