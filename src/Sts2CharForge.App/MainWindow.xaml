@@ -1705,6 +1705,9 @@
                                     </StackPanel>
                                 </Border>
                             </ContentControl>
+                            <!-- 署名：「逐帧动画」这一页的玩法与文案吸收自 TのG 的改造版（工具本身是按本仓库风格重写的） -->
+                            <TextBlock Margin="0,14,0,0" HorizontalAlignment="Right" FontSize="11" Foreground="#888"
+                                       Text="由TのG制作"/>
                         </StackPanel>
                     </ScrollViewer>
                 </Grid>
