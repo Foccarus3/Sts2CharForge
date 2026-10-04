@@ -56,7 +56,17 @@ public sealed record ConditionOption(string Id, string Display, bool ForCard, bo
     // 填负数 = 反向时的说法（null = 这个条件不支持填负数）。界面 / 卡面描述都按它写。
     string? InvertedDisplay = null,
     // 这个条件支持「填负数 = 反向」吗（校验器用它提醒）
-    bool SupportsNegative = false);
+    bool SupportsNegative = false,
+    // 这个条件底下还要再选一个「子时机」吗（需求⑩ 的「卡牌时机」用得到，见 CardTimings）
+    bool NeedsTiming = false);
+
+/// <summary>
+/// 「卡牌时机」的一个子时机（需求⑩）。
+/// 原文：`条件增加“卡牌时机”，当选择时在底下新增下拉栏，内包含“被消耗”、“被生成”、“被保留”、“被丢弃”、“被变化”，
+/// 参考原版“战鼓”，再加一个“被给予自定义关键词”，当此卡被给予关键词时条件生效。`
+/// Id = 生成代码 / 存档里的稳定标识（也是 `CET:CardTiming=` 标记里写的那个）。
+/// </summary>
+public sealed record CardTimingOption(string Id, string Display);
 
 /// <summary>条件的「指向对象」一条：看自己 / 任意一个敌人 / 全部敌人。</summary>
 public sealed record ConditionTargetOption(string Id, string Display);
@@ -1244,6 +1254,57 @@ public static class EffectCatalog
             "按战斗回合数取余（第 N、2N、3N…回合满足）。"),
         new ConditionOption("OncePerCombat", "每场战斗只触发一次", false, true, false, false,
             "本体「百年积木」的做法：用标记记住本场用过，战斗结束清零。"),
+        // 卡牌时机（需求⑩）：唯一一个**不是「打出时算一个 bool」**的条件 —— 带它的效果不写进 OnPlay，
+        // 而是挂到本体对应钩子的 override 上（本体「战鼓」DrumOfBattle 的做法：
+        // override AfterCardExhausted 里判 card == this）。所以它只能给卡牌用，见 CSharpCodeGen.EmitCardTimingHooks。
+        new ConditionOption("CardTiming", "卡牌时机（这张牌被消耗 / 被丢弃 / 被保留…时）", true, false, false, false,
+            "这一条不是「打出的条件」，而是一个**钩子**：带这个条件的效果不会在打出时执行，"
+            + "而是挂到本体对应时机的钩子上（和本体「战鼓」一样 —— 它是 override AfterCardExhausted）。"
+            + "所以它的效果里不能用「打出的目标」（那个钩子里没有打出记录），也不能用 X 值 / 伙伴。"
+            + "只能用在普通卡牌上。", false, false, false, null, false, true),
+    };
+
+    /// <summary>
+    /// 「卡牌时机」的 6 个子时机（需求⑩）。顺序 = 界面下拉里的顺序（也是存档里没写 Timing 时的默认值：第一项）。
+    ///
+    /// 每个子时机**挂哪个钩子**写在 <c>CSharpCodeGen.CardTimingHook</c> 里（连同为什么选那个钩子的说明）：
+    /// 被消耗 → AbstractModel.AfterCardExhausted；被丢弃 → AbstractModel.AfterCardDiscarded；
+    /// 被生成 → AbstractModel.AfterCardGeneratedForCombat；被保留 → AbstractModel.AfterFlush；
+    /// 被变化 → CardModel.AfterTransformedFrom；被给予自定义关键词 → 我们自己的「给予卡牌关键词」那一步。
+    /// </summary>
+    public static IReadOnlyList<CardTimingOption> CardTimings { get; } = new[]
+    {
+        new CardTimingOption("Exhausted", "被消耗"),
+        new CardTimingOption("Generated", "被生成"),
+        new CardTimingOption("Retained", "被保留"),
+        new CardTimingOption("Discarded", "被丢弃"),
+        new CardTimingOption("Transformed", "被变化"),
+        new CardTimingOption("GivenKeyword", "被给予自定义关键词"),
+    };
+
+    /// <summary>存档里 Timing 字段的默认值（= 下拉第一项「被消耗」，也是老存档缺这一项时的退路）。</summary>
+    public const string DefaultCardTiming = "Exhausted";
+
+    public static CardTimingOption? FindCardTiming(string? id) =>
+        string.IsNullOrWhiteSpace(id) ? null
+        : CardTimings.FirstOrDefault(t => string.Equals(t.Id, id.Trim(), StringComparison.Ordinal));
+
+    /// <summary>子时机的中文名（认不出来时退回 Id，界面 / 描述里不会出现空白）。</summary>
+    public static string CardTimingZh(string? id) => FindCardTiming(id)?.Display ?? (id ?? "").Trim();
+
+    /// <summary>
+    /// 子时机写进卡面描述 / 生成代码注释的那句话（「当这张牌被消耗时」这种）。
+    /// 界面上的下拉文案是 <see cref="CardTimingOption.Display"/>（就三个字），描述里要成句，所以分两份。
+    /// </summary>
+    public static string CardTimingPhrase(string? id) => FindCardTiming(id)?.Id switch
+    {
+        "Exhausted" => "当这张牌被消耗时",
+        "Generated" => "当这张牌被生成时",
+        "Retained" => "当这张牌被保留时",
+        "Discarded" => "当这张牌被丢弃时",
+        "Transformed" => "当这张牌被变化（被变成别的牌）时",
+        "GivenKeyword" => "当这张牌被给予自定义关键词时",
+        _ => "当这张牌被" + CardTimingZh(id) + "时",
     };
 
     /// <summary>
@@ -1334,13 +1395,16 @@ public static class EffectCatalog
     ///   ② **填负数 = 反向**（用户要求）：生命值低于 -20 → 「生命值高于 20%」、
     ///      「拥有某状态至少 -2 层」→「拥有某状态少于 2 层」，等等（文案取 <see cref="ConditionOption.InvertedDisplay"/>）；
     ///   ③ 「生命区间」两个数值（N~M，任一为负 = 区间外）；
-    ///   ④ 指向对象 / 「额外资源量」的显示名。
+    ///   ④ 指向对象 / 「额外资源量」的显示名；
+    ///   ⑤ 「卡牌时机」的子时机（<paramref name="timing"/>）—— 这一类的文案整句由子时机决定。
     /// </summary>
     public static string ConditionZh(string kind, decimal amount, decimal amount2, string? powerId,
-        string targetZh, string? resourceName = null)
+        string targetZh, string? resourceName = null, string? timing = null)
     {
         var opt = FindCondition(kind);
         if (opt is null || string.Equals(opt.Id, "None", StringComparison.Ordinal)) return "";
+        // 卡牌时机：整句都按子时机写（「当这张牌被消耗时」），没有数值 / 状态 / 指向对象要替换
+        if (opt.NeedsTiming) return CardTimingPhrase(timing);
         bool inverted = amount < 0 || (opt.NeedsAmount2 && amount2 < 0);
         string text = inverted && opt.InvertedDisplay is not null ? opt.InvertedDisplay : opt.Display;
         string Abs(decimal v) => Math.Abs(v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);

@@ -537,12 +537,13 @@ public static class LocalizationGen
             string text = DescribeEffect(e, p, potionTarget, isCard, starCostIsX, varMap);
             // 斩杀条件写在**这句效果的最前面**（本体 FEED「造成…伤害。\n[gold]斩杀[/gold]时，永久获得…最大生命值。」），
             // 不跟别的条件一样单独占一行 —— 那样读起来像「另一条效果」。
-            if (text.Length > 0 && e.Condition is { Kind: "Fatal" })
+            // 卡牌时机（需求⑩）同理：写成「当这张牌被消耗时，…」贴在效果前面（读起来才像一句条件句）。
+            if (text.Length > 0 && e.Condition is { Kind: "Fatal" or "CardTiming" })
                 text = EffectConditionInline(e.Condition, p) + text;
             if (text.Length > 0) one.Append(text).Append('\n');
             // 条件选项是「每条效果各自一份」的，所以条件说明紧跟在它管的那条效果后面
-            // （药水不支持条件，所以药水不写；斩杀那句已经在上面拼到最前面了）
-            if (potionTarget is null && e.Condition is not { Kind: "Fatal" })
+            // （药水不支持条件，所以药水不写；斩杀 / 卡牌时机那两句已经在上面拼到最前面了）
+            if (potionTarget is null && e.Condition is not { Kind: "Fatal" or "CardTiming" })
             {
                 string cond = EffectConditionInline(e.Condition, p);
                 if (cond.Length > 0) one.Append(cond).Append('\n');
@@ -572,6 +573,9 @@ public static class LocalizationGen
         // （本体 FEED「[gold]斩杀[/gold]时，永久获得…」/ HAND_OF_GREED「[gold]斩杀[/gold]时，获得…金币」），
         // 而不是通用的「条件：…（不满足时这条效果不生效）」——那句话在攻击牌上读起来很怪。
         if (condition is { Kind: "Fatal" }) return "[gold]斩杀[/gold]时，";
+        // 卡牌时机（需求⑩）：写成「当这张牌被消耗时，…」—— 它描述的也是「什么时候发生」，不是「打出的条件」。
+        if (condition is { Kind: "CardTiming" })
+            return EffectCatalog.CardTimingPhrase(condition.Timing) + "，";
         return ConditionInline(condition, "（不满足时这条效果不生效）", p);
     }
 

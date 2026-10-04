@@ -673,6 +673,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// <summary>条件里的「指向对象」：自己 / 任意一个敌人 / 全部敌人。</summary>
 	public IReadOnlyList<ConditionTargetOption> ConditionTargets { get; } = EffectCatalog.ConditionTargets;
 
+	/// <summary>
+	/// 「卡牌时机」的 6 个子时机（需求⑩）：被消耗 / 被生成 / 被保留 / 被丢弃 / 被变化 / 被给予自定义关键词。
+	/// 条件选到「卡牌时机」时，条件区底下才显示这个下拉（绑定 Condition.Timing / Condition.NeedsTiming）。
+	/// </summary>
+	public IReadOnlyList<CardTimingOption> ConditionTimings { get; } = EffectCatalog.CardTimings;
+
 	/// <summary>「升级后的关键字」每一行的三个选项（不变 / 升级后获得 / 升级后失去）。</summary>
 	public IReadOnlyList<KeywordStateOption> KeywordUpgradeStates { get; } = EffectCatalog.KeywordUpgradeStates;
 
@@ -7009,6 +7015,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("每条效果的「条件选项」里有「指向对象」下拉（自己 / 指定敌人 / 任意一个敌人 / 全部敌人）",
 				list26.Any((ComboBox c) => c.ItemsSource == ConditionTargets && BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Target"),
 				$"{ConditionTargets.Count} 个指向对象");
+			// 需求⑩：条件选到「卡牌时机」时，条件区底下要出现「子时机」下拉（被消耗 / 被生成 / 被保留 / 被丢弃 / 被变化 / 被给予自定义关键词）
+			Check("每条效果的「条件选项」有「卡牌时机」的子时机下拉（绑 Condition.Timing，6 个候选）",
+				list26.Any((ComboBox c) => c.ItemsSource == ConditionTimings && BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Timing")
+				&& ConditionTimings.Count == 6,
+				$"{ConditionTimings.Count} 个子时机");
 			List<CheckBox> list27 = new List<CheckBox>();
 			CollectCheckBoxes(groupBox, list27);
 			Check("每条效果的「条件选项」有「不满足时打不出去」开关", list27.Any((CheckBox c) => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path == "Condition.UnplayableWhenUnmet"), string.Join(" / ", list27.Select((CheckBox c) => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path)));
@@ -14386,6 +14397,161 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			});
 			Check("斩杀：遗物上用 → 报错（只能用在卡牌上，本体那几个都是攻击牌）",
 				ProfileValidator.Validate(faRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能用在**卡牌**上")), "拦住了");
+
+			// ⑩ 条件选项「卡牌时机」+ 6 个子时机
+			// 这一条和别的条件**架构上不同**：带它的效果不写进 OnPlay，而是生成成本体对应钩子的 override
+			//（本体「战鼓」DrumOfBattle 的做法），所以断言要同时看「钩子挂对了」和「OnPlay 里没有它」。
+			Check("条件选项里有「卡牌时机」，而且只给卡牌用（遗物 / 药水 / 自定义状态没有「这张牌被消耗」这一说）",
+				EffectCatalog.Conditions.Any((ConditionOption o) => o.Id == "CardTiming" && o.ForCard && !o.ForRelic && !o.ForPower && o.NeedsTiming), "在");
+			Check("「卡牌时机」的 6 个子时机齐、中文名就是需求里那 6 个",
+				ConditionTimings.Select((CardTimingOption t) => t.Display)
+					.SequenceEqual(new[] { "被消耗", "被生成", "被保留", "被丢弃", "被变化", "被给予自定义关键词" }),
+				string.Join(" / ", ConditionTimings.Select((CardTimingOption t) => t.Display)));
+			Check("「卡牌时机」不在遗物 / 自定义状态的条件表里（选了会被校验器拦住）",
+				!RelicConditions.Any((ConditionOption o) => o.Id == "CardTiming")
+				&& !PlainEffectConditions.Any((ConditionOption o) => o.Id == "CardTiming"), "归属正确");
+			// 生成端：一个子时机一条断言（拿到的源码里找签名 / 守卫 / 标记 / 效果体）
+			CharacterProfile ctProbe = ProfileFactory.Sample();
+			CardSpec ctCard = new CardSpec { Name = "自检时机", ClassName = "UiCheckCardTiming", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, Retain = true };
+			foreach (string timingId in new[] { "Exhausted", "Generated", "Retained", "Discarded", "Transformed", "GivenKeyword" })
+				ctCard.Effects.Add(new EffectSpec
+				{
+					Kind = "Block", Amount = 4m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "CardTiming", Timing = timingId },
+				});
+			ctProbe.Cards.Add(ctCard);
+			string ctSrc = CSharpCodeGen.CardSource(ctProbe, ctCard, 0);
+			Check("被消耗 → 覆写本体 AbstractModel.AfterCardExhausted（「战鼓」的做法）+ card == this 守卫 + CET 标记",
+				ctSrc.Contains("public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)")
+				&& ctSrc.Contains("if (card != this || base.CombatState is null) return;")
+				&& ctSrc.Contains("// CET:CardTiming=Exhausted"), "挂上了");
+			Check("被丢弃 → 覆写 AbstractModel.AfterCardDiscarded",
+				ctSrc.Contains("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)")
+				&& ctSrc.Contains("// CET:CardTiming=Discarded"), "挂上了");
+			Check("被生成 → 覆写 AbstractModel.AfterCardGeneratedForCombat（那个同步的 AfterCreated 没有 choiceContext，await 不了命令）",
+				ctSrc.Contains("public override async Task AfterCardGeneratedForCombat(CardModel card, Player? creator)")
+				&& ctSrc.Contains("new HookPlayerChoiceContext(this,")
+				&& ctSrc.Contains("// CET:CardTiming=Generated"), "挂上了");
+			Check("被保留 → 覆写 AbstractModel.AfterFlush，判据是「本体把这张牌归进了 retainedCards」",
+				ctSrc.Contains("public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)")
+				&& ctSrc.Contains("if (!retainedCards.Contains(this)) return;")
+				&& ctSrc.Contains("// CET:CardTiming=Retained"), "挂上了");
+			Check("被变化 → 覆写 CardModel.AfterTransformedFrom（本体 Transform 里对「被变成别的牌」那张调的就是它）",
+				ctSrc.Contains("public override void AfterTransformedFrom()")
+				&& ctSrc.Contains("ForgeOnTransformedFrom(choiceContext)")
+				&& ctSrc.Contains("// CET:CardTiming=Transformed"), "挂上了");
+			Check("被给予自定义关键词 → 生成卡自己的入口方法，由「给予卡牌关键词」那一步直接调",
+				ctSrc.Contains("public async Task ForgeOnGivenCustomKeyword(PlayerChoiceContext choiceContext)")
+				&& ctSrc.Contains("// CET:CardTiming=GivenKeyword"), "挂上了");
+			// 「不写进 OnPlay」：OnPlay 那段里不能出现这些效果（效果体只在钩子里）
+			int ctOnPlayAt = ctSrc.IndexOf("protected override async Task OnPlay", StringComparison.Ordinal);
+			int ctHookAt = ctSrc.IndexOf("public override async Task AfterCardExhausted", StringComparison.Ordinal);
+			string ctOnPlay = ctOnPlayAt >= 0 && ctHookAt > ctOnPlayAt ? ctSrc[ctOnPlayAt..ctHookAt] : "(没找到 OnPlay)";
+			Check("带「卡牌时机」的效果**不在 OnPlay 里**（OnPlay 只留一句 await），效果体全在钩子里",
+				!ctOnPlay.Contains("GainBlock") && !ctOnPlay.Contains("CardTiming")
+				&& ctSrc.Split("await CreatureCmd.GainBlock").Length - 1 == 6, "不在 OnPlay");
+			Check("同一张牌多个时机 → 一个时机一个 override，各跑各的那一条效果",
+				ctSrc.Split("await CreatureCmd.GainBlock").Length - 1 == 6, "6 条效果各在一个钩子里");
+			// 被给予自定义关键词：给关键词那一步要转发（转发器只在真的用到这个时机时才生成）
+			CharacterProfile gkProbe = ProfileFactory.Sample();
+			gkProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE10", Name = "命运十" });
+			CardSpec gkCard = new CardSpec { Name = "自检给关键词", ClassName = "UiCheckGiven10", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			gkCard.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 0m, GivenKeyword = "FATE10" });
+			gkCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "GivenKeyword" } });
+			gkProbe.Cards.Add(gkCard);
+			string gkSrc = CSharpCodeGen.CardSource(gkProbe, gkCard, 0);
+			string gkPatch = CSharpCodeGen.GivenKeywordPatchSource(gkProbe);
+			Check("被给予自定义关键词：给关键词那一步直接转发给这张牌（复用「给予卡牌关键词」那条链，没有另造机制）",
+				gkSrc.Contains("ForgeGivenKeywordTiming.Notify(choiceContext, this)")
+				&& gkPatch.Contains("internal static class " + Naming.From(gkProbe).CharClass + "ForgeGivenKeywordTiming")
+				&& gkPatch.Contains("case UiCheckGiven10 __given: return __given.ForgeOnGivenCustomKeyword(choiceContext);"), "转发了");
+			Check("没有「卡牌时机」的存档不生成任何转发 / 钩子（默认档不变）",
+				!CSharpCodeGen.GivenKeywordPatchSource(ProfileFactory.Sample()).Contains("GivenKeywordTiming"), "没生成");
+			CharacterProfile ctPlain = ProfileFactory.Sample();
+			CardSpec ctPlainCard = new CardSpec { Name = "自检普通卡", ClassName = "UiCheckPlainTiming", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			ctPlainCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
+			ctPlain.Cards.Add(ctPlainCard);
+			string ctPlainSrc = CSharpCodeGen.CardSource(ctPlain, ctPlainCard, 0);
+			Check("普通卡（没有「卡牌时机」）生成结果里没有钩子 override / CET:CardTiming / HookPlayerChoiceContext",
+				!ctPlainSrc.Contains("AfterCardExhausted") && !ctPlainSrc.Contains("AfterFlush")
+				&& !ctPlainSrc.Contains("CET:CardTiming") && !ctPlainSrc.Contains("HookPlayerChoiceContext"), "干净");
+			// 校验器：子时机认不出来 / 用在非普通卡牌上 / 用了「打出的目标」/ 用了 X
+			CharacterProfile badTiming = ProfileFactory.Sample();
+			CardSpec badTimingCard = new CardSpec { Name = "自检坏时机", ClassName = "UiCheckBadTiming", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			badTimingCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "NotATiming" } });
+			badTiming.Cards.Add(badTimingCard);
+			Check("子时机认不出来 → 校验器报错",
+				ProfileValidator.Validate(badTiming).Any((ValidationIssue i) => i.IsError && i.Message.Contains("子时机认不出来")), "拦住了");
+			CharacterProfile badSide = ProfileFactory.Sample();
+			CardSpec badSideCard = new CardSpec { Name = "自检时机打目标", ClassName = "UiCheckBadTimingSide", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			badSideCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, TargetSide = "Enemy", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" } });
+			badSide.Cards.Add(badSideCard);
+			Check("「卡牌时机」+「打出的目标」→ 报错（钩子里没有 cardPlay.Target，会空引用）",
+				ProfileValidator.Validate(badSide).Any((ValidationIssue i) => i.IsError && i.Message.Contains("那个钩子里没有打出记录")), "拦住了");
+			CharacterProfile badX = ProfileFactory.Sample();
+			CardSpec badXCard = new CardSpec { Name = "自检时机X", ClassName = "UiCheckBadTimingX", CardType = "Skill", Rarity = "Common", Cost = 0, CostIsX = true, InCardPool = true };
+			badXCard.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, AmountIsX = true, Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" } });
+			badX.Cards.Add(badXCard);
+			Check("「卡牌时机」+ 数值 = X → 报错（那些钩子里没有打出时取的 X）",
+				ProfileValidator.Validate(badX).Any((ValidationIssue i) => i.IsError && i.Message.Contains("没有它")), "拦住了");
+			CharacterProfile badRelicTiming = ProfileFactory.Sample();
+			badRelicTiming.Relics.Add(new RelicSpec
+			{
+				Name = "自检时机遗物", ClassName = "UiCheckTimingRelic", Rarity = "Common", Trigger = "CombatStart",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 5m, Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" } } },
+			});
+			Check("遗物上选「卡牌时机」→ 报错（遗物没有「这张牌被消耗」这一说）",
+				ProfileValidator.Validate(badRelicTiming).Any((ValidationIssue i) => i.IsError
+					&& i.Message.Contains("卡牌时机") && i.Message.Contains("不能用在这里")), "拦住了");
+			// 诅咒：也是卡（ForCard 那一关过得了），但它的效果写在 OnTurnEndInHand 里、没有这些卡牌钩子
+			CharacterProfile badCurseTiming = ProfileFactory.Sample();
+			CardSpec badCurseCard = new CardSpec { Name = "自检时机诅咒", ClassName = "UiCheckTimingCurse", CardType = "Skill", Rarity = "Curse", Cost = -1, InCardPool = false };
+			badCurseCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" } });
+			badCurseTiming.Cards.Add(badCurseCard);
+			Check("诅咒上选「卡牌时机」→ 报错（诅咒的效果写在「回合结束时在手上」，挂不上这些卡牌钩子）",
+				ProfileValidator.Validate(badCurseTiming).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只对**普通卡牌**有意义")), "拦住了");
+			// 卡面描述：写成「当这张牌被消耗时，获得 4 点格挡。」（不是通用的「条件：…（不满足时…）」）
+			CharacterProfile ctDesc = ProfileFactory.Sample();
+			CardSpec ctDescCard = new CardSpec { Name = "自检时机描述", ClassName = "UiCheckTimingDesc", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			ctDescCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" } });
+			ctDescCard.Effects.Add(new EffectSpec { Kind = "Energy", Amount = 1m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Retained" } });
+			ctDesc.Cards.Add(ctDescCard);
+			string ctDescJson = LocalizationGen.CardsJson(ctDesc);
+			Check("卡面描述：「卡牌时机」写成「当这张牌被消耗时，…」（不是通用的「条件：…」）",
+				ctDescJson.Contains("当这张牌被消耗时，获得 {Block:diff()} 点格挡")
+				&& ctDescJson.Contains("当这张牌被保留时，获得 {Energy:diff()} 点能量")
+				&& !ctDescJson.Contains("条件：当这张牌被消耗时"), "描述对");
+			// 卡面描述那一条已经在上面单独用一张卡断言过了（见「当这张牌被消耗时，…」）
+			// 生成 → 回读：6 个子时机都要原样回来
+			string ctRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_timing_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile ctRound = ProfileFactory.Sample();
+				ctRound.Paths.OutputDir = ctRoot;
+				ctRound.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				ctRound.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec ctRoundCard = new CardSpec { Name = "自检时机往返", ClassName = "UiCheckTimingRound", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, Retain = true };
+				foreach (string timingId in new[] { "Exhausted", "Generated", "Retained", "Discarded", "Transformed", "GivenKeyword" })
+					ctRoundCard.Effects.Add(new EffectSpec
+					{
+						Kind = "Block", Amount = 4m, TargetSide = "Self",
+						Condition = new ConditionSpec { Kind = "CardTiming", Timing = timingId },
+					});
+				ctRound.Cards.Add(ctRoundCard);
+				Check("（准备）「卡牌时机」的存档能生成工程", ModGenerator.Generate(ctRound).Success, ctRoot);
+				var ctRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(ctRound));
+				var ctBack = ctRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckTimingRound");
+				Check("回读：6 个子时机（被消耗 / 被生成 / 被保留 / 被丢弃 / 被变化 / 被给予自定义关键词）都原样回来",
+					ctBack is not null
+					&& new[] { "Exhausted", "Generated", "Retained", "Discarded", "Transformed", "GivenKeyword" }
+						.All((string t) => ctBack.Effects.Any((EffectSpec e) => e.Condition is { Kind: "CardTiming" } c2 && c2.Timing == t)),
+					ctBack is null ? "(没回读出来)" : string.Join(" / ", ctBack.Effects.Select((EffectSpec e) => e.Condition?.Kind + ":" + (e.Condition?.Timing ?? "-"))));
+				Check("回读：带「卡牌时机」的卡没有认不出来的语句", !ctRec.HasUnparsed, ctRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(ctRoot)) Directory.Delete(ctRoot, true); } catch { }
+			}
 
 			// 生成 → 回读：本轮六件事的字段都要原样回来
 			string roundRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_r30_" + Guid.NewGuid().ToString("N").Substring(0, 8));

@@ -1548,6 +1548,35 @@ public static class ProfileValidator
                         + "（本体 Feed / HandOfGreed / TheHunt 都是攻击牌：判的是「这一次攻击有没有把目标打死」）。"));
             }
 
+            // ===== 卡牌时机（需求⑩）=====
+            // 这一条不是「打出时算一个 bool」，而是把效果挂到本体对应时机的钩子上，所以：
+            //   · 钩子里没有「打出的目标」（cardPlay.Target）→ 会解引用 null，直接拦住；
+            //   · 钩子里没有打出时取的 X 值 → 拦住（不是「按 0 处理」那种能猜的事）；
+            //   · 钩子里查不到「这只伙伴在不在场」的那个变量 → 伙伴类效果拦住（纯召唤仍可用，
+            //     因为 EmitSummonPet 不需要已存在的伙伴）。
+            if (CSharpCodeGen.IsCardTiming(e.Condition))
+            {
+                string timingZh = EffectCatalog.CardTimingZh(e.Condition!.Timing);
+                if (ctx is not "Card")
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「卡牌时机（{timingZh}）」，但它只能用在**普通卡牌**上"
+                        + "（诅咒的效果写在「回合结束时在手上」里，遗物 / 药水 / 自定义状态根本没有「这张牌被消耗」这一说）。"));
+                if (CSharpCodeGen.TimingUsesPlayedTarget(e))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「卡牌时机（{timingZh}）」+「打出的目标」—— "
+                        + "那个钩子里没有打出记录（cardPlay.Target 是空的）。请把这条效果改成「自己 / 全体敌人 / 随机敌人」，"
+                        + "或者把它挪到不带「卡牌时机」的普通效果里。"));
+                if (e.UsesX)
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「卡牌时机（{timingZh}）」而且数值填了 X —— "
+                        + "X 是「打出时」消耗掉的那个量，这些钩子（被消耗 / 被丢弃 / …）里没有它。请填固定数值。"));
+                if (CSharpCodeGen.NeedsExistingPet(e))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「卡牌时机（{timingZh}）」而且需要「伙伴已经在场」—— "
+                        + "那个变量是在 OnPlay 里查的，钩子里拿不到。请改用「召唤伙伴」（不需要已有伙伴），"
+                        + "或把这条效果挪到普通效果里。"));
+                if (e.Condition.UnplayableWhenUnmet)
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」的条件是「卡牌时机（{timingZh}）」："
+                        + "它不是「打出的条件」，所以「不满足时这张牌打不出去」对它没有作用 —— "
+                        + "效果只会在那个时机触发，牌本身照常能打出。"));
+            }
+
             if (e.Kind == "CopyCard")
             {
                 if (e.Amount is < 1m or > 5m)
@@ -1776,6 +1805,25 @@ public static class ProfileValidator
             issues.Add(new("错误", ctx == "Potion"
                 ? $"{owner}：药水不支持条件选项（条件要用在卡牌 / 遗物 / 自定义状态上）。"
                 : $"{owner} 的条件「{opt.Display}」不能用在这里，请换一个。"));
+            return;
+        }
+        // 卡牌时机（需求⑩）：子时机必须认得出来，而且这条条件只对**普通卡牌**有意义 ——
+        // 遗物 / 药水 / 自定义状态根本没有「这张牌被消耗 / 被丢弃 / 被保留」这一说；
+        // 诅咒虽然也是卡，但它的效果写在「回合结束时在手上」里，生成端没有为它挂这些卡牌钩子
+        //（这就是要单独拦 Curse 的原因：ForCard 那一关它是过的）。
+        // 它也没有数值 / 状态 / 指向对象可填，所以判完就返回。
+        if (opt.NeedsTiming)
+        {
+            if (EffectCatalog.FindCardTiming(cond.Timing) is null)
+            {
+                issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」的子时机认不出来：{cond.Timing}。"
+                    + "（可选：" + string.Join(" / ", EffectCatalog.CardTimings.Select(t => t.Display)) + "）"));
+                return;
+            }
+            if (!string.Equals(ctx, "Card", StringComparison.Ordinal))
+                issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」不能用在这里："
+                    + "它只对**普通卡牌**有意义（遗物 / 药水 / 自定义状态没有「这张牌」；"
+                    + "诅咒的效果写在「回合结束时在手上」，挂不上这些卡牌钩子）。"));
             return;
         }
         if (opt.NeedsPower && string.IsNullOrWhiteSpace(cond.PowerId))

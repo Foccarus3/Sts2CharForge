@@ -59,6 +59,13 @@ public sealed record Naming(
     /// <summary>「抽牌堆洗过牌」记录器类名（兜底用当前角色）。</summary>
     public static string AmbientShuffleTrackerClass => _currentCharClass + "ForgeShuffleTracker";
 
+    /// <summary>
+    /// 需求⑩「卡牌时机 = 被给予自定义关键词」的转发器类名（兜底用当前角色）。
+    /// 它就生成在「给予卡牌关键词」那份源码里（见 <see cref="CSharpCodeGen.GivenKeywordPatchSource"/>），
+    /// 作用是把「这张牌刚被给了一个自定义关键词」转发给带那个时机的卡自己的方法。
+    /// </summary>
+    public static string AmbientGivenKeywordTimingClass => _currentCharClass + "ForgeGivenKeywordTiming";
+
     public string CardClassName(CardSpec c, int index) =>
         IsValidIdentifier(c.ClassName) ? EmittedCardClass(c.ClassName!.Trim()) : CharClass + "Card" + (index + 1).ToString();
 

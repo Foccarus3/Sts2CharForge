@@ -409,7 +409,24 @@ public static class ProjectRecovery
         // 诅咒：效果写在 OnTurnEndInHand 里（不是 OnPlay），而且没有「打出的目标」这一说 ——
         // 语句是照遗物那套生成的，所以按**遗物**的上下文解析（ctx 用 Card 会去认 cardPlay.Target）
         bool curse = card.IsCurseCard;
-        ParseEffects(card.Effects, BodyOf(text, curse ? "OnTurnEndInHand" : "OnPlay"), vars, nameToPowerId,
+        // 需求⑩「卡牌时机」：带这个条件的效果不在 OnPlay 里，而是各自一个钩子方法。这里把它们的**方法体**
+        // 按生成顺序（= EffectCatalog.CardTimings 的顺序 = CanonicalVars 的声明顺序）拼在 OnPlay 后面。
+        // 每个方法体里都有生成器写的 `// CET:CardTiming=X` 标记 —— ParseEffects 见到它就记住
+        // 「接下来这些效果属于哪个子时机」（见那里的 timingCond），不用再包一层假 if：
+        // 钩子里有 EmitRepeated 生成的裸花括号块，那个 `}` 会把假 if 的栈帧弹掉（试过，第二条效果就丢了条件）。
+        // 为什么必须**拼成一个字符串**交给同一次 ParseEffects：变量是按顺序配对的（NextVar），
+        // 分几次调用会各自从头配对，数值会串到别的效果上。
+        string body = BodyOf(text, curse ? "OnTurnEndInHand" : "OnPlay");
+        if (!curse)
+        {
+            foreach (var opt in EffectCatalog.CardTimings)
+            {
+                string hookBody = BodyOf(text, CSharpCodeGen.CardTimingMethodName(opt.Id) + "(");
+                if (hookBody.Length == 0) continue;
+                body += "\n" + hookBody + "\n";
+            }
+        }
+        ParseEffects(card.Effects, body, vars, nameToPowerId,
             curse ? EffectCtx.Relic : EffectCtx.Card, result, cls, result.PetClassNames);
         if (curse)
         {
@@ -576,10 +593,17 @@ public static class ProjectRecovery
         // 在 Kill 那行就收尾的话，后面的 GainBlock / Attack 会被再当成一条普通效果 → 多回读一条。
         string? sacKillPet = null;
 
+        // 需求⑩「卡牌时机」：ParseCard 会把各时机钩子的方法体拼在 OnPlay 后面，每个方法体开头有
+        // 生成器写的 `// CET:CardTiming=<子时机>` 标记。这里记下来 —— 之后解析到的效果如果自己没有
+        // 条件（CondTop() 为 null），就归属到这个子时机上（直到下一个标记出现）。
+        // 为什么不包一层假 if：钩子体里有 EmitRepeated 产生的裸 `{`/`}`，`}` 会把假 if 的栈帧弹掉。
+        string? timingCond = null;
+
         // 收尾：把「每条效果自己的条件」带上（生成器是用一层 if 包的）
         void Done(EffectSpec e)
         {
-            e.Condition = CondTop() ?? new ConditionSpec();
+            e.Condition = CondTop()
+                ?? (timingCond is null ? new ConditionSpec() : new ConditionSpec { Kind = "CardTiming", Timing = timingCond });
             // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上。
             // 「范围界定」（需求 ③：消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / 回合结束自动打出 /
             // 从三摞牌拿牌 / 预见）用的是同一份标记，所以这里把「选牌类效果」也认下来；
@@ -722,8 +746,20 @@ public static class ProjectRecovery
             string line = raw.Trim();
             i++;
             if (line.Length == 0) continue;
+            // 需求⑩：生成器为「卡牌时机」写的两句**胶水代码**，它们不是效果，回读时整行跳过 ——
+            //   · `await Task.CompletedTask;`：保证「所有效果都挂在钩子上」的卡，OnPlay 里也有 await（不然 CS1998）；
+            //   · `...ForgeGivenKeywordTiming.Notify(...)`：把「被给予自定义关键词」转给卡自己的钩子那一步。
+            if (line.StartsWith("await Task.CompletedTask;", StringComparison.Ordinal)) continue;
+            if (line.Contains("CET:GivenKeywordNotify", StringComparison.Ordinal)) continue;
             if (line.StartsWith("//"))
             {
+                // 需求⑩「卡牌时机」：这个标记说明「接下来的效果挂在这个子时机的钩子上」（见 Done / timingCond）
+                string? timingRaw = Match(line, @"CET:CardTiming=(\w+)");
+                if (timingRaw is not null)
+                {
+                    timingCond = timingRaw;
+                    continue;
+                }
                 string? mk = Match(line, @"CET:PetEffect=(\w+)");
                 if (mk is not null)
                 {

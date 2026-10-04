@@ -2144,6 +2144,7 @@ public sealed class ConditionSpec : SpecBase
     private string? _powerId;
     private string _whenUnmet = "Unplayable";
     private string _target = "Self";
+    private string _timing = EffectCatalog.DefaultCardTiming;
 
     /// <summary>条件种类（EffectCatalog.Conditions 里的 Id；None = 无条件）</summary>
     public string Kind
@@ -2157,9 +2158,32 @@ public sealed class ConditionSpec : SpecBase
                 Raise(nameof(NeedsAmount2));
                 Raise(nameof(NeedsPower));
                 Raise(nameof(NeedsTarget));
+                Raise(nameof(NeedsTiming));
                 Raise(nameof(IsNone));
                 Raise(nameof(IsInverted));
                 Raise(nameof(IsOutsideRange));
+                Raise(nameof(DisplayShort));
+                Raise(nameof(Summary));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 「卡牌时机」的子时机（需求⑩）：Exhausted / Generated / Retained / Discarded / Transformed / GivenKeyword。
+    /// 只有 <see cref="NeedsTiming"/> 为 true 的条件（现在就是「卡牌时机」）用得到它；
+    /// 默认值 = 下拉第一项「被消耗」（老存档没有这一项时也是它）。
+    ///
+    /// 注意：带这个条件的效果**不写进 OnPlay**，而是挂到本体对应钩子的 override 上
+    /// （本体「战鼓」DrumOfBattle 的做法），生成端见 CSharpCodeGen.EmitCardTimingHooks。
+    /// </summary>
+    public string Timing
+    {
+        get => _timing;
+        set
+        {
+            if (Set(ref _timing, string.IsNullOrWhiteSpace(value) ? EffectCatalog.DefaultCardTiming : value))
+            {
+                Raise(nameof(TimingZh));
                 Raise(nameof(DisplayShort));
                 Raise(nameof(Summary));
             }
@@ -2240,6 +2264,12 @@ public sealed class ConditionSpec : SpecBase
     [JsonIgnore] public bool NeedsPower => EffectCatalog.FindCondition(_kind)?.NeedsPower == true;
     [JsonIgnore] public bool NeedsTarget => EffectCatalog.FindCondition(_kind)?.NeedsTarget == true;
 
+    /// <summary>界面用：这个条件底下要不要再显示一个「子时机」下拉（需求⑩ 的「卡牌时机」要）。</summary>
+    [JsonIgnore] public bool NeedsTiming => EffectCatalog.FindCondition(_kind)?.NeedsTiming == true;
+
+    /// <summary>子时机的中文名（界面上那个下拉里显示的就是它）。</summary>
+    [JsonIgnore] public string TimingZh => EffectCatalog.CardTimingZh(_timing);
+
     /// <summary>界面上「填负数 = 反向」那一句提示要不要显示（条件支持填负数、而且当前没填负数时提示怎么写）。</summary>
     [JsonIgnore] public bool SupportsNegative => EffectCatalog.FindCondition(_kind)?.SupportsNegative == true;
 
@@ -2257,7 +2287,7 @@ public sealed class ConditionSpec : SpecBase
     /// 措辞（含「填负数 = 反向」「生命区间」）统一走 <see cref="EffectCatalog.ConditionZh"/>，界面和卡面描述不会两套说法。</summary>
     [JsonIgnore]
     public string DisplayShort =>
-        EffectCatalog.ConditionZh(_kind, _amount, _amount2, _powerId, TargetZh, ResourceDisplayName);
+        EffectCatalog.ConditionZh(_kind, _amount, _amount2, _powerId, TargetZh, ResourceDisplayName, _timing);
 
     /// <summary>
     /// 「额外资源量」在界面上的名字（「额外资源量/状态」页里用户填的那个）。

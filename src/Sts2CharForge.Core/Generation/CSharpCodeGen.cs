@@ -802,6 +802,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "EveryNTurns" =>
                 $"{player}?.PlayerCombatState != null && {player}.PlayerCombatState.TurnNumber % {ni} == 0",
             "OncePerCombat" => "!_condUsedThisCombat",
+            // 卡牌时机（需求⑩）：这一条**不是**「打出时的 bool」——带它的效果根本不写进 OnPlay，
+            // 而是挂到本体钩子的 override 上（见 EmitCardTimingHooks）。所以这里永远返回 true：
+            // 万一有哪条路径真的拿它来判断，也只是「不拦」，不会把卡牌判成永远打不出去。
+            "CardTiming" => "true",
             _ => "true",
         };
     }
@@ -1330,7 +1334,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「额外资源量」换成它，否则卡面上会出现「拥有额外资源量至少 4 点」和计数器上的「冰附魔」两个名字。
     /// </summary>
     public static string ConditionText(ConditionSpec c, string? resourceName = null) =>
-        EffectCatalog.ConditionZh(c.Kind, c.Amount, c.Amount2, c.PowerId, c.TargetZh, resourceName);
+        EffectCatalog.ConditionZh(c.Kind, c.Amount, c.Amount2, c.PowerId, c.TargetZh, resourceName, c.Timing);
 
     // ==================== 三个池 ====================
     public static string CardPoolSource(CharacterProfile p)
@@ -2171,12 +2175,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
         var cardVars = VarNamesOf(c.Effects);
+        // 需求⑩「卡牌时机」：带这个条件的效果**不写进 OnPlay**，而是各自挂到本体的钩子上（见 EmitCardTimingHooks）。
+        // 这里先把效果分好组，并把「代码里出现的顺序」定成：OnPlay 的效果在前、各时机块在后。
+        // 变量声明（CanonicalVars）与升级增量都按这个顺序写 —— 回读（ProjectRecovery）也是照同一个顺序
+        // 把各方法体拼起来解析的，变量（NextVar 按顺序配对）才不会串到别的效果上。
+        // 没有这个条件的存档：下面三项全都等于原来的 c.Effects，生成结果一个字符都不变。
+        var timingGroups = CardTimingGroups(c.Effects);
+        bool hasTiming = timingGroups.Count > 0;
+        IReadOnlyList<EffectSpec> onPlayEffects = hasTiming ? c.Effects.Where(e => !IsCardTiming(e.Condition)).ToList() : c.Effects;
+        IReadOnlyList<EffectSpec> varOrder = hasTiming ? onPlayEffects.Concat(timingGroups.SelectMany(g => g.Effects)).ToList() : c.Effects;
+        cardVars = VarNamesOf(varOrder);
         // 「按生命值算」的宠物效果：倍率 lambda 里要写 <Pet>Cmd.Get(card.Owner)，但 CanonicalVars
         // 声明那一刻还不知道是哪只（一张牌可以同时指向两只不同的宠物）→ 先写占位符，
         // 这里按**每条效果自己的**召唤物逐个替换（不能全文替换，否则多只宠物会串）。
-        bool needsPetCmd = c.Effects.Any(x => !HasNoDynamicVar(x) && CanonicalVarNeedsPetCmd(x));
-        bool anyPetCmdMissing = c.Effects.Any(x => CanonicalVarNeedsPetCmd(x) && PetGen.Resolve(p, x.PetSummon) is null);
-        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x)))
+        bool needsPetCmd = varOrder.Any(x => !HasNoDynamicVar(x) && CanonicalVarNeedsPetCmd(x));
+        bool anyPetCmdMissing = varOrder.Any(x => CanonicalVarNeedsPetCmd(x) && PetGen.Resolve(p, x.PetSummon) is null);
+        foreach (var e in varOrder.Where(x => !HasNoDynamicVar(x)))
             w.Line($"    {VarDeclaration(e, cardVars, p)},");
         w.Line("];");
         if (needsPetCmd && anyPetCmdMissing)
@@ -2261,7 +2275,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         var summonedHere = new HashSet<string>(StringComparer.Ordinal);
         foreach (var e in c.Effects.Where(x => x.Kind == "SummonPet"))
             foreach (var d in PetGen.ResolveMany(p, e.PetSummon)) summonedHere.Add(d.ClassName);
-        foreach (var e in c.Effects)
+        // 注意这里遍历的是 onPlayEffects：卡牌时机的宠物效果挂在钩子里，不该在 OnPlay 上加伙伴守卫 /
+        // 查询变量（`Creature? __pet = …` 是在 OnPlay 开头声明的，钩子里用不到）。
+        foreach (var e in onPlayEffects)
         {
             if (!NeedsExistingPet(e)) continue;
             var defs = PetGen.ResolveMany(p, e.PetSummon);
@@ -2300,6 +2316,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         foreach (var e in c.Effects)
         {
             if (e.Condition is null || e.Condition.IsNone) continue;
+            // 卡牌时机（需求⑩）：这一类不是「打出时算一个 bool」，写不进 IsPlayable / 描金边
+            //（它挂在本体的钩子上，见 EmitCardTimingHooks），所以这里跳过、由生成钩子那段写自己的注释。
+            if (IsCardTiming(e.Condition)) continue;
             // 斩杀（Fatal）：判的是「上一条攻击有没有把目标打死」，只有**打出之后**才知道结果 ——
             // 写不进 IsPlayable / 描金边（那两个地方还没有 __lastAttack，而且语义也不对），
             // 所以只包住那条效果（和「指定敌人」那类条件一样）。
@@ -2361,6 +2380,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line()
          .Open("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
 
+        // 所有效果都挂在「卡牌时机」的钩子上时，OnPlay 里一句都没有 —— 补一句 await，
+        // 免得生成出「async 方法里没有 await」（CS1998）。这是新配置才会走到的分支（老存档不变）。
+        if (c.Effects.Count > 0 && onPlayEffects.Count == 0)
+            w.Line("// 这张牌的效果全都挂在「卡牌时机」的钩子上（打出时不做事），见下面那几个 override")
+             .Line("await Task.CompletedTask;");
+
         // X 值：整张牌里只取一次，后面的效果都用这个变量
         if (usesX)
         {
@@ -2410,13 +2435,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 注意：只有「需要已经召唤出来的那只」的效果才需要这个变量（见 NeedsExistingPet）；
         // 纯召唤牌不声明它（否则生成代码里会留一个没用到的局部变量，白挨一条编译警告）。
         var petLookup = new Dictionary<string, string>(StringComparer.Ordinal);      // 宠物类名 → 局部变量名
-        foreach (var e in c.Effects.Where(NeedsExistingPet))
+        foreach (var e in onPlayEffects.Where(NeedsExistingPet))
         {
             // 「全部召唤物」会把这张牌用到的**每一只**都查一遍（各占一个 __xxx 变量）
             foreach (var d in PetGen.ResolveMany(p, e.PetSummon))
                 if (!petLookup.ContainsKey(d.ClassName)) petLookup[d.ClassName] = PetAttackVarName(d.ClassName);
         }
-        bool hasPetAction = c.Effects.Any(e => e.PetAction);
+        bool hasPetAction = onPlayEffects.Any(e => e.PetAction);
         if (hasPetAction)
         {
             w.Line();
@@ -2434,10 +2459,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         // 每条效果各自的条件：不满足只跳过这一条（WrapInIf 里的效果本身不能带条件）
         // 概率生效：整张牌所有勾了概率的效果**共用一次掷骰**（合并概率，用户要求）
-        var cardChanceSlices = ChanceSlices(c.Effects);
+        var cardChanceSlices = ChanceSlices(onPlayEffects);
         if (cardChanceSlices.Count > 0) w.Line(ChanceRollLine());
         int petAllGroup = 0;
-        foreach (var e in c.Effects)
+        foreach (var e in onPlayEffects)
         {
             string? cond = EffectConditionGuard(e, CondCtx.Card, inOnPlay: true, chanceSlices: cardChanceSlices);
             bool hasGuard = cond is not null;
@@ -2493,6 +2518,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (wrapEffects) w.Close();
         w.Close();
 
+        // 需求⑩：卡牌时机的效果 —— 挂到本体对应钩子的 override 上（不在 OnPlay 里）
+        if (hasTiming) EmitCardTimingHooks(w, p, timingGroups, cardVars);
+
         var upgradeable = c.Effects.Where(e => e.UpgradeAmount != 0 && !HasNoDynamicVar(e)).ToList();
         int? targetCost = c.UpgradeCost;
         bool costChange = targetCost is not null && targetCost.Value != c.Cost && !c.CostIsX;
@@ -2530,6 +2558,308 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         w.Close();
         return w.ToString();
+    }
+
+    // ==================== 卡牌时机（需求⑩） ====================
+    //
+    // 原文：`条件增加“卡牌时机”，当选择时在底下新增下拉栏，内包含“被消耗”、“被生成”、“被保留”、“被丢弃”、“被变化”，
+    // 参考原版“战鼓”，再加一个“被给予自定义关键词”，当此卡被给予关键词时条件生效。`
+    //
+    // 这一条和别的 20 个条件**架构上不同**：别的都是「打出这张牌时算一个 bool」，而「这张牌被消耗了」这件事
+    // 打出的时候根本还没发生（可能是别的牌的效果、可能是回合结束时虚无、也可能永远不发生）。
+    // 本体「战鼓」DrumOfBattle 的做法就是覆写卡自己的钩子：
+    //     public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)
+    //     { if (card == this && base.CombatState != null) { … } }
+    // 所以带这个条件的效果一律**不写进 OnPlay**，而是生成成对应钩子的 override；同一个时机有多条效果
+    // 就合并进同一个 override，按效果列表顺序执行（和本体多效果卡的写法一致）。
+
+    /// <summary>
+    /// 「卡牌时机」子时机 → 生成出来的**方法名**。回读（<see cref="ProjectRecovery"/>）按它把方法体抠出来，
+    /// 所以这里和 <see cref="EmitCardTimingHooks"/> 里写的签名必须一致（改一处就得改另一处）。
+    /// 被变化 / 被给予自定义关键词用的是**另一个方法名**（本体那个钩子是同步 void，效果体在私有异步方法里；
+    /// 给关键词那条压根不是本体钩子，是我们自己的入口）。
+    /// </summary>
+    public static string CardTimingMethodName(string timing) => timing switch
+    {
+        "Exhausted" => "AfterCardExhausted",
+        "Generated" => "AfterCardGeneratedForCombat",
+        "Retained" => "AfterFlush",
+        "Discarded" => "AfterCardDiscarded",
+        "Transformed" => "ForgeOnTransformedFrom",
+        "GivenKeyword" => "ForgeOnGivenCustomKeyword",
+        _ => "AfterCardExhausted",
+    };
+
+    /// <summary>这条效果的条件是不是「卡牌时机」（需求⑩）。</summary>
+    internal static bool IsCardTiming(ConditionSpec? c) =>
+        c is not null && !c.IsNone && string.Equals(c.Kind, "CardTiming", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 把这个存档里所有「卡牌时机」的效果按子时机分组（顺序 = <see cref="EffectCatalog.CardTimings"/> 的顺序）。
+    /// 顺序固定下来是为了「生成 → 回读」对得上：CanonicalVars 与回读解析都按同一个顺序走。
+    /// </summary>
+    private static List<(string Timing, List<EffectSpec> Effects)> CardTimingGroups(IEnumerable<EffectSpec> effects)
+    {
+        var list = effects.Where(e => IsCardTiming(e.Condition)).ToList();
+        var groups = new List<(string Timing, List<EffectSpec> Effects)>();
+        if (list.Count == 0) return groups;
+        foreach (var opt in EffectCatalog.CardTimings)
+        {
+            var mine = list.Where(e => string.Equals(e.Condition!.Timing, opt.Id, StringComparison.Ordinal)).ToList();
+            if (mine.Count > 0) groups.Add((opt.Id, mine));
+        }
+        // 子时机认不出来（老存档被改坏 / 手写）的兜底：挂到第一项「被消耗」上，不丢效果（校验器会报错拦住生成）
+        var known = new HashSet<string>(groups.Select(g => g.Timing), StringComparer.Ordinal);
+        var unknown = list.Where(e => !known.Contains(e.Condition!.Timing ?? "") && EffectCatalog.FindCardTiming(e.Condition!.Timing) is null).ToList();
+        if (unknown.Count > 0) groups.Add((EffectCatalog.DefaultCardTiming, unknown));
+        return groups;
+    }
+
+    /// <summary>
+    /// 生成「卡牌时机」的钩子 override。每个子时机一段，签名照本体抄（注释里各写清了为什么挂那儿）：
+    ///   被消耗   → AbstractModel.AfterCardExhausted(choiceContext, card, causedByEthereal)   [async，判 card == this]
+    ///   被丢弃   → AbstractModel.AfterCardDiscarded(choiceContext, card)                       [async，判 card == this]
+    ///   被生成   → AbstractModel.AfterCardGeneratedForCombat(card, creator)                    [async，判 card == this]
+    ///   被保留   → AbstractModel.AfterFlush(choiceContext, player, flushedCards, retainedCards)[async，判 retainedCards 里有自己]
+    ///   被变化   → CardModel.AfterTransformedFrom()                                            [**同步 void、无 context**，见下面的说明]
+    ///   被给予自定义关键词 → 我们自己的「给予卡牌关键词」那一步直接调用（本体没有这个事件）
+    /// </summary>
+    private static void EmitCardTimingHooks(CodeWriter w, CharacterProfile p,
+        List<(string Timing, List<EffectSpec> Effects)> groups, Dictionary<EffectSpec, string> cardVars)
+    {
+        foreach (var (timing, effects) in groups)
+        {
+            // 要不要声明 `CardPlay? cardPlay = null;`：由**生成出来的文本**决定（有没有真的引用 cardPlay），
+            // 比按效果种类列一张表猜更准（例：格挡自始至终都把 cardPlay 传给 CreatureCmd.GainBlock）。
+            // 同一份文本也用来判断「这几条效果里有没有 await」—— 没有的话要给 async 方法补一句，
+            // 免得生成出 CS1998（async 方法里没有 await）。
+            string bodyText = TimingBodyText(effects, p, cardVars);
+            bool needsCardPlay = bodyText.Contains("cardPlay", StringComparison.Ordinal);
+            bool bodyAwaits = bodyText.Contains("await ", StringComparison.Ordinal);
+            switch (timing)
+            {
+                case "Discarded":
+                    w.Line()
+                     .Line("// 卡牌时机「被丢弃」（需求⑩）：覆写 AbstractModel.AfterCardDiscarded（本体这个钩子会广播给场上所有模型，先判 card == this）")
+                     .Open("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)")
+                     .Line("if (card != this || base.CombatState is null) return;")
+                     .Line("// CET:CardTiming=Discarded");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+
+                case "Generated":
+                    // 为什么不用 CardModel.AfterCreated()：本体那个钩子是 `public virtual void AfterCreated()`（同步 void、
+                    // 没有 choiceContext），里面没法 await 本体的命令（本体的卡也一个都没覆写它）。
+                    // 本体的另一条钩子 AfterCardGeneratedForCombat(card, creator) 是 async 的，而且是
+                    // **战斗里生成卡牌时**广播的（CardPileCmd.AddGeneratedCardsToCombat → Hook.AfterCardGeneratedForCombat），
+                    // 我们的「生成卡牌」效果生成的卡走的正是这条路（AddToCombatAndPreview / AddGeneratedCardsToCombat），
+                    // 所以「被生成」挂它 —— 而且生成出来的卡这时已经在战斗牌堆里，能收到广播。
+                    // 它同样**没有** choiceContext，但它是 async 的：用本体分发事件时那个 HookPlayerChoiceContext
+                    // 自己造一个就行（Hook.cs 里就是这么 new 的），效果体照常 await。
+                    w.Line()
+                     .Line("// 卡牌时机「被生成」（需求⑩）：覆写 AbstractModel.AfterCardGeneratedForCombat")
+                     .Line("// （为什么不是 CardModel.AfterCreated：那个是同步 void、没有 choiceContext，没法 await 本体的命令；")
+                     .Line("//   而这一条是 async 的，并且战斗里「生成卡牌」正是广播它 —— 见 CardPileCmd.AddGeneratedCardsToCombat）")
+                     .Open("public override async Task AfterCardGeneratedForCombat(CardModel card, Player? creator)")
+                     .Line("if (card != this || base.CombatState is null) return;")
+                     .Line("// CET:CardTiming=Generated")
+                     .Line("// 本体这条钩子没有 choiceContext：用本体分发事件时用的 HookPlayerChoiceContext 造一个（Hook.cs 里就是这么 new 的）")
+                     .Line("var choiceContext = new HookPlayerChoiceContext(this, MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
+                    if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+
+                case "Retained":
+                    // 本体**没有** AfterCardRetained 之类的钩子，但它丢手牌那一步会把「这回合要留下的牌」
+                    // 单独交出来：CombatManager.FlushPlayerHand → Hook.AfterFlush(state, player, ctx, cardsToFlush, cardsToRetain)。
+                    // 判据就写在那里（本体 CardModel.ShouldRetainThisTurn 的定义）：
+                    //   · 有 CardKeyword.Retain 关键词 → 留；
+                    //   · 这一回合被 GiveSingleTurnRetain() 标记过（本体单回合保留）→ 留；
+                    //   · Hook.ShouldFlush(state, player) 为 false 时（「整手牌都不丢」那种效果）→ 所有手牌都归进 retainedCards。
+                    // 三条路都会让这张牌出现在 retainedCards 里，所以「retainedCards.Contains(this)」就是准的判据。
+                    //
+                    // 为什么不用 CardModel.OnTurnEndInHandWrapper 自己判：HasTurnEndInHandEffect 会让本体
+                    // 把这张牌当成「回合结束时在手上触发的牌」，在跑完 OnTurnEndInHand 之后**无条件把它丢进弃牌堆 / 消耗**
+                    // （CombatManager.ResolveTurnEndCardEffects），那正好把「保留」这件事破坏掉了 ——
+                    // 玩家会看到一张写着「被保留时…」的牌根本不留在手上。AfterFlush 是只读的通知，没有这个副作用。
+                    w.Line()
+                     .Line("// 卡牌时机「被保留」（需求⑩）：覆写 AbstractModel.AfterFlush —— 本体丢手牌时会把「这回合留下的牌」交出来")
+                     .Line("// 判据 = 本体 CombatManager.FlushPlayerHand 归进 retainedCards：有 Retain 关键词 / 这回合被单回合保留 / 整手牌都不丢")
+                     .Open("public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)")
+                     .Line("if (player != base.Owner || base.CombatState is null) return;")
+                     .Line("if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）")
+                     .Line("// CET:CardTiming=Retained");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+
+                case "Transformed":
+                    // 本体 CardCmd.Transform 里：`original.AfterTransformedFrom(); replacement2.AfterTransformedTo();`
+                    // 需求里说的「被变化」= **这张牌被变成了别的牌**，所以选 AfterTransformedFrom
+                    //（AfterTransformedTo 是「这张牌是变化出来的那一张」，那更像「被生成」）。
+                    // 这个钩子是**同步 void、也没有 choiceContext**，效果体只能放进一个 private async Task，
+                    // 用本体自己分发事件时用的 HookPlayerChoiceContext 起一个上下文
+                    //（Hook.cs 里就是 `new HookPlayerChoiceContext(model, netId, combatState, GameActionType.Combat)`）。
+                    w.Line()
+                     .Line("// 卡牌时机「被变化」（需求⑩）：本体 CardCmd.Transform 里 original.AfterTransformedFrom() —— 「这张牌被变成了别的牌」")
+                     .Line("//（不选 AfterTransformedTo：那是「这张牌是变化出来的那一张」，语义上属于「被生成」。）")
+                     .Open("public override void AfterTransformedFrom()")
+                     .Line("// 本体这个钩子是**同步 void、没有 choiceContext**，没法直接 await 命令，所以另起一个异步方法；")
+                     .Line("// 上下文用 HookPlayerChoiceContext（本体分发这类事件时用的就是它，见 Hook.cs）。")
+                     .Line("if (base.CombatState is null) return;")
+                     .Line("var choiceContext = new HookPlayerChoiceContext(this, MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
+                     .Line("_ = choiceContext.AssignTaskAndWaitForPauseOrCompletion(ForgeOnTransformedFrom(choiceContext));")
+                     .Close()
+                     .Line()
+                     .Open("private async Task ForgeOnTransformedFrom(PlayerChoiceContext choiceContext)")
+                     .Line("// CET:CardTiming=Transformed");
+                    if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+
+                case "GivenKeyword":
+                    // 本体**没有**「被给予关键词」事件（关键词只有 AddKeyword / RemoveKeyword 两个动作，没有广播）。
+                    // 但「给一张牌加上自定义关键词」这件事**本来就是我们自己做的**（生成出来的
+                    // `AddGivenCustomKeyword` / `EmitGiveKeywordTo` 那一套），所以不需要另造机制：
+                    // 在那一步直接调用这张牌的这个方法就行（见 EmitGiveKeywordTo 里的 notify 与
+                    // GivenKeywordPatchSource 里生成的转发器 ForgeGivenKeywordTiming）。
+                    w.Line()
+                     .Line("// 卡牌时机「被给予自定义关键词」（需求⑩）：由生成出来的「给予卡牌关键词」那一步直接调用")
+                     .Line("// （本体没有这个事件；给自定义关键词本来就是我们自己做的，见生成的关键词补丁里的 ForgeGivenKeywordTiming）")
+                     .Open("public async Task ForgeOnGivenCustomKeyword(PlayerChoiceContext choiceContext)")
+                     .Line("// CET:CardTiming=GivenKeyword")
+                     .Line("if (base.CombatState is null) return;");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+
+                default:   // Exhausted（也是兜底）
+                    w.Line()
+                     .Line("// 卡牌时机「被消耗」（需求⑩）：本体「战鼓」DrumOfBattle 的做法 —— 覆写 AbstractModel.AfterCardExhausted")
+                     .Line("//（本体这个钩子会广播给场上所有模型，所以先判 card == this 只认自己）")
+                     .Open("public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)")
+                     .Line("if (card != this || base.CombatState is null) return;")
+                     .Line("// CET:CardTiming=Exhausted");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars);
+                    w.Close();
+                    break;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 这些钩子里没有「打出记录」（cardPlay）。有几条本体 API 只是需要一个「来源卡」参数
+    /// （<c>DamageCmd.Attack(...).FromCard(this, cardPlay)</c> / <c>CreatureCmd.GainBlock(..., cardPlay)</c>），
+    /// 传 null 就是「没有具体的打出记录」。真正会**解引用** cardPlay.Target 的效果（打出的那个目标）
+    /// 校验器会直接拦掉（见 ProfileValidator 的 TimingUsesPlayedTarget）。
+    /// </summary>
+    private static void EmitCardPlayPlaceholder(CodeWriter w) =>
+        w.Line("// 这些钩子里没有「打出记录」：下面把 cardPlay 传 null（那几条本体 API 允许它），")
+         .Line("// 「打出的目标」类效果（会解引用 cardPlay.Target）校验器会拦住，不允许挂在卡牌时机上。")
+         .Line("CardPlay? cardPlay = null;");
+
+    /// <summary>一组时机效果生成出来的代码文本（只用来判断「有没有引用 cardPlay / 有没有 await」）。</summary>
+    private static string TimingBodyText(IReadOnlyList<EffectSpec> effects, CharacterProfile p,
+        Dictionary<EffectSpec, string> cardVars)
+    {
+        var scratch = new CodeWriter();
+        EmitCardTimingBody(scratch, p, effects, cardVars);
+        return scratch.ToString();
+    }
+
+    /// <summary>
+    /// 「卡牌时机」那一组效果的代码体（同一个时机里的多条效果按列表顺序依次执行）。
+    /// 条件就是时机本身（已经体现在挂在哪个钩子上），所以这里**不再包条件 if**，只处理「概率生效」。
+    /// </summary>
+    private static void EmitCardTimingBody(CodeWriter w, CharacterProfile p, IReadOnlyList<EffectSpec> effects,
+        Dictionary<EffectSpec, string> cardVars)
+    {
+        var slices = ChanceSlices(effects);
+        if (slices.Count > 0) w.Line(ChanceRollLine());
+        foreach (var e in effects)
+        {
+            w.Line($"// 卡牌时机「{EffectCatalog.CardTimingZh(e.Condition?.Timing)}」→「{EffectCatalog.FindKind(e.Kind).Display}」这条效果"
+                 + (e.ChanceEnabled ? $"（{e.ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}% 概率生效）" : ""));
+            string? guard = null;
+            if (slices.TryGetValue(e, out var slice))
+                guard = $"if (__chanceRoll >= {slice.Start.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}"
+                      + $" && __chanceRoll < {slice.End.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)})";
+            if (guard is not null) w.Open(guard);
+            // X 一律按 0 处理（useX: false → 用 CanonicalVars 里那个数值）：这些钩子里没有打出时的 X，
+            // 校验器会拦住「数值 = X」的配置，这里只是保证万一跑到也不生成引用不到变量的代码。
+            EmitCardEffect(w, p, e, useX: false, varMap: cardVars, petVar: null, petDef: null,
+                effectComment: null, petLookup: null, captureFatal: false);
+            if (guard is not null) w.Close();
+        }
+    }
+
+    /// <summary>
+    /// 这张牌（或遗物 / 药水 / 自定义状态）里有没有「卡牌时机 = <paramref name="timing"/>」的效果。
+    /// 生成「给予卡牌关键词」那一步时要用它决定要不要转发给卡牌的钩子
+    /// （没有这个时机的存档 → 一个字符都不变，见 EmitGiveKeywordTo）。
+    /// </summary>
+    public static bool UsesCardTiming(CharacterProfile p, params string[] timings)
+    {
+        bool Hit(ConditionSpec? c) => IsCardTiming(c)
+            && (timings.Length == 0 || timings.Contains(c!.Timing, StringComparer.Ordinal));
+        foreach (var card in p.AllCards)
+        {
+            if (Hit(card.Condition)) return true;
+            if (card.Effects.Any(e => Hit(e.Condition))) return true;
+        }
+        foreach (var r in p.Relics)
+        {
+            if (Hit(r.Condition)) return true;
+            if (r.Effects.Any(e => Hit(e.Condition))) return true;
+        }
+        foreach (var s in p.Potions)
+            if (s.Effects.Any(e => Hit(e.Condition))) return true;
+        foreach (var t in p.CustomPowers)
+            foreach (var tr in t.Triggers)
+                if (tr.Effects.Any(e => Hit(e.Condition))) return true;
+        return false;
+    }
+
+    /// <summary>「被给予自定义关键词」这个时机的卡类名（生成转发器用；顺序 = 卡牌列表顺序）。</summary>
+    public static IReadOnlyList<string> GivenKeywordTimingCardClasses(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        return p.AllCards.Where(card => !card.IsVanillaCard
+                && card.Effects.Any(e => IsCardTiming(e.Condition) && e.Condition!.Timing == "GivenKeyword"))
+            .Select(card => n.CardClassName(p, card))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 「卡牌时机」的效果里**不能用**「打出的目标」（本体那些钩子里没有 cardPlay.Target）。判据对着
+    /// <see cref="EmitCardEffectOnce"/> 抄 —— 它里面碰 cardPlay.Target 的地方就是下面这几种：
+    ///   · 一律用 cardPlay.Target 的：Stun（击晕）、TimesUp（大限已至）、PetSacrifice 的伤害收益；
+    ///   · 只有「作用对象 = 敌人」那一档才用：Damage / Block / Heal / HpLoss / MaxHp / ApplyPower / TempPower /
+    ///     DoublePower / ForbidBlock / ForbidHeal / Expose / ClearPowerOne / ClearPowerDebuffs
+    ///     （Self / AllEnemies / RandomEnemies 这几档走 base.Owner 或 HittableEnemies，用不到它）；
+    ///   · 「下回合生效」的那几档走的是另一个 Power（打给自己），也用不到。
+    /// </summary>
+    internal static bool TimingUsesPlayedTarget(EffectSpec e)
+    {
+        if (e.Kind == "Stun" || e.Kind == "TimesUp") return true;
+        if (e.Kind == "PetSacrifice") return e.PetSacrificeGain == "Damage";
+        // 「下回合生效」会改成打给自己的另一个状态（BlockNextTurnPower / 延迟 Power），用不到打出目标 ——
+        // 只有这两种效果有这一档（别的效果的 NextTurn 不改变它打谁，所以不能一起放过）。
+        if (e.NextTurn && e.Kind is "Block" or "ApplyPower") return false;
+        if (e.Kind is not ("Damage" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "ApplyPower" or "TempPower"
+            or "DoublePower" or "ForbidBlock" or "ForbidHeal" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"))
+            return false;
+        return e.TargetSide is "" or "Enemy";
     }
 
     private static string ResolveTargetType(CardSpec c)
@@ -5798,6 +6128,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             Warn(w, e, "（没选关键词，这条效果什么都不做）");
             return;
         }
+        // 需求⑩：这个存档里有没有「卡牌时机 = 被给予自定义关键词」的卡 —— 只有有时才写转发那一句
+        //（默认档 / 老存档一个字符都不变）。
+        bool notifyTiming = NotifyGivenKeywordTiming(p);
         if (e.Amount <= 0)
         {
             if (!selfAllowed)
@@ -5806,7 +6139,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 return;
             }
             w.Line("// 数值 0 = 这张牌自己");
-            EmitGiveKeywordTo(w, e, "this", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            EmitGiveKeywordTo(w, e, "this", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
             return;
         }
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
@@ -5820,7 +6153,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"var __kwCards = (await CardSelectCmd.FromCombatPile(choiceContext, {pileExpr}, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
             w.Line("foreach (CardModel __kwCard in __kwCards)");
             w.Open("");
-            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
             w.Close();
         }
         else
@@ -5829,7 +6162,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Open($"for (int __kwIdx = 0; __kwIdx < {n}; __kwIdx++)");
             w.Line($"CardModel? __kwCard = {playerExpr}.RunState.Rng.CombatCardSelection.NextItem({CardScopeFiltered(e, p, $"{pileExpr}.Cards")});");
             w.Line("if (__kwCard is null) break;");
-            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
+            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
             w.Close();
         }
     }
@@ -5837,13 +6170,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>给某张牌加上关键词（<paramref name="cardExpr"/> 是那张牌的表达式）。</summary>
     private static void EmitGiveKeywordTo(CodeWriter w, EffectSpec e, string cardExpr,
         string creatureExpr, string sourceExpr, bool customKw, string kwEnum, string customKey,
-        bool? tempOverride = null)
+        bool? tempOverride = null, bool notifyTiming = false)
     {
         // 「临时关键词」由调用方决定：需求 ⑦「生成出来的卡带关键词」固定按永久生成（新卡没有「只是这一回合」这一说）
         bool temp = tempOverride ?? e.TempKeyword;
         if (customKw)
         {
             w.Line($"{cardExpr}.AddGivenCustomKeyword({Lit.Str(customKey)});   // 自定义关键词：卡面文字与悬停说明由生成的关键词补丁加上");
+            // 需求⑩「卡牌时机 = 被给予自定义关键词」：给关键词这一步就是入口 —— 直接把这件事转给这张牌自己的钩子
+            //（生成转发器只在真的用到这个时机时才存在，见 GivenKeywordPatchSource / NotifyGivenKeywordTiming）。
+            if (notifyTiming)
+                w.Line($"await {Naming.AmbientGivenKeywordTimingClass}.Notify(choiceContext, {cardExpr});"
+                    + "   // 需求⑩：这张牌带着「被给予自定义关键词」时机时，跑它自己那条效果 // CET:GivenKeywordNotify");
             if (temp)
                 w.Line($"await PowerCmd.Apply(choiceContext, {TempKeywordPowerClassName(e, null)}.CreateForCustom({cardExpr}, {Lit.Str(customKey)}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
                     + "   // 临时：回合结束时摘掉");
@@ -5884,6 +6222,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>存档里有没有「临时关键词」（有才生成那个 Power）。</summary>
     public static bool UsesTempKeywordPower(CharacterProfile p) => GiveKeywordEffects(p).Any(e => e.TempKeyword);
+
+    /// <summary>
+    /// 需求⑩：「被给予自定义关键词」这个时机要不要在给关键词那一步转发。
+    /// 条件有两个：① 存档里真有卡用了这个时机；② <paramref name="p"/> 拿得到（几个生成入口会传 null）。
+    /// 默认档 / 老存档两个都不成立 → 生成结果一个字符都不变。
+    /// </summary>
+    internal static bool NotifyGivenKeywordTiming(CharacterProfile? p) =>
+        p is not null && UsesCardTiming(p, "GivenKeyword");
 
     /// <summary>存档里所有「给予卡牌关键词」效果（卡的 / 遗物的 / 药水的 / 自定义状态触发的）。</summary>
     public static IEnumerable<EffectSpec> GiveKeywordEffects(CharacterProfile p) =>
@@ -6088,6 +6434,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static string GivenKeywordPatchSource(CharacterProfile p)
     {
         var n = Naming.From(p);
+        var timingCards = GivenKeywordTimingCardClasses(p);
         return new CodeWriter()
             .Line("// <auto-generated> 「给予卡牌关键词」：运行时给任意卡牌加自定义关键词（卡面 + 悬停） </auto-generated>")
             .Line("using System;")
@@ -6130,6 +6477,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Line("public static void AddGivenCustomKeyword(this CardModel card, string key) => ForgeGivenKeywords.Add(card, key);")
             .Line("public static void RemoveGivenCustomKeyword(this CardModel card, string key) => ForgeGivenKeywords.Remove(card, key);")
             .Close()
+            .Raw(GivenKeywordTimingDispatcherSource(timingCards))
             .Line()
             .Line("/// <summary>卡面描述：把「给过」的关键词按本体的观感拼在描述最前面（[gold]名字[/gold]。）。</summary>")
             .Line("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"GetDescriptionForPile\")]")
@@ -6174,6 +6522,33 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Close()
             .Close()
             .ToString();
+    }
+
+    /// <summary>
+    /// 需求⑩「卡牌时机 = 被给予自定义关键词」的**转发器**：把「这张牌刚被给了一个自定义关键词」这件事
+    /// 交给这张牌自己的钩子方法（<c>ForgeOnGivenCustomKeyword</c>，见 <see cref="EmitCardTimingHooks"/>）。
+    ///
+    /// 为什么不用本体的钩子：本体根本没有「被给予关键词」的事件 —— 关键词只有 AddKeyword / RemoveKeyword
+    /// 两个动作（CardModel 上没有任何广播）。但「给一张牌加上**自定义**关键词」这件事完全是我们自己做的
+    /// （生成的 AddGivenCustomKeyword / EmitGiveKeywordTo），所以在那一步直接调用即可，不需要另造机制。
+    ///
+    /// 这个类只在存档里真有卡用这个时机时才生成（没有 = 一个字符都不变，见 <see cref="GivenKeywordTimingCardClasses"/>）。
+    /// </summary>
+    private static string GivenKeywordTimingDispatcherSource(IReadOnlyList<string> timingCards)
+    {
+        if (timingCards.Count == 0) return "";
+        var w = new CodeWriter();
+        w.Line("/// <summary>需求⑩：把「这张牌被给了自定义关键词」转发给带这个时机的卡（没带就什么都不做）。</summary>")
+         .Open($"internal static class {Naming.AmbientGivenKeywordTimingClass}")
+         .Open("internal static Task Notify(PlayerChoiceContext choiceContext, CardModel card)")
+         .Open("switch (card)");
+        foreach (string cls in timingCards)
+            w.Line($"case {cls} __given: return __given.ForgeOnGivenCustomKeyword(choiceContext);");
+        w.Line("default: return Task.CompletedTask;")
+         .Close()
+         .Close()
+         .Close();
+        return w.ToString();
     }
 
     /// <summary>额外回合用的 Power（照抄本体 MockExtraTurnPower 的写法）。</summary>

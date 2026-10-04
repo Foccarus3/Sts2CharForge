@@ -421,12 +421,24 @@
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
                     <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
                               ItemsSource="{Binding CardEffectConditions, RelativeSource={RelativeSource AncestorType=Window}}"
                               DisplayMemberPath="Display" SelectedValuePath="Id"
                               SelectedValue="{Binding Condition.Kind}"/>
+
+                    <!-- 需求⑩「卡牌时机」：选了它才出现这个「子时机」下拉（被消耗 / 被生成 / 被保留 / 被丢弃 / 被变化 / 被给予自定义关键词）。
+                         它和别的条件不一样：带它的效果不写进 OnPlay，而是挂到本体对应时机的钩子上。 -->
+                    <TextBlock Grid.Row="3" Grid.Column="2" Text="卡牌时机" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsTiming, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="3" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                              Visibility="{Binding Condition.NeedsTiming, Converter={StaticResource BoolToVis}}"
+                              ItemsSource="{Binding ConditionTimings, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Timing}"
+                              ToolTip="这张牌在什么时候触发这条效果（挂到本体对应的钩子上，和本体「战鼓」一样）。"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
@@ -482,12 +494,24 @@
                     </Grid.ColumnDefinitions>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
                     <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
                               ItemsSource="{Binding PlainEffectConditions, RelativeSource={RelativeSource AncestorType=Window}}"
                               DisplayMemberPath="Display" SelectedValuePath="Id"
                               SelectedValue="{Binding Condition.Kind}"/>
+
+                    <!-- 需求⑩「卡牌时机」的子时机。这一版模板是遗物 / 自定义状态用的：那些地方的条件表里
+                         没有「卡牌时机」（ForCard = false，校验器会报错），所以这个下拉永远不会显示出来 ——
+                         但绑定还是写上，免得以后放开时漏一处。 -->
+                    <TextBlock Grid.Row="3" Grid.Column="2" Text="卡牌时机" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsTiming, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="3" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                              Visibility="{Binding Condition.NeedsTiming, Converter={StaticResource BoolToVis}}"
+                              ItemsSource="{Binding ConditionTimings, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Timing}"/>
 
                     <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
