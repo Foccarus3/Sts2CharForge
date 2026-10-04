@@ -922,6 +922,9 @@ public static class ProjectRecovery
                     // 负数 = 反向：扣层数（PowerCmd.ModifyAmount + __negPower）与失去格挡（LoseBlock）
                     || line.Contains("__negPower", StringComparison.Ordinal)
                     || line.Contains("__dblPower", StringComparison.Ordinal)
+                    || line.Contains("__expTarget", StringComparison.Ordinal)
+                    || line.Contains("__clrPower", StringComparison.Ordinal)
+                    || line.Contains("__clrP", StringComparison.Ordinal)
                     || line.Contains("CreatureCmd.LoseBlock(", StringComparison.Ordinal)
                     || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
                 if (scBody) continue;

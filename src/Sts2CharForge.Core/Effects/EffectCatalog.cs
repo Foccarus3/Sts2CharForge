@@ -602,6 +602,14 @@ public static class EffectCatalog
     // —— 加「(倍数-1) 倍现有层数」就等于翻倍（本体扣/加层数都是走 ModifyAmount）。
     // 数值不声明动态变量（写死在生成代码里，见 CSharpCodeGen.HasNoDynamicVar）。
     new EffectKindOption("DoublePower", "翻倍目标身上的状态层数（数值 = 倍数，2 = 翻倍；0 = 不生效）", "倍", 0, 5, true, true),
+    // 暴露（参考本体卡「暴露 Expose」）：清空目标的格挡 + 移除人工制品，再施加 N 层状态
+    // （施加哪个状态在「增益 / 减益」栏选）。生成的就是本体那三句：
+    //   CreatureCmd.LoseBlock(目标, 目标.Block) → 有 ArtifactPower 就 PowerCmd.Remove<ArtifactPower> → PowerCmd.Apply<X>(N)。
+    new EffectKindOption("Expose", "暴露（清空格挡与人工制品，再施加 N 层状态；0 = 不生效）", "层", 0, 99, true, true),
+    // 清除目标身上的指定状态（哪个状态在「增益 / 减益」栏选）
+    new EffectKindOption("ClearPowerOne", "清除目标的指定状态（在「增益 / 减益」栏选哪个）", "—", 0, 0, true, true),
+    // 清除目标身上的所有减益状态
+    new EffectKindOption("ClearPowerDebuffs", "清除目标的所有减益状态", "—", 0, 0, true, true),
         // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
         // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
         // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。

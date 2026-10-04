@@ -13504,6 +13504,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			dblProbe.Relics.Add(dblRelic);
 			Check("校验器：翻倍只做在卡牌上（遗物没有「选中的目标」）",
 				ProfileValidator.Validate(dblProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("只做在卡牌上")), "拦住了");
+		}		// ===== 本轮新增：暴露 / 清除指定状态 / 清除所有减益（+ 修「只带这些效果的牌 TargetType 变成 Self」）=====
+		{
+			CharacterProfile expProbe = ProfileFactory.Sample();
+			expProbe.VanillaPowerOverrides.Clear();
+			CardSpec expCard = new CardSpec { Name = "暴露探针", ClassName = "UiCheckExpose", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			expCard.Effects.Add(new EffectSpec { Kind = "Expose", Amount = 3m, PowerId = "VulnerablePower", TargetSide = "Enemy" });
+			expCard.Effects.Add(new EffectSpec { Kind = "ClearPowerOne", PowerId = "StrengthPower", TargetSide = "Enemy" });
+			expCard.Effects.Add(new EffectSpec { Kind = "ClearPowerDebuffs", TargetSide = "Enemy" });
+			CardSpec dblOnly = new CardSpec { Name = "只翻倍", ClassName = "UiCheckDblOnly", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			dblOnly.Effects.Add(new EffectSpec { Kind = "DoublePower", Amount = 2m, PowerId = "PoisonPower", TargetSide = "Enemy" });
+			expProbe.Cards.Add(expCard);
+			expProbe.Cards.Add(dblOnly);
+			string expSrc = CSharpCodeGen.CardSource(expProbe, expCard, 0);
+			Check("暴露：照本体卡「暴露」写（清格挡 → 去人工制品 → 施加 N 层状态），数值是字面量不引用动态变量",
+				expSrc.Contains("CreatureCmd.LoseBlock(choiceContext, __expTarget, __expTarget.Block, base.Owner.Creature)")
+				&& expSrc.Contains("if (__expTarget.HasPower<ArtifactPower>()) await PowerCmd.Remove<ArtifactPower>(__expTarget)")
+				&& expSrc.Contains("await PowerCmd.Apply<VulnerablePower>(choiceContext, __expTarget, 3, base.Owner.Creature, this)")
+				&& !expSrc.Contains("DynamicVars[\"Value\"]"), "暴露对");
+			Check("清除指定状态：取到那份实例才 Remove（没有这个状态就什么都不做）",
+				expSrc.Contains("PowerModel? __clrPower = cardPlay.Target.GetPower<StrengthPower>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower);"), "对");
+			Check("清除所有减益：遍历目标身上那份列表（先 ToList）按 TypeForCurrentAmount == Debuff 清",
+				expSrc.Contains("foreach (PowerModel __clrP in cardPlay.Target.Powers.ToList()) { if (__clrP.TypeForCurrentAmount == PowerType.Debuff) await PowerCmd.Remove(__clrP); }"), "对");
+			Check("只带「翻倍敌人状态」的牌也算「要选目标」（不然 cardPlay.Target 是空的）",
+				CSharpCodeGen.CardSource(expProbe, dblOnly, 0).Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			string expJson = LocalizationGen.CardsJson(expProbe);
+			Check("卡面描述：暴露 / 清除指定 / 清除所有减益 三句都写了",
+				expJson.Contains("清空格挡与人工制品，并施加 3 层易伤") && expJson.Contains("清除力量")
+				&& expJson.Contains("清除所有减益状态"), "描述对");
+			CardSpec expBad = new CardSpec { Name = "暴露没选状态", ClassName = "UiCheckExposeBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			expBad.Effects.Add(new EffectSpec { Kind = "Expose", Amount = 2m, TargetSide = "Enemy" });
+			expProbe.Cards.Add(expBad);
+			Check("校验器：暴露没选「增益 / 减益」直接报错",
+				ProfileValidator.Validate(expProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("没有选「增益 / 减益」")), "拦住了");
+			RelicSpec expRelic = new RelicSpec { Name = "清除遗物", ClassName = "UiCheckClrRelic", Rarity = "Common", InRelicPool = true, Trigger = "PlayerTurnStart" };
+			expRelic.Effects.Add(new EffectSpec { Kind = "ClearPowerDebuffs", TargetSide = "Enemy" });
+			expProbe.Relics.Add(expRelic);
+			Check("校验器：清除所有减益放在遗物上会被拦（需要「选中的目标」）",
+				ProfileValidator.Validate(expProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("只做在卡牌上")), "拦住了");
 		}		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

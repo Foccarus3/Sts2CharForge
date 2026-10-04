@@ -1123,7 +1123,12 @@ public static class ProfileValidator
             // 负数 = 反向（扣除层数 / 失去格挡）：生成时会改走 PowerCmd.ModifyAmount(-N) / CreatureCmd.LoseBlock。
             // 两个组合它做不到，直接拦住并在提示里说清：
             // 翻倍状态层数：只做在卡牌上（要「选中的目标」），而且必须选是哪个状态
-            if (e.Kind == "DoublePower")
+            // 暴露 / 清除指定状态：必须选是哪个状态；三者都只做在卡牌上（需要「选中的目标」）
+            if (e.Kind is "Expose" or "ClearPowerOne" && string.IsNullOrWhiteSpace(e.PowerId))
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」"
+                    + (e.Kind == "Expose" ? "（要施加哪个状态）。" : "（要清除哪个状态）。")));
+            if (e.Kind is "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" && (owner.Contains("遗物") || owner.Contains("药水")))
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」只做在卡牌上（它需要「选中的目标」——遗物 / 药水没有）。请把它放到卡牌的效果里。"));            if (e.Kind == "DoublePower")
             {
                 if (string.IsNullOrWhiteSpace(e.PowerId))
                     issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」（哪一栏填要翻倍的那个状态）。"));

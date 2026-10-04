@@ -845,6 +845,20 @@ if (shouldTriggerFatal && attackCommand.Results.SelectMany(r => r).Any(r => r.Wa
 
 只做在**卡牌**上（它需要「选中的目标」，遗物 / 药水没有；生成前的检查会拦住）。
 
+## 暴露 / 清除状态
+
+三个「对目标身上的状态动手」的效果（都只做在**卡牌**上，需要「选中的目标」；生成前的检查会拦住遗物 / 药水）：
+
+| 效果 | 生成的 | 说明 |
+|---|---|---|
+| **暴露**（数值 = 层数，0 = 不生效） | `CreatureCmd.LoseBlock(目标, 目标.Block)` → 有 `ArtifactPower` 就 `PowerCmd.Remove<ArtifactPower>` → `PowerCmd.Apply<X>(N)` | 照本体卡「暴露 Expose」写；施加哪个状态在「增益 / 减益」栏选 |
+| **清除指定状态** | `目标.GetPower<X>()` 取到实例才 `PowerCmd.Remove(实例)` | 目标身上没有这个状态时什么都不做 |
+| **清除所有减益** | 遍历 `目标.Powers.ToList()`，`TypeForCurrentAmount == PowerType.Debuff` 的逐个 `PowerCmd.Remove` | 先 `ToList` 再清，免得边遍历边改集合 |
+
+顺带修掉一个隐患：这几条（以及「翻倍状态层数」）以前没被算进「这张牌要不要选目标」，
+所以**只带这类效果**的牌会生成成 `TargetType.Self`，打出去时 `cardPlay.Target` 是空的。
+现在它们都会让牌变成「要选目标」（单体 / 全体 / 随机按「作用对象」栏来）。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：
