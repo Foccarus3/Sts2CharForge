@@ -13766,6 +13766,312 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				ProfileValidator.Validate(infProbe).Any((ValidationIssue x) => !x.IsError && x.Message.Contains("可被无限升级")),
 				"提醒了");
 		}
+		// ===== 需求 ③：选牌类效果的「范围界定」（和生成 / 变化卡牌同一份选项表 / 同一个字段）=====
+		{
+			// ① 这些种类都能选范围
+			string[] csKinds = { "ExhaustCard", "DiscardCard", "UpgradeCard", "GiveKeyword", "CopyCard",
+				"ReplayCard", "TurnEndPlay", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust", "Scry" };
+			Check("11 个选牌类效果种类都支持「范围界定」（消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / "
+				+ "回合结束自动打出 / 从三摞牌拿牌 / 预见）",
+				csKinds.All((string k) => new EffectSpec { Kind = k, Amount = 1m }.UseCardScopeFilter), "都支持");
+			Check("「范围界定」那一行的显隐 = 这个种类真的会挑牌（数值 0 = 这张牌自己的那两档不显示）",
+				csKinds.All((string k) => new EffectSpec { Kind = k, Amount = 1m }.ShowCardScopeFilter)
+				&& !new EffectSpec { Kind = "GiveKeyword", Amount = 0m }.ShowCardScopeFilter
+				&& !new EffectSpec { Kind = "TurnEndPlay", Amount = 0m }.ShowCardScopeFilter
+				&& new EffectSpec { Kind = "TurnEndPlay", Amount = 2m }.ShowCardScopeFilter
+				&& !new EffectSpec { Kind = "Damage", Amount = 5m }.ShowCardScopeFilter,
+				"自己那一档不给范围");
+			Check("范围界定复用同一个 SpawnFilter 字段（不新建一套），候选表和「生成 / 变化」完全同一份",
+				SpawnFilters.Count == 6
+				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" }),
+				string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
+			Check("列表里也会写出范围界定（不然选了范围在列表里看不出来）",
+				new EffectSpec { Kind = "ExhaustCard", Amount = 2m, SpawnFilter = "Attack" }.Display.Contains("范围界定：攻击")
+				&& !new EffectSpec { Kind = "ExhaustCard", Amount = 2m }.Display.Contains("范围界定"),
+				new EffectSpec { Kind = "ExhaustCard", Amount = 2m, SpawnFilter = "Attack" }.Display);
+
+			// ② 生成的候选池**真的**被过滤（把生成文本钉死）
+			CharacterProfile csProbe = ProfileFactory.Sample();
+			CardSpec csRandom = new CardSpec { Name = "自检范围随机", ClassName = "UiCheckScopeRandom", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csRandom.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Random", SelectPile = "Draw", SpawnFilter = "Skill" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csRandom.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, CardPick = "Random", SelectPile = "Hand", GivenKeyword = "Retain", SpawnFilter = "Attack" });
+			csProbe.Cards.Add(csRandom);
+			string csRandomSrc = CSharpCodeGen.CardSource(csProbe, csRandom, 0);
+			Check("随机的那些：候选池就是「那一摞的牌 .Where(范围)」（消耗 / 丢弃 / 升级 / 复制 / 重放 / 回合结束 / 给关键词 七处都在）",
+				csRandomSrc.Contains("NextItem(PileType.Hand.GetPile(base.Owner).Cards.Where(c => c.Type == CardType.Attack))")
+				&& csRandomSrc.Contains("NextItem(PileType.Draw.GetPile(base.Owner).Cards.Where(c => c.Type == CardType.Skill))")
+				&& csRandomSrc.Contains("NextItem(PileType.Hand.GetPile(base.Owner).Cards.Where(c => (c.IsUpgradable) && (c.Type == CardType.Attack)))")
+				&& csRandomSrc.Contains("TakeRandom(PileType.Hand.GetPile(base.Owner).Cards.Where(c => c.Type == CardType.Attack), 1,"),
+				"候选池被过滤了");
+			Check("重放卡牌：范围界定和它本来就有的「能重放」条件 && 到一起（不是覆盖掉）",
+				csRandomSrc.Contains(".Where(c => (!c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1) && (c.Type == CardType.Attack))"),
+				"两个条件都在");
+
+			CardSpec csChosen = new CardSpec { Name = "自检范围自己选", ClassName = "UiCheckScopeChosen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csChosen.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csChosen.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csChosen.Effects.Add(new EffectSpec { Kind = "TakeFromDraw", Amount = 2m, SpawnFilter = "Attack" });
+			csChosen.Effects.Add(new EffectSpec { Kind = "TakeFromExhaust", Amount = 2m, SpawnFilter = "Attack" });
+			csChosen.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 3m, SpawnFilter = "Attack" });
+			csProbe.Cards.Add(csChosen);
+			string csChosenSrc = CSharpCodeGen.CardSource(csProbe, csChosen, 0);
+			Check("自己选的那些：谓词当 CardSelectCmd 的 filter 传进去（消耗走 FromHand / 拿牌走 FromCombatPile）",
+				csChosenSrc.Contains("prefs: new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, 2), filter: c => c.Type == CardType.Attack, source: this)")
+				&& csChosenSrc.Contains("new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, 2), c => c.Type == CardType.Attack, this)")
+				&& csChosenSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 2), c => c.Type == CardType.Attack))"),
+				"filter 传进去了");
+			Check("预见：先取「抽牌堆顶 N 张」，再在那一小撮里按范围筛（只丢符合范围的）",
+				csChosenSrc.Contains("var __scryTop = PileType.Draw.GetPile(base.Owner).Cards.Take(3).Where(c => c.Type == CardType.Attack).ToList();"),
+				"先取顶 N 张再筛");
+			Check("范围界定也写进了生成期的标记行（回读靠它），而且带着效果种类（不会串到别的效果上）",
+				csChosenSrc.Contains("CET:SpawnFilter=Attack CET:SpawnChoice=1") && csChosenSrc.Contains("CET:Kind=Scry")
+				&& csChosenSrc.Contains("CET:Kind=ExhaustCard"), "标记在");
+
+			// ③ 范围为空时：生成文本与旧版完全一致（回归）
+			CharacterProfile csOld = ProfileFactory.Sample();
+			CardSpec csOldCard = new CardSpec { Name = "自检无范围", ClassName = "UiCheckScopeOff", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csOldCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "TakeFromDraw", Amount = 2m });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 3m });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, CardPick = "Random", SelectPile = "Hand", GivenKeyword = "Retain" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Random", SelectPile = "Hand" });
+			csOldCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand" });
+			csOld.Cards.Add(csOldCard);
+			string csOldSrc = CSharpCodeGen.CardSource(csOld, csOldCard, 0);
+			var csOldPins = new List<KeyValuePair<string, bool>>
+			{
+				new("没有标记行", !csOldSrc.Contains("CET:SpawnPick=")),
+				new("没有范围过滤", !csOldSrc.Contains(".Where(c => c.Type == CardType")),
+				new("丢弃（自己选）", csOldSrc.Contains("new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, 2), null, this)")),
+				new("升级（自己选）", csOldSrc.Contains("new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, 1), c => c.IsUpgradable, this)")),
+				new("预见", csOldSrc.Contains("var __scryTop = PileType.Draw.GetPile(base.Owner).Cards.Take(3).ToList();")),
+				new("消耗（随机）", csOldSrc.Contains("CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem(PileType.Hand.GetPile(base.Owner).Cards);")),
+				new("从抽牌堆拿牌", csOldSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 2))).ToList();")),
+				new("复制（随机）", csOldSrc.Contains("CardModel? __src = base.Owner.RunState.Rng.CombatCardSelection.NextItem(PileType.Hand.GetPile(base.Owner).Cards);")),
+				new("回合结束自动打出（随机）", csOldSrc.Contains("TakeRandom(PileType.Hand.GetPile(base.Owner).Cards, 1,")),
+				new("重放（自己选）", csOldSrc.Contains(".Where(c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1)")),
+				new("给关键词（随机）", csOldSrc.Contains("CardModel? __kwCard = base.Owner.RunState.Rng.CombatCardSelection.NextItem(PileType.Hand.GetPile(base.Owner).Cards);")),
+			};
+			// 「生成 / 变化」那套的标记行长什么样（回归用：不许因为需求 ③ 多出 CET:Kind）
+			CharacterProfile csGenProbe = ProfileFactory.Sample();
+			CardSpec csGenCard = new CardSpec { Name = "自检生成标记", ClassName = "UiCheckScopeGenMark", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csGenCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand" });
+			csGenProbe.Cards.Add(csGenCard);
+			string csGenOldMarker = CSharpCodeGen.CardSource(csGenProbe, csGenCard, 0)
+				.Split('\n').FirstOrDefault((string l) => l.Contains("CET:SpawnPick=")) ?? "";
+			Check("（回归）范围为空时：一句新语句都不生成、标记行也不写 —— 与旧版逐字一致",
+				csOldPins.All((KeyValuePair<string, bool> kv) => kv.Value) && csOldSrc.Contains("filter: null, source: this)"),
+				string.Join(" ｜ ", csOldPins.Where((KeyValuePair<string, bool> kv) => !kv.Value).Select((KeyValuePair<string, bool> kv) => "缺:" + kv.Key))
+					+ (csOldSrc.Contains("filter: null, source: this)") ? "" : " ｜ 缺:消耗（自己选）"));
+			Check("（回归）「生成 / 变化卡牌」的标记行没有被改动（没有多加 CET:Kind）",
+				csGenOldMarker.Length > 0 && csGenOldMarker.Contains("CET:SpawnFilter=Attack")
+				&& !csGenOldMarker.Contains("CET:Kind"), csGenOldMarker.Trim());
+
+			// ④ 卡面描述写了范围
+			CharacterProfile csDesc = ProfileFactory.Sample();
+			CardSpec csDescCard = new CardSpec { Name = "自检范围描述", ClassName = "UiCheckScopeDesc", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csDescCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Random", SelectPile = "Draw", SpawnFilter = "Skill" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "TakeFromDiscard", Amount = 2m, SpawnFilter = "Power" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 2m, SpawnFilter = "Curse" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, CardPick = "Random", SelectPile = "Hand", GivenKeyword = "Retain", SpawnFilter = "Status" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csDescCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csDesc.Cards.Add(csDescCard);
+			string csDescJson = LocalizationGen.CardsJson(csDesc);
+			Check("卡面描述写清了范围（例：「…1 张手牌（只限攻击牌）。」）",
+				csDescJson.Contains("张手牌（只限攻击牌）。")
+				&& csDescJson.Contains("（只限技能牌）。")
+				&& csDescJson.Contains("（只限能力牌）。")
+				&& csDescJson.Contains("（只限诅咒牌）。")
+				&& csDescJson.Contains("（只限状态牌）。"),
+				csDescJson.Split('\n').FirstOrDefault((string l) => l.Contains("UI_CHECK_SCOPE_DESC.description")) ?? "(没找到)");
+			// 空范围时描述一个字都不多
+			CharacterProfile csDescOff = ProfileFactory.Sample();
+			CardSpec csDescOffCard = new CardSpec { Name = "自检范围描述关", ClassName = "UiCheckScopeDescOff", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csDescOffCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand" });
+			csDescOff.Cards.Add(csDescOffCard);
+			Check("（回归）范围为空时描述里没有「（只限…牌）」那句",
+				!LocalizationGen.CardsJson(csDescOff).Contains("只限"), "描述与旧版一致");
+
+			// ⑤ 三个上下文（卡牌 / 遗物触发 / 药水）都接了
+			CharacterProfile csCtx = ProfileFactory.Sample();
+			var csRelic = new RelicSpec
+			{
+				Name = "自检范围遗物", ClassName = "UiCheckScopeRelic", Rarity = "Common", Trigger = "PlayerTurnStart",
+				Effects =
+				{
+					new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" },
+					new EffectSpec { Kind = "TakeFromExhaust", Amount = 1m, SpawnFilter = "Attack" },
+				},
+			};
+			csCtx.Relics.Add(csRelic);
+			var csPotion = new PotionSpec
+			{
+				Name = "自检范围药水", ClassName = "UiCheckScopePotion", Rarity = "Common", TargetType = "Self",
+				Effects =
+				{
+					new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" },
+					new EffectSpec { Kind = "Scry", Amount = 2m, SpawnFilter = "Attack" },
+				},
+			};
+			csCtx.Potions.Add(csPotion);
+			string csRelicSrc = CSharpCodeGen.RelicSource(csCtx, csRelic, csCtx.Relics.IndexOf(csRelic));
+			string csPotionSrc = CSharpCodeGen.PotionSource(csCtx, csPotion, csCtx.Potions.IndexOf(csPotion));
+			Check("遗物触发那一路也接上了（含「从消耗牌堆拿牌到手牌」）",
+				csRelicSrc.Contains("NextItem(PileType.Hand.GetPile(base.Owner).Cards.Where(c => c.Type == CardType.Attack))")
+				&& csRelicSrc.Contains("FromCombatPile(choiceContext, PileType.Exhaust.GetPile(base.Owner), base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 1), c => c.Type == CardType.Attack)"),
+				"遗物两处都对");
+			Check("药水那一路也接上了（升级 + 预见）",
+				csPotionSrc.Contains("c => (c.IsUpgradable) && (c.Type == CardType.Attack), this)")
+				&& csPotionSrc.Contains("PileType.Draw.GetPile(base.Owner).Cards.Take(2).Where(c => c.Type == CardType.Attack)"),
+				"药水两处都对");
+
+			// ⑥ 空组报错 + 「范围 + 取牌方式」的说明
+			CharacterProfile csEmpty = ProfileFactory.Sample();
+			csEmpty.CustomKeywords.Clear();
+			csEmpty.CustomKeywords.Add(new CustomKeywordSpec { Key = "VOID", Name = "虚空" });
+			CardSpec csEmptyCard = new CardSpec { Name = "自检范围空组", ClassName = "UiCheckScopeEmpty", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csEmptyCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Keyword:VOID" });
+			csEmpty.Cards.Add(csEmptyCard);
+			Check("范围界定选了自定义关键词分组但那一组是空的 → 报错拦住",
+				ProfileValidator.Validate(csEmpty).Any((ValidationIssue x) => x.IsError && x.Message.Contains("这一组是空的")),
+				"拦住了");
+			CharacterProfile csNote = ProfileFactory.Sample();
+			CardSpec csNoteCard = new CardSpec { Name = "自检范围说明", ClassName = "UiCheckScopeNote", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csNoteCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+			csNote.Cards.Add(csNoteCard);
+			var csNotes = ProfileValidator.Validate(csNote);
+			Check("校验器给一条「范围 + 取牌方式」的说明（随机 / 自己选，并说清范围里没牌就什么都不做）",
+				csNotes.Any((ValidationIssue x) => !x.IsError && x.Message.Contains("范围界定") && x.Message.Contains("取牌方式 = 随机")
+					&& x.Message.Contains("不会弹空选牌界面")),
+				string.Join(" ｜ ", csNotes.Where((ValidationIssue x) => x.Message.Contains("范围界定")).Select((ValidationIssue x) => x.Message)));
+			Check("「范围界定」用在自定义状态的触发器里 → 报错拦住（那条链上没有角色配置）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					CustomPowers =
+					{
+						new CustomPowerSpec
+						{
+							Name = "自检范围状态",
+							Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain", SpawnFilter = "Attack" } } } },
+						},
+					},
+				}).Any((ValidationIssue x) => x.IsError && x.Message.Contains("范围界定")), "拦住了");
+			Check("用了范围界定但那条效果种类不支持（例如「造成伤害」）→ 给一句提示，别让人以为配了会有用",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					Cards = { new CardSpec { Name = "自检范围无效", ClassName = "UiCheckScopeBad", CardType = "Attack", Rarity = "Common", Cost = 1,
+						Effects = { new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", SpawnFilter = "Attack" } } } },
+				}).Any((ValidationIssue x) => !x.IsError && x.Message.Contains("范围界定")), "提示了");
+
+			// ⑦ 生成 → 回读：范围界定要原样回来
+			string csRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_cardscope_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile csGen = ProfileFactory.Sample();
+				csGen.CustomKeywords.Clear();
+				csGen.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运" });
+				csGen.Paths.OutputDir = csRoot;
+				csGen.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				csGen.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec csFate = new CardSpec { Name = "自检命运牌", ClassName = "UiCheckScopeFate", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				csFate.KeywordIds.Add("FATE");
+				CardSpec csRound = new CardSpec { Name = "自检范围往返", ClassName = "UiCheckScopeRound", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				csRound.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Draw", SpawnFilter = "Keyword:FATE" });
+				csRound.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "GiveKeyword", Amount = 1m, CardPick = "Random", SelectPile = "Hand", GivenKeyword = "Retain", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "ReplayCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "TakeFromDraw", Amount = 1m, SpawnFilter = "Attack" });
+				csRound.Effects.Add(new EffectSpec { Kind = "TakeFromExhaust", Amount = 1m, SpawnFilter = "Skill" });
+				csRound.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 2m, SpawnFilter = "Attack" });
+				// 这两条是「回读老毛病」的守门用例（和范围界定无关，但都是这几个种类上的坑）：
+				//   · 「自己选消耗」生成的是**单行** foreach，以前回读会掉这条效果 + 多一行「没认出来」；
+				//   · 「随机升级」的 `if (pick is null) break;` 会把跳过开关关掉，
+				//     紧跟着的 CardCmd.Upgrade(pick) 被当成「升级牌组（全局）」多回读一条。
+				csRound.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 2m, CardPick = "Chosen", SelectPile = "Hand" });
+				csRound.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand" });
+				csGen.Cards.Add(csFate);
+				csGen.Cards.Add(csRound);
+				Check("（准备）带范围界定的存档能生成工程", ModGenerator.Generate(csGen).Success, csRoot);
+				var csRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(csGen));
+				var csRecCard = csRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckScopeRound");
+				List<EffectSpec> csRecFx = csRecCard is null ? new List<EffectSpec>() : csRecCard.Effects.ToList();
+				Check("回读：10 条选牌类效果的范围界定都原样回来了（含自定义关键词那一组）",
+					csRecFx.Count == 12
+					&& csRecFx[0].Kind == "ExhaustCard" && csRecFx[0].SpawnFilter == "Attack"
+					&& csRecFx[1].Kind == "DiscardCard" && csRecFx[1].SpawnFilter == "Keyword:FATE"
+					&& csRecFx[2].Kind == "UpgradeCard" && csRecFx[2].SpawnFilter == "Attack"
+					&& csRecFx[3].Kind == "GiveKeyword" && csRecFx[3].SpawnFilter == "Attack"
+					&& csRecFx[4].Kind == "CopyCard" && csRecFx[4].SpawnFilter == "Attack"
+					&& csRecFx[5].Kind == "ReplayCard" && csRecFx[5].SpawnFilter == "Attack"
+					&& csRecFx[6].Kind == "TurnEndPlay" && csRecFx[6].SpawnFilter == "Attack"
+					&& csRecFx[7].Kind == "TakeFromDraw" && csRecFx[7].SpawnFilter == "Attack"
+					&& csRecFx[8].Kind == "TakeFromExhaust" && csRecFx[8].SpawnFilter == "Skill"
+					&& csRecFx[9].Kind == "Scry" && csRecFx[9].SpawnFilter == "Attack",
+					string.Join(" · ", csRecFx.Select((EffectSpec x) => x.Kind + "/" + (x.SpawnFilter.Length == 0 ? "-" : x.SpawnFilter))));
+				Check("回读：「自己选消耗」的单行 foreach 也认得出来（以前会掉这条效果 + 多一行「没认出来」）",
+					csRecFx[10].Kind == "ExhaustCard" && csRecFx[10].CardPick == "Chosen" && csRecFx[10].Amount == 2m,
+					$"{csRecFx[10].Kind}/{csRecFx[10].CardPick}/{csRecFx[10].Amount}");
+				Check("回读：「随机升级手牌」不再被当成「升级牌组（全局）」多回读一条",
+					csRecFx[11].Kind == "UpgradeCard" && csRecFx[11].CardPick == "Random"
+					&& !csRecFx.Any((EffectSpec x) => x.Kind == "UpgradeCardGlobal"),
+					string.Join(" · ", csRecFx.Select((EffectSpec x) => x.Kind)));
+				Check("回读没有认不出来的语句", !csRec.HasUnparsed, csRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				Check("回读兼容：标记行里没有 CET:Kind 的老工程也照旧配范围（withKind 默认 false，生成 / 变化那条路没变）",
+					csGenOldMarker.Length > 0 && !csGenOldMarker.Contains("CET:Kind")
+					&& csChosenSrc.Contains("CET:Kind=Scry"),
+					"两种写法都在");
+			}
+			finally
+			{
+				try { if (Directory.Exists(csRoot)) Directory.Delete(csRoot, true); } catch { }
+				RefreshCustomKeywordRegistry();
+			}
+
+			// ⑧ 界面：选到这些效果时「范围界定」那一行真的出现（用户报过「找不到在哪限定范围」）
+			DependencyObject csUiRoot = SelectTabRoot("卡牌");
+			CardSpec csUiCard = new CardSpec { Name = "自检范围界面", ClassName = "UiCheckScopeUi", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			csUiCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy" });
+			Profile.Cards.Add(csUiCard);
+			CardList.SelectedItem = csUiCard;
+			CardEffectList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("不是选牌类效果时界面上没有「范围界定」那一行",
+				!VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("范围界定（哪些牌能选）")), "没出现");
+			csUiCard.Effects[0].Kind = "ExhaustCard";
+			csUiCard.Effects[0].Amount = 1m;
+			UpdateLayout();
+			Check("换成「消耗卡牌」后「范围界定（哪些牌能选）」那一行就出现了",
+				VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("范围界定（哪些牌能选）")), "在");
+			csUiCard.Effects[0].CardPick = "Chosen";
+			UpdateLayout();
+			Check("「自己选」那一档也一样有（范围界定不是只在随机档才出现 —— 历史上就报过找不到入口）",
+				VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("范围界定（哪些牌能选）")), "在");
+			csUiCard.Effects[0].Kind = "TurnEndPlay";
+			csUiCard.Effects[0].Amount = 0m;
+			UpdateLayout();
+			Check("数值 0 = 这张牌自己那一档不给「范围界定」（那一步根本不挑牌）",
+				!VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("范围界定（哪些牌能选）")), "没出现");
+			Profile.Cards.Remove(csUiCard);
+			CardList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("（收尾）自检加的那张范围界定卡已清掉", !Profile.Cards.Contains(csUiCard));
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

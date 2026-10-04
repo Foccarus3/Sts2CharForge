@@ -270,12 +270,30 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(ShowTurnEndPlay));   // 「回合结束时自动打出」那几行的显隐绑的就是它
                 Raise(nameof(IsTurnEndPlay));
                 Raise(nameof(ShowTurnEndPlay));   // 「回合结束时自动打出」那几行的显隐绑的就是它
+                // 「范围界定」（需求 ③：选牌类效果限定只对哪一类牌 / 哪一组牌动手）：
+                // 这一行的显隐绑的就是这两个 —— 和上面那几行同一条规矩，只 Raise 一次。
+                Raise(nameof(UseCardScopeFilter));
+                Raise(nameof(ShowCardScopeFilter));
+                Raise(nameof(HasCardScope));
                 Raise(nameof(IsSlowPower));
                 Raise(nameof(Display));
             }
         }
     }
-    public decimal Amount { get => _amount; set => Set(ref _amount, value); }
+    public decimal Amount
+    {
+        get => _amount;
+        set
+        {
+            if (!Set(ref _amount, value)) return;
+            // 「数值 0 = 这张牌自己」的那两种（给予关键词 / 回合结束时自动打出）：
+            // 数值一改，「范围界定」那一行的显隐也跟着变（0 的时候根本没有「挑牌」这一步）。
+            Raise(nameof(CardScopeSelfOnly));
+            Raise(nameof(ShowCardScopeFilter));
+            Raise(nameof(HasCardScope));
+            Raise(nameof(Display));
+        }
+    }
     /// <summary>升级后增量（只有卡牌用得到，遗物/药水不能升级）</summary>
     public decimal UpgradeAmount { get => _upgradeAmount; set => Set(ref _upgradeAmount, value); }
 
@@ -318,12 +336,58 @@ public sealed class EffectSpec : SpecBase
     public string SpawnFilter
     {
         get => _spawnFilter;
-        set { if (Set(ref _spawnFilter, value ?? "")) { Raise(nameof(SpawnFilterZh)); Raise(nameof(Display)); } }
+        set { if (Set(ref _spawnFilter, value ?? "")) { Raise(nameof(SpawnFilterZh)); Raise(nameof(HasCardScope)); Raise(nameof(Display)); } }
     }
 
     /// <summary>范围限定的中文（界面 / 描述里用）。</summary>
     [JsonIgnore]
     public string SpawnFilterZh => EffectCatalog.SpawnFilterZh(SpawnFilter);
+
+    // ===== 选牌类效果的「范围界定」（需求 ③）=====
+    // 需求原文：「所有可选牌的效果种类都增加范围界定（与生成 / 变化卡牌一致）」。
+    // 做法（见 docs\选牌类效果范围界定_设计.md）：**复用同一个 SpawnFilter 字段和同一份选项表**
+    // （EffectCatalog.SpawnFiltersFor：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 每个自定义关键词一组），
+    // 不新建 CardScopeFilter —— 这样界面上的候选、文案、校验、自定义关键词分组的逻辑全都只有一份。
+    //
+    // 这 11 个种类就是「从某一摞牌里挑牌 / 对牌动手」的那些。
+    // **故意不含 TransformCard（变化卡牌）**：它的 SpawnFilter 已经有含义了 —— 那是
+    // 「变出来的新卡从哪个范围里抽」（见 CSharpCodeGen.SpawnPoolExpr / __transformPool）。
+    // 同一个字段再拿去限定「挑哪几张牌去变」会变成一句话两个意思，而且会让**老存档**的
+    // 「变化卡牌 + 按范围随机 + 范围=攻击」在更新后突然只能挑攻击牌来变（静默变行为）。
+    // 「变化卡牌」本来就是需求里说的「与生成 / 变化卡牌一致」的那个**参照物**，它早就有范围限定了。
+    // =====
+
+    /// <summary>这个效果种类支不支持「范围界定」（选牌类效果：只对某一类牌 / 某一组牌动手）。</summary>
+    [JsonIgnore]
+    public bool UseCardScopeFilter => Kind is "ExhaustCard" or "DiscardCard" or "UpgradeCard"
+        or "GiveKeyword" or "CopyCard" or "ReplayCard" or "TurnEndPlay"
+        or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry";
+
+    /// <summary>
+    /// 「范围界定」没有意义的那一档：**数值 0 = 这张牌自己**（给予关键词 / 回合结束时自动打出），
+    /// 这时候根本不会去牌堆里挑牌，范围界定自然也不该出现。
+    /// </summary>
+    [JsonIgnore]
+    public bool CardScopeSelfOnly => Kind is "GiveKeyword" or "TurnEndPlay" && Amount <= 0m && !AmountIsX;
+
+    /// <summary>
+    /// 「范围界定」那一行要不要显示（和「生成 / 变化」那套一样是**按效果种类 + 当前档位**显隐，
+    /// 用户报过「找不到在哪限定范围」，所以这里只要这个种类真的会挑牌就显示，不藏在别的档位后面）。
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowCardScopeFilter => UseCardScopeFilter && !CardScopeSelfOnly;
+
+    /// <summary>这一条效果真的设了范围界定（空 = 不限）。生成代码 / 描述都按它判断。</summary>
+    [JsonIgnore]
+    public bool HasCardScope => UseCardScopeFilter && !CardScopeSelfOnly && !string.IsNullOrWhiteSpace(SpawnFilter);
+
+    /// <summary>范围界定的中文（列表 / 卡面描述里用）。</summary>
+    [JsonIgnore]
+    public string CardScopeZh => EffectCatalog.SpawnFilterZh(SpawnFilter);
+
+    /// <summary>效果列表里那句「 ｜ 范围界定：攻击」（没设范围就空）。</summary>
+    [JsonIgnore]
+    public string CardScopeListText => HasCardScope ? $" ｜ 范围界定：{CardScopeZh}" : "";
 
     /// <summary>
     /// 「多选1（候选张数）」：默认 1 = 直接生成（现在的行为）；
@@ -924,7 +988,7 @@ public sealed class EffectSpec : SpecBase
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
                  // 召唤 / 伙伴攻击打的是宠物，没有「作用对象」这一说 —— 加了这个尾巴会让人以为「→ 自己」是给宠物加血
-                 + (PetAction ? "" : $" → {side}") + extra
+                 + (PetAction ? "" : $" → {side}") + extra + CardScopeListText
                  + (Condition.IsNone ? "" : $"  ｜ 条件：{Condition.DisplayShort}");
         }
     }

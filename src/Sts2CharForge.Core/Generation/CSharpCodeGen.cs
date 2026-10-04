@@ -2523,11 +2523,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 而「免费 / 仅本回合」这种差别只差一个方法名，反推很容易认错（而且老存档没有这些设置）。
     /// 标记一行写全，回读就一行读完。
     /// </summary>
-    internal static string SpawnMarker(EffectSpec e) =>
+    internal static string SpawnMarker(EffectSpec e, bool withKind = false) =>
         $"// CET:SpawnPick={e.SpawnPick} CET:SpawnFilter={(string.IsNullOrWhiteSpace(e.SpawnFilter) ? "-" : e.SpawnFilter)}"
         + $" CET:SpawnChoice={(int)Math.Max(1m, e.SpawnChoice)}"
         + $" CET:SpawnUp={(e.SpawnUpgraded ? 1 : 0)} CET:SpawnFree={(e.SpawnFree ? 1 : 0)}"
-        + $" CET:SpawnFreeTurn={(e.SpawnFreeThisTurn ? 1 : 0)} CET:SpawnUpTurn={(e.SpawnUpgradedThisTurn ? 1 : 0)}";
+        + $" CET:SpawnFreeTurn={(e.SpawnFreeThisTurn ? 1 : 0)} CET:SpawnUpTurn={(e.SpawnUpgradedThisTurn ? 1 : 0)}"
+        // 「范围界定」（需求 ③）的标记行只多带一个种类：这种标记是给选牌类效果写的，
+        // 万一那条效果的代码没被回读认出来，也不会把范围配到**别的种类**的效果身上（见 ProjectRecovery 的 pendingSpawn）。
+        + (withKind ? $" CET:Kind={e.Kind}" : "");
 
     /// <summary>
     /// 「生成卡牌」。
@@ -2690,30 +2693,103 @@ public static class ExtraResourceEnergyCounterDiagPatch
             _ => $"PileType.Hand.GetPile({player})",
         };
 
+    // ==================== 「范围界定」（需求 ③：选牌类效果只对某一类牌 / 某一组牌动手）====================
+    // 和「生成 / 变化卡牌」那套**共用同一个 SpawnFilter 字段与同一份选项表**，只是用在「候选池」上：
+    //   不限（空）/ Attack / Skill / Power / Curse / Status / Keyword:XXX（自定义关键词那一组）。
+    // 关键约定：**范围为空时一律返回 null / 原样表达式** —— 生成出来的文本和以前逐字一致（回归要求）。
+
+    /// <summary>
+    /// 范围界定的**条件部分**（不含 <c>c =&gt; </c>，方便和「只能升级的牌」这类已有条件用 &amp;&amp; 拼）。
+    /// 返回 null = 没设范围（调用处原样输出，行为与旧版完全一致）。
+    /// </summary>
+    internal static string? CardScopeCond(EffectSpec e, CharacterProfile? p)
+    {
+        if (!e.HasCardScope) return null;
+        string f = (e.SpawnFilter ?? "").Trim();
+        // 自定义关键词那一组：关键词是我们自己的标注（游戏里没有对应枚举），运行时过滤不出来，
+        // 只能在生成期把「这一组有哪些牌」查成显式条件。牌的身份用 ModelId（本体就是按类名算的，
+        // 战斗里的牌是规范模型的 MemberwiseClone，Id 一样）。
+        if (EffectCatalog.IsKeywordFilter(f))
+        {
+            var group = EffectCatalog.KeywordGroupCards(p, f);
+            if (p is null || group.Count == 0) return "false";      // 空组 / 拿不到配置：谁也不匹配（校验器已经报过错）
+            var kn = Naming.From(p);
+            return string.Join(" || ", group.Select(c => $"c.Id == ModelDb.Card<{kn.CardClassName(p, c)}>().Id"));
+        }
+        return f switch
+        {
+            "Attack" => "c.Type == CardType.Attack",
+            "Skill" => "c.Type == CardType.Skill",
+            "Power" => "c.Type == CardType.Power",
+            "Curse" => "c.Rarity == CardRarity.Curse",
+            "Status" => "c.Type == CardType.Status || c.Rarity == CardRarity.Status",
+            _ => null,
+        };
+    }
+
+    /// <summary>范围界定的谓词（<c>c =&gt; …</c>）；没设范围返回 null（给 CardSelectCmd 的 filter 参数用）。</summary>
+    internal static string? CardScopePredicate(EffectSpec e, CharacterProfile? p)
+    {
+        string? cond = CardScopeCond(e, p);
+        return cond is null ? null : $"c => {cond}";
+    }
+
+    /// <summary>把范围界定套在「候选牌」表达式上（没设范围 → 原样返回，生成的文本与旧版逐字一致）。</summary>
+    internal static string CardScopeFiltered(EffectSpec e, CharacterProfile? p, string cardsExpr)
+    {
+        string? pred = CardScopePredicate(e, p);
+        return pred is null ? cardsExpr : $"{cardsExpr}.Where({pred})";
+    }
+
+    /// <summary>和已有条件（例如「只能升级的牌」）拼成一个谓词：两个都有就 &amp;&amp; 起来。</summary>
+    private static string CombineCond(string existingCond, string? scopeCond) =>
+        scopeCond is null ? existingCond : $"({existingCond}) && ({scopeCond})";
+
+    /// <summary>
+    /// 要不要为这条效果写「范围界定」的标记行。
+    /// 只有**真的设了范围**才写：这样「范围为空」的老配置生成出来的文本与旧版逐字一致（回归由自检钉死）。
+    /// 「生成 / 变化 / 全局加牌」那几种本来就有标记行（<see cref="EffectSpec.UsesSpawnOptions"/>），不重复写。
+    /// </summary>
+    private static bool NeedsCardScopeMarker(EffectSpec e) => e.HasCardScope && !e.UsesSpawnOptions;
+
+    /// <summary>范围界定的标记行（只有 <see cref="NeedsCardScopeMarker"/> 为真时才写）。</summary>
+    private static string? CardScopeMarker(EffectSpec e) =>
+        NeedsCardScopeMarker(e) ? SpawnMarker(e, withKind: true) : null;
+
+    /// <summary>「范围界定」在注释 / 描述用的中文后缀（没设范围就空）。</summary>
+    private static string ScopeZhSuffix(EffectSpec e) => e.HasCardScope ? $"（范围界定：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}）" : "";
+
     /// <summary>
     /// 消耗卡牌（参考铁甲战士的「坚毅」TrueGrit）：自选用 CardSelectCmd，随机用 Rng 抓牌。
     /// 「从哪里选牌」支持手牌 / 抽牌堆 / 弃牌堆：
     ///   手牌走本体 CardSelectCmd.FromHand；抽牌堆 / 弃牌堆走 CardSelectCmd.FromCombatPile
     ///   （本体「充能 / 净化」选抽牌堆、「全息影像 / 头槌」选弃牌堆都是这么写的）。
+    ///
+    /// 「范围界定」（需求 ③）：候选池套一层 <see cref="CardScopeFiltered"/> ——
+    /// 自己选的那条路把谓词当 CardSelectCmd 的 filter 传（本体自己会在候选为空 / 不够时直接返回，
+    /// 不会弹一个空选牌界面），随机那条路直接在 .Cards 后面 .Where。
     /// </summary>
-    private static void EmitExhaustCard(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitExhaustCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
+        string? pred = CardScopePredicate(e, p);
         if (e.CardPick == "Chosen")
         {
-            w.Line($"// 自己从{pileZh}选 {n} 张消耗");
+            w.Line($"// 自己从{pileZh}选 {n} 张消耗{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
-                w.Line($"var toExhaust = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, {n}), filter: null, source: this)).ToList();");
+                w.Line($"var toExhaust = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, {n}), filter: {pred ?? "null"}, source: this)).ToList();");
             else
-                w.Line($"var toExhaust = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, {n}))).ToList();");
+                w.Line($"var toExhaust = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.ExhaustSelectionPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
             w.Line("foreach (CardModel c in toExhaust) await CardCmd.Exhaust(choiceContext, c);");
         }
         else
         {
-            w.Line($"// 随机从{pileZh}消耗 {n} 张");
+            w.Line($"// 随机从{pileZh}消耗 {n} 张{ScopeZhSuffix(e)}");
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
+            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")});");
             w.Line("if (pick is null) break;");
             w.Line("await CardCmd.Exhaust(choiceContext, pick);");
             w.Close();
@@ -2731,24 +2807,27 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 自己选：手牌走 <c>CardSelectCmd.FromHandForDiscard</c>（本体丢手牌专用的那个：奇巧牌会描金），
     ///         抽牌堆走 <c>CardSelectCmd.FromCombatPile</c>；随机：Rng.CombatCardSelection 抓。
     /// </summary>
-    private static void EmitDiscardCard(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitDiscardCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
+        string? pred = CardScopePredicate(e, p);
         if (e.CardPick == "Chosen")
         {
-            w.Line($"// 自己从{pileZh}选 {n} 张丢弃");
+            w.Line($"// 自己从{pileZh}选 {n} 张丢弃{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
-                w.Line($"var toDiscard = (await CardSelectCmd.FromHandForDiscard(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}), null, this)).ToList();");
+                w.Line($"var toDiscard = (await CardSelectCmd.FromHandForDiscard(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}), {pred ?? "null"}, this)).ToList();");
             else
-                w.Line($"var toDiscard = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}))).ToList();");
+                w.Line($"var toDiscard = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
             w.Line("await CardCmd.Discard(choiceContext, toDiscard);");
         }
         else
         {
-            w.Line($"// 随机从{pileZh}丢弃 {n} 张");
+            w.Line($"// 随机从{pileZh}丢弃 {n} 张{ScopeZhSuffix(e)}");
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
+            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")});");
             w.Line("if (pick is null) break;");
             w.Line("await CardCmd.Discard(choiceContext, pick);");
             w.Close();
@@ -2768,11 +2847,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// （GeneratePlayCount 在 OnPlayWrapper 里、进 OnPlay 循环之前调用），
     /// 所以在自己的 OnPlay 里改 BaseReplayCount 对这一次打出没有作用（校验器会提示）。
     /// </summary>
-    private static void EmitReplayCard(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitReplayCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         int times = Math.Max(1, Math.Min(20, e.ReplayTimes));
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e) + $" CET:Replay={times}");
         // 选牌前先算「候选池」，并且**先筛掉不能重放的牌**（照本体「隐藏宝石 HiddenGem」的过滤条件）：
         //   · 打不出去的牌（Unplayable / 状态 / 诅咒）给它重放没有意义；
@@ -2781,9 +2862,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 为什么要先算池子：池子空了就整条跳过（本体 HiddenGem 就是 `if (list.Count == 0) return;`），
         // 不要拿着一张空界面的选牌请求去等玩家（那才是「打出后卡死」）。
         string pool = "__replayPool";
-        w.Line($"// 候选：{pileZh}里还能重放的牌（打不出去的、已经有重放的都排除）");
+        string? scopeCond = CardScopeCond(e, p);
+        string replayCond = CombineCond("!c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1", scopeCond);
+        w.Line($"// 候选：{pileZh}里还能重放的牌（打不出去的、已经有重放的都排除）{ScopeZhSuffix(e)}");
         w.Line($"List<CardModel> {pool} = {PileExpr(e)}.Cards"
-            + ".Where(c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1)"
+            + $".Where(c => {replayCond})"
             + ".ToList();");
         w.Open($"if ({pool}.Count > 0)");
         w.Line($"int __replayWant = Math.Min({n}, {pool}.Count);   // 池子不够就少拿几张，绝不多要");
@@ -2791,10 +2874,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             w.Line($"// 自己从{pileZh}选（最多 {n} 张），让它们本场战斗内额外打出 {times} 次");
             string want = "__replayWant";
+            string filterArg = $"c => {replayCond}";
             if (e.SelectPile == "Hand")
-                w.Line($"var __replayFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), filter: c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1, source: this)).ToList();");
+                w.Line($"var __replayFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), filter: {filterArg}, source: this)).ToList();");
             else
-                w.Line($"var __replayFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1)).ToList();");
+                w.Line($"var __replayFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), {filterArg})).ToList();");
             w.Open("foreach (CardModel __replayCard in __replayFrom)");
             w.Line($"__replayCard.BaseReplayCount += {times};   // 本体：重放 N 次 = 打出去时连着打 N+1 次");
             w.Close();
@@ -2827,6 +2911,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? selfExpr = null, string cardSource = "this")
     {
         string cls = Naming.From(p).TurnEndPlayPowerClass;
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e));
         if (e.Amount <= 0m && !e.AmountIsX)
         {
@@ -2842,17 +2928,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
-        w.Line($"// 现在先选好 {n} 张{pileZh}里的牌，本回合结束时自动打出它们");
+        string? pred = CardScopePredicate(e, p);
+        w.Line($"// 现在先选好 {n} 张{pileZh}里的牌，本回合结束时自动打出它们{ScopeZhSuffix(e)}");
         if (e.CardPick == "Chosen")
         {
             if (e.SelectPile == "Hand")
-                w.Line($"var __tePicks = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: null, source: this)).ToList();");
+                w.Line($"var __tePicks = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: {pred ?? "null"}, source: this)).ToList();");
             else
-                w.Line($"var __tePicks = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+                w.Line($"var __tePicks = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
         }
         else
         {
-            w.Line($"var __tePicks = MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom({PileExpr(e)}.Cards, {n}, base.Owner.RunState.Rng.CombatCardSelection).ToList();");
+            w.Line($"var __tePicks = MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom({CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}, {n}, base.Owner.RunState.Rng.CombatCardSelection).ToList();");
         }
         w.Line($"if (__tePicks.Count > 0) await PowerCmd.Apply(choiceContext, {cls}.Create(__tePicks), base.Owner.Creature, 1m, base.Owner.Creature, {cardSource});");
     }
@@ -2887,19 +2974,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// InvalidOperationException），所以这里的三摞都是战斗牌堆；复制出来的牌是克隆，
     /// 升级状态 / 附魔都跟着原牌走（本体 CloneCard 的行为）。
     /// </summary>
-    private static void EmitCopyCard(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitCopyCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         int copies = Math.Max(1, Math.Min(20, e.Copies));
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e));
+        string? pred = CardScopePredicate(e, p);
         if (e.CardPick == "Chosen")
         {
-            w.Line($"// 自己从{pileZh}选 {n} 张复制，每张 {copies} 份，复制出来的放进手牌");
+            w.Line($"// 自己从{pileZh}选 {n} 张复制，每张 {copies} 份，复制出来的放进手牌{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
-                w.Line($"var __copyFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: null, source: this)).ToList();");
+                w.Line($"var __copyFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: {pred ?? "null"}, source: this)).ToList();");
             else
-                w.Line($"var __copyFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+                w.Line($"var __copyFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
             w.Open("foreach (CardModel __src in __copyFrom)");
             w.Open($"for (int __copyIdx = 0; __copyIdx < {copies}; __copyIdx++)");
             w.Line("CardModel __clone = __src.CreateClone();");
@@ -2909,9 +2999,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            w.Line($"// 随机从{pileZh}拿 {n} 张复制，每张 {copies} 份，复制出来的放进手牌");
+            w.Line($"// 随机从{pileZh}拿 {n} 张复制，每张 {copies} 份，复制出来的放进手牌{ScopeZhSuffix(e)}");
             w.Open($"for (int __copyPickIdx = 0; __copyPickIdx < {n}; __copyPickIdx++)");
-            w.Line($"CardModel? __src = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
+            w.Line($"CardModel? __src = base.Owner.RunState.Rng.CombatCardSelection.NextItem({CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")});");
             w.Line("if (__src is null) break;");
             w.Open($"for (int __copyIdx = 0; __copyIdx < {copies}; __copyIdx++)");
             w.Line("CardModel __clone = __src.CreateClone();");
@@ -2929,25 +3019,29 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 选牌时也带上 <c>c =&gt; c.IsUpgradable</c> 过滤，免得玩家选到升不了的牌（选了也是白选）。
     /// 战斗里的卡是牌组卡的**克隆**，所以这里升级只影响本场战斗（本体机制，不用我们处理）。
     /// </summary>
-    private static void EmitUpgradeCard(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitUpgradeCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e));
+        // 「只能升级的牌」是这条效果本来就有的过滤条件；范围界定有的话和它 && 起来（见 CombineCond）。
+        string upgradableCond = CombineCond("c.IsUpgradable", CardScopeCond(e, p));
         if (e.CardPick == "Chosen")
         {
-            w.Line($"// 自己从{pileZh}选 {n} 张升级（只列能升级的牌）");
+            w.Line($"// 自己从{pileZh}选 {n} 张升级（只列能升级的牌）{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
-                w.Line($"var toUpgrade = (await CardSelectCmd.FromHand(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => c.IsUpgradable, this)).ToList();");
+                w.Line($"var toUpgrade = (await CardSelectCmd.FromHand(choiceContext, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => {upgradableCond}, this)).ToList();");
             else
-                w.Line($"var toUpgrade = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => c.IsUpgradable)).ToList();");
+                w.Line($"var toUpgrade = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.UpgradeSelectionPrompt, {n}), c => {upgradableCond})).ToList();");
             w.Line("foreach (CardModel c in toUpgrade) CardCmd.Upgrade(c);");
         }
         else
         {
-            w.Line($"// 随机升级{pileZh}里的 {n} 张（只挑能升级的）");
+            w.Line($"// 随机升级{pileZh}里的 {n} 张（只挑能升级的）{ScopeZhSuffix(e)}");
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards.Where(c => c.IsUpgradable));");
+            w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards.Where(c => {upgradableCond}));");
             w.Line("if (pick is null) break;");
             w.Line("CardCmd.Upgrade(pick);");
             w.Close();
@@ -2964,12 +3058,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///     （FromChooseACardScreen 超过 3 张会直接抛异常），min 0 / max N = 可以一张都不丢；
     ///   · 丢牌走 <c>CardCmd.Discard</c>（派发 AfterCardDiscarded，奇巧照常触发）。
     /// </summary>
-    private static void EmitScry(CodeWriter w, EffectSpec e, bool useX = false)
+    private static void EmitScry(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e));
-        w.Line($"// 预见 {n}：看抽牌堆顶的 {n} 张，想丢的丢进弃牌堆（可以一张都不丢）");
-        w.Line($"var __scryTop = PileType.Draw.GetPile(base.Owner).Cards.Take({n}).ToList();");
+        w.Line($"// 预见 {n}：看抽牌堆顶的 {n} 张，想丢的丢进弃牌堆（可以一张都不丢）{ScopeZhSuffix(e)}");
+        // 范围界定：先取「抽牌堆顶 N 张」，再在这一小撮里按范围过滤（只丢符合范围的牌；都不符合就相当于没丢）
+        w.Line($"var __scryTop = {CardScopeFiltered(e, p, $"PileType.Draw.GetPile(base.Owner).Cards.Take({n})")}.ToList();");
         w.Open("if (__scryTop.Count > 0)");
         w.Line("var __scryDiscard = (await CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))).ToList();");
         w.Open("if (__scryDiscard.Count > 0)");
@@ -3126,13 +3223,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 选牌界面的提示语用 <c>base.SelectionScreenPrompt</c>（本体每条卡牌 / 遗物 / 药水自己的那条，
     /// 本地化键是 &lt;ENTRY&gt;.selectionScreenPrompt，生成时会一起写出来）。
     /// </summary>
-    private static void EmitTakeFromPile(CodeWriter w, EffectSpec e, string pile, bool useX = false)
+    private static void EmitTakeFromPile(CodeWriter w, CharacterProfile? p, EffectSpec e, string pile, bool useX = false)
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileZh = PileZh(pile);
         string expr = $"PileType.{pile}.GetPile(base.Owner)";
-        w.Line($"// 从{pileZh}里自己选 {n} 张拿到手牌");
-        w.Line($"var __taken = (await CardSelectCmd.FromCombatPile(choiceContext, {expr}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+        string? scope = CardScopeMarker(e);
+        if (scope is not null) w.Line(scope);
+        string? pred = CardScopePredicate(e, p);
+        w.Line($"// 从{pileZh}里自己选 {n} 张拿到手牌{ScopeZhSuffix(e)}");
+        w.Line($"var __taken = (await CardSelectCmd.FromCombatPile(choiceContext, {expr}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
         w.Line("if (__taken.Count > 0) await CardPileCmd.Add(__taken, PileType.Hand);");
     }
 
@@ -3531,11 +3631,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "ExhaustCard":
-                EmitExhaustCard(w, e, useX);
+                EmitExhaustCard(w, p, e, useX);
                 break;
 
             case "DiscardCard":
-                EmitDiscardCard(w, e, useX);
+                EmitDiscardCard(w, p, e, useX);
                 break;
 
             case "TransformCard":
@@ -3543,11 +3643,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "UpgradeCard":
-                EmitUpgradeCard(w, e, useX);
+                EmitUpgradeCard(w, p, e, useX);
                 break;
 
             case "Scry":
-                EmitScry(w, e, useX);
+                EmitScry(w, p, e, useX);
                 break;
 
             case "ScrapeDraw":
@@ -3575,26 +3675,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "TakeFromDraw":
-                EmitTakeFromPile(w, e, "Draw", useX);
+                EmitTakeFromPile(w, p, e, "Draw", useX);
                 break;
 
             case "TakeFromDiscard":
-                EmitTakeFromPile(w, e, "Discard", useX);
+                EmitTakeFromPile(w, p, e, "Discard", useX);
                 break;
 
             // 从消耗牌堆拿牌到手牌（消耗牌堆同样是战斗牌堆，走同一个本体 API）
             case "TakeFromExhaust":
-                EmitTakeFromPile(w, e, "Exhaust", useX);
+                EmitTakeFromPile(w, p, e, "Exhaust", useX);
                 break;
 
             // 复制卡牌：选/随机拿 N 张，每张复制「复制的份数」份（本体「二刀流」的官方做法）
             case "CopyCard":
-                EmitCopyCard(w, e, useX);
+                EmitCopyCard(w, p, e, useX);
                 break;
 
             // 重放卡牌：给选中的牌加上「重放 N 次」（本体 CardModel.BaseReplayCount）
             case "ReplayCard":
-                EmitReplayCard(w, e, useX);
+                EmitReplayCard(w, p, e, useX);
                 break;
 
             // 回合结束时自动打出：数值 0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去
@@ -4947,22 +5047,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ExhaustCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，消耗卡牌无法实现）"); break; }
-                EmitExhaustCard(w, e);
+                EmitExhaustCard(w, p, e);
                 break;
 
             case "DiscardCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，丢弃卡牌无法实现）"); break; }
-                EmitDiscardCard(w, e);
+                EmitDiscardCard(w, p, e);
                 break;
 
             case "UpgradeCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，升级卡牌无法实现）"); break; }
-                EmitUpgradeCard(w, e);
+                EmitUpgradeCard(w, p, e);
                 break;
 
             case "Scry":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，预见无法实现）"); break; }
-                EmitScry(w, e);
+                EmitScry(w, p, e);
                 break;
 
             case "ScrapeDraw":
@@ -4994,12 +5094,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "TakeFromDraw":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，从抽牌堆拿牌无法实现）"); break; }
-                EmitTakeFromPile(w, e, "Draw");
+                EmitTakeFromPile(w, p, e, "Draw");
                 break;
 
             case "TakeFromDiscard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，从弃牌堆拿牌无法实现）"); break; }
-                EmitTakeFromPile(w, e, "Discard");
+                EmitTakeFromPile(w, p, e, "Discard");
+                break;
+
+            // 从消耗牌堆拿牌到手牌：消耗牌堆同样是战斗牌堆（PileType.IsCombatPile() 认它），
+            // 和另外两摞走同一个本体 API —— 卡牌 / 药水上早就有，「遗物触发」这一档也补上（需求 ③：三个上下文都要接）
+            case "TakeFromExhaust":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，从消耗牌堆拿牌无法实现）"); break; }
+                EmitTakeFromPile(w, p, e, "Exhaust");
                 break;
 
             // 复制卡牌：**只能用在卡牌 / 药水上**。遗物没有「战斗里选牌」的时机
@@ -5010,7 +5117,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 重放卡牌：遗物可以（「每回合让手里的一张牌重放一次」这类很常见），选牌走本体接口
             case "ReplayCard":
-                EmitReplayCard(w, e);
+                EmitReplayCard(w, p, e);
                 break;
 
             // 回合结束时自动打出：遗物上只能填 1 以上（数值 0 = 这张牌自己，遗物没有「自己这张牌」）
@@ -5364,6 +5471,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 拿不到 profile 的地方（自定义状态的钩子链）：用户在下拉里选的**已经是键**，规范化一下就够
         string customKey = !customKw ? "" : (p is null ? KeywordGen.NormalizeKeyText(kwRaw) : KeywordGen.KeyOfReference(p, kwRaw));
         // 回读标记：生成代码里认不出「给的是哪个关键词 / 是不是临时的」
+        // 「范围界定」的标记行要写在它**前面**（回读是「先攒着、等这条效果的标记出现时配上去」）
+        string? scopeMark = CardScopeMarker(e);
+        if (scopeMark is not null) w.Line(scopeMark);
         w.Line($"// CET:GiveKeyword={(customKw ? "custom:" + customKey : kwEnum)} CET:GiveKeywordTemp={(e.TempKeyword ? "1" : "0")}");
         if (customKw && customKey.Length == 0)
         {
@@ -5383,12 +5493,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pileExpr = $"PileType.{e.SelectPile}.GetPile({playerExpr})";
+        string? pred = CardScopePredicate(e, p);
         if (e.CardPick == "Chosen")
         {
             if (e.SelectPile == "Hand")
-                w.Line($"var __kwCards = (await CardSelectCmd.FromHand(context: choiceContext, player: {playerExpr}, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: null, source: {sourceExpr})).ToList();");
+                w.Line($"var __kwCards = (await CardSelectCmd.FromHand(context: choiceContext, player: {playerExpr}, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: {pred ?? "null"}, source: {sourceExpr})).ToList();");
             else
-                w.Line($"var __kwCards = (await CardSelectCmd.FromCombatPile(choiceContext, {pileExpr}, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+                w.Line($"var __kwCards = (await CardSelectCmd.FromCombatPile(choiceContext, {pileExpr}, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}){(pred is null ? "" : ", " + pred)})).ToList();");
             w.Line("foreach (CardModel __kwCard in __kwCards)");
             w.Open("");
             EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
@@ -5396,9 +5507,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            w.Line($"// 随机从{PileZh(e.SelectPile)}挑 {n} 张");
+            w.Line($"// 随机从{PileZh(e.SelectPile)}挑 {n} 张{ScopeZhSuffix(e)}");
             w.Open($"for (int __kwIdx = 0; __kwIdx < {n}; __kwIdx++)");
-            w.Line($"CardModel? __kwCard = {playerExpr}.RunState.Rng.CombatCardSelection.NextItem({pileExpr}.Cards);");
+            w.Line($"CardModel? __kwCard = {playerExpr}.RunState.Rng.CombatCardSelection.NextItem({CardScopeFiltered(e, p, $"{pileExpr}.Cards")});");
             w.Line("if (__kwCard is null) break;");
             EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey);
             w.Close();
@@ -6033,19 +6144,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "ExhaustCard":
-                EmitExhaustCard(w, e);
+                EmitExhaustCard(w, p, e);
                 break;
 
             case "DiscardCard":
-                EmitDiscardCard(w, e);
+                EmitDiscardCard(w, p, e);
                 break;
 
             case "UpgradeCard":
-                EmitUpgradeCard(w, e);
+                EmitUpgradeCard(w, p, e);
                 break;
 
             case "Scry":
-                EmitScry(w, e);
+                EmitScry(w, p, e);
                 break;
             case "ScrapeDraw":
                 EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
@@ -6070,11 +6181,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "TakeFromDraw":
-                EmitTakeFromPile(w, e, "Draw");
+                EmitTakeFromPile(w, p, e, "Draw");
                 break;
 
             case "TakeFromDiscard":
-                EmitTakeFromPile(w, e, "Discard");
+                EmitTakeFromPile(w, p, e, "Discard");
+                break;
+
+            // 从消耗牌堆拿牌到手牌（同上：三个上下文都接上了）
+            case "TakeFromExhaust":
+                EmitTakeFromPile(w, p, e, "Exhaust");
                 break;
 
             // 全局（牌组）类效果：药水的 base.Owner 也是 Player
@@ -6198,12 +6314,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // ===== 复制卡牌：药水也能用（喝药水复制手里的牌，本体「二刀流」那套）=====
             case "CopyCard":
-                EmitCopyCard(w, e);
+                EmitCopyCard(w, p, e);
                 break;
 
             // ===== 重放卡牌：药水也能用（本体「士兵炖菜 SoldiersStew」就是药水给一张牌重放）=====
             case "ReplayCard":
-                EmitReplayCard(w, e);
+                EmitReplayCard(w, p, e);
                 break;
 
             // ===== 回合结束时自动打出：药水上只能填 1 以上（数值 0 = 这张牌自己，药水没有「自己」）=====

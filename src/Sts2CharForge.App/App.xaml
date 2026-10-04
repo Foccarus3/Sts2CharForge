@@ -207,7 +207,21 @@
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnFilter}"
                                   ToolTip="攻击 / 技能 / 能力按牌的类型挑；诅咒 / 状态从那两个本体卡池 + 你自己的卡池里挑（你自己的诅咒 / 状态牌也在候选里）；下面「自定义关键词：…」那些 = 把某个自定义关键词当成一套**卡的组**，只从带这个关键词的牌里出（这一组牌在卡牌页勾关键词就能改）。"/>
                     </Grid>
-                    <!-- 多选1（用户要求）：候选张数 > 1 时，先随机抽这么多张候选、玩家挑 1 张生成。
+                    <!-- 范围界定（需求 ③）：**选牌类**效果（消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 /
+                         回合结束自动打出 / 从三摞牌拿牌 / 预见）也限定「只对哪一类牌 / 哪一组牌动手」。
+                         和上面「范围限定」共用同一份候选（MainWindow.SpawnFilters）与同一个 SpawnFilter 字段
+                         —— 文案、自定义关键词分组、校验都只有一份，不用记两套。 -->
+                    <Grid Visibility="{Binding ShowCardScopeFilter, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="范围界定（哪些牌能选）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding SpawnFilters, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnFilter}"
+                                  ToolTip="「自己选」和「随机」两条路都按这里限：攻击 / 技能 / 能力按牌的类型筛；诅咒 / 状态按稀有度筛（你自己的诅咒 / 状态牌也算）；下面「自定义关键词：…」那些 = 把某个自定义关键词当成一套**卡的组**，只对带这个关键词的牌动手（和「生成 / 变化卡牌」的范围限定是同一份选项）。选「不限」= 和以前完全一样。范围里一张牌都没有时，这条效果什么都不做（不会弹空选牌界面）。"/>
+                    </Grid>
+                    <!-- 「多选1」（用户要求）：候选张数 > 1 时，先随机抽这么多张候选、玩家挑 1 张生成。
                          默认 1 = 直接生成（原来的行为）。只对「生成卡牌 + 按范围随机」出现。 -->
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
                                 Visibility="{Binding ShowSpawnChoice, Converter={StaticResource BoolToVis}}">

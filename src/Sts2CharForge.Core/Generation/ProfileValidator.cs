@@ -178,6 +178,12 @@ public static class ProfileValidator
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
                             + "用了「按范围随机」或「生成出来的卡怎么处理」，但**自定义状态的触发器里不支持**这两类设置 —— "
                             + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
+                    // 「范围界定」（需求 ③）同理：这条链上拿不到角色配置（自定义关键词那一组查不出来）→ 直接拦住
+                    if (e.HasCardScope)
+                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
+                            + $"用了「范围界定 = {EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，"
+                            + "但**自定义状态的触发器里不支持**这一项（拿不到角色配置，自定义关键词那一组查不出来）—— "
+                            + "请改用卡牌 / 遗物 / 药水，或者把范围界定改回「不限」。"));
                     if (e.Kind is "ApplyPower" or "TempPower" && string.IsNullOrWhiteSpace(e.PowerId))
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」还没选状态。"));
                     else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
@@ -1268,22 +1274,57 @@ public static class ProfileValidator
             if (e.Kind == "TransformCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("提示", $"{owner} 的「变化卡牌」没填目标卡 → 会变化成随机卡牌。"));
 
-            // ===== 范围限定里的「自定义关键词那一组」（用户要求：把自定义关键词当卡的组用）=====
-            if (e.IsSpawnRandom && EffectCatalog.IsKeywordFilter(e.SpawnFilter))
+            // ===== 范围限定 / 范围界定里的「自定义关键词那一组」（用户要求：把自定义关键词当卡的组用）=====
+            // 「范围限定」= 生成 / 变化卡牌那一套；「范围界定」= 需求 ③ 给选牌类效果加的那一套。
+            // 两套共用同一个 SpawnFilter 字段和同一份选项表，所以检查也只有一份（措辞按当前是哪一套换）。
+            bool spawnScope = e.UsesSpawnOptions && e.IsSpawnRandom;
+            bool cardScope = e.HasCardScope;
+            if ((spawnScope || cardScope) && EffectCatalog.IsKeywordFilter(e.SpawnFilter))
             {
+                string scopeWord = cardScope ? "范围界定" : "范围限定";
                 string groupName = EffectCatalog.KeywordFilterName(e.SpawnFilter);
                 var group = EffectCatalog.KeywordGroupCards(p, e.SpawnFilter);
                 if (group.Count == 0)
-                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」范围限定选了自定义关键词「{groupName}」，"
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」{scopeWord}选了自定义关键词「{groupName}」，"
                         + "但**没有任何一张你自己的牌带这个关键词** —— 这一组是空的，效果会什么都不做。"
                         + "请到卡牌页给这一组牌勾上这个关键词，或者换一个范围限定。"));
                 else
-                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」范围限定 = 自定义关键词「{groupName}」那一组，"
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」{scopeWord} = 自定义关键词「{groupName}」那一组，"
                         + $"共 {group.Count} 张牌（{string.Join("、", group.Take(6).Select(c => c.Name))}"
                         + (group.Count > 6 ? " …" : "") + "）。"
                         + "生成时会把这些牌直接列进候选表（关键词是我们自己的标注，游戏里没有对应枚举，"
                         + "只能在生成时按配置查出来）。"
                         + "注意：本体的候选过滤会排除「基础 / 先古 / 事件」稀有度的牌，所以起始的打击 / 防御不会出现在这一组里。"));
+            }
+
+            // ===== 范围界定（需求 ③：选牌类效果只对某一类牌 / 某一组牌动手）=====
+            if (cardScope)
+            {
+                string scopeName = EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter);
+                string pickWord = e.CardPick == "Chosen" ? "自己选" : "随机";
+                // 「范围 + 取牌方式」：说清这一档到底会怎么挑牌（用户看着「范围界定」不一定知道随机那条路也受限）
+                string how = e.Kind switch
+                {
+                    "ExhaustCard" => $"只会从{EffectCatalog.SelectPileZh(e.SelectPile)}里挑「{scopeName}」的牌来消耗",
+                    "DiscardCard" => $"只会从{EffectCatalog.SelectPileZh(e.SelectPile)}里挑「{scopeName}」的牌丢掉",
+                    "UpgradeCard" => $"只会从{EffectCatalog.SelectPileZh(e.SelectPile)}里挑「{scopeName}」的牌升级",
+                    "GiveKeyword" => $"只会给{EffectCatalog.SelectPileZh(e.SelectPile)}里「{scopeName}」的牌加上这个关键词",
+                    "CopyCard" => $"只会复制{EffectCatalog.SelectPileZh(e.SelectPile)}里「{scopeName}」的牌",
+                    "ReplayCard" => $"只会让{EffectCatalog.SelectPileZh(e.SelectPile)}里「{scopeName}」的牌重放",
+                    "TurnEndPlay" => $"只会自动打出{EffectCatalog.SelectPileZh(e.SelectPile)}里「{scopeName}」的牌",
+                    "Scry" => $"只会把符合「{scopeName}」的牌列进可以丢掉的那一批（看牌堆顶 N 张之后再按范围筛）",
+                    _ => $"只会从对应那摞牌里挑「{scopeName}」的牌",
+                };
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」设了范围界定 = 「{scopeName}」，取牌方式 = {pickWord}："
+                    + how + " —— 范围里一张都没有时这一条效果什么都不做（不会弹空选牌界面）。"));
+            }
+            // 填了范围界定、但这条效果种类**不支持**它（界面里那一行也不显示）→ 说一句，别让人以为配了会有用
+            // （「生成 / 变化 / 全局加牌」那几种的范围限定不是这个功能，所以不在此列）
+            else if (!string.IsNullOrWhiteSpace(e.SpawnFilter) && !e.UsesSpawnOptions)
+            {
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」填了「范围界定 = {EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，"
+                    + "但「范围界定」只有**选牌类**效果用得到（消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / "
+                    + "回合结束时自动打出 / 从三摞牌拿牌 / 预见）—— 这条会被忽略。"));
             }
 
             // ===== 「多选1」（候选张数 > 1）=====
@@ -1427,6 +1468,12 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「按范围随机」或「生成出来的卡怎么处理」，"
                     + "但**自定义状态的触发器里不支持**这两类设置（那里的生成链拿不到玩家那一侧的对象）—— "
                     + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
+            // 「范围界定」（需求 ③）同理：状态触发器那条链上没有「角色配置」（自定义关键词那一组查不出来），
+            // 所以这里也直接拦住（和上面「按范围随机」同一条规矩）。
+            if (ctx == "Power" && e.HasCardScope)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「范围界定 = {EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，"
+                    + "但**自定义状态的触发器里不支持**这一项（拿不到角色配置，自定义关键词那一组查不出来）—— "
+                    + "请改用卡牌 / 遗物 / 药水，或者把范围界定改回「不限」。"));
 
             if (e.Kind == "BoostCard")
             {

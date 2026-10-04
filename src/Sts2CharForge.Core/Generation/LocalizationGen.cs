@@ -215,6 +215,20 @@ public static class LocalizationGen
         return $"从{pile}选择要拿到手牌的牌";
     }
 
+    /// <summary>
+    /// 「范围界定」（需求 ③：选牌类效果只对某一类牌 / 某一组牌动手）在卡面描述里的那一句。
+    /// 没设范围就返回空串 —— 卡面描述与旧版逐字一致。
+    /// 例：<c>（只限攻击牌）</c> / <c>（只限「命运」那一组牌）</c>。
+    /// </summary>
+    private static string CardScopeNote(CharacterProfile p, EffectSpec e)
+    {
+        if (!e.HasCardScope) return "";
+        string name = EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter);
+        return EffectCatalog.IsKeywordFilter(e.SpawnFilter)
+            ? $"（只限「{name}」那一组牌）"
+            : $"（只限{name}牌）";
+    }
+
     /// <summary>「给予卡牌关键词」的一句话描述。</summary>
     private static string GiveKeywordText(CharacterProfile p, EffectSpec e, string repeat, string when)
     {
@@ -222,9 +236,9 @@ public static class LocalizationGen
         string temp = e.TempKeyword ? "（本回合）" : "";
         if (e.Amount <= 0) return $"{when}这张牌获得[gold]{kw}[/gold]{temp}。";
         string n = e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString();
-        string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", _ => "手牌" };
+        string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", "Exhaust" => "消耗牌堆", _ => "手牌" };
         string pick = e.CardPick == "Chosen" ? "自己选" : "随机";
-        return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}。";
+        return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}{CardScopeNote(p, e)}。";
     }
 
     /// <summary>
@@ -733,20 +747,22 @@ public static class LocalizationGen
                 ? $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
                 : $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
+            // 范围界定（需求 ③）：范围非空时在句尾补一句「（只限攻击牌）」（空则不加，描述与旧版一致）
             "ExhaustCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌{CardScopeNote(p, e)}。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌{CardScopeNote(p, e)}。",
             // 丢弃卡牌：丢进弃牌堆（不是消耗，洗牌后会回来）。丢哪一摞写在描述里：
             // 手牌 = 「丢弃 N 张手牌」；抽牌堆 = 「从抽牌堆里丢弃 N 张牌」。
             "DiscardCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌{CardScopeNote(p, e)}。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌{CardScopeNote(p, e)}。",
             // 升级卡牌：从哪一摞选、自己选还是随机（本体「武装」那种）
             "UpgradeCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {var} 张手牌（升级不了的牌不会出现在选择里）。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌。",
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {var} 张手牌（升级不了的牌不会出现在选择里）{CardScopeNote(p, e)}。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌{CardScopeNote(p, e)}。",
             // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
-            "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）。",
+            // 范围界定作用于「看的那几张」：只把符合范围的牌列进选择里
+            "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）{CardScopeNote(p, e)}。",
             // 用「目标卡」填满手牌（本体「迫降 CrashLanding」）：张数由手牌上限决定，没有数值
             "FillHand" => $"{repeat}{when}用{CardNameOf(p, e.SpawnCardId)}填满你的[gold]手牌[/gold]。",
             // 抽到就减费：N 回合内每次抽到的牌费用 -1（负数 = 反向扣层数）
@@ -758,22 +774,22 @@ public static class LocalizationGen
             "CopyCard" => (e.SelectPile == "Hand"
                     ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
                     : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
-                + (Math.Max(1, e.Copies) == 1 ? "（每张复制一份到手牌）。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）。"),
+                + (Math.Max(1, e.Copies) == 1 ? $"（每张复制一份到手牌）{CardScopeNote(p, e)}。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）{CardScopeNote(p, e)}。"),
             // 重放卡牌：本体 CardModel.BaseReplayCount（重放 1 = 打出去时连着打 2 次）
             "ReplayCard" => (e.SelectPile == "Hand"
                     ? $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的 {var} 张手牌"
                     : $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌")
                 + (Math.Max(1, e.ReplayTimes) == 1
-                    ? "本场战斗内额外打出一次。"
-                    : $"本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次。"),
+                    ? $"本场战斗内额外打出一次{CardScopeNote(p, e)}。"
+                    : $"本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次{CardScopeNote(p, e)}。"),
             // 回合结束时自动打出：0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去。
             // 这里**写数字字面量**（不用 {Cards:diff()}）：这一条效果不声明动态变量
             // （数值 0 有特殊含义，不能当成「0 = 不生效」），写成占位符的话游戏里替换不出来。
             "TurnEndPlay" => e.Amount <= 0m && !e.AmountIsX
                 ? "回合结束时自动打出这张牌。"
                 : (e.SelectPile == "Hand"
-                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们。"
-                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们。"),
+                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"
+                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"),
             // 毒性爆发 / 大限已至：照本体两张牌的原文写
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
@@ -782,9 +798,9 @@ public static class LocalizationGen
                     : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为")
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
             // 本体「搜寻 / 全息影像 / 挖掘」那种：从牌堆里挑牌拿到手牌
-            "TakeFromDraw" => $"从抽牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
-            "TakeFromDiscard" => $"从弃牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
-            "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
+            "TakeFromDraw" => $"从抽牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromDiscard" => $"从弃牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
             // 负数 = 扣除层数（生成的是 PowerCmd.ModifyAmount(-N)：本体 Apply 对负数会新建一个负层数的状态）
             // 暴露 / 清除状态（没有动态变量，数值直接写死）

@@ -555,6 +555,11 @@ public static class ProjectRecovery
         // 「生成 / 变化卡牌」的附加设置（CET:SpawnPick= 标记）：标记行先存着，等真正那条效果出现时配上。
         EffectSpec? pendingSpawn = null;
 
+        // 「范围界定」（需求 ③：选牌类效果限定只对某一类牌 / 某一组牌动手）的标记行里额外带着效果种类
+        // （CET:Kind=）—— 那条效果的代码万一没被认出来，也不会把范围配到**另一个种类**的效果身上。
+        // 老工程（没这一项）保持原样：见了谁都配。
+        string? pendingSpawnKind = null;
+
         // 「从哪里选牌」：消耗 / 变化 / 丢弃的选牌语句里带着它（FromHand* = 手牌，PileType.X = 那一摞）。
         // 记在暂存里，等真正的动作语句（CardCmd.Exhaust / Transform / Discard）出现时再配给那条效果 ——
         // 以前完全没回读这个字段，回读出来的「从抽牌堆消耗 / 变化」会静默退回手牌。
@@ -575,8 +580,13 @@ public static class ProjectRecovery
         void Done(EffectSpec e)
         {
             e.Condition = CondTop() ?? new ConditionSpec();
-            // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上
-            if (pendingSpawn is not null && e.UsesSpawnOptions)
+            // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上。
+            // 「范围界定」（需求 ③：消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / 回合结束自动打出 /
+            // 从三摞牌拿牌 / 预见）用的是同一份标记，所以这里把「选牌类效果」也认下来；
+            // 带 CET:Kind= 的标记再核对一次种类（防止那条效果的代码没被认出来时，范围串到别的效果身上）。
+            if (pendingSpawn is not null
+                && (e.UsesSpawnOptions || e.UseCardScopeFilter)
+                && (pendingSpawnKind is null || string.Equals(pendingSpawnKind, e.Kind, StringComparison.Ordinal)))
             {
                 e.SpawnPick = pendingSpawn.SpawnPick;
                 e.SpawnFilter = pendingSpawn.SpawnFilter;
@@ -586,6 +596,7 @@ public static class ProjectRecovery
                 e.SpawnFreeThisTurn = pendingSpawn.SpawnFreeThisTurn;
                 e.SpawnUpgradedThisTurn = pendingSpawn.SpawnUpgradedThisTurn;
                 pendingSpawn = null;
+                pendingSpawnKind = null;
             }
             if (pendingPetAllGroup is not null)
             {
@@ -805,6 +816,8 @@ public static class ProjectRecovery
                     // 范围限定可能是自定义关键词分组（`Keyword:FATE`），所以这里不能只认 \w（冒号会被截断）
                     string? flt = Match(line, @"CET:SpawnFilter=([^\s]+)");
                     string? choice = Match(line, @"CET:SpawnChoice=(\d+)");
+                    // 「范围界定」（需求 ③）用的也是这份标记，只是额外带一个 CET:Kind=（见 pendingSpawnKind）
+                    pendingSpawnKind = Match(line, @"CET:Kind=(\w+)");
                     pendingSpawn = new EffectSpec
                     {
                         SpawnPick = spawnPick,
@@ -901,6 +914,11 @@ public static class ProjectRecovery
                     || line.StartsWith("var toUpgrade", StringComparison.Ordinal)
                     || line.EndsWith("CardCmd.Upgrade(c);", StringComparison.Ordinal)
                     || line.StartsWith("CardCmd.Upgrade(pick);", StringComparison.Ordinal)
+                    // 「升级卡牌（战斗内）+ 随机」那一支的 `if (pick is null) break;`：
+                    // 它是上面那句 `CardModel? pick = …` 的下一行，而那句被「选牌暂存」那条分支 continue 掉了，
+                    // 于是这个开关在这里被关掉 → 紧跟着的 `CardCmd.Upgrade(pick);` 被当成**升级牌组**（全局）多回读一条。
+                    // （探针实测：一张「随机升级手牌 1 张」的牌回读后多出一条 UpgradeCardGlobal。）
+                    || line.StartsWith("if (pick is null) break;", StringComparison.Ordinal)
                     || line.StartsWith("PoisonPower? poison = ", StringComparison.Ordinal)
                     || line.StartsWith("if (poison is not null)", StringComparison.Ordinal)
                     || line.StartsWith("await PowerCmd.Apply<PoisonPower>(", StringComparison.Ordinal)
@@ -1671,6 +1689,32 @@ public static class ProjectRecovery
                 Done(e);
                 // 「按范围随机变化」那一支后面还有 __newCard / __made / CardCmd.Upgrade(__made) 几行 → 整段跳过
                 if (randomTransform) skipSelfContainedBody = true;
+                continue;
+            }
+
+            // 「消耗卡牌」的**自己选**那一支生成的是**单行** foreach（整段写在一行里）：
+            //   foreach (CardModel c in toExhaust) await CardCmd.Exhaust(choiceContext, c);
+            // 上面那条分支只认「await CardCmd.Exhaust(…」开头的行（随机那一支是单独一行），
+            // 于是「自己选消耗」的存档回读时会掉这条效果、并多出一行「没认出来」（探针实测）。
+            if (line.StartsWith("foreach (CardModel c in toExhaust) await CardCmd.Exhaust(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec
+                {
+                    Kind = "ExhaustCard",
+                    CardPick = "Chosen",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
+                };
+                pendingSelectPile = null;
+                // 张数在**上一行**（var toExhaust = … ExhaustSelectionPrompt, N）——
+                // 只往回看几行，别用整个方法体去 Match（一张牌里两条消耗时会认到第一条的张数）
+                string? chosen = null;
+                for (int k = i - 2; k >= 0 && k >= i - 6; k--)
+                {
+                    chosen = Match(lines[k].Trim(), @"ExhaustSelectionPrompt, (\d+)");
+                    if (chosen is not null) break;
+                }
+                e.Amount = chosen is not null ? decimal.Parse(chosen, CultureInfo.InvariantCulture) : LoopValue(LoopTop() ?? "1");
+                Done(e);
                 continue;
             }
 
