@@ -913,6 +913,9 @@ public static class ProjectRecovery
                     || line.Contains("__replayWant", StringComparison.Ordinal)
                     || line.Contains("__replayPicked", StringComparison.Ordinal)
                     || line.Contains("__tePicks", StringComparison.Ordinal)
+                    // 负数 = 反向：扣层数（PowerCmd.ModifyAmount + __negPower）与失去格挡（LoseBlock）
+                    || line.Contains("__negPower", StringComparison.Ordinal)
+                    || line.Contains("CreatureCmd.LoseBlock(", StringComparison.Ordinal)
                     || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
                 if (scBody) continue;
                 skipSelfContainedBody = false;
@@ -1335,6 +1338,50 @@ public static class ProjectRecovery
                 }
                 else ApplyLoop(e, frames);
                 Done(e);
+                continue;
+            }
+
+            if (line.StartsWith("CreatureCmd.LoseBlock(", StringComparison.Ordinal) || line.StartsWith("await CreatureCmd.LoseBlock(", StringComparison.Ordinal))
+            {
+                // 负数格挡 = 失去格挡（生成的是 LoseBlock(choiceContext, 目标, System.Math.Abs(数值), remover)）
+                var e = new EffectSpec { Kind = "Block", TargetSide = SideOfTarget(line) };
+                FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                if (e.Amount > 0) e.Amount = -e.Amount;        // 回读成负数（生成时是 Math.Abs）
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            if (line.Contains("PowerCmd.ModifyAmount(choiceContext, __negPower,"))
+            {
+                // 负数「施加状态」= 扣除层数（生成的是先 GetPower<T>() 再 ModifyAmount(-(Math.Abs(数值))））
+                var mNeg = Regex.Match(line, @"GetPower<(\w+)>\(\)");
+                var mPower = mNeg.Success ? mNeg : Regex.Match(line, @"__negPower, -\(System\.Math\.Abs\(base\.DynamicVars\[""(\w+)""\]");
+                if (!mPower.Success) { result.Unparsed.Add($"{where}: {line}"); continue; }
+                string power = mNeg.Success ? mPower.Groups[1].Value : mPower.Groups[1].Value;
+                var eNeg = new EffectSpec
+                {
+                    Kind = "ApplyPower",
+                    PowerId = nameToPowerId.TryGetValue(power, out var pid) ? pid : power,
+                };
+                // 目标：GetPower<T>() 是从谁身上取的（自己 / 选中的敌人 / 全体里的 foe）
+                eNeg.TargetSide = line.Contains(".GetPower<" + power + ">()") && line.Contains("cardPlay.Target.GetPower<")
+                    ? "TargetEnemy"
+                    : SideOfTarget(line);
+                // 数值按名字去 CanonicalVars 里取（生成时写的是 new PowerVar<X>(-3m)，
+                // 变量名/泛型都是这个状态类名 —— 和宠物那条一样按名字找，别靠顺序）
+                int atNeg = vars.FindIndex(v => v.Kind == "Power"
+                    && (string.Equals(v.Name, power, StringComparison.Ordinal)
+                        || string.Equals(v.PowerId, power, StringComparison.Ordinal)));
+                if (atNeg >= 0) { eNeg.Amount = -Math.Abs(vars[atNeg].Amount); vars.RemoveAt(atNeg); }
+                else
+                {
+                    // 找不到变量就别硬猜：列出来让用户人工补（静默回读成 0 会把配置吃掉）
+                    result.Unparsed.Add($"{where}: 负数「施加状态」的层数没认出来（{power}）");
+                    continue;
+                }
+                ApplyLoop(eNeg, frames);
+                Done(eNeg);
                 continue;
             }
 

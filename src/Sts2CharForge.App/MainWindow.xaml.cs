@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -13402,7 +13402,70 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try { if (Directory.Exists(stabRoot)) Directory.Delete(stabRoot, true); } catch { }
 			}
 		}
-		Close();
+		// ===== 本轮新增：所有「获得类」数值支持负数 = 反向（获得力量 -3 = 失去 3 点力量）=====
+		{
+			Check("（配置）格挡 / 施加状态 的数值都允许填负数",
+				EffectCatalog.FindKind("Block").Min <= -999
+				&& EffectCatalog.FindKind("Block").Display.Contains("负数 = 失去")
+				&& EffectCatalog.FindKind("ApplyPower").Min <= -99
+				&& EffectCatalog.FindKind("ApplyPower").Display.Contains("负数 = 扣除"),
+				$"Block {EffectCatalog.FindKind("Block").Min}【{EffectCatalog.FindKind("Block").Display}】 / ApplyPower {EffectCatalog.FindKind("ApplyPower").Min}");
+
+			CharacterProfile negProbe = ProfileFactory.Sample();
+			negProbe.VanillaPowerOverrides.Clear();
+			CardSpec negCard = new CardSpec { Name = "反向探针", ClassName = "UiCheckNeg", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			negCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = -5m, TargetSide = "Self" });
+			negCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" });
+			negCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "PoisonPower", Amount = -5m, TargetSide = "Enemy" });
+			negCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "PoisonPower", Amount = -2m, TargetSide = "Enemy", NextTurn = true });
+			CardSpec negTemp = new CardSpec { Name = "临时负数探针", ClassName = "UiCheckNegTemp", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			negTemp.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" });
+			negProbe.Cards.Add(negCard);
+			negProbe.Cards.Add(negTemp);
+			string negSrc = CSharpCodeGen.CardSource(negProbe, negCard, 0);
+			Check("格挡填负数 → 生成 CreatureCmd.LoseBlock（本体 GainBlock 对非正数什么都不做）",
+				negSrc.Contains("CreatureCmd.LoseBlock(choiceContext, base.Owner.Creature, System.Math.Abs(base.DynamicVars.Block.BaseValue), base.Owner.Creature)")
+				&& !negSrc.Contains("CreatureCmd.GainBlock(base.Owner.Creature, base.DynamicVars.Block.BaseValue"), "LoseBlock");
+			Check("施加状态填负数 → 先取目标身上那份实例再 PowerCmd.ModifyAmount 扣（本体 Apply 对负数会新建负层数状态）",
+				negSrc.Contains("PowerModel? __negPower = base.Owner.Creature.GetPower<StrengthPower>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(base.DynamicVars[\"StrengthPower\"].BaseValue)), base.Owner.Creature, this);")
+				&& negSrc.Contains("PowerModel? __negPower = cardPlay.Target.GetPower<PoisonPower>();")
+				&& !negSrc.Contains("await PowerCmd.Apply<PoisonPower>(choiceContext, cardPlay.Target, base.DynamicVars[\"PoisonPower\"].BaseValue"), "ModifyAmount");
+			string negJson = LocalizationGen.CardsJson(negProbe);
+			Check("卡面描述写成「失去 / 扣除」而不是「获得 -5」",
+				negJson.Contains("失去 5 点格挡。") && negJson.Contains("失去 3 层力量。") && negJson.Contains("扣除 5 层中毒。"), "描述对");
+			var negIssues = ProfileValidator.Validate(negProbe);
+			Check("校验器：施加状态「负数 + 下回合生效」这个组合会被拦（下回合那套只会加层数）",
+				negIssues.Any((ValidationIssue x) => x.IsError && x.Message.Contains("填了负数（扣除层数）又勾了「下回合生效」")), "拦住了");
+			string negTempSrc = CSharpCodeGen.CardSource(negProbe, negTemp, 0);
+			var negTempIssues = ProfileValidator.Validate(negProbe);
+			Check("校验器：临时增益填负数会被拦（它的机制是「本回合 +X、回合结束撤掉」）",
+				negTempIssues.Any((ValidationIssue x) => x.IsError && x.Message.Contains("填了负数 —— 它的机制是「本回合 +X、回合结束撤掉」")), "拦住了");
+			// 生成 → 回读：负数要原样带回来（回读靠标记行里的 Amount）
+			string negRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_neg_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				negProbe.Paths.OutputDir = negRoot;
+				negProbe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				negProbe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				// 上面两条会被校验器拦的配置先撤掉，才能生成工程
+				negCard.Effects[3].NextTurn = false;
+				negTemp.Effects[0].Amount = 3m;
+				var negGen = ModGenerator.Generate(negProbe);
+				Check("（准备）带负数的配置能生成工程", negGen.Success, negRoot);
+				var negRec = ProjectRecovery.FromProject(negGen.ProjectRoot);
+				CardSpec? backCard = negRec.Profile?.Cards.FirstOrDefault(c => c.Name == "反向探针");
+				Check("回读把负数原样带回来（格挡 -5 / 力量 -3 / 中毒 -5）",
+					backCard is not null
+					&& backCard.Effects.Any(x => x.Kind == "Block" && x.Amount == -5m)
+					&& backCard.Effects.Any(x => x.Kind == "ApplyPower" && x.PowerId == "StrengthPower" && x.Amount == -3m)
+					&& backCard.Effects.Any(x => x.Kind == "ApplyPower" && x.PowerId == "PoisonPower" && x.Amount == -5m),
+					backCard is null ? "没回读到卡" : string.Join(" / ", backCard.Effects.Select(x => x.Kind + ":" + x.Amount)));
+			}
+			finally
+			{
+				try { if (Directory.Exists(negRoot)) Directory.Delete(negRoot, true); } catch { }
+			}
+		}		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
 		if (_selfTestRealProfileFolder is not null)

@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -190,6 +190,7 @@ public static class ProfileValidator
                             + "想要固定数值就把那个勾去掉。"));
                     // 本体里有些状态显示的数字根本不是层数（自己 override 了 DisplayAmount）：
                     // 填多少层，状态栏那个数字都不会是你填的值（用户报过「30 层缓慢」）
+
                     if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.PowerAmountNote(e.PowerId) is string amountNote)
                         issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条施加的是「{EffectCatalog.PowerName(e.PowerId)}」："
                             + $"本体这个状态显示的数字不是层数 —— {amountNote}"
@@ -1119,6 +1120,20 @@ public static class ProfileValidator
             if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsX)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值 = X 且填了负数：X 要到打出时才知道正负，"
                     + "所以这条会按「获得 X」生成（负数被忽略）。"));
+            // 负数 = 反向（扣除层数 / 失去格挡）：生成时会改走 PowerCmd.ModifyAmount(-N) / CreatureCmd.LoseBlock。
+            // 两个组合它做不到，直接拦住并在提示里说清：
+            if (e.Kind == "ApplyPower" && e.Amount < 0 && e.NextTurn)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」填了负数（扣除层数）又勾了「下回合生效」"
+                    + "—— 下回合那套是给目标挂一个延迟状态（它的机制是加层数），扣层数没有对应的做法。"
+                    + "请二选一：去掉「下回合生效」，或把数值改成正数。"));
+            if (e.Kind == "TempPower" && e.Amount < 0)
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」填了负数 —— 它的机制是「本回合 +X、回合结束撤掉」，"
+                    + "负数的意思会变成「本回合先扣、回合结束加回来」，和你的预期不一样。"
+                    + "要扣掉目标身上的层数，请改用「施加增益/减益」并把数值填成负数（例：-3 = 失去 3 层力量）。"));
+            if (e.Kind == "ApplyPower" && e.Amount < 0)
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 {e.Amount}："
+                    + $"会生成「{(e.TargetSide == "Self" ? "失去" : "扣除")} {-e.Amount} 层{EffectCatalog.PowerName(e.PowerId)}」"
+                    + "（先找目标身上那份状态实例再扣；目标身上没有这个状态时什么都不做）。"));
             if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
             else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的增益/减益未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));

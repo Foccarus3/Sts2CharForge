@@ -1152,6 +1152,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
             ? $"await PlayerCmd.LoseEnergy({AbsExpr(amt)}, {ownerExpr});   // 负数 = 失去（本体 GainEnergy 对非正数直接返回）"
             : $"await PlayerCmd.GainEnergy({amt}, {ownerExpr});";
 
+    /// <summary>
+    /// 「施加增益/减益 N 层」那一行。
+    ///
+    /// 为什么负数不能直接交给本体 <c>PowerCmd.Apply</c>：它会走到 <c>ApplyInternal(target, -N, …)</c>
+    /// 去**新建一个层数为 -N 的状态**（等于凭空挂个负数），而不是「扣掉目标身上已有的 N 层」。
+    /// 所以负数先找目标身上那份已有实例，再用 <c>PowerCmd.ModifyAmount</c> 扣（本体扣层数就是这条）；
+    /// 目标身上没有这个状态时什么都不做（扣不了），和「获得力量 -3 = 失去 3 点力量」的直觉一致。
+    /// </summary>
+    internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr)
+        => IsNegativeAmount(e, useX)
+            ? $"{{ PowerModel? __negPower = {targetExpr}.GetPower<{type}>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -({AbsExpr(amt)}), {applierExpr}, this); }}   // 负数 = 扣除层数"
+            : $"await PowerCmd.Apply<{type}>(choiceContext, {targetExpr}, {amt}, {applierExpr}, this);";
+
     /// <summary>「获得 N 枚金币」那一行（N 是负数时生成 LoseGold，数值取绝对值）。</summary>
     internal static string GainGoldLine(EffectSpec e, string amt, bool useX, string ownerExpr) =>
         IsNegativeAmount(e, useX)
@@ -3597,7 +3610,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Block":
-                if (e.NextTurn)
+                if (IsNegativeAmount(e, useX))
+                    // 负数 = 失去 N 点格挡（本体 GainBlock 对非正数什么都不做，得走 LoseBlock；
+                    // remover 传我们这边，本体用它记「谁削掉的」）
+                    EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
+                        c => $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡");
+                else if (e.NextTurn)
                     w.Line($"await PowerCmd.Apply<BlockNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
                 else if (useX && e.AmountIsX)
                     // 格挡 = X：BlockVar 那条重载只能吃固定值，X 要走 decimal 重载
@@ -3687,12 +3705,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 switch (e.TargetSide)
                 {
                     case "Self":
-                        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
+                        w.Line(ApplyPowerLine(e, useX, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "base.Owner.Creature");
                         break;
                     case "AllEnemies":
                         w.Open("foreach (Creature foe in base.CombatState.HittableEnemies)")
-                         .Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, this);");
+                         .Line(ApplyPowerLine(e, useX, e.PowerId, "foe", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "foe");
                         w.Close();
                         break;
@@ -3701,12 +3719,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                          .Open($"for (int __foeIdx = 0; __foeIdx < {RepeatExpr(e, useX)} && foes.Count > 0; __foeIdx++)")
                          .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
                         if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
-                        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, this);");
+                        w.Line(ApplyPowerLine(e, useX, e.PowerId, "foe", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "foe");
                         w.Close();
                         break;
                     default:
-                        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, cardPlay.Target, {amt}, base.Owner.Creature, this);");
+                        w.Line(ApplyPowerLine(e, useX, e.PowerId, "cardPlay.Target", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "cardPlay.Target");
                         break;
                 }
@@ -4146,7 +4164,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
             return;
         }
-        w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, {petVar}, {calc}, base.Owner.Creature, this);");
+        w.Line(ApplyPowerLine(e, useX: false, e.PowerId, petVar, calc, "base.Owner.Creature"));
     }
 
     /// <summary>
@@ -4808,7 +4826,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Block":
-                if (e.NextTurn)
+                if (IsNegativeAmount(e, useX: false))
+                    // 负数 = 失去 N 点格挡（本体 GainBlock 对非正数什么都不做，得走 LoseBlock；
+                    // remover 传我们这边，本体用它记「谁削掉的」）
+                    EmitPerCreature(w, e, useX: false, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
+                        c => $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡");
+                else if (e.NextTurn)
                 {
                     if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「下回合格挡」无法实现）"); break; }
                     w.Line($"await PowerCmd.Apply<BlockNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
@@ -4894,7 +4917,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 else if (e.TargetSide == "Self")
                 {
-                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
                 }
                 else if (e.TargetSide == "RandomEnemies")
@@ -4905,13 +4928,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Open($"for (int __relFoeIdx = 0; __relFoeIdx < {RepeatExpr(e, useX: false)} && foes.Count > 0; __relFoeIdx++)")
                      .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
                     if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
-                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, null);");
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
                     EmitSlowPercentFix(w, e, "foe");     // 在循环里（foe 的作用域内），不能拿到循环外面
                     w.Close();
                 }
                 else if (e.TargetSide == "AllEnemies")
                 {
-                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature.CombatState.HittableEnemies", amt, "base.Owner.Creature"));
                     // 一次性对全体施加（上面那条重载），这里逐个补百分比
                     EmitSlowPercentFixForAll(w, e);
                 }
@@ -4920,7 +4943,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // 「指定敌人」：遗物没有「玩家选中的目标」→ 取可打的第一个敌人（和其它效果同一套约定）
                     w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
                      .Open("if (foe is not null)")
-                     .Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, null);");
+                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
                     EmitSlowPercentFix(w, e, "foe");
                     w.Close();
                 }
@@ -5808,7 +5831,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "Block":
                 EmitPotionPerCreature(w, potionTarget, allEnemies,
-                    c => $"await CreatureCmd.GainBlock({c}, {BlockValueAccess(varMap, e)}, ValueProp.Move, null);");
+                    c => IsNegativeAmount(e, useX: false)
+                        ? $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡"
+                        : $"await CreatureCmd.GainBlock({c}, {BlockValueAccess(varMap, e)}, ValueProp.Move, null);");
                 break;
             case "Draw":
                 w.Line($"await CardPileCmd.Draw(choiceContext, {amt}, base.Owner);");
@@ -5857,19 +5882,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (potionTarget == "AllEnemies")
                 {
                     w.Open($"foreach (Creature foe in {allEnemies})")
-                     .Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, foe, {amt}, base.Owner.Creature, null);");
+                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
                     if (IsSlowPercentEffect(e))
                         w.Line($"SlowPowerHelper.SetPercent(foe, {e.SlowPercentEffective});   // 本体「缓慢」：直接设成 {e.SlowPercentEffective}%");
                     w.Close();
                 }
                 else if (potionTarget == "AnyEnemy")
                 {
-                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, target, {amt}, base.Owner.Creature, null);");
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "target", amt, "base.Owner.Creature"));
                     EmitSlowPercentFix(w, e, "target");
                 }
                 else
                 {
-                    w.Line($"await PowerCmd.Apply<{e.PowerId}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
                 }
                 break;

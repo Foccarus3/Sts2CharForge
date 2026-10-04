@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -576,7 +576,7 @@ public static class EffectCatalog
         // 格挡 / 回复生命 / 失去生命 / 最大生命 也能指定「作用对象」——
         // 本体的 CreatureCmd.GainBlock / Heal / GainMaxHp / Damage 收的都是 Creature，
         // 所以「给敌人加格挡」「给敌人回血」这类也能做出来（有些怪就是靠这个变强）。
-        new EffectKindOption("Block",   "获得格挡",     "点", 0,    999, true,  true),
+        new EffectKindOption("Block",   "获得格挡（负数 = 失去）", "点", -999, 999, true,  true),
         new EffectKindOption("Draw",    "抽牌",         "张", 0,    10,  true,  false),
         // 负数 = 失去 N 点能量（本体的 PlayerCmd.GainEnergy 第一句就是 `if (!(amount > 0m)) return;` ——
         // 非正数什么都不做，所以负数必须改走 PlayerCmd.LoseEnergy，见 CSharpCodeGen.IsNegativeAmount）。
@@ -591,7 +591,7 @@ public static class EffectCatalog
             // 额外资源量（本体的星星计数器）：正数 = 获得、负数 = 卡牌费用（花费）。
         // 支持「下回合生效」：正数走本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars + 自毁）。
         new EffectKindOption("ExtraResource", "获得额外资源量", "点", -999, 999, true, false),
-        new EffectKindOption("ApplyPower", "施加增益/减益", "层", 0, 99, true, true),
+        new EffectKindOption("ApplyPower", "施加增益/减益（负数 = 扣除层数）", "层", -99, 99, true, true),
         // 击晕：本体的「击晕」不是状态（Power），而是**怪物意图**（StunIntent）——
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
         // 我们照它生成：被打晕的敌人这一回合什么都不做。

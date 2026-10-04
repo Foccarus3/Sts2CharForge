@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -685,9 +685,14 @@ public static class LocalizationGen
             // 伤害：命中次数 > 1（或 = X）要写出来，本体「旋风斩 / 天际钻头」的描述就是「造成 X 点伤害 X 次」
             "Damage" => e.TargetSide == "Self" ? $"受到 {var} 点伤害。" : $"{repeat}{when}{target}造成 {var} 点伤害{hitSuffix}。",
             // 格挡 / 回复生命 / 失去生命 / 最大生命：自己以外要写清对象（能给敌人加格挡 / 回血了）
-            "Block" => who.Length == 0
-                ? $"{repeat}{when}获得 {var} 点格挡。"
-                : $"{repeat}{when}{forWho}获得 {var} 点格挡。",
+            // 负数 = 失去格挡（生成的是 CreatureCmd.LoseBlock；本体 GainBlock 对非正数什么都不做）
+            "Block" => e.Amount < 0 && var != "X"
+                ? (who.Length == 0
+                    ? $"{repeat}{when}失去 {-e.Amount} 点格挡。"
+                    : $"{repeat}{when}{forWho}失去 {-e.Amount} 点格挡。")
+                : (who.Length == 0
+                    ? $"{repeat}{when}获得 {var} 点格挡。"
+                    : $"{repeat}{when}{forWho}获得 {var} 点格挡。"),
             "Draw" => $"{repeat}{when}抽 {var} 张牌。",
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
@@ -773,9 +778,14 @@ public static class LocalizationGen
             "TakeFromDiscard" => $"从弃牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
             "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌。",
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
+            // 负数 = 扣除层数（生成的是 PowerCmd.ModifyAmount(-N)：本体 Apply 对负数会新建一个负层数的状态）
             "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
                 ? $"{repeat}{when}{target}施加{PowerNameFor(p, e.PowerId)}（受到伤害 +{e.SlowPercentEffective}%）。"
-                : $"{repeat}{when}{target}施加 {var} 层{PowerNameFor(p, e.PowerId)}。",
+                : (e.Amount < 0 && var != "X"
+                    ? (e.TargetSide == "Self"
+                        ? $"{repeat}{when}失去 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}。"
+                        : $"{repeat}{when}{target}扣除 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}。")
+                    : $"{repeat}{when}{target}施加 {var} 层{PowerNameFor(p, e.PowerId)}。"),
             // 临时增益：本回合 +X 层，回合结束时撤掉（生成的是 <角色>ForgeTemp<状态> Power）
             // 给自己的写「获得」，给敌人的写「施加」（同一句话套在敌人身上会很别扭）
             "TempPower" => e.TargetSide == "Self"
