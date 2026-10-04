@@ -1181,9 +1181,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 目标身上没有这个状态时什么都不做（扣不了），和「获得力量 -3 = 失去 3 点力量」的直觉一致。
     /// </summary>
     internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr)
+        => ApplyPowerLine(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr: "this");
+
+    /// <summary>
+    /// 同上，但**显式**指定 <c>cardSource</c> 那个实参。
+    ///
+    /// 为什么必须显式：<c>PowerCmd.Apply</c> / <c>ModifyAmount</c> 的最后一个参数是 <c>CardModel?</c>。
+    /// 卡牌那边写 <c>this</c> 没问题（卡牌自己就是 CardModel），**但遗物和药水不是 CardModel** ——
+    /// 传 <c>this</c> 会让编译器去选 <c>Apply&lt;T&gt;(ctx, IEnumerable&lt;Creature&gt;? targets, …)</c> 那个重载，
+    /// 然后报两条看不懂的错：
+    ///   参数 2: 无法从 Creature 转换为 IEnumerable&lt;Creature&gt;
+    ///   参数 5: 无法从 …Relic1 转换为 MegaCrit.Sts2.Core.Models.CardModel?
+    /// 整个模组编译不过。V0.2.37「获得类数值支持负数」把遗物 / 药水也并到这个辅助函数上时踩过这个坑
+    /// （用户实测：遗物「每回合开始 → 获得状态」生成出来编译失败）。所以遗物 / 药水 / 自定义状态一律传 <c>null</c>。
+    /// </summary>
+    internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr, string cardSourceExpr)
         => IsNegativeAmount(e, useX)
-            ? $"{{ PowerModel? __negPower = {targetExpr}.GetPower<{type}>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -({AbsExpr(amt)}), {applierExpr}, this); }}   // 负数 = 扣除层数"
-            : $"await PowerCmd.Apply<{type}>(choiceContext, {targetExpr}, {amt}, {applierExpr}, this);";
+            ? $"{{ PowerModel? __negPower = {targetExpr}.GetPower<{type}>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -({AbsExpr(amt)}), {applierExpr}, {cardSourceExpr}); }}   // 负数 = 扣除层数"
+            : $"await PowerCmd.Apply<{type}>(choiceContext, {targetExpr}, {amt}, {applierExpr}, {cardSourceExpr});";
 
     /// <summary>「获得 N 枚金币」那一行（N 是负数时生成 LoseGold，数值取绝对值）。</summary>
     internal static string GainGoldLine(EffectSpec e, string amt, bool useX, string ownerExpr) =>
@@ -4271,7 +4286,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "CheapenDraw":
                 w.Line(SelfContainedMarker(e));
                 w.Line(ApplyPowerLine(e, useX, Naming.From(p).DrawCostPowerClass, "base.Owner.Creature",
-                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature") + "   // 抽到就减费");
+                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature", cardSourceExpr: "null") + "   // 抽到就减费");
                 break;
 
             case "Outbreak":
@@ -5724,7 +5739,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，施加不了「抽到就减费」状态）"); break; }
                 w.Line(SelfContainedMarker(e));
                 w.Line(ApplyPowerLine(e, useX: false, Naming.From(p).DrawCostPowerClass, "base.Owner.Creature",
-                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature") + "   // 抽到就减费");
+                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature", cardSourceExpr: "null") + "   // 抽到就减费");
                 break;
 
             // 毒性爆发：只要拿到玩家和敌人列表就行（本体 PoisonPower 那一下伤害 dealer 是 null）
@@ -5929,7 +5944,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 else if (e.TargetSide == "Self")
                 {
-                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
                 }
                 else if (e.TargetSide == "RandomEnemies")
@@ -5940,13 +5955,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Open($"for (int __relFoeIdx = 0; __relFoeIdx < {RepeatExpr(e, useX: false)} && foes.Count > 0; __relFoeIdx++)")
                      .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
                     if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
-                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "foe");     // 在循环里（foe 的作用域内），不能拿到循环外面
                     w.Close();
                 }
                 else if (e.TargetSide == "AllEnemies")
                 {
-                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature.CombatState.HittableEnemies", amt, "base.Owner.Creature"));
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature.CombatState.HittableEnemies", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     // 一次性对全体施加（上面那条重载），这里逐个补百分比
                     EmitSlowPercentFixForAll(w, e);
                 }
@@ -5955,7 +5970,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // 「指定敌人」：遗物没有「玩家选中的目标」→ 取可打的第一个敌人（和其它效果同一套约定）
                     w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
                      .Open("if (foe is not null)")
-                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
+                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "foe");
                     w.Close();
                 }
@@ -6881,7 +6896,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "CheapenDraw":
                 w.Line(SelfContainedMarker(e));
                 w.Line(ApplyPowerLine(e, useX: false, Naming.From(p).DrawCostPowerClass, "base.Owner.Creature",
-                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature") + "   // 抽到就减费");
+                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature", cardSourceExpr: "null") + "   // 抽到就减费");
                 break;
 
             case "Outbreak":
@@ -6978,19 +6993,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (potionTarget == "AllEnemies")
                 {
                     w.Open($"foreach (Creature foe in {allEnemies})")
-                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature"));
+                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     if (IsSlowPercentEffect(e))
                         w.Line($"SlowPowerHelper.SetPercent(foe, {e.SlowPercentEffective});   // 本体「缓慢」：直接设成 {e.SlowPercentEffective}%");
                     w.Close();
                 }
                 else if (potionTarget == "AnyEnemy")
                 {
-                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "target", amt, "base.Owner.Creature"));
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "target", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "target");
                 }
                 else
                 {
-                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
+                    w.Line(ApplyPowerLine(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
                 }
                 break;
