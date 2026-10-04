@@ -1140,10 +1140,20 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	/// <summary>
+	/// 需求 ⑦：「生成 / 变化出来的卡：加上关键词」那个下拉的候选。
+	/// 比「给予关键词」多一项空档 —— 「（不加关键词）」是**默认档**（老存档就是它，
+	/// 生成出来的代码与卡面描述一个字符都不变），所以必须能在界面上明确选回它。
+	/// 其余候选与 <see cref="KeywordChoices"/> 完全同源（本体 7 个 + 存档里的自定义关键词）。
+	/// </summary>
+	public IReadOnlyList<KeywordChoiceOption> SpawnKeywordChoices =>
+		new[] { new KeywordChoiceOption("", "（不加关键词）", false) }
+			.Concat(KeywordChoices)
+			.ToList();
+
 	/// <summary>有没有自定义关键词（「卡牌」页的空态提示用）。</summary>
 	public bool HasCustomKeywords => _profile.CustomKeywords.Count > 0;
 	public bool NoCustomKeywords => _profile.CustomKeywords.Count == 0;
-
 	/// <summary>
 	/// 「强化指定卡牌」里「强化什么」的候选：伤害（像本体「精准」）/ 格挡（像「敏捷」）。
 	/// 是静态表，但走窗口属性绑定（和「增益 / 减益」那些下拉一个写法）。
@@ -1305,6 +1315,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
 		Raise("KeywordChoices");
+		// 需求 ⑦：「生成出来的卡加上关键词」的下拉与自定义关键词注册联动（同源的那一份候选）
+		Raise("SpawnKeywordChoices");
 		// 关键词改了名字 / 加了删了 → 「范围限定」里那一组选项跟着变（生成 / 变化卡牌能只从这一组里出牌）
 		RefreshCustomKeywordRegistry();
 		Raise("HasCustomKeywords");
@@ -10729,6 +10741,93 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 						},
 					},
 				}).Any((ValidationIssue i) => i.IsError && i.Message.Contains("按范围随机")), "拦住了");
+
+			// ⑦ 生成 / 变化出来的卡「加上关键词」（需求 ⑦：像「是否升级」那样给个选项）
+			Check("（界面）「生成 / 变化出来的卡：加上关键词」那一行在卡牌页的效果编辑区里",
+				TextsIn(SelectTabRoot("卡牌")).Any(t => t.StartsWith("生成 / 变化出来的卡：加上关键词", StringComparison.Ordinal)), "在");
+			Check("下拉候选 =「（不加关键词）」+ 本体 7 个 + 存档里的自定义关键词（与「给予关键词」完全同源）",
+				SpawnKeywordChoices.Count == 1 + EffectCatalog.VanillaKeywordChoices.Count + KeywordGen.All(Profile).Count
+				&& SpawnKeywordChoices[0].Id.Length == 0
+				&& SpawnKeywordChoices.Any(k => k.Id == "Retain") && SpawnKeywordChoices.Any(k => k.Id == "Eternal")
+				&& SpawnKeywordChoices.Skip(1).Select(k => k.Id).SequenceEqual(KeywordChoices.Select(k => k.Id)),
+				$"{SpawnKeywordChoices.Count} 项");
+			CharacterProfile skProbe = ProfileFactory.Sample();
+			skProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运", Description = "命运组" });
+			CardSpec skCard = new CardSpec { Name = "自检生成带关键词", ClassName = "UiCheckSpawnKeyword", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			skCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv", SpawnTo = "Hand", SpawnKeyword = "Exhaust" });
+			skCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand", SpawnKeyword = "FATE" });
+			skCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnKeyword = "Ethereal" });
+			skCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnCardId = "Shiv", SpawnKeyword = "Retain" });
+			skProbe.Cards.Add(skCard);
+			string skSrc = CSharpCodeGen.CardSource(skProbe, skCard, 0);
+			Check("选「消耗」→ 生成出来的每张卡都调本体 AddKeyword(CardKeyword.Exhaust)",
+				skSrc.Contains("__gen.AddKeyword(CardKeyword.Exhaust);"), "AddKeyword");
+			Check("自定义关键词走「给予关键词」同一套（AddGivenCustomKeyword + 注册表 + 卡面 / 悬停补丁一起生成）",
+				skSrc.Contains("__gen.AddGivenCustomKeyword(\"FATE\");")
+				&& CSharpCodeGen.UsesGivenCustomKeyword(skProbe), "同一套");
+			Check("变化出来的卡也能加上关键词（「本体随机变化」与「填了目标卡」两支都接住本体返回的新卡；两边的返回值类型不同，取值写法也不同）",
+				skSrc.Contains("var __tr = await CardCmd.TransformToRandom(") && skSrc.Contains("var __tr = await CardCmd.Transform(")
+				&& skSrc.Contains("__tr.cardAdded?.AddKeyword(CardKeyword.Ethereal);")
+				&& skSrc.Contains("__tr?.cardAdded?.AddKeyword(CardKeyword.Retain);"), "变化也带");
+			Check("标记行写了 CET:SpawnKeyword=（回读靠它）",
+				skSrc.Contains("CET:SpawnKeyword=Exhaust") && skSrc.Contains("CET:SpawnKeyword=FATE"), "标记在");
+			Check("卡面描述写出「生成出来的卡会带上『X』」（本体关键词与自定义关键词各一份）",
+				LocalizationGen.CardsJson(skProbe).Contains("生成出来的卡会带上[gold]消耗[/gold]")
+				&& LocalizationGen.CardsJson(skProbe).Contains("生成出来的卡会带上[gold]命运[/gold]"), "描述在");
+			Check("列表里也写了这一项（只看「生成卡牌」看不出配了它）",
+				skCard.Effects[0].Display.Contains("生成出来的卡带上「消耗」"), skCard.Effects[0].Display);
+			// 默认档（没选关键词）：标记行 / 生成代码 / 卡面描述 / 列表文字一个字符都不能变
+			CharacterProfile skOff = ProfileFactory.Sample();
+			CardSpec skOffCard = new CardSpec { Name = "自检生成不带关键词", ClassName = "UiCheckSpawnKeywordOff", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			skOffCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv", SpawnTo = "Hand" });
+			skOff.Cards.Add(skOffCard);
+			string skOffSrc = CSharpCodeGen.CardSource(skOff, skOffCard, 0);
+			Check("默认档（没选关键词）：标记行不带 CET:SpawnKeyword、代码里没有 AddKeyword、描述 / 列表里没有那句话",
+				!skOffSrc.Contains("CET:SpawnKeyword") && !skOffSrc.Contains("AddKeyword(") && !skOffSrc.Contains("AddGivenCustomKeyword(")
+				&& !LocalizationGen.CardsJson(skOff).Contains("生成出来的卡会带上")
+				&& !skOffCard.Effects[0].Display.Contains("生成出来的卡带上"), "默认档逐字不变");
+			Check("校验器：选了不存在的自定义关键词 → 报错（生成出来的代码会印出生键名）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					Cards = { new CardSpec { Name = "自检坏关键词", ClassName = "UiCheckSpawnKwBad", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Hand", SpawnKeyword = "NOT_A_KEYWORD" } } } },
+				}).Any((ValidationIssue i) => i.IsError && i.Message.Contains("生成 / 变化出来的卡")), "报错了");
+			Check("校验器：选了本体关键词 → 给一句提示（「生成的卡会带上『虚无』」）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					Cards = { new CardSpec { Name = "自检关键词提示", ClassName = "UiCheckSpawnKwHint", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Hand", SpawnKeyword = "Ethereal" } } } },
+				}).Any((ValidationIssue i) => !i.IsError && i.Message.Contains("生成 / 变化出来的卡会带上") && i.Message.Contains("虚无")), "有提示");
+			// 生成 → 回读：SpawnKeyword 要原样还原，而且新生成的 AddKeyword 那几行不能被当成「没认出来」
+			string skRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_spawnkw_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile skGen = ProfileFactory.Sample();
+				skGen.Paths.OutputDir = skRoot;
+				skGen.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				skGen.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				skGen.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运", Description = "命运组" });
+				CardSpec skGenCard = new CardSpec { Name = "自检生成带关键词", ClassName = "UiCheckSpawnKwGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				skGenCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv", SpawnTo = "Hand", SpawnKeyword = "Exhaust" });
+				skGenCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand", SpawnKeyword = "FATE" });
+				skGenCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Draw", SpawnUpgraded = true, SpawnKeyword = "Ethereal" });
+				skGenCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", SpawnKeyword = "Retain" });
+				skGen.Cards.Add(skGenCard);
+				Check("（准备）配了「生成出来的卡加关键词」的存档能生成工程", ModGenerator.Generate(skGen).Success, skRoot);
+				var skRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(skGen));
+				var skRecCard = skRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckSpawnKwGen");
+				Check("回读：SpawnKeyword 原样还原（本体枚举名 + 自定义关键词的键都要认）",
+					skRecCard is not null
+					&& skRecCard.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard" && e.SpawnKeyword == "Exhaust")
+					&& skRecCard.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard" && e.SpawnKeyword == "FATE")
+					&& skRecCard.Effects.Any((EffectSpec e) => e.Kind == "GenerateCard" && e.SpawnKeyword == "Ethereal")
+					&& skRecCard.Effects.Any((EffectSpec e) => e.Kind == "TransformCard" && e.SpawnKeyword == "Retain"),
+					skRecCard is null ? "卡没回来" : string.Join(" / ", skRecCard.Effects.Select((EffectSpec e) => $"{e.Kind}:{e.SpawnKeyword}")));
+				Check("回读没有认不出来的语句（生成的 AddKeyword / __tr.cardAdded 那几行不会被误认成别的效果）",
+					!skRec.HasUnparsed, skRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(skRoot)) Directory.Delete(skRoot, true); } catch { }
+			}
 
 			// ⑦ 遗物 / 药水自定义描述 + 「填入参数」
 			CharacterProfile cdProbe = ProfileFactory.Sample();

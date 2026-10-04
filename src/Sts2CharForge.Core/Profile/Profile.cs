@@ -313,6 +313,8 @@ public sealed class EffectSpec : SpecBase
     // 「多选1（候选张数）」：1 = 直接生成；> 1 = 抽这么多张候选让玩家挑 1 张
     private decimal _spawnChoice = 1m;
     private bool _spawnUpgraded, _spawnFree, _spawnFreeThisTurn, _spawnUpgradedThisTurn;
+    // 需求 ⑦：「生成 / 变化出来的卡带上关键词」。空 = 不带（默认档，老存档就是它）
+    private string _spawnKeyword = "";
 
     /// <summary>
     /// 生成 / 变化时是「指定卡」还是「按范围随机」：
@@ -536,9 +538,46 @@ public sealed class EffectSpec : SpecBase
         set { if (Set(ref _spawnUpgradedThisTurn, value)) { Raise(nameof(HasSpawnModifier)); Raise(nameof(Display)); } }
     }
 
-    /// <summary>勾了任意一个「生成出来的卡怎么处理」（升级 / 免费…）。</summary>
+    /// <summary>
+    /// 生成 / 变化出来的卡**带上的关键词**（需求 ⑦，像「是否升级」那样给的一项）：
+    /// 空 = 不带（默认档，老存档就是它）；值是本体关键词的枚举名（<c>Exhaust</c> / <c>Ethereal</c> …）
+    /// 或者自定义关键词的引用（下拉里给的是键）。
+    ///
+    /// 生成代码复用「给予卡牌关键词」那一套（<c>CSharpCodeGen.EmitGiveKeywordTo</c>）：
+    /// 本体关键词走 <c>AddKeyword(CardKeyword.X)</c>，自定义关键词走
+    /// <c>AddGivenCustomKeyword</c> + 本地化词条 + 悬停说明，所以不另写一份实现。
+    /// </summary>
+    public string SpawnKeyword
+    {
+        get => _spawnKeyword;
+        set
+        {
+            if (Set(ref _spawnKeyword, value ?? ""))
+            {
+                Raise(nameof(HasSpawnKeyword));
+                // 只有这一项时也算「要改生成出来的卡」：生成卡牌那条路必须自己 CreateCard 才拿得到实例
+                Raise(nameof(HasSpawnModifier));
+                Raise(nameof(SpawnKeywordZh));
+                Raise(nameof(Display));
+            }
+        }
+    }
+
+    /// <summary>选了「生成 / 变化出来的卡带上关键词」。</summary>
     [JsonIgnore]
-    public bool HasSpawnModifier => SpawnUpgraded || SpawnFree || SpawnFreeThisTurn || SpawnUpgradedThisTurn;
+    public bool HasSpawnKeyword => !string.IsNullOrWhiteSpace(_spawnKeyword);
+
+    /// <summary>
+    /// 「生成出来的卡带上的关键词」在界面上的名字：本体关键词中文名（Retain → 保留）；
+    /// 自定义关键词显示用户填的英文标识 / 键（和 <see cref="GivenKeywordZh"/> 一个写法 —— Profile 层拿不到关键词列表）。
+    /// </summary>
+    [JsonIgnore]
+    public string SpawnKeywordZh =>
+        string.IsNullOrWhiteSpace(_spawnKeyword) ? "?" : EffectCatalog.VanillaKeywordZh(_spawnKeyword);
+
+    /// <summary>勾了任意一个「生成出来的卡怎么处理」（升级 / 免费 / 加上关键词…）。</summary>
+    [JsonIgnore]
+    public bool HasSpawnModifier => SpawnUpgraded || SpawnFree || SpawnFreeThisTurn || SpawnUpgradedThisTurn || HasSpawnKeyword;
 
     /// <summary>这些「生成 / 变化」相关的设置要不要显示（只有生成 / 变化 / 全局加牌这几种用得到）。</summary>
     [JsonIgnore]
@@ -1009,6 +1048,9 @@ public sealed class EffectSpec : SpecBase
                 "UpgradeCardGlobal" => $" ｜ 升级牌组里的牌 ｜ {CardPickZh}",
                 _ => "",
             };
+            // 需求 ⑦：「生成 / 变化出来的卡带上关键词」在列表里也写出来（只说一句「生成卡牌」看不出配了它）
+            if (UsesSpawnOptions && HasSpawnKeyword)
+                extra += $" ｜ 生成出来的卡带上「{SpawnKeywordZh}」";
             string side = TargetSide switch
             {
                 "Enemy" => "单体敌人",

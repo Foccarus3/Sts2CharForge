@@ -241,6 +241,19 @@
                                   ToolTip="本体 card.SetToFreeThisTurn()：回合结束自动恢复原费用。"/>
                         <CheckBox Content="生成 / 变化出来的卡：仅本回合升级" Style="{StaticResource Check}" IsChecked="{Binding SpawnUpgradedThisTurn}"
                                   ToolTip="本体没有「临时升级」API，工具会生成一个临时状态记着这几张牌，回合结束时把它们降回来。"/>
+                        <!-- 需求 ⑦：「生成 / 变化出来的卡是否加上关键词」—— 像上面四个勾选框一样的一项。
+                             「不加关键词」是默认档（老存档就是它，生成出来的代码 / 卡面描述一个字符都不变）。
+                             候选和「给予关键词」共用同一份口径：本体那 7 个 + 存档里的自定义关键词。 -->
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="生成 / 变化出来的卡：加上关键词" VerticalAlignment="Center" FontWeight="Bold" MinWidth="96"/>
+                            <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                      ItemsSource="{Binding SpawnKeywordChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnKeyword}"
+                                      ToolTip="生成 / 变化出来的那些卡会自动带上这个关键词（第一项「不加关键词」= 什么都不加，和以前的版本一样）。上面是本体的 7 个关键词，下面是你自己造的关键词（「自定义关键词」页里加的）。生成代码和「给予卡牌关键词」共用同一套实现：本体关键词走 AddKeyword，自定义关键词走本工具的关键词补丁（卡面金字 + 悬停说明）。"/>
+                        </Grid>
                     </StackPanel>
 
                     <!-- 复制卡牌专用：复制的份数（数值 = 选几张，这个 = 每张复制几份）。只有选这个效果时才出现。 -->

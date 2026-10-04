@@ -1294,6 +1294,9 @@ public static class ProfileValidator
             // 给予卡牌关键词：关键词必须选、而且必须存在（本体枚举名 或 已定义的自定义关键词）
             if (e.Kind == "GiveKeyword")
                 ValidateGiveKeyword(issues, owner, e, p, ctx);
+            // 需求 ⑦：生成 / 变化出来的卡带上的关键词也必须存在（同一个判据，两处共用一个取值口径）
+            if (e.UsesSpawnOptions && e.HasSpawnKeyword)
+                ValidateSpawnKeyword(issues, owner, e, p);
             // 「直接把「缓慢」设成 N%」那几个坑
             if (e.SlowPercent > 0)
             {
@@ -1686,6 +1689,31 @@ public static class ProfileValidator
         if (e.TempKeyword)
             issues.Add(new("提示", $"{owner} 的「给予卡牌关键词」勾了「临时关键词」："
                 + "保留 / 奇巧走本体的单回合标记，其它关键词会在回合结束时被摘掉（卡面上那几个字也会跟着消失）。"));
+    }
+
+    /// <summary>
+    /// 需求 ⑦：「生成 / 变化出来的卡：加上关键词」的校验。判据和「给予卡牌关键词」完全一样 ——
+    /// 关键词必须是本体那 7 个之一，或者是「自定义关键词」页里已经定义好的那个（键 / 名字都认）。
+    ///
+    /// 找不到时报**错误**：生成出来的代码会调 <c>AddGivenCustomKeyword("KEY")</c>，
+    /// 注册表里没有这个键的话游戏里只会把键名原样印在卡面上，用户看不出来哪里配错了。
+    /// </summary>
+    private static void ValidateSpawnKeyword(List<ValidationIssue> issues, string owner, EffectSpec e, CharacterProfile p)
+    {
+        string raw = (e.SpawnKeyword ?? "").Trim();
+        string? vanilla = EffectCatalog.NormalizeVanillaKeyword(raw);
+        string kindZh = EffectCatalog.FindKind(e.Kind).Display;
+        if (vanilla is null && p is not null && KeywordGen.Find(p, raw) is null)
+        {
+            issues.Add(new("错误", $"{owner} 的「{kindZh}」选了「生成 / 变化出来的卡：加上关键词」=「{raw}」，"
+                + "但这个关键词找不到：既不是本体关键词（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒），"
+                + "也不是已定义的自定义关键词。请到「自定义关键词」页添加它，或者改成别的关键词。"));
+            return;
+        }
+        // 给一句提示：说清游戏里那张生成出来的卡会带什么（自定义关键词还额外说明金字 / 悬停说明来自我们的补丁）
+        issues.Add(new("提示", $"{owner} 的「{kindZh}」：生成 / 变化出来的卡会带上"
+            + $"「{EffectCatalog.VanillaKeywordZh(raw)}」"
+            + (vanilla is null ? "（自定义关键词，卡面上的金字与悬停说明由生成的关键词补丁加上）。" : "。")));
     }
 
     /// <summary>

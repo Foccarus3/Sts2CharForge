@@ -246,6 +246,17 @@ public static class LocalizationGen
             : $"把其中「{cond}」的牌{op}";
     }
 
+    /// <summary>
+    /// 需求 ⑦：「生成 / 变化出来的卡带上关键词」在卡面描述里的那一句。
+    /// 没选关键词就返回空串 —— 卡面描述与旧版逐字一致（老存档一个字符都不变）。
+    /// 例：<c>（生成出来的卡会带上[gold]虚无[/gold]）</c>。
+    /// </summary>
+    private static string SpawnKeywordNote(CharacterProfile p, EffectSpec e)
+    {
+        if (!e.HasSpawnKeyword) return "";
+        return $"（生成出来的卡会带上[gold]{KeywordNameOf(p, e.SpawnKeyword)}[/gold]）";
+    }
+
     /// <summary>「给予卡牌关键词」的一句话描述。</summary>
     private static string GiveKeywordText(CharacterProfile p, EffectSpec e, string repeat, string when)
     {
@@ -277,9 +288,15 @@ public static class LocalizationGen
     }
 
     /// <summary>「给予卡牌关键词」在卡面上的名字：本体关键词用中文枚举名，自定义关键词用它的显示名。</summary>
-    private static string KeywordNameFor(CharacterProfile p, EffectSpec e)
+    private static string KeywordNameFor(CharacterProfile p, EffectSpec e) => KeywordNameOf(p, e.GivenKeyword);
+
+    /// <summary>
+    /// 关键词引用（本体枚举名 / 自定义关键词的键或名字）在卡面上的名字。
+    /// 「给予卡牌关键词」和需求 ⑦ 的「生成出来的卡带的关键词」共用这一份。
+    /// </summary>
+    private static string KeywordNameOf(CharacterProfile p, string? reference)
     {
-        string raw = (e.GivenKeyword ?? "").Trim();
+        string raw = (reference ?? "").Trim();
         if (raw.Length == 0) return "?";
         string? vanilla = EffectCatalog.NormalizeVanillaKeyword(raw);
         if (vanilla is not null)
@@ -910,6 +927,10 @@ public static class LocalizationGen
             "PetSacrifice" => PetSacrificeText(p, e, var),
             _ => "",
         };
+        // 需求 ⑦：「生成 / 变化出来的卡带上关键词」—— 句尾补一句「（生成出来的卡会带上『X』）」。
+        // 没选关键词时一个字都不加（卡面描述与旧版逐字一致）。
+        if (text.Length > 0 && e.HasSpawnKeyword)
+            text = text.TrimEnd('。') + SpawnKeywordNote(p, e) + "。";
         // 概率生效：写在这条效果后面（例：「造成 6 点伤害（50% 概率）。」）
         if (text.Length > 0 && e.ChanceEnabled)
             text = text.TrimEnd('。') + e.ChanceText + "。";

@@ -595,6 +595,8 @@ public static class ProjectRecovery
                 e.SpawnFree = pendingSpawn.SpawnFree;
                 e.SpawnFreeThisTurn = pendingSpawn.SpawnFreeThisTurn;
                 e.SpawnUpgradedThisTurn = pendingSpawn.SpawnUpgradedThisTurn;
+                // 需求 ⑦：生成 / 变化出来的卡带上的关键词（原样还原用户选的那个引用）
+                e.SpawnKeyword = pendingSpawn.SpawnKeyword;
                 pendingSpawn = null;
                 pendingSpawnKind = null;
             }
@@ -843,6 +845,8 @@ public static class ProjectRecovery
                         SpawnFree = line.Contains("CET:SpawnFree=1", StringComparison.Ordinal),
                         SpawnFreeThisTurn = line.Contains("CET:SpawnFreeTurn=1", StringComparison.Ordinal),
                         SpawnUpgradedThisTurn = line.Contains("CET:SpawnUpTurn=1", StringComparison.Ordinal),
+                        // 需求 ⑦：「生成 / 变化出来的卡带上关键词」。空 = 没配（默认档的标记行里没有这一项）
+                        SpawnKeyword = Match(line, @"CET:SpawnKeyword=(\S+)") ?? "",
                     };
                 }
                 continue;
@@ -1001,6 +1005,11 @@ public static class ProjectRecovery
                 || line.StartsWith("CardModel? __pickCard = ", StringComparison.Ordinal)
                 || line.StartsWith("var __tempUp", StringComparison.Ordinal)
                 || line.Contains("__tempUp.Track(", StringComparison.Ordinal)
+                // 需求 ⑦：「生成 / 变化出来的卡带上关键词」生成的两种语句 ——
+                // 效果本身已经从标记行 / CreateCard / Transform 那几行认出来了，这里不能把它们再当成一条「给予关键词」。
+                // （`__tr.cardAdded?` 是「本体随机变化」那一支接住本体返回的新卡用的，`__tr?.cardAdded?` 是「填了目标卡」那一支）
+                || line.Contains(".AddKeyword(CardKeyword.", StringComparison.Ordinal)
+                || line.Contains(".AddGivenCustomKeyword(", StringComparison.Ordinal)
                 // 斩杀条件那两行辅助语句（效果本身在 DamageCmd.Attack 那一行认）
                 || line.StartsWith("__fatalOk = ", StringComparison.Ordinal)
                 || line.StartsWith("__lastAttack = null;", StringComparison.Ordinal)
@@ -1693,8 +1702,10 @@ public static class ProjectRecovery
 
             // 变化卡牌：填了目标卡 → CardCmd.Transform(原卡, 新卡)；留空 → CardCmd.TransformToRandom。
             // **两种都要认**（以前只认 Transform，留空那种会被记成「没认出来」）。
-            if (line.StartsWith("await CardCmd.Transform(", StringComparison.Ordinal)
-                || line.StartsWith("await CardCmd.TransformToRandom(", StringComparison.Ordinal))
+            // 需求 ⑦：选了「变化出来的卡带上关键词」时，生成的是 `var __tr = await CardCmd.Transform(…)`
+            // （要接住本体返回的新卡），所以这里用 Contains 而不是 StartsWith —— 两种写法都要认。
+            if (line.Contains("await CardCmd.Transform(", StringComparison.Ordinal)
+                || line.Contains("await CardCmd.TransformToRandom(", StringComparison.Ordinal))
             {
                 // 「自己选」走 foreach (… in toTransform / toTransformDeck)；「随机」走循环 + TransformToRandom。
                 // 全局（改牌组）那一种：自己选的局部变量是 toTransformDeck，随机那支抓的是 PileType.Deck。

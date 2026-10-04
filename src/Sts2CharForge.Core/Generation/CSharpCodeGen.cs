@@ -903,6 +903,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Open($"for (int __addIdx = 0; __addIdx < {n}; __addIdx++)");
                     w.Line($"CardModel gained = {owner}.RunState.CreateCard(ModelDb.Card<{target ?? "Shiv"}>(), {owner});");
                     if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(gained);   // 加进牌组时就是升级过的");
+                    EmitSpawnKeyword(w, e, "gained", p);   // 需求 ⑦：加进牌组的这张卡也带上关键词
                     w.Line("await CardPileCmd.Add(gained, PileType.Deck);");
                     w.Close();
                     break;
@@ -915,6 +916,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line("if (__pickCard is null) break;");
                 w.Line($"CardModel gained = {owner}.RunState.CreateCard(__pickCard, {owner});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(gained);   // 加进牌组时就是升级过的");
+                EmitSpawnKeyword(w, e, "gained", p);   // 需求 ⑦：加进牌组的这张卡也带上关键词
                 w.Line("await CardPileCmd.Add(gained, PileType.Deck);");
                 w.Close();
                 break;
@@ -967,7 +969,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"var toTransformDeck = (await CardSelectCmd.FromDeckGeneric({owner}, new CardSelectorPrefs(CardSelectorPrefs.TransformSelectionPrompt, {n}), null, null)).ToList();");
                     w.Line("foreach (CardModel c in toTransformDeck)");
                     w.Open("");
-                    EmitTransformGlobalBody(w, e, owner, rng, "c", target);
+                    EmitTransformGlobalBody(w, e, owner, rng, "c", target, p);
                     w.Close();
                 }
                 else
@@ -976,7 +978,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
                     w.Line($"CardModel? pick = {rng}.NextItem(PileType.Deck.GetPile({owner}).Cards);");
                     w.Line("if (pick is null) break;");
-                    EmitTransformGlobalBody(w, e, owner, rng, "pick", target);
+                    EmitTransformGlobalBody(w, e, owner, rng, "pick", target, p);
                     w.Close();
                 }
                 break;
@@ -984,7 +986,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>牌组里的牌变成什么：按范围随机抽一张 / 指定的那张 / 本体的随机变化；抽到的还能直接是升级过的。</summary>
-    private static void EmitTransformGlobalBody(CodeWriter w, EffectSpec e, string owner, string rng, string cardVar, string? target)
+    private static void EmitTransformGlobalBody(CodeWriter w, EffectSpec e, string owner, string rng, string cardVar, string? target,
+        CharacterProfile? p = null)
     {
         if (e.IsSpawnRandom)
         {
@@ -993,7 +996,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line($"CardModel __made = {owner}.RunState.CreateCard(__newDeck, {owner});");
             if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__made);   // 变出来就是升级过的");
             w.Line($"await CardCmd.Transform({cardVar}, __made);");
+            EmitSpawnKeyword(w, e, "__made", p);   // 需求 ⑦：变出来的这张卡带上关键词
             w.Close();
+            return;
+        }
+        // 需求 ⑦：和战斗里那条变化一样，要拿到本体返回的新卡才能加关键词（这一段只在选了关键词时生成）
+        if (e.HasSpawnKeyword)
+        {
+            bool randomVanilla = target is null;
+            w.Line("// 变化出来的卡要带关键词：先接住本体返回的 cardAdded（新卡是它新建的）");
+            w.Line($"var __tr = await {(randomVanilla
+                ? $"CardCmd.TransformToRandom({cardVar}, {rng})"
+                : $"CardCmd.Transform({cardVar}, {owner}.RunState.CreateCard(ModelDb.Card<{target}>(), {owner}))")};");
+            // 同战斗里那条：TransformToRandom 返回不可空结构体，Transform 返回可空结构体，取值写法分开
+            EmitSpawnKeyword(w, e, randomVanilla ? "__tr.cardAdded?" : "__tr?.cardAdded?", p);
             return;
         }
         w.Line(target is null
@@ -2554,7 +2570,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         + $" CET:SpawnFreeTurn={(e.SpawnFreeThisTurn ? 1 : 0)} CET:SpawnUpTurn={(e.SpawnUpgradedThisTurn ? 1 : 0)}"
         // 「范围界定」（需求 ③）的标记行只多带一个种类：这种标记是给选牌类效果写的，
         // 万一那条效果的代码没被回读认出来，也不会把范围配到**别的种类**的效果身上（见 ProjectRecovery 的 pendingSpawn）。
-        + (withKind ? $" CET:Kind={e.Kind}" : "");
+        + (withKind ? $" CET:Kind={e.Kind}" : "")
+        // 需求 ⑦：「生成 / 变化出来的卡带上关键词」。**只在选了关键词时追加** —— 默认档（没选）
+        // 的标记行必须与旧版逐字一致（老存档回读 / 生成代码一个字都不能变）。
+        // 值原样写用户选的那个引用（本体枚举名或自定义关键词的键），回读时原样还原。
+        + (e.HasSpawnKeyword ? $" CET:SpawnKeyword={e.SpawnKeyword.Trim()}" : "");
 
     /// <summary>
     /// 「生成卡牌」。
@@ -2587,7 +2607,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             EmitTempUpgradePowerApply(w, tempUp, cardSource);
             w.Open($"for (int __genIdx = 0; __genIdx < {n}; __genIdx++)");
             w.Line($"CardModel __gen = base.Owner.Creature.CombatState.CreateCard(ModelDb.Card<{card}>(), base.Owner);");
-            EmitSpawnModifiers(w, e, "__gen", tempUp);
+            EmitSpawnModifiers(w, e, "__gen", tempUp, p);
             w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
             w.Close();
             return;
@@ -2611,7 +2631,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 ? "CardModel? __picked = await CardSelectCmd.FromChooseACardScreen(choiceContext, __candidates, base.Owner, canSkip: false);"
                 : "CardModel? __picked = (await CardSelectCmd.FromSimpleGrid(choiceContext, __candidates, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 1))).FirstOrDefault();");
             w.Open("if (__picked is not null)");
-            EmitSpawnModifiers(w, e, "__picked", tempUp);
+            EmitSpawnModifiers(w, e, "__picked", tempUp, p);
             w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__picked, PileType.{pile}, base.Owner);");
             w.Close();
             w.Close();
@@ -2624,7 +2644,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         EmitTempUpgradePowerApply(w, tempUp, cardSource);
         w.Line($"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat(base.Owner, __genPool, {n}, base.Owner.RunState.Rng.CombatCardGeneration))");
         w.Open("");
-        EmitSpawnModifiers(w, e, "__gen", tempUp);
+        EmitSpawnModifiers(w, e, "__gen", tempUp, p);
         w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
         w.Close();
     }
@@ -2650,7 +2670,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///     所以升级之后把这张牌交给生成的 <c>&lt;角色&gt;ForgeTempUpgradePower</c>，
     ///     它在回合结束时把「这次真的升上去的那几张」降回来（本来就是升级过的牌不碰）。
     /// </summary>
-    internal static void EmitSpawnModifiers(CodeWriter w, EffectSpec e, string cardVar, string? tempUpVar = null)
+    internal static void EmitSpawnModifiers(CodeWriter w, EffectSpec e, string cardVar, string? tempUpVar = null,
+        CharacterProfile? p = null)
     {
         if (e.SpawnUpgradedThisTurn)
         {
@@ -2664,6 +2685,47 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         if (e.SpawnFree) w.Line($"{cardVar}.SetToFreeThisCombat();");
         if (e.SpawnFreeThisTurn) w.Line($"{cardVar}.SetToFreeThisTurn();");
+        // 需求 ⑦：给生成 / 变化出来的这张卡加上关键词（没选就一行都不写）
+        EmitSpawnKeyword(w, e, cardVar, p);
+    }
+
+    /// <summary>
+    /// 需求 ⑦：「生成 / 变化出来的卡：加上关键词」的生成代码。
+    ///
+    /// 复用「给予卡牌关键词」那份实现（<see cref="EmitGiveKeywordTo"/>）—— 本体关键词走
+    /// <c>AddKeyword(CardKeyword.X)</c>，自定义关键词走 <c>AddGivenCustomKeyword</c>
+    /// + 本地化词条 + 悬停说明那一套，这里不另写一份。
+    /// 和「给予」只有两点不同：
+    ///   · 作用对象就是刚生成出来的那张卡（调用方把变量名传进来）；
+    ///   · **没有「临时」档** —— 生成出来的本来就是新卡，回合结束再摘掉没有意义，所以固定按永久关键词生成。
+    /// </summary>
+    internal static void EmitSpawnKeyword(CodeWriter w, EffectSpec e, string cardVar, CharacterProfile? p = null)
+    {
+        string raw = (e.SpawnKeyword ?? "").Trim();
+        if (raw.Length == 0) return;   // 默认档：一个字符都不写（生成代码与旧版逐字一致）
+        var kw = ResolveKeyword(raw, p);
+        if (kw.Custom && kw.Key.Length == 0)
+        {
+            // 只有「遗物上的变化卡牌」那条链会走到这里（那里拿不到角色配置）：
+            // 界面上选的自定义关键词存的就是键，所以正常配置不会落空；手改存档写成中文名才会。
+            w.Line($"// 生成出来的卡要带的关键词「{raw}」在这里认不出来（这条链上没有角色配置），这一项已忽略");
+            return;
+        }
+        w.Line($"// 生成出来的卡带上关键词：{(kw.Custom ? "自定义关键词 " + kw.Key : kw.Enum)}");
+        EmitGiveKeywordTo(w, e, cardVar, "base.Owner.Creature", "this", kw.Custom, kw.Enum, kw.Key, tempOverride: false);
+    }
+
+    /// <summary>
+    /// 关键词引用 → 「是不是自定义关键词 / 本体枚举名 / 自定义关键词的键」。
+    /// 「给予卡牌关键词」和需求 ⑦ 的「生成出来的卡带关键词」共用这一份解析，避免两处写法漂移。
+    /// </summary>
+    private static (bool Custom, string Enum, string Key) ResolveKeyword(string raw, CharacterProfile? p)
+    {
+        bool customKw = !EffectCatalog.IsVanillaKeywordName(raw);
+        string kwEnum = EffectCatalog.NormalizeVanillaKeyword(raw) ?? "Retain";
+        // 拿不到 profile 的地方（遗物那条变化链 / 自定义状态的钩子链）：用户在下拉里选的**已经是键**，规范化一下就够
+        string customKey = !customKw ? "" : (p is null ? KeywordGen.NormalizeKeyText(raw) : KeywordGen.KeyOfReference(p, raw));
+        return (customKw, kwEnum, customKey);
     }
 
     /// <summary>
@@ -3261,7 +3323,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"var toTransform = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(CardSelectorPrefs.TransformSelectionPrompt, {n}))).ToList();");
             w.Line("foreach (CardModel c in toTransform)");
             w.Open("");
-            EmitTransformBody(w, e, "c", target, randomSpawn, tempUp);
+            EmitTransformBody(w, e, "c", target, randomSpawn, tempUp, p);
             w.Close();
         }
         else
@@ -3270,13 +3332,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
             w.Line($"CardModel? pick = base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards);");
             w.Line("if (pick is null) break;");
-            EmitTransformBody(w, e, "pick", target, randomSpawn, tempUp);
+            EmitTransformBody(w, e, "pick", target, randomSpawn, tempUp, p);
             w.Close();
         }
     }
 
     /// <summary>把一张牌变成什么：按范围随机抽一张 / 指定的那张 / 本体的随机变化。</summary>
-    private static void EmitTransformBody(CodeWriter w, EffectSpec e, string cardVar, string? target, bool randomSpawn, string? tempUpVar)
+    private static void EmitTransformBody(CodeWriter w, EffectSpec e, string cardVar, string? target, bool randomSpawn, string? tempUpVar,
+        CharacterProfile? p = null)
     {
         if (randomSpawn)
         {
@@ -3286,8 +3349,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Open("");
             w.Line($"CardModel __made = base.Owner.Creature.CombatState.CreateCard(__newCard, base.Owner);");
             w.Line($"await CardCmd.Transform({cardVar}, __made);");
-            EmitSpawnModifiers(w, e, "__made", tempUpVar);
+            EmitSpawnModifiers(w, e, "__made", tempUpVar, p);
             w.Close();
+            return;
+        }
+        // 需求 ⑦：要往「变化出来的卡」上加关键词时，必须接住本体返回的那张新卡 ——
+        // 本体 CardCmd.Transform / TransformToRandom 都是**新建一张再把原卡移掉**，
+        // 只有返回值里的 cardAdded 才是变出来的那张（原来的写法把返回值丢掉了，拿不到它）。
+        // 这一段只在**选了关键词**时才生成，所以默认档的代码与旧版逐字一致。
+        if (e.HasSpawnKeyword)
+        {
+            bool randomVanilla = target is null;
+            w.Line("// 变化出来的卡要带关键词：先接住本体返回的 cardAdded（新卡是它新建的）");
+            w.Line($"var __tr = await {(randomVanilla
+                ? $"CardCmd.TransformToRandom({cardVar}, base.Owner.RunState.Rng.CombatCardSelection)"
+                : $"CardCmd.Transform({cardVar}, base.CombatState.CreateCard<{target}>(base.Owner))")};");
+            // 两边的返回值类型不一样：TransformToRandom 是 CardPileAddResult（不可空结构体，用 `?.` 会 CS0023），
+            // Transform 是 CardPileAddResult?（可空）—— 所以取值写法必须分开写。
+            EmitSpawnKeyword(w, e, randomVanilla ? "__tr.cardAdded?" : "__tr?.cardAdded?", p);
             return;
         }
         w.Line(target is null
@@ -5198,6 +5277,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "TransformCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，变化卡牌无法实现）"); break; }
+                // 这里**故意不传 profile**：传了会顺带改掉「按范围随机变化 + 范围限定 = 自定义关键词那一组」
+                // 的候选池表达式（p 为 null 时那一组查不出来、现在生成的是空表），
+                // 而需求 ⑦ 的硬要求是「没选关键词时生成代码逐字不变」。需求 ⑦ 要用的自定义关键词
+                // 解析在这条链上退回 KeywordGen.NormalizeKeyText（界面下拉存的**就是键**，所以够用；
+                // 手改存档写成中文名的话这一项会打印一行「没认出来」的说明）。
                 EmitTransformCard(w, e);
                 break;
 
@@ -5575,10 +5659,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string playerExpr, string creatureExpr, string sourceExpr, bool selfAllowed)
     {
         string kwRaw = (e.GivenKeyword ?? "").Trim();
-        bool customKw = !EffectCatalog.IsVanillaKeywordName(kwRaw);
-        string kwEnum = EffectCatalog.NormalizeVanillaKeyword(kwRaw) ?? "Retain";
-        // 拿不到 profile 的地方（自定义状态的钩子链）：用户在下拉里选的**已经是键**，规范化一下就够
-        string customKey = !customKw ? "" : (p is null ? KeywordGen.NormalizeKeyText(kwRaw) : KeywordGen.KeyOfReference(p, kwRaw));
+        // 「给的是哪个关键词」的解析和需求 ⑦ 的「生成出来的卡带关键词」共用一份（见 ResolveKeyword）
+        var (customKw, kwEnum, customKey) = ResolveKeyword(kwRaw, p);
         // 回读标记：生成代码里认不出「给的是哪个关键词 / 是不是临时的」
         // 「范围界定」的标记行要写在它**前面**（回读是「先攒着、等这条效果的标记出现时配上去」）
         string? scopeMark = CardScopeMarker(e);
@@ -5627,17 +5709,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>给某张牌加上关键词（<paramref name="cardExpr"/> 是那张牌的表达式）。</summary>
     private static void EmitGiveKeywordTo(CodeWriter w, EffectSpec e, string cardExpr,
-        string creatureExpr, string sourceExpr, bool customKw, string kwEnum, string customKey)
+        string creatureExpr, string sourceExpr, bool customKw, string kwEnum, string customKey,
+        bool? tempOverride = null)
     {
+        // 「临时关键词」由调用方决定：需求 ⑦「生成出来的卡带关键词」固定按永久生成（新卡没有「只是这一回合」这一说）
+        bool temp = tempOverride ?? e.TempKeyword;
         if (customKw)
         {
             w.Line($"{cardExpr}.AddGivenCustomKeyword({Lit.Str(customKey)});   // 自定义关键词：卡面文字与悬停说明由生成的关键词补丁加上");
-            if (e.TempKeyword)
+            if (temp)
                 w.Line($"await PowerCmd.Apply(choiceContext, {TempKeywordPowerClassName(e, null)}.CreateForCustom({cardExpr}, {Lit.Str(customKey)}), {creatureExpr}, 1m, {creatureExpr}, {sourceExpr});"
                     + "   // 临时：回合结束时摘掉");
             return;
         }
-        if (!e.TempKeyword)
+        if (!temp)
         {
             w.Line($"{cardExpr}.AddKeyword(CardKeyword.{kwEnum});   // 本体 API：卡面文字会立刻刷新");
             return;
@@ -5677,9 +5762,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static IEnumerable<EffectSpec> GiveKeywordEffects(CharacterProfile p) =>
         AllEffects(p).Where(e => e.Kind == "GiveKeyword");
 
-    /// <summary>存档里有没有给「自定义关键词」的（有才生成注册表 + 那个补丁）。</summary>
+    /// <summary>
+    /// 存档里所有「生成 / 变化出来的卡带上关键词」效果（需求 ⑦）。只有这四种用得到「生成出来的卡怎么处理」。
+    /// </summary>
+    public static IEnumerable<EffectSpec> SpawnKeywordEffects(CharacterProfile p) =>
+        AllEffects(p).Where(e => e.UsesSpawnOptions && e.HasSpawnKeyword);
+
+    /// <summary>
+    /// 存档里有没有给「自定义关键词」的（有才生成注册表 + 那个补丁）。
+    /// 需求 ⑦：「生成 / 变化出来的卡带上自定义关键词」用的是同一套注册表 + 卡面 / 悬停补丁，
+    /// 所以这里必须把它一起算上，否则光配这一项时生成出来的工程编译不过（AddGivenCustomKeyword 不存在）。
+    /// </summary>
     public static bool UsesGivenCustomKeyword(CharacterProfile p) =>
-        GiveKeywordEffects(p).Any(e => !EffectCatalog.IsVanillaKeywordName(e.GivenKeyword));
+        GiveKeywordEffects(p).Any(e => !EffectCatalog.IsVanillaKeywordName(e.GivenKeyword))
+        || SpawnKeywordEffects(p).Any(e => !EffectCatalog.IsVanillaKeywordName(e.SpawnKeyword));
 
     /// <summary>
     /// 「临时关键词」用的 Power：记住「哪张牌、哪个关键词」，这一回合结束（拥有者那一侧结束时）把它摘掉。
