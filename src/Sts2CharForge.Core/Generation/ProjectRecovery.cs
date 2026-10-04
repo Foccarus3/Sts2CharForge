@@ -946,7 +946,9 @@ public static class ProjectRecovery
                     //（不按标记里的种类认下来，它会被再当成一条「施加状态」—— 探针实测多回读出一条）
                     || (selfContainedKind == "ForbidBlock" && line.Contains("NoBlockPower", StringComparison.Ordinal))
                     // 「抽到就减费」：整个实现就是一句 PowerCmd.Apply<角色>ForgeDrawCostPower（或负数的扣层数）
-                    || (selfContainedKind == "CheapenDraw" && line.Contains("ForgeDrawCostPower", StringComparison.Ordinal));
+                    || (selfContainedKind == "CheapenDraw" && line.Contains("ForgeDrawCostPower", StringComparison.Ordinal))
+                    // 「禁止生命回复」：同样是一句 PowerCmd.Apply<角色>ForgeNoHealPower
+                    || (selfContainedKind == "ForbidHeal" && line.Contains("ForgeNoHealPower", StringComparison.Ordinal));
                 if (scBody) continue;
                 skipSelfContainedBody = false;
             }

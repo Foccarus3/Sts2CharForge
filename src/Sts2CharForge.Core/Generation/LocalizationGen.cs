@@ -791,6 +791,10 @@ public static class LocalizationGen
             "ForbidBlock" => e.Amount < 0
                 ? $"{repeat}{when}解除{target}身上「禁止获得格挡」的效果。"
                 : $"{repeat}{when}{target}在 {(int)e.Amount} 回合内无法获得格挡。",
+            // 禁止生命回复：N 回合内该目标回复量恒为 0（负数 = 反向解除）
+            "ForbidHeal" => e.Amount < 0
+                ? $"{repeat}{when}解除{target}身上「禁止回复生命」的效果。"
+                : $"{repeat}{when}{target}在 {(int)e.Amount} 回合内无法回复生命。",
             "Expose" => $"{repeat}{when}{target}清空格挡与人工制品，并施加 {(int)e.Amount} 层{PowerNameFor(p, e.PowerId).Trim()}。",
             "ClearPowerOne" => $"{repeat}{when}{target}清除{PowerNameFor(p, e.PowerId).Trim()}。",
             "ClearPowerDebuffs" => $"{repeat}{when}{target}清除所有减益状态。",            // 翻倍状态层数（数值 = 倍数，2 = 翻倍；没有动态变量，所以直接写死数字）

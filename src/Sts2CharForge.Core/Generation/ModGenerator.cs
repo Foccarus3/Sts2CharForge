@@ -295,6 +295,13 @@ public static class ModGenerator
             Log("  已生成「抽到就减费」用的 Power（每次抽到的牌费用 -1，层数 = 持续回合数）");
         }
 
+        // 「禁止目标回复生命」：自造状态 + 一条把 CreatureCmd.Heal 治疗量清零的 Harmony 前缀
+        if (CSharpCodeGen.NeedsNoHealPower(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "NoHealPower.cs"), CSharpCodeGen.NoHealPowerSource(profile));
+            Log("  已生成「禁止目标回复生命」用的状态 + 治疗量清零补丁");
+        }
+
         // 强化指定卡牌（像本体「精准」对「小刀」）：每个「目标卡 + 伤害/格挡」一个 Power 类
         var boosts = CSharpCodeGen.CollectBoostEffects(profile).ToList();
         if (boosts.Count > 0)

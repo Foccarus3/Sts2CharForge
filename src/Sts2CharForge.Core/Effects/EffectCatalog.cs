@@ -620,6 +620,12 @@ public static class EffectCatalog
     // 每回合掉 1 层、掉光就消失（层数 = 还能持续几个回合）。
     // 负数 = 反向扣掉层数（复用 ApplyPowerLine，和「禁止获得格挡」同一套）。
     new EffectKindOption("CheapenDraw", "抽到就减费（N 回合内每次抽到的牌费用 -1；负数 = 扣层数）", "回合", -5, 5, false, false),
+    // 禁止生命回复（用户要求的新效果）：给目标挂上本模组自己生成的状态，N 回合内该目标**回复量为 0**。
+    // 本体没有任何「治疗量修改」的钩子（全库只有营地的 ModifyRestSiteHealAmount），
+    // 所以配一条 Harmony 前缀把 CreatureCmd.Heal 的 ref amount 改成 0（**不跳过**原方法 ——
+    // 它是 async Task，跳过会让调用方 await 到 null）。数值 = 回合数，负数 = 反向扣层数。
+    // 只做在卡牌上（需要「选中的目标」，和「禁止获得格挡」同一档）。
+    new EffectKindOption("ForbidHeal", "禁止目标回复生命（N 回合内回复量为 0；负数 = 扣层数）", "回合", -99, 99, true, true),
         // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
         // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
         // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。

@@ -974,6 +974,28 @@ public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, Car
 现在这类「没有独特记号的实现行」都按标记行里的种类整段跳过（探针实测：`ForbidBlock(2)` / `ForbidBlock(-1)`
 不再多出一条 `ApplyPower(NoBlockPower)`）。
 
+## 禁止目标回复生命
+
+效果种类里的「**禁止目标回复生命**」：给目标挂上本模组自己生成的状态，N 回合内该目标的**回复量恒为 0**。
+
+本体**没有**任何「治疗量修改」的钩子（全库只有营地的 `ModifyRestSiteHealAmount`），所以配一条 Harmony 前缀：
+
+```csharp
+[HarmonyLib.HarmonyPatch(typeof(CreatureCmd), nameof(CreatureCmd.Heal))]
+internal static class <角色>ForgeNoHealPowerPatch {
+    // ref 改参数，而不是「跳过原方法」：原方法是 async Task，跳过会让调用方 await 到 null
+    private static void Prefix(Creature creature, ref decimal amount) {
+        if (creature is not null && creature.HasPower<<角色>ForgeNoHealPower>()) amount = 0m;
+    }
+}
+```
+
+- 数值 = 回合数；**填负数 = 反向**（取实例后 `PowerCmd.ModifyAmount` 扣层数），卡面写「解除…的效果」。
+- 状态自己会掉层（挂在自己身上 = 玩家回合末掉、挂在敌人身上 = 敌人回合末掉），掉光自毁。
+- 只做在**卡牌**上（需要「选中的目标」；配到遗物 / 药水上时配置检查会直接报错），只带它的牌也会变成「要选目标」。
+- 只有存档里真的用到这个效果才会生成那个状态 + 补丁。
+- 从工程反推存档按 `CET:Effect=ForbidHeal` 认回来。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

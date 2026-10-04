@@ -131,6 +131,12 @@ public sealed record Naming(
     public string DrawCostPowerClass => CharClass + "ForgeDrawCostPower";
 
     /// <summary>
+    /// 「禁止目标回复生命」用的状态：挂谁身上谁就回不了血（配一条 Harmony 前缀把
+    /// <c>CreatureCmd.Heal</c> 的治疗量改成 0）。层数 = 还能持续几个回合，掉光自毁。
+    /// </summary>
+    public string NoHealPowerClass => CharClass + "ForgeNoHealPower";
+
+    /// <summary>
     /// 「强化指定卡牌」（像本体「精准」）用的 Power：
     /// <c>&lt;角色&gt;ForgeBoost&lt;目标卡类名&gt;&lt;Damage|Block&gt;Power</c>。
     /// 它挂在自己身上，只给**那一张卡**的伤害 / 格挡加 N。

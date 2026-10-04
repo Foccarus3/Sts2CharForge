@@ -1142,7 +1142,8 @@ public static class ProfileValidator
             if (e.Kind is "Expose" or "ClearPowerOne" && string.IsNullOrWhiteSpace(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」没有选「增益 / 减益」"
                     + (e.Kind == "Expose" ? "（要施加哪个状态）。" : "（要清除哪个状态）。")));
-            if (e.Kind is "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" && (owner.Contains("遗物") || owner.Contains("药水")))
+            if (e.Kind is "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock" or "ForbidHeal"
+                && (owner.Contains("遗物") || owner.Contains("药水")))
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」只做在卡牌上（它需要「选中的目标」——遗物 / 药水没有）。请把它放到卡牌的效果里。"));            if (e.Kind == "DoublePower")
             {
                 if (string.IsNullOrWhiteSpace(e.PowerId))

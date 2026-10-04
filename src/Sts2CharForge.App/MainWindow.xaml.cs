@@ -13136,6 +13136,44 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			string cheapJson = LocalizationGen.CardsJson(cheapProbe);
 			Check("卡面描述：正数写「在 N 回合内…费用 -1」，负数写「解除…N 层」",
 				cheapJson.Contains("每抽到一张牌，那张牌本场战斗的费用 -1") && cheapJson.Contains("解除「抽到就减费」1 层"), "描述对");
+
+			// ⑨ 本轮新增：禁止目标回复生命（自造状态 + CreatureCmd.Heal 治疗量清零补丁）
+			Check("（配置）有「禁止目标回复生命」这个效果种类，数值 -99~99（负数 = 反向扣层数）",
+				EffectCatalog.FindKind("ForbidHeal") is not null
+				&& EffectCatalog.FindKind("ForbidHeal").Min == -99 && EffectCatalog.FindKind("ForbidHeal").Max == 99
+				&& EffectCatalog.FindKind("ForbidHeal").Display.Contains("回复生命"),
+				EffectCatalog.FindKind("ForbidHeal")?.Display ?? "(没有)");
+			CharacterProfile noHealProbe = ProfileFactory.Sample();
+			noHealProbe.VanillaPowerOverrides.Clear();
+			CardSpec noHealCard = new CardSpec { Name = "禁疗探针", ClassName = "UiCheckNoHeal", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			noHealCard.Effects.Add(new EffectSpec { Kind = "ForbidHeal", Amount = 2m, TargetSide = "Enemy" });
+			noHealCard.Effects.Add(new EffectSpec { Kind = "ForbidHeal", Amount = -1m, TargetSide = "Enemy" });
+			noHealProbe.Cards.Add(noHealCard);
+			Check("门控：只有存档里用到这个效果才生成那个状态 + 补丁",
+				CSharpCodeGen.NeedsNoHealPower(noHealProbe) && !CSharpCodeGen.NeedsNoHealPower(ProfileFactory.Sample()), "门控对");
+			string noHealCls = Naming.From(noHealProbe).NoHealPowerClass;
+			string noHealPower = CSharpCodeGen.NoHealPowerSource(noHealProbe);
+			Check("补丁：把 CreatureCmd.Heal 的 ref amount 改成 0（**不跳过**原方法 —— async Task 跳过会让调用方 await 到 null）",
+				noHealPower.Contains($"public sealed class {noHealCls} : PowerModel")
+				&& noHealPower.Contains("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.CreatureCmd), nameof(MegaCrit.Sts2.Core.Commands.CreatureCmd.Heal))]")
+				&& noHealPower.Contains("private static void Prefix(Creature creature, ref decimal amount)")
+				&& noHealPower.Contains($"if (creature is not null && creature.HasPower<{noHealCls}>()) amount = 0m;"), "对");
+			string noHealSrc = CSharpCodeGen.CardSource(noHealProbe, noHealCard, 0);
+			Check("生成：只带「禁止回复生命」的牌也会变成「要选目标」；正数是施加、负数是扣层数",
+				noHealSrc.Contains("TargetType.AnyEnemy")
+				&& noHealSrc.Contains($"await PowerCmd.Apply<{noHealCls}>(choiceContext, cardPlay.Target, 2, base.Owner.Creature, this);")
+				&& noHealSrc.Contains($"PowerModel? __negPower = cardPlay.Target.GetPower<{noHealCls}>();"), "对");
+			string noHealJson = LocalizationGen.CardsJson(noHealProbe);
+			Check("卡面描述：正数写「N 回合内无法回复生命」，负数写「解除…效果」",
+				noHealJson.Contains("在 2 回合内无法回复生命") && noHealJson.Contains("解除"), "描述对");
+			RelicSpec noHealRelic = new RelicSpec
+			{
+				Name = "禁疗遗物", ClassName = "UiCheckNoHealRelic", Rarity = "Common", Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "ForbidHeal", Amount = 2m, TargetSide = "Enemy" } },
+			};
+			noHealProbe.Relics.Add(noHealRelic);
+			Check("校验器：把「禁止回复生命」放在遗物上直接报错（它需要「选中的目标」，只做在卡牌上）",
+				ProfileValidator.Validate(noHealProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只做在卡牌上")), "拦住了");
 			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
 				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
 				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),
