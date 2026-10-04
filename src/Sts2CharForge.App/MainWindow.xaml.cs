@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -97,6 +98,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private readonly Stack<UndoEntry> _keywordUndo = new Stack<UndoEntry>();
 
 	private readonly Stack<UndoEntry> _artUndo = new Stack<UndoEntry>();
+
+	/// <summary>
+	/// 「动画」页上一次清除掉的 GIF 路径（+ 是哪个槽位）。
+	/// 为什么不用别的页那种撤回栈：这一页只有「清除」一个会丢东西的操作，
+	/// 而且用户清错时想拿回来的**就是最后那一次**（栈反而要多想一层）。
+	/// </summary>
+	private string? _lastAnimClearedPath;
+
+	private AnimSlot? _lastAnimClearedSlot;
+
+	/// <summary>已经挂上 PropertyChanged 监听的那个 AnimationSpec（换存档时要换挂，别重复订阅）。</summary>
+	private AnimationSpec? _animHookedSpec;
+
+	/// <summary>动画设置改动的诊断序号（界面右下角那行字用；排查「改了没反应」时看它有没有涨）。</summary>
+	private int _animDiagSeq;
+
+	/// <summary>同上，但是类级的：换存档 / 重开窗口也接着数，日志里不会出现两个「#1」。</summary>
+	private static int _diagSeqStatic;
 
 	private readonly Stack<UndoEntry> _profileUndo = new Stack<UndoEntry>();
 
@@ -312,6 +331,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			_profile = value;
 			HookProfileColors();
+			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
+			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
+			HookAnimationSpec();
 			// 「本体关键词改名」是固定 7 行的表格：换存档时把缺的行补齐并接上事件
 			EnsureKeywordRenameRows();
 			Raise("Profile");
@@ -432,6 +454,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// </summary>
 	public IReadOnlyList<SpawnFilterOption> SpawnFilters => EffectCatalog.SpawnFiltersFor(_profile);
 
+	/// <summary>
+	/// 「刮削」那一栏「其中符合条件的牌」（条件）的候选：非 0 费 / 不限 + 上面那份范围限定
+	/// （攻击 / 技能 / 能力 / 诅咒 / 状态 / **每个自定义关键词一组**）。
+	/// 和 <see cref="SpawnFilters"/> 一样每次重新取（关键词改完由 RefreshCustomKeywordRegistry Raise）。
+	/// </summary>
+	public IReadOnlyList<SpawnFilterOption> ScrapeConds => EffectCatalog.ScrapeCondsFor(_profile);
+
+	/// <summary>「刮削」那一栏「执行」（操作）的候选：丢弃 / 消耗 / 升级（选项表是固定的）。</summary>
+	public IReadOnlyList<SpawnFilterOption> ScrapeOps => EffectCatalog.ScrapeOps;
+
 	/// <summary>「从哪里选牌」下拉（消耗 / 变化卡牌用）：手牌 / 抽牌堆 / 弃牌堆。</summary>
 	public IReadOnlyList<PileChoiceOption> SelectPiles => EffectCatalog.SelectPiles;
 
@@ -470,6 +502,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 
 	public ObservableCollection<ArtSlot> ArtSlots { get; } = new ObservableCollection<ArtSlot>();
+
+
+	/// <summary>「动画」页的 7 个槽位（待机 / 攻击 / 施法 / 受伤 / 死亡 / 篝火 / 商店）。形状照 <see cref="ArtSlots"/>。</summary>
+	public ObservableCollection<AnimSlot> AnimSlots { get; } = new ObservableCollection<AnimSlot>();
 
 
 	public ObservableCollection<string> Issues { get; } = new ObservableCollection<string>();
@@ -1018,6 +1054,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public bool CanUndoArt => _artUndo.Count > 0;
 
+	/// <summary>「动画」页的「撤回清除」按钮能不能点（清除过才有东西可拿回来）。</summary>
+	public bool CanUndoAnim => _lastAnimClearedSlot is not null && !string.IsNullOrWhiteSpace(_lastAnimClearedPath);
+
+	public string UndoAnimHint => CanUndoAnim
+		? "撤回清除：把「" + _lastAnimClearedSlot!.Name + "」的 GIF 接回来"
+		: "还没有清除过动画素材";
+
+	/// <summary>
+	/// 「素材已经放了、但总开关是关的」——这时界面上要给一条橙色提示 + 「一键启用逐帧动画」。
+	/// 为什么要连磁盘一起看（<see cref="ReadAnimSlotsOnDisk"/>）：换存档 / 老存档的 JSON 里
+	/// 可能本来就有素材，而界面槽位还没同步过来 —— 只看内存会漏掉那一档。
+	/// </summary>
+	public bool AnimNeedsEnableHint => !Profile.Animation.Enabled
+		&& (AnimSlots.Any((AnimSlot s) => !string.IsNullOrWhiteSpace(s.Path)) || ReadAnimSlotsOnDisk());
+
+	/// <summary>「预览动画计划」那段文本（只读文本框显示它；真解一遍动图，但不写任何文件）。</summary>
+	public string AnimPlanText { get; private set; } = "（点上面「预览动画计划」看当前的裁剪框 / 帧数 / 每帧时长 / 缩放 / 位置）";
+
+	/// <summary>最近一次动画设置改动的诊断行（带序号，见 <see cref="_animDiagSeq"/>）。</summary>
+	public string AnimSettingDiag { get; private set; } = "";
+
 	public bool CanUndoProfile => _profileUndo.Count > 0;
 
 	public string UndoCardHint => HintOf(_cardUndo);
@@ -1186,6 +1243,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		// 标题带上版本号（和整合包 / 启动器用的是同一个版本号：App.csproj 里的 InformationalVersion）
 		Title = $"Sts2CharForge {AppVersion.Current} —— 杀戮尖塔2 自定义角色生成器";
 		BuildArtSlots();
+		BuildAnimSlots();
+		HookAnimationSpec();
 		BuildAncientRows();
 		PresetItems = CardColorSpec.Presets.Select((CardColorSpec.Preset pz) => new PresetItem(pz, pz.Name)).Append(_customPreset).ToList();
 		FrameItems = CardColorSpec.Frames.Select((string f) => new FrameItem(f, f)).Append(_customFrame).ToList();
@@ -2452,6 +2511,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		EffectCatalog.SetCustomKeywords(KeywordGen.All(_profile)
 			.Select(x => (x.Key, KeywordGen.DisplayName(x.Spec, x.Key))));
 		Raise("SpawnFilters");
+		// 「刮削」的条件下拉里也有一组「自定义关键词：…」，加 / 删关键词后同样要重新取一次
+		Raise("ScrapeConds");
 	}
 
 	/// <summary>
@@ -2669,6 +2730,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			artSlot.Load(_profile.Art);
 		}
+		// 「动画」页的槽位同理：上面这一轮是「配置 → 界面」的方向，7 个动画槽位也要跟着刷新
+		SyncAnimSlotsFromProfile();
+		Raise("AnimNeedsEnableHint");
+		Raise("AnimSettingDiag");
 		RefreshCardChoices();
 		BuildAncientRows();
 		RefreshExtraResourceIconPreview();
@@ -2775,6 +2840,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Profile = ProfileFactory.Sample();
 		Profile.Paths.OutputDir = Path.Combine(RootFolder, "自定义角色存档");
 		SyncArt();
+		SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 		ReloadCatalog();
 		RefreshAll();
 		try
@@ -2825,8 +2891,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			//   存档里的 7 个美术路径当场被抹掉 —— 而「逐张卡面」走的是另一个字段，不会被抹，
 			//   所以表现是「卡面还在、那 7 个槽位每次打开都变回占位，得重新上传」。
 			SyncArtSlotsFromProfile();
+			// 动画槽位同理：**先把 7 个槽位从刚载入的这份存档读进界面**，后面 SyncAnim 才不会
+			// 拿「上一个存档」的槽位值把刚读进来的 GIF 路径抹掉（美术那一页踩过这个顺序的坑）。
+			SyncAnimSlotsFromProfile();
 			NormalizeOutputDir();
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			ReloadCatalog();
 			RecheckEnvironment();
 			RefreshAll();
@@ -2966,6 +3036,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private bool SaveProfileInPlace()
 	{
 		SyncArt();
+		SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 		string modId = (_profile.ModId ?? "").Trim();
 		string? current = _currentProfilePath;
 
@@ -3070,6 +3141,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private void OnValidate(object sender, RoutedEventArgs e)
 	{
 		SyncArt();
+		SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 		RefreshIssues();
 		int num = Issues.Count((string i) => i.StartsWith("[错误]"));
 		SetStatus((num == 0) ? $"校验通过（{Issues.Count} 条提示）" : $"有 {num} 个错误");
@@ -3116,6 +3188,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private void OnGenerate(object sender, RoutedEventArgs e)
 	{
 		SyncArt();
+		SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 		if (!EnsureVanillaProject())
 		{
 			return;
@@ -3256,6 +3329,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				try
 				{
 					SyncArt();
+					SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 					// 「自动编号的英文类名 / 关键词键」先固定下来、并把失效的引用修好 —— 必须在这里做
 					// （快照之前）：留空类名时按位置编号，中间插 / 删一条会让后面的集体改名，
 					// 而效果里存的是类名 / 键的字符串 → 引用失效或串到别的模型上（用户实测：每次构建都要手工重排）。
@@ -3513,6 +3587,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			string a = JsonSerializer.Serialize(_profile, ProfileFactory.JsonOpts);
 			string b = ((string.IsNullOrWhiteSpace(_currentProfilePath) || !File.Exists(_currentProfilePath)) ? JsonSerializer.Serialize(ProfileFactory.Sample(), ProfileFactory.JsonOpts) : JsonSerializer.Serialize(ProfileFactory.Load(_currentProfilePath), ProfileFactory.JsonOpts));
 			return !string.Equals(a, b, StringComparison.Ordinal);
@@ -3612,6 +3687,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("UndoPowerHint");
 		Raise("CanUndoPower");
 		Raise("UndoArtHint");
+		Raise("CanUndoAnim");
+		Raise("UndoAnimHint");
 		Raise("UndoProfileHint");
 	}
 
@@ -4469,6 +4546,255 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 	}
 
+	// ==================== 「动画」页（逐帧动画 / 动图拆帧） ====================
+	// 界面这一半只做三件事：给 7 个槽位选 GIF（缩略图给第一帧）、把设置写进 AnimationSpec、
+	// 「预览动画计划」直接调 AnimFramesGen.BuildPlan 真解一遍（**不写文件**，随便反复点）。
+	// 真正的拆帧 / 裁剪 / 抠底 / 写资源全在生成阶段（见 docs\逐帧动画_吸收设计.md）。
+
+	/// <summary>
+	/// 建立 7 个动画槽位。顺序必须和 <see cref="AnimationSpec.Slots"/> 一致
+	/// （待机 / 攻击 / 施法 / 受伤 / 死亡 / 篝火 / 商店）—— 界面、存档、生成三处都按这个顺序。
+	/// </summary>
+	private void BuildAnimSlots()
+	{
+		AnimSlots.Add(new AnimSlot("待机（循环）", "idle_loop", "战斗 / 篝火 / 商店的默认动作，一直循环播放",
+			"GIF，必须有：其它动作没上传时都会退回它（没待机等于没做逐帧动画）",
+			(AnimationSpec a) => a.Idle, delegate(AnimationSpec a, string? v) { a.Idle = v; }));
+		AnimSlots.Add(new AnimSlot("攻击", "attack", "打出攻击牌时播一次，播完回待机",
+			"GIF，可选；不传就退回待机",
+			(AnimationSpec a) => a.Attack, delegate(AnimationSpec a, string? v) { a.Attack = v; }));
+		AnimSlots.Add(new AnimSlot("施法", "cast", "打出技能 / 能力牌时播一次，播完回待机",
+			"GIF，可选；不传就退回待机",
+			(AnimationSpec a) => a.Cast, delegate(AnimationSpec a, string? v) { a.Cast = v; }));
+		AnimSlots.Add(new AnimSlot("受伤", "hurt", "被打到时播一次，播完回待机",
+			"GIF，可选；不传就退回待机",
+			(AnimationSpec a) => a.Hurt, delegate(AnimationSpec a, string? v) { a.Hurt = v; }));
+		AnimSlots.Add(new AnimSlot("死亡", "die", "死亡时播一次，播完定格在最后一帧",
+			"GIF，可选；不传就退回待机",
+			(AnimationSpec a) => a.Die, delegate(AnimationSpec a, string? v) { a.Die = v; }));
+		AnimSlots.Add(new AnimSlot("篝火", "overgrowth_loop", "篝火（营地）场景里循环播放",
+			"GIF，可选；不传就退回待机",
+			(AnimationSpec a) => a.RestSite, delegate(AnimationSpec a, string? v) { a.RestSite = v; }));
+		AnimSlots.Add(new AnimSlot("商店", "relaxed_loop", "商店场景里循环播放",
+			"GIF，可选；不传就退回待机（篝火 / 商店要不要一直保持，见下面那个开关）",
+			(AnimationSpec a) => a.Merchant, delegate(AnimationSpec a, string? v) { a.Merchant = v; }));
+	}
+
+	/// <summary>把 7 个动画槽位从「当前内存里的配置」读进界面（载入存档时必须先做这一步，理由同美术槽位）。</summary>
+	private void SyncAnimSlotsFromProfile()
+	{
+		foreach (AnimSlot slot in AnimSlots)
+		{
+			slot.Load(_profile.Animation);
+		}
+	}
+
+	/// <summary>把界面上的 7 个动画槽位写回内存配置（生成 / 保存之前都要先做一次）。</summary>
+	private void SyncAnim()
+	{
+		foreach (AnimSlot slot in AnimSlots)
+		{
+			slot.Save(_profile.Animation);
+		}
+	}
+
+	/// <summary>
+	/// 给当前的 <see cref="AnimationSpec"/> 挂改动监听：设置项一改就要
+	/// ① 刷新「素材放了但总开关没关」那条提示、② 写一行带序号的诊断（排查「改了没反应」）。
+	/// </summary>
+	private void HookAnimationSpec()
+	{
+		if (_animHookedSpec is not null) _animHookedSpec.PropertyChanged -= OnAnimSettingChanged;
+		_animHookedSpec = _profile.Animation;
+		if (_animHookedSpec is not null) _animHookedSpec.PropertyChanged += OnAnimSettingChanged;
+		Raise(nameof(AnimNeedsEnableHint));
+	}
+
+	/// <summary>动画设置项改动后的刷新 + 诊断日志。</summary>
+	private void OnAnimSettingChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		_animDiagSeq++;
+		_diagSeqStatic++;
+		string what = string.IsNullOrEmpty(e.PropertyName) ? "(整体)" : e.PropertyName;
+		AnimSettingDiag = $"动画设置改动 #{_animDiagSeq}（本次运行累计 {_diagSeqStatic}）：{what}"
+			+ $"（总开关 {(Profile.Animation.Enabled ? "开" : "关")}、{Profile.Animation.Slots.Count()} 个动作）";
+		Raise(nameof(AnimSettingDiag));
+		Raise(nameof(AnimNeedsEnableHint));
+		// 设置变了，上一份「预览动画计划」就过期了：清掉，别让用户拿着旧数字去调
+		AnimPlanText = "（设置改过了，点「预览动画计划」重新算一遍）";
+		Raise(nameof(AnimPlanText));
+	}
+
+	/// <summary>磁盘上（当前存档 JSON）到底有没有动画素材。读不到就当没有（这条路只是给提示用的）。</summary>
+	private bool ReadAnimSlotsOnDisk()
+	{
+		try
+		{
+			if (string.IsNullOrWhiteSpace(_currentProfilePath) || !File.Exists(_currentProfilePath)) return false;
+			return ProfileFactory.Load(_currentProfilePath).Animation.Slots.Any();
+		}
+		catch
+		{
+			return false;   // 存档读不动（正在写 / 老格式）：宁可少提示一句，也不要弹异常
+		}
+	}
+
+	private void OnPickAnim(object sender, RoutedEventArgs e)
+	{
+		if (!(AnimList.SelectedItem is AnimSlot slot))
+		{
+			SetStatus("请先在上方选中一个动作。");
+			return;
+		}
+		OpenFileDialog openFileDialog = new OpenFileDialog
+		{
+			// 只列 GIF：这个槽位要的就是「动图」，PNG 请走「美术资源」页
+			Filter = "动图 GIF (*.gif)|*.gif|所有文件 (*.*)|*.*"
+		};
+		if (!openFileDialog.ShowDialog(this).GetValueOrDefault()) return;
+
+		slot.Path = openFileDialog.FileName;
+		slot.Save(_profile.Animation);
+		PersistAnimChange("「" + slot.Name + "」已选择：" + openFileDialog.FileName);
+	}
+
+	private void OnClearAnim(object sender, RoutedEventArgs e)
+	{
+		if (!(AnimList.SelectedItem is AnimSlot slot)) return;
+		string? old = slot.Path;
+		if (string.IsNullOrWhiteSpace(old)) return;
+		if (!Confirm("确定清掉「" + slot.Name + "」的动图吗？\n\n（GIF 文件本身不会被删；点了「撤回清除」还能接回来。）", "确认清除")) return;
+
+		slot.Path = null;
+		slot.Save(_profile.Animation);
+		_lastAnimClearedPath = old;          // 只记最后这一次：清错了立刻点「撤回清除」就能拿回来
+		_lastAnimClearedSlot = slot;
+		RaiseUndoState();
+		PersistAnimChange("「" + slot.Name + "」的动图已清除（可点「撤回清除」拿回来）");
+	}
+
+	private void OnUndoAnim(object sender, RoutedEventArgs e)
+	{
+		if (!CanUndoAnim)
+		{
+			SetStatus("还没有清除过动画素材。");
+			return;
+		}
+		AnimSlot slot = _lastAnimClearedSlot!;
+		slot.Path = _lastAnimClearedPath;
+		slot.Save(_profile.Animation);
+		_lastAnimClearedPath = null;
+		_lastAnimClearedSlot = null;
+		RaiseUndoState();
+		PersistAnimChange("已撤回清除：「" + slot.Name + "」的动图接回来了");
+	}
+
+	/// <summary>橙色提示里那个按钮：把总开关打开（素材已经在槽位里了，不用再选一遍）。</summary>
+	private void OnAnimEnableFromHint(object sender, RoutedEventArgs e)
+	{
+		Profile.Animation.Enabled = true;
+		PersistAnimChange("已一键启用逐帧动画");
+	}
+
+	/// <summary>
+	/// 「预览动画计划」：直接调 <see cref="AnimFramesGen.BuildPlan"/> 真解一遍动图（**不写文件**）。
+	/// 为什么要给这个按钮：裁剪框 / 缩放 / Y 偏移都是算出来的，用户在生成之前看不到任何数字，
+	/// 素材不对（画布尺寸不一致 / 待机解不开）也只能等生成完才发现。
+	/// </summary>
+	private void OnAnimPlanPreview(object sender, RoutedEventArgs e)
+	{
+		SyncAnim();
+		var noteLines = new List<string>();
+		AnimFramesGen.Plan plan = AnimFramesGen.BuildPlan(_profile, noteLines.Add);
+		var sb2 = new StringBuilder();
+		AnimationSpec a = Profile.Animation;
+		sb2.AppendLine("动画计划（只是解一遍动图，不写任何文件）");
+		sb2.AppendLine("总开关：" + (a.Enabled ? "开" : "关") + "　素材：" + a.Slots.Count() + " 个动作"
+			+ "　最近邻：" + (a.NearestFilter ? "开" : "关") + "　速度系数：" + a.SpeedScale.ToString("0.###", CultureInfo.InvariantCulture));
+		if (!plan.Ok)
+		{
+			sb2.AppendLine("状态：**这份计划用不了**（下面每一条都说清了原因）");
+		}
+		else
+		{
+			sb2.AppendLine($"裁剪框：{plan.CropX0},{plan.CropY0} .. {plan.CropX1},{plan.CropY1}（x1/y1 是开区间）＝ {plan.Width}×{plan.Height}"
+				+ (string.IsNullOrWhiteSpace(a.ManualCrop) ? "（自动：所有动作所有帧的并集）" : "（界面手动指定）"));
+			sb2.AppendLine("缩放：" + plan.Scale.ToString("0.###", CultureInfo.InvariantCulture)
+				+ "　Y 偏移：" + plan.YOffset.ToString("0.###", CultureInfo.InvariantCulture)
+				+ "　（填了就用填的；0 = 自动让脚落在静态立绘底边）");
+			sb2.AppendLine();
+			sb2.AppendLine("动作（每帧时长是计划值；游戏里实际每帧 = 它 ÷ 速度系数）：");
+			foreach (AnimFramesGen.AnimPlan one in plan.Anims)
+			{
+				string kind = one.HoldAtEnd ? "播完定格" : (one.Loop ? "循环" : "播完回待机");
+				sb2.AppendLine($"  {one.Anim,-16} {one.FrameCount,3} 帧  {one.Width}×{one.Height}  "
+					+ $"每帧 {one.FrameSeconds.ToString("0.#####", CultureInfo.InvariantCulture)} 秒  {kind}  {one.Note}");
+			}
+		}
+		sb2.AppendLine();
+		sb2.AppendLine("提示 / 警告 / 错误：");
+		if (plan.Notes.Count == 0 && noteLines.Count == 0) sb2.AppendLine("  （没有）");
+		foreach (string n in plan.Notes) sb2.AppendLine("  " + n);
+		foreach (string n in noteLines.Where((string n) => !plan.Notes.Contains(n))) sb2.AppendLine("  " + n);
+		AnimPlanText = sb2.ToString().TrimEnd();
+		Raise(nameof(AnimPlanText));
+		SetStatus("动画计划预览已刷新（" + (plan.Ok ? "这份计划可以用" : "这份计划用不了，看提示行") + "）。");
+	}
+
+	/// <summary>
+	/// 动画槽位改动之后立刻写回存档：和美术那一页同一个理由 ——
+	/// 选完图不点「保存配置」就关掉程序，下次打开又得一张张重选（用户报过美术那个坑）。
+	/// </summary>
+	private void PersistAnimChange(string what)
+	{
+		try
+		{
+			SyncAnim();
+			if (string.IsNullOrWhiteSpace(_currentProfilePath) || !File.Exists(_currentProfilePath))
+			{
+				SetStatus(what + "｜这个存档还没落到磁盘，点一下「保存配置」就存进存档了");
+				return;
+			}
+			string current = Path.GetFileNameWithoutExtension(_currentProfilePath);
+			if (!string.Equals(_profile.SaveName, current, StringComparison.Ordinal))
+			{
+				AppendLog($"（动画改动先只留在界面上：内存配置的存档名「{_profile.SaveName}」和当前文件「{current}.json」对不上，"
+					+ "点「保存配置」写进存档）");
+				SetStatus(what + "｜请点「保存配置」写进存档");
+				return;
+			}
+			ProfileFactory.Save(_profile, _currentProfilePath);
+			SetStatus(what + "｜已写进存档：" + Path.GetFileName(_currentProfilePath));
+		}
+		catch (Exception ex)
+		{
+			SetStatus(what + "｜写进存档失败：" + ex.Message);
+			AppendLog("动画改动写进存档失败：" + ex.Message);
+		}
+	}
+
+	/// <summary>
+	/// 把一帧的 RGBA 字节（长 4×W×H，顺序 R,G,B,A）造成 WPF 的位图。
+	/// WPF 的 8bit 格式只认 BGRA，所以要换一次通道；<c>Freeze()</c> 之后这张图不可再改，
+	/// 界面绑定 / 跨线程都安全（缩略图是界面自己造的，不经过磁盘）。
+	/// </summary>
+	public static BitmapSource? BitmapFromRgba(int w, int h, byte[] rgba)
+	{
+		if (w <= 0 || h <= 0 || rgba is null || rgba.Length < w * h * 4) return null;
+		// WPF 没有 8bit 的 RGBA 格式，得先换成 BGRA（顺带把行按 stride 对齐 —— 这里 stride 天然等于 w*4）
+		byte[] bgra = new byte[w * h * 4];
+		for (int i = 0; i < w * h; i++)
+		{
+			bgra[i * 4] = rgba[i * 4 + 2];
+			bgra[i * 4 + 1] = rgba[i * 4 + 1];
+			bgra[i * 4 + 2] = rgba[i * 4];
+			bgra[i * 4 + 3] = rgba[i * 4 + 3];
+		}
+		BitmapSource bmp = BitmapSource.Create(w, h, 96, 96, PixelFormats.Bgra32, null, bgra, w * 4);
+		bmp.Freeze();                        // 冻结 = 可跨线程 / 不会再被改动，界面绑定更省
+		return bmp;
+	}
+
 	/// <summary>
 	/// 自检里临时把 _profile 换成别的配置（测改名 / 测美术落盘）时，列表选中项会跟着丢，
 	/// 后面的自检又依赖「药水列表选着第 0 个」这类状态 —— 换之前存一下、换回来之后还回去。
@@ -4497,6 +4823,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			if (string.IsNullOrWhiteSpace(_currentProfilePath) || !File.Exists(_currentProfilePath))
 			{
 				SetStatus(what + "｜这个存档还没落到磁盘，点一下「保存配置」就存进存档了");
@@ -4759,6 +5086,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			string text = ((ProfileList.SelectedItem is ProfileEntry profileEntry) ? profileEntry.Name : _profile.ModId);
 			string text2 = Path.Combine(ProfileFolder, text + ".json");
 			ProfileFactory.Save(_profile, text2);
@@ -4787,6 +5115,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			AppendLog("========== 从工程恢复存档 ==========");
 			AppendLog("工程目录：" + dir);
 			var rec = ProjectRecovery.FromProject(dir, _profile, ProfileFolder);
@@ -4832,6 +5161,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		try
 		{
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			ProfileFactory.Save(_profile, saveFileDialog.FileName);
 			// 另存之后「当前存档」就是这份新文件了；不设的话路径还指着上一个存档，
 			// 后面任何静默保存都会覆盖那个旧文件（见 NewProfileCore 里的注释）。
@@ -4862,6 +5192,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			SyncArtSlotsFromProfile();                    // 先读进界面，再写回配置（顺序写反会把存档里的美术路径抹掉）
 			NormalizeOutputDir();
 			SyncArt();
+			SyncAnim();   // 动画槽位和美术槽位一样：用之前先把界面上的值写回配置
 			RefreshAll();
 			SetStatus("已载入存档：" + profileEntry.Path);
 		}
@@ -13072,6 +13403,122 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("遗物上也能用（同一段实现；触发时机不给 choiceContext 时是警告而不是坏代码）",
 				scrapeRelicSrc.Contains("__scraped"), "遗物上也在");
 
+			// ⑫ 刮削的「条件 + 操作」（用户要求：抽 N 张 → 对其中**符合条件**的牌执行**选定的操作**）。
+			// 老存档没有这两个字段，默认必须是「非 0 费 + 丢弃」，生成的文本一个字都不能变 —— 先整块钉死。
+			string scrapeNl = scrapeSrc.Replace("\r\n", "\n");
+			Check("默认（非 0 费 + 丢弃）生成出来的一整段与旧版**逐字一致**（标记行 / 注释 / 抽牌 / 丢牌四行都没动）",
+				scrapeNl.Contains("// CET:Effect=ScrapeDraw CET:Amount=4m CET:Pick=Random CET:Pile=Hand CET:Stack=0 CET:X=0 CET:Copies=1 CET:Power=\"\" CET:Side=Self\n")
+				&& scrapeNl.Contains("            // 抽 base.DynamicVars.Cards.BaseValue 张牌，丢弃其中所有「非 0 费」的牌（本体「刮削 Scrape」的写法）\n"
+					+ "            IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner)).Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);\n"
+					+ "            await CardCmd.Discard(choiceContext, __scraped);")
+				&& !scrapeNl.Contains("CET:ScrapeCond") && !scrapeNl.Contains("CET:ScrapeOp"),
+				"逐字一致");
+			Check("（配置）条件候选 = 非 0 费 / 不限 + 范围限定那一整份（含自定义关键词分组）；操作候选 = 丢弃 / 消耗 / 升级",
+				EffectCatalog.ScrapeCondsFor(scrapeProbe).Select((SpawnFilterOption f) => f.Id)
+					.SequenceEqual(new[] { "NonZeroCost", "Any", "Attack", "Skill", "Power", "Curse", "Status" })
+				&& EffectCatalog.ScrapeCondsFor(scrapeProbe)[1].Zh == "不限"
+				&& EffectCatalog.ScrapeOps.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "Discard", "Exhaust", "Upgrade" })
+				&& EffectCatalog.ScrapeOpZh("Exhaust") == "消耗掉",
+				string.Join("/", EffectCatalog.ScrapeCondsFor(scrapeProbe).Select((SpawnFilterOption f) => f.Id)));
+			// 条件 = 攻击 + 操作 = 消耗
+			CardSpec scrapeAtk = new CardSpec { Name = "刮削攻击消耗", ClassName = "UiCheckScrapeExhaust", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeAtk.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Attack", ScrapeOp = "Exhaust" });
+			scrapeProbe.Cards.Add(scrapeAtk);
+			string scrapeAtkSrc = CSharpCodeGen.CardSource(scrapeProbe, scrapeAtk, 0);
+			Check("条件 = 攻击 + 操作 = 消耗 → 判据是 CardType.Attack、动作是 CardCmd.Exhaust（和「消耗卡牌」同一个命令）",
+				scrapeAtkSrc.Contains("IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner)).Where(c => c.Type == CardType.Attack);")
+				&& scrapeAtkSrc.Contains("foreach (CardModel c in __scraped) await CardCmd.Exhaust(choiceContext, c);")
+				&& scrapeAtkSrc.Contains("CET:ScrapeCond=Attack CET:ScrapeOp=Exhaust"), "对");
+			Check("卡面描述写出了条件与操作（「把其中「攻击」的牌消耗掉」）",
+				LocalizationGen.CardsJson(scrapeProbe).Contains("抽 {Cards:diff()} 张牌，把其中「攻击」的牌消耗掉。"), "描述对");
+			// 条件 = 不限 + 操作 = 升级
+			CardSpec scrapeAny = new CardSpec { Name = "刮削不限升级", ClassName = "UiCheckScrapeUpgrade", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeAny.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Any", ScrapeOp = "Upgrade" });
+			scrapeProbe.Cards.Add(scrapeAny);
+			string scrapeAnySrc = CSharpCodeGen.CardSource(scrapeProbe, scrapeAny, 0);
+			string scrapeAnyDraw = scrapeAnySrc.Split('\n').First((string l) => l.Contains("__scraped = ")).Trim();
+			Check("条件 = 不限 + 操作 = 升级 → 完全不筛（那一句里没有 .Where(）、动作是 CardCmd.Upgrade",
+				scrapeAnyDraw == "IEnumerable<CardModel> __scraped = await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner);"
+				&& !scrapeAnyDraw.Contains(".Where(")
+				&& scrapeAnySrc.Contains("foreach (CardModel c in __scraped) CardCmd.Upgrade(c);")
+				&& scrapeAnySrc.Contains("CET:ScrapeCond=Any CET:ScrapeOp=Upgrade"), "对");
+			Check("卡面描述写的是「每一张牌升级」（不限时不说「符合条件的」）",
+				LocalizationGen.CardsJson(scrapeProbe).Contains("抽 {Cards:diff()} 张牌，把其中每一张牌升级。"), "描述对");
+			// 条件 = 自定义关键词那一组（把关键词当「卡的组」用，生成期查成显式条件）
+			CharacterProfile scrapeKw = ProfileFactory.Sample();
+			scrapeKw.VanillaPowerOverrides.Clear();
+			scrapeKw.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运" });
+			CardSpec scrapeKwA = new CardSpec { Name = "刮削命运一", ClassName = "UiCheckScrapeFateA", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeKwA.KeywordIds.Add("FATE");
+			CardSpec scrapeKwB = new CardSpec { Name = "刮削命运二", ClassName = "UiCheckScrapeFateB", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeKwB.KeywordIds.Add("FATE");
+			CardSpec scrapeKwCard = new CardSpec { Name = "刮削按组", ClassName = "UiCheckScrapeKw", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeKwCard.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Keyword:FATE", ScrapeOp = "Discard" });
+			scrapeKw.Cards.Add(scrapeKwA);
+			scrapeKw.Cards.Add(scrapeKwB);
+			scrapeKw.Cards.Add(scrapeKwCard);
+			string scrapeKwSrc = CSharpCodeGen.CardSource(scrapeKw, scrapeKwCard, 0);
+			Check("条件 = 自定义关键词那一组 → 生成期查成显式条件（c.Id == ModelDb.Card<X>().Id，复用范围界定那份查表）",
+				scrapeKwSrc.Contains(".Where(c => c.Id == ModelDb.Card<UiCheckScrapeFateA>().Id || c.Id == ModelDb.Card<UiCheckScrapeFateB>().Id);")
+				&& scrapeKwSrc.Contains("CET:ScrapeCond=Keyword:FATE CET:ScrapeOp=Discard"), "显式牌表");
+			Check("卡面描述写的是这一组的名字（「命运」）",
+				LocalizationGen.CardsJson(scrapeKw).Contains("把其中「命运」的牌丢弃。"), "描述对");
+			// 空组：选了关键词分组、但一张牌都没带这个关键词 → 报错（和「范围限定 / 范围界定」同一条规矩）
+			CharacterProfile scrapeKwEmpty = ProfileFactory.Sample();
+			scrapeKwEmpty.CustomKeywords.Clear();
+			scrapeKwEmpty.CustomKeywords.Add(new CustomKeywordSpec { Key = "VOID", Name = "虚空" });
+			CardSpec scrapeKwEmptyCard = new CardSpec { Name = "刮削空组", ClassName = "UiCheckScrapeKwEmpty", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeKwEmptyCard.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Keyword:VOID", ScrapeOp = "Discard" });
+			scrapeKwEmpty.Cards.Add(scrapeKwEmptyCard);
+			Check("条件选了自定义关键词、但那一组一张牌都没有 → 校验器**报错**",
+				ProfileValidator.Validate(scrapeKwEmpty).Any((ValidationIssue i) => i.IsError && i.Message.Contains("这一组是空的")), "报错了");
+			Check("条件 / 操作 Id 认不出来 → 校验器报错（不静默退化成「一张都不动手」）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					Cards = { new CardSpec { Name = "刮削坏 Id", ClassName = "UiCheckScrapeBad", CardType = "Attack", Rarity = "Common", Cost = 1,
+						Effects = { new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Bogus", ScrapeOp = "Bogus" } } } },
+				}).Count((ValidationIssue x) => x.IsError && x.Message.Contains("认不出来")) == 2, "条件和操作各报一条");
+			Check("校验器给了一句「抽 N 张 → 对其中 X 的牌执行 Y」的提示",
+				ProfileValidator.Validate(scrapeProbe).Any((ValidationIssue i) => i.Message.Contains("会抽 3 张牌，然后对其中「攻击」的牌消耗掉")), "提示在");
+			// 生成 → 回读：两个字段要原样回来（默认那一档回来还是默认值），而且没有「没认出来」
+			string scrapeRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_scrape_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile scrapeGen = ProfileFactory.Sample();
+				scrapeGen.VanillaPowerOverrides.Clear();
+				scrapeGen.CustomKeywords.Clear();
+				scrapeGen.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运" });
+				scrapeGen.Paths.OutputDir = scrapeRoot;
+				scrapeGen.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				scrapeGen.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec scrapeGenFate = new CardSpec { Name = "自检刮削命运牌", ClassName = "UiCheckScrapeRoundFate", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				scrapeGenFate.KeywordIds.Add("FATE");
+				CardSpec scrapeRound = new CardSpec { Name = "自检刮削往返", ClassName = "UiCheckScrapeRound", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				// 四条摆在一起：默认那一档 + 三种非默认（同一张牌上还有 Cards2 / Cards3 / Cards4 的别名要一起对上）
+				scrapeRound.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 4m, TargetSide = "Self" });
+				scrapeRound.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self", ScrapeCond = "Attack", ScrapeOp = "Exhaust" });
+				scrapeRound.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 2m, TargetSide = "Self", ScrapeCond = "Any", ScrapeOp = "Upgrade" });
+				scrapeRound.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 1m, TargetSide = "Self", ScrapeCond = "Keyword:FATE", ScrapeOp = "Discard" });
+				scrapeGen.Cards.Add(scrapeGenFate);
+				scrapeGen.Cards.Add(scrapeRound);
+				Check("（准备）带刮削条件 / 操作的存档能生成工程", ModGenerator.Generate(scrapeGen).Success, scrapeRoot);
+				var scrapeRec = ProjectRecovery.FromProject(ModGenerator.ProjectRootOf(scrapeGen));
+				var scrapeRecCard = scrapeRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckScrapeRound");
+				List<EffectSpec> scrapeRecFx = scrapeRecCard is null ? new List<EffectSpec>() : scrapeRecCard.Effects.ToList();
+				Check("回读：刮削的条件 / 操作原样回来（默认那一档回来仍是默认值，没有多写标记项）",
+					scrapeRecFx.Count == 4
+					&& scrapeRecFx[0].Kind == "ScrapeDraw" && scrapeRecFx[0].ScrapeCond == "NonZeroCost" && scrapeRecFx[0].ScrapeOp == "Discard"
+					&& scrapeRecFx[1].ScrapeCond == "Attack" && scrapeRecFx[1].ScrapeOp == "Exhaust"
+					&& scrapeRecFx[2].ScrapeCond == "Any" && scrapeRecFx[2].ScrapeOp == "Upgrade"
+					&& scrapeRecFx[3].ScrapeCond == "Keyword:FATE" && scrapeRecFx[3].ScrapeOp == "Discard",
+					string.Join(" · ", scrapeRecFx.Select((EffectSpec x) => x.ScrapeCond + "/" + x.ScrapeOp)));
+				Check("回读：生成代码一条都没漏（没认出来的语句为 0）", !scrapeRec.HasUnparsed, scrapeRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+			}
+			finally
+			{
+				try { if (Directory.Exists(scrapeRoot)) Directory.Delete(scrapeRoot, true); } catch { }
+			}
+
 			// ⑪ 本轮新增：用「目标卡」填满手牌（本体卡「迫降 CrashLanding」的机制）
 			Check("（配置）有「用目标卡填满手牌」这个效果种类（数值 0~0：张数由手牌上限决定）",
 				EffectCatalog.FindKind("FillHand") is not null
@@ -14071,6 +14518,458 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			CardList.SelectedIndex = 0;
 			UpdateLayout();
 			Check("（收尾）自检加的那张范围界定卡已清掉", !Profile.Cards.Contains(csUiCard));
+
+			// ⑨ 界面：刮削的「条件 / 操作」那两行只在选到「刮削」时出现
+			//（用户要求：别在别的效果种类上也占着位置 —— 条件那一栏还带着一串自定义关键词分组）
+			CardSpec scrapeUiCard = new CardSpec { Name = "自检刮削界面", ClassName = "UiCheckScrapeUi", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeUiCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy" });
+			Profile.Cards.Add(scrapeUiCard);
+			CardList.SelectedItem = scrapeUiCard;
+			CardEffectList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("不是「刮削」时界面上没有「其中符合条件的牌 / 执行」那两行",
+				!VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("其中符合条件的牌"))
+				&& !VisibleTextsIn(csUiRoot).Any((string t) => t == "执行"), "没出现");
+			scrapeUiCard.Effects[0].Kind = "ScrapeDraw";
+			scrapeUiCard.Effects[0].Amount = 3m;
+			UpdateLayout();
+			Check("换成「刮削」后那两行出现了（并且条件下拉的候选里第一条是「非 0 费」、操作第一条是「丢弃」）",
+				VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("其中符合条件的牌"))
+				&& VisibleTextsIn(csUiRoot).Any((string t) => t == "执行")
+				&& ScrapeConds.Count > 1 && ScrapeConds[0].Id == "NonZeroCost"
+				&& ScrapeOps.Count == 3 && ScrapeOps[0].Id == "Discard", "在");
+			// 效果列表里那行文案也要说清「抽 N 张 → 对什么条件的牌做什么」，不能还写着老的「丢弃所有非 0 费」
+			Check("效果列表那句写的是「抽 N 张 → 对其中「条件」的牌操作」（默认档在列表里也说得清）",
+				scrapeUiCard.Effects[0].Display.Contains("对其中「非 0 费」的牌丢弃"), scrapeUiCard.Effects[0].Display);
+			Profile.Cards.Remove(scrapeUiCard);
+			CardList.SelectedIndex = 0;
+			UpdateLayout();
+			Check("（收尾）自检加的那张刮削界面卡已清掉", !Profile.Cards.Contains(scrapeUiCard));
+		}
+
+		// ==================== 逐帧动画（动图拆帧） ====================
+		// 这一块验的是「界面 + 接线 + 校验」；动画本身的算法（解码 / 裁剪 / 抠底 / 剥描边 / 写资源）
+		// 已经逐字节对齐参考实现，见 docs\逐帧动画_吸收设计.md 与 _art\anim_ref 里的黄金文件。
+		{
+			string animGifDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_animgif");
+			Directory.CreateDirectory(animGifDir);
+			string builtGif = Path.Combine(animGifDir, "selftest_2frames.gif");
+			WriteSelfTestGif(builtGif);
+			var builtDecoded = GifFrames.Decode(builtGif);
+			Check("自检内置的那张 2 帧 GIF 解得开（2×2 / 两帧 / 100ms + 200ms）",
+				builtDecoded is not null && builtDecoded.Width == 2 && builtDecoded.Height == 2
+				&& builtDecoded.Frames.Count == 2 && builtDecoded.Frames[0].DelayMs == 100 && builtDecoded.Frames[1].DelayMs == 200,
+				builtDecoded is null ? "解不开" : $"{builtDecoded.Frames.Count} 帧 / {builtDecoded.Width}×{builtDecoded.Height}");
+
+			// 素材：优先用仓库里的黄金测试动图（逐字节对齐参考实现用的就是它们）；
+			// 部署版旁边没有 _art 目录，就退回自检自己造的那张（自检不能依赖仓库文件）。
+			string animIdle = FindRepoAnimGif("idle.gif") ?? builtGif;
+			string animAttack = FindRepoAnimGif("attack.gif") ?? builtGif;
+			string animNotGif = Path.Combine(animGifDir, "not_a_gif.png");
+			PngUtil.WriteRgba(animNotGif, 4, 4, new byte[4 * 4 * 4]);
+			// 头是 GIF、内容短得解不开：用来验「待机解不开」这条（它不是「不是 GIF」，校验器不该拦）
+			string animBrokenGif = Path.Combine(animGifDir, "truncated.gif");
+			File.WriteAllBytes(animBrokenGif, new byte[] { 0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x02, 0x00 });
+
+			// 自检期间绝不能把改动写进用户的真实存档：把「当前存档路径」指到临时目录
+			// （美术那一块也是这么做的）。下面会真的点「清除 / 撤回 / 一键启用」，它们都会落盘。
+			string? animOldProfilePath = _currentProfilePath;
+			string? animOldSaveName = _profile.SaveName;
+			string? animOldAsk = _renameAskKey;
+			bool animOldEnabled = Profile.Animation.Enabled;
+			string animOldIdle = Profile.Animation.Idle;
+			string? animOldSlot0Path = AnimSlots[0].Path;
+			string animTempProfile = Path.Combine(animGifDir, "anim_selftest.json");
+			ProfileFactory.Save(_profile, animTempProfile);
+			_currentProfilePath = animTempProfile;
+			_renameAskKey = RenameAskKey(animTempProfile, _profile.ModId);
+			try
+			{
+				HookAnimationSpec();
+				SyncAnimSlotsFromProfile();
+
+				// ---------- ① 界面：7 个槽位，待机那一行写明「必须有」 ----------
+				DependencyObject animRoot = SelectTabRoot("动画");
+				Check("「动画」页在界面上，7 个槽位都在列表里（顺序 = 待机/攻击/施法/受伤/死亡/篝火/商店）",
+					AnimSlots.Count == 7 && AnimList.Items.Count == 7
+					&& string.Join("/", AnimSlots.Select((AnimSlot s) => s.Name)) == "待机（循环）/攻击/施法/受伤/死亡/篝火/商店",
+					string.Join("、", AnimSlots.Select((AnimSlot s) => s.Name)));
+				Check("7 个槽位带的本体动画名与生成侧一致（idle_loop/attack/cast/hurt/die/overgrowth_loop/relaxed_loop）",
+					string.Join("/", AnimSlots.Select((AnimSlot s) => s.AnimName))
+						== "idle_loop/attack/cast/hurt/die/overgrowth_loop/relaxed_loop",
+					string.Join("/", AnimSlots.Select((AnimSlot s) => s.AnimName)));
+				AnimList.SelectedIndex = 0;
+				UpdateLayout();
+				Check("「待机（循环）」那一行写明**必须有**（其它动作没素材时都会退回它）",
+					VisibleTextsIn(animRoot).Any((string t) => t.Contains("必须有")) && AnimSlots[0].Display.Contains("必须有"),
+					AnimSlots[0].Display);
+
+				// ---------- ② 总开关：不勾时设置区不显示；素材已填 → 提示 + 一键启用 ----------
+				Profile.Animation.Enabled = false;
+				AnimSlots[0].Path = animIdle;
+				AnimSlots[0].Save(Profile.Animation);
+				SyncAnimSlotsFromProfile();
+				UpdateLayout();
+				Check("不勾总开关时设置区不显示（抠背景 / 播放速度系数 / 缩放那几行都看不到）",
+					!VisibleTextsIn(animRoot).Any((string t) => t.Contains("抠背景"))
+					&& !VisibleTextsIn(animRoot).Any((string t) => t.Contains("播放速度系数"))
+					&& !VisibleTextsIn(animRoot).Any((string t) => t.Contains("缩放（0 = 按静态立绘高度自动算）")),
+					"设置区藏起来了");
+				Check("素材已填但总开关没勾 → 提示「上面已经放了动画素材，但总开关是关的」+「一键启用逐帧动画」按钮",
+					Profile.Animation.HasAny && AnimNeedsEnableHint
+					&& VisibleTextsIn(animRoot).Any((string t) => t == "上面已经放了动画素材，但总开关是关的")
+					&& VisibleTextsIn(animRoot).Any((string t) => t == "一键启用逐帧动画"),
+					"提示与按钮都在");
+
+				// ---------- ③ 勾上：设置区出现，默认值与参考实现一致 ----------
+				OnAnimEnableFromHint(this, new RoutedEventArgs());
+				UpdateLayout();
+				Check("点「一键启用逐帧动画」→ 总开关打开、提示消失、设置区出现",
+					Profile.Animation.Enabled
+					&& !VisibleTextsIn(animRoot).Any((string t) => t == "上面已经放了动画素材，但总开关是关的")
+					&& VisibleTextsIn(animRoot).Any((string t) => t.Contains("播放速度系数")),
+					"总开关=" + (Profile.Animation.Enabled ? "开" : "关"));
+				Check("勾上之后那几行设置（容差 / 亮度 / 最近邻 / 速度 / 缩放 / Y 偏移 / 每帧时长 / 篝火商店）连控件都在",
+					HasBoxBoundTo(animRoot, "KeyTolerance") && HasBoxBoundTo(animRoot, "OutlineLuminance")
+					&& HasBoxBoundTo(animRoot, "SpeedScale") && HasBoxBoundTo(animRoot, "Scale")
+					&& HasBoxBoundTo(animRoot, "YOffset") && HasBoxBoundTo(animRoot, "FrameSeconds")
+					&& HasBoxBoundTo(animRoot, "ManualCrop")
+					&& HasCheckBox(animRoot, "抠背景") && HasCheckBox(animRoot, "剥掉浅色描边")
+					&& HasCheckBox(animRoot, "最近邻过滤") && HasCheckBox(animRoot, "篝火 / 商店里保持专属动画"),
+					"输入框与勾选框都在");
+				Check("设置项的默认值与参考实现一致（KeyTolerance=12 / OutlineLuminance=170 / NearestFilter=true / SpeedScale=1 / 缩放与每帧时长=0 表示自动）",
+					new AnimationSpec().KeyTolerance == 12 && new AnimationSpec().OutlineLuminance == 170
+					&& new AnimationSpec().NearestFilter && new AnimationSpec().SpeedScale == 1
+					&& new AnimationSpec().Scale == 0 && new AnimationSpec().FrameSeconds == 0
+					&& new AnimationSpec().KeyBackground == false && new AnimationSpec().StripOutline == false,
+					"默认值对");
+				Check("界面上**不显示**「按首帧自动对齐」这一行（参考实现里那个字段根本没接进算法，暴露出来就是骗人）",
+					!VisibleTextsIn(animRoot).Any((string t) => t.Contains("按首帧自动对齐")),
+					"没这一行");
+
+				// ---------- ④ AnimationSpec 的派生属性 ----------
+				var animAll = new AnimationSpec
+				{
+					Idle = "i.gif", Attack = "a.gif", Cast = "c.gif", Hurt = "h.gif",
+					Die = "d.gif", RestSite = "r.gif", Merchant = "m.gif",
+				};
+				Check("Slots 只 yield 填了路径的槽位，顺序与动作名都对（idle_loop/attack/cast/hurt/die/overgrowth_loop/relaxed_loop）",
+					string.Join(",", animAll.Slots.Select((ValueTuple<string, string> s) => s.Item1))
+						== "idle_loop,attack,cast,hurt,die,overgrowth_loop,relaxed_loop"
+					&& !new AnimationSpec { Attack = "a.gif" }.Slots.Any()
+					&& new AnimationSpec { Merchant = "m.gif" }.Slots.Count() == 1,
+					string.Join(",", animAll.Slots.Select((ValueTuple<string, string> s) => s.Item1)));
+				Check("HasAny 只看待机（只填了攻击 = 没有素材；待机是回退目标）",
+					!new AnimationSpec { Attack = "a.gif" }.HasAny && new AnimationSpec { Idle = "i.gif" }.HasAny,
+					"只看待机");
+				Check("Display 三种状态都写对（未启用 / 已启用但没上传待机 / N 个动作 · 最近邻 · 1×）",
+					new AnimationSpec().Display == "未启用"
+					&& new AnimationSpec { Enabled = true }.Display == "已启用但没上传待机"
+					&& new AnimationSpec { Enabled = true, Idle = "i.gif", Attack = "a.gif" }.Display == "2 个动作 · 最近邻 · 1×"
+					&& new AnimationSpec { Enabled = true, Idle = "i.gif", NearestFilter = false, SpeedScale = 0.5 }.Display == "1 个动作 · 线性 · 0.5×",
+					new AnimationSpec { Enabled = true, Idle = "i.gif", Attack = "a.gif" }.Display);
+
+				// ---------- ⑤ 缩略图：第一帧 ----------
+				var animThumb = AnimSlots[0].Preview;
+				Check("缩略图用**第一帧**的 RGBA 造得出来（WPF 播不了动图，只有游戏里才逐帧播放）",
+					animThumb is not null && animThumb.PixelWidth == AnimSlots[0].PreviewWidth
+					&& animThumb.PixelHeight == AnimSlots[0].PreviewHeight
+					&& AnimSlots[0].FrameNote.Contains("帧") && AnimSlots[0].FrameNote.Contains("每帧"),
+					AnimSlots[0].FrameNote);
+				Check("没上传 / 不是 GIF 的槽位缩略图为空、并且说明为什么（不会画出一张花图）",
+					new AnimSlot("x", "attack", "", "", (AnimationSpec a) => a.Attack, delegate { }).Preview is null
+					&& AnimSlots[1].FrameNote.Length > 0,
+					AnimSlots[1].FrameNote);
+
+				// ---------- ⑥ 生成：帧资源 + 两个运行时文件 + ModEntry 注册行 ----------
+				string animGenRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animgen_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				CharacterProfile animGen = ProfileFactory.Sample();
+				animGen.Paths.OutputDir = animGenRoot;
+				animGen.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				animGen.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				animGen.Animation.Enabled = true;
+				animGen.Animation.Idle = animIdle;
+				animGen.Animation.Attack = animAttack;
+				try
+				{
+					AnimFramesGen.Plan animPlan = AnimFramesGen.BuildPlan(animGen, _ => { });
+					Check("（准备）勾了逐帧动画 + 待机素材的存档能生成工程", ModGenerator.Generate(animGen).Success, animGenRoot);
+					string animProject = ModGenerator.ProjectRootOf(animGen);
+					string animCs = Path.Combine(animProject, "cs");
+					string animSlug = Naming.From(animGen).CharSlug;
+					string animFrameDir = Path.Combine(animProject, "images", "characters", "anim", animSlug);
+					Check("工程里有逐帧动画的两个源文件（FrameAnimRuntime.cs / FrameAnimPatches.cs）",
+						File.Exists(Path.Combine(animCs, "FrameAnimRuntime.cs")) && File.Exists(Path.Combine(animCs, "FrameAnimPatches.cs")),
+						animCs);
+					string[] animFrameFiles = Directory.Exists(animFrameDir) ? Directory.GetFiles(animFrameDir, "*.png") : Array.Empty<string>();
+					Check("工程里有帧 PNG + 每张的 .png.import + _frames.tres + _manifest.json（帧数与计划一致）",
+						animFrameFiles.Length == animPlan.Anims.Sum((AnimFramesGen.AnimPlan o) => o.FrameCount)
+						&& animFrameFiles.All((string f) => File.Exists(f + ".import"))
+						&& File.Exists(Path.Combine(animFrameDir, animSlug + "_idle_loop_frames.tres"))
+						&& File.Exists(Path.Combine(animFrameDir, animSlug + "_idle_loop_manifest.json")),
+						$"{animFrameFiles.Length} 张帧图（计划 {animPlan.Anims.Sum((AnimFramesGen.AnimPlan o) => o.FrameCount)} 帧）");
+					string animEntry = File.ReadAllText(Path.Combine(animCs, "ModEntry.cs"));
+					Check("ModEntry.cs 里有 FrameAnimRegistry.Register(...) 和四个 __anim* 常量（缩放 / Y 偏移 / 速度 / 篝火商店）",
+						animEntry.Contains("FrameAnimRegistry.Register(")
+						&& animEntry.Contains("const float __animScale")
+						&& animEntry.Contains("const float __animYOffset")
+						&& animEntry.Contains("const float __animSpeed")
+						&& animEntry.Contains("const bool __animKeepRestShop"),
+						"注册行与常量都在");
+					Check("每个动作注册一条，tres 路径指向该动作的 _frames.tres",
+						animPlan.Anims.All((AnimFramesGen.AnimPlan o) => animEntry.Contains(
+							$"\"{o.Anim}\", \"res://images/characters/anim/{animSlug}/{animSlug}_{o.Anim}_frames.tres\"")),
+						$"{animPlan.Anims.Count} 个动作");
+					AnimFramesGen.AnimPlan animIdlePlan = animPlan.Anims.First((AnimFramesGen.AnimPlan o) => o.Anim == "idle_loop");
+					string animTres = File.ReadAllText(Path.Combine(animFrameDir, animSlug + "_idle_loop_frames.tres"));
+					Check("SpriteFrames 是「speed 恒为 1.0 + 每帧 duration 写秒数」（Godot 的 speed 是倍率不是 fps）",
+						animTres.Contains("\"speed\": 1.0")
+						&& animTres.Contains("\"duration\": " + animIdlePlan.FrameSeconds.ToString("0.####", CultureInfo.InvariantCulture))
+						&& animTres.Contains("\"name\": &\"idle_loop\"") && animTres.Contains("\"loop\": true"),
+						"每帧 " + animIdlePlan.FrameSeconds.ToString("0.####", CultureInfo.InvariantCulture) + " 秒");
+					string animManifest = File.ReadAllText(Path.Combine(animFrameDir, animSlug + "_idle_loop_manifest.json"));
+					Check("清单里的裁剪框 / 尺寸 / 帧数 / trigger 与计划一致",
+						animManifest.Contains($"\"crop\": [{animPlan.CropX0}, {animPlan.CropY0}, {animPlan.CropX1}, {animPlan.CropY1}]")
+						&& animManifest.Contains($"\"size\": [{animPlan.Width}, {animPlan.Height}]")
+						&& animManifest.Contains($"\"frames\": {animIdlePlan.FrameCount}")
+						&& animManifest.Contains("\"trigger\": \"Idle\""),
+						$"裁剪框 {animPlan.CropX0},{animPlan.CropY0}..{animPlan.CropX1},{animPlan.CropY1}");
+
+					// ---------- ⑦ 不勾总开关 = 与以前逐字一样（老存档也走这条） ----------
+					string animOffModernRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animoff_a_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					string animOffLegacyRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animoff_b_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					CharacterProfile animOffModern = ProfileFactory.Sample();
+					animOffModern.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					animOffModern.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					animOffModern.Paths.OutputDir = animOffModernRoot;
+					animOffModern.Animation.Enabled = false;
+					animOffModern.Animation.Idle = animIdle;      // 素材留着、总开关关着（用户可能只是暂时关掉）
+					// 老存档 = 同一份 JSON 把 "Animation" 整段删掉（V0.2.47 及以前根本没有这一档）
+					string animModernJson = JsonSerializer.Serialize(animOffModern, ProfileFactory.JsonOpts);
+					string animLegacyJson = RemoveAnimationSection(animModernJson);
+					string animLegacyPath = Path.Combine(animGifDir, "legacy_no_animation.json");
+					File.WriteAllText(animLegacyPath, animLegacyJson, new UTF8Encoding(false));
+					CharacterProfile animOffLegacy = ProfileFactory.Load(animLegacyPath);
+					Check("老存档（JSON 里**没有** Animation 段）读出来就是「不勾总开关、一个素材都没有」",
+						!animLegacyJson.Contains("\"Animation\"", StringComparison.Ordinal)
+						&& !animOffLegacy.Animation.Enabled && !animOffLegacy.Animation.Slots.Any()
+						&& !animOffLegacy.Animation.HasAny,
+						animOffLegacy.Animation.Display);
+					Check("（准备）关着总开关的两份存档都能生成工程",
+						ModGenerator.Generate(animOffModern).Success && ModGenerator.Generate(animOffLegacy).Success,
+						animOffModernRoot);
+					string animOffModernCs = Path.Combine(ModGenerator.ProjectRootOf(animOffModern), "cs");
+					string animOffLegacyCs = Path.Combine(ModGenerator.ProjectRootOf(animOffLegacy), "cs");
+					string animOffEntry = File.ReadAllText(Path.Combine(animOffModernCs, "ModEntry.cs"));
+					Check("不勾总开关：ModEntry.cs 里没有动画那几行（注册调用 / 四个 __anim* 常量 / 注释都没有）",
+						!animOffEntry.Contains("FrameAnimRegistry") && !animOffEntry.Contains("__anim")
+						&& !animOffEntry.Contains("逐帧动画"),
+						"一行都没写");
+					Check("不勾总开关：不生成 FrameAnimRuntime.cs / FrameAnimPatches.cs，也没有帧图目录",
+						!File.Exists(Path.Combine(animOffModernCs, "FrameAnimRuntime.cs"))
+						&& !File.Exists(Path.Combine(animOffModernCs, "FrameAnimPatches.cs"))
+						&& !Directory.Exists(Path.Combine(ModGenerator.ProjectRootOf(animOffModern), "images", "characters", "anim")),
+						"没生成任何动画资源");
+					Check("老存档（JSON 里没有 Animation 段）走的就是「不勾总开关」那条路：ModEntry.cs 与本轮的输出逐字一样",
+						File.ReadAllText(Path.Combine(animOffLegacyCs, "ModEntry.cs")) == animOffEntry
+						&& !File.Exists(Path.Combine(animOffLegacyCs, "FrameAnimRuntime.cs")),
+						"两份 ModEntry.cs 逐字相同");
+					Directory.Delete(animOffModernRoot, true);
+					Directory.Delete(animOffLegacyRoot, true);
+
+					// ---------- ⑧ 待机解不开：计划作废、一个动画资源都不写，但模组照常能生成 ----------
+					string animBadRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animbad_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					CharacterProfile animBad = ProfileFactory.Sample();
+					animBad.Paths.OutputDir = animBadRoot;
+					animBad.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					animBad.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					animBad.Animation.Enabled = true;
+					animBad.Animation.Idle = animBrokenGif;      // 头是 GIF，但短得解不开
+					List<string> animBadNotes = new List<string>();
+					AnimFramesGen.Plan animBadPlan = AnimFramesGen.BuildPlan(animBad, animBadNotes.Add);
+					Check("待机解不开 → BuildPlan 给 [错误] 且 Ok=false（整份计划作废）",
+						!animBadPlan.Ok && animBadPlan.Notes.Any((string t) => t.StartsWith("[错误]", StringComparison.Ordinal)),
+						animBadPlan.Notes.FirstOrDefault((string t) => t.StartsWith("[错误]", StringComparison.Ordinal)) ?? "(没有错误行)");
+					Check("（准备）这种存档照样能生成工程（模组能编译，只是没有逐帧动画）",
+						ModGenerator.Generate(animBad).Success, animBadRoot);
+					string animBadCs = Path.Combine(ModGenerator.ProjectRootOf(animBad), "cs");
+					Check("待机解不开时不写任何动画资源 / 运行时代码（宁可什么都没有，也不要写出半套动画）",
+						!File.Exists(Path.Combine(animBadCs, "FrameAnimRuntime.cs"))
+						&& !File.Exists(Path.Combine(animBadCs, "FrameAnimPatches.cs"))
+						&& !Directory.Exists(Path.Combine(ModGenerator.ProjectRootOf(animBad), "images", "characters", "anim"))
+						&& !File.ReadAllText(Path.Combine(animBadCs, "ModEntry.cs")).Contains("FrameAnimRegistry"),
+						"一个文件都没写");
+					Directory.Delete(animBadRoot, true);
+
+					// ---------- ⑨ 抠底 / 剥描边真的改像素，而且不影响裁剪框 ----------
+					string animKeyFrame = Path.Combine(animFrameDir, animSlug + "_idle_loop_000.png");
+					animGen.Animation.KeyBackground = false;
+					Check("（准备）关着抠底的存档能生成工程", ModGenerator.Generate(animGen).Success, animGenRoot);
+					byte[] animFrameNoKey = File.ReadAllBytes(animKeyFrame);
+					animGen.Animation.KeyBackground = true;
+					Check("（准备）勾上抠底的存档能生成工程", ModGenerator.Generate(animGen).Success, animGenRoot);
+					byte[] animFrameKey = File.ReadAllBytes(animKeyFrame);
+					Check("抠底真的改了像素：同一帧在 KeyBackground=false/true 下写出来的 PNG 字节不同",
+						!animFrameNoKey.SequenceEqual(animFrameKey),
+						$"不抠 {animFrameNoKey.Length} 字节 / 抠底 {animFrameKey.Length} 字节");
+					animGen.Animation.KeyBackground = false;
+					AnimFramesGen.Plan animPlanStrip = AnimFramesGen.BuildPlan(animGen, _ => { });
+					animGen.Animation.StripOutline = true;
+					AnimFramesGen.Plan animPlanStripOn = AnimFramesGen.BuildPlan(animGen, _ => { });
+					Check("抠底 / 剥描边都不影响裁剪框与缩放（计划按原图算，这两步只在写帧时做）",
+						animPlanStrip.CropX0 == animPlanStripOn.CropX0 && animPlanStrip.CropY0 == animPlanStripOn.CropY0
+						&& animPlanStrip.CropX1 == animPlanStripOn.CropX1 && animPlanStrip.CropY1 == animPlanStripOn.CropY1
+						&& animPlanStrip.Scale == animPlanStripOn.Scale && animPlanStrip.YOffset == animPlanStripOn.YOffset,
+						$"{animPlanStripOn.CropX0},{animPlanStripOn.CropY0}..{animPlanStripOn.CropX1},{animPlanStripOn.CropY1}");
+					// 剥描边要另外造一张图验：仓库那张测试动图的描边是**深色**，剥浅色对它本来就不该有影响
+					//（黄金文件实测：variant_strip 与基线逐字节相同），拿它验「剥描边生效」是验不出来的。
+					byte[] animProbe = OutlineProbeFrame(400);
+					byte[] animNoStrip = AnimFramesGen.CropFrame(animProbe, 400, 400, 0, 0, 400, 400, new AnimationSpec());
+					byte[] animStripped = AnimFramesGen.CropFrame(animProbe, 400, 400, 0, 0, 400, 400,
+						new AnimationSpec { StripOutline = true, OutlineLuminance = 170 });
+					int animStrippedAway = 0;
+					for (int i = 0; i < 400 * 400; i++)
+						if (animNoStrip[i * 4 + 3] == 255 && animStripped[i * 4 + 3] == 0) animStrippedAway++;
+					int animCenter = (200 * 400 + 200) * 4 + 3;
+					Check("剥浅色描边真的改了像素：造一张「最外圈透明 + 两圈浅灰」的图，剥掉的就是那两圈（深色主体一动不动）",
+						animStrippedAway > 1000 && !animNoStrip.SequenceEqual(animStripped)
+						&& animNoStrip[animCenter] == 255 && animStripped[animCenter] == 255,
+						$"剥掉 {animStrippedAway} 个像素的 alpha");
+
+					// ---------- ⑩ 「最近邻」：关掉时注册行必须带 Linear（我们对参考实现的修正） ----------
+					CharacterProfile animLinear = ProfileFactory.Sample();
+					animLinear.Animation.Enabled = true;
+					animLinear.Animation.Idle = animIdle;
+					animLinear.Animation.NearestFilter = false;
+					string animLinearEntry = PatchesGen.ModEntrySource(animLinear, AnimFramesGen.BuildPlan(animLinear, _ => { }));
+					Check("「最近邻」关掉时注册行带 filter: Godot.CanvasItem.TextureFilterEnum.Linear"
+						+ "（参考实现那个勾选框其实没生效，这里是我们补的）",
+						animLinearEntry.Contains("filter: Godot.CanvasItem.TextureFilterEnum.Linear"), "带了 Linear");
+					animLinear.Animation.NearestFilter = true;
+					string animNearestEntry = PatchesGen.ModEntrySource(animLinear, AnimFramesGen.BuildPlan(animLinear, _ => { }));
+					Check("（对照）开着最近邻时不写 filter 参数（用 Register 的默认值 Nearest）",
+						animNearestEntry.Contains("FrameAnimRegistry.Register(") && !animNearestEntry.Contains(", filter:"),
+						"不带 filter");
+				}
+				finally
+				{
+					try { if (Directory.Exists(animGenRoot)) Directory.Delete(animGenRoot, true); } catch { }
+				}
+
+				// ---------- ⑪ 「预览动画计划」：写进只读文本框，而且一个文件都不写 ----------
+				string animPreviewRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_animpreview_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				Directory.CreateDirectory(animPreviewRoot);
+				string animPreviewOldOut = Profile.Paths.OutputDir;
+				try
+				{
+					Profile.Paths.OutputDir = animPreviewRoot;
+					SyncAnimSlotsFromProfile();
+					AnimList.SelectedIndex = 0;
+					OnAnimPlanPreview(this, new RoutedEventArgs());
+					Check("「预览动画计划」把裁剪框 / 帧数 / 每帧时长 / 缩放 / 位置 / 提示行都写进了文本框",
+						AnimPlanText.Contains("裁剪框：") && AnimPlanText.Contains("每帧 ") && AnimPlanText.Contains("缩放：")
+						&& AnimPlanText.Contains("Y 偏移：") && AnimPlanText.Contains("提示 / 警告 / 错误：")
+						&& AnimPlanText.Contains("idle_loop"),
+						AnimPlanText.Split('\n')[0].Trim());
+					Check("「预览动画计划」一个文件都不写（预览用的输出目录里连 images 都没有）",
+						!Directory.Exists(Path.Combine(animPreviewRoot, "images")), animPreviewRoot);
+					Check("改一下设置，上一份预览就作废（免得拿着旧数字去调）",
+						SetAnimSettingAndCheckPreviewInvalidated());
+				}
+				finally
+				{
+					Profile.Paths.OutputDir = animPreviewOldOut;
+				}
+
+				// ---------- ⑫ 「清除」要能撤回（记 _lastAnimClearedPath） ----------
+				SyncAnimSlotsFromProfile();
+				AnimList.SelectedIndex = 0;
+				string animClearTarget = AnimSlots[0].Path ?? "";
+				OnClearAnim(this, new RoutedEventArgs());
+				Check("「清除」清掉槽位，并记住上一次清除的路径（清错了能拿回来）",
+					string.IsNullOrWhiteSpace(Profile.Animation.Idle) && CanUndoAnim && _lastAnimClearedPath == animClearTarget,
+					"记着：" + (_lastAnimClearedPath ?? "空"));
+				OnUndoAnim(this, new RoutedEventArgs());
+				Check("「撤回清除」把 GIF 路径接回来、按钮状态复位",
+					Profile.Animation.Idle == animClearTarget && !CanUndoAnim,
+					Profile.Animation.Idle.Length > 0 ? Profile.Animation.Idle : "空");
+
+				// ---------- ⑬ 校验器那 6 条 ----------
+				CharacterProfile animV = ProfileFactory.Sample();
+				animV.Animation.Enabled = true;
+				Check("校验器：勾了总开关却没待机 → **错误**（待机是回退目标，没它整条废）",
+					ProfileValidator.Validate(animV).Any((ValidationIssue i) => i.IsError && i.Message.Contains("待机是回退目标")),
+					"报错了");
+				Check("校验器：勾了总开关但一个素材都没有 → 提示（不是错误）",
+					ProfileValidator.Validate(animV).Any((ValidationIssue i) => !i.IsError && i.Message.Contains("一个动图都没传")),
+					"提示了");
+				CharacterProfile animV2 = ProfileFactory.Sample();
+				animV2.Animation.Enabled = true;
+				animV2.Animation.Idle = Path.Combine(animGifDir, "这个文件根本不存在.gif");
+				Check("校验器：填了路径但文件不存在 → **错误**，并指出是哪个槽位",
+					ProfileValidator.Validate(animV2).Any((ValidationIssue i) => i.IsError
+						&& i.Message.Contains("待机（循环）") && i.Message.Contains("文件不存在")),
+					"报错了");
+				animV2.Animation.Idle = animNotGif;
+				animV2.Animation.Attack = animNotGif;
+				Check("校验器：素材不是 GIF → **错误**（逐个槽位各报一条，指出是哪个槽位）",
+					ProfileValidator.Validate(animV2).Count((ValidationIssue i) => i.IsError && i.Message.Contains("不是 GIF")) == 2,
+					"待机与攻击各一条");
+				CharacterProfile animV3 = ProfileFactory.Sample();
+				animV3.Animation.Enabled = false;
+				animV3.Animation.Idle = animIdle;
+				Check("校验器：没勾总开关却留着路径 → 提示（不会生效，别让人以为生效了）",
+					ProfileValidator.Validate(animV3).Any((ValidationIssue i) => !i.IsError && i.Message.Contains("没勾")),
+					"提示了");
+				CharacterProfile animV4 = ProfileFactory.Sample();
+				animV4.Animation.Enabled = true;
+				animV4.Animation.Idle = animIdle;
+				animV4.Animation.ManualCrop = "0,0,20";       // 少一个数
+				Check("校验器：手动裁剪框格式不对 → **警告**（生成侧会优雅降级改用自动，别拦住整次生成）",
+					ProfileValidator.Validate(animV4).Any((ValidationIssue i) => !i.IsError && i.Message.Contains("手动裁剪框") && i.Message.Contains("开区间"))
+					&& !ProfileValidator.Validate(animV4).Any((ValidationIssue i) => i.IsError && i.Message.Contains("手动裁剪框")),
+					"是警告不是错误");
+				CharacterProfile animV5 = ProfileFactory.Sample();
+				animV5.Animation.Enabled = true;
+				animV5.Animation.Idle = animIdle;
+				animV5.Animation.ManualCrop = "7,12,13,21";
+				animV5.Animation.Scale = 3;
+				Check("（对照）裁剪框写对 / 缩放填了合法值 → 这两条都不报",
+					!ProfileValidator.Validate(animV5).Any((ValidationIssue i) => i.Message.Contains("手动裁剪框") || i.Message.Contains("「缩放」")),
+					"不报");
+				CharacterProfile animV6 = ProfileFactory.Sample();
+				animV6.Animation.Enabled = true;
+				animV6.Animation.Idle = animIdle;
+				animV6.Animation.Scale = -1;
+				animV6.Animation.SpeedScale = 0;
+				animV6.Animation.KeyTolerance = -1;
+				animV6.Animation.OutlineLuminance = 999;
+				var animVRange = ProfileValidator.Validate(animV6);
+				Check("校验器：Scale / SpeedScale / KeyTolerance / OutlineLuminance 越界 → 四条**错误**",
+					animVRange.Count((ValidationIssue i) => i.IsError && i.Message.Contains("逐帧动画：")) == 4,
+					string.Join(" ｜ ", animVRange.Where((ValidationIssue i) => i.IsError && i.Message.Contains("逐帧动画：")).Select((ValidationIssue i) => i.Message)));
+
+				// 校验器的这几条不能把正常配置也拦下来（示例配置 + 一张合法动图 → 一条逐帧动画的问题都不该有）
+				CharacterProfile animV7 = ProfileFactory.Sample();
+				animV7.Animation.Enabled = true;
+				animV7.Animation.Idle = animIdle;
+				animV7.Animation.Attack = animAttack;
+				Check("（对照）正常配置一条逐帧动画的问题都不报",
+					!ProfileValidator.Validate(animV7).Any((ValidationIssue i) => i.Message.Contains("逐帧动画：")),
+					"干净");
+			}
+			finally
+			{
+				// 自检结束：把存档路径 / 开关 / 槽位都还原（绝不把自检期间的改动留在用户存档上）
+				_currentProfilePath = animOldProfilePath;
+				_renameAskKey = animOldAsk;
+				_profile.SaveName = animOldSaveName;
+				Profile.Animation.Enabled = animOldEnabled;
+				Profile.Animation.Idle = animOldIdle;
+				AnimSlots[0].Path = animOldSlot0Path;
+				SyncAnimSlotsFromProfile();
+				HookAnimationSpec();
+			}
 		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
@@ -14209,6 +15108,130 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 			CollectButtons(child, into);
 		}
+	}
+
+	/// <summary>
+	/// 界面自检：这棵子树里有没有**绑定到指定路径**的输入框（验「这一行设置真的长在界面上」）。
+	/// 注意比的是绑定的原始路径：设置区那一块的 DataContext 是 AnimationSpec，所以那边写的是 "Scale" 而不是
+	/// "Profile.Animation.Scale"。
+	/// </summary>
+	private static bool HasBoxBoundTo(DependencyObject root, string path)
+	{
+		var list = new List<TextBox>();
+		CollectTextBoxes(root, list);
+		return list.Any((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == path);
+	}
+
+	/// <summary>这棵子树里有没有勾选状态 = <paramref name="isChecked"/> 的、内容含 <paramref name="contentPart"/> 的勾选框。</summary>
+	private static bool HasCheckBox(DependencyObject root, string contentPart, bool? isChecked = null)
+	{
+		var list = new List<CheckBox>();
+		CollectCheckBoxes(root, list);
+		return list.Any((CheckBox c) => (c.Content as string ?? "").Contains(contentPart, StringComparison.Ordinal)
+			&& (isChecked is null || c.IsChecked == isChecked));
+	}
+
+	/// <summary>
+	/// 自检用：动一个动画设置项，返回「上一份预览是不是作废了」。
+	/// 为什么要有这一条：改了设置还留着旧数字，用户会拿着过期的裁剪框 / 缩放去调素材。
+	/// </summary>
+	private bool SetAnimSettingAndCheckPreviewInvalidated()
+	{
+		Profile.Animation.SpeedScale = 1.5;
+		bool invalidated = AnimPlanText.Contains("重新算一遍", StringComparison.Ordinal);
+		Profile.Animation.SpeedScale = 1;
+		return invalidated;
+	}
+
+	/// <summary>
+	/// 找仓库里那份「黄金测试动图」（<c>_art\anim_ref\testgif</c>）。
+	/// 从程序所在目录往上找：开发时是 <c>src\...\bin\Debug\net9.0-windows</c>，往上 5 层就是仓库根。
+	/// 找不到返回 null（部署版 --uicheck 就用自检自己造的那张 —— 自检不能依赖仓库文件）。
+	/// </summary>
+	private static string? FindRepoAnimGif(string name)
+	{
+		var dir = new DirectoryInfo(AppContext.BaseDirectory);
+		for (int up = 0; up < 8 && dir is not null; up++, dir = dir.Parent)
+		{
+			string candidate = Path.Combine(dir.FullName, "_art", "anim_ref", "testgif", name);
+			if (File.Exists(candidate)) return candidate;
+		}
+		return null;
+	}
+
+	/// <summary>
+	/// 自检自己造的那张动图：2 帧、2×2、白底、每帧 100ms / 200ms。
+	/// 为什么要内置一张：部署版的 <c>--uicheck</c> 旁边没有仓库的 <c>_art</c> 目录，
+	/// 而「拆帧 → 写资源」这条路必须能在任何机器上验一遍。
+	/// 字节是手写的（GIF89a + 全局色表 + 两个 GCE + 两个图像块），LZW 数据里每两个像素插一个 Clear 码 ——
+	/// 这样字典项数不会涨到要加码长，7 个 3 位码正好 3 个字节（见下面的断言：它必须解得开）。
+	/// </summary>
+	private static void WriteSelfTestGif(string path)
+	{
+		byte[] gif = new byte[]
+		{
+			0x47, 0x49, 0x46, 0x38, 0x39, 0x61,                          // "GIF89a"
+			0x02, 0x00, 0x02, 0x00, 0x80, 0x00, 0x00,                    // 画布 2×2，有全局色表（2 色），背景色 0，宽高比 0
+			0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00,                          // 全局色表：白、黑
+			0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00,              // 图形控制扩展：延时 10（=100ms）
+			0x2C, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,  // 图像描述符：0,0 起，2×2，无局部色表、不隔行
+			0x02, 0x03, 0x04, 0x08, 0x14, 0x00,                          // LZW 最小码长 2 + 3 字节数据 + 块结束
+			0x21, 0xF9, 0x04, 0x00, 0x14, 0x00, 0x00, 0x00,              // 第二帧：延时 20（=200ms）
+			0x2C, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x02, 0x00, 0x00,
+			0x02, 0x03, 0x04, 0x08, 0x14, 0x00,
+			0x3B,                                                        // 文件结束
+		};
+		Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+		File.WriteAllBytes(path, gif);
+	}
+
+	/// <summary>
+	/// 把存档 JSON 里的 <c>"Animation"</c> 整段删掉，用来模拟**V0.2.47 及以前的老存档**
+	/// （那时候 JSON 里根本没有这一档）。AnimationSpec 里没有嵌套对象，所以这一段是连续的若干行。
+	/// </summary>
+	private static string RemoveAnimationSection(string json)
+	{
+		var kept = new List<string>();
+		bool skipping = false;
+		foreach (string line in json.Replace("\r\n", "\n").Split('\n'))
+		{
+			if (skipping)
+			{
+				string trimmed = line.TrimEnd();
+				if (trimmed.EndsWith("},", StringComparison.Ordinal) || trimmed.EndsWith("}", StringComparison.Ordinal)) skipping = false;
+				continue;
+			}
+			if (line.TrimStart().StartsWith("\"Animation\"", StringComparison.Ordinal))
+			{
+				skipping = true;
+				continue;
+			}
+			kept.Add(line);
+		}
+		return string.Join("\n", kept);
+	}
+
+	/// <summary>
+	/// 造一帧「中间一大块不透明深色 + 最外圈透明 + 再两圈浅灰」的 RGBA，用来验剥描边真的改了像素。
+	/// 为什么要造：仓库那张测试动图的描边是**深色**，剥浅色描边对它本来就不该有任何效果
+	/// （黄金文件实测：<c>variant_strip</c> 与基线逐字节相同）—— 拿它验「剥描边生效」是验不出来的。
+	/// 尺寸要够大：剥掉的像素超过全图 2.5% 时算法会整块还原（保护素材别被剥没），小图必然触发那个兜底。
+	/// </summary>
+	private static byte[] OutlineProbeFrame(int size)
+	{
+		var rgba = new byte[size * size * 4];
+		for (int y = 0; y < size; y++)
+		{
+			for (int x = 0; x < size; x++)
+			{
+				int o = (y * size + x) * 4;
+				int ring = Math.Min(Math.Min(x, y), Math.Min(size - 1 - x, size - 1 - y));   // 0 = 最外圈
+				byte v = ring == 0 ? (byte)10 : ring <= 2 ? (byte)220 : (byte)10;             // 最外圈透明，再两圈浅灰
+				rgba[o] = rgba[o + 1] = rgba[o + 2] = v;
+				rgba[o + 3] = ring == 0 ? (byte)0 : (byte)255;
+			}
+		}
+		return rgba;
 	}
 
 	private void PumpDispatcher(int ms)
@@ -14651,6 +15674,131 @@ public sealed class ArtSlot : INotifyPropertyChanged
 	public void Save(ArtSpec art)
 	{
 		_set(art, Path);
+	}
+
+	private void Raise(string n)
+	{
+		this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(n));
+	}
+}
+
+/// <summary>
+/// 「动画」页的一个槽位（一个动作）。形状照 <see cref="ArtSlot"/>：列表行 + 详情 + 预览 + 清除，
+/// 区别只有一个 —— 数据落在 <see cref="AnimationSpec"/> 上，而且预览**只能给第一帧**
+/// （WPF 播不了动图，真正逐帧播放的是游戏里那套运行时）。
+/// </summary>
+public sealed class AnimSlot : INotifyPropertyChanged
+{
+	private string? _path;
+
+	/// <summary>解码结果按路径缓存：一张动图可能几十帧、几 MB，界面每刷一次都重解会很卡。</summary>
+	private string? _cachePath;
+
+	private GifFrames.Result? _cacheGif;
+
+	private readonly Func<AnimationSpec, string?> _get;
+
+	private readonly Action<AnimationSpec, string?> _set;
+
+	/// <summary>界面上的槽位名（待机（循环）/ 攻击 / …）。</summary>
+	public string Name { get; }
+
+	/// <summary>本体那边的动画名（idle_loop / attack / cast / hurt / die / overgrowth_loop / relaxed_loop）。</summary>
+	public string AnimName { get; }
+
+	/// <summary>这个动作在游戏里什么时候播。</summary>
+	public string Hint { get; }
+
+	/// <summary>素材要求（GIF / 可选 / 必须有）。</summary>
+	public string Requirement { get; }
+
+	public string? Path
+	{
+		get => _path;
+		set
+		{
+			_path = value;
+			Raise(nameof(Path));
+			Raise(nameof(Preview));
+			Raise(nameof(PreviewWidth));
+			Raise(nameof(PreviewHeight));
+			Raise(nameof(FrameNote));
+			Raise(nameof(Display));
+		}
+	}
+
+	/// <summary>缩略图：动图的**第一帧**（没上传 / 文件不在 / 解不开都给 null，界面就空着）。</summary>
+	public BitmapSource? Preview
+	{
+		get
+		{
+			GifFrames.Result? gif = Decode();
+			if (gif is null || gif.Frames.Count == 0) return null;
+			return MainWindow.BitmapFromRgba(gif.Width, gif.Height, gif.Frames[0].Rgba);
+		}
+	}
+
+	/// <summary>预览框的宽 / 高 = 动图自己的画布尺寸（这样界面里能看到素材的真实比例）。</summary>
+	public int PreviewWidth => Decode()?.Width ?? 0;
+
+	public int PreviewHeight => Decode()?.Height ?? 0;
+
+	/// <summary>预览下面那行小字：几帧 / 多大 / 每帧多久（或为什么显示不出来）。</summary>
+	public string FrameNote
+	{
+		get
+		{
+			if (string.IsNullOrWhiteSpace(_path)) return "（没上传：这个动作会退回待机）";
+			if (!File.Exists(_path)) return "文件不在了：" + _path;
+			GifFrames.Result? gif = Decode();
+			if (gif is null) return "解不开（只支持 GIF）：" + _path;
+			return $"{gif.Frames.Count} 帧 · {gif.Width}×{gif.Height} · 每帧 "
+				+ AnimFramesGen.AverageSeconds(gif).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)
+				+ " 秒（按动图自己的延时取平均）";
+		}
+	}
+
+	public string Display
+	{
+		get
+		{
+			if (!string.IsNullOrWhiteSpace(_path)) return Name + "（已上传）";
+			// 「待机必须有」这件事要在列表上就能看见，不能只在详情里写
+			return AnimName == "idle_loop" ? Name + "（必须有，还没上传）" : Name + "（没上传：退回待机）";
+		}
+	}
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	public AnimSlot(string name, string animName, string hint, string requirement,
+		Func<AnimationSpec, string?> get, Action<AnimationSpec, string?> set)
+	{
+		Name = name;
+		AnimName = animName;
+		Hint = hint;
+		Requirement = requirement;
+		_get = get;
+		_set = set;
+	}
+
+	public void Load(AnimationSpec anim)
+	{
+		Path = _get(anim);
+	}
+
+	public void Save(AnimationSpec anim)
+	{
+		_set(anim, Path);
+	}
+
+	private GifFrames.Result? Decode()
+	{
+		// 只按路径判缓存：界面上的路径变了就重解（同一路径换了文件内容这种极端情况不管 ——
+		// 这一页只是给个缩略图，真正的解码在生成时才做）
+		if (string.Equals(_cachePath, _path, StringComparison.Ordinal)) return _cacheGif;
+		_cachePath = _path;
+		_cacheGif = string.IsNullOrWhiteSpace(_path) ? null : GifFrames.Decode(_path);
+		return _cacheGif;
 	}
 
 	private void Raise(string n)

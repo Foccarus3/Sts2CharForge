@@ -670,10 +670,12 @@ public static class EffectCatalog
         new EffectKindOption("TurnEndPlay",   "回合结束时自动打出（数值 0 = 这张牌自己）", "张", 0, 5,  false, false),
         // 预见（一代观者的 Scry）：看抽牌堆顶的 N 张牌，把其中任意张丢进弃牌堆（本体没有这个机制，自己拼）。
         new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 0, 9, false, false),
-        // 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后把其中**所有非 0 费**的牌丢进弃牌堆
-        // （0 费牌留在手上）。判据照本体原样写：EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || CostsX。
+        // 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后对其中**符合条件的牌**执行**指定的操作**。
+        // 条件和操作都是可选的：默认「非 0 费 + 丢弃」= 本体的刮削（判据照本体原样写：
+        // EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || CostsX），换成别的就对别的牌动手
+        //（条件那一栏的候选见 ScrapeCondsFor，操作见 ScrapeOps）。
         // 数值 = 抽几张（0 = 不生效，守「所有种类都能填 0」那条规矩）；用 CardsVar，卡面 {Cards:diff()} 与升级增量都跟着走。
-        new EffectKindOption("ScrapeDraw",    "刮削（抽 N 张，丢弃其中所有非 0 费牌）", "张", 0, 10, false, false),
+        new EffectKindOption("ScrapeDraw",    "刮削（抽 N 张 → 对其中符合条件的牌执行选定的操作）", "张", 0, 10, false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
         new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
@@ -952,6 +954,101 @@ public static class EffectCatalog
         }
         return list;
     }
+
+    // ==================== 「刮削 ScrapeDraw」的条件 / 操作 ====================
+    // 需求原文：「效果种类的『抽 N 张牌丢弃其中所有非 0 费牌』，条件设宽泛一定，抽 N，
+    //          对其中满足一定条件的牌执行特定操作」。也就是把原来写死的**判据**和**动作**都变成可选的。
+    //
+    // 条件那一栏**复用上面那份范围限定选项表**（SpawnFiltersFor：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 /
+    // 每个自定义关键词一组）—— 界面候选、中文名、自定义关键词的查表逻辑全都只有一份，不另造一套。
+    // 只额外在前面加两条：非 0 费（老存档的默认值 = 本体「刮削」的判据）和不限。
+    //
+    // 注意范围限定里的「不限」Id 是**空串**，这里不能用空串当 Id（那样和「没填」分不清），统一换成 "Any"。
+
+    /// <summary>刮削的条件：非 0 费（默认，= 本体「刮削 Scrape」的判据）。</summary>
+    public const string ScrapeCondNonZeroCost = "NonZeroCost";
+    /// <summary>刮削的条件：不限（抽到的每一张都动手）。</summary>
+    public const string ScrapeCondAny = "Any";
+
+    /// <summary>刮削的操作：丢进弃牌堆（默认；洗牌后会回来）。</summary>
+    public const string ScrapeOpDiscard = "Discard";
+    /// <summary>刮削的操作：消耗掉（本场战斗不再回来）。</summary>
+    public const string ScrapeOpExhaust = "Exhaust";
+    /// <summary>刮削的操作：升级。</summary>
+    public const string ScrapeOpUpgrade = "Upgrade";
+
+    /// <summary>
+    /// 刮削「对其中哪些牌动手」（条件）的全部候选：非 0 费 + 不限 + 范围限定那一整份
+    ///（攻击 / 技能 / 能力 / 诅咒 / 状态 / 每个自定义关键词一组）。
+    /// 界面上那个下拉绑它，所以配置里加 / 删关键词后要重新取一次（见 MainWindow.RefreshCustomKeywordRegistry）。
+    /// </summary>
+    public static IReadOnlyList<SpawnFilterOption> ScrapeCondsFor(CharacterProfile? p)
+    {
+        var list = new List<SpawnFilterOption>
+        {
+            new(ScrapeCondNonZeroCost, "非 0 费的牌（默认，本体「刮削 Scrape」的判据）", "非 0 费"),
+            new(ScrapeCondAny, "不限（抽到的每一张都动手）", "不限"),
+        };
+        foreach (var f in SpawnFiltersFor(p))
+        {
+            // 范围限定里那条「不限」的 Id 是空串：这里「不限」已经单列成 Any 了，跳过它，
+            // 免得把空串当成一个 Id（回读 / 校验都会认不出来）。
+            if (string.IsNullOrEmpty(f.Id)) continue;
+            list.Add(f);
+        }
+        return list;
+    }
+
+    /// <summary>刮削条件的中文名（非 0 费 / 不限 自己给文案，其余走范围限定那一份查表）。</summary>
+    public static string ScrapeCondZhFor(CharacterProfile? p, string? v)
+    {
+        string id = (v ?? "").Trim();
+        if (id.Length == 0 || string.Equals(id, ScrapeCondAny, StringComparison.Ordinal)) return "不限";
+        if (string.Equals(id, ScrapeCondNonZeroCost, StringComparison.Ordinal)) return "非 0 费";
+        return SpawnFilterZhFor(p, id);   // 攻击 / 技能 / 能力 / 诅咒 / 状态 / 自定义关键词那一组
+    }
+
+    /// <summary>这个条件 Id 认不认识（校验器用它报「不认识的条件」）。</summary>
+    public static bool IsKnownScrapeCond(string? v)
+    {
+        string id = (v ?? "").Trim();
+        if (id.Length == 0) return true;                                  // 空 = 不限（手改 JSON 的兜底）
+        if (id is ScrapeCondNonZeroCost or ScrapeCondAny) return true;
+        // 自定义关键词那一组：关键词是不是真的存在于配置里由「空组」那条检查负责，这里只认前缀
+        if (IsKeywordFilter(id)) return true;
+        return id is "Attack" or "Skill" or "Power" or "Curse" or "Status";
+    }
+
+    /// <summary>
+    /// 刮削「对选中的牌执行什么操作」的候选。
+    /// 形状和范围限定那条一样（Id / Display / Zh），这样界面上的下拉绑定、中文名查表都是同一套写法。
+    /// </summary>
+    public static IReadOnlyList<SpawnFilterOption> ScrapeOps { get; } = new[]
+    {
+        new SpawnFilterOption(ScrapeOpDiscard, "丢弃（丢进弃牌堆，洗牌后会回来）", "丢弃"),
+        new SpawnFilterOption(ScrapeOpExhaust, "消耗掉（本场战斗不再回来）", "消耗掉"),
+        new SpawnFilterOption(ScrapeOpUpgrade, "升级（本体「武装 Armaments」那种升级）", "升级"),
+    };
+
+    /// <summary>刮削操作的中文名。</summary>
+    public static string ScrapeOpZh(string? v) => (v ?? "").Trim() switch
+    {
+        ScrapeOpExhaust => "消耗掉",
+        ScrapeOpUpgrade => "升级",
+        _ => "丢弃",
+    };
+
+    /// <summary>这个操作 Id 认不认识（校验器用它报「不认识的操作」）。</summary>
+    public static bool IsKnownScrapeOp(string? v) =>
+        (v ?? "").Trim() is "" or ScrapeOpDiscard or ScrapeOpExhaust or ScrapeOpUpgrade;
+
+    /// <summary>
+    /// 是不是「默认的刮削」（非 0 费 + 丢弃）。生成端按它决定要不要写条件 / 操作（不写 = 与旧版逐字一致），
+    /// 标记行按它决定要不要追加 CET:ScrapeCond / CET:ScrapeOp。
+    /// </summary>
+    public static bool IsDefaultScrape(string? cond, string? op) =>
+        ((cond ?? "").Trim() is "" or ScrapeCondNonZeroCost)
+        && ((op ?? "").Trim() is "" or ScrapeOpDiscard);
 
     /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
     public static IReadOnlyList<SpawnPickOption> SpawnPicks { get; } = new[]

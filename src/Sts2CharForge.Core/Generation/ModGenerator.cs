@@ -56,6 +56,20 @@ public static class ModGenerator
         }
         foreach (var i in issues) Log("  " + i);
 
+        // 逐帧动画（动图拆帧）：先算一遍计划 —— 后面写 ModEntry（注册行）和写帧资源都要用它。
+        // 计划里的提示行（解不开 / 没待机 / 尺寸不一致…）一起打进日志，出问题时用户能直接看到原因。
+        AnimFramesGen.Plan? animPlan = null;
+        if (FrameAnimGen.Needs(profile))
+        {
+            animPlan = AnimFramesGen.BuildPlan(profile, Log);
+            foreach (string note in animPlan.Notes) Log("  " + note);
+            if (!animPlan.Ok)
+            {
+                Log("逐帧动画：计划不可用（见上面的错误行），本次不生成任何动画资源。");
+                animPlan = null;
+            }
+        }
+
 
 
         // 每次生成都先清掉旧工程：上一次生成留下的 cs 文件（删掉的卡/状态/遗物）如果留着，
@@ -102,8 +116,24 @@ public static class ModGenerator
         }
         ProjectFilesGen.WriteText(Path.Combine(cs, n.RelicPoolClass + ".cs"), CSharpCodeGen.RelicPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, n.PotionPoolClass + ".cs"), CSharpCodeGen.PotionPoolSource(profile));
-        ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile));
+        ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile, animPlan));
         ProjectFilesGen.WriteText(Path.Combine(cs, "Patches.cs"), PatchesGen.PatchesSource(profile));
+        // 逐帧动画的游戏侧两个文件：只有勾了总开关而且待机有素材时才写
+        if (animPlan is not null)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, FrameAnimGen.RuntimeFile + ".cs"), FrameAnimGen.RuntimeSource(profile));
+            ProjectFilesGen.WriteText(Path.Combine(cs, FrameAnimGen.PatchesFile + ".cs"), FrameAnimGen.PatchesSource(profile));
+        }
+        else
+        {
+            // 关掉总开关后重新生成时，要把上一次留下的这两个文件删掉：它们的类还在程序集里、
+            // Harmony 补丁照样会被 PatchAll 打上（但注册表是空的 → 表现为「角色立绘不动」而不是报错，很难查）。
+            foreach (string f in new[] { FrameAnimGen.RuntimeFile, FrameAnimGen.PatchesFile })
+            {
+                string stale = Path.Combine(cs, f + ".cs");
+                if (File.Exists(stale)) { try { File.Delete(stale); Log("  已删掉上一次生成的 " + f + ".cs（总开关关掉了）"); } catch { } }
+            }
+        }
 
         // 「引用了没声明的动态变量」的生成后自检（说明见下面那段）
         var varProblems = new List<string>();
@@ -411,6 +441,16 @@ public static class ModGenerator
             + (PetGen.IsActive(profile) ? " / monsters（召唤物的名字）" : ""));
 
         ArtGenerator.Generate(profile, root, Log);
+
+        // 逐帧动画的帧资源：放在美术生成之后（它要读「美术资源」页那张战斗立绘的高度来算自动缩放）。
+        if (animPlan is not null)
+        {
+            var afterAnim = AnimFramesGen.Generate(profile, root, Log, animPlan);
+            foreach (string note in afterAnim.Notes) Log("  " + note);
+            Log($"  逐帧动画：{afterAnim.Anims.Count} 个动作 / {afterAnim.Anims.Sum(x => x.FrameCount)} 帧"
+                + $"，裁剪框 {afterAnim.CropX0},{afterAnim.CropY0}~{afterAnim.CropX1},{afterAnim.CropY1}"
+                + $"，缩放 {afterAnim.Scale:0.###}、Y 偏移 {afterAnim.YOffset:0.###}");
+        }
         // 图集精灵补丁必须在美术生成**之后**写：它要按刚写出来的药水图标实际尺寸算区域。
         // 为什么改成这样：以前每个模组都往工程里塞一份完整的 ui_atlas.tpsheet（本体 102 条 + 自己那条），
         // 而模组的 pck 同路径只有一个能生效（后挂载的盖掉前面的）—— 同时装两个自建角色时，

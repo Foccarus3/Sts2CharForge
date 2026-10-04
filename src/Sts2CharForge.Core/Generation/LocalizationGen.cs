@@ -229,6 +229,23 @@ public static class LocalizationGen
             : $"（只限{name}牌）";
     }
 
+    /// <summary>
+    /// 「刮削」卡面描述的后半句（条件和操作都是可选的，各档的说法不一样）。
+    /// **默认那一档（非 0 费 + 丢弃）返回与旧版逐字一致的「丢弃其中所有非 0 费牌」** ——
+    /// 老存档的卡面描述一个字符都不能变（用户要求），由 --uicheck 钉死。
+    /// 例：<c>丢弃其中所有非 0 费牌</c> / <c>把其中「攻击」的牌消耗掉</c> / <c>把其中每一张牌升级</c>。
+    /// </summary>
+    private static string ScrapeTailZh(CharacterProfile p, EffectSpec e)
+    {
+        if (EffectCatalog.IsDefaultScrape(e.ScrapeCond, e.ScrapeOp)) return "丢弃其中所有非 0 费牌";
+        string cond = EffectCatalog.ScrapeCondZhFor(p, e.ScrapeCond);
+        string op = EffectCatalog.ScrapeOpZh(e.ScrapeOp);
+        // 「不限」时不说「符合条件的」（那样读起来像还有筛选）
+        return e.ScrapeCond == EffectCatalog.ScrapeCondAny
+            ? $"把其中每一张牌{op}"
+            : $"把其中「{cond}」的牌{op}";
+    }
+
     /// <summary>「给予卡牌关键词」的一句话描述。</summary>
     private static string GiveKeywordText(CharacterProfile p, EffectSpec e, string repeat, string when)
     {
@@ -708,8 +725,9 @@ public static class LocalizationGen
                     ? $"{repeat}{when}获得 {var} 点格挡。"
                     : $"{repeat}{when}{forWho}获得 {var} 点格挡。"),
             "Draw" => $"{repeat}{when}抽 {var} 张牌。",
-            // 刮削（本体卡「刮削 Scrape」）：抽 N 张，丢弃其中所有非 0 费牌（0 费牌留在手上）
-            "ScrapeDraw" => $"{repeat}{when}抽 {var} 张牌，丢弃其中所有非 0 费牌。",
+            // 刮削（本体卡「刮削 Scrape」）：抽 N 张，然后对其中符合条件的牌做选定的操作。
+            // 默认那一档必须与旧版逐字一致（「丢弃其中所有非 0 费牌」）—— 卡面描述的回归由 --uicheck 钉死。
+            "ScrapeDraw" => $"{repeat}{when}抽 {var} 张牌，{ScrapeTailZh(p, e)}。",
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
             // 负数 = 失去（生成的是 LoseEnergy：本体 GainEnergy 对非正数直接返回）

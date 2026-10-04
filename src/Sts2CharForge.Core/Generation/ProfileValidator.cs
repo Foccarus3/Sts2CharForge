@@ -637,7 +637,115 @@ public static class ProfileValidator
         // 这一步要读磁盘上别的存档工程，任何意外（路径怪、文件被占、读取失败）都绝不能影响正常校验。
         try { CheckMultiModConflicts(issues, p, n); } catch { /* 读不到就不报，宁可漏报 */ }
 
+        // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
+        ValidateAnimation(issues, p);
+
         return issues;
+    }
+
+    /// <summary>
+    /// 逐帧动画（动图拆帧）的校验。见 <c>docs\逐帧动画_吸收设计.md</c>。
+    ///
+    /// 这里只拦「生成之前就能一眼看出来的错」：整张动图**不在这里解**——校验器每改一次界面就跑一次
+    /// （<c>RefreshIssues</c>），解一张几十帧的动图要几十毫秒，界面会卡；真解不开在生成时还会再报一次
+    /// （<see cref="AnimFramesGen.BuildPlan"/> 会写 <c>[错误] 待机动图解不开</c> 并让整份计划作废）。
+    /// </summary>
+    private static void ValidateAnimation(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        var a = p.Animation;
+
+        // 槽位顺序 = AnimationSpec.Slots 的顺序（界面、存档、生成三处一致）
+        var slots = new (string Label, string Path)[]
+        {
+            ("待机（循环）", a.Idle),
+            ("攻击", a.Attack),
+            ("施法", a.Cast),
+            ("受伤", a.Hurt),
+            ("死亡", a.Die),
+            ("篝火", a.RestSite),
+            ("商店", a.Merchant),
+        };
+        int filled = slots.Count(s => !string.IsNullOrWhiteSpace(s.Path));
+
+        if (a.Enabled && string.IsNullOrWhiteSpace(a.Idle))
+            issues.Add(new("错误", "勾了「启用逐帧动画」但没传「待机（循环）」动图：待机是回退目标，"
+                + "其它动作没素材时都会退回它 —— 没有它整条动画都不生效。到「动画」页选一张待机 GIF，或把总开关关掉。"));
+
+        if (a.Enabled && filled == 0)
+            issues.Add(new("提示", "勾了「启用逐帧动画」但一个动图都没传：这次生成不会写任何帧图 / 运行动画代码（模组照常能编译）。"));
+
+        foreach (var (label, path) in slots)
+        {
+            if (string.IsNullOrWhiteSpace(path)) continue;
+            if (!File.Exists(path))
+                issues.Add(new("错误", $"逐帧动画：{label}的动图文件不存在：{path}"
+                    + "（到「动画」页重新选一个，或把这个槽位清除）"));
+            else if (!LooksLikeGif(path))
+                issues.Add(new("错误", $"逐帧动画：{label}的素材不是 GIF：{path}"
+                    + "（逐帧动画只吃动图；静态 PNG 请放「美术资源」页）"));
+        }
+
+        if (!a.Enabled && filled > 0)
+            issues.Add(new("提示", $"「动画」页里放了 {filled} 个动图，但「启用逐帧动画」没勾：这些素材这次不会生效"
+                + "（生成结果和没放素材一样）。"));
+
+        // 裁剪框格式不对给**警告**不给错误：生成侧会优雅降级（写一条 [警告] 然后改用自动裁剪），
+        // 用户手打错一个字符不该拦住整次生成 —— 两边口径必须一致。
+        if (!string.IsNullOrWhiteSpace(a.ManualCrop) && !IsManualCrop(a.ManualCrop))
+            issues.Add(new("警告", $"逐帧动画：「手动裁剪框」格式不对，要 x0,y0,x1,y1 四个整数（x1/y1 是开区间，"
+                + $"例如 0,0,20,24）：{a.ManualCrop} —— 生成时会忽略它、改用自动裁剪（所有动作所有帧的并集）。"));
+
+        // 下面这几个直接进游戏里的缩放 / 播放速度 / 抠底参数，越界会算出看不见人的精灵或抠出窟窿
+        if (a.Scale < 0 || a.Scale > 50)
+            issues.Add(new("错误", $"逐帧动画：「缩放」只能是 0（按静态立绘高度自动算）或 0.05 ~ 50 之间的数，现在是 {Num(a.Scale)}。"));
+        if (a.SpeedScale <= 0 || a.SpeedScale > 20)
+            issues.Add(new("错误", $"逐帧动画：「播放速度系数」只能是大于 0 的数（1 = 动图原速，2 = 双倍速，上限 20），"
+                + $"现在是 {Num(a.SpeedScale)}。0 不是原速，原速是 1。"));
+        if (a.KeyTolerance < 0 || a.KeyTolerance > 255)
+            issues.Add(new("错误", $"逐帧动画：「抠背景容差」是 RGB 每个通道允许的最大差，只能是 0 ~ 255，现在是 {Num(a.KeyTolerance)}。"));
+        if (a.OutlineLuminance < 0 || a.OutlineLuminance > 255)
+            issues.Add(new("错误", $"逐帧动画：「剥描边的亮度阈值」是 0 ~ 255 的亮度，现在是 {Num(a.OutlineLuminance)}。"));
+
+        static string Num(double v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// 是不是 GIF：只看文件头 6 字节（<c>GIF87a</c> / <c>GIF89a</c>）。
+    /// 为什么不整个解一遍：见 <see cref="ValidateAnimation"/> 的说明 —— 校验器跑得很勤，读整个文件会卡界面。
+    /// </summary>
+    private static bool LooksLikeGif(string path)
+    {
+        try
+        {
+            using var fs = File.OpenRead(path);
+            var head = new byte[6];
+            int n = 0;
+            while (n < head.Length)
+            {
+                int read = fs.Read(head, n, head.Length - n);
+                if (read <= 0) break;
+                n += read;
+            }
+            if (n < head.Length) return false;
+            return head[0] == (byte)'G' && head[1] == (byte)'I' && head[2] == (byte)'F'
+                && head[3] == (byte)'8' && (head[4] == (byte)'7' || head[4] == (byte)'9') && head[5] == (byte)'a';
+        }
+        catch
+        {
+            return false;   // 读不动（被占用 / 权限）按「不是 GIF」报，反正生成时也解不开
+        }
+    }
+
+    /// <summary>
+    /// 手动裁剪框是不是 <c>x0,y0,x1,y1</c>。判定写法**必须和 <see cref="AnimFramesGen.BuildPlan"/> 里那一段一模一样**，
+    /// 否则会出现「校验器说没问题、生成时却按自动算」这种自相矛盾的行为（两边都允许前后空格、正负号）。
+    /// </summary>
+    private static bool IsManualCrop(string text)
+    {
+        string[] parts = text.Split(new[] { ',' }, 4, StringSplitOptions.None);
+        return parts.Length == 4
+            && parts.All(s => int.TryParse(s, System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out _));
     }
 
     /// <summary>
@@ -1436,6 +1544,50 @@ public static class ProfileValidator
                     + $"让你看抽牌堆顶的 {e.Amount:0.##} 张牌，并把其中**任意张**丢进弃牌堆（可以一张都不丢）。"
                     + "本体没有「预见」这个机制，是工具按一代观者的效果自己拼的"
                     + "（抽牌堆顶 = Cards 的前 N 个：本体索引 0 就是顶；选牌走 FromSimpleGrid）。"));
+            }
+
+            // ===== 刮削（抽 N 张 → 对其中符合条件的牌做选定的操作）=====
+            // 张数范围沿用效果种类表里的 0~10（上面那条通用检查已经管了，这里不重复报一次）。
+            if (e.Kind == "ScrapeDraw")
+            {
+                // 条件 / 操作的认识与否：Id 是存档里存着的字符串，手改过 / 旧版本留下的都可能对不上，
+                // 对不上就必须报错 —— 生成端对认不出来的 Id 只能退成「谁也不匹配」，效果会静静地什么都不做。
+                if (!EffectCatalog.IsKnownScrapeCond(e.ScrapeCond))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」条件「{e.ScrapeCond}」认不出来："
+                        + "只支持 非 0 费 / 不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 自定义关键词那一组"
+                        + "（请在界面上重新选一次）。"));
+                if (!EffectCatalog.IsKnownScrapeOp(e.ScrapeOp))
+                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」操作「{e.ScrapeOp}」认不出来："
+                        + "只支持 丢弃 / 消耗 / 升级（请在界面上重新选一次）。"));
+                // 自定义关键词那一组：和「范围限定 / 范围界定」同一套检查（复用现成写法）——
+                // 空组必须报错，否则这条效果会什么都不做，用户还以为配好了。
+                if (EffectCatalog.IsKeywordFilter(e.ScrapeCond))
+                {
+                    string groupName = EffectCatalog.KeywordFilterName(e.ScrapeCond);
+                    var group = EffectCatalog.KeywordGroupCards(p, e.ScrapeCond);
+                    if (group.Count == 0)
+                        issues.Add(new("错误", $"{owner} 的「{kind.Display}」条件选了自定义关键词「{groupName}」，"
+                            + "但**没有任何一张你自己的牌带这个关键词** —— 这一组是空的，抽完之后一张都不会动手。"
+                            + "请到卡牌页给这一组牌勾上这个关键词，或者换一个条件。"));
+                    else
+                        issues.Add(new("提示", $"{owner} 的「{kind.Display}」条件 = 自定义关键词「{groupName}」那一组，"
+                            + $"共 {group.Count} 张牌（{string.Join("、", group.Take(6).Select(c => c.Name))}"
+                            + (group.Count > 6 ? " …" : "") + "）。生成时会把这些牌直接列进判据"
+                            + "（关键词是我们自己的标注，游戏里没有对应枚举，只能在生成时按配置查出来）。"));
+                }
+                // 一句人话的总说明：抽 N 张 → 对其中 X 的牌执行 Y
+                string condZh = EffectCatalog.ScrapeCondZhFor(p, e.ScrapeCond);
+                string opZh = EffectCatalog.ScrapeOpZh(e.ScrapeOp);
+                string tail = e.ScrapeOp switch
+                {
+                    "Exhaust" => "（本场战斗不再回来；走本体 CardCmd.Exhaust，和「消耗卡牌」同一个命令）",
+                    "Upgrade" => "（走本体 CardCmd.Upgrade，和「升级卡牌」同一个命令；战斗里的升级只影响本场战斗）",
+                    _ => "（丢进弃牌堆、洗牌后会回来；走本体 CardCmd.Discard，所以「奇巧」这类跟弃牌有关的钩子照常触发）",
+                };
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」会抽 {e.Amount:0.##} 张牌，"
+                    + $"然后对其中「{condZh}」的牌{opZh}{tail}。"
+                    + "条件与操作都可以改：条件选「不限」就是抽到的每一张都动手；"
+                    + "条件选自定义关键词那一组时，会在生成期把这一组牌查成显式判据。"));
             }
             // 升级卡牌（全局）：直接改牌组（永久、写进存档），和「获得 / 变化 / 删除卡牌（全局）」同一档
             if (e.Kind == "UpgradeCardGlobal")

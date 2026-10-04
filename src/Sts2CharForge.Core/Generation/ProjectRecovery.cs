@@ -797,6 +797,14 @@ public static class ProjectRecovery
                     // 「用目标卡填满手牌」选的是哪张卡（代码里只剩 CreateCard<那张卡>）
                     string? scCard = Match(line, @"CET:Card=(\S+)");
                     if (scCard is not null) sc.SpawnCardId = scCard;
+                    // 「刮削」的条件 / 操作：生成时**只有不是默认值**才写这两项（默认那一档的标记行
+                    // 与老版本逐字一致）。所以这里缺项就补默认值 —— 老工程回读出来的行为完全不变。
+                    // 条件可能是 `Keyword:XXX`（冒号），所以不能只认 \w。
+                    if (sc.Kind == "ScrapeDraw")
+                    {
+                        sc.ScrapeCond = Match(line, @"CET:ScrapeCond=([^\s]+)") ?? EffectCatalog.ScrapeCondNonZeroCost;
+                        sc.ScrapeOp = Match(line, @"CET:ScrapeOp=([^\s]+)") ?? EffectCatalog.ScrapeOpDiscard;
+                    }
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
                     if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay" or "ScrapeDraw")

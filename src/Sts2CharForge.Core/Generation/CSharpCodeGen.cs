@@ -2702,10 +2702,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 范围界定的**条件部分**（不含 <c>c =&gt; </c>，方便和「只能升级的牌」这类已有条件用 &amp;&amp; 拼）。
     /// 返回 null = 没设范围（调用处原样输出，行为与旧版完全一致）。
     /// </summary>
-    internal static string? CardScopeCond(EffectSpec e, CharacterProfile? p)
+    internal static string? CardScopeCond(EffectSpec e, CharacterProfile? p) =>
+        e.HasCardScope ? ScopeCondForFilter(e.SpawnFilter, p) : null;
+
+    /// <summary>
+    /// 把「一个范围 Id」翻成生成期的显式条件（不含 <c>c =&gt; </c>）。
+    /// 抽出来是因为**刮削的条件那一栏用的就是同一份选项表**（攻击 / 技能 / 能力 / 诅咒 / 状态 /
+    /// 自定义关键词那一组），那边不是「范围界定」（字段是 ScrapeCond），但判据必须一模一样 ——
+    /// 与其复制一份，不如两边都走这一个函数（见 <see cref="ScrapeCondExpr"/>）。
+    /// 返回 null = 不限（空 Id）。
+    /// </summary>
+    internal static string? ScopeCondForFilter(string? filterId, CharacterProfile? p)
     {
-        if (!e.HasCardScope) return null;
-        string f = (e.SpawnFilter ?? "").Trim();
+        string f = (filterId ?? "").Trim();
+        if (f.Length == 0) return null;
         // 自定义关键词那一组：关键词是我们自己的标注（游戏里没有对应枚举），运行时过滤不出来，
         // 只能在生成期把「这一组有哪些牌」查成显式条件。牌的身份用 ModelId（本体就是按类名算的，
         // 战斗里的牌是规范模型的 MemberwiseClone，Id 一样）。
@@ -2961,7 +2971,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         + $" CET:Power={Lit.Str(e.PowerId ?? "")} CET:Side={e.TargetSide}"
         // 「用目标卡填满手牌」要把选的那张卡带上（代码里只剩 CreateCard<那张卡>）；
         // 没填就不写这一项，别的种类回读时不受影响。
-        + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "" : $" CET:Card={e.SpawnCardId!.Trim()}");
+        + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "" : $" CET:Card={e.SpawnCardId!.Trim()}")
+        // 「刮削」的条件 / 操作：**只有这个种类**才有这两项（别的种类的标记行一个字符都不动）。
+        // 而且只有**不是默认值**（非 0 费 + 丢弃）时才写：默认那一档的标记行与改动前逐字一致
+        //（老存档的生成文本不能变，用户要求）；回读时缺项就按默认值补（见 ProjectRecovery）。
+        + (e.Kind == "ScrapeDraw" && !EffectCatalog.IsDefaultScrape(e.ScrapeCond, e.ScrapeOp)
+            ? $" CET:ScrapeCond={(e.ScrapeCond ?? "").Trim()} CET:ScrapeOp={(e.ScrapeOp ?? "").Trim()}"
+            : "");
 
     /// <summary>
     /// 复制卡牌（用户要求的新效果）：从手牌 / 抽牌堆 / 弃牌堆里选 N 张（或随机拿 N 张），
@@ -3076,23 +3092,61 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
-    /// 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后把其中**所有非 0 费**的牌丢进弃牌堆
-    /// （0 费牌留在手上 —— 「刮」掉的是要花能量的牌）。
+    /// 刮削的条件（不含 <c>c =&gt; </c>）。返回 null = 不限（不筛，抽到的每一张都动手）。
+    /// 「非 0 费」是本体「刮削 Scrape」的判据，照原样写：
+    /// <c>c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX</c>
+    /// （CostsX 也留着：X 费牌的花费是 0，但它是「要花能量」的牌）。
+    /// 其余（攻击 / 技能 / 能力 / 诅咒 / 状态 / 自定义关键词那一组）复用范围界定那份判据，
+    /// 不复制粘贴第二份（见 <see cref="ScopeCondForFilter"/>）。
+    /// </summary>
+    private static string? ScrapeCondExpr(EffectSpec e, CharacterProfile? p)
+    {
+        string id = (e.ScrapeCond ?? "").Trim();
+        if (id.Length == 0 || string.Equals(id, EffectCatalog.ScrapeCondAny, StringComparison.Ordinal)) return null;
+        if (string.Equals(id, EffectCatalog.ScrapeCondNonZeroCost, StringComparison.Ordinal))
+            return "c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX";
+        return ScopeCondForFilter(id, p) ?? "false";   // 认不出来的 Id：谁也不匹配（校验器已经报过错）
+    }
+
+    /// <summary>
+    /// 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后对其中**符合条件的牌**执行**选定的操作**。
     ///
-    /// 判据照本体原样写：<c>c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX</c>
-    /// （CostsX 也留着：X 费牌的花费是 0，但它是「要花能量」的牌）。丢牌走 <c>CardCmd.Discard</c>，
-    /// 所以「奇巧」这类跟弃牌有关的机制照常触发。
+    /// 条件是 <see cref="EffectSpec.ScrapeCond"/>（默认「非 0 费」= 本体那张牌的判据；不限 / 按类型 /
+    /// 按稀有度 / 自定义关键词那一组都行），操作是 <see cref="EffectSpec.ScrapeOp"/>
+    /// （默认丢弃 = <c>CardCmd.Discard</c>；消耗 = <c>CardCmd.Exhaust</c>；升级 = <c>CardCmd.Upgrade</c>）。
+    ///
+    /// **默认那一档生成出来的文本与改动前逐字一致**（用户要求：老存档不能变）：
+    /// 注释、抽牌那一句（含 <c>.Where(...)</c>）和 <c>CardCmd.Discard</c> 都原样保留 ——
+    /// 所以默认那两行是**特意**写死的分支，不是忘了统一。由 --uicheck 钉死。
     ///
     /// 整段写在一个变量上（__scraped），回读时按 <c>CET:Effect=ScrapeDraw</c> 标记收尾、这几行整段跳过
     /// （见 ProjectRecovery 的 skipSelfContainedBody 名单）。
     /// </summary>
-    private static void EmitScrapeDraw(CodeWriter w, EffectSpec e, string amount)
+    private static void EmitScrapeDraw(CodeWriter w, CharacterProfile? p, EffectSpec e, string amount)
     {
+        string? cond = ScrapeCondExpr(e, p);
+        string condZh = EffectCatalog.ScrapeCondZhFor(p, e.ScrapeCond);
+        string opZh = EffectCatalog.ScrapeOpZh(e.ScrapeOp);
+        string draw = $"(await CardPileCmd.Draw(choiceContext, {amount}, base.Owner))";
         w.Line(SelfContainedMarker(e));
-        w.Line($"// 抽 {amount} 张牌，丢弃其中所有「非 0 费」的牌（本体「刮削 Scrape」的写法）");
-        w.Line($"IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, {amount}, base.Owner))"
-            + ".Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);");
-        w.Line("await CardCmd.Discard(choiceContext, __scraped);");
+        // 默认（非 0 费 + 丢弃）用旧版那句注释，一个字符都不动
+        if (EffectCatalog.IsDefaultScrape(e.ScrapeCond, e.ScrapeOp))
+            w.Line($"// 抽 {amount} 张牌，丢弃其中所有「非 0 费」的牌（本体「刮削 Scrape」的写法）");
+        else
+            w.Line($"// 抽 {amount} 张牌，对其中「{condZh}」的牌{opZh}"
+                + (e.ScrapeOp == EffectCatalog.ScrapeOpExhaust ? "（参考「消耗卡牌」的写法）"
+                    : e.ScrapeOp == EffectCatalog.ScrapeOpUpgrade ? "（本体自己也是这么升级卡牌的）" : ""));
+        w.Line(cond is null
+            ? $"IEnumerable<CardModel> __scraped = await CardPileCmd.Draw(choiceContext, {amount}, base.Owner);"
+            : $"IEnumerable<CardModel> __scraped = {draw}.Where(c => {cond});");
+        // 操作那几行：丢弃 = CardCmd.Discard（一次传整批，和旧版一致）；消耗 / 升级按 EmitExhaustCard /
+        // EmitUpgradeCard 的写法逐张来（CardCmd.Exhaust 只接受单张牌）。
+        w.Line(e.ScrapeOp switch
+        {
+            EffectCatalog.ScrapeOpExhaust => "foreach (CardModel c in __scraped) await CardCmd.Exhaust(choiceContext, c);",
+            EffectCatalog.ScrapeOpUpgrade => "foreach (CardModel c in __scraped) CardCmd.Upgrade(c);",
+            _ => "await CardCmd.Discard(choiceContext, __scraped);",
+        });
     }
 
     /// <summary>
@@ -3651,7 +3705,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "ScrapeDraw":
-                EmitScrapeDraw(w, e, amt);
+                EmitScrapeDraw(w, p, e, amt);
                 break;
 
             case "FillHand":
@@ -5067,7 +5121,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ScrapeDraw":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，刮削抽不了牌）"); break; }
-                EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
+                EmitScrapeDraw(w, p, e, Lit.Dec(e.Amount));
                 break;
 
             case "FillHand":
@@ -6159,7 +6213,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitScry(w, p, e);
                 break;
             case "ScrapeDraw":
-                EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
+                EmitScrapeDraw(w, p, e, Lit.Dec(e.Amount));
                 break;
 
             case "FillHand":

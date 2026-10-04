@@ -193,6 +193,13 @@ public sealed class CharacterProfile
     public ObservableCollection<VanillaKeywordRenameSpec> KeywordRenames { get; set; } = new();
 
     public ArtSpec Art { get; set; } = new();
+    /// <summary>
+    /// 逐帧动画（把动图拆成帧，替代战斗 / 篝火 / 商店那三处的静态立绘）。
+    /// 详见 <c>docs\逐帧动画_吸收设计.md</c>：游戏引擎读不了 GIF，所以**生成时**就拆成 PNG 帧，
+    /// 再写成 Godot 的 SpriteFrames 资源，配合生成的运行时 + Harmony 补丁在游戏里逐帧播。
+    /// 总开关不勾 = 行为和以前完全一样。
+    /// </summary>
+    public AnimationSpec Animation { get; set; } = new();
     /// <summary>卡牌配色（整个角色生效：边框 / 牌堆底色 / 能量描边）</summary>
     public CardColorSpec Colors { get; set; } = new();
     public PathsSpec Paths { get; set; } = new();
@@ -276,6 +283,8 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(ShowCardScopeFilter));
                 Raise(nameof(HasCardScope));
                 Raise(nameof(IsSlowPower));
+                // 「刮削」那两行（条件 / 操作）的显隐绑的就是它 —— 换成别的效果种类时要跟着消失。
+                Raise(nameof(ShowScrapeOptions));
                 Raise(nameof(Display));
             }
         }
@@ -445,6 +454,46 @@ public sealed class EffectSpec : SpecBase
     /// <summary>「重放次数」那个输入框要不要显示。</summary>
     [JsonIgnore]
     public bool ShowReplayTimes => Kind == "ReplayCard";
+
+    // ===== 刮削（ScrapeDraw）：条件 + 操作（用户要求：抽到之后对「满足条件的牌」做「某个操作」）=====
+    // 需求原文：「条件设宽泛一定，抽 N，对其中满足一定条件的牌执行特定操作」。
+    // 默认值就是老行为（非 0 费 + 丢弃）—— 老存档里没有这两个字段，反序列化后就是这两个默认值，
+    // 生成出来的代码与改动前逐字一致（由 --uicheck 钉死）。
+    private string _scrapeCond = EffectCatalog.ScrapeCondNonZeroCost;
+    private string _scrapeOp = EffectCatalog.ScrapeOpDiscard;
+
+    /// <summary>
+    /// 抽完之后「对其中哪些牌动手」：<c>NonZeroCost</c>（默认，本体「刮削」的判据）/
+    /// <c>Any</c>（不限）/ Attack / Skill / Power / Curse / Status / <c>Keyword:XXX</c>（自定义关键词那一组）。
+    /// 候选见 <see cref="EffectCatalog.ScrapeCondsFor"/>（就是范围限定那一份，前面多两条）。
+    /// </summary>
+    public string ScrapeCond
+    {
+        get => _scrapeCond;
+        set { if (Set(ref _scrapeCond, value ?? EffectCatalog.ScrapeCondNonZeroCost)) { Raise(nameof(ScrapeCondZh)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>
+    /// 对选中的那些牌「执行什么操作」：<c>Discard</c>（默认，丢进弃牌堆）/ <c>Exhaust</c>（消耗掉）/
+    /// <c>Upgrade</c>（升级）。候选见 <see cref="EffectCatalog.ScrapeOps"/>。
+    /// </summary>
+    public string ScrapeOp
+    {
+        get => _scrapeOp;
+        set { if (Set(ref _scrapeOp, value ?? EffectCatalog.ScrapeOpDiscard)) { Raise(nameof(ScrapeOpZh)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>条件的中文（列表 / 描述里用）。</summary>
+    [JsonIgnore]
+    public string ScrapeCondZh => EffectCatalog.ScrapeCondZhFor(null, ScrapeCond);
+
+    /// <summary>操作的中文（列表 / 描述里用）。</summary>
+    [JsonIgnore]
+    public string ScrapeOpZh => EffectCatalog.ScrapeOpZh(ScrapeOp);
+
+    /// <summary>「条件 / 操作」那两行要不要显示（只有「刮削」才有这两栏）。</summary>
+    [JsonIgnore]
+    public bool ShowScrapeOptions => Kind == "ScrapeDraw";
 
     /// <summary>是不是「回合结束时自动打出」（数值 0 = 这张牌自己；≥ 1 = 从牌堆里选 N 张）。</summary>
     [JsonIgnore]
@@ -966,8 +1015,9 @@ public sealed class EffectSpec : SpecBase
                 // 毒性爆发 / 大限已至：本体那两张牌的效果（界面上把关键说明写出来）
                 "Outbreak" => "毒性爆发（全体上毒并立即触发）",
                 "TimesUp" => "大限已至（伤害 = 目标灾厄层数）",
-                // 刮削（本体卡「刮削 Scrape」）：界面上把「抽几张」写出来，否则只看得到 Kind 名
-                "ScrapeDraw" => $"刮削（抽 {Amount:0.##} 张，丢弃其中所有非 0 费牌）",
+                // 刮削（本体卡「刮削 Scrape」）：界面上把「抽几张 → 对什么条件的牌做什么」写出来，
+                // 否则只看得到 Kind 名（条件和操作各有各的档，光看「刮削」两个字分不清）
+                "ScrapeDraw" => $"刮削（抽 {Amount:0.##} 张 → 对其中「{ScrapeCondZh}」的牌{ScrapeOpZh}）",
                 // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」。
                 // 这里写的是选中那只召唤物的**类名**（Profile 层拿不到中文名 —— 那要读召唤物列表，
                 // 由 LocalizationGen / 界面负责翻译成中文名）。
@@ -2560,6 +2610,137 @@ public sealed class SummonSpec : SpecBase
         + $" ｜ 站位 {StandDistance}"
         + (TakesDamageForOwner ? " ｜ 替主人承伤" : "")
         + (string.IsNullOrWhiteSpace(Image) ? "" : " ｜ 有自定义图片");
+}
+
+/// <summary>
+/// 逐帧动画（把动图 / GIF 拆成帧动画）的配置。见 <c>docs\逐帧动画_吸收设计.md</c>。
+///
+/// 为什么是「生成时拆帧」而不是运行时放 GIF：游戏引擎（Godot）读不了 GIF，
+/// 而且帧图在游戏里会被缩放 —— 所以工具在生成阶段把 GIF 解成 RGBA 帧、按同一个裁剪框裁好、
+/// 写成 PNG + Godot 的 <c>SpriteFrames</c> 资源，再由生成的运行时把本体的动画请求翻成逐帧播放。
+///
+/// 7 个槽位对应本体自己的动画名（<c>idle_loop / attack / cast / hurt / die / overgrowth_loop / relaxed_loop</c>），
+/// **待机是回退目标，必须有**：其它动作没素材时都会退回它。
+/// </summary>
+public sealed class AnimationSpec : SpecBase
+{
+    private bool _enabled;
+    private string _idle = "", _attack = "", _cast = "", _hurt = "", _die = "", _restSite = "", _merchant = "";
+    private double _frameSeconds;
+    private bool _alignByFirstFrame = true;
+    private string _manualCrop = "";
+    private bool _keyBackground;
+    private double _keyTolerance = 12;
+    private bool _stripOutline;
+    private double _outlineLuminance = 170;
+    private bool _nearestFilter = true;
+    private double _speedScale = 1;
+    private double _scale;
+    private double _yOffset;
+    private bool _keepRestAndShopAnim;
+
+    /// <summary>总开关。不勾 = 生成结果和以前完全一样（不写任何动画资源 / 运行时代码）。</summary>
+    public bool Enabled { get => _enabled; set { if (Set(ref _enabled, value)) { Raise(nameof(HasAny)); Raise(nameof(Display)); } } }
+
+    /// <summary>待机（循环）。**必须有** —— 其它动作没素材时都退回它。</summary>
+    public string Idle { get => _idle; set => SetPath(ref _idle, value); }
+    /// <summary>攻击（本体 <c>attack</c>，不循环）。</summary>
+    public string Attack { get => _attack; set => SetPath(ref _attack, value); }
+    /// <summary>施法（本体 <c>cast</c>，不循环）。</summary>
+    public string Cast { get => _cast; set => SetPath(ref _cast, value); }
+    /// <summary>受伤（本体 <c>hurt</c>，不循环）。</summary>
+    public string Hurt { get => _hurt; set => SetPath(ref _hurt, value); }
+    /// <summary>死亡（本体 <c>die</c>，播完定格在最后一帧）。</summary>
+    public string Die { get => _die; set => SetPath(ref _die, value); }
+    /// <summary>篝火（本体按章节播 overgrowth_loop / hive_loop / glory_loop）。</summary>
+    public string RestSite { get => _restSite; set => SetPath(ref _restSite, value); }
+    /// <summary>商店（本体 <c>relaxed_loop</c>）。</summary>
+    public string Merchant { get => _merchant; set => SetPath(ref _merchant, value); }
+
+    /// <summary>每帧秒数：0 = 用动图自己的延时（取平均）；填了 = 所有动作都用这个值。</summary>
+    public double FrameSeconds { get => _frameSeconds; set { if (Set(ref _frameSeconds, value)) Raise(nameof(Display)); } }
+
+    /// <summary>
+    /// 按首帧自动对齐（推荐）：以「待机第 0 帧」为基准推一个裁剪框，7 个动作**共用**它
+    /// —— 这样换动作时角色不会跳位置。关掉则每个动作各自按自己的并集裁剪（只适合素材本来就对齐的情况）。
+    /// </summary>
+    public bool AlignByFirstFrame { get => _alignByFirstFrame; set => Set(ref _alignByFirstFrame, value); }
+
+    /// <summary>手动裁剪框 <c>x0,y0,x1,y1</c>（留空 = 自动；x1/y1 是**开区间**）。</summary>
+    public string ManualCrop { get => _manualCrop; set => Set(ref _manualCrop, value ?? ""); }
+
+    /// <summary>抠背景：把纯色底（取边框像素的颜色）变透明。</summary>
+    public bool KeyBackground { get => _keyBackground; set => Set(ref _keyBackground, value); }
+    /// <summary>抠底容差（RGB 距离，默认 12）。</summary>
+    public double KeyTolerance { get => _keyTolerance; set => Set(ref _keyTolerance, value); }
+
+    /// <summary>剥掉最外 1~2 层浅色描边（素材在轮廓外留了一圈不透明的浅色边时用；会吃掉不透明像素）。</summary>
+    public bool StripOutline { get => _stripOutline; set => Set(ref _stripOutline, value); }
+    /// <summary>「浅色」的亮度阈值（默认 170）。</summary>
+    public double OutlineLuminance { get => _outlineLuminance; set => Set(ref _outlineLuminance, value); }
+
+    /// <summary>
+    /// 最近邻过滤（默认开）。素材多是 256 色硬边像素画，而帧图在游戏里会被缩放：
+    /// 线性过滤会混出大量源里不存在的颜色、边缘发糊（参考实现实测 9704 色 vs 256 色）。
+    /// </summary>
+    public bool NearestFilter { get => _nearestFilter; set { if (Set(ref _nearestFilter, value)) Raise(nameof(Display)); } }
+
+    /// <summary>播放速度系数：1 = 动图原速，0.5 = 半速，2 = 双倍速。</summary>
+    public double SpeedScale { get => _speedScale; set { if (Set(ref _speedScale, value)) Raise(nameof(Display)); } }
+
+    /// <summary>缩放：0 = 按「静态立绘高 ÷ 待机内容高」自动算。</summary>
+    public double Scale { get => _scale; set => Set(ref _scale, value); }
+
+    /// <summary>
+    /// Y 偏移：0 = 自动（让「帧内内容底边」落在静态立绘底边所在的位置，也就是脚的位置不变）。
+    /// 注意 0 也是合法的手动值语义里的「自动」；要微调就填非 0。
+    /// </summary>
+    public double YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
+
+    /// <summary>
+    /// 篝火 / 商店里保持专属动画（不切回待机）。默认不勾：篝火和商店会先播你传的专属动画，
+    /// 但本体过一会儿会发一次「回待机」，画面就切回待机动画了（本体默认行为）。
+    /// </summary>
+    public bool KeepRestAndShopAnim { get => _keepRestAndShopAnim; set => Set(ref _keepRestAndShopAnim, value); }
+
+    private void SetPath(ref string field, string? value)
+    {
+        if (!Set(ref field, value ?? "")) return;
+        Raise(nameof(HasAny));
+        Raise(nameof(Slots));
+        Raise(nameof(Display));
+    }
+
+    /// <summary>
+    /// 填了路径的槽位：<c>(本体动画名, GIF 路径)</c>，顺序固定为
+    /// 待机 / 攻击 / 施法 / 受伤 / 死亡 / 篝火 / 商店（生成和界面都按这个顺序）。
+    /// </summary>
+    [JsonIgnore]
+    public IEnumerable<(string Anim, string Path)> Slots
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(Idle)) yield return ("idle_loop", Idle.Trim());
+            if (!string.IsNullOrWhiteSpace(Attack)) yield return ("attack", Attack.Trim());
+            if (!string.IsNullOrWhiteSpace(Cast)) yield return ("cast", Cast.Trim());
+            if (!string.IsNullOrWhiteSpace(Hurt)) yield return ("hurt", Hurt.Trim());
+            if (!string.IsNullOrWhiteSpace(Die)) yield return ("die", Die.Trim());
+            if (!string.IsNullOrWhiteSpace(RestSite)) yield return ("overgrowth_loop", RestSite.Trim());
+            if (!string.IsNullOrWhiteSpace(Merchant)) yield return ("relaxed_loop", Merchant.Trim());
+        }
+    }
+
+    /// <summary>有没有素材（**只看待机**：其它动作没素材都会退回待机，待机为空等于没做动画）。</summary>
+    [JsonIgnore]
+    public bool HasAny => !string.IsNullOrWhiteSpace(Idle);
+
+    /// <summary>界面列表 / 存档摘要里那一句话。</summary>
+    [JsonIgnore]
+    public string Display => !Enabled
+        ? "未启用"
+        : !HasAny
+            ? "已启用但没上传待机"
+            : $"{Slots.Count()} 个动作 · {(NearestFilter ? "最近邻" : "线性")} · {SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}×";
 }
 
 public sealed class PathsSpec

@@ -273,6 +273,31 @@
                                    Text="数值 0 = 打出这张牌后，本回合结束时再自动打出它一次；填 1 以上 = 先按「选牌方式 / 从哪里选牌」挑好 N 张，本回合结束时逐张自动打出它们（不弹选牌界面）。注意：填 0 时只有卡牌能用「这张牌自己」"/>
                     </StackPanel>
 
+                    <!-- 刮削专用：抽 N 张之后「对其中哪些牌动手」（条件）+「做什么」（操作）。
+                         条件和操作都可选，默认「非 0 费 + 丢弃」= 本体「刮削 Scrape」的老行为。
+                         条件下拉的候选是 MainWindow.ScrapeConds（= EffectCatalog.ScrapeCondsFor(_profile)：
+                         非 0 费 / 不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 每个自定义关键词一组）。 -->
+                    <Grid Visibility="{Binding ShowScrapeOptions, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="其中符合条件的牌" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding ScrapeConds, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding ScrapeCond}"
+                                  ToolTip="抽上来的 N 张牌里，**哪些**会被下面的操作处理。「非 0 费」= 本体「刮削 Scrape」的判据（要花能量的牌，0 费牌留在手上）；「不限」= 抽到的每一张都动手；攻击 / 技能 / 能力按牌的类型筛；诅咒 / 状态按稀有度筛；「自定义关键词：…」那些 = 把某个自定义关键词当成一套**卡的组**（这一组牌在卡牌页勾关键词就能改，生成时会查成显式判据）。"/>
+                    </Grid>
+                    <Grid Visibility="{Binding ShowScrapeOptions, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="执行" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding ScrapeOps, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding ScrapeOp}"
+                                  ToolTip="对那些牌做什么：丢弃（CardCmd.Discard，进弃牌堆、洗牌后会回来，奇巧这类钩子照常触发）/ 消耗掉（CardCmd.Exhaust，本场战斗不再回来）/ 升级（CardCmd.Upgrade，战斗里的升级只影响本场战斗）。"/>
+                    </Grid>
+
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->
