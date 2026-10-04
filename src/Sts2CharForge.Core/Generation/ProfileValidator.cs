@@ -166,24 +166,25 @@ public static class ProfileValidator
                     // 复制 / 重放 / 回合结束时自动打出，以及「斩杀」条件：都要「打出某张牌」的上下文，
                     // 状态触发器里没有 —— 生成时会留一行「已忽略」，这里也说清楚（不静默丢）。
                     if (e.Kind is "CopyCard" or "ReplayCard" or "TurnEndPlay")
+                        // 为什么这一条**仍然要拦**：这三个都要「打出这张牌、此刻弹选牌界面」的上下文
+                        //（CopyCard 要原牌在战斗牌堆里 + 选牌界面、ReplayCard 要现在就把重放次数写上去、
+                        // TurnEndPlay 要把牌挂到本回合结束那一刻的钩子上）—— 状态触发器里只有「模型自己的钩子」，
+                        // 没有「打出的那张牌」，CustomPowerGen.EmitEffect 对这三个只写一行「已忽略」。
+                        // 所以它拦的是「生成端真的什么都不做」的组合，和需求 ⑥ 放开的
+                        //「按范围随机 / 生成出来的卡怎么处理 / 范围界定」是两回事。
                         issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
                             + "在**自定义状态**里用不了（它要「打出这张牌时选牌」的上下文）—— 生成时会被忽略，"
                             + "请把它放到卡牌 / 遗物 / 药水上。"));
                     if (e.Condition is { Kind: "Fatal" })
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条用了「斩杀」条件，但它只能用在**卡牌**上 —— "
                             + "请把这条效果放到攻击牌上（判的是「这一次攻击有没有把目标打死」）。"));
-                    // 「按范围随机 / 生成出来的卡怎么处理」：状态触发器里走的是另一套生成链（base.Owner 是 Creature），
-                    // 只支持「指定卡」那种写法 —— 说清楚，别让用户以为配了没生效（用户在自定义状态里配了会被静默忽略）
-                    if (e.UsesSpawnOptions && (e.IsSpawnRandom || e.HasSpawnModifier))
-                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
-                            + "用了「按范围随机」或「生成出来的卡怎么处理」，但**自定义状态的触发器里不支持**这两类设置 —— "
-                            + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
-                    // 「范围界定」（需求 ③）同理：这条链上拿不到角色配置（自定义关键词那一组查不出来）→ 直接拦住
-                    if (e.HasCardScope)
-                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
-                            + $"用了「范围界定 = {EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，"
-                            + "但**自定义状态的触发器里不支持**这一项（拿不到角色配置，自定义关键词那一组查不出来）—— "
-                            + "请改用卡牌 / 遗物 / 药水，或者把范围界定改回「不限」。"));
+                    // 需求 ⑥：这里原本还有两条**错误**级检查，拦的是「按范围随机 / 生成出来的卡怎么处理」与「范围界定」。
+                    // 当时的理由是那条链（CustomPowerGen.EmitEffect）手写 AddToCombatAndPreview、base.Owner 是 Creature，
+                    // 拿不到玩家那一侧的对象与角色配置。现在那条链改成复用 CSharpCodeGen.EmitGenerateCard
+                    //（传 base.Owner.Player + profile），三样都能做了 —— 两条检查都撤掉，不在这里再报错。
+                    // 也**不需要**补「自定义关键词那一组是空的」检查：上面通用效果校验里的
+                    //「范围限定 / 范围界定里的自定义关键词那一组」那段是按效果本身判的（spawnScope || cardScope），
+                    // 状态触发器同样会走到那一段，空组照样报错。
                     if (e.Kind is "ApplyPower" or "TempPower" && string.IsNullOrWhiteSpace(e.PowerId))
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」还没选状态。"));
                     else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
@@ -1473,6 +1474,12 @@ public static class ProfileValidator
                     + "（本体 CardModel.BaseReplayCount：重放 N 次 = 打出去时连着打 N+1 次）。"
                     + "本体「转化 Transfigure / 隐藏宝石 HiddenGem / 剑圣 SwordSagePower」都是这一句。"
                     + "**只能给别的牌**加 —— 自己这张牌的重放次数在本体里是 OnPlay 之前就算好的，改它没有作用。"));
+                // 下面这条 ctx == "Power" 分支**永远不生效**：ValidateEffects 只在卡牌 / 诅咒 / 遗物 / 药水
+                // 四处被调用（ctx 传的是 Card / Curse / Relic / Potion），自定义状态触发器走的是上面那条
+                // PowerTriggers 专用校验（ValidateCustomPowers → 按 kind 判）。留着是为了和另外两处同款写法一致，
+                // 也让「假如以后有人把状态触发器接进这个函数」时不会漏掉这条拦住。
+                // 为什么这条**仍然要拦**：重放卡牌要「现在就把 BaseReplayCount 写上去」的牌上下文，
+                // CustomPowerGen.EmitEffect 对 ReplayCard 只写一行「已忽略」。
                 if (ctx == "Power")
                     issues.Add(new("警告", $"{owner} 的「重放卡牌」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌 / 遗物 / 药水上。"));
             }
@@ -1499,6 +1506,9 @@ public static class ProfileValidator
                         + "生成的 <角色>ForgeTurnEndPlayPower 挂在 BeforeSideTurnEnd —— 那个时机在本体「结算手牌」之前，"
                         + "所以自动打出的牌会正常离开手牌。"));
                 }
+                // 同上：ctx == "Power" 在这条函数里到不了（状态触发器有自己的校验）。
+                // 为什么这条**仍然要拦**：TurnEndPlay 要把选好的牌挂到「本回合结束那一刻」的钩子上，
+                // 状态里没有「打出的那张牌」这个上下文，CustomPowerGen.EmitEffect 只写一行「已忽略」。
                 if (ctx == "Power")
                     issues.Add(new("警告", $"{owner} 的「回合结束时自动打出」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌 / 遗物 / 药水上。"));
             }
@@ -1523,6 +1533,9 @@ public static class ProfileValidator
                 if (ctx == "Relic")
                     issues.Add(new("警告", $"{owner} 的「复制卡牌」在**遗物**上用不了（遗物没有「战斗里选牌」的时刻），"
                         + "生成时会被忽略 —— 请把它放到卡牌或药水上。"));
+                // 同上：ctx == "Power" 在这条函数里到不了（状态触发器有自己的校验）。
+                // 为什么这条**仍然要拦**：复制卡牌要原牌在战斗牌堆里 + 一个「选哪张 / 复制几份」的选牌流程，
+                // 状态钩子里没有，CustomPowerGen.EmitEffect 对 CopyCard 只写一行「已忽略」。
                 if (ctx == "Power")
                     issues.Add(new("警告", $"{owner} 的「复制卡牌」在**自定义状态**里用不了，生成时会被忽略 —— 请把它放到卡牌或药水上。"));
                 if (e.SelectPile == "Deck" || e.SelectPile is not ("Hand" or "Draw" or "Discard" or "Exhaust"))
@@ -1623,19 +1636,12 @@ public static class ProfileValidator
                         + "建议把「作用对象」改成「指定敌人」。"));
             }
 
-            // 「按范围随机 / 生成出来的卡的附加处理」：自定义状态的触发器里走的是另一套 emitter
-            // （那里的 base.Owner 是 Creature），只支持「指定卡」那种写法 —— 说清楚，别让用户以为配了没生效
-            if (ctx == "Power" && e.UsesSpawnOptions && (e.IsSpawnRandom || e.HasSpawnModifier))
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「按范围随机」或「生成出来的卡怎么处理」，"
-                    + "但**自定义状态的触发器里不支持**这两类设置（那里的生成链拿不到玩家那一侧的对象）—— "
-                    + "请改用卡牌 / 遗物 / 药水，或者把这两项关掉、用「指定卡」。"));
-            // 「范围界定」（需求 ③）同理：状态触发器那条链上没有「角色配置」（自定义关键词那一组查不出来），
-            // 所以这里也直接拦住（和上面「按范围随机」同一条规矩）。
-            if (ctx == "Power" && e.HasCardScope)
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」用了「范围界定 = {EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，"
-                    + "但**自定义状态的触发器里不支持**这一项（拿不到角色配置，自定义关键词那一组查不出来）—— "
-                    + "请改用卡牌 / 遗物 / 药水，或者把范围界定改回「不限」。"));
-
+            // 需求 ⑥：这里原本有两条 ctx == "Power" 的**错误**级检查（「按范围随机 / 生成出来的卡怎么处理」与「范围界定」）。
+            // 撤掉的原因：那张拦网当时是基于「状态触发器链拿不到玩家那一侧的对象 / 角色配置」，
+            // 现在 CustomPowerGen.EmitEffect 的 GenerateCard 改成复用 CSharpCodeGen.EmitGenerateCard
+            //（传 playerExpr: "base.Owner.Player" 与 profile），三样都能做了。
+            // 顺带说明这两条本来也到不了：ValidateEffects 只被卡牌 / 诅咒 / 遗物 / 药水调用，ctx 永远不会是 "Power"
+            // —— 用户真正看到的那两条报错在 ValidateCustomPowers 里（同一个文件，现已一起撤掉）。
             if (e.Kind == "BoostCard")
             {
                 if (string.IsNullOrWhiteSpace(e.SpawnCardId))

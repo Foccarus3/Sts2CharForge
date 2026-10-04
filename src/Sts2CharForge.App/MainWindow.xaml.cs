@@ -10729,18 +10729,85 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				SpawnFilters.Count == 6 && SpawnPicks.Count == 2
 				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" }),
 				string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
-			Check("自定义状态的触发器里不支持「按范围随机 / 附加处理」（那边的生成链不一样）→ 报错拦住",
-				ProfileValidator.Validate(new CharacterProfile
+			// 需求 ⑥：自定义状态的触发器也支持「按范围随机 / 生成出来的卡的附加处理 / 范围界定」
+			// —— 那条链（CustomPowerGen.EmitEffect 的 GenerateCard）改成复用卡牌那条链的
+			// CSharpCodeGen.EmitGenerateCard（playerExpr: base.Owner.Player + profile），所以这里
+			// 既检查「不再报错」，也检查生成出来的**状态源码**用对了玩家表达式（base.Owner 在状态钩子里是 Creature，
+			// 写错了生成的工程会 CS1061 / CS1929，编译不过）。
+			CharacterProfile pwProbe = ProfileFactory.Sample();
+			pwProbe.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命运", Description = "命运组" });
+			pwProbe.Cards.Add(new CardSpec
+			{
+				Name = "自检命运牌", ClassName = "UiCheckPwFate", CardType = "Attack", Rarity = "Common", Cost = 1,
+				InCardPool = true, KeywordIds = { "FATE" },
+				Effects = { new EffectSpec { Kind = "Damage", Amount = 8m, TargetSide = "Enemy" } },
+			});
+			var pwPower = new CustomPowerSpec { Name = "自检范围状态", ClassName = "UiCheckPwRangePower" };
+			pwPower.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "TurnStart",
+				Effects =
 				{
-					CustomPowers =
+					new EffectSpec
 					{
-						new CustomPowerSpec
-						{
-							Name = "自检范围状态",
-							Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack" } } } },
-						},
+						Kind = "GenerateCard", Amount = 2m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand",
+						SpawnUpgraded = true, SpawnFree = true, SpawnKeyword = "Exhaust",
 					},
-				}).Any((ValidationIssue i) => i.IsError && i.Message.Contains("按范围随机")), "拦住了");
+					new EffectSpec
+					{
+						Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Keyword:FATE",
+						SpawnChoice = 3m, SpawnTo = "Hand", SpawnUpgradedThisTurn = true, SpawnKeyword = "FATE",
+					},
+				},
+			});
+			pwProbe.CustomPowers.Add(pwPower);
+			Check("校验器：自定义状态触发器 +「按范围随机 / 附加处理 / 范围界定」不再报错（需求 ⑥ 放开了这两条）",
+				!ProfileValidator.Validate(pwProbe).Any((ValidationIssue i) => i.IsError
+					&& (i.Message.Contains("按范围随机") || i.Message.Contains("范围界定"))),
+				string.Join(" / ", ProfileValidator.Validate(pwProbe).Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message)));
+			string pwSrc = CustomPowerGen.Source(pwProbe, pwPower, 0);
+			Check("状态触发器里的「按范围随机」用玩家那一侧的对象取卡池 / 抽牌（CardFactory.GetDistinctForCombat(base.Owner.Player, …)）",
+				pwSrc.Contains("CardFactory.GetDistinctForCombat(base.Owner.Player, __genPool, 2, base.Owner.Player.RunState.Rng.CombatCardGeneration)"), "对");
+			Check("状态触发器里的「附加处理 / 需求⑦ 生成出来的卡加关键词」照旧复用同一份 EmitSpawnModifiers / EmitSpawnKeyword",
+				pwSrc.Contains("CardCmd.Upgrade(__gen);") && pwSrc.Contains("__gen.SetToFreeThisCombat();")
+				&& pwSrc.Contains("__gen.AddKeyword(CardKeyword.Exhaust);"), "对");
+			Check("状态触发器里的「自定义关键词那一组」也能查 profile：候选表按生成期列出来（不再只支持「指定卡」）",
+				pwSrc.Contains("ModelDb.Card<UiCheckPwFate>()") && pwSrc.Contains("__picked.AddGivenCustomKeyword(\"FATE\");"), "对");
+			Check("状态触发器里默认档（指定卡、不加附加处理）生成的文本与旧版一致：仍走 AddToCombatAndPreview + base.Owner",
+				CustomPowerGen.Source(pwProbe, new CustomPowerSpec
+				{
+					Name = "自检默认档状态", ClassName = "UiCheckPwPlainPower",
+					Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Hand" } } } },
+				}, 0).Contains("await CardPileCmd.AddToCombatAndPreview<Shiv>(base.Owner, PileType.Hand, 1, base.Owner.Player);"), "对");
+			// （界面）自定义状态那一档也能看到这三样吗？**先核实**：那几行的显隐绑的是
+			// UsesSpawnOptions / ShowSpawnFilter / UsesSpawnOptions（附加处理那几行），判据只看效果种类（Kind），
+			// 和 ctx 无关；App.xaml 里自定义状态的 EffectEditorPower 模板也是 ContentTemplate=EffectCommon
+			// —— 所以不用补界面。这里把「真的显示出来了」钉住：选中「自定义状态」页的状态 → 触发时机 →
+			// 效果种类改成「生成卡牌 + 按范围随机」，看那几行在不在。
+			SelectTabRoot("自定义状态");
+			if (CustomPowerList.Items.Count == 0) OnAddCustomPower(this, new RoutedEventArgs());
+			// 上面 #9 那段已经把选中项改成别的了（所以 CustomPowerList.SelectedItem 可能是 null）——
+			// 这里自己按名字选一个回来，保证下面那几条真的跑到。
+			CustomPowerList.SelectedItem = CustomPowerList.Items.OfType<CustomPowerSpec>()
+				.FirstOrDefault((CustomPowerSpec s) => s.Name == "自检范围状态") ?? CustomPowerList.Items[0];
+			if (CustomPowerList.SelectedItem is CustomPowerSpec uiPower)
+			{
+				var uiTrigger = new PowerTriggerSpec { Kind = "TurnStart" };
+				uiTrigger.Effects.Clear();
+				uiTrigger.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack" });
+				uiPower.Triggers.Clear();
+				uiPower.Triggers.Add(uiTrigger);
+				CustomTriggerList.SelectedItem = uiTrigger;
+				UpdateLayout();
+				List<Grid> pwGrids = new List<Grid>();
+				CollectGrids(SelectTabRoot("自定义状态"), pwGrids);
+				Check("（界面）自定义状态触发器里能看到「取卡方式（生成 / 变化）」那一行（绑 UsesSpawnOptions）",
+					pwGrids.Any((Grid g) => BindingOperations.GetBinding(g, UIElement.VisibilityProperty)?.Path?.Path == "UsesSpawnOptions"), "在");
+				Check("（界面）自定义状态触发器里能看到「范围限定（随机出什么）」那一行（绑 ShowSpawnFilter）",
+					pwGrids.Any((Grid g) => BindingOperations.GetBinding(g, UIElement.VisibilityProperty)?.Path?.Path == "ShowSpawnFilter"), "在");
+				Check("（界面）自定义状态触发器里也能看到「生成 / 变化出来的卡：加上关键词」那一行（和卡牌页同一个模板）",
+					TextsIn(SelectTabRoot("自定义状态")).Any(t => t.StartsWith("生成 / 变化出来的卡：加上关键词", StringComparison.Ordinal)), "在");
+			}
 
 			// ⑦ 生成 / 变化出来的卡「加上关键词」（需求 ⑦：像「是否升级」那样给个选项）
 			Check("（界面）「生成 / 变化出来的卡：加上关键词」那一行在卡牌页的效果编辑区里",
@@ -14598,18 +14665,33 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				csNotes.Any((ValidationIssue x) => !x.IsError && x.Message.Contains("范围界定") && x.Message.Contains("取牌方式 = 随机")
 					&& x.Message.Contains("不会弹空选牌界面")),
 				string.Join(" ｜ ", csNotes.Where((ValidationIssue x) => x.Message.Contains("范围界定")).Select((ValidationIssue x) => x.Message)));
-			Check("「范围界定」用在自定义状态的触发器里 → 报错拦住（那条链上没有角色配置）",
-				ProfileValidator.Validate(new CharacterProfile
-				{
-					CustomPowers =
-					{
-						new CustomPowerSpec
-						{
-							Name = "自检范围状态",
-							Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain", SpawnFilter = "Attack" } } } },
-						},
-					},
-				}).Any((ValidationIssue x) => x.IsError && x.Message.Contains("范围界定")), "拦住了");
+			// 需求 ⑥ 以前这条是「范围界定用在自定义状态触发器里 → 报错拦住」。现在放开了，
+			// 所以这里改成钉住**两条边界**：
+			//   · 「生成卡牌 + 范围限定」在状态触发器里能配（不再报错）—— 详查见上面「⑥ 状态触发器也支持」那一段；
+			//   · 但「给予卡牌关键词」这种**本身就不支持**放进状态触发器的效果，照样拦住（拦的是效果种类，不是范围）。
+			// 用 ProfileFactory.Sample() 当底（空存档会先被「卡池至少 3 张」这类通用校验拦下，测不到我们关心的那两条）。
+			CharacterProfile scopeProbe = ProfileFactory.Sample();
+			var scopePowerOkSpec = new CustomPowerSpec
+			{
+				Name = "自检范围状态", Enabled = true,
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnTo = "Hand" } } } },
+			};
+			scopeProbe.CustomPowers.Add(scopePowerOkSpec);
+			// 只断言「没有和范围 / 按范围随机有关的那条错误」：ProfileFactory.Sample() 自带的路径 / 美术类错误
+			// 和这一条无关（真实回归由 forge --build 探针兜底：真被拦下来的话校验直接中止生成）。
+			var scopePowerOk = ProfileValidator.Validate(scopeProbe);
+			Check("「范围界定 / 按范围随机」用在自定义状态的触发器里 → 不再报错（需求 ⑥ 放开）",
+				!scopePowerOk.Any((ValidationIssue x) => x.IsError
+					&& (x.Message.Contains("按范围随机") || x.Message.Contains("范围界定"))),
+				string.Join(" ｜ ", scopePowerOk.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+			CharacterProfile scopeProbe2 = ProfileFactory.Sample();
+			scopeProbe2.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检范围状态", Enabled = true,
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain", SpawnFilter = "Attack" } } } },
+			});
+			Check("但「给予卡牌关键词」（本就不支持放进状态触发器）照样拦住 —— 拦的是效果种类，不是范围",
+				ProfileValidator.Validate(scopeProbe2).Any((ValidationIssue x) => x.IsError && x.Message.Contains("卡牌上下文")), "拦住了");
 			Check("用了范围界定但那条效果种类不支持（例如「造成伤害」）→ 给一句提示，别让人以为配了会有用",
 				ProfileValidator.Validate(new CharacterProfile
 				{
@@ -15475,6 +15557,21 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				into.Add(item);
 			}
 			CollectTextBlocks(child, into);
+		}
+	}
+
+	/// <summary>自检用：把一棵可视化树里的 Grid 全收出来（需求 ⑥ 查「那几行到底有没有显示出来」）。</summary>
+	private static void CollectGrids(DependencyObject root, List<Grid> into)
+	{
+		int childrenCount = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < childrenCount; i++)
+		{
+			DependencyObject child = VisualTreeHelper.GetChild(root, i);
+			if (child is Grid item)
+			{
+				into.Add(item);
+			}
+			CollectGrids(child, into);
 		}
 	}
 

@@ -2586,53 +2586,79 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   · 「按范围随机 + 多选1（候选 M 张，M &gt; 1）」→ 先随机抽 M 张当候选，玩家**选一张**生成
     ///     （本体「发现 Discovery」就是这条路的原型：3 张里选 1 张）。
     /// 生成出来的卡还能带几个附加处理（升级 / 免费 / 仅本回合升级 / 仅本回合免费）—— 见 EmitSpawnModifiers。
+    ///
+    /// <paramref name="playerExpr"/> = **玩家那一侧**的表达式。卡牌 / 遗物 / 药水这三条链里
+    /// <c>base.Owner</c> 本身就是 Player，所以默认值就是它（生成出来的文本与旧版逐字一致）；
+    /// 需求 ⑥ 的自定义状态触发器链上 <c>base.Owner</c> 是 <c>Creature</c>，调用方传 <c>base.Owner.Player</c>。
+    /// 这里**不复制第二份判据**：范围限定（<see cref="SpawnPoolExpr"/>）、附加处理（<see cref="EmitSpawnModifiers"/>）、
+    /// 范围界定（<see cref="ScopeCondForFilter"/>）全都是同一批函数，只是「上下文表达式」不同。
+    /// 需求 ⑥ 把它开成 internal 就是为了让 <c>CustomPowerGen</c> 那条链直接复用（而不是抄一份）。
+    ///
+    /// <paramref name="withMarker"/> / <paramref name="withComment"/> 只服务一件事：让**默认档逐字一致**。
+    /// 「自定义状态的触发器」那条链原本是手写的一行 <c>AddToCombatAndPreview</c>，既没有 <c>CET:SpawnPick=…</c>
+    /// 标记行、也没有「生成 N 张…」那句注释；现在换成复用这个函数，就必须把这两处压回原样
+    /// （否则用户一个选项都不改、重新生成，代码文本也会变）。那条链上标记里读出来的 <c>SpawnPick</c> 默认就是
+    /// <c>Fixed</c>、其余字段默认就是 0/空 —— 不写不影响回读，所以只在真的用上「按范围随机 / 附加处理 /
+    /// 范围界定」时才写标记（那几样没有标记就回读不出来）。
+    /// 卡牌 / 遗物 / 药水三条链一律用默认值（true / true），文本与旧版逐字一致。
+    ///
+    /// <paramref name="playerArg"/> = 只在那一条 <c>AddToCombatAndPreview</c> 里传的「玩家」实参。
+    /// 卡牌 / 遗物 / 药水那三条链原来写的是 <c>base.Owner</c>；自定义状态那条链原来写的是 <c>base.Owner.Player</c>
+    /// （两种写法指向同一个 Player，只是文本不同）—— 为了默认档逐字一致才留这个参数。
+    /// 「仅本回合升级」那个 Power 的 Apply 实参 = <paramref name="tempUpSource"/>：
+    /// 卡牌那几条链旧写法是 <c>this</c>、遗物 / 药水 / 自定义状态是 <c>null</c>（那几个 context 里没有「这张牌」）。
+    /// 为了默认档逐字一致，这个实参由调用方按链给。
     /// </summary>
-    private static void EmitGenerateCard(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
-        string cardSource = "this")
+    internal static void EmitGenerateCard(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
+        string tempUpSource = "this", string playerExpr = "base.Owner", bool withMarker = true,
+        string? creatureExpr = null, bool withComment = true, string playerArg = "base.Owner")
     {
+        // 玩家那个 Creature 的表达式：卡牌 / 遗物 / 药水那三条链里 base.Owner 就是 Player，所以是 owner.Creature。
+        // 自定义状态那条链的默认档传的 playerExpr 直接就是 Creature（base.Owner），这时调用方会显式给 creatureExpr。
+        creatureExpr ??= playerExpr + ".Creature";
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string pile = e.SpawnToPile;
         string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
-        w.Line(SpawnMarker(e));
+        if (withMarker) w.Line(SpawnMarker(e));
         if (!e.IsSpawnRandom)
         {
             string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
-            w.Line($"// 生成 {n} 张 {card} 放进{PileZh(pile)}");
+            if (withComment) w.Line($"// 生成 {n} 张 {card} 放进{PileZh(pile)}");
             if (!e.HasSpawnModifier)
             {
-                w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner.Creature, PileType.{pile}, {n}, base.Owner);");
+                w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>({creatureExpr}, PileType.{pile}, {n}, {playerArg});");
                 return;
             }
             // 要改「生成出来的卡」就得自己 CreateCard：AddToCombatAndPreview 内部拿不到那些实例
-            EmitTempUpgradePowerApply(w, tempUp, cardSource);
+            EmitTempUpgradePowerApply(w, tempUp, tempUpSource, creatureExpr);
             w.Open($"for (int __genIdx = 0; __genIdx < {n}; __genIdx++)");
-            w.Line($"CardModel __gen = base.Owner.Creature.CombatState.CreateCard(ModelDb.Card<{card}>(), base.Owner);");
-            EmitSpawnModifiers(w, e, "__gen", tempUp, p);
-            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
+            w.Line($"CardModel __gen = {creatureExpr}.CombatState.CreateCard(ModelDb.Card<{card}>(), {playerExpr});");
+            EmitSpawnModifiers(w, e, "__gen", tempUp, p, playerExpr, creatureExpr);
+            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, {playerExpr});");
             w.Close();
             return;
         }
 
-        string pool = SpawnPoolExpr(e, p);
+        string pool = SpawnPoolExpr(e, p, playerExpr);
         // 多选1：先随机抽 M 张候选，玩家选 1 张（生成 1 张 —— 「数值」这时是候选张数，不是生成张数）
         if (e.SpawnChoice > 1m)
         {
             int m = Math.Max(2, Math.Min(60, (int)e.SpawnChoice));
             w.Line($"// 按范围随机：先从「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」里抽 {m} 张当候选，玩家选 1 张放进{PileZh(pile)}");
             w.Line($"var __genPool = {pool};");
-            w.Line($"List<CardModel> __candidates = MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat(base.Owner, __genPool, {m}, base.Owner.RunState.Rng.CombatCardGeneration).ToList();");
+            w.Line($"List<CardModel> __candidates = MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {m}, {playerExpr}.RunState.Rng.CombatCardGeneration).ToList();");
             // 池子比 M 小的时候会少给几张：本体「发现」在这一步是直接 ReportSoftlock 的，
             // 这里改成「有就选、一张都没有就整条跳过」（下面那个 if 就是干这个的），免得把牌卡死。
             w.Open("if (__candidates.Count > 0)");
-            EmitTempUpgradePowerApply(w, tempUp, cardSource);
+            EmitTempUpgradePowerApply(w, tempUp, tempUpSource, creatureExpr);
             // 本体 CardSelectCmd.FromChooseACardScreen 在候选 > 3 时**直接抛 ArgumentException**，
             // 所以 > 3 走「简单网格」选牌界面（本体的「抉择悖论 ChoicesParadox」用的就是它，正好是「N 张里选 1 张」）。
             w.Line(m <= 3
-                ? "CardModel? __picked = await CardSelectCmd.FromChooseACardScreen(choiceContext, __candidates, base.Owner, canSkip: false);"
-                : "CardModel? __picked = (await CardSelectCmd.FromSimpleGrid(choiceContext, __candidates, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 1))).FirstOrDefault();");
+                ? $"CardModel? __picked = await CardSelectCmd.FromChooseACardScreen(choiceContext, __candidates, {playerExpr}, canSkip: false);"
+                : $"CardModel? __picked = (await CardSelectCmd.FromSimpleGrid(choiceContext, __candidates, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, 1))).FirstOrDefault();");
             w.Open("if (__picked is not null)");
-            EmitSpawnModifiers(w, e, "__picked", tempUp, p);
-            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__picked, PileType.{pile}, base.Owner);");
+            EmitSpawnModifiers(w, e, "__picked", tempUp, p, playerExpr, creatureExpr);
+            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__picked, PileType.{pile}, {playerExpr});");
             w.Close();
             w.Close();
             return;
@@ -2641,22 +2667,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 按范围随机：从卡池里抽 N 张（不重复）
         w.Line($"// 按范围随机生成 {n} 张「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」放进{PileZh(pile)}");
         w.Line($"var __genPool = {pool};");
-        EmitTempUpgradePowerApply(w, tempUp, cardSource);
-        w.Line($"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat(base.Owner, __genPool, {n}, base.Owner.RunState.Rng.CombatCardGeneration))");
+        EmitTempUpgradePowerApply(w, tempUp, tempUpSource, creatureExpr);
+        w.Line($"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {n}, {playerExpr}.RunState.Rng.CombatCardGeneration))");
         w.Open("");
-        EmitSpawnModifiers(w, e, "__gen", tempUp, p);
-        w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, base.Owner);");
+        EmitSpawnModifiers(w, e, "__gen", tempUp, p, playerExpr, creatureExpr);
+        w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, {playerExpr});");
         w.Close();
     }
 
     /// <summary>
     /// 勾了「仅在此回合升级」时，先挂上生成的那个「回合结束降回来」的状态（只挂一次，生成出来的卡都交给它）。
     /// </summary>
-    private static void EmitTempUpgradePowerApply(CodeWriter w, string? tempUpVar, string cardSource)
+    private static void EmitTempUpgradePowerApply(CodeWriter w, string? tempUpVar, string cardSource,
+        string creatureExpr = "base.Owner.Creature")
     {
         if (tempUpVar is null) return;
+        // 最后那个实参（source）卡牌那几条链是 this、遗物 / 药水 / 自定义状态是 null，
+        // 所以由调用方给（见 EmitGenerateCard 的 tempUpSource 说明）。
         w.Line("// 仅本回合升级：挂一个「回合结束时把它们降回来」的状态（下面的 Track 负责升级并记住是哪几张）");
-        w.Line($"var {tempUpVar} = await PowerCmd.Apply<{Naming.AmbientTempUpgradePowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, {cardSource});");
+        w.Line($"var {tempUpVar} = await PowerCmd.Apply<{Naming.AmbientTempUpgradePowerClass}>(choiceContext, {creatureExpr}, 1m, {creatureExpr}, {cardSource});");
     }
 
     /// <summary>
@@ -2669,9 +2698,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   · 仅本回合升级 → 本体**没有**这种 API（只有视觉预览 CardUpgradePreviewType），
     ///     所以升级之后把这张牌交给生成的 <c>&lt;角色&gt;ForgeTempUpgradePower</c>，
     ///     它在回合结束时把「这次真的升上去的那几张」降回来（本来就是升级过的牌不碰）。
+    ///
+    /// <paramref name="playerExpr"/> / <paramref name="creatureExpr"/>：见 <see cref="EmitSpawnKeyword"/>。
     /// </summary>
     internal static void EmitSpawnModifiers(CodeWriter w, EffectSpec e, string cardVar, string? tempUpVar = null,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature")
     {
         if (e.SpawnUpgradedThisTurn)
         {
@@ -2686,7 +2717,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (e.SpawnFree) w.Line($"{cardVar}.SetToFreeThisCombat();");
         if (e.SpawnFreeThisTurn) w.Line($"{cardVar}.SetToFreeThisTurn();");
         // 需求 ⑦：给生成 / 变化出来的这张卡加上关键词（没选就一行都不写）
-        EmitSpawnKeyword(w, e, cardVar, p);
+        EmitSpawnKeyword(w, e, cardVar, p, playerExpr, creatureExpr);
     }
 
     /// <summary>
@@ -2698,8 +2729,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 和「给予」只有两点不同：
     ///   · 作用对象就是刚生成出来的那张卡（调用方把变量名传进来）；
     ///   · **没有「临时」档** —— 生成出来的本来就是新卡，回合结束再摘掉没有意义，所以固定按永久关键词生成。
+    ///
+    /// <paramref name="playerExpr"/> / <paramref name="creatureExpr"/> = 玩家 / 玩家那个 Creature 的表达式：
+    /// 卡牌 / 遗物 / 药水那三条链里 <c>base.Owner</c> 就是 Player，默认值即它们（逐字不变）；
+    /// 需求 ⑥ 的自定义状态触发器链上 <c>base.Owner</c> 是 Creature，调用方传 <c>base.Owner.Player</c> + <c>base.Owner</c>。
+    /// （这两个表达式只在「临时关键词」那条分支里真的用到，而需求 ⑦ 固定永久，所以那边用不上。）
     /// </summary>
-    internal static void EmitSpawnKeyword(CodeWriter w, EffectSpec e, string cardVar, CharacterProfile? p = null)
+    internal static void EmitSpawnKeyword(CodeWriter w, EffectSpec e, string cardVar, CharacterProfile? p = null,
+        string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature")
     {
         string raw = (e.SpawnKeyword ?? "").Trim();
         if (raw.Length == 0) return;   // 默认档：一个字符都不写（生成代码与旧版逐字一致）
@@ -2712,7 +2749,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
         w.Line($"// 生成出来的卡带上关键词：{(kw.Custom ? "自定义关键词 " + kw.Key : kw.Enum)}");
-        EmitGiveKeywordTo(w, e, cardVar, "base.Owner.Creature", "this", kw.Custom, kw.Enum, kw.Key, tempOverride: false);
+        EmitGiveKeywordTo(w, e, cardVar, creatureExpr, "this", kw.Custom, kw.Enum, kw.Key, tempOverride: false);
     }
 
     /// <summary>
@@ -5230,7 +5267,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "GenerateCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，生成卡牌无法实现）"); break; }
-                EmitGenerateCard(w, p, e, cardSource: "null");
+                EmitGenerateCard(w, p, e, tempUpSource: "null");
                 break;
 
             case "ExhaustCard":
@@ -6345,7 +6382,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "GenerateCard":
-                EmitGenerateCard(w, p, e, cardSource: "null");
+                EmitGenerateCard(w, p, e, tempUpSource: "null");
                 break;
 
             case "ExhaustCard":

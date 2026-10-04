@@ -503,13 +503,29 @@ public static class CustomPowerGen
                 break;
 
             case "GenerateCard":
+                // 需求 ⑥：这里**不再**手写 AddToCombatAndPreview，而是把卡牌那条链的 EmitGenerateCard 拿来复用 ——
+                // 「按范围随机（含自定义关键词那一组）」「生成出来的卡的附加处理（升级 / 免费 / 本回合升级 /
+                // 本回合免费 / 需求⑦ 的带关键词）」全都只有一份实现，这里只把「上下文表达式」换掉。
+                //
+                // 为什么分两支：**默认档必须逐字一致**。老代码在「指定卡、不加任何附加处理」时写的是
+                //   await CardPileCmd.AddToCombatAndPreview<卡>(base.Owner, PileType.X, N, base.Owner.Player);
+                // 而 EmitGenerateCard 统一写 (玩家.Creature, …)。状态钩子里 base.Owner 是 Creature、本身就是「自己」，
+                // 所以默认档照样传 base.Owner（文本与旧版一致、也不写 CET:SpawnPick 标记行、不写那句生成注释）；
+                // 只有真的用上「按范围随机 / 附加处理 / 范围界定」时才换成 base.Owner.Player
+                //（那些都要 Player 与 profile：卡池 / RunState.Rng / 自定义关键词分组）。
                 {
-                    string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
-                    string count = e.AmountIsStack ? "(int)base.Amount" : Math.Max(1, (int)e.Amount).ToString();
-                    // 用 SpawnToPile（白名单归一化）而不是原始的 SpawnTo：存档里万一是个老值 / 怪值也不会写出编不过的代码
-                    w.Line($"await CardPileCmd.AddToCombatAndPreview<{card}>(base.Owner, PileType.{e.SpawnToPile}, {count}, base.Owner.Player);");
-                    break;
+                    bool plainSpawn = !e.IsSpawnRandom && !e.HasSpawnModifier && !e.HasCardScope;
+                    CSharpCodeGen.EmitGenerateCard(w, p!, e,
+                        // tempUpSource = 生成的那个「仅本回合升级」临时状态挂上去时的来源实参。
+                        // 状态钩子里没有「这张牌」，所以来源只能是 null（卡牌那条链才是 this）。
+                        tempUpSource: "null",
+                        playerExpr: plainSpawn ? "base.Owner" : "base.Owner.Player",
+                        withMarker: !plainSpawn,
+                        creatureExpr: "base.Owner",
+                        withComment: !plainSpawn,
+                        playerArg: "base.Owner.Player");
                 }
+                break;
 
             // 毒性爆发：状态里也能用（都是本体 API）。注意这里的 base.Owner 是 Creature（不是 Player），
             // 所以敌人列表 / 施加者都用它自己的形式（见 CSharpCodeGen.EmitOutbreak 的参数说明）。
