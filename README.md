@@ -883,6 +883,35 @@ public override int MaxUpgradeLevel => int.MaxValue;
 - 一处升级增量都没填就勾上：「配置检查」会提醒你 —— 那样反复升级只是白花钱。
 - 从工程反推存档（`--recover`）时按 `MaxUpgradeLevel => int.MaxValue` 这一行认回来，不用另写标记行。
 
+## 触发时机「自己失去生命时」
+
+自定义状态（能力）的触发时机里多了「**自己失去生命时（每一下）**」，走的是本体的
+`AfterCurrentHpChanged`（本体「肉骨头 MeatOnTheBone」与亡灵契约师的 `NecroMasteryPower` 用的就是它）。
+`delta < 0` 表示生命值真的少了，生成的是：
+
+```csharp
+public override async Task AfterCurrentHpChanged(Creature creature, decimal delta) {
+    // 这个钩子本体不给 choiceContext：按本体做法自己造一个（不然造成伤害 / 抽牌会 CS0103）
+    if (creature != base.Owner) return;   // 只认自己掉血
+    if (delta >= 0m) return;              // delta 为正是回血，不算「失去生命」
+    ...
+}
+```
+
+和已有的「自己受到伤害后（每一下）」的关系：
+
+| 触发时机 | 本体钩子 | 什么时候触发 |
+|---|---|---|
+| 自己受到伤害后（每一下） | `AfterDamageReceived` | 走**伤害管线**的那一下（判据 `UnblockedDamage > 0`：全被格挡 / 0 伤害不算） |
+| **自己失去生命时（每一下）** | `AfterCurrentHpChanged` | 只要**生命值真的少了**：伤害、自己「失去生命」、直接扣血（致死那套）都算；回血不算 |
+
+所以后者把前者包含在内。两个都是**每一下都会触发一次**（敌人「1 点 × 5 下」的连击就是 5 次）。
+配置检查会把这条差别写成「提示」；从工程反推存档时按 `AfterCurrentHpChanged` 认回这条触发时机。
+
+顺带修掉一个回读漏洞：自定义状态的触发器**没有动态变量**（数值是生成期字面量），
+原来「获得格挡 / 失去格挡」这两条只按变量回读，反推存档时会把数值静默变成 0 ——
+现在按参数里的字面量兜底（探针实测「获得 3 点格挡」能原样带回）。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

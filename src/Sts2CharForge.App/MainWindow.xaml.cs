@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -13012,6 +13012,34 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				&& atkPowerSrc.Contains("Where(r => r.Receiver == base.Owner)"), "对");
 			Check("自定义状态里的「自己受到伤害后（每一下）」也有 UnblockedDamage > 0 的判据",
 				perHitPowerSrc.Contains("if (result.UnblockedDamage <= 0) return;"), "有");
+
+			// ⑤ 本轮新增：「自己失去生命时」= 本体 AfterCurrentHpChanged 里 delta < 0 的那一半。
+			//    它比「受到伤害后」更宽（那条只认伤害管线），而且这个钩子本体不给 choiceContext。
+			Check("自定义状态的触发时机里有「自己失去生命时」，走本体的 AfterCurrentHpChanged",
+				PowerTriggers.All.Any((PowerTriggerOption t) => t.Kind == "HpLost" && t.Display.Contains("失去生命")), "在");
+			CharacterProfile hpLostProbe = ProfileFactory.Sample();
+			hpLostProbe.CustomPowers.Clear();
+			hpLostProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检掉血状态", ClassName = "UiCheckHpLost", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "HpLost", Effects = { new EffectSpec { Kind = "Block", Amount = 3m } } } },
+			});
+			hpLostProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检掉血打人状态", ClassName = "UiCheckHpLostDamage", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "HpLost", Effects = { new EffectSpec { Kind = "Damage", Amount = 2m, TargetSide = "Enemy" } } } },
+			});
+			string hpLostSrc = CustomPowerGen.Source(hpLostProbe, hpLostProbe.CustomPowers[0], 0);
+			string hpLostDmgSrc = CustomPowerGen.Source(hpLostProbe, hpLostProbe.CustomPowers[1], 0);
+			Check("生成：AfterCurrentHpChanged + 只认自己 + **只认掉血**（delta >= 0 是回血，直接 return）",
+				hpLostSrc.Contains("public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)")
+				&& hpLostSrc.Contains("if (creature != base.Owner) return;")
+				&& hpLostSrc.Contains("if (delta >= 0m) return;"), "对");
+			Check("这个钩子本体不给 choiceContext：效果要用它时按本体做法自己造一个（不然造成伤害会 CS0103）",
+				hpLostDmgSrc.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
+				&& hpLostDmgSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();"), "造了");
+			Check("校验器把「失去生命时」和「受到伤害后」的差别写清楚（前者是后者的超集）",
+				ProfileValidator.Validate(hpLostProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("生命值真的少了")), "写了");
 			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
 				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
 				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),

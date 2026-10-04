@@ -1134,7 +1134,10 @@ public static class ProjectRecovery
                     continue;
                 }
                 var e = new EffectSpec { Kind = "Block", TargetSide = SideOfTarget(line) };
-                FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                // 卡牌 / 遗物都声明了 Block 变量，能按变量拿；**自定义状态的触发器没有 CanonicalVars**
+                // （数值是生成期的字面量），所以这里必须留下「按第 2 个参数的字面量兜底」这条路，
+                // 否则从工程反推存档时「获得 3 点格挡」会静默变成 0（探针实测踩到）。
+                FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId, fallbackExpr: ArgAt(line, 1));
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -1358,7 +1361,8 @@ public static class ProjectRecovery
             {
                 // 负数格挡 = 失去格挡（生成的是 LoseBlock(choiceContext, 目标, System.Math.Abs(数值), remover)）
                 var e = new EffectSpec { Kind = "Block", TargetSide = SideOfTarget(line) };
-                FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId);
+                // 同上面那条：自定义状态的触发器没有 Block 变量，按第 3 个参数（值）兜底
+                FillAmount(e, NextVar(vars, ref varIdx, "Block"), nameToPowerId, fallbackExpr: AbsInner(ArgAt(line, 2)));
                 if (e.Amount > 0) e.Amount = -e.Amount;        // 回读成负数（生成时是 Math.Abs）
                 ApplyLoop(e, frames);
                 Done(e);
@@ -2985,6 +2989,8 @@ public static class ProjectRecovery
         // 自定义状态的「战斗胜利后」现在生成的是 AfterCombatEnd（本体发战斗奖励的钩子就是它）
         "AfterCombatEnd" => "CombatVictory",
         "AfterDamageReceived" => "DamageReceived",
+        // 自己失去生命时（生命值真的少了那一下；本体钩子 AfterCurrentHpChanged，delta < 0）
+        "AfterCurrentHpChanged" => "HpLost",
         // 受到攻击后（一次攻击只触发一次的那个钩子）
         "AfterAttack" => "Attacked",
         "AfterGoldGained" => "GoldGained",

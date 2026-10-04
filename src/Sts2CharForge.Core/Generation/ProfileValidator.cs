@@ -134,6 +134,13 @@ public static class ProfileValidator
                         + "（本体钩子 AfterAttack）—— 敌人的「1 点 × 5 下」连击也只算一次。"
                         + "判据是这一次攻击真的打到了你身上（全被格挡 / 打的是别人时不触发）；"
                         + "注意它只认「攻击」：中毒、事件掉血这类不是攻击的伤害不会触发它。"));
+                // 「自己失去生命时」= 本体 AfterCurrentHpChanged（delta < 0）。和「受到伤害后」的关系说清楚：
+                // 那条走伤害管线（AfterDamageReceived），这条认的是生命值真的少了这一件事 —— 是它的超集。
+                if (t.Kind == "HpLost")
+                    issues.Add(new("提示", $"{who}「{when}」用的是本体钩子 AfterCurrentHpChanged（delta < 0）："
+                        + "只要**生命值真的少了**就触发 —— 伤害、自己「失去生命」、直接扣血（致死那套）都算，回血（delta > 0）不算。"
+                        + "它比「自己受到伤害后（每一下）」更宽：那条只认伤害，这条连非伤害的掉血也会触发；"
+                        + "同样是**每一下都会触发一次**（敌人「1 点 × 5 下」的连击就是 5 次）。"));
 
                 for (int j = 0; j < t.Effects.Count; j++)
                 {

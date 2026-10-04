@@ -36,6 +36,13 @@ public static class PowerTriggers
         // MultiAttackIntent），所以一次「5 点伤害」的攻击会触发 5 次（本体的原体黏土 SelfFormingClay
         // 也是这个行为）。想「一次攻击只算一次」用下面那条「自己受到攻击后」。
         new PowerTriggerOption("DamageTaken",   "自己受到伤害后（每一下）", "AfterDamageReceived：多次连击会触发多次"),
+        // 「自己失去生命时」= 本体 AfterCurrentHpChanged 里 delta < 0 的那一半（本体「肉骨头 MeatOnTheBone」
+        // 与亡灵契约师的 NecroMasteryPower 用的就是这个钩子）。和上面那条的区别：
+        //   · 「受到伤害后」走的是**伤害管线**（AfterDamageReceived，判 UnblockedDamage > 0）；
+        //   · 这条认的是**生命值真的少了**这一件事 —— 伤害、自己「失去生命」、直接扣血（例：致死那套
+        //     LoseHpInternal）都算，回血（delta > 0）不算。所以它把上一条完全包含在内。
+        // 同样是**每一下都会触发一次**（「1 点 × 5 下」的连击就是 5 次）。
+        new PowerTriggerOption("HpLost",        "自己失去生命时（每一下）", "AfterCurrentHpChanged：delta < 0 时触发（伤害 / 失去生命 / 直接扣血都算，回血不算）"),
         // 一次攻击只触发一次：本体的 AfterAttack 注释里写明了 —— multi-attack 时它在**所有命中结束之后**
         // 只跑一次（AfterDamageGiven / AfterDamageReceived 是每一下都跑）。
         new PowerTriggerOption("Attacked",      "自己受到攻击后（连击只算一次）", "AfterAttack：一次攻击的所有命中结束后只跑一次"),

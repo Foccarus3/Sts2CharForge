@@ -194,6 +194,19 @@ public static class CustomPowerGen
                 w.Close();
                 break;
 
+            // 自己失去生命时（本体 AfterCurrentHpChanged：delta < 0 = 生命真的少了，回血是正数）。
+            // 这个钩子**不带 choiceContext**，所以照 BlockGained 那套先 bootstrap 一个（不然配了
+            // 造成伤害 / 抽牌 / 施加状态就会 CS0103）。本体也是这么写的：
+            // NecroMasteryPower 判 `!(delta >= 0m)`，肉骨头 MeatOnTheBone 只拿它更新遗物状态。
+            case "HpLost":
+                w.Open("public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)");
+                EmitChoiceContextBootstrap(w, "HpLost", items);
+                w.Line("if (creature != base.Owner) return;   // 只认自己掉血");
+                w.Line("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
+                foreach (var t in items) EmitEffects(w, t, p: p);
+                w.Close();
+                break;
+
             // 自己受到攻击后（连击只算一次）：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次
             //（AbstractModel.AfterAttack 的注释就是这么写的），所以敌人的多次连击在这里只触发一次。
             case "Attacked":
@@ -366,7 +379,7 @@ public static class CustomPowerGen
     /// AfterEnergySpent(int, Player)、AfterStarsSpent(int, Player)。
     /// </summary>
     internal static bool TriggerHasChoiceContext(string? kind) =>
-        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory");
+        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory" or "HpLost");
 
     /// <summary>
     /// 这个钩子没有 choiceContext 时，自己造一个再往下跑。
