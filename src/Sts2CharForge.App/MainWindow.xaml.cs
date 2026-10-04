@@ -13565,7 +13565,46 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			string fbJson = LocalizationGen.CardsJson(fbProbe);
 			Check("卡面描述：正数写「N 回合内无法获得格挡」，负数写「解除…效果」",
 				fbJson.Contains("在 2 回合内无法获得格挡") && fbJson.Contains("解除"), "描述对");
-		}		Close();
+		}		// ===== 本轮新增：可被无限升级（覆写 MaxUpgradeLevel => int.MaxValue）=====
+		{
+			Check("（配置）卡牌页多了「可被无限升级」这一项，默认不勾（本体默认每张牌只能升 1 级）",
+				!new CardSpec().InfinitelyUpgradable, "默认关");
+			CharacterProfile infProbe = ProfileFactory.Sample();
+			infProbe.VanillaPowerOverrides.Clear();
+			CardSpec infCard = new CardSpec
+			{
+				Name = "无限升级探针", ClassName = "UiCheckInfUpgradable", CardType = "Attack",
+				Rarity = "Common", Cost = 1, InCardPool = true, InfinitelyUpgradable = true,
+			};
+			infCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+			infProbe.Cards.Add(infCard);
+			string infSrc = CSharpCodeGen.CardSource(infProbe, infCard, 0);
+			Check("生成：勾了「可被无限升级」就覆写 MaxUpgradeLevel => int.MaxValue",
+				infSrc.Contains("public override int MaxUpgradeLevel => int.MaxValue;"), "覆写在");
+			Check("生成：升级增量照旧写在 OnUpgrade() 里（无限升级就是靠它每升一级再涨一次）",
+				infSrc.Contains("protected override void OnUpgrade()")
+				&& infSrc.Contains("UpgradeValueBy(3m)"), "升级增量在");
+			CardSpec infOff = new CardSpec
+			{
+				Name = "普通升级", ClassName = "UiCheckInfOff", CardType = "Attack",
+				Rarity = "Common", Cost = 1, InCardPool = true,
+			};
+			infOff.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+			infProbe.Cards.Add(infOff);
+			Check("生成：没勾的牌不写这一行（仍然是本体的「只能升 1 级」）",
+				!CSharpCodeGen.CardSource(infProbe, infOff, 0).Contains("MaxUpgradeLevel"), "没写");
+			CardSpec infBare = new CardSpec
+			{
+				Name = "无限升级没增量", ClassName = "UiCheckInfBare", CardType = "Skill",
+				Rarity = "Common", Cost = 1, InCardPool = true, InfinitelyUpgradable = true,
+			};
+			infBare.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
+			infProbe.Cards.Add(infBare);
+			Check("校验器：勾了可被无限升级却一处升级增量都没填 → 给警告（否则反复升级只是白花钱）",
+				ProfileValidator.Validate(infProbe).Any((ValidationIssue x) => !x.IsError && x.Message.Contains("可被无限升级")),
+				"提醒了");
+		}
+		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
 		if (_selfTestRealProfileFolder is not null)

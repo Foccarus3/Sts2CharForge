@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -362,6 +362,14 @@ public static class ProfileValidator
             if (c.Effects.Any(e => e.AmountIsX && e.UpgradeAmount != 0))
                 issues.Add(new("警告", $"卡牌「{c.Name}」有一条「数值 = X」的效果填了「升级增量」：X 的数值不能直接升级（会被忽略），"
                     + "要升级请用卡牌上的「升级后 X +1」。"));
+            // 可被无限升级：勾了却没有升级增量 = 能反复花钱升级但数值不变（本体的升级增量全靠 OnUpgrade 累加）
+            if (c.InfinitelyUpgradable
+                && c.UpgradeCost is null
+                && !c.Effects.Any(e => e.UpgradeAmount != 0)
+                && (c.UpgradeKeywords?.Added?.Count ?? 0) == 0
+                && (c.UpgradeKeywords?.Removed?.Count ?? 0) == 0)
+                issues.Add(new("警告", $"卡牌「{c.Name}」勾了「可被无限升级」，但一处升级增量都没填"
+                    + "（效果里的「升级增量」/「升级后费用」/「升级后关键词」都是空的）：反复升级不会让数值变强。"));
             // 斩杀条件：判的是「上一条攻击有没有把目标打死」，所以要写在造成伤害那一条**后面**，
             // 而且只能写在单条效果上（写在整张牌的条件上时，包裹的那段代码跑在伤害之前，永远不成立）。
             if (c.Condition is { Kind: "Fatal" })

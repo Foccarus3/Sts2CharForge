@@ -1,4 +1,4 @@
-﻿# Sts2CharForge — 杀戮尖塔 2 自定义角色生成器
+# Sts2CharForge — 杀戮尖塔 2 自定义角色生成器
 
 一个 Windows 桌面工具（WPF + .NET 9）：填表配置 → 一键生成 C# 工程 → 编译 → 导出 PCK → 安装到游戏 `mods`。
 
@@ -865,6 +865,23 @@ if (shouldTriggerFatal && attackCommand.Results.SelectMany(r => r).Any(r => r.Wa
 生成的就是 `PowerCmd.Apply<NoBlockPower>(目标, N, …)` —— 本体的 `NoBlockPower` 现成可用，
 不用自己造状态。**填负数 = 反向**（取目标身上那份实例再 `PowerCmd.ModifyAmount` 扣掉），
 卡面写「解除…的效果」。作用对象按「作用对象」栏来；只带这个效果的牌也会变成「要选目标」。
+
+## 可被无限升级
+
+「卡牌」页多了「**可被无限升级**」这个勾选框（默认不勾）。勾上以后生成的卡牌类里会多一行：
+
+```csharp
+public override int MaxUpgradeLevel => int.MaxValue;
+```
+
+本体默认每张牌**只能升 1 级**（`MaxUpgradeLevel => 1`；诅咒固定 `0` —— 所有诅咒都不能升级）。
+覆写成 `int.MaxValue` 之后就能反复升级，而且**每升一级都会再跑一遍 `OnUpgrade()`**：
+我们生成的升级增量（效果里的「升级增量」、卡牌上的「升级后费用」、「升级后关键词」）全写在那个方法里，
+所以是「越升越强」而不是只换一次数值。卡面标题本体自己会显示成「名字+N」（本体 `CardModel.Title`
+在 `MaxUpgradeLevel > 1` 时的写法）。
+
+- 一处升级增量都没填就勾上：「配置检查」会提醒你 —— 那样反复升级只是白花钱。
+- 从工程反推存档（`--recover`）时按 `MaxUpgradeLevel => int.MaxValue` 这一行认回来，不用另写标记行。
 
 ## 存档安全：自动备份 + 从工程恢复
 

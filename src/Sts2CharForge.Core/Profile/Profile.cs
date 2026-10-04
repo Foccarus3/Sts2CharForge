@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -938,6 +938,7 @@ public sealed class CardSpec : SpecBase
     private bool _inStartingDeck;
     private int _startingCopies = 1;
     private bool _inCardPool = true;
+    private bool _infinitelyUpgradable;
     private bool _exhausts;
     private bool _ethereal;
     private bool _innate;
@@ -999,6 +1000,17 @@ public sealed class CardSpec : SpecBase
     public bool InStartingDeck { get => _inStartingDeck; set => Set(ref _inStartingDeck, value); }
     public int StartingCopies { get => _startingCopies; set => Set(ref _startingCopies, value); }
     public bool InCardPool { get => _inCardPool; set => Set(ref _inCardPool, value); }
+
+    /// <summary>
+    /// 可被无限升级：覆写 <c>MaxUpgradeLevel =&gt; int.MaxValue</c>（本体默认是 1，诅咒固定 0）。
+    ///
+    /// 为什么勾上就真的能「越升越强」：本体的升级流程是
+    /// <c>UpgradeInternal() { CurrentUpgradeLevel++; OnUpgrade(); }</c>，
+    /// 而我们生成的升级增量**全都写在 <c>OnUpgrade()</c> 里**
+    /// （<c>DynamicVars[…].UpgradeValueBy(N)</c>），所以每升一级就再涨一次。
+    /// 卡面标题本来就会显示成「名字+N」（本体 CardModel 在 MaxUpgradeLevel &gt; 1 时的行为）。
+    /// </summary>
+    public bool InfinitelyUpgradable { get => _infinitelyUpgradable; set => Set(ref _infinitelyUpgradable, value); }
 
     private string _customDescription = "";
 

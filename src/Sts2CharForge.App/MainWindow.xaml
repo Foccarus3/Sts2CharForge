@@ -352,6 +352,9 @@
                             <TextBlock Text="初始份数" Style="{StaticResource Label}"/>
                             <TextBox Width="80" HorizontalAlignment="Left" Style="{StaticResource Field}" Text="{Binding StartingCopies, UpdateSourceTrigger=PropertyChanged}"/>
                             <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding InCardPool}"/>
+                            <CheckBox Content="可被无限升级（每次升级数值再涨一次）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
+                                      IsChecked="{Binding InfinitelyUpgradable}"
+                                      ToolTip="本体默认每张牌只能升级一次（MaxUpgradeLevel => 1）。勾上以后生成 MaxUpgradeLevel => int.MaxValue：可以反复升级，每升一级 OnUpgrade() 就再跑一遍，升级增量会累加；卡面标题显示成「名字+N」。" />
                             <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
                                 <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>

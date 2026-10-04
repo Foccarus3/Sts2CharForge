@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
@@ -396,6 +396,9 @@ public static class ProjectRecovery
         }
         if (text.Contains("HasEnergyCostX => true")) card.CostIsX = true;
         if (text.Contains("HasStarCostX => true")) card.StarCostIsX = true;
+        // 可被无限升级：生成时写的是 `public override int MaxUpgradeLevel => int.MaxValue;`
+        // （诅咒写的是 => 0，那不是这一项）—— 直接按这行认，不用另加标记。
+        if (text.Contains("MaxUpgradeLevel => int.MaxValue")) card.InfinitelyUpgradable = true;
         if (text.Contains("ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0)")) p_xPlus(card);
 
         var vars = ParseVars(text);

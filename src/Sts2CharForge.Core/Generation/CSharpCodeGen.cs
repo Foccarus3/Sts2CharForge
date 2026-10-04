@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -2301,6 +2301,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line()
              .Line("// 外观用你在「诅咒 / 先古卡」页给先古卡设的那个外观池（卡框颜色）")
              .Line($"public override CardPoolModel VisualCardPool => ModelDb.CardPool<{n.AncientStylePoolClass}>();");
+
+        // 可被无限升级（用户要求）：本体默认 MaxUpgradeLevel => 1，覆写后升级次数没有上限。
+        // 本体 UpgradeInternal() = 「CurrentUpgradeLevel++ → OnUpgrade()」，而我们的升级增量全写在
+        // OnUpgrade() 里 → 每升一级数值再涨一次；卡面标题本体自己会显示成「名字+N」。
+        if (c.InfinitelyUpgradable)
+            w.Line()
+             .Line("// 可被无限升级：本体默认 MaxUpgradeLevel => 1（只能升一次），这里覆写成没有上限")
+             .Line("public override int MaxUpgradeLevel => int.MaxValue;");
 
         w.Line()
          .Line($"public {cls}() : base({(c.CostIsX ? 0 : c.Cost)}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
