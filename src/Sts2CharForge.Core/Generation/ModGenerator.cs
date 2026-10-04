@@ -288,6 +288,13 @@ public static class ModGenerator
                 + string.Join("、", tempPowers.Select(e => EffectCatalog.PowerName(e.PowerId))));
         }
 
+        // 「抽到就减费」：在 N 回合内，每次抽到的牌本场战斗的费用 -1（我们自己生成的 Power）
+        if (CSharpCodeGen.NeedsDrawCostPower(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "DrawCostPower.cs"), CSharpCodeGen.DrawCostPowerSource(profile));
+            Log("  已生成「抽到就减费」用的 Power（每次抽到的牌费用 -1，层数 = 持续回合数）");
+        }
+
         // 强化指定卡牌（像本体「精准」对「小刀」）：每个「目标卡 + 伤害/格挡」一个 Power 类
         var boosts = CSharpCodeGen.CollectBoostEffects(profile).ToList();
         if (boosts.Count > 0)

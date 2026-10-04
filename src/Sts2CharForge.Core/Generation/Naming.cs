@@ -124,6 +124,13 @@ public sealed record Naming(
     public string TurnEndPlayPowerClass => CharClass + "ForgeTurnEndPlayPower";
 
     /// <summary>
+    /// 「抽到就减费」用的 Power：挂在自己身上，N 层 = 还能持续几个回合；
+    /// 每次抽到牌就把那张牌本场战斗的费用减 1（AfterCardDrawn + EnergyCost.SetThisCombat），
+    /// 每回合掉 1 层、掉光自毁。
+    /// </summary>
+    public string DrawCostPowerClass => CharClass + "ForgeDrawCostPower";
+
+    /// <summary>
     /// 「强化指定卡牌」（像本体「精准」）用的 Power：
     /// <c>&lt;角色&gt;ForgeBoost&lt;目标卡类名&gt;&lt;Damage|Block&gt;Power</c>。
     /// 它挂在自己身上，只给**那一张卡**的伤害 / 格挡加 N。

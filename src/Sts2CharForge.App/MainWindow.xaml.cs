@@ -13102,6 +13102,40 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Check("没选目标卡时：校验器给警告，生成的代码退成小刀（Shiv）",
 				ProfileValidator.Validate(fillProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("小刀"))
 				&& CSharpCodeGen.CardSource(fillProbe, fillBare, 0).Contains("CreateCard<Shiv>(base.Owner)"), "退成小刀");
+
+			// ⑪ 本轮新增：抽到就减费（N 回合内每次抽到的牌费用 -1，自己生成的 Power）
+			Check("（配置）有「抽到就减费」这个效果种类，数值 -5~5（负数 = 反向扣层数）",
+				EffectCatalog.FindKind("CheapenDraw") is not null
+				&& EffectCatalog.FindKind("CheapenDraw").Min == -5 && EffectCatalog.FindKind("CheapenDraw").Max == 5
+				&& EffectCatalog.FindKind("CheapenDraw").Display.Contains("抽到就减费"),
+				EffectCatalog.FindKind("CheapenDraw")?.Display ?? "(没有)");
+			CharacterProfile cheapProbe = ProfileFactory.Sample();
+			cheapProbe.VanillaPowerOverrides.Clear();
+			CardSpec cheapCard = new CardSpec { Name = "减费探针", ClassName = "UiCheckCheapen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			cheapCard.Effects.Add(new EffectSpec { Kind = "CheapenDraw", Amount = 3m, TargetSide = "Self" });
+			cheapCard.Effects.Add(new EffectSpec { Kind = "CheapenDraw", Amount = -1m, TargetSide = "Self" });
+			cheapProbe.Cards.Add(cheapCard);
+			Check("门控：只有存档里真的用到这个效果才生成那个 Power 类（不用就不生成）",
+				CSharpCodeGen.NeedsDrawCostPower(cheapProbe) && !CSharpCodeGen.NeedsDrawCostPower(ProfileFactory.Sample()), "门控对");
+			string cheapCls = Naming.From(cheapProbe).DrawCostPowerClass;
+			string cheapPower = CSharpCodeGen.DrawCostPowerSource(cheapProbe);
+			Check("生成的 Power：抽到牌就把那张牌的费用 SetThisCombat(当前-1) + 每回合掉 1 层自毁",
+				cheapPower.Contains($"public sealed class {cheapCls} : PowerModel")
+				&& cheapPower.Contains("if (card.EnergyCost.CostsX || card.EnergyCost.Canonical < 0) return;")
+				&& cheapPower.Contains("int __now = card.EnergyCost.GetWithModifiers(CostModifiers.All);")
+				&& cheapPower.Contains("card.EnergyCost.SetThisCombat(__now - 1);")
+				&& cheapPower.Contains("if (base.Amount <= 1)")
+				&& cheapPower.Contains("SetAmount(base.Amount - 1);"), "对");
+			string cheapSrc = CSharpCodeGen.CardSource(cheapProbe, cheapCard, 0);
+			Check("生成：正数是施加那个状态，负数是取实例后 ModifyAmount 扣层数（复用「负数 = 反向」那套）",
+				cheapSrc.Contains("CET:Effect=CheapenDraw")
+				&& cheapSrc.Contains($"await PowerCmd.Apply<{cheapCls}>(choiceContext, base.Owner.Creature, 3, base.Owner.Creature, this);")
+				&& cheapSrc.Contains($"PowerModel? __negPower = base.Owner.Creature.GetPower<{cheapCls}>();"), "对");
+			Check("它不声明动态变量（数值是生成期字面量）",
+				!cheapSrc.Contains("new DynamicVar("), "没声明");
+			string cheapJson = LocalizationGen.CardsJson(cheapProbe);
+			Check("卡面描述：正数写「在 N 回合内…费用 -1」，负数写「解除…N 层」",
+				cheapJson.Contains("每抽到一张牌，那张牌本场战斗的费用 -1") && cheapJson.Contains("解除「抽到就减费」1 层"), "描述对");
 			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
 				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
 				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),

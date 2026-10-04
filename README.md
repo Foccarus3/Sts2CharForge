@@ -949,6 +949,31 @@ if (__fillTo > 0) {
 - 卡牌 / 遗物 / 药水三处都能用；触发时机不在战斗里时给警告（不会生成坏代码）。
 - 从工程反推存档按 `CET:Effect=FillHand` + `CET:Card=<卡类名>` 认回来。
 
+## 抽到就减费（N 回合内，每次抽到的牌费用 -1）
+
+效果种类里的「**抽到就减费**」：给自己挂一个生成的 `<角色>ForgeDrawCostPower`，层数 = 还能持续几个回合。
+本体没有现成的状态，用公开 API 自己写（不需要 Harmony）：
+
+```csharp
+public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw) {
+    if (card.Owner != base.Owner.Player) return;
+    if (card.EnergyCost.CostsX || card.EnergyCost.Canonical < 0) return;   // X 费 / 不能打出的牌不动
+    int __now = card.EnergyCost.GetWithModifiers(CostModifiers.All);
+    if (__now > 0) card.EnergyCost.SetThisCombat(__now - 1);               // 本体 ConfusedPower 就是这么改费用的
+}
+// 每回合掉 1 层，掉光自毁
+```
+
+- 数值 = 持续回合数；**填负数 = 反向**（取实例后 `PowerCmd.ModifyAmount` 扣层数），卡面写「解除「抽到就减费」N 层」。
+- 只有存档里真的用到这个效果才会生成那个 Power 类（不用就不生成，免得留下没用的代码）。
+- 卡牌 / 遗物 / 药水三处都能用。
+- 从工程反推存档按 `CET:Effect=CheapenDraw` 认回来。
+
+顺带修掉一个回读漏洞：「禁止获得格挡」的**正数**分支只有一句 `PowerCmd.Apply<NoBlockPower>`
+（没有 `__negPower` 那种记号），以前会被再当成一条「施加状态」多回读一条 → 下次生成会多加一次。
+现在这类「没有独特记号的实现行」都按标记行里的种类整段跳过（探针实测：`ForbidBlock(2)` / `ForbidBlock(-1)`
+不再多出一条 `ApplyPower(NoBlockPower)`）。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

@@ -548,6 +548,9 @@ public static class ProjectRecovery
         // 标记行收尾之后，把它的实现代码整段跳过（不跳的话预见的 CardCmd.Discard 会被当成「丢弃卡牌」、
         // 毒性爆发的 PowerCmd.Apply<PoisonPower> 会被当成「施加中毒」）。
         bool skipSelfContainedBody = false;
+        // 标记行里写的效果种类：有几段实现**没有**独特记号（例：「禁止获得格挡」的正数分支就是一句
+        // PowerCmd.Apply<NoBlockPower>），只能按种类认下来，否则会被再当成一条普通效果多回读一条。
+        string? selfContainedKind = null;
 
         // 「生成 / 变化卡牌」的附加设置（CET:SpawnPick= 标记）：标记行先存着，等真正那条效果出现时配上。
         EffectSpec? pendingSpawn = null;
@@ -792,6 +795,7 @@ public static class ProjectRecovery
                     ApplyLoop(sc, frames);
                     Done(sc);
                     skipSelfContainedBody = true;
+                    selfContainedKind = sc.Kind;
                 }
                 // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：
                 // 标记那一行先存成一份「只填了这几个字段」的效果，等真正那条效果出现时再配上（见 ApplySpawnOpts）。
@@ -937,7 +941,12 @@ public static class ProjectRecovery
                     || line.Contains("__clrPower", StringComparison.Ordinal)
                     || line.Contains("__clrP", StringComparison.Ordinal)
                     || line.Contains("CreatureCmd.LoseBlock(", StringComparison.Ordinal)
-                    || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
+                    || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal)
+                    // 「禁止获得格挡」的正数分支：只有一句 PowerCmd.Apply<NoBlockPower>，没有 __negPower 那种记号
+                    //（不按标记里的种类认下来，它会被再当成一条「施加状态」—— 探针实测多回读出一条）
+                    || (selfContainedKind == "ForbidBlock" && line.Contains("NoBlockPower", StringComparison.Ordinal))
+                    // 「抽到就减费」：整个实现就是一句 PowerCmd.Apply<角色>ForgeDrawCostPower（或负数的扣层数）
+                    || (selfContainedKind == "CheapenDraw" && line.Contains("ForgeDrawCostPower", StringComparison.Ordinal));
                 if (scBody) continue;
                 skipSelfContainedBody = false;
             }

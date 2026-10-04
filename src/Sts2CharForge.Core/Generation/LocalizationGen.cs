@@ -749,6 +749,10 @@ public static class LocalizationGen
             "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）。",
             // 用「目标卡」填满手牌（本体「迫降 CrashLanding」）：张数由手牌上限决定，没有数值
             "FillHand" => $"{repeat}{when}用{CardNameOf(p, e.SpawnCardId)}填满你的[gold]手牌[/gold]。",
+            // 抽到就减费：N 回合内每次抽到的牌费用 -1（负数 = 反向扣层数）
+            "CheapenDraw" => e.Amount < 0
+                ? $"{repeat}{when}解除「抽到就减费」{-e.Amount} 层。"
+                : $"{repeat}{when}在 {(int)e.Amount} 回合内，每抽到一张牌，那张牌本场战斗的费用 -1。",
             // 复制卡牌（本体「二刀流 DualWield」那种）：选 / 随机拿 N 张，每张复制 M 份到手牌。
             // 份数 = 1 时按本体的说法写「复制一份」而不是「复制 1 份」（卡面更顺）。
             "CopyCard" => (e.SelectPile == "Hand"

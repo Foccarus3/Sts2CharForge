@@ -614,6 +614,12 @@ public static class EffectCatalog
     // 挂上之后目标就再也拿不到格挡。数值 = 层数（本体的层数即持续回合数；0 = 不生效）。
     // 复用「施加增益/减益」那套生成（ApplyPowerLine），所以负数 = 反向（可用来清掉这个状态）。
     new EffectKindOption("ForbidBlock", "禁止目标获得格挡（施加本体的 NoBlockPower；负数 = 反向扣掉）", "层", -99, 99, true, true),
+    // 抽到就减费（用户要求的新效果）：在 N 回合内，每次抽到的牌**本场战斗**的费用 -1。
+    // 本体没有现成的状态，用我们自己生成的 <角色>ForgeDrawCostPower：
+    // 它在 AfterCardDrawn 里把那张牌的 EnergyCost 用 SetThisCombat 减 1（X 费 / 不能打出的牌不动），
+    // 每回合掉 1 层、掉光就消失（层数 = 还能持续几个回合）。
+    // 负数 = 反向扣掉层数（复用 ApplyPowerLine，和「禁止获得格挡」同一套）。
+    new EffectKindOption("CheapenDraw", "抽到就减费（N 回合内每次抽到的牌费用 -1；负数 = 扣层数）", "回合", -5, 5, false, false),
         // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
         // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
         // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。
