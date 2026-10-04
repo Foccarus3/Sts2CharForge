@@ -908,6 +908,10 @@ public static class ProjectRecovery
                     // 「重放卡牌」/「回合结束时自动打出」的实现行（识别行是各自的标记行）
                     || line.Contains("__replayFrom", StringComparison.Ordinal)
                     || line.Contains("__replayCard", StringComparison.Ordinal)
+                    // 重放：候选池 / 取几张 / 整批预览（生成时为了「池子空了不弹空选牌界面」加的那几行）
+                    || line.Contains("__replayPool", StringComparison.Ordinal)
+                    || line.Contains("__replayWant", StringComparison.Ordinal)
+                    || line.Contains("__replayPicked", StringComparison.Ordinal)
                     || line.Contains("__tePicks", StringComparison.Ordinal)
                     || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal);
                 if (scBody) continue;

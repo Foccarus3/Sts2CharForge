@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -2744,27 +2744,42 @@ public static class ExtraResourceEnergyCounterDiagPatch
         int times = Math.Max(1, Math.Min(20, e.ReplayTimes));
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         w.Line(SelfContainedMarker(e) + $" CET:Replay={times}");
+        // 选牌前先算「候选池」，并且**先筛掉不能重放的牌**（照本体「隐藏宝石 HiddenGem」的过滤条件）：
+        //   · 打不出去的牌（Unplayable / 状态 / 诅咒）给它重放没有意义；
+        //   · 已经有重放的牌不再叠加（本体也是 `c.GetEnchantedReplayCount() < 1`）——
+        //     不然「重放 N 次」会一次次累乘，玩起来像卡死。
+        // 为什么要先算池子：池子空了就整条跳过（本体 HiddenGem 就是 `if (list.Count == 0) return;`），
+        // 不要拿着一张空界面的选牌请求去等玩家（那才是「打出后卡死」）。
+        string pool = "__replayPool";
+        w.Line($"// 候选：{pileZh}里还能重放的牌（打不出去的、已经有重放的都排除）");
+        w.Line($"List<CardModel> {pool} = {PileExpr(e)}.Cards"
+            + ".Where(c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1)"
+            + ".ToList();");
+        w.Open($"if ({pool}.Count > 0)");
+        w.Line($"int __replayWant = Math.Min({n}, {pool}.Count);   // 池子不够就少拿几张，绝不多要");
         if (e.CardPick == "Chosen")
         {
-            w.Line($"// 自己从{pileZh}选 {n} 张，让它们本场战斗内额外打出 {times} 次");
+            w.Line($"// 自己从{pileZh}选（最多 {n} 张），让它们本场战斗内额外打出 {times} 次");
+            string want = "__replayWant";
             if (e.SelectPile == "Hand")
-                w.Line($"var __replayFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {n}), filter: null, source: this)).ToList();");
+                w.Line($"var __replayFrom = (await CardSelectCmd.FromHand(context: choiceContext, player: base.Owner, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), filter: c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1, source: this)).ToList();");
             else
-                w.Line($"var __replayFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {n}))).ToList();");
+                w.Line($"var __replayFrom = (await CardSelectCmd.FromCombatPile(choiceContext, {PileExpr(e)}, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, {want}), c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1)).ToList();");
             w.Open("foreach (CardModel __replayCard in __replayFrom)");
             w.Line($"__replayCard.BaseReplayCount += {times};   // 本体：重放 N 次 = 打出去时连着打 N+1 次");
-            w.Line("CardCmd.Preview(__replayCard);");
             w.Close();
+            w.Line("if (__replayFrom.Count > 0) CardCmd.Preview(__replayFrom);   // 一次给整批（本体自己也有这个重载），别一张一张弹");
         }
         else
         {
-            w.Line($"// 随机从{pileZh}拿 {n} 张，让它们本场战斗内额外打出 {times} 次");
-            w.Open("foreach (CardModel __replayCard in MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom("
-                + $"{PileExpr(e)}.Cards, {n}, base.Owner.RunState.Rng.CombatCardSelection))");
+            w.Line($"// 随机从{pileZh}拿（最多 {n} 张），让它们本场战斗内额外打出 {times} 次");
+            w.Line($"var __replayPicked = MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom({pool}, __replayWant, base.Owner.RunState.Rng.CombatCardSelection).ToList();");
+            w.Open("foreach (CardModel __replayCard in __replayPicked)");
             w.Line($"__replayCard.BaseReplayCount += {times};");
-            w.Line("CardCmd.Preview(__replayCard);");
             w.Close();
+            w.Line("if (__replayPicked.Count > 0) CardCmd.Preview(__replayPicked);");
         }
+        w.Close();
     }
 
     /// <summary>

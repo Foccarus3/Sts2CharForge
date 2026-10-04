@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -1643,7 +1643,7 @@ public sealed class VanillaPowerOverride : SpecBase
     private string _icon = "";
     private string _barColor = "";
     private string _amountColor = "";
-    private bool _replaceInVanillaText = true;
+    private bool _replaceInVanillaText = false;
 
     /// <summary>不勾选就先不生效（留着配置以后再用）</summary>
     public bool Enabled { get => _enabled; set => Set(ref _enabled, value); }

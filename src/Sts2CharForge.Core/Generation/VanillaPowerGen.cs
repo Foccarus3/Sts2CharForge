@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -34,7 +34,16 @@ public static class VanillaPowerGen
         Active(p).Count > 0
         || CustomPowerGen.Active(p).Any(cp => !string.IsNullOrWhiteSpace(cp.Icon) || !string.IsNullOrWhiteSpace(cp.AmountColor));
 
-    /// <summary>这条改写要覆盖的本地化键（键 → 文本）。名字/描述走这里，不需要补丁。</summary>
+    /// <summary>
+    /// 本体状态改名 / 改描述要写的本地化键。
+    ///
+    /// **不再覆盖本体的键**（<c>&lt;SLUG&gt;.title</c> 那种）：本地化表是**全局**的，
+    /// 一覆盖，别的角色、百科、以及任何提到这个状态的地方都会变成新名字
+    /// （用户实测：sparkle 把易伤改成破绽后，百科里铁甲战士的「战栗」描述也变成了破绽）。
+    /// 改成写我们自己的键 <c>&lt;SLUG&gt;_FORGE.title / .description / .smartDescription</c>，
+    /// 由生成的 <c>ForgePowerRename</c> 补丁**只在「这一局玩的是我方角色」时**返回它们 ——
+    /// 本体键一个字都不动，其它角色 / 主菜单百科永远是原名。
+    /// </summary>
     public static IEnumerable<KeyValuePair<string, string>> LocEntries(CharacterProfile p)
     {
         foreach (var o in Active(p))
@@ -44,20 +53,23 @@ public static class VanillaPowerGen
 
             string name = (o.Name ?? "").Trim();
             if (name.Length > 0 && name != (o.VanillaName ?? "").Trim())
-                yield return new(slug + ".title", name);
+                yield return new(ForgeLocKey(slug, "title"), name);
 
             string desc = (o.Description ?? "").Trim();
             if (desc.Length == 0) continue;
             string vanillaDesc = (EffectCatalog.ZhLocText(slug + ".description") ?? "").Trim();
-            if (desc == vanillaDesc) continue;                       // 和本体一样 = 没改，不用覆盖
+            if (desc == vanillaDesc) continue;                       // 和本体一样 = 没改，不用写
 
-            yield return new(slug + ".description", desc);
-            // 战斗里的悬停提示优先用 smartDescription；只有本体本来就有这个键时才一起盖上
+            yield return new(ForgeLocKey(slug, "description"), desc);
+            // 战斗里的悬停提示优先用 smartDescription；只有本体本来就有这个键时才一起写上
             // （凭空加一个键会把提示从「普通」变成「smart」，没必要）
             if (EffectCatalog.ZhLocText(slug + ".smartDescription") is not null)
-                yield return new(slug + ".smartDescription", desc);
+                yield return new(ForgeLocKey(slug, "smartDescription"), desc);
         }
     }
+
+    /// <summary>我们自己的本地化键（不碰本体键）：<c>&lt;SLUG&gt;_FORGE.title</c> 这种。</summary>
+    public static string ForgeLocKey(string slug, string suffix) => slug + "_FORGE." + suffix;
 
     /// <summary>这条改写用的本体本地化键前缀（优先用配置里记下的，没有就按类名推）。</summary>
     public static string SlugOf(VanillaPowerOverride o)
@@ -121,6 +133,24 @@ public static class VanillaPowerGen
                 .Append(", AmountColor = ").Append(Lit.Str(amount))
                 .Append(", BarNode = ").Append(Lit.Str(barNode))
                 .Append(", BarColor = ").Append(Lit.Str(barColor)).AppendLine(" },");
+
+        // 改名 / 改描述的表：本体 Id.Entry → 我们自己的本地化键前缀
+        var renames = new StringBuilder();
+        void RenameRow(string slug, bool hasName, bool hasDesc) =>
+            renames.Append("        [").Append(Lit.Str(slug)).Append("] = new Rename { Name = ")
+                .Append(hasName ? "true" : "false").Append(", Desc = ").Append(hasDesc ? "true" : "false")
+                .Append(", Prefix = ").Append(Lit.Str(slug + "_FORGE")).AppendLine(" },");
+        foreach (var o in Active(p))
+        {
+            string rs = SlugOf(o);
+            if (rs.Length == 0) continue;
+            string newName = (o.Name ?? "").Trim();
+            bool hasName = newName.Length > 0 && newName != (o.VanillaName ?? "").Trim();
+            string newDesc = (o.Description ?? "").Trim();
+            string oldDesc = (EffectCatalog.ZhLocText(rs + ".description") ?? "").Trim();
+            bool hasDesc = newDesc.Length > 0 && newDesc != oldDesc;
+            if (hasName || hasDesc) RenameRow(rs, hasName, hasDesc);
+        }
 
         foreach (var o in Active(p))
         {
@@ -221,6 +251,132 @@ public static class VanillaPowerGen
             }
         }
 
+        /// <summary>
+        /// 本体状态改名 / 改描述 **只在我方角色的这一局里生效** 的开关 + 文本表。
+        ///
+        /// 为什么不再直接覆盖本体的本地化键：本地化表是全局的，一覆盖，别的角色、百科、
+        /// 以及任何提到这个状态的地方都会变成新名字（用户实测：sparkle 把易伤改成破绽后，
+        /// 百科里铁甲战士的「战栗」描述也成了破绽）。现在本体键一个字都不动 ——
+        /// 我们的新文本放在自己的键 <c>&lt;SLUG&gt;_FORGE.*</c> 里，只有这里的补丁会返回它们。
+        ///
+        /// 判定「这一局玩的是不是我方角色」用的是本体自己的公开链：
+        /// <c>RunManager.Instance.IsInProgress</c> → <c>DebugOnlyGetState()</c> →
+        /// <c>LocalContext.GetMe(runState)?.Character</c>（本体的百科页也是这么判的）。
+        /// 主菜单 / 别的角色时这条链给 null → 一律返回本体原值。
+        /// </summary>
+        internal static class ForgePowerRename
+        {
+            internal sealed class Rename
+            {
+                internal bool Name;
+                internal bool Desc;
+                internal string Prefix = "";
+            }
+
+            /// <summary>键 = 本体 Id.Entry（如 VULNERABLE_POWER）。</summary>
+            private static readonly Dictionary<string, Rename> Table = new(StringComparer.Ordinal)
+            {
+        {{renames.ToString().TrimEnd('\r', '\n')}}
+            };
+
+            private static ulong _cachedFrame = ulong.MaxValue;
+            private static bool _cached;
+
+            /// <summary>这一局玩的是不是我方角色（主菜单 / 别的角色 → false）。</summary>
+            internal static bool IsMyRun()
+            {
+                try
+                {
+                    ulong frame = Godot.Engine.GetProcessFrames();
+                    if (frame == _cachedFrame) return _cached;
+                    _cachedFrame = frame;
+                    _cached = ComputeIsMyRun();
+                    return _cached;
+                }
+                catch { return false; }
+            }
+
+            private static bool ComputeIsMyRun()
+            {
+                if (Table.Count == 0) return false;
+                if (!MegaCrit.Sts2.Core.Runs.RunManager.Instance.IsInProgress) return false;
+                MegaCrit.Sts2.Core.Entities.Players.Player? me =
+                    MegaCrit.Sts2.Core.Context.LocalContext.GetMe(MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState());
+                return me?.Character is {{n.CharClass}};
+            }
+
+            private static bool TryGet(string? entry, out Rename r) => Table.TryGetValue(entry ?? "", out r!);
+
+            /// <summary>这个本体状态有没有被改名（用于「本体卡面文字要不要跟着换」之外的判断）。</summary>
+            internal static bool Has(string? entry) => TryGet(entry, out _);
+
+            internal static LocString? Title(string? entry) =>
+                TryGet(entry, out Rename r) && r.Name && LocString.Exists("powers", r.Prefix + ".title")
+                    ? new LocString("powers", r.Prefix + ".title") : null;
+
+            internal static LocString? Description(string? entry) =>
+                TryGet(entry, out Rename r) && r.Desc && LocString.Exists("powers", r.Prefix + ".description")
+                    ? new LocString("powers", r.Prefix + ".description") : null;
+
+            internal static LocString? SmartDescription(string? entry) =>
+                TryGet(entry, out Rename r) && r.Desc && LocString.Exists("powers", r.Prefix + ".smartDescription")
+                    ? new LocString("powers", r.Prefix + ".smartDescription") : null;
+        }
+
+        /// <summary>状态名字：只在我方角色的这一局里换成新名字。</summary>
+        [HarmonyLib.HarmonyPatch(typeof(PowerModel), nameof(PowerModel.Title), HarmonyLib.MethodType.Getter)]
+        internal static class ForgePowerRenameTitlePatch
+        {
+            [HarmonyLib.HarmonyPostfix]
+            private static void AfterTitle(PowerModel __instance, ref LocString __result)
+            {
+                try
+                {
+                    if (__instance is null) return;
+                    if (!ForgePowerRename.IsMyRun()) return;
+                    LocString? mine = ForgePowerRename.Title(__instance.Id.Entry);
+                    if (mine is not null) __result = mine;
+                }
+                catch (Exception ex) { Log.Error("本体状态改名：换名字失败（已忽略）：" + ex.Message); }
+            }
+        }
+
+        /// <summary>状态描述：同样只在我方角色的这一局里换。</summary>
+        [HarmonyLib.HarmonyPatch(typeof(PowerModel), nameof(PowerModel.Description), HarmonyLib.MethodType.Getter)]
+        internal static class ForgePowerRenameDescPatch
+        {
+            [HarmonyLib.HarmonyPostfix]
+            private static void AfterDescription(PowerModel __instance, ref LocString __result)
+            {
+                try
+                {
+                    if (__instance is null) return;
+                    if (!ForgePowerRename.IsMyRun()) return;
+                    LocString? mine = ForgePowerRename.Description(__instance.Id.Entry);
+                    if (mine is not null) __result = mine;
+                }
+                catch (Exception ex) { Log.Error("本体状态改名：换描述失败（已忽略）：" + ex.Message); }
+            }
+        }
+
+        /// <summary>战斗里悬停提示优先用 smartDescription（这个属性不是 virtual，但补丁打在方法本身上，一样生效）。</summary>
+        [HarmonyLib.HarmonyPatch(typeof(PowerModel), nameof(PowerModel.SmartDescription), HarmonyLib.MethodType.Getter)]
+        internal static class ForgePowerRenameSmartPatch
+        {
+            [HarmonyLib.HarmonyPostfix]
+            private static void AfterSmartDescription(PowerModel __instance, ref LocString __result)
+            {
+                try
+                {
+                    if (__instance is null) return;
+                    if (!ForgePowerRename.IsMyRun()) return;
+                    LocString? mine = ForgePowerRename.SmartDescription(__instance.Id.Entry);
+                    if (mine is not null) __result = mine;
+                }
+                catch (Exception ex) { Log.Error("本体状态改名：换战斗描述失败（已忽略）：" + ex.Message); }
+            }
+        }
+
         /// <summary>状态栏那个小图标 + 悬停提示里的图标：换成你上传的图。</summary>
         [HarmonyLib.HarmonyPatch(typeof(PowerModel), nameof(PowerModel.Icon), HarmonyLib.MethodType.Getter)]
         internal static class VanillaPowerIconPatch
@@ -231,6 +387,8 @@ public static class VanillaPowerGen
                 try
                 {
                     if (__instance is null) return;
+                    // 只在「这一局玩的是我方角色」时改：别的角色 / 主菜单百科一律保持本体原样
+                    if (!ForgePowerRename.IsMyRun()) return;
                     if (!VanillaPowerCosmetic.TryGet(__instance.Id.Entry, out VanillaPowerCosmetic.Entry e)) return;
                     Texture2D? tex = VanillaPowerCosmetic.IconFor(__instance.Id.Entry, e.IconRes);
                     if (tex is not null) __result = tex;
@@ -249,6 +407,8 @@ public static class VanillaPowerGen
                 try
                 {
                     if (__instance is null) return;
+                    // 只在「这一局玩的是我方角色」时改：别的角色 / 主菜单百科一律保持本体原样
+                    if (!ForgePowerRename.IsMyRun()) return;
                     if (!VanillaPowerCosmetic.TryGet(__instance.Id.Entry, out VanillaPowerCosmetic.Entry e)) return;
                     Texture2D? tex = VanillaPowerCosmetic.IconFor(__instance.Id.Entry, e.IconRes);
                     if (tex is not null) __result = tex;
@@ -273,6 +433,7 @@ public static class VanillaPowerGen
             {
                 try
                 {
+                    if (!ForgePowerRename.IsMyRun()) return;
                     string id;
                     try { id = __instance.Model?.Id.Entry ?? ""; } catch { return; }   // 模型还没挂上时本体自己也走空分支
                     if (!VanillaPowerCosmetic.TryGet(id, out VanillaPowerCosmetic.Entry e)) return;
@@ -304,6 +465,7 @@ public static class VanillaPowerGen
             {
                 try
                 {
+                    if (!ForgePowerRename.IsMyRun()) return;   // 血条颜色也只在我方角色的这一局里改
                     foreach (VanillaPowerCosmetic.Entry e in VanillaPowerCosmetic.BarEntries())
                     {
                         Color? c = VanillaPowerCosmetic.ParseColor(e.BarColor);

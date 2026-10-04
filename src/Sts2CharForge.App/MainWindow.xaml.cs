@@ -9236,14 +9236,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		characterProfile20.VanillaPowerOverrides.Add(vanillaPowerOverride);
 		Check("填了改写就会生成补丁文件", VanillaPowerGen.HasAny(characterProfile20));
 		string text35 = LocalizationGen.PowersJson(characterProfile20);
-		Check("新名字写进 powers.json（键和本体同名 → 本体加载时会覆盖）", text35.Contains("\"POISON_POWER.title\"") && text35.Contains("剧毒"), "改名键在");
-		Check("新描述也写进去了", text35.Contains("\"POISON_POWER.description\""));
+		// 改名**不再覆盖本体的键**（那是全局的：别的角色 / 百科里所有提到它的地方都会变）。
+		// 改成写我们自己的 <SLUG>_FORGE.* 键，由生成的补丁只在「这一局玩的是我方角色」时返回它们。
+		Check("新名字写进 powers.json 的**我们自己的键**（POISON_POWER_FORGE.title），本体键一个字都不动",
+			text35.Contains("\"POISON_POWER_FORGE.title\"") && text35.Contains("剧毒")
+			&& !text35.Contains("\"POISON_POWER.title\""), "自己的键");
+		Check("新描述也写进我们自己的键（本体键不覆盖）",
+			text35.Contains("\"POISON_POWER_FORGE.description\"") && !text35.Contains("\"POISON_POWER.description\""));
 		if (flag3 && EffectCatalog.ZhLocText("POISON_POWER.smartDescription") != null)
 		{
-			Check("本体有 smartDescription 时一起覆盖（战斗里悬停提示用的是它）", text35.Contains("\"POISON_POWER.smartDescription\""), "一起盖");
+			Check("本体有 smartDescription 时也写一份我们自己的（战斗里悬停提示用的是它）",
+				text35.Contains("\"POISON_POWER_FORGE.smartDescription\""), "自己的键");
 		}
 		string text36 = VanillaPowerGen.Source(characterProfile20);
 		Check("补丁按本体 Id.Entry 认状态（POISON_POWER）", text36.Contains("[\"POISON_POWER\"]"), "在表里");
+		// 隔离开关：只有「这一局玩的是我方角色」时才改名/换图 —— 主菜单百科、别的角色一律原名原图
+		Check("改名/换图有一个「只在我方角色的这一局生效」的开关（主菜单 / 别的角色 → 原名）",
+			text36.Contains("internal static bool IsMyRun()")
+			&& text36.Contains("RunManager.Instance.IsInProgress")
+			&& text36.Contains("LocalContext.GetMe(MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState())")
+			&& text36.Contains("is " + Naming.From(characterProfile20).CharClass), "开关在");
+		Check("名字 / 描述 / 战斗描述三条都按这个开关来（不再靠覆盖本体的本地化表）",
+			text36.Contains("nameof(PowerModel.Title)") && text36.Contains("nameof(PowerModel.Description)")
+			&& text36.Contains("nameof(PowerModel.SmartDescription)")
+			&& text36.Contains("new LocString(\"powers\", r.Prefix + \".title\")"), "三条都在");
+		Check("图标 / 大图标 / 层数颜色 / 血条颜色也都按这个开关来",
+			System.Text.RegularExpressions.Regex.Matches(text36, "ForgePowerRename\\.IsMyRun\\(\\)").Count >= 4, "四处都加了开关");
 		Check("补丁替换状态栏小图标 + 特效大图", text36.Contains("nameof(PowerModel.Icon)") && text36.Contains("nameof(PowerModel.BigIcon)"), "两个都在");
 		Check("补丁改层数数字颜色：补在消费端 NPower.RefreshAmount 上（本体中毒/灾厄 override 了基类属性，补基类没用）", text36.Contains("\"RefreshAmount\"") && text36.Contains("ThemeConstants.Label.FontColor") && !text36.Contains("nameof(PowerModel.AmountLabelColor)"), "补在 RefreshAmount 之后");
 		Check("补丁改血条那一截的颜色（NHealthBar + %节点 + SelfModulate）", text36.Contains("NHealthBar") && text36.Contains("\"%\" + e.BarNode") && text36.Contains("SelfModulate"), "都改到");
@@ -9300,7 +9318,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Check("自己卡牌的描述用新名字（不是「施加 3 层中毒」）", text38.Contains("剧毒") && !text38.Contains("层中毒"), "卡面已用新名");
 		Check("本机读到了本体卡牌中文表（卡面描述里的旧名字才换得了）", VanillaPowerGen.CanRewriteVanillaCardText, $"{EffectCatalog.ZhCardLoc.Count} 个键");
 		List<(string, string, string)> list29 = VanillaPowerGen.VanillaTextReplacements(characterProfile22).ToList();
-		Check("本体卡牌/遗物/药水里写着「中毒」的描述会被一起换掉", list29.Count > 0 && list29.All<(string, string, string)>(((string Table, string Key, string Text) r) => !r.Text.Contains("中毒") && r.Text.Contains("剧毒")), $"{list29.Count} 条（卡牌 {list29.Count<(string, string, string)>(((string Table, string Key, string Text) r) => r.Table == "cards")} / 遗物 {list29.Count<(string, string, string)>(((string Table, string Key, string Text) r) => r.Table == "relics")} / 药水 {list29.Count<(string, string, string)>(((string Table, string Key, string Text) r) => r.Table == "potions")}）");
+		// 用户要求：对原版状态的修改**只能在生成的模组角色上生效** —— 所以默认**不再**全局改本体的卡牌/遗物/药水文本
+		Check("默认**不动**本体卡牌/遗物/药水的文本（改了会连带影响别的角色与百科）",
+			list29.Count == 0, $"{list29.Count} 条（应为 0）");
+		// 用户显式勾了「本体卡牌/遗物/药水描述里的旧名字也一起换掉」时才做（那是全角色范围的，界面上有说明）
+		characterProfile20.VanillaPowerOverrides[0].ReplaceInVanillaText = true;
+		var list29b = VanillaPowerGen.VanillaTextReplacements(characterProfile20).ToList();
+		Check("（显式勾选后才会做）本体文本替换仍然可用，且只改含旧名的描述类键",
+			list29b.Count > 0 && list29b.All<(string, string, string)>(((string Table, string Key, string Text) r) => !r.Text.Contains("中毒") && r.Text.Contains("剧毒")),
+			$"{list29b.Count} 条");
+		characterProfile20.VanillaPowerOverrides[0].ReplaceInVanillaText = false;
+		Check("默认值就是关（新配置不再全局改本体文本）", new VanillaPowerOverride().ReplaceInVanillaText == false, "默认 false");
 		Check("只改描述键，不动标题（免得卡名对不上）", list29.All<(string, string, string)>(((string Table, string Key, string Text) r) => r.Key.EndsWith(".description") || r.Key.EndsWith(".smartDescription")), "都是描述键");
 		Check("不勾「本体卡面也换名」时就不替换", VanillaPowerGen.VanillaTextReplacements(ProfileWith(new VanillaPowerOverride
 		{
@@ -13137,12 +13165,16 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			rpProbe.Cards.Add(rpRandCard);
 			string rpSrc = CSharpCodeGen.CardSource(rpProbe, rpCard, 0);
 			string rpRandSrc = CSharpCodeGen.CardSource(rpProbe, rpRandCard, 0);
-			Check("重放（自己选）：选出来的每张 BaseReplayCount += N，并给一次预览（本体 HiddenGem 的做法）",
-				rpSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, 1)")
+			Check("重放（自己选）：先算候选池（排除打不出去 / 已有重放的），池空就整条跳过；选出来的每张 BaseReplayCount += N，最后一次性预览",
+				rpSrc.Contains("__replayPool = PileType.Hand.GetPile(base.Owner).Cards.Where(c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1).ToList();")
+				&& rpSrc.Contains("if (__replayPool.Count > 0) {")
+				&& rpSrc.Contains("int __replayWant = Math.Min(1, __replayPool.Count);")
+				&& rpSrc.Contains("new CardSelectorPrefs(base.SelectionScreenPrompt, __replayWant)")
 				&& rpSrc.Contains("__replayCard.BaseReplayCount += 2;")
-				&& rpSrc.Contains("CardCmd.Preview(__replayCard);"), "对");
-			Check("重放（随机）：从那一摞（这里是消耗牌堆）随机拿 N 张再加",
-				rpRandSrc.Contains("TakeRandom(PileType.Exhaust.GetPile(base.Owner).Cards, 2, base.Owner.RunState.Rng.CombatCardSelection)")
+				&& rpSrc.Contains("CardCmd.Preview(__replayFrom);"), "对");
+			Check("重放（随机）：从那一摞（这里是消耗牌堆）的候选池里随机拿（最多 N 张）再加",
+				rpRandSrc.Contains("__replayPool = PileType.Exhaust.GetPile(base.Owner).Cards.Where(c => !c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1).ToList();")
+				&& rpRandSrc.Contains("TakeRandom(__replayPool, __replayWant, base.Owner.RunState.Rng.CombatCardSelection)")
 				&& rpRandSrc.Contains("__replayCard.BaseReplayCount += 1;"), "对");
 			Check("重放的卡面描述写清「额外打出 N 次」",
 				LocalizationGen.CardsJson(rpProbe).Contains("本场战斗内额外打出 2 次"), "描述对");
