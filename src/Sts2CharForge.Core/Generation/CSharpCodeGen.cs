@@ -3758,7 +3758,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「从哪里选牌」同消耗卡牌：手牌 / 抽牌堆 / 弃牌堆（本体「降灵 Seance / 充能 Charge」就是选抽牌堆变化）。
     /// 变出来的新卡还能带「升级 / 免费 / 仅本回合升级 / 仅本回合免费」这几个附加处理。
     /// </summary>
-    private static void EmitTransformCard(CodeWriter w, EffectSpec e, bool useX = false, CharacterProfile? p = null)
+    private static void EmitTransformCard(CodeWriter w, EffectSpec e, bool useX = false, CharacterProfile? p = null, string cardSource = "this")
     {
         string n = useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString();
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
@@ -3767,7 +3767,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         bool randomSpawn = e.IsSpawnRandom;
         if (randomSpawn) w.Line($"var __transformPool = {SpawnPoolExpr(e, p)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
         string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
-        if (e.HasSpawnModifier) EmitTempUpgradePowerApply(w, tempUp, "this");
+        // 「仅本回合升级」要挂一个生成的 Power，最后一个实参是 cardSource（CardModel?）——
+        // 卡牌传 this 没问题，**遗物/药水不是 CardModel，必须传 null**（否则编译器选到
+        // Apply<T>(ctx, IEnumerable<Creature>?, …) 那个重载，报「参数 2/参数 5」两条错，整个模组编译不过）。
+        // 与 EmitGenerateCard 的 tempUpSource 是同一个约定。
+        if (e.HasSpawnModifier) EmitTempUpgradePowerApply(w, tempUp, cardSource);
 
         if (e.CardPick == "Chosen")
         {
@@ -4286,7 +4290,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "CheapenDraw":
                 w.Line(SelfContainedMarker(e));
                 w.Line(ApplyPowerLine(e, useX, Naming.From(p).DrawCostPowerClass, "base.Owner.Creature",
-                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature", cardSourceExpr: "null") + "   // 抽到就减费");
+                    Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature") + "   // 抽到就减费");
                 break;
 
             case "Outbreak":
@@ -5754,7 +5758,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 而需求 ⑦ 的硬要求是「没选关键词时生成代码逐字不变」。需求 ⑦ 要用的自定义关键词
                 // 解析在这条链上退回 KeywordGen.NormalizeKeyText（界面下拉存的**就是键**，所以够用；
                 // 手改存档写成中文名的话这一项会打印一行「没认出来」的说明）。
-                EmitTransformCard(w, e);
+                EmitTransformCard(w, e, cardSource: "null");
                 break;
 
             case "TakeFromDraw":
@@ -6904,7 +6908,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "TransformCard":
-                EmitTransformCard(w, e, p: p);
+                EmitTransformCard(w, e, p: p, cardSource: "null");
                 break;
 
             case "TakeFromDraw":

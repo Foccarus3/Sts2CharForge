@@ -10870,6 +10870,136 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 		}
 
+		// ===== 本轮用户实测修复：遗物 / 药水「施加增益 / 减益」的 cardSource 必须是 null（写成 this 会选错重载）=====
+		{
+			// PowerCmd.Apply<T> / PowerCmd.ModifyAmount 的**最后一个实参**类型是 CardModel?。卡牌写 this 合法
+			//（卡牌自己就是 CardModel），但遗物 / 药水不是 CardModel —— 写 this 会让编译器去选
+			// Apply<T>(ctx, IEnumerable<Creature>? targets, …) 那个重载，然后报两条看不懂的错：
+			//   参数 2: 无法从 Creature 转换为 IEnumerable<Creature>?
+			//   参数 5: 无法从 …Relic1 转换为 MegaCrit.Sts2.Core.Models.CardModel?
+			// 整个模组编译不过（用户实测：遗物「每回合开始 → 获得状态」）。V0.2.37「获得类数值支持负数」把遗物 /
+			// 药水也并到 CSharpCodeGen.ApplyPowerLine 上时踩过这个坑（遗物段 / 药水段共 9 个调用点现在都显式传
+			// cardSourceExpr: "null"）。这里按「取那一行 → 看最后一个实参」逐个锁死三类上下文，免得再犯。
+			// 判据只看那一行里有没有 ", null);" / ", this);"：applier 那一位固定是 Creature 表达式，不会是 null，
+			// 所以这样判既准又不依赖中间的数值表达式长什么样。
+
+			// ① 遗物：「每回合开始 → 获得状态」（用户实测的那条路；正数走 Apply<T>）
+			CharacterProfile argRelicProbe = ProfileFactory.Sample();
+			var argRelicPos = new RelicSpec
+			{
+				Name = "自检遗物状态实参", ClassName = "UiCheckPowerArgRelic", Rarity = "Common", InRelicPool = true,
+				Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 3m, TargetSide = "Self" } },
+			};
+			argRelicProbe.Relics.Add(argRelicPos);
+			string argRelicSrc = CSharpCodeGen.RelicSource(argRelicProbe, argRelicPos, argRelicProbe.Relics.Count - 1);
+			string argRelicApplyLine = argRelicSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<StrengthPower>(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.Apply 那一行)";
+			Check("遗物「每回合开始 → 获得状态」：PowerCmd.Apply 的最后一个实参（cardSource）是 null 而不是 this —— 遗物不是 CardModel，写 this 会选错重载、整个模组编译不过",
+				argRelicApplyLine.Contains(", null);", StringComparison.Ordinal)
+				&& !argRelicApplyLine.Contains(", this);", StringComparison.Ordinal), argRelicApplyLine);
+
+			// ② 遗物：同一条效果的负数（扣除层数）走 ModifyAmount —— 同一个坑，也要 null
+			var argRelicNeg = new RelicSpec
+			{
+				Name = "自检遗物扣层数实参", ClassName = "UiCheckPowerArgRelicNeg", Rarity = "Common", InRelicPool = true,
+				Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" } },
+			};
+			argRelicProbe.Relics.Add(argRelicNeg);
+			string argRelicNegSrc = CSharpCodeGen.RelicSource(argRelicProbe, argRelicNeg, argRelicProbe.Relics.Count - 1);
+			string argRelicModifyLine = argRelicNegSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.ModifyAmount 那一行)";
+			Check("遗物「每回合开始 → 扣除 N 层状态」（负数）：PowerCmd.ModifyAmount 的最后一个实参也是 null（负数那条路是同一个坑）",
+				argRelicModifyLine.Contains(", null);", StringComparison.Ordinal)
+				&& !argRelicModifyLine.Contains(", this);", StringComparison.Ordinal), argRelicModifyLine);
+
+			// ③ 遗物：兜底 —— 整段生成代码里一处都不能有
+			string[] argRelicThisLines = argRelicSrc.Split('\n')
+				.Where((string l) => (l.Contains("PowerCmd.Apply<", StringComparison.Ordinal) || l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))
+					&& l.Contains(", this);", StringComparison.Ordinal)).ToArray();
+			Check("（兜底）遗物那一整段生成代码里，没有任何 PowerCmd.Apply / ModifyAmount 把 this 当 cardSource",
+				argRelicThisLines.Length == 0,
+				argRelicThisLines.Length == 0 ? "一处都没有" : string.Join(" ｜ ", argRelicThisLines.Select((string l) => l.Trim())));
+
+			// ④ 药水：「获得状态」（药水也不是 CardModel）
+			CharacterProfile argPotionProbe = ProfileFactory.Sample();
+			var argPotionPos = new PotionSpec { Name = "自检药水状态实参", ClassName = "UiCheckPowerArgPotion" };
+			argPotionPos.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "PoisonPower", Amount = 3m, TargetSide = "Self" });
+			argPotionProbe.Potions.Add(argPotionPos);
+			string argPotionSrc = CSharpCodeGen.PotionSource(argPotionProbe, argPotionPos, argPotionProbe.Potions.Count - 1);
+			string argPotionApplyLine = argPotionSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<PoisonPower>(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.Apply 那一行)";
+			Check("药水「获得状态」：PowerCmd.Apply 的最后一个实参是 null 而不是 this（药水同样不是 CardModel）",
+				argPotionApplyLine.Contains(", null);", StringComparison.Ordinal)
+				&& !argPotionApplyLine.Contains(", this);", StringComparison.Ordinal), argPotionApplyLine);
+
+			// ⑤ 药水：负数（扣除层数）
+			var argPotionNeg = new PotionSpec { Name = "自检药水扣层数实参", ClassName = "UiCheckPowerArgPotionNeg" };
+			argPotionNeg.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "PoisonPower", Amount = -3m, TargetSide = "Self" });
+			argPotionProbe.Potions.Add(argPotionNeg);
+			string argPotionNegSrc = CSharpCodeGen.PotionSource(argPotionProbe, argPotionNeg, argPotionProbe.Potions.Count - 1);
+			string argPotionModifyLine = argPotionNegSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.ModifyAmount 那一行)";
+			Check("药水「扣除 N 层状态」（负数）：PowerCmd.ModifyAmount 的最后一个实参也是 null",
+				argPotionModifyLine.Contains(", null);", StringComparison.Ordinal)
+				&& !argPotionModifyLine.Contains(", this);", StringComparison.Ordinal), argPotionModifyLine);
+
+			// ⑥ 药水：兜底
+			string[] argPotionThisLines = argPotionSrc.Split('\n')
+				.Where((string l) => (l.Contains("PowerCmd.Apply<", StringComparison.Ordinal) || l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))
+					&& l.Contains(", this);", StringComparison.Ordinal)).ToArray();
+			Check("（兜底）药水那一整段生成代码里，没有任何 PowerCmd.Apply / ModifyAmount 把 this 当 cardSource",
+				argPotionThisLines.Length == 0,
+				argPotionThisLines.Length == 0 ? "一处都没有" : string.Join(" ｜ ", argPotionThisLines.Select((string l) => l.Trim())));
+
+			// ⑦ 卡牌：同一个效果仍然必须是 this（别为了修遗物 / 药水把卡牌也改坏）
+			CharacterProfile argCardProbe = ProfileFactory.Sample();
+			argCardProbe.VanillaPowerOverrides.Clear();
+			var argCardPos = new CardSpec { Name = "自检卡牌状态实参", ClassName = "UiCheckPowerArgCard", Rarity = "Common", Cost = 1, InCardPool = true };
+			argCardPos.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 3m, TargetSide = "Self" });
+			argCardProbe.Cards.Add(argCardPos);
+			string argCardSrc = CSharpCodeGen.CardSource(argCardProbe, argCardPos, argCardProbe.Cards.Count - 1);
+			string argCardApplyLine = argCardSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<StrengthPower>(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.Apply 那一行)";
+			Check("（对照）卡牌上同类效果仍然传 this（卡牌自己就是 CardModel —— 修 bug 不能把卡牌一起改坏）",
+				argCardApplyLine.Contains(", this);", StringComparison.Ordinal)
+				&& !argCardApplyLine.Contains(", null);", StringComparison.Ordinal), argCardApplyLine);
+
+			// ⑧ 卡牌：负数（扣除层数）也仍然是 this
+			var argCardNeg = new CardSpec { Name = "自检卡牌扣层数实参", ClassName = "UiCheckPowerArgCardNeg", Rarity = "Common", Cost = 1, InCardPool = true };
+			argCardNeg.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" });
+			argCardProbe.Cards.Add(argCardNeg);
+			string argCardNegSrc = CSharpCodeGen.CardSource(argCardProbe, argCardNeg, argCardProbe.Cards.Count - 1);
+			string argCardModifyLine = argCardNegSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.ModifyAmount 那一行)";
+			Check("（对照）卡牌上「扣除 N 层状态」（负数）也仍然是 this",
+				argCardModifyLine.Contains(", this);", StringComparison.Ordinal)
+				&& !argCardModifyLine.Contains(", null);", StringComparison.Ordinal), argCardModifyLine);
+
+			// ⑨ 自定义状态触发器：状态不是 CardModel，也必须是 null（这条现在就是对的，锁住）
+			CharacterProfile argCpProbe = ProfileFactory.Sample();
+			argCpProbe.CustomPowers.Clear();
+			argCpProbe.CustomPowers.Add(new CustomPowerSpec
+			{
+				Name = "自检状态实参", ClassName = "UiCheckPowerArgCp", Type = "Buff",
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 3m, TargetSide = "Self" } } } },
+			});
+			string argCpSrc = CustomPowerGen.Source(argCpProbe, argCpProbe.CustomPowers[0], 0);
+			string argCpApplyLine = argCpSrc.Split('\n')
+				.FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<StrengthPower>(", StringComparison.Ordinal))?.Trim()
+				?? "(没找到 PowerCmd.Apply 那一行)";
+			Check("自定义状态的触发器里：PowerCmd.Apply 的最后一个实参是 null（状态钩子里没有「这张牌」）",
+				argCpApplyLine.Contains(", null);", StringComparison.Ordinal)
+				&& !argCpApplyLine.Contains(", this);", StringComparison.Ordinal), argCpApplyLine);
+		}
+
 		// ===== 本轮新增：自定义状态伤害归属 / 毒性爆发 / 大限已至 / 预见 / 升级卡牌 / 范围限定 / 自定义描述 =====
 		{
 			// ① 自定义状态造成的伤害不算「角色造成的伤害」：dealer 传 null（本体就是靠它归因的）
