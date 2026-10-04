@@ -13040,6 +13040,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				&& hpLostDmgSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();"), "造了");
 			Check("校验器把「失去生命时」和「受到伤害后」的差别写清楚（前者是后者的超集）",
 				ProfileValidator.Validate(hpLostProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("生命值真的少了")), "写了");
+
+			// ⑪ 本轮新增：刮削（本体卡「刮削 Scrape」）——抽 N 张，丢弃其中所有非 0 费牌
+			Check("（配置）有「刮削」这个效果种类，数值 0~10（0 = 不生效，守「都能填 0」那条规矩）",
+				EffectCatalog.FindKind("ScrapeDraw") is not null
+				&& EffectCatalog.FindKind("ScrapeDraw").Min == 0 && EffectCatalog.FindKind("ScrapeDraw").Max == 10
+				&& EffectCatalog.FindKind("ScrapeDraw").Display.Contains("刮削"),
+				EffectCatalog.FindKind("ScrapeDraw")?.Display ?? "(没有)");
+			CharacterProfile scrapeProbe = ProfileFactory.Sample();
+			scrapeProbe.VanillaPowerOverrides.Clear();
+			CardSpec scrapeCard = new CardSpec { Name = "刮削探针", ClassName = "UiCheckScrape", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			scrapeCard.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 4m, TargetSide = "Self" });
+			scrapeProbe.Cards.Add(scrapeCard);
+			string scrapeSrc = CSharpCodeGen.CardSource(scrapeProbe, scrapeCard, 0);
+			Check("生成：声明 CardsVar（卡面 {Cards:diff()} 与升级增量都跟着走）",
+				scrapeSrc.Contains("new CardsVar(4)"), "变量在");
+			Check("生成：抽 N 张 → 按本体的判据筛掉 0 费牌 → CardCmd.Discard（和本体 Scrape 写法一致）",
+				scrapeSrc.Contains("CET:Effect=ScrapeDraw")
+				&& scrapeSrc.Contains("IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner)).Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);")
+				&& scrapeSrc.Contains("await CardCmd.Discard(choiceContext, __scraped);"), "对");
+			string scrapeJson = LocalizationGen.CardsJson(scrapeProbe);
+			Check("卡面描述写清「丢弃其中所有非 0 费牌」",
+				scrapeJson.Contains("抽 {Cards:diff()} 张牌，丢弃其中所有非 0 费牌。"), "描述对");
+			RelicSpec scrapeRelic = new RelicSpec
+			{
+				Name = "刮削遗物", ClassName = "UiCheckScrapeRelic", Rarity = "Common", Trigger = "PlayerTurnStart",
+				Effects = { new EffectSpec { Kind = "ScrapeDraw", Amount = 3m, TargetSide = "Self" } },
+			};
+			scrapeProbe.Relics.Add(scrapeRelic);
+			string scrapeRelicSrc = CSharpCodeGen.RelicSource(scrapeProbe, scrapeRelic, 0);
+			Check("遗物上也能用（同一段实现；触发时机不给 choiceContext 时是警告而不是坏代码）",
+				scrapeRelicSrc.Contains("__scraped"), "遗物上也在");
 			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
 				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
 				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),

@@ -782,7 +782,7 @@ public static class ProjectRecovery
                     if (scSide is not null) sc.TargetSide = scSide;
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
-                    if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay")
+                    if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay" or "ScrapeDraw")
                         NextVar(vars, ref varIdx, "Cards");
                     if (sc.Kind == "Outbreak") NextVar(vars, ref varIdx, "Power:PoisonPower");
                     // 「大限已至」的变量是计算三件套，ParseEffects 开头已经把 calcVars 摘出去了，不用认领
@@ -886,6 +886,8 @@ public static class ProjectRecovery
                     || line.StartsWith("var __scryDiscard", StringComparison.Ordinal)
                     || line.StartsWith("if (__scryDiscard.Count", StringComparison.Ordinal)
                     || line.StartsWith("await CardCmd.Discard(choiceContext, __scryDiscard)", StringComparison.Ordinal)
+                    // 「刮削」那一段的实现（抽 N 张 + 丢掉非 0 费的）：效果本身由 CET:Effect=ScrapeDraw 收尾
+                    || line.Contains("__scraped", StringComparison.Ordinal)
                     || line.StartsWith("var toUpgrade", StringComparison.Ordinal)
                     || line.EndsWith("CardCmd.Upgrade(c);", StringComparison.Ordinal)
                     || line.StartsWith("CardCmd.Upgrade(pick);", StringComparison.Ordinal)
@@ -2160,6 +2162,8 @@ public static class ProjectRecovery
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false && !e.AmountIsX,
         // 升级卡牌 / 预见：都用本体的 CardsVar（键 = Cards）
         "UpgradeCard" or "Scry" => !e.AmountIsX,
+        // 刮削：同样是 CardsVar（数值 = 抽几张）
+        "ScrapeDraw" => !e.AmountIsX,
         // 毒性爆发：PowerVar<PoisonPower>（键 = PoisonPower），升级增量落在它上面
         "Outbreak" => true,
         // 大限已至：计算三件套（CalculationBase + ExtraDamage + CalculatedDamage），

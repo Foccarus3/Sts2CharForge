@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -694,6 +694,8 @@ public static class LocalizationGen
                     ? $"{repeat}{when}获得 {var} 点格挡。"
                     : $"{repeat}{when}{forWho}获得 {var} 点格挡。"),
             "Draw" => $"{repeat}{when}抽 {var} 张牌。",
+            // 刮削（本体卡「刮削 Scrape」）：抽 N 张，丢弃其中所有非 0 费牌（0 费牌留在手上）
+            "ScrapeDraw" => $"{repeat}{when}抽 {var} 张牌，丢弃其中所有非 0 费牌。",
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
             // 负数 = 失去（生成的是 LoseEnergy：本体 GainEnergy 对非正数直接返回）

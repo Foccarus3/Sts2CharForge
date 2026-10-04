@@ -912,6 +912,23 @@ public override async Task AfterCurrentHpChanged(Creature creature, decimal delt
 原来「获得格挡 / 失去格挡」这两条只按变量回读，反推存档时会把数值静默变成 0 ——
 现在按参数里的字面量兜底（探针实测「获得 3 点格挡」能原样带回）。
 
+## 刮削（抽 N 张，丢弃其中所有非 0 费牌）
+
+效果种类里多了「**刮削**」（本体卡「刮削 Scrape」那套做法）：抽 N 张牌，然后把其中
+**所有非 0 费**的牌丢进弃牌堆（0 费牌留在手上）。生成的就是本体那两句：
+
+```csharp
+IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner))
+    .Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);
+await CardCmd.Discard(choiceContext, __scraped);
+```
+
+- 数值 = 抽几张（0 = 不生效，守「所有种类都能填 0」那条规矩），用本体的 `CardsVar`：
+  卡面写 `{Cards:diff()}`，升级增量也加在它上面。
+- 丢牌走 `CardCmd.Discard`，所以「奇巧」这类跟弃牌有关的机制照常触发。
+- 卡牌 / 遗物 / 药水三处都能用；触发时机本身没有 choiceContext 时会给出警告（不会生成坏代码）。
+- 从工程反推存档时按 `CET:Effect=ScrapeDraw` 标记整段认回来（数值、是否 X 都在标记里）。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

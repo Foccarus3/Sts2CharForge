@@ -1493,6 +1493,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "UpgradeCard" => "Cards",
         // 预见：数值 = 看抽牌堆顶几张，同样用 CardsVar
         "Scry" => "Cards",
+        // 刮削：数值 = 抽几张（本体「刮削 Scrape」），同样用 CardsVar
+        "ScrapeDraw" => "Cards",
         // 复制卡牌：数值 = 从牌堆里选几张，同样用 CardsVar（键 = Cards）；「复制的份数」不是变量，
         // 生成时直接写字面量（它不随升级变 —— 界面上它是整数栏，也没有升级增量那一栏）
         "CopyCard" => "Cards",
@@ -1542,6 +1544,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 升级卡牌 / 预见：数值也是「几张牌」，用本体的 CardsVar（有同名属性，可以直接 base.DynamicVars.Cards）
         "UpgradeCard" => "Cards",
         "Scry" => "Cards",
+        // 刮削：数值 = 抽几张牌，同样用 CardsVar（有同名属性）
+        "ScrapeDraw" => "Cards",
         // 复制卡牌 / 重放卡牌：数值 = 选几张牌，也用本体的 CardsVar（卡面 {Cards:diff()} 跟着升级变）
         "CopyCard" => "Cards",
         "ReplayCard" => "Cards",
@@ -1631,7 +1635,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 起了别名（Damage2 这种）或只有索引器的（Power / PetHp / PetDamage）一律用 ["名字"]。
         // PetHp / PetDamage 是**我们自己起的名字**，本体 DynamicVars 上当然没有这两个属性 → 必须走索引器。
         bool hasProperty = e.Kind is "Damage" or "Block" or "Draw" or "Energy" or "ExtraResource"
-            or "UpgradeCard" or "Scry";
+            or "UpgradeCard" or "Scry" or "ScrapeDraw";
         return hasProperty && name == VarPropertyOf(e)
             ? $"base.DynamicVars.{VarPropertyOf(e)}.BaseValue"
             : $"base.DynamicVars[{Lit.Str(name)}].BaseValue";
@@ -1695,6 +1699,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 升级卡牌 / 预见：数值也是「几张牌」，共用本体的 CardsVar（键 = Cards，同名时自动起别名）
             "UpgradeCard" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
             "Scry" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
+            // 刮削：数值 = 抽几张，共用本体的 CardsVar
+            "ScrapeDraw" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
             // 复制卡牌 / 重放卡牌：数值 = 选几张（本体的「二刀流 / 转化」用的也是 CardsVar，
             // 卡面 {Cards:diff()} 跟着升级变）
             "CopyCard" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
@@ -2968,6 +2974,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Close();
     }
 
+    /// <summary>
+    /// 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后把其中**所有非 0 费**的牌丢进弃牌堆
+    /// （0 费牌留在手上 —— 「刮」掉的是要花能量的牌）。
+    ///
+    /// 判据照本体原样写：<c>c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX</c>
+    /// （CostsX 也留着：X 费牌的花费是 0，但它是「要花能量」的牌）。丢牌走 <c>CardCmd.Discard</c>，
+    /// 所以「奇巧」这类跟弃牌有关的机制照常触发。
+    ///
+    /// 整段写在一个变量上（__scraped），回读时按 <c>CET:Effect=ScrapeDraw</c> 标记收尾、这几行整段跳过
+    /// （见 ProjectRecovery 的 skipSelfContainedBody 名单）。
+    /// </summary>
+    private static void EmitScrapeDraw(CodeWriter w, EffectSpec e, string amount)
+    {
+        w.Line(SelfContainedMarker(e));
+        w.Line($"// 抽 {amount} 张牌，丢弃其中所有「非 0 费」的牌（本体「刮削 Scrape」的写法）");
+        w.Line($"IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, {amount}, base.Owner))"
+            + ".Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);");
+        w.Line("await CardCmd.Discard(choiceContext, __scraped);");
+    }
+
     private static void EmitOutbreak(CodeWriter w, EffectSpec e, string amt, string cardSource)
         => EmitOutbreak(w, e, amt,
             enemies: "base.Owner.Creature.CombatState.HittableEnemies",
@@ -3181,7 +3207,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static bool AmountIsStrength(EffectSpec e) =>
         e.Kind is "Damage" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "Draw" or "Gold" or "Energy"
             or "OverdraftEnergy" or "ExtraResource" or "ApplyPower" or "TempPower" or "Outbreak"
-            or "BoostCard" or "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard"
+            or "BoostCard" or "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "ScrapeDraw"
             or "GenerateCard" or "ExhaustCard" or "TransformCard" or "DiscardCard"
             or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust"
             or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal" or "CardReward"
@@ -3489,6 +3515,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "Scry":
                 EmitScry(w, e, useX);
+                break;
+
+            case "ScrapeDraw":
+                EmitScrapeDraw(w, e, amt);
                 break;
 
             case "Outbreak":
@@ -4780,6 +4810,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitScry(w, e);
                 break;
 
+            case "ScrapeDraw":
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，刮削抽不了牌）"); break; }
+                EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
+                break;
+
             // 毒性爆发：只要拿到玩家和敌人列表就行（本体 PoisonPower 那一下伤害 dealer 是 null）
             case "Outbreak":
                 EmitOutbreak(w, e, Lit.Dec(e.Amount), "null");
@@ -5844,6 +5879,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "Scry":
                 EmitScry(w, e);
+                break;
+            case "ScrapeDraw":
+                EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
                 break;
 
             case "Outbreak":

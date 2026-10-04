@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -658,6 +658,10 @@ public static class EffectCatalog
         new EffectKindOption("TurnEndPlay",   "回合结束时自动打出（数值 0 = 这张牌自己）", "张", 0, 5,  false, false),
         // 预见（一代观者的 Scry）：看抽牌堆顶的 N 张牌，把其中任意张丢进弃牌堆（本体没有这个机制，自己拼）。
         new EffectKindOption("Scry",          "预见（看抽牌堆顶 N 张，丢任意张）", "张", 0, 9, false, false),
+        // 刮削（本体卡「刮削 Scrape」）：抽 N 张牌，然后把其中**所有非 0 费**的牌丢进弃牌堆
+        // （0 费牌留在手上）。判据照本体原样写：EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || CostsX。
+        // 数值 = 抽几张（0 = 不生效，守「所有种类都能填 0」那条规矩）；用 CardsVar，卡面 {Cards:diff()} 与升级增量都跟着走。
+        new EffectKindOption("ScrapeDraw",    "刮削（抽 N 张，丢弃其中所有非 0 费牌）", "张", 0, 10, false, false),
         // 从战斗中的牌堆「挑牌拿到手牌」：本体「搜寻 SecretTechnique / 全息影像 Hologram / 挖掘 Dredge」那种。
         // 走 CardSelectCmd.FromCombatPile + CardPileCmd.Add(..., PileType.Hand)。
         new EffectKindOption("TakeFromDraw",    "从抽牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
