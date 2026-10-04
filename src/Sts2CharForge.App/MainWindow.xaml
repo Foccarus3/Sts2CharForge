@@ -1572,9 +1572,9 @@
                     </Grid.ColumnDefinitions>
                     <DockPanel Grid.Column="0">
                         <!-- 署名：「逐帧动画」这一页的玩法与文案吸收自 TのG 的改造版（工具本身是按本仓库风格重写的）。
-                             放最上面、加粗加色，是要一眼就能看到。 -->
+                             放最上面、加粗 + 金色，是要一眼就能看到（金色用偏深的 #B8860B：纯金 #FFD700 在白底上太浅看不清）。 -->
                         <TextBlock DockPanel.Dock="Top" Margin="0,0,0,8" FontSize="15" FontWeight="Bold"
-                                   Foreground="#C0392B" Text="此动画板块由TのG制作"/>
+                                   Foreground="#B8860B" Text="此动画板块由TのG制作"/>
                         <!-- 这一页只管「战斗 / 篝火 / 商店立绘」这一处，所以第一句先说清边界，
                              免得用户以为传了动图就全套美术都换了。 -->
                         <TextBlock DockPanel.Dock="Top" Margin="0,0,0,6" TextWrapping="Wrap" Foreground="#666"
