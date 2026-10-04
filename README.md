@@ -859,6 +859,13 @@ if (shouldTriggerFatal && attackCommand.Results.SelectMany(r => r).Any(r => r.Wa
 所以**只带这类效果**的牌会生成成 `TargetType.Self`，打出去时 `cardPlay.Target` 是空的。
 现在它们都会让牌变成「要选目标」（单体 / 全体 / 随机按「作用对象」栏来）。
 
+## 禁止目标获得格挡
+
+效果种类里的「**禁止目标获得格挡**」：数值 = 层数（本体的层数即持续回合数），
+生成的就是 `PowerCmd.Apply<NoBlockPower>(目标, N, …)` —— 本体的 `NoBlockPower` 现成可用，
+不用自己造状态。**填负数 = 反向**（取目标身上那份实例再 `PowerCmd.ModifyAmount` 扣掉），
+卡面写「解除…的效果」。作用对象按「作用对象」栏来；只带这个效果的牌也会变成「要选目标」。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

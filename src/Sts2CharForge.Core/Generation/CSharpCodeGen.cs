@@ -2489,7 +2489,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 必须让这张牌变成要选目标的，否则打出去时 cardPlay.Target 是空的。
             or "TimesUp"
             // 翻倍 / 暴露 / 清除状态：都是「对目标身上的状态动手」，同样要让这张牌变成「要选目标」的
-            or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
+            or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
             || PetAttackKind(e.Kind)
             || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage");
 
@@ -3216,7 +3216,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 数值写死在代码里，不声明动态变量（0 那一档描述里也不用占位符）
         or "TurnEndPlay"
     // 「翻倍状态层数」：数值 = 倍数（写死在代码里），不声明动态变量
-    or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
+    or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock"
         // 击晕：没有数值，也不用声明动态变量
         or "Stun"
         // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
@@ -3710,6 +3710,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 int __dblTimes = Math.Clamp((int)e.Amount, 2, 5);   // 2 = 翻倍；生成期就定下来（不声明动态变量）
                 EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
                     c => $"{{ PowerModel? __dblPower = {c}.GetPower<{e.PowerId}>(); if (__dblPower is not null && __dblPower.Amount != 0) await PowerCmd.ModifyAmount(choiceContext, __dblPower, __dblPower.Amount * {__dblTimes - 1}, base.Owner.Creature, this); }}   // 翻 {__dblTimes} 倍");
+                break;
+
+            // 禁止持有护盾：施加本体现成的 NoBlockPower（数值 = 层数）。复用 ApplyPowerLine，
+            // 所以负数也自动是反向（负数 = 把这个状态扣掉）。
+            case "ForbidBlock":
+                w.Line(SelfContainedMarker(e));
+                EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
+                    c => ApplyPowerLine(e, useX, "NoBlockPower", c, Math.Abs((int)e.Amount).ToString(), "base.Owner.Creature") + "   // 禁止获得格挡");
                 break;
 
             // 暴露（照本体卡「暴露 Expose」写）：清空目标的格挡 + 移除人工制品，再施加 N 层状态。

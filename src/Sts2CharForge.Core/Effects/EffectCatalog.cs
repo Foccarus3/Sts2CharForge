@@ -610,6 +610,10 @@ public static class EffectCatalog
     new EffectKindOption("ClearPowerOne", "清除目标的指定状态（在「增益 / 减益」栏选哪个）", "—", 0, 0, true, true),
     // 清除目标身上的所有减益状态
     new EffectKindOption("ClearPowerDebuffs", "清除目标的所有减益状态", "—", 0, 0, true, true),
+    // 禁止持有护盾（用户要求的新效果）：施加本体现成的 NoBlockPower（全库只有这一个相关状态），
+    // 挂上之后目标就再也拿不到格挡。数值 = 层数（本体的层数即持续回合数；0 = 不生效）。
+    // 复用「施加增益/减益」那套生成（ApplyPowerLine），所以负数 = 反向（可用来清掉这个状态）。
+    new EffectKindOption("ForbidBlock", "禁止目标获得格挡（施加本体的 NoBlockPower；负数 = 反向扣掉）", "层", -99, 99, true, true),
         // 强化指定卡（像本体「精准 Accuracy」对「小刀」那样）：给**某一类卡**的伤害或格挡加 N。
         // 生成一个挂在自己身上的 Power，覆写 ModifyDamageAdditive / ModifyBlockAdditive，
         // 只对指定的那张卡生效（本体精准是用 CardTag.Shiv 认牌，我们直接认卡的类型，更精确）。

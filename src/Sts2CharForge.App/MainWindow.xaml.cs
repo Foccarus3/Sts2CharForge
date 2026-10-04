@@ -13542,6 +13542,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			expProbe.Relics.Add(expRelic);
 			Check("校验器：清除所有减益放在遗物上会被拦（需要「选中的目标」）",
 				ProfileValidator.Validate(expProbe).Any((ValidationIssue x) => x.IsError && x.Message.Contains("只做在卡牌上")), "拦住了");
+		}		// ===== 本轮新增：效果种类「禁止目标获得格挡」（复用原版 NoBlockPower）=====
+		{
+			Check("（配置）有「禁止目标获得格挡」这个效果，数值允许负数（负数 = 反向扣掉）",
+				EffectCatalog.FindKind("ForbidBlock") is not null
+				&& EffectCatalog.FindKind("ForbidBlock").Min <= -99 && EffectCatalog.FindKind("ForbidBlock").Max == 99
+				&& EffectCatalog.FindKind("ForbidBlock").Display.Contains("禁止"),
+				EffectCatalog.FindKind("ForbidBlock").Display);
+			CharacterProfile fbProbe = ProfileFactory.Sample();
+			fbProbe.VanillaPowerOverrides.Clear();
+			CardSpec fbCard = new CardSpec { Name = "禁盾探针", ClassName = "UiCheckForbid", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			fbCard.Effects.Add(new EffectSpec { Kind = "ForbidBlock", Amount = 2m, TargetSide = "Enemy" });
+			fbCard.Effects.Add(new EffectSpec { Kind = "ForbidBlock", Amount = -1m, TargetSide = "Enemy" });
+			fbProbe.Cards.Add(fbCard);
+			string fbSrc = CSharpCodeGen.CardSource(fbProbe, fbCard, 0);
+			Check("生成：正数是施加本体的 NoBlockPower，负数是取实例后 ModifyAmount 扣（复用「负数=反向」那套）",
+				fbSrc.Contains("await PowerCmd.Apply<NoBlockPower>(choiceContext, cardPlay.Target, 2, base.Owner.Creature, this)")
+				&& fbSrc.Contains("PowerModel? __negPower = cardPlay.Target.GetPower<NoBlockPower>();")
+				&& fbSrc.Contains("PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(1)), base.Owner.Creature, this)"), "生成对");
+			Check("只带「禁止获得格挡」的牌也算「要选目标」",
+				fbSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
+			string fbJson = LocalizationGen.CardsJson(fbProbe);
+			Check("卡面描述：正数写「N 回合内无法获得格挡」，负数写「解除…效果」",
+				fbJson.Contains("在 2 回合内无法获得格挡") && fbJson.Contains("解除"), "描述对");
 		}		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
