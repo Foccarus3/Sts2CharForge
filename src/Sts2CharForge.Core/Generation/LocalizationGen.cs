@@ -747,6 +747,8 @@ public static class LocalizationGen
                 : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌。",
             // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
             "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）。",
+            // 用「目标卡」填满手牌（本体「迫降 CrashLanding」）：张数由手牌上限决定，没有数值
+            "FillHand" => $"{repeat}{when}用{CardNameOf(p, e.SpawnCardId)}填满你的[gold]手牌[/gold]。",
             // 复制卡牌（本体「二刀流 DualWield」那种）：选 / 随机拿 N 张，每张复制 M 份到手牌。
             // 份数 = 1 时按本体的说法写「复制一份」而不是「复制 1 份」（卡面更顺）。
             "CopyCard" => (e.SelectPile == "Hand"

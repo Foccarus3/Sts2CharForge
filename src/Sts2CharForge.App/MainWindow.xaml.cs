@@ -13071,6 +13071,37 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			string scrapeRelicSrc = CSharpCodeGen.RelicSource(scrapeProbe, scrapeRelic, 0);
 			Check("遗物上也能用（同一段实现；触发时机不给 choiceContext 时是警告而不是坏代码）",
 				scrapeRelicSrc.Contains("__scraped"), "遗物上也在");
+
+			// ⑪ 本轮新增：用「目标卡」填满手牌（本体卡「迫降 CrashLanding」的机制）
+			Check("（配置）有「用目标卡填满手牌」这个效果种类（数值 0~0：张数由手牌上限决定）",
+				EffectCatalog.FindKind("FillHand") is not null
+				&& EffectCatalog.FindKind("FillHand").Min == 0 && EffectCatalog.FindKind("FillHand").Max == 0
+				&& EffectCatalog.FindKind("FillHand").Display.Contains("填满手牌"),
+				EffectCatalog.FindKind("FillHand")?.Display ?? "(没有)");
+			CharacterProfile fillProbe = ProfileFactory.Sample();
+			fillProbe.VanillaPowerOverrides.Clear();
+			CardSpec fillCard = new CardSpec { Name = "填手探针", ClassName = "UiCheckFillHand", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			fillCard.Effects.Add(new EffectSpec { Kind = "FillHand", SpawnCardId = "Shiv", TargetSide = "Self" });
+			fillProbe.Cards.Add(fillCard);
+			string fillSrc = CSharpCodeGen.CardSource(fillProbe, fillCard, 0);
+			Check("生成：算「手牌上限 - 当前手牌数」→ 逐张 CreateCard → 一次性加进手牌（本体「迫降」的写法）",
+				fillSrc.Contains("CET:Effect=FillHand") && fillSrc.Contains("CET:Card=Shiv")
+				&& fillSrc.Contains("int __fillTo = CardPile.MaxCardsInHand - CardPile.GetCards(base.Owner, PileType.Hand).Count();")
+				&& fillSrc.Contains("__filled.Add(base.CombatState.CreateCard<Shiv>(base.Owner));")
+				&& fillSrc.Contains("await CardPileCmd.AddGeneratedCardsToCombat(__filled, PileType.Hand, base.Owner);"), "对");
+			Check("它不声明动态变量（数值永远是 0，声明了反而会多出用不上的占位符 / 撞名）",
+				!fillSrc.Contains("new DynamicVar(") && !fillSrc.Contains("new CardsVar("), "没声明");
+			string fillJson = LocalizationGen.CardsJson(fillProbe);
+			Check("卡面描述写清「用哪张卡填满手牌」",
+				fillJson.Contains("填满你的[gold]手牌[/gold]") && fillJson.Contains("Shiv"), "描述对");
+			Check("校验器说明「张数 = 手牌上限 - 当前手牌数」，没选目标卡时给警告（并退成小刀）",
+				ProfileValidator.Validate(fillProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("手牌上限")), "提示在");
+			CardSpec fillBare = new CardSpec { Name = "填手没选卡", ClassName = "UiCheckFillHandBare", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			fillBare.Effects.Add(new EffectSpec { Kind = "FillHand", TargetSide = "Self" });
+			fillProbe.Cards.Add(fillBare);
+			Check("没选目标卡时：校验器给警告，生成的代码退成小刀（Shiv）",
+				ProfileValidator.Validate(fillProbe).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("小刀"))
+				&& CSharpCodeGen.CardSource(fillProbe, fillBare, 0).Contains("CreateCard<Shiv>(base.Owner)"), "退成小刀");
 			Check("校验器把两条触发时机的差别写清楚（每一下会触发多次 → 指路「连击只算一次」）",
 				ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("每一下伤害都会触发一次"))
 				&& ProfileValidator.Validate(atkProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("所有命中都结束之后")),

@@ -780,6 +780,9 @@ public static class ProjectRecovery
                         sc.PowerId = nameToPowerId.TryGetValue(scPower, out string? scPid) ? scPid : scPower;
                     string? scSide = Match(line, @"CET:Side=(\w+)");
                     if (scSide is not null) sc.TargetSide = scSide;
+                    // 「用目标卡填满手牌」选的是哪张卡（代码里只剩 CreateCard<那张卡>）
+                    string? scCard = Match(line, @"CET:Card=(\S+)");
+                    if (scCard is not null) sc.SpawnCardId = scCard;
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
                     if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay" or "ScrapeDraw")
@@ -888,6 +891,9 @@ public static class ProjectRecovery
                     || line.StartsWith("await CardCmd.Discard(choiceContext, __scryDiscard)", StringComparison.Ordinal)
                     // 「刮削」那一段的实现（抽 N 张 + 丢掉非 0 费的）：效果本身由 CET:Effect=ScrapeDraw 收尾
                     || line.Contains("__scraped", StringComparison.Ordinal)
+                    // 「用目标卡填满手牌」那一段的实现（算还差几张 + 逐张 CreateCard + 加进手牌）
+                    || line.Contains("__fillTo", StringComparison.Ordinal)
+                    || line.Contains("__filled", StringComparison.Ordinal)
                     || line.StartsWith("var toUpgrade", StringComparison.Ordinal)
                     || line.EndsWith("CardCmd.Upgrade(c);", StringComparison.Ordinal)
                     || line.StartsWith("CardCmd.Upgrade(pick);", StringComparison.Ordinal)

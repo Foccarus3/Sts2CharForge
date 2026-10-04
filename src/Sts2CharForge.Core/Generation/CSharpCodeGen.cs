@@ -2870,7 +2870,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         $"// CET:Effect={e.Kind} CET:Amount={Lit.Dec(e.Amount)} CET:Pick={e.CardPick} CET:Pile={e.SelectPile}"
         + $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsX ? 1 : 0)} CET:Copies={Math.Max(1, e.Copies)}"
         // 自包含效果里「翻倍状态层数」要用到「哪一个状态 / 打谁」——顺手带上，回读时按它还原
-        + $" CET:Power={Lit.Str(e.PowerId ?? "")} CET:Side={e.TargetSide}";
+        + $" CET:Power={Lit.Str(e.PowerId ?? "")} CET:Side={e.TargetSide}"
+        // 「用目标卡填满手牌」要把选的那张卡带上（代码里只剩 CreateCard<那张卡>）；
+        // 没填就不写这一项，别的种类回读时不受影响。
+        + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "" : $" CET:Card={e.SpawnCardId!.Trim()}");
 
     /// <summary>
     /// 复制卡牌（用户要求的新效果）：从手牌 / 抽牌堆 / 弃牌堆里选 N 张（或随机拿 N 张），
@@ -2992,6 +2995,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line($"IEnumerable<CardModel> __scraped = (await CardPileCmd.Draw(choiceContext, {amount}, base.Owner))"
             + ".Where(c => c.EnergyCost.GetWithModifiers(CostModifiers.All) != 0 || c.EnergyCost.CostsX);");
         w.Line("await CardCmd.Discard(choiceContext, __scraped);");
+    }
+
+    /// <summary>
+    /// 用「目标卡」填满手牌（本体卡「迫降 CrashLanding」的做法）：
+    /// 先算手牌还差几张（<c>CardPile.MaxCardsInHand - 手牌数</c>），再逐张 <c>CreateCard</c> 一次性加进手牌。
+    /// 卡由「目标卡」那一栏选（没填时退成小刀 Shiv，和「生成卡牌」一致），张数完全由手牌上限决定。
+    /// 整段写在一个变量上（__filled），回读时按 <c>CET:Effect=FillHand</c> 标记收尾、这几行整段跳过。
+    /// </summary>
+    private static void EmitFillHand(CodeWriter w, EffectSpec e)
+    {
+        string card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? "Shiv" : e.SpawnCardId!.Trim();
+        w.Line(SelfContainedMarker(e));
+        w.Line($"// 用「{card}」把手牌填满（本体「迫降 CrashLanding」的写法：张数 = 手牌上限 - 当前手牌数）");
+        w.Line("int __fillTo = CardPile.MaxCardsInHand - CardPile.GetCards(base.Owner, PileType.Hand).Count();");
+        w.Open("if (__fillTo > 0)");
+        w.Line("List<CardModel> __filled = new List<CardModel>();");
+        w.Line($"for (int i = 0; i < __fillTo; i++) __filled.Add(base.CombatState.CreateCard<{card}>(base.Owner));");
+        w.Line("await CardPileCmd.AddGeneratedCardsToCombat(__filled, PileType.Hand, base.Owner);");
+        w.Close();
     }
 
     private static void EmitOutbreak(CodeWriter w, EffectSpec e, string amt, string cardSource)
@@ -3249,6 +3271,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「回合结束时自动打出」：数值 0 = 这张牌自己（**不能**被当成「0 = 不生效」丢掉），
         // 数值写死在代码里，不声明动态变量（0 那一档描述里也不用占位符）
         or "TurnEndPlay"
+        // 用「目标卡」填满手牌：张数由手牌上限决定（代码里算），数值永远是 0，不声明动态变量
+        or "FillHand"
     // 「翻倍状态层数」：数值 = 倍数（写死在代码里），不声明动态变量
     or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock"
         // 击晕：没有数值，也不用声明动态变量
@@ -3519,6 +3543,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ScrapeDraw":
                 EmitScrapeDraw(w, e, amt);
+                break;
+
+            case "FillHand":
+                EmitFillHand(w, e);
                 break;
 
             case "Outbreak":
@@ -4815,6 +4843,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
                 break;
 
+            case "FillHand":
+                if (!hasContext) { Warn(w, e, "（该触发时机不在战斗里，填满手牌无法实现）"); break; }
+                EmitFillHand(w, e);
+                break;
+
             // 毒性爆发：只要拿到玩家和敌人列表就行（本体 PoisonPower 那一下伤害 dealer 是 null）
             case "Outbreak":
                 EmitOutbreak(w, e, Lit.Dec(e.Amount), "null");
@@ -5882,6 +5915,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "ScrapeDraw":
                 EmitScrapeDraw(w, e, Lit.Dec(e.Amount));
+                break;
+
+            case "FillHand":
+                EmitFillHand(w, e);
                 break;
 
             case "Outbreak":

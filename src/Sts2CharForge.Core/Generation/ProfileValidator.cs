@@ -1244,6 +1244,14 @@ public static class ProfileValidator
             // 生成 / 消耗 / 变化卡牌
             if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                 issues.Add(new("警告", $"{owner} 的「生成卡牌」没填目标卡，将默认生成 Shiv（静默猎手的小刀）。"));
+            // 用「目标卡」填满手牌：没选卡就退成小刀；顺便说清「张数由手牌上限决定」这件事
+            if (e.Kind == "FillHand")
+            {
+                if (string.IsNullOrWhiteSpace(e.SpawnCardId))
+                    issues.Add(new("警告", $"{owner} 的「用目标卡填满手牌」没填目标卡，将默认用小刀（Shiv）填满。"));
+                issues.Add(new("提示", $"{owner} 的「用目标卡填满手牌」张数是**手牌上限 - 当前手牌数**（本体「迫降」的做法）："
+                    + "手牌满了就什么都不发生；它只填空位，不会超过上限。"));
+            }
             // 生成到「消耗牌堆」：说明一下它和另外三摞的区别（不参与抽牌，本场战斗结束也不会回来）
             if (e.Kind == "GenerateCard" && e.SpawnToPile == "Exhaust")
                 issues.Add(new("提示", $"{owner} 的「生成卡牌」生成出来的牌会**直接进消耗牌堆**"

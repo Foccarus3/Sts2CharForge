@@ -929,6 +929,26 @@ await CardCmd.Discard(choiceContext, __scraped);
 - 卡牌 / 遗物 / 药水三处都能用；触发时机本身没有 choiceContext 时会给出警告（不会生成坏代码）。
 - 从工程反推存档时按 `CET:Effect=ScrapeDraw` 标记整段认回来（数值、是否 X 都在标记里）。
 
+## 用「目标卡」填满手牌（本体「迫降」那种）
+
+效果种类里的「**用「目标卡」填满手牌**」：算出手牌还差几张，然后用你在「目标卡」那一栏选的那张卡补齐。
+照本体卡「迫降 CrashLanding」的写法生成：
+
+```csharp
+int __fillTo = CardPile.MaxCardsInHand - CardPile.GetCards(base.Owner, PileType.Hand).Count();
+if (__fillTo > 0) {
+    List<CardModel> __filled = new List<CardModel>();
+    for (int i = 0; i < __fillTo; i++) __filled.Add(base.CombatState.CreateCard<目标卡>(base.Owner));
+    await CardPileCmd.AddGeneratedCardsToCombat(__filled, PileType.Hand, base.Owner);
+}
+```
+
+- 数值没有意义（手牌上限 - 当前手牌数就是张数，手牌满了就什么都不发生），所以这一条的数值栏是 0~0；
+  也**不会**声明动态变量（卡面不出现用不上的占位符）。
+- 目标卡没填时退成小刀（`Shiv`），配置检查会给一条警告说清楚。
+- 卡牌 / 遗物 / 药水三处都能用；触发时机不在战斗里时给警告（不会生成坏代码）。
+- 从工程反推存档按 `CET:Effect=FillHand` + `CET:Card=<卡类名>` 认回来。
+
 ## 存档安全：自动备份 + 从工程恢复
 
 **每次保存前，旧内容都会自动留一份**：

@@ -679,6 +679,12 @@ public static class EffectCatalog
         // 本体用 CalculatedDamageVar + WithMultiplier(target => target.GetPowerAmount<DoomPower>())，
         // 数值那一栏没有意义（伤害完全由目标的灾厄决定），所以范围是 0~0。
         new EffectKindOption("TimesUp", "大限已至（伤害 = 目标身上的灾厄层数）", "—", 0, 0, false, true),
+        // 用「目标卡」填满手牌（本体卡「迫降 CrashLanding」的做法）：算出手牌还差几张
+        // （CardPile.MaxCardsInHand - 手牌数），再逐张 CreateCard 一次性加进手牌。
+        // 目标卡在「目标卡」那一栏选（和生成 / 变化 / 强化共用同一栏）；数值没有意义（0~0）。
+        // 注意**不能**列进 AmountIsStrength —— 否则「数值 0」会把整条效果当成「不存在」丢掉
+        // （和「清除指定状态」那几条同一个道理：它们只列进 HasNoDynamicVar）。
+        new EffectKindOption("FillHand", "用「目标卡」填满手牌（本体「迫降」那种）", "—", 0, 0, false, false),
         // 给予卡牌关键词：数值 = 选几张牌（**0 = 这张牌自己**），从「选牌方式 / 从哪里选牌」挑，
         // 给它们加上「给予关键词」里选的那个关键词（可以是自定义关键词）；勾「是否为临时关键词」
         // 就只本回合有效（保留 / 奇巧走本体单回合标记，其余的由生成的临时 Power 在回合结束摘掉）。
