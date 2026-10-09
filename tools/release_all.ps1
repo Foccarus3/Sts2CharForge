@@ -61,8 +61,13 @@ param(
     [switch]$NewNotes,
     # 全部步骤都不再问「继续吗」
     [switch]$Yes,
-    # 结束后顺手提交并推送仓库
+    # 兼容旧用法：以前这个开关 = 「提交并推送」。现在**默认就会本地提交**，所以它等同默认；
+    # 保留是为了老命令行不报错（语义变了：不再顺手 push）。
     [switch]$Commit,
+    # 发版后**不**自动提交 git（默认会提交到本地 —— 这是「每个版本都能回退」的那道闸）
+    [switch]$NoCommit,
+    # 提交之后再 git push 到远端（默认只提交到本地，推不推由你决定）
+    [switch]$Push,
     # 跳过「源码快照 + 编码体检」（默认每次都做 —— 这是防止「文件被写坏又发现不了」的那道闸）
     [switch]$SkipBackup
 )
@@ -189,6 +194,7 @@ $plan += "步骤         : " + $(if ($SkipBuild) { "跳过发布程序" } else {
                               $(if ($NoRelease) { " / 不发 GitHub" } else { " / 发 GitHub Release" })
 $plan += "旧包清理     : 打完删掉其它版本的整合包 / 更新包 / 生成器包"
 $plan += "源码备份     : " + $(if ($SkipBackup) { "跳过（-SkipBackup）" } else { "快照到 _备份\源码 + 编码体检（命中非法 UTF-8 / U+FFFD / PUA 就中止）" })
+$plan += "git 备份     : " + $(if ($NoCommit) { "跳过（-NoCommit）" } else { "发布后自动提交到本地" + $(if ($Push) { "，再 push 到远端（-Push）" } else { "（不推送；要推加 -Push）" }) })
 Write-Host ""
 $plan | ForEach-Object { Write-Host ("  " + $_) }
 if (-not $Yes) {
@@ -306,25 +312,42 @@ foreach ($f in $bundleZip, $updateZip) {
 Push-Location $T3
 $dirty = @(& git status --porcelain)
 Pop-Location
-if ($dirty.Count -gt 0) {
-    Info ("仓库有 " + $dirty.Count + " 个改动未提交")
-    if ($Commit) {
-        Step "提交并推送"
-        Push-Location $T3
-        & git add -A
-        & git commit -m ("Sts2CharForge " + $target)
-        if ($LASTEXITCODE -ne 0) { Pop-Location; Fail "git commit 失败" }
-        & git push
-        $pushCode = $LASTEXITCODE
-        Pop-Location
-        if ($pushCode -ne 0) { Fail "git push 失败（检查网络/代理后手动 push）" }
-        Info "已提交并推送"
-    } else {
-        Write-Host "    别忘了提交并推送（GitHub 上才有源码）：" -ForegroundColor Yellow
-        Write-Host ("      cd " + $T3) -ForegroundColor Yellow
-        Write-Host ("      git add -A; git commit -m `"Sts2CharForge " + $target + "`"; git push") -ForegroundColor Yellow
+# ---- git 备份：默认「发布完自动提交到本地」（不推送）----
+# 为什么默认提交：2026-10-08 那次源文件被写坏之所以难救，根因就是**68 个版本没提交过** ——
+# 现在每个版本一条提交，随时 `git restore --source=<commit> -- <file>` 就能退回去。
+# 推不推到 GitHub 由你决定：加 -Push 才推（或者你自己 git push）；-NoCommit 则完全跳过。
+$doCommit = -not $NoCommit
+$doPush = [bool]$Push
+if ($dirty.Count -eq 0) {
+    Info "仓库没有未提交的改动（这条版本已经在历史里了）"
+} elseif (-not $doCommit) {
+    Write-Host "    这次没有自动提交（-NoCommit）。想留一份可回退的历史：" -ForegroundColor Yellow
+    Write-Host ("      cd " + $T3) -ForegroundColor Yellow
+    Write-Host ("      git add -A; git commit -m `"发版 " + $target + "（版本号 + 发版说明）`"") -ForegroundColor Yellow
+} else {
+    Step "提交到本地 git"
+    Push-Location $T3
+    & git add -A
+    & git commit -m ("发版 " + $target + "（版本号 + 发版说明）") | Out-Null
+    $commitCode = $LASTEXITCODE
+    if ($commitCode -eq 0) {
+        $headLine = (& git log -1 --format='%h %s')
+        $stillDirty = @(& git status --porcelain)
     }
-} else { Info "仓库没有未提交的改动" }
+    Pop-Location
+    if ($commitCode -ne 0) { Fail "git commit 失败（检查 git 身份配置：git config user.name / user.email）" }
+    Info ("已本地提交：" + $headLine)
+    if ($stillDirty.Count -gt 0) { Info ("注意：提交后还有 " + $stillDirty.Count + " 个改动未提交（被 pre-commit 钩子改过？）") }
+}
+if ($doPush) {
+    Step "推送到远端"
+    Push-Location $T3
+    & git push
+    $pushCode = $LASTEXITCODE
+    Pop-Location
+    if ($pushCode -ne 0) { Fail "git push 失败（检查网络/代理后手动 push）" }
+    Info "已推送"
+}
 
 Write-Host ""
 Write-Host ("完成：Sts2CharForge " + $target) -ForegroundColor Green
