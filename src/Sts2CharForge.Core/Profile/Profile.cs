@@ -467,9 +467,16 @@ public sealed class EffectSpec : SpecBase
     public bool UsesAmountFormula =>
         FormulaSupports(Kind) && !string.IsNullOrWhiteSpace(_amountFormula);
 
-    /// <summary>「数值公式」那一栏要不要显示（不支持的种类就不摆一个填了会报错的框）。</summary>
+    /// <summary>
+    /// 「数值公式」那一栏要不要显示（不支持完整公式的种类就不摆一个填了会报错的框）。
+    ///
+    /// <para>⚠ V0.2.131：卡牌链上**所有**效果种类都显示这一栏 —— 用户要求去掉「数值 = X」那个勾选框，
+    /// X 改在这个框里写。除了原来那 5 种（完整公式）以外，其余种类**只认光秃秃的 `X`**
+    ///（= 原来的「数值 = X」，见 <see cref="AmountIsXEffective"/>），写别的公式由校验器拦住并说清原因。</para>
+    /// </summary>
     [JsonIgnore]
-    public bool ShowAmountFormula => FormulaSupports(Kind);
+    public bool ShowAmountFormula => FormulaSupports(Kind) || IsCardChain;
+
 
     /// <summary>
     /// 界面用：「数值」那个固定数值框还要不要显示。
@@ -686,8 +693,11 @@ public sealed class EffectSpec : SpecBase
         get
         {
             if (!FormulaSupports(Kind))
-                return $"「{EffectCatalog.FindKind(Kind).Display}」不支持公式：它的数值要在生成的时候就得定下来"
-                     + "（抽几张 / 生成几张这类要提前分配变量和选牌上限）。";
+                return $"「{EffectCatalog.FindKind(Kind).Display}」的数值要在生成的时候就得定下来"
+                     + "（抽几张 / 生成几张这类要提前分配变量和选牌上限），所以这一栏**只认光秃秃一个 X**："
+                     + "写 X = 原来的「数值 = X」那个勾选框（打出这张牌那一刻消耗掉的能量，费用框里也要填 X）。"
+                     + "想写完整公式（M*3 / max(1, N/2) / Turn*2…）只有这 5 种："
+                     + "造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益。";
             return "留空 = 0（这条效果就不显示、也不执行）；写了 = 打出这张牌时才求值，卡面上显示算出来的数字。"
                  + "可用参数名（M / N…，「自定义参数 / 组」页里定义的那几个）、X = 当前能量、Y = 当前额外资源量；"
                  + "还内置了一批**实时只读量**（不用定义，直接写）—— **完整清单就在下面那个「可用量」小框里**："
@@ -767,11 +777,24 @@ public sealed class EffectSpec : SpecBase
         or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry";
 
     /// <summary>
+    /// <b>这条效果是不是「数值 = X」</b>：老勾选框 <see cref="AmountIsX"/>，或者「数值（公式）」框里
+    /// 光秃秃写了一个 <c>X</c>（V0.2.131 用户要求去掉那个勾选框，X 改在公式框里写）。
+    ///
+    /// <para>⚠ 只对**那 5 种支持完整公式的种类以外**生效：那 5 种写 <c>X</c> 走的是既有的公式通道
+    /// （<c>__X</c>，值一样但生成的是公式变量），不能同时按「= X」再走一遍 —— 否则同一条效果会被
+    /// 两条路各处理一次。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool AmountIsXEffective =>
+        AmountIsX || (Generation.ForgeNumbers.IsBareX(AmountFormula) && !FormulaSupports(Kind));
+
+
+    /// <summary>
     /// 「范围界定」没有意义的那一档：**数值 0 = 这张牌自己**（给予关键词 / 回合结束时自动打出），
     /// 这时候根本不会去牌堆里挑牌，范围界定自然也不该出现。
     /// </summary>
     [JsonIgnore]
-    public bool CardScopeSelfOnly => Kind is "GiveKeyword" or "TurnEndPlay" or "DiscardCard" && Amount <= 0m && !AmountIsX;
+    public bool CardScopeSelfOnly => Kind is "GiveKeyword" or "TurnEndPlay" or "DiscardCard" && Amount <= 0m && !AmountIsXEffective;
 
     /// <summary>
     /// 「范围界定」那一行要不要显示。
@@ -1456,7 +1479,7 @@ public sealed class EffectSpec : SpecBase
     /// 界面按它藏掉一行，用户就填不了了（实测报过「怎么不能填范围了」）。
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public bool DiscardSelfOnly => Kind == "DiscardCard" && Amount <= 0m && !AmountIsX;
+    public bool DiscardSelfOnly => Kind == "DiscardCard" && Amount <= 0m && !AmountIsXEffective;
 
     /// <summary>
     /// 这一条效果的可选牌堆（界面下拉的候选）。
@@ -1549,9 +1572,17 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public bool IsSlowPower => string.Equals(PowerId?.Trim(), "SlowPower", StringComparison.Ordinal);
 
-    /// <summary>这条效果是否用到 X（生成代码时要先取 X 值）</summary>
+    /// <summary>
+    /// 这条效果是否用到 X（生成代码时要先取 X 值 —— 也就是那句 <c>int x = ResolveEnergyXValue();</c>）。
+    ///
+    /// <para>⚠ V0.2.131：三个「= X」勾选框从界面上撤掉了，「X」改在公式框里写。
+    /// <see cref="AmountIsXEffective"/> 认「非那 5 种」效果上写的光秃秃 <c>X</c>（走 <c>x</c> 这个变量，
+    /// 与老勾选框**逐字等价**）；生效次数 / 命中次数那两处走既有的「次数公式」通道
+    /// （<c>X</c> 被解析成 <c>__X</c>，由公式序幕声明），**不算**在 <see cref="UsesX"/> 里 ——
+    /// 否则会多生成一个没人用的 <c>int x</c>（CS0219）。</para>
+    /// </summary>
     [JsonIgnore]
-    public bool UsesX => AmountIsX || TimesIsX || RepeatIsX;
+    public bool UsesX => AmountIsXEffective || TimesIsX || RepeatIsX;
 
     /// <summary>
     /// 这条效果是「召唤伙伴 / 伙伴攻击」（做的是宠物，不是自己 / 敌人）。
@@ -1869,10 +1900,10 @@ public sealed class EffectSpec : SpecBase
                 // 显示占位值等于骗人（界面上写着「造成伤害 6」，打出时算的却是 M*3）。
                 : UsesAmountFormula
                     ? $" 数值公式 {AmountFormulaText}"
-                    : $" {(AmountIsX ? "X" : Amount.ToString("0.##"))}";
+                    : $" {(AmountIsXEffective ? "X" : Amount.ToString("0.##"))}";
             // 写了公式时不再显示「（升级 +N）」：公式取代了数值，升级增量对这条不生效
             //（校验器也会给一条提示说清这件事）。
-            return $"{when}{kind}{amountPart}{(UpgradeAmount != 0 && !AmountIsX && !UsesAmountFormula ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
+            return $"{when}{kind}{amountPart}{(UpgradeAmount != 0 && !AmountIsXEffective && !UsesAmountFormula ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + (UsesAnyCountFormula ? CountFormulaListText : "")
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
@@ -1918,22 +1949,293 @@ public sealed class CardSpec : SpecBase
     public string CardType { get => _cardType; set => Set(ref _cardType, value); }
     /// <summary>Basic / Common / Uncommon / Rare</summary>
     public string Rarity { get => _rarity; set => Set(ref _rarity, value); }
-    public int Cost { get => _cost; set => Set(ref _cost, value); }
+    public int Cost
+    {
+        get => _cost;
+        set
+        {
+            if (!Set(ref _cost, value)) return;
+            // 界面那个费用框绑的是 CostText（写纯数字时会落回这里），提示行也要跟着刷新
+            Raise(nameof(CostText));
+            Raise(nameof(CardCostHint));
+        }
+    }
 
     // ===== X 费用（本体储君「天际钻头」、亡灵契约师「挽歌」那种）=====
+    // ⚠ V0.2.131：界面上这三个勾选框**没有了**（用户要求合并进费用框 / 额外资源量费用框 / 升级后费用框）。
+    //   字段一个都没删 —— 老存档原样读得回来、生成文本逐字不变；界面上由 CostText / StarCostText /
+    //   UpgradeCostText 这三个文本属性**代理**显示与写入（写 "X" / "Y" / "X+1" 就落回这三个老字段）。
     /// <summary>费用为 X：打出时消耗全部能量，X = 消耗掉的能量（本体 Whirlwind / 天际钻头）。</summary>
-    public bool CostIsX { get => _costIsX; set => Set(ref _costIsX, value); }
+    public bool CostIsX
+    {
+        get => _costIsX;
+        set
+        {
+            if (!Set(ref _costIsX, value)) return;
+            Raise(nameof(CostText));
+            Raise(nameof(CostIsXEffective));
+            Raise(nameof(CardCostHint));
+        }
+    }
     /// <summary>额外资源量费用为 X：打出时消耗全部额外资源量，X = 消耗掉的资源量（本体 Stardust）。</summary>
-    public bool StarCostIsX { get => _starCostIsX; set => Set(ref _starCostIsX, value); }
+    public bool StarCostIsX
+    {
+        get => _starCostIsX;
+        set
+        {
+            if (!Set(ref _starCostIsX, value)) return;
+            Raise(nameof(StarCostText));
+            Raise(nameof(StarCostIsXEffective));
+            Raise(nameof(CardCostHint));
+        }
+    }
     /// <summary>升级后 X +1（本体 Cascade 的做法）。</summary>
-    public bool XPlusOnUpgrade { get => _xPlusOnUpgrade; set => Set(ref _xPlusOnUpgrade, value); }
+    public bool XPlusOnUpgrade
+    {
+        get => _xPlusOnUpgrade;
+        set
+        {
+            if (!Set(ref _xPlusOnUpgrade, value)) return;
+            Raise(nameof(UpgradeCostText));
+            Raise(nameof(CardCostHint));
+        }
+    }
 
     /// <summary>
     /// 升级后费用（整张牌，不是单条效果）：填了就生成 <c>OnUpgrade()</c> 里的
     /// <c>base.EnergyCost.UpgradeBy(差值)</c>（本体改费用就是这么做的）。
     /// 留空（null）= 升级不改费用。例：1 费卡想升级成 0 费 → 这里填 0。
+    ///
+    /// <para>⚠ V0.2.131 起界面上这一栏**搬到中间费用栏下方**（原来在右侧效果编辑器里，用户说重复了），
+    /// 但字段本身没动 —— 老存档读回来、生成文本一个字都不变。</para>
     /// </summary>
-    public int? UpgradeCost { get => _upgradeCost; set => Set(ref _upgradeCost, value); }
+    public int? UpgradeCost
+    {
+        get => _upgradeCost;
+        set
+        {
+            if (!Set(ref _upgradeCost, value)) return;
+            Raise(nameof(UpgradeCostText));
+            Raise(nameof(CardCostHint));
+        }
+    }
+
+    // ==================================================================================
+    //  卡牌费用 / 额外资源量费用（用户 2026 需求《卡牌页优化.md》中间②，V0.2.131）
+    //
+    //  需求原文：「去掉 X 费用、额外资源量费用为 X、升级后 X+1 这三项，在原本费用框内，
+    //  支持填入 A+3 或 X 这种带参数的式子；在费用框同侧右边加上额外资源量费用框……
+    //  并且在这两下方增加「升级后费用」和「升级后额外资源量费用」。」
+    //
+    //  用户拍板（《已拍板决定.md》Q3=A「两者都要」）：
+    //    · 「生成期常量折叠」—— 1+1、A+3（A 必须是「固定数值」来源的参数）在**生成时**就算成一个数字，
+    //      因为本体 <c>base(cost, …)</c> / <c>CanonicalStarCost</c> 要的是**编译期常量**；
+    //    · 「X 沿用本体那套」—— 费用里的 X 只有一个含义：打出时消耗掉的资源量
+    //      （能量 → 本体 <c>HasEnergyCostX</c> + <c>ResolveEnergyXValue()</c>；
+    //       额外资源量 → <c>HasStarCostX</c> + <c>ResolveStarXValue()</c>）。
+    //
+    //  ⚠ 老字段 <see cref="CostIsX"/> / <see cref="StarCostIsX"/> / <see cref="XPlusOnUpgrade"/>
+    //    一个都没删，生成端**先读它们**（见 <c>CSharpCodeGen.IsCostX</c>）—— 所以老存档生成出来的
+    //    代码逐字节不变（红线①）。界面上这三个勾选框没了，改成在这几个框里写 `X` / `Y` / `X+1`：
+    //    写 `X` 与勾「X 费用」**完全等价**（走的是同一条生成分支、同一个变量 `x`）。
+    //
+    //  解析口径完全复用锻造页数字框那一套（<see cref="Generation.ForgeNumbers"/> +
+    //  <c>ForgeFormula.TryEvalConst</c>）—— 不另造一个解析器。
+    // ==================================================================================
+
+    private string _costFormula = "";
+
+    /// <summary>
+    /// 费用框的原文（空 = 用老字段 <see cref="Cost"/>，老存档一个字符都不变）。
+    /// 支持三档：纯数字 / 生成期常量折叠公式 / <c>X</c>（全部能量，本体 X 费那套）。
+    /// 运行时才知道的量（读血量 / 读状态 / 实时读数参数）由校验器明确拦住并说清原因 —— 本体收不了。
+    /// </summary>
+    public string CostFormula
+    {
+        get => _costFormula;
+        set
+        {
+            if (!Set(ref _costFormula, value ?? "")) return;
+            Raise(nameof(CostText));
+            Raise(nameof(CostIsXEffective));
+            Raise(nameof(CostBoxHint));
+            Raise(nameof(Display));
+        }
+    }
+
+    private string _starCostFormula = "";
+
+    /// <summary>
+    /// 「额外资源量费用」框的原文（空 = 老规矩：从效果里的「花费额外资源量」（负数）算出来）。
+    /// 支持三档：纯数字 / 生成期常量折叠公式 / <c>Y</c>（全部额外资源量，本体 <c>HasStarCostX</c> 那套）。
+    /// </summary>
+    public string StarCostFormula
+    {
+        get => _starCostFormula;
+        set
+        {
+            if (!Set(ref _starCostFormula, value ?? "")) return;
+            Raise(nameof(StarCostText));
+            Raise(nameof(StarCostIsXEffective));
+            Raise(nameof(Display));
+        }
+    }
+
+    private string _upgradeCostFormula = "";
+
+    /// <summary>
+    /// 「升级后费用」框的原文（空 = 用老字段 <see cref="UpgradeCost"/>）。
+    /// 绝对值那套照旧（<c>EnergyCost.UpgradeBy(差值)</c>）；
+    /// 写成 <c>X</c> / <c>X+1</c> 时表示「还是 X 费，升级后 X + N」——
+    /// 这就是老勾选框「升级后 X +1」的等价写法（生成 <c>x = ResolveEnergyXValue() + (base.IsUpgraded ? N : 0)</c>）。
+    /// </summary>
+    public string UpgradeCostFormula
+    {
+        get => _upgradeCostFormula;
+        set
+        {
+            if (!Set(ref _upgradeCostFormula, value ?? "")) return;
+            Raise(nameof(UpgradeCostText));
+            Raise(nameof(CardCostHint));
+            Raise(nameof(Display));
+        }
+    }
+
+    private int? _upgradeStarCost;
+
+    /// <summary>
+    /// 「升级后额外资源量费用」（绝对数，null = 升级不改额外资源量费用）。
+    ///
+    /// <para>本体依据（对着 <c>sts2.dll</c> 的元数据核过）：<c>CardModel</c> 上
+    /// **有** <c>protected void UpgradeStarCostBy(int addend)</c>（和 <c>OnUpgrade()</c> 同级、同一个
+    /// <c>Family</c> 可见性），另有 <c>BaseStarCost</c> / <c>CurrentStarCost</c> /
+    /// <c>WasStarCostJustUpgraded</c> / <c>StarCostChanged</c> 这套机制 —— 所以生成端照
+    /// <c>base.EnergyCost.UpgradeBy(差值)</c> 的同款思路在 <c>OnUpgrade()</c> 里写
+    /// <c>UpgradeStarCostBy(差值)</c> 即可（不需要自己发明一套）。</para>
+    /// </summary>
+    public int? UpgradeStarCost
+    {
+        get => _upgradeStarCost;
+        set
+        {
+            if (!Set(ref _upgradeStarCost, value)) return;
+            Raise(nameof(UpgradeStarCostText));
+            Raise(nameof(CardCostHint));
+            Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>界面上「费用」框里显示的文本：写了个式子就显示式子，否则显示老字段那个数字。</summary>
+    [JsonIgnore]
+    public string CostText
+    {
+        get => string.IsNullOrWhiteSpace(_costFormula)
+            ? (CostIsX ? "X" : _cost.ToString(System.Globalization.CultureInfo.InvariantCulture))
+            : _costFormula;
+        set
+        {
+            string text = (value ?? "").Trim();
+            // 纯数字 / 空 → 写回**老字段**，新字段留空：老存档的 JSON 形状与生成文本都不变
+            if (text.Length == 0) { Cost = 0; CostIsX = false; CostFormula = ""; return; }
+            if (int.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int plain))
+            { Cost = plain; CostIsX = false; CostFormula = ""; return; }
+            if (string.Equals(Generation.ForgeFormula.DisplayText(text), "X", StringComparison.Ordinal))
+            { CostIsX = true; CostFormula = ""; return; }
+            CostIsX = false;
+            CostFormula = text;
+        }
+    }
+
+    /// <summary>界面上「额外资源量费用」框里显示的文本。</summary>
+    [JsonIgnore]
+    public string StarCostText
+    {
+        get
+        {
+            if (!string.IsNullOrWhiteSpace(_starCostFormula)) return _starCostFormula;
+            if (StarCostIsX) return "Y";
+            int derived = Generation.CSharpCodeGen.StarCostOf(this);
+            return derived > 0 ? derived.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+        }
+        set
+        {
+            string text = (value ?? "").Trim();
+            if (text.Length == 0) { StarCostIsX = false; StarCostFormula = ""; return; }
+            if (int.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int plain))
+            { StarCostIsX = false; StarCostFormula = plain.ToString(System.Globalization.CultureInfo.InvariantCulture); return; }
+            if (string.Equals(Generation.ForgeFormula.DisplayText(text), "Y", StringComparison.Ordinal))
+            { StarCostIsX = true; StarCostFormula = ""; return; }
+            StarCostIsX = false;
+            StarCostFormula = text;
+        }
+    }
+
+    /// <summary>界面上「升级后费用」框里显示的文本。</summary>
+    [JsonIgnore]
+    public string UpgradeCostText
+    {
+        get => string.IsNullOrWhiteSpace(_upgradeCostFormula)
+            ? (XPlusOnUpgrade ? "X+1" : (_upgradeCost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? ""))
+            : _upgradeCostFormula;
+        set
+        {
+            string text = (value ?? "").Trim();
+            if (text.Length == 0) { UpgradeCost = null; XPlusOnUpgrade = false; UpgradeCostFormula = ""; return; }
+            if (int.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int plain))
+            { UpgradeCost = plain; XPlusOnUpgrade = false; UpgradeCostFormula = ""; return; }
+            // X（/ X+1、1+X）：还是 X 费，升级后 X + N —— 等价于老勾选框「升级后 X +1」
+            var r = Generation.ForgeNumbers.ResolveCost(null, text, "X", allowPlus: true, "升级后费用");
+            if (r.Ok && r.IsX)
+            { XPlusOnUpgrade = r.Plus == 1; UpgradeCost = null; UpgradeCostFormula = r.Plus == 1 ? "" : text; return; }
+            XPlusOnUpgrade = false;
+            UpgradeCostFormula = text;
+        }
+    }
+
+    /// <summary>界面上「升级后额外资源量费用」框里显示的文本。</summary>
+    [JsonIgnore]
+    public string UpgradeStarCostText
+    {
+        get => _upgradeStarCost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        set
+        {
+            string text = (value ?? "").Trim();
+            if (text.Length == 0) { UpgradeStarCost = null; return; }
+            if (int.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int plain))
+            { UpgradeStarCost = plain; return; }
+            var r = Generation.ForgeNumbers.ResolveCost(null, text, "Y", allowPlus: false, "升级后额外资源量费用");
+            if (r.Ok && r.IsConstant) { UpgradeStarCost = r.Value; return; }
+            // 解析不出来：先存原样，交给校验器报错说清（不许静默丢掉）
+            UpgradeStarCost = null;
+            UpgradeStarCostFormula = text;
+        }
+    }
+
+    private string _upgradeStarCostFormula = "";
+
+    /// <summary>「升级后额外资源量费用」解析不了时留的原文（校验器按它报错，不会静默丢）。</summary>
+    public string UpgradeStarCostFormula
+    {
+        get => _upgradeStarCostFormula;
+        set { if (Set(ref _upgradeStarCostFormula, value ?? "")) { Raise(nameof(UpgradeStarCostText)); Raise(nameof(CardCostHint)); } }
+    }
+
+    /// <summary>这张牌的费用**是不是 X**（老字段 + 费用框里写了 X，两者等价）。</summary>
+    [JsonIgnore]
+    public bool CostIsXEffective => _costIsX || Generation.ForgeNumbers.IsBareX(_costFormula);
+
+    /// <summary>这张牌的额外资源量费用**是不是 X/Y**（老字段 + 框里写了 Y，两者等价）。</summary>
+    [JsonIgnore]
+    public bool StarCostIsXEffective => _starCostIsX || Generation.ForgeNumbers.IsBareY(_starCostFormula);
+
+    /// <summary>界面上费用栏底下那句说明（把四档写法 / 编译期常量这件事说清楚）。</summary>
+    [JsonIgnore]
+    public string CostBoxHint =>
+        "费用支持三档：① 数字（2）；② 生成期就算得出来的式子（1+1、A+3 —— A 必须是「自定义参数 / 组」页里"
+        + "「固定数值」来源的参数）；③ X = 消耗全部能量（本体「天际钻头 / 旋风斩」那套，X 值 = 打出时消耗掉的能量）。"
+        + "本体 base(cost, …) 要的是**编译期常量**，所以读血量 / 读状态那种运行时表达式在费用栏里收不了"
+        + "（校验器会拦下来并说清是哪一条）。额外资源量费用栏同理，写 Y = 消耗全部额外资源量（本体「星尘」那套）。"
+        + "「升级后费用」留空 = 升级不改费用；填 X+1 = 还是 X 费、升级后 X 多 1（原来那个勾选框的等价写法）。";
 
     private KeywordUpgradeSpec _upgradeKeywords = new();
 
@@ -2272,10 +2574,48 @@ public sealed class CardSpec : SpecBase
         // 锻造卡名字前面带一个「*」（需求：生成一项前缀带有「*」的卡牌）
         // 费用：锻造卡那两栏在「卡牌」页是藏起来的（费用归布上【能量】模块管）—— 列表里就按布上那个数显示，
         // 免得用户看到「0 费」却打进游戏才发现其实要花 1 点（用户报的坑）。
-        : $"{(IsForged ? "*" : "")}{Name}  ｜ {CardType} / {Rarity} / {(CostIsX ? "X" : (IsForged ? Generation.ForgeGraphGen.EnergyCostOf(ForgeGraph) : Cost).ToString())} 费{StarCostSuffix}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
+        : $"{(IsForged ? "*" : "")}{Name}  ｜ {CardType} / {Rarity} / {(CostIsXEffective ? "X" : (IsForged ? Generation.ForgeGraphGen.EnergyCostOf(ForgeGraph) : Cost).ToString())} 费{StarCostSuffix}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
           + (KeywordList.Count > 0 ? " ｜ " + string.Join("·", KeywordList) : "")
           + (UpgradeKeywords.Any ? " ｜ " + UpgradeKeywords.Display : "")
           + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort);
+
+    /// <summary>
+    /// 卡牌页费用栏底下那句提示（V0.2.131）：说清这一张牌现在到底几费、升级后几费。
+    /// </summary>
+    [JsonIgnore]
+    public string CardCostHint
+    {
+        get
+        {
+            if (IsForged) return "";
+            var parts = new List<string>();
+            parts.Add(CostIsXEffective
+                ? "费用 = X（打出时消耗全部能量，X = 消耗掉的能量）"
+                : $"费用 = {Generation.CSharpCodeGen.CardCostOf(this)}");
+            if (StarCostIsXEffective) parts.Add("额外资源量 = Y（消耗全部额外资源量）");
+            else
+            {
+                int star = Generation.CSharpCodeGen.StarCostOf(this);
+                if (star > 0) parts.Add($"额外资源量 = {star}");
+            }
+            string now = string.Join("，", parts);
+            int? up = _upgradeCost is { } uc ? uc : (int?)null;
+            if (!string.IsNullOrWhiteSpace(_upgradeCostFormula))
+            {
+                var r = Generation.ForgeNumbers.ResolveCost(null, _upgradeCostFormula, "X", allowPlus: true, "升级后费用");
+                if (r.Ok && r.IsConstant) up = r.Value;
+            }
+            int xPlus = Generation.CSharpCodeGen.CostXPlus(this);
+            string upText = xPlus > 0 ? $"升级后还是 X，但 X + {xPlus}"
+                : up is { } u ? (u == Generation.CSharpCodeGen.CardCostOf(this) ? $"升级后 {u}（和现在一样 = 等于没改）" : $"升级后 {u}")
+                : "升级不改费用";
+            string starText = _upgradeStarCost is { } us
+                ? (us == Generation.CSharpCodeGen.StarCostOf(this) ? $"升级后额外资源量 {us}（和现在一样）" : $"升级后额外资源量 {us}")
+                : "";
+            return $"整张牌：现在 {now}；{upText}{(starText.Length > 0 ? "；" + starText : "")}。";
+        }
+    }
+
 
     /// <summary>「+ 资源量 N」（列表里显示费用时跟在后面）：锻造卡看布上【能量】模块，普通卡看「资源量X」那个勾。</summary>
     [JsonIgnore]
@@ -2288,7 +2628,11 @@ public sealed class CardSpec : SpecBase
                 int res = Generation.ForgeGraphGen.ResourceCostOf(ForgeGraph);
                 return res > 0 ? $" + 资源量{res}" : "";
             }
-            return StarCostIsX ? " + 资源量X" : "";
+            // ⚠ 只有**显式配过**的才追加这一段：老存档（只有负数「花费额外资源量」效果、没勾资源量 X）
+            //   的列表文字必须逐字不变（老行为就是不追加），所以不能直接拿 StarCostOf 的结果来显示。
+            if (StarCostIsXEffective) return " + 资源量X";
+            var r = Generation.ForgeNumbers.ResolveCost(null, _starCostFormula, "Y", allowPlus: false, "额外资源量费用");
+            return r.IsConstant && r.Value > 0 ? $" + 资源量{r.Value}" : "";
         }
     }
 

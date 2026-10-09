@@ -676,22 +676,37 @@
                             <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
                             <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
-                            <!-- 费用 / X 费用 / 额外资源量费用 / 升级后 X+1：锻造卡不显示（需求）
-                                 —— 那几样由锻造页的【触发时机】/【能量】模块决定。 -->
+                            <!-- 费用 / 额外资源量费用 / 升级后费用 / 升级后额外资源量费用（需求《卡牌页优化.md》中间②）
+                                 —— 原来的三个勾选框（X 费用 / 额外资源量费用为 X / 升级后 X+1）已经并进这几个框：
+                                 框里写 X / Y / X+1 就是那三个勾选框的老语义（老字段一个都没删，老存档生成文本不变）。
+                                 锻造卡不显示这一块（费用由锻造页【能量】模块决定）。 -->
                             <StackPanel Visibility="{Binding CardCoreFieldsVisible, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
-                            <TextBlock Text="费用" Style="{StaticResource Label}"/>
-                            <TextBox Style="{StaticResource Field}" IsEnabled="{Binding ValueEditable}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
-                            <CheckBox Content="X 费用（消耗全部能量，X = 消耗掉的能量）" Style="{StaticResource Check}"
-                                      IsEnabled="{Binding ValueEditable}"
-                                      IsChecked="{Binding CostIsX}"
-                                      ToolTip="本体储君「天际钻头」、亡灵契约师「挽歌」那种：构造函数费用写 0，本体用 HasEnergyCostX 表示，X 值用 ResolveEnergyXValue() 取。配合效果里的「= X」使用。"/>
-                            <CheckBox Content="额外资源量费用为 X（消耗全部额外资源量）" Style="{StaticResource Check}"
-                                      IsEnabled="{Binding ValueEditable}"
-                                      IsChecked="{Binding StarCostIsX}"
-                                      ToolTip="本体储君「星尘」那种：用 HasStarCostX 表示，X = 打出时消耗掉的额外资源量（ResolveStarXValue）。需要同时有一条「花费额外资源量」的负数效果。"/>
-                            <CheckBox Content="升级后 X +1（本体铁甲战士「倾泻 / Cascade」那样）" Style="{StaticResource Check}"
-                                      IsEnabled="{Binding ValueEditable}"
-                                      IsChecked="{Binding XPlusOnUpgrade}"/>
+                            <TextBlock Text="费用 ／ 额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <Grid IsEnabled="{Binding ValueEditable}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding CostText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="费用（消耗能量）。三档：① 数字 2；② 生成期就算得出来的式子（1+1、A+3 —— A 必须是「固定数值」来源的参数）；③ X = 消耗全部能量（本体「天际钻头 / 旋风斩」那套）。&#10;本体 base(cost, …) 要的是编译期常量，所以读血量 / 读状态那种运行时表达式收不了（校验器会拦住并说清原因）。"/>
+                                <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding StarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="额外资源量费用（要消耗多少额外资源量）。和左边同一套写法：数字 / 生成期常量式子 / Y = 消耗全部额外资源量（本体「星尘」那套）。&#10;留空 = 按效果里的「花费额外资源量」（负数）自动算（老存档的老规矩）。"/>
+                            </Grid>
+                            <TextBlock Text="升级后费用 ／ 升级后额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap" Margin="6,6,6,0"/>
+                            <Grid IsEnabled="{Binding ValueEditable}">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBox Style="{StaticResource Field}" Text="{Binding UpgradeCostText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="升级后这张牌花几点能量：留空 = 升级不改费用；填 0 / 1 / 2 就是绝对费用；填 X+1 = 还是 X 费、升级后 X 多 1（原来那个「升级后 X +1」勾选框的等价写法）。"/>
+                                <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding UpgradeStarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="升级后这张牌要花多少额外资源量（绝对数，留空 = 升级不改）。生成时写在本体的 OnUpgrade() 里：UpgradeStarCostBy(差值)。"/>
+                            </Grid>
+                            <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="{Binding CardCostHint}"/>
+                            <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="{Binding CostBoxHint}"/>
                             </StackPanel>
                             <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#B60" FontSize="11"
                                        Text="{Binding ForgeEnergyCostText, RelativeSource={RelativeSource AncestorType=Window}}"

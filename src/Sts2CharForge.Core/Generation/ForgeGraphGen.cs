@@ -1337,9 +1337,12 @@ public static class ForgeGraphGen
     /// 而生成出来的工程是要能干净编译的。
     /// <paramref name="targetExpr"/> 是「玩家选中的那个目标」在这条链里的写法：
     /// 卡牌是 <c>cardPlay?.Target</c>，卡牌时机钩子里也是它（那里会补一句 <c>CardPlay? cardPlay = null;</c>）。
+    /// <paramref name="xPlus"/> 是这张牌的「升级后 X + N」（0 = 不加）—— <c>__X</c> 也要跟着加：
+    /// 公式里的 <c>X</c> 和「= X」走的是**同一个 X**（打出时消耗掉的能量），
+    /// 不给 <c>__X</c> 加就等于「升级后费用填 X+1」对那些用公式的效果静默失效。
     /// </summary>
     public static void EmitCardFormulaPrologue(CodeWriter w, CharacterProfile p, IEnumerable<EffectSpec> effects,
-        string targetExpr = "cardPlay?.Target")
+        string targetExpr = "cardPlay?.Target", int xPlus = 0)
     {
         // 「数值公式」+「次数类公式」（用户要求⑦）都要在这里先把值算出来
         var list = effects.Where(e => e is not null && (e.UsesAmountFormula || e.UsesAnyCountFormula)).ToList();
@@ -1394,7 +1397,9 @@ public static class ForgeGraphGen
         if (needPlayer) w.Line("Player __fgPlayer = base.Owner;");
         if (needSelf) w.Line("Creature __fgSelf = base.Owner.Creature;");
         if (needTarget) w.Line($"Creature? __fgTarget = {targetExpr};");
-        if (needX) w.Line("decimal __X = ForgeFormulaRuntime.Energy(base.Owner);   // X = 打出这张牌那一刻的当前能量");
+        if (needX) w.Line("decimal __X = ForgeFormulaRuntime.Energy(base.Owner)"
+            + (xPlus > 0 ? $" + (base.IsUpgraded ? {xPlus} : 0)" : "")
+            + ";   // X = 打出这张牌那一刻的当前能量" + (xPlus > 0 ? $"（升级后 X + {xPlus}）" : ""));
         if (needY) w.Line("decimal __Y = ForgeFormulaRuntime.Stars(base.Owner);   // Y = 当前额外资源量");
         foreach (string decl in paramDecls) w.Line(decl);
         w.Line();
@@ -2125,7 +2130,7 @@ public static class ForgeGraphGen
 
         if (e.UpgradeAmount != 0m)
             Add("升级增量", "节点图没有「升级增量」这个概念；要给升级改数值请在【数值】模块里写公式。");
-        if (e.AmountIsX || e.TimesIsX || e.RepeatIsX)
+        if (e.AmountIsXEffective || e.TimesIsX || e.RepeatIsX)
             Add("数值 / 生效次数 / 命中次数 = X", "节点图里的 X / Y 是【能量】模块送出来的：把它的出口接到【效果】左边的「数值」口，"
                 + "再在【数值】模块里写 X / Y。");
         if (e.AmountIsStack || e.TimesIsStack || e.RepeatIsStack)

@@ -557,7 +557,28 @@ public static class ProjectRecovery
         // 可被无限升级：生成时写的是 `public override int MaxUpgradeLevel => int.MaxValue;`
         // （诅咒写的是 => 0，那不是这一项）—— 直接按这行认，不用另加标记。
         if (text.Contains("MaxUpgradeLevel => int.MaxValue")) card.InfinitelyUpgradable = true;
-        if (text.Contains("ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0)")) p_xPlus(card);
+        // V0.2.131：「升级后费用」写 X+N 时生成 `ResolveEnergyXValue() + (base.IsUpgraded ? N : 0)`。
+        // N = 1 落回老字段 XPlusOnUpgrade（生成文本与老存档完全一样）；
+        // N > 1 落到 UpgradeCostFormula（新字段）—— 两者再生成出来都是同一行代码，所以「生成 → 回读 → 再生成」幂等。
+        var xPlus = Regex.Match(text, @"ResolveEnergyXValue\(\) \+ \(base\.IsUpgraded \? (\d+) : 0\)");
+        if (xPlus.Success && int.TryParse(xPlus.Groups[1].Value, out int xPlusN))
+        {
+            if (xPlusN == 1) p_xPlus(card);
+            else card.UpgradeCostFormula = "X+" + xPlusN.ToString(CultureInfo.InvariantCulture);
+        }
+        else
+        {
+            // 「升级后 X + N」还有另一条载体：公式序幕那句注释
+            // `// X = 打出这张牌那一刻的当前能量（升级后 X + 1）`（见 ForgeGraphGen.EmitCardFormulaPrologue）。
+            // 牌上一条「= X」的老效果都没有、全靠公式里的 X 时，生成的代码里只有这句注释带得出 N
+            //（没有它，「升级后费用填 X+1」回读后就会丢，再生成出来就少一个 +1 —— 幂等会破）。
+            var xPlusNote = Regex.Match(text, @"// X = .*（升级后 X \+ (\d+)）");
+            if (xPlusNote.Success && int.TryParse(xPlusNote.Groups[1].Value, out int noteN))
+            {
+                if (noteN == 1) p_xPlus(card);
+                else card.UpgradeCostFormula = "X+" + noteN.ToString(CultureInfo.InvariantCulture);
+            }
+        }
 
         var vars = ParseVars(text);
         // ParseEffects 会**消耗** vars（按种类 / 名字取走变量值，避免被后面的效果按顺序捡走），
@@ -622,14 +643,25 @@ public static class ProjectRecovery
         if (keywordRefs.Count > 0) card.KeywordIds = keywordRefs;
 
         string starCost = Match(text, @"CanonicalStarCost => (\d+)");
-        if (starCost is not null)
-            card.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = -int.Parse(starCost, CultureInfo.InvariantCulture), TargetSide = "Self" });
+        int baseStar = starCost is null ? 0 : int.Parse(starCost, CultureInfo.InvariantCulture);
+        // V0.2.131：「额外资源量费用」框里写过的原文（`// CET:StarCostFormula=`）优先 ——
+        // 有它就不按「CanonicalStarCost → 凭空补一条负数效果」那条老口径走（那条会改动生成结果，幂等会破）。
+        string? starFormulaRaw = Match(text, @"CET:StarCostFormula=([^\r\n]*)");
+        if (starFormulaRaw is not null)
+            card.StarCostFormula = CSharpCodeGen.UnescapeMarker(starFormulaRaw.Trim());
+        else if (starCost is not null)
+            card.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = -baseStar, TargetSide = "Self" });
         else if (card.StarCostIsX && !card.Effects.Any(e => e.Kind == "ExtraResource" && e.Amount < 0))
         {
             // 「额外资源量费用为 X」：老工程里这笔开销不生成代码（走本体 HasStarCostX），
             // 但配置里得有一条负数效果，卡面才会写「需要 X 点…」—— 补一条 -1（X 费时数额不影响玩法）
             card.Effects.Add(new EffectSpec { Kind = "ExtraResource", Amount = -1, TargetSide = "Self" });
         }
+        // V0.2.131「升级后额外资源量费用」：生成时是 OnUpgrade 里的 `UpgradeStarCostBy(差值)`
+        //（本体 CardModel 自带的方法）—— 回读按「基础值 + 差值」还原成绝对值。
+        var starUp = Regex.Match(text, @"UpgradeStarCostBy\((-?\d+)\)");
+        if (starUp.Success && int.TryParse(starUp.Groups[1].Value, out int starDelta))
+            card.UpgradeStarCost = baseStar + starDelta;
 
         ParseCardCondition(card, text, nameToPowerId, result, cls);
         return card;

@@ -108,9 +108,29 @@ public static class LocalizationGen
             if (g is { IsEmpty: false }) return GraphCardText(p, g);
         }
         // 效果列表那条路：升级前后是**同一段**（数字靠本体的 {…:diff()} 由游戏自己按升没升级显示）
-        return c.IsCurseCard
+        string bodyText = c.IsCurseCard
             ? CurseBodyText(p, c)
-            : Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + ConditionSuffix(c.Condition, isCard: true, p);
+            : Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsXEffective) + ConditionSuffix(c.Condition, isCard: true, p);
+        // V0.2.131：「额外资源量费用」框里显式写了费用时，卡面开头补一句（那条负数效果不一定还在）
+        string starLead = StarCostLeadText(p, c);
+        return starLead.Length == 0 ? bodyText : (bodyText.Length == 0 ? starLead : starLead + "\n" + bodyText);
+    }
+
+    /// <summary>
+    /// 「额外资源量费用」框里写的费用在卡面上的那一句（空 = 不写）。
+    ///
+    /// 为什么不写在效果那一栏：新语义下这张费用是**框**里定的，效果列表里可以一条负数效果都没有
+    /// （老存档才是「负数效果 = 费用」）。有负数效果时不重复写 —— 那一句本来就由效果生成，
+    /// 写两句会变成「需要 2 点星尘。…需要 3 点星尘。」（校验器会提示这种冲突）。
+    /// </summary>
+    private static string StarCostLeadText(CharacterProfile p, CardSpec c)
+    {
+        if (string.IsNullOrWhiteSpace(c.StarCostFormula)) return "";
+        if (c.Effects.Any(e => e is not null && e.Kind == "ExtraResource" && e.Amount < 0)) return "";
+        var r = Generation.ForgeNumbers.ResolveCost(p, c.StarCostFormula, "Y", allowPlus: false, "额外资源量费用");
+        if (!r.Ok) return "";   // 解析不出来由校验器报错，这里不写半句话
+        if (r.IsX) return $"需要 X 点{ResourceName(p)}（打出时消耗全部）。";
+        return r.Value > 0 ? $"需要 {r.Value} 点{ResourceName(p)}。" : "";
     }
 
     /// <summary>自动描述 + 自定义描述（勾了「替换」就只用自定义那段）。</summary>
@@ -541,7 +561,7 @@ public static class LocalizationGen
     /// </summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
         effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry"
-            || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen")
+            || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsXEffective && e.CardPick == "Chosen")
             // 「生成卡牌 + 按范围随机 + 多选1（候选 > 3 张时走网格选牌界面）」会读 base.SelectionScreenPrompt；
             // 另外「复制卡牌」自己选牌也要（CardSelectCmd.FromHand 那条）。
             || (e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m)
@@ -549,7 +569,7 @@ public static class LocalizationGen
             // 「重放」自己选牌也一样（走 CardSelectCmd.FromHand / FromCombatPile）
             || (e.Kind == "ReplayCard" && e.CardPick == "Chosen")
             // 「回合结束时自动打出」填了 1 以上 + 自己选：选牌是**打出这张牌时**做的，读的是它的提示语
-            || (e.Kind == "TurnEndPlay" && e.Amount > 0 && !e.AmountIsX && e.CardPick == "Chosen"));
+            || (e.Kind == "TurnEndPlay" && e.Amount > 0 && !e.AmountIsXEffective && e.CardPick == "Chosen"));
 
     /// <summary>选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。</summary>
     public static string SelectPromptText(IEnumerable<EffectSpec> effects)
@@ -625,7 +645,7 @@ public static class LocalizationGen
         string kw = KeywordNameFor(p, e);
         string temp = e.TempKeyword ? "（本回合）" : "";
         if (e.Amount <= 0) return $"{when}这张牌获得[gold]{kw}[/gold]{temp}。";
-        string n = e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString();
+        string n = e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString();
         string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", "Exhaust" => "消耗牌堆", _ => "手牌" };
         string pick = e.CardPick == "Chosen" ? "自己选" : "随机";
         return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}{CardScopeNote(p, e)}。";
@@ -1173,7 +1193,7 @@ public static class LocalizationGen
         // 以前的写法是直接印公式本身（「造成 M/2 点伤害」），玩家看不懂，用户报过。
         string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;
         string var = varOverride
-            ?? (e.AmountIsX && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}");
+            ?? (e.AmountIsXEffective && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}");
         // 「取任意张 / 最多 N 张」（需求：「消耗任意张手牌」）：任意 = 不写数字；最多 = 前面加「最多」
         if (e.CountIsAny) var = "任意";
         else if (e.CountMode == "UpTo") var = "最多 " + var;
@@ -1256,12 +1276,12 @@ public static class LocalizationGen
                 ? $"失去 {-e.Amount} 枚金币。"
                 : $"获得 {var} 枚金币。",
             // 增加额外资源量上限值：数值 = 抬多少（卡面用 {ResourceCap:diff()}，升级后会自动显示升级值）
-            "RaiseResourceCap" => $"{ResourceName(p)}上限 +{(e.AmountIsX && isCard ? "X" : "{ResourceCap:diff()}")}。",
+            "RaiseResourceCap" => $"{ResourceName(p)}上限 +{(e.AmountIsXEffective && isCard ? "X" : "{ResourceCap:diff()}")}。",
             // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣；
             // 「下回合生效」（正数）走本体 StarNextTurnPower，描述里要写清是下回合开始时发
             "ExtraResource" => starCostIsX && e.Amount < 0 && isCard
                 ? $"需要 X 点{ResourceName(p)}（打出时消耗全部）。"
-                : e.AmountIsX && isCard
+                : e.AmountIsXEffective && isCard
                 ? $"{(e.Amount < 0 ? "需要" : "获得")} X 点{ResourceName(p)}。"
                 : e.Amount < 0
                     ? (isCard ? $"需要 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。" : $"失去 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。")
@@ -1284,9 +1304,9 @@ public static class LocalizationGen
             // 随机档写「随机一瓶药水」。句尾**必须**写明药水栏满时的行为（用户要求：不要静默）——
             // 本体 TryToProcure 在栏满时返回 success=false，我们什么都不做。
             "GainPotion" => e.IsPotionRandom
-                ? $"{repeat}{when}获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 瓶随机药水"
+                ? $"{repeat}{when}获得 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 瓶随机药水"
                     + "（药水栏满时不会发生任何事）。"
-                : $"{repeat}{when}获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 瓶"
+                : $"{repeat}{when}获得 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 瓶"
                     + $"[gold]{EffectCatalog.FindPotionZh(e.PotionId)}[/gold]（药水栏满时不会发生任何事）。",
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
             // 范围界定（需求 ③）：范围非空时在句尾补一句「（只限攻击牌）」（空则不加，描述与旧版一致）
@@ -1334,11 +1354,11 @@ public static class LocalizationGen
             // 回合结束时自动打出：0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去。
             // 这里**写数字字面量**（不用 {Cards:diff()}）：这一条效果不声明动态变量
             // （数值 0 有特殊含义，不能当成「0 = 不生效」），写成占位符的话游戏里替换不出来。
-            "TurnEndPlay" => e.Amount <= 0m && !e.AmountIsX
+            "TurnEndPlay" => e.Amount <= 0m && !e.AmountIsXEffective
                 ? "回合结束时自动打出这张牌。"
                 : (e.SelectPile == "Hand"
-                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"
-                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"),
+                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"
+                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"),
             // 毒性爆发 / 大限已至：照本体两张牌的原文写
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
@@ -1351,7 +1371,7 @@ public static class LocalizationGen
             "TakeFromDiscard" => $"从弃牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
             "TakeFromExhaust" => $"从消耗牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
             // 放置卡牌（V0.2.116）：数值 0 = 这张牌自己；≥ 1 = 从某一摞（含牌顶）挑 N 张放到「放到哪一摞」
-            "PlaceCard" => (e.Amount <= 0m && !e.AmountIsX
+            "PlaceCard" => (e.Amount <= 0m && !e.AmountIsXEffective
                     ? $"把这张牌放到{e.PlaceToZh}。"
                     : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}拿 {amountPhrase}牌放到{e.PlaceToZh}{CardScopeNote(p, e)}。"),
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
@@ -1398,22 +1418,22 @@ public static class LocalizationGen
                 ? $"{repeat}{when}自己被打晕（本回合不行动）。"
                 : $"{repeat}{when}击晕{(who.Length == 0 ? "指定敌人" : who)}（本回合不行动）。",
             // ===== 全局（直接改牌组）=====
-            "AddCardGlobal" => $"获得 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
+            "AddCardGlobal" => $"获得 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
             // 挂「战斗胜利后」时是结算界面多一条奖励；挂在战斗中就是当场弹选牌界面（见 CSharpCodeGen.EmitCardReward）
-            "CardReward" => $"获得卡牌奖励（{(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 选一，选中的加入牌组）。",
+            "CardReward" => $"获得卡牌奖励（{(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 选一，选中的加入牌组）。",
             "RemoveCardGlobal" => e.CardPick == "Chosen"
-                ? $"从牌组中自己选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌删除。"
-                : $"从牌组中随机删除 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+                ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌删除。"
+                : $"从牌组中随机删除 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
             "TransformCardGlobal" => (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
-                + $"{(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
+                + $"{(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
             // 升级牌组里的牌（永久、跨战斗）：本体「香盒 Pomander」那种
             "UpgradeCardGlobal" => e.CardPick == "Chosen"
-                ? $"从牌组中自己选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌升级。"
-                : $"从牌组中随机升级 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+                ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌升级。"
+                : $"从牌组中随机升级 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
             // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
             // 数值 0 = 用「召唤物」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
-            "SummonPet" => (e.AmountIsX && isCard)
+            "SummonPet" => (e.AmountIsXEffective && isCard)
                 ? $"召唤{SummonNameOrAll(p, e)}（{var} 点生命）。"
                 : e.Amount <= 0
                     ? (PetGen.IsAll(e.PetSummon)

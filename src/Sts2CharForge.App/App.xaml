@@ -746,7 +746,11 @@
             </GroupBox>
         </DataTemplate>
 
-        <!-- 卡牌用：带「升级增量」+「升级后费用」+ X 费用卡牌的「= X」开关 -->
+        <!-- 卡牌用：带「升级增量」+「次数公式」
+             ⚠ V0.2.131：原来这里的「升级后费用」那一栏**搬到卡牌页中间的费用栏下方**了
+             （需求右侧②：「去除升级后费用（重复了）」—— 是搬家不是删除）；
+             三个「= X」勾选框（数值 / 生效次数 / 命中次数·对群数）也按需求右侧③删掉了，
+             X 改成在「数值（公式）」「次数公式」那几个框里写（X 这个能力本身一个字没少）。 -->
         <DataTemplate x:Key="EffectEditorCard">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel>
@@ -757,32 +761,9 @@
                         <TextBlock Text="升级增量" Style="{StaticResource Label}"/>
                         <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding UpgradeAmount, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
-                    <Grid Margin="0,4,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="升级后费用" Style="{StaticResource Label}"
-                                   ToolTip="整张牌的设置（不是单条效果）：升级后花几点能量，留空 = 升级不改费用。例：2 费卡想升级成 1 费就填 1；1 费升 0 费就填 0。"/>
-                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
-                                 Text="{Binding SelectedCardUpgradeCost, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="整张牌的设置：升级后花几点能量。留空 = 升级不改费用。" />
-                    </Grid>
-                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
-                               Text="{Binding UpgradeCostHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                    <CheckBox Margin="6,4,0,0" Style="{StaticResource Check}"
-                              Content="数值 = X（这条效果的数值用 X）"
-                              IsChecked="{Binding AmountIsX}"
-                              ToolTip="只有勾了「X 费用」的卡牌用得到。X = 打出时消耗掉的能量（或额外资源量）。"/>
-                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
-                              Content="生效次数 = X（整条效果重复 X 遍）"
-                              IsChecked="{Binding TimesIsX}"
-                              ToolTip="本体亡灵契约师「挽歌」那种：召唤 X 次 / 生成 X 张。"/>
-                    <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
-                              Content="命中次数 / 对群数 = X"
-                              IsChecked="{Binding RepeatIsX}"
-                              ToolTip="本体铁甲战士「旋风斩」、储君「天际钻头」那种：命中 X 次 / 随机打 X 个敌人。"/>
                     <!-- 次数类公式（用户要求⑦：所有能填数值的地方都能写公式，次数类优先）。
-                         只做在卡牌上，所以这一块长在「卡牌专用」的模板里（遗物 / 药水 / 状态看不到）。 -->
+                         只做在卡牌上，所以这一块长在「卡牌专用」的模板里（遗物 / 药水 / 状态看不到）。
+                         「X」也在这里写（= 老勾选框「生效次数 = X」/「命中次数 = X」）。 -->
                     <GroupBox Header="次数公式（留空 = 用上面那个固定次数）" Margin="0,6,0,0">
                         <StackPanel>
                             <Grid Visibility="{Binding ShowTimesFormulaBox, Converter={StaticResource BoolToVis}}">
@@ -790,14 +771,14 @@
                                 <TextBlock Text="生效次数" Style="{StaticResource Label}" MinWidth="96"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource Field}"
                                          Text="{Binding TimesFormula, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="整条效果重复几遍。例：Turn（这一场第几回合）、HandCount（手牌张数）、DiscardedThisTurn*2。算出来会夹到 1~20。"/>
+                                         ToolTip="整条效果重复几遍。例：X（= 老勾选框「生效次数 = X」，打出时消耗掉的能量）、Turn（这一场第几回合）、HandCount（手牌张数）、DiscardedThisTurn*2。算出来会夹到 1~20。"/>
                             </Grid>
                             <Grid Margin="0,4,0,0" Visibility="{Binding ShowRepeatFormulaBox, Converter={StaticResource BoolToVis}}">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <TextBlock Text="命中次数 / 对群数" Style="{StaticResource Label}" MinWidth="96"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource Field}"
                                          Text="{Binding RepeatFormula, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="多段攻击的段数 / 随机挑几个敌人。算出来会夹到 1~20。"/>
+                                         ToolTip="多段攻击的段数 / 随机挑几个敌人。例：X（= 老勾选框「命中次数 / 对群数 = X」，本体「旋风斩 / 天际钻头」那种）。算出来会夹到 1~20。"/>
                             </Grid>
                             <Grid Margin="0,4,0,0" Visibility="{Binding ShowCopiesFormulaBox, Converter={StaticResource BoolToVis}}">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>

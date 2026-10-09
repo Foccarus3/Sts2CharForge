@@ -1,5 +1,73 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 18 批需求（用户 2026-10-XX 提，按《卡牌页优化.md》**中间② + 右侧②③**；其余留给后面几版）
+
+> 需求原文：`docs\需求\卡牌页优化.md`。**用户拍板**：`docs\需求\已拍板决定.md` **Q3 = A「两者都要」**
+> —— `A+3` 这类**生成期折叠成常量**（`A` 必须来自「固定数值」参数来源）＋ `X` **沿用本体那套**
+> （`ResolveEnergyXValue()` / `ResolveStarXValue()`）。
+> 盘点报告：`D:\ds\s\t3\_tmp\需求盘点_锻造页与卡牌页.md` §4② / §6.1（行号是中间态快照，按实际代码复核过）。
+> 先例复用：**V0.2.128 给锻造页 12 个数字框做的三档解析**（`Core\Generation\ForgeNumbers.cs` +
+> `ForgeFormula.TryEvalConst`）—— 费用栏**复用同一套解析器与可用量口径**，没有另造。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **卡牌费用（中间②）**：「去掉 X 费用、额外资源量费用为 X、升级后 X+1 这三项，在原本费用框内支持填 `A+3` 或 `X`；**费用框同侧右边加额外资源量费用框**（同样可填 `A+3` / `Y`）；**这两下方加「升级后费用」和「升级后额外资源量费用」**」 | **模型**（`Profile.cs` `CardSpec`）：新增 `CostFormula` / `StarCostFormula` / `UpgradeCostFormula`（都是「框里的原文」字符串）+ `UpgradeStarCost`（升级后额外资源量费用，`int?`）+ `UpgradeStarCostFormula`（解析不了时留原文给校验器报错）；外加**文本代理** `CostText` / `StarCostText` / `UpgradeCostText` / `UpgradeStarCostText`（写纯数字→落回老字段 `Cost` / `UpgradeCost`，写 `X` / `Y` / `X+1`→落回老勾选框字段 `CostIsX` / `StarCostIsX` / `XPlusOnUpgrade`，写式子→落在新字段）。派生判据 `CostIsXEffective` / `StarCostIsXEffective` + `CSharpCodeGen.IsCostX` / `IsStarCostX` / `CostXPlus`。**解析器**（`ForgeNumbers.ResolveCost`，三档：纯整数 → 生成期常量折叠（`TryEvalConst` + 固定数值参数）→ 只含 `X`/`Y` 一次项 ⇒ X 费用；**运行时表达式一律 `Ok=false` + 中文原因**）。**生成端**：`base(cost,…)` 用折叠值、`HasEnergyCostX` / `HasStarCostX` 走本体的 X 那套、`CanonicalStarCost => N`、`OnUpgrade()` 里 `EnergyCost.UpgradeBy(差值)` / **`UpgradeStarCostBy(差值)`**（本体依据：`sts2.dll` 的 `CardModel` 上 `protected void UpgradeStarCostBy(int addend)` 与 `OnUpgrade()` 同级可见性，另有 `BaseStarCost`/`CurrentStarCost`/`WasStarCostJustUpgraded` 那套机制 —— 所以照 `EnergyCost.UpgradeBy` 的同款思路写，不用自己发明）。**校验器**：费用框写运行时表达式 → **错误**并说清是哪张牌哪一栏；X 费牌填绝对升级后费用 / 框与负数效果冲突 → 警告。**回读**：`HasEnergyCostX`/`HasStarCostX` 照旧认；`ResolveEnergyXValue() + (base.IsUpgraded ? N : 0)` 与公式序幕注释 `// X = …（升级后 X + N）` 还原「升级后 X+N」；「额外资源量费用」框的原文写成 `// CET:StarCostFormula=`（老口径会凭空补一条负数效果 → 幂等会破）。**界面**：`MainWindow.xaml` 卡牌页费用那一块换成两行四框（左费用 / 右额外资源量费用；下一行升级后费用 / 升级后额外资源量费用）+ 两句说明。**文案**：「额外资源量费用」框显式写了费用时卡面开头补一句「需要 N 点…/需要 X 点…（打出时消耗全部）」；`CardSpec.Display` 的费用列按有效值显示 | ✅V0.2.131 |
+| ② | **右侧②「去除升级后费用（重复了）」** | **是搬家不是删除**：`App.xaml` 的 `EffectEditorCard` 里那一栏（+ 提示行）删掉，同一次把中间那两栏加上（见 ①）—— 能力中途没消失。`MainWindow.xaml.cs` 的 `SelectedCardUpgradeCost` 保留（老自检还在用），`UpgradeCostHint` 改成新口径（也说 `X+1` 那一档） | ✅V0.2.131 |
+| ③ | **右侧③「去除 数值=X / 生效次数=X / 命中次数·对群数=X」** | **界面删 3 个勾选框**（`App.xaml`），**模型三个字段一个都没删**（`AmountIsX`/`TimesIsX`/`RepeatIsX`，老存档原样读得回来、生成文本逐字不变）。**X 这个能力没丢**：`ShowAmountFormula` 在卡牌链上对所有种类都显示「数值（公式）」，非那 5 种的**只认光秃秃一个 `X`**（`AmountIsXEffective` 判据，生成端 32 处读 `AmountIsX` 的地方全部换成它 → 与老勾选框**逐字相同**）；生效次数 / 命中次数写 X 走既有的「次数公式」通道（`TimesFormula` / `RepeatFormula`，解析成 `__X`）。**等价性逐条对拍**见下面那段 | ✅V0.2.131 |
+
+> **三开关能力等价性（逐条：原勾选配置 → 新写法 → 生成结果）**
+>
+> | 原勾选 | 新写法 | 生成结果对不对拍 |
+> |---|---|---|
+> | 「数值 = X」+ 非那 5 种（抽牌 / 生成 / 消耗…） | 「数值（公式）」框写 `X` | **逐字节相同**（`--uicheck` 断言「抽牌 + 公式写 X」与「抽牌 + 勾 AmountIsX」生成文本 `==`，都出 `CardPileCmd.Draw(choiceContext, x, base.Owner)`） |
+> | 「数值 = X」+ 那 5 种（伤害 / 格挡 / 失去生命 / 回复 / 施加状态） | 「数值（公式）」框写 `X` | **语义等价、写法不同**：新写法走既有的公式通道（`decimal __X = ForgeFormulaRuntime.Energy(base.Owner)` + `ForgeFormulaDamageVar` 现算），老写法直接取 `x`。值一样（X 费牌打出时「当前能量」=「消耗掉的能量」）。⚠ 这是 V0.2.112 起就有的既有设计，本版只是把「删掉勾选框」之后的替代写法讲清楚 |
+> | 「生效次数 = X」 | 「次数公式 · 生效次数」框写 `X` | **语义等价**：新写法 `for (int i = 0; i < (int)Math.Clamp(__X, 1m, 20m); i++)`，老写法 `for (int i = 0; i < x; i++)` —— 次数公式通道一律夹到 1~20（既有规矩），X>20 时会不同 |
+> | 「命中次数 / 对群数 = X」 | 「次数公式 · 命中次数」框写 `X` | **语义等价**：`.WithHitCount((int)Math.Clamp(__X, 1m, 20m))` vs `.WithHitCount(x)`，同样多一层 1~20 夹取 |
+> | 「升级后 X +1」 | 「升级后费用」框写 `X+1` | **逐字节相同**（`--uicheck` 断言两种写法生成文本 `==`，都是 `int x = ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0);`） |
+> | 「X 费用」 | 费用框写 `X` | **逐字节相同**（同一段 `HasEnergyCostX => true` + `base(0, …)`） |
+> | 「额外资源量费用为 X」 | 额外资源量费用框写 `Y` | **逐字节相同**（同一段 `HasStarCostX => true`） |
+>
+> ⚠ **顺手修正一个老 bug**：以前「升级后 X +1」只对**老写法**（勾「数值 = X」→ 变量 `x`）生效，
+> 对「数值（公式）」里写的 `X`（变量 `__X`）**不生效** —— 两处都是同一个 X（打出时消耗掉的能量），
+> 少了 `+1` 就是静默丢能力。现在公式序幕那句也带上 `+ (base.IsUpgraded ? N : 0)`。
+> 只影响「老存档既勾了升级后 X+1、又用了引用 X 的公式」这种组合（以前那种组合本来就是错的）；
+> 本轮的默认档对拍与含卡老形状存档对拍都实测**逐字节一致**（见下）。
+>
+> **老字段迁移规则 + 幂等**：`CostIsX` / `StarCostIsX` / `XPlusOnUpgrade` / `AmountIsX` / `TimesIsX` / `RepeatIsX`
+> **一个都没删、生成端先读它们**，所以「老存档加载前后」的生成文本是**逐字节一样**（不需要迁移写回，
+> 也就不会出现「迁移一次变一次」）。界面靠文本代理显示/写入：`CostIsX=true` → 费用框显示 `X`；
+> 写纯数字/`X`/`Y`/`X+1` 时**落回老字段**（存档形状与老版本一致），只有写真正的式子才落到新字段。
+> 实测：「生成 → `--recover` → 再生成 → 再 `--recover` → 再生成」，第 2/3 轮产物**逐字节一致**（只差 `.sln` 的随机 GUID），
+> 两份恢复出来的存档**字节相同**（43026 字节）。
+>
+> **本轮明确不做**（留给后面几版）：右④ 重排 UI / 作用对象 7 档 / 概率独立 / 下回合生效 65 种、
+> ④ 升级后关键字与自定义关键词、⑤ 升级描述变绿、右①「升级增量填公式」（`OnUpgrade()` 里没有玩家上下文，
+> 根本障碍没解决，等用户拍板）。
+>
+> **红线实测数字**：`dotnet build Sts2CharForge.sln -c Debug --no-incremental` **0 错误**；
+> `--uicheck` Debug **3001 PASS / 0 FAIL**、发布版（`dotnet publish -c Release -r win-x64 --self-contained true`
+> → `Unblock-File` → `[System.Diagnostics.Process]::Start(UseShellExecute=$false)` + `WaitForExit`，跑前先删旧结果文件）
+> **3001 PASS / 0 FAIL**（基线 2975/0，新增 26 条）；**默认配置逐字不变**：`--samplegen` 113 个文件
+> **112 个逐文件 SHA256 一致**（只差 `ExampleMod.sln` 的随机 GUID）、文件名一个都没变；
+> **含卡（X 费 / 额外资源量费 / 升级后费用）的老形状存档对拍**：91 个文件里 **89 个逐字节一致**
+> （同样只差 `.sln`）。探针 `D:\ds\s\_tmp\v02131`：新费用语义存档（费用常量公式 / 费用 X / 额外资源量费用式子 /
+> 额外资源量费用 Y / 升级后费用 X+1 / 升级后额外资源量费用 / 三种 X 的等价新写法）→ CLI `--build --install`
+> **真 `dotnet build` 0 错误** → `--recover` **0 条「没认出来」**、字段逐项还原（费用式子回读成折叠后的
+> `Cost` / `CostIsX` / `StarCostIsX` / `UpgradeStarCost`，语义等价、再生成逐字节一致）；**幂等**：
+> 同配置连跑两次 + 「生成→回读→再生成→再回读→再生成」两轮产物逐字节一致、两份恢复存档字节相同。
+> **行尾噪声怎么排除**：本机 `core.autocrlf=true`，直接 `git worktree` 检出的源码行尾会和 t3 工作区不一致
+> → 生成物行尾跟着变、SHA 全对不上。做法 = `robocopy t3\src → _tmp\v02131\ref\src`（继承 t3 当前行尾约定）
+> + 只把这一轮改过的 **8 个文件**用 `cmd /c "git show HEAD:<path> > tmp"`（**字节级**，避免 PowerShell 管道
+> 按错误代码页解码）取回来，再**按每个文件在 t3 工作区里的行尾风格**（逐个统计 CRLF/LF：8 个里 6 个 CRLF、
+> `ForgeNumbers.cs` 与 `ProfileFactory.cs` 是 LF）归一化后覆盖 → 编译 → 同一份存档跑两版 CLI 逐文件对拍。
+> ⚠ `edit` 工具这轮没把文件写成 LF（改完逐个复核过），但每次编辑后仍逐文件统计了行尾。
+>
+> **已知未修 / 边界**：`ProjectRecovery` 仍然不支持锻造节点图（`ForgeGraph` 恢复后为空，见「已知未修」）；
+> `--recover` 恢复不出「费用框里写的是 `1+1` 还是 `4`」这种**原文**（本体 `base(cost,…)` 是编译期常量，
+> 生成代码里没有可标记的地方）—— 恢复的是**折叠后的值**，语义与再生成结果一致；同理
+> 「额外资源量费用」框的原文靠新加的 `// CET:StarCostFormula=` 保住了，费用框没有加标记（会动老存档生成文本），
+> 如果用户要求「原样还原费用式子」，要单独一版 + 明确的红线重新界定。
+
 ## 第 17 批需求（用户 2026-10-XX 提，按《卡牌页优化.md》**只做第 1 条 + 中间 ③**；其余留给后面几版）
 
 > 需求原文：`docs\需求\卡牌页优化.md`。**用户拍板**：`docs\需求\已拍板决定.md` **Q5 = A —— 卡牌左侧序号按「列表里全部行」编号（含本体卡 / 初始打击防御）**。

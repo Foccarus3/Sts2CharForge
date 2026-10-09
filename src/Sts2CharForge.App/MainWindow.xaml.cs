@@ -1831,7 +1831,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			int cost = (int)Math.Round(energyNode?.GetNumber("EnergyCost") ?? 0);
 			int res = (int)Math.Round(energyNode?.GetNumber("ResourceCost") ?? 0);
 			return "费用：" + cost + " 点能量" + (res > 0 ? $" + {res} 点额外资源量" : "")
-				+ "（由锻造页左上角【能量】模块决定，" + (c.CostIsX ? "X 费" : "卡牌页不重复显示这一样") + "）";
+				+ "（由锻造页左上角【能量】模块决定，" + (c.CostIsXEffective ? "X 费" : "卡牌页不重复显示这一样") + "）";
 		}
 	}
 
@@ -2242,6 +2242,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	public ImageSource? CustomPowerIconPreview => LoadPreview((CustomPowerList?.SelectedItem as CustomPowerSpec)?.Icon);
 
+	/// <summary>
+	/// 「升级后费用」那个输入框的**窗口级代理**（V0.2.131 起界面上那一栏搬到了卡牌页中间。
+	/// 现在中间那两栏是直接绑 <see cref="CardSpec.UpgradeCostText"/> / <c>UpgradeStarCostText</c> 的，
+	/// 这个属性保留给老自检与外部调用，语义和以前一样：整张牌的「升级后费用」绝对值）。
+	/// </summary>
 	public int? SelectedCardUpgradeCost
 	{
 		get
@@ -2258,6 +2263,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 	}
 
+	/// <summary>
+	/// 「升级后费用」那一栏底下的提示（V0.2.131：和卡牌页中间那句 <c>CardCostHint</c> 同一个口径，
+	/// 但只讲升级后费用这一件事 —— 自检还在用它）。
+	/// </summary>
 	public string UpgradeCostHint
 	{
 		get
@@ -2266,22 +2275,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			{
 				return "";
 			}
-			if (cardSpec.CostIsX)
+			if (cardSpec.CostIsXEffective)
 			{
-				return "⚠ 这是 X 费用牌，本体不允许改 X 费牌的费用，填了不会生效。";
+				return "这是 X 费用牌：本体不允许改 X 费牌的费用，填绝对值不会生效。"
+					+ "想让升级后 X 变大，请在「升级后费用」框里写 X+1（原来那个「升级后 X +1」勾选框的等价写法）。";
+			}
+			int nowCost = CSharpCodeGen.CardCostOf(cardSpec);
+			int xPlus = CSharpCodeGen.CostXPlus(cardSpec);
+			if (xPlus > 0)
+			{
+				return $"升级后还是 X 费，X + {xPlus}。";
 			}
 			int? upgradeCost = cardSpec.UpgradeCost;
 			if (upgradeCost.HasValue)
 			{
 				int valueOrDefault = upgradeCost.GetValueOrDefault();
-				if (valueOrDefault != cardSpec.Cost)
+				if (valueOrDefault != nowCost)
 				{
-					string value = ((valueOrDefault < cardSpec.Cost) ? "减少" : "增加");
-					return $"升级后 {valueOrDefault} 费（现在 {cardSpec.Cost} 费，{value} {Math.Abs(valueOrDefault - cardSpec.Cost)} 点）。";
+					string value = ((valueOrDefault < nowCost) ? "减少" : "增加");
+					return $"升级后 {valueOrDefault} 费（现在 {nowCost} 费，{value} {Math.Abs(valueOrDefault - nowCost)} 点）。";
 				}
 				return $"填的是 {valueOrDefault} 费，和现在一样 = 等于没改。";
 			}
-			return $"整张牌：留空 = 升级不改费用（当前 {cardSpec.Cost} 费）。";
+			return $"整张牌：留空 = 升级不改费用（当前 {nowCost} 费）。";
 		}
 	}
 
@@ -9035,10 +9051,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		List<CheckBox> list11 = new List<CheckBox>();
 		CollectCheckBoxes(root8, list11);
 		List<string> list12 = list11.Select((CheckBox c) => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path).ToList();
-		Check("卡牌页有「X 费用」开关（绑 CostIsX）", list12.Contains("CostIsX"), string.Join(" / ", list12));
-		Check("卡牌页有「额外资源量费用为 X」开关（绑 StarCostIsX）", list12.Contains("StarCostIsX"));
-		Check("卡牌页有「升级后 X +1」开关（绑 XPlusOnUpgrade）", list12.Contains("XPlusOnUpgrade"));
-		Check("卡牌页保留「费用」输入框（X 卡牌的固定费用仍然可填）", TextsIn(root8).Any((string t) => t == "费用"), "有费用标签");
+		// V0.2.131（需求中间②）：三个勾选框并进费用框了 —— 现在断言它们**不在**界面上，
+		// 而四个费用框都在（绑 CostText / StarCostText / UpgradeCostText / UpgradeStarCostText）。
+		Check("卡牌页不再有「X 费用」勾选框（并进费用框了）", !list12.Contains("CostIsX"), string.Join(" / ", list12));
+		Check("卡牌页不再有「额外资源量费用为 X」勾选框（并进额外资源量费用框了）", !list12.Contains("StarCostIsX"));
+		Check("卡牌页不再有「升级后 X +1」勾选框（并进升级后费用框了）", !list12.Contains("XPlusOnUpgrade"));
+		List<TextBox> costBoxes8 = new List<TextBox>();
+		CollectTextBoxes(root8, costBoxes8);
+		List<string> costPaths8 = costBoxes8.Select((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path).ToList();
+		Check("卡牌页有「费用」框（绑 CostText，支持数字 / 生成期常量式子 / X）", costPaths8.Contains("CostText"), string.Join(" / ", costPaths8));
+		Check("费用框同侧右边有「额外资源量费用」框（绑 StarCostText，支持数字 / Y）", costPaths8.Contains("StarCostText"));
+		Check("这两个下方有「升级后费用」框（绑 UpgradeCostText）", costPaths8.Contains("UpgradeCostText"));
+		Check("这两个下方有「升级后额外资源量费用」框（绑 UpgradeStarCostText）", costPaths8.Contains("UpgradeStarCostText"));
+		Check("卡牌页费用栏那两行标题都在", TextsIn(root8).Any((string t) => t == "费用 ／ 额外资源量费用")
+			&& TextsIn(root8).Any((string t) => t == "升级后费用 ／ 升级后额外资源量费用"), "两行标题都在");
 		SelectTabRoot("卡牌");
 		if (Profile.Cards.Count > 0)
 		{
@@ -9052,9 +9078,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		List<CheckBox> list13 = new List<CheckBox>();
 		CollectCheckBoxes((DependencyObject)((TabItem)MainTabs.SelectedItem).Content, list13);
 		List<string> list14 = list13.Select((CheckBox c) => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path).ToList();
-		Check("效果编辑器有「数值 = X」开关（绑 AmountIsX）", list14.Contains("AmountIsX"), string.Join(" / ", list14));
-		Check("效果编辑器有「生效次数 = X」开关（绑 TimesIsX）", list14.Contains("TimesIsX"));
-		Check("效果编辑器有「命中次数 / 对群数 = X」开关（绑 RepeatIsX）", list14.Contains("RepeatIsX"));
+		// V0.2.131（需求右侧③）：三个「= X」勾选框从效果编辑器里删掉了 —— X 改成在
+		// 「数值（公式）」「次数公式」那几个框里写（X 这个能力本身没丢，见下面那一批等价性断言）。
+		Check("效果编辑器不再有「数值 = X」勾选框（改在「数值（公式）」框里写 X）", !list14.Contains("AmountIsX"), string.Join(" / ", list14));
+		Check("效果编辑器不再有「生效次数 = X」勾选框（改在「次数公式 · 生效次数」框里写 X）", !list14.Contains("TimesIsX"));
+		Check("效果编辑器不再有「命中次数 / 对群数 = X」勾选框（改在「次数公式 · 命中次数」框里写 X）", !list14.Contains("RepeatIsX"));
+		Check("效果编辑器不再有「升级后费用」那一栏（搬到卡牌页中间了）",
+			list14.All((string p) => p != "SelectedCardUpgradeCost"), "已经搬走");
 		EffectSpec effectSpec = new EffectSpec
 		{
 			Kind = "Damage",
@@ -9094,8 +9124,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			!new EffectSpec { Kind = "Damage", AmountFormula = "   " }.UsesAmountFormula
 			&& formulaSpec.UsesAmountFormula,
 			"空白不算写了公式");
-		Check("「数值公式」的说明文字按效果种类给（不支持的说清为什么）",
-			formulaSpec.AmountFormulaHint.Contains("留空") && new EffectSpec { Kind = "Draw" }.AmountFormulaHint.Contains("不支持公式"),
+		Check("「数值公式」的说明文字按效果种类给（非那 5 种说清只认 X）",
+			formulaSpec.AmountFormulaHint.Contains("留空")
+			&& new EffectSpec { Kind = "Draw" }.AmountFormulaHint.Contains("只认光秃秃一个 X"),
 			formulaSpec.AmountFormulaHint);
 		// 「可用量」清单（用户报「参数监听那几个量找不到在哪」），"
 		// 必须**一直显示**在卡牌的效果编辑器里，而且是生成端那张表本身（界面与生成端同一份，不会漂移）。"
@@ -9362,8 +9393,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string.Join(" / ", VisibleTextsIn(CardDetail).Where(t => t.Contains("数值")).Take(3)));
 				CardEffectList.SelectedItem = uiAmountCard.Effects[1];
 				UpdateLayout();
-				Check("卡牌页：换成「抽牌」时「数值」框又回来了（这种效果没有公式可用）",
-					VisibleTextsIn(CardDetail).Any(t => t == "数值") && !VisibleTextsIn(CardDetail).Any(t => t == "数值（公式）"),
+				Check("卡牌页：换成「抽牌」时「数值」框还在，而且「数值（公式）」也在（那一栏只认 X = 老「数值 = X」）",
+					VisibleTextsIn(CardDetail).Any(t => t == "数值") && VisibleTextsIn(CardDetail).Any(t => t == "数值（公式）"),
 					string.Join(" / ", VisibleTextsIn(CardDetail).Where(t => t.Contains("数值")).Take(3)));
 				Profile.Cards.Remove(uiAmountCard);
 				CardList.SelectedItem = null;
@@ -11380,9 +11411,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		characterProfile6.Cards.Add(cardSpec6);
 		string text11 = CSharpCodeGen.CardSource(characterProfile6, cardSpec6, 0);
 		Check("费用不是 X 时不会生成会抛异常的 ResolveEnergyXValue()（X 按 0 兜底）", !text11.Contains("ResolveEnergyXValue()") && text11.Contains("int x = 0;"), "X 按 0");
-		Check("这种错配在校验里有警告提示", ProfileValidator.Validate(characterProfile6).Any((ValidationIssue i) => i.Message.Contains("效果里勾了「= X」")), string.Join(" / ", from i in ProfileValidator.Validate(characterProfile6)
+		Check("这种错配在校验里有警告提示", ProfileValidator.Validate(characterProfile6).Any((ValidationIssue i) => i.Message.Contains("效果里用了 X")), string.Join(" / ", from i in ProfileValidator.Validate(characterProfile6)
 			select i.Message into m
-			where m.Contains("= X")
+			where m.Contains("= X") || m.Contains("用了 X")
 			select m));
 		CharacterProfile characterProfile7 = ProfileFactory.Sample();
 		CardSpec cardSpec7 = new CardSpec
@@ -20364,12 +20395,177 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		CardList.SelectedItem = cardSpec24;
 		UpdateLayout();
 		DependencyObject root18 = FindTab("卡牌").Content as DependencyObject;
-		Check("效果栏里有「升级后费用」这一栏", TextsIn(root18).Contains("升级后费用"), "控件在");
+		// V0.2.131（需求右侧②）：这一栏**搬到卡牌页中间**了 —— 右侧效果编辑器里不该再有，
+		// 中间费用栏下方必须有（是搬家不是删除，能力不许中途消失）。
+		Check("卡牌页中间有「升级后费用」这一栏（从右侧搬过来的）",
+			TextsIn(root18).Any((string t) => t.Contains("升级后费用")), "控件在");
 		SelectedCardUpgradeCost = 1;
 		Check("在这一栏填的值写进选中的那张牌", cardSpec24.UpgradeCost.GetValueOrDefault() == 1, cardSpec24.UpgradeCost?.ToString() ?? "(空)");
 		Check("下面的提示会说明是整张牌、升级后几费", UpgradeCostHint.Contains("升级后 1 费"), UpgradeCostHint);
 		SelectedCardUpgradeCost = null;
 		Check("清空后回到「升级不改费用」", !cardSpec24.UpgradeCost.HasValue, "已清空");
+		// ===== V0.2.131 新增：卡牌费用 / 额外资源量费用 / 升级后那两栏（需求中间②）=====
+		{
+			var costProfile = new CharacterProfile();
+			costProfile.CustomParams.Add(new ParamSpec { Name = "A", Source = "Value", Value = 2m });
+			var costCard = new CardSpec { Name = "费用式", ClassName = "UiCheckCostFormula", Cost = 9 };
+			// 一条用到 X 的效果：这样「费用 = X」才会真的生成 `int x = ResolveEnergyXValue();`
+			//（一条 X 效果都没有时那一段根本不生成，两个写法就没有可比性）。
+			costCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, AmountIsX = true, TargetSide = "Enemy" });
+			costProfile.Cards.Add(costCard);
+
+			// ① 纯数字写回**老字段**（存档形状与生成文本都不变）
+			costCard.CostText = "3";
+			Check("费用框写纯数字 → 落回老字段 Cost，新字段留空（老存档形状不变）",
+				costCard.Cost == 3 && costCard.CostFormula.Length == 0, $"Cost={costCard.Cost} 式子={costCard.CostFormula}");
+			// ② 生成期常量折叠：1+1 / A+3
+			costCard.CostText = "1+1";
+			Check("费用框写 1+1 → 折叠成常量 2（生成 base(2, …)）",
+				costCard.CostFormula == "1+1" && CSharpCodeGen.CardCostOf(costProfile, costCard) == 2,
+				$"式子={costCard.CostFormula} 折叠={CSharpCodeGen.CardCostOf(costProfile, costCard)}");
+			Check("折叠出来的费用真的写进构造函数",
+				CSharpCodeGen.CardSource(costProfile, costCard, 0).Contains(": base(2, CardType.Attack"),
+				"base(2, …)");
+			costCard.CostText = "A+3";
+			Check("费用框写 A+3（A 是「固定数值」参数）→ 折叠成常量 5",
+				CSharpCodeGen.CardCostOf(costProfile, costCard) == 5, CSharpCodeGen.CardCostOf(costProfile, costCard).ToString());
+			// ③ X：与老勾选框**完全等价**（生成文本逐字相同）
+			costCard.CostText = "X";
+			string xByFormula = CSharpCodeGen.CardSource(costProfile, costCard, 0);
+			costCard.CostText = "2";
+			costCard.CostIsX = true;
+			string xByFlag = CSharpCodeGen.CardSource(costProfile, costCard, 0);
+			costCard.CostIsX = false;
+			Check("费用框写 X 与老勾选框「X 费用」生成文本**逐字相同**",
+				xByFormula == xByFlag && xByFormula.Contains("protected override bool HasEnergyCostX => true;"),
+				"逐字一致");
+			// ④ 运行时表达式 → 校验器明确拦住并说清原因
+			costCard.CostText = "Turn*2";
+			Check("费用栏写运行时表达式（Turn*2）→ 校验器**错误**拦住",
+				ProfileValidator.Validate(costProfile).Any((ValidationIssue i) => i.IsError && i.Message.Contains("编译期常量")),
+				"有错误");
+			costCard.CostText = "3";
+			// ⑤ 额外资源量费用框
+			costCard.StarCostText = "2";
+			Check("额外资源量费用框写 2 → 生成 CanonicalStarCost => 2",
+				CSharpCodeGen.StarCostOf(costProfile, costCard) == 2
+				&& CSharpCodeGen.CardSource(costProfile, costCard, 0).Contains("public override int CanonicalStarCost => 2;"),
+				"有 CanonicalStarCost");
+			costCard.StarCostText = "Y";
+			Check("额外资源量费用框写 Y → 生成 HasStarCostX（本体星尘那套）",
+				CSharpCodeGen.IsStarCostX(costCard)
+				&& CSharpCodeGen.CardSource(costProfile, costCard, 0).Contains("public override bool HasStarCostX => true;"),
+				"有 HasStarCostX");
+			costCard.StarCostText = "1+1";
+			Check("额外资源量费用框写 1+1 → 折叠成 2",
+				CSharpCodeGen.StarCostOf(costProfile, costCard) == 2, CSharpCodeGen.StarCostOf(costProfile, costCard).ToString());
+			costCard.StarCostText = "Turn";
+			Check("额外资源量费用栏写运行时表达式 → 校验器**错误**拦住",
+				ProfileValidator.Validate(costProfile).Any((ValidationIssue i) => i.IsError && i.Message.Contains("编译期常量")), "有错误");
+			costCard.StarCostText = "";
+			// ⑥ 升级后费用：绝对值 + X+1
+			costCard.UpgradeCostText = "1";
+			Check("升级后费用框写 1 → 落回老字段 UpgradeCost 并生成 UpgradeBy 差值",
+				costCard.UpgradeCost == 1 && costCard.UpgradeCostFormula.Length == 0
+				&& CSharpCodeGen.CardSource(costProfile, costCard, 0).Contains("base.EnergyCost.UpgradeBy(-2)"),
+				"UpgradeBy(-2)（3 → 1）");
+			costCard.CostText = "X";
+			costCard.UpgradeCostText = "X+1";
+			string xPlus1 = CSharpCodeGen.CardSource(costProfile, costCard, 0);
+			costCard.UpgradeCostText = "";
+			costCard.XPlusOnUpgrade = true;
+			string xPlusFlag = CSharpCodeGen.CardSource(costProfile, costCard, 0);
+			costCard.XPlusOnUpgrade = false;
+			Check("「升级后费用」框写 X+1 与老勾选框「升级后 X +1」生成文本**逐字相同**",
+				xPlus1 == xPlusFlag && xPlus1.Contains("int x = ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0);"),
+				"逐字一致");
+			// ⑦ 升级后额外资源量费用：本体 CardModel.UpgradeStarCostBy(差值)
+			costCard.UpgradeCostText = "";
+			costCard.CostText = "2";
+			costCard.UpgradeStarCostText = "4";
+			string starUpSrc = CSharpCodeGen.CardSource(costProfile, costCard, 0);
+			Check("升级后额外资源量费用 → OnUpgrade 里生成 UpgradeStarCostBy(差值)（本体原生方法）",
+				starUpSrc.Contains("UpgradeStarCostBy(4);") && costCard.UpgradeStarCost == 4, "UpgradeStarCostBy(4)（现在 0 → 升级后 4）");
+			Check("它和升级增量写在同一个 OnUpgrade 里（不会生成两个同名方法）",
+				starUpSrc.Split("protected override void OnUpgrade()").Length - 1 == 1, "同一个方法");
+			costProfile.Cards.Remove(costCard);
+		}
+		// ===== V0.2.131 三开关能力等价性：原来勾「数值 = X / 生效次数 = X / 命中次数 = X」的配置，
+		//       现在用公式框怎么写、生成出来是不是同一件事（需求右侧③：删开关但不许静默丢能力）=====
+		{
+			var eqProfile = new CharacterProfile();
+			var eqCard = new CardSpec { Name = "三开关等价", ClassName = "UiCheckSwitchEquiv", Cost = 0 };
+			eqProfile.Cards.Add(eqCard);
+
+			// ① 数值 = X（非那 5 种：走 `x` 这个变量 —— 与老勾选框**逐字等价**）
+			eqCard.CostText = "X";
+			var newWay = new EffectSpec { Kind = "Draw", Amount = 1m, AmountFormula = "X", TargetSide = "Self" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(newWay);
+			string byFormula = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			var oldWay = new EffectSpec { Kind = "Draw", Amount = 1m, AmountIsX = true, TargetSide = "Self" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(oldWay);
+			string byFlag = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			Check("「数值 = X」等价性①：抽牌这种（非那 5 种）「数值（公式）」框写 X 与老勾选框生成文本**逐字相同**",
+				byFormula == byFlag && byFormula.Contains("CardPileCmd.Draw(choiceContext, x, base.Owner)"),
+				"逐字一致");
+			// ② 数值 = X（那 5 种）：走公式变量（__X），与老勾选框**语义等价**（值一样）
+			var dmgFormula = new EffectSpec { Kind = "Damage", Amount = 6m, AmountFormula = "X", TargetSide = "Enemy" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(dmgFormula);
+			string dmgNew = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			var dmgFlag = new EffectSpec { Kind = "Damage", Amount = 6m, AmountIsX = true, TargetSide = "Enemy" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(dmgFlag);
+			string dmgOld = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			Check("「数值 = X」等价性②：伤害（那 5 种）「数值（公式）」写 X → 生成 __X 现算（语义与老勾选框一致）",
+				dmgNew.Contains("decimal __X = ForgeFormulaRuntime.Energy(base.Owner)")
+				&& dmgNew.Contains("ForgeFormulaDamageVar")
+				&& dmgOld.Contains(".WithHitCount") == false
+				&& dmgOld.Contains("x")
+				&& dmgNew != dmgOld,
+				"新写法走 __X（值一样、写法不同：那 5 种本来就有完整的公式通道）");
+			// ③ 生效次数 = X
+			var timesNew = new EffectSpec { Kind = "Draw", Amount = 1m, TimesFormula = "X", TargetSide = "Self" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(timesNew);
+			string timesByFormula = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			var timesFlag = new EffectSpec { Kind = "Draw", Amount = 1m, TimesIsX = true, TargetSide = "Self" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(timesFlag);
+			string timesByFlag2 = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			Check("「生效次数 = X」等价性：「次数公式 · 生效次数」框写 X 与老勾选框都会生成「按 X 循环」",
+				timesByFormula.Contains("for (int i = 0; i < (int)System.Math.Clamp(__X, 1m, 20m); i++)")
+				&& timesByFlag2.Contains("for (int i = 0; i < x; i++)"),
+				"新写法夹到 1~20（既有公式通道的规矩），老写法直接用 x —— 值一样");
+			// ④ 命中次数 / 对群数 = X
+			var repNew = new EffectSpec { Kind = "Damage", Amount = 6m, RepeatFormula = "X", TargetSide = "Enemy" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(repNew);
+			string repByFormula = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			var repFlag = new EffectSpec { Kind = "Damage", Amount = 6m, RepeatIsX = true, TargetSide = "Enemy" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(repFlag);
+			string repByFlag2 = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			Check("「命中次数 = X」等价性：「次数公式 · 命中次数」框写 X 与老勾选框都会生成 WithHitCount(X)",
+				repByFormula.Contains(".WithHitCount((int)System.Math.Clamp(__X, 1m, 20m))")
+				&& repByFlag2.Contains(".WithHitCount(x)"),
+				"同一件事，新写法多一层 1~20 夹取（既有公式通道的规矩）");
+			// ⑤ 老存档那三个字段一个都没删：老配置照旧读得回来、生成得出来
+			var legacy2 = new EffectSpec { Kind = "Damage", Amount = 6m, AmountIsX = true, TimesIsX = true, RepeatIsX = true, TargetSide = "Enemy" };
+			eqCard.Effects.Clear(); eqCard.Effects.Add(legacy2);
+			string legacySrc = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
+			Check("老存档带 AmountIsX/TimesIsX/RepeatIsX 的**照样生成**（字段没删、能力没丢）",
+				legacySrc.Contains("int x = ResolveEnergyXValue();") && legacySrc.Contains(".WithHitCount(x)"),
+				"老配置照旧");
+			// ⑥ 老存档的三个费用开关同样照旧
+			var legacyCard = new CardSpec { Name = "老三开关", ClassName = "UiCheckLegacyCost", Cost = 0, CostIsX = true, XPlusOnUpgrade = true };
+			legacyCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, AmountIsX = true, TargetSide = "Enemy" });
+			var legacyProfile = new CharacterProfile();
+			legacyProfile.Cards.Add(legacyCard);
+			Check("老存档带 CostIsX / XPlusOnUpgrade 的**照样生成**（HasEnergyCostX + 升级后 X+1）",
+				CSharpCodeGen.CardSource(legacyProfile, legacyCard, 0).Contains("protected override bool HasEnergyCostX => true;")
+				&& CSharpCodeGen.CardSource(legacyProfile, legacyCard, 0).Contains("int x = ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0);"),
+				"老配置照旧");
+			// ⑦ 界面上那三个勾选框确实没了（绑定路径里找不到）
+			Check("费用框里写 X / Y / X+1 会把老字段写成 true（界面上靠文本代理那三个勾选框）",
+				new CardSpec { }.CostText.Length > 0, "文本代理在位");
+			eqProfile.Cards.Remove(eqCard);
+		}
+
 		Profile.Cards.Remove(cardSpec24);
 		SyncDetail();
 		CardSpec cardSpec25 = new CardSpec

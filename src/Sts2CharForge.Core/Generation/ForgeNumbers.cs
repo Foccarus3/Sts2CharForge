@@ -129,6 +129,108 @@ public static class ForgeNumbers
         return r.Runtime ? fallback : (double)r.Value;
     }
 
+    /// <summary>
+    /// 卡牌**费用栏**（费用 / 额外资源量费用 / 升级后费用）的解析结果。
+    ///
+    /// 为什么单独一个类型：这三个栏位要的是**编译期常量**（本体 <c>base(cost, …)</c> /
+    /// <c>CanonicalStarCost</c>），所以只有「纯数字」「生成期能折叠成常数」和「<c>X</c> / <c>Y</c>
+    /// 这种本体原生支持的 X 费用」三档能用，**运行时表达式一律不收**（校验器按 <see cref="Error"/> 原话报出来）。
+    /// </summary>
+    public enum CostKind
+    {
+        /// <summary>这一栏没填（走老字段 / 老口径）。</summary>
+        None,
+        /// <summary>生成期就定下来的常量（纯数字，或 <c>1+1</c> / <c>A+3</c> 折叠出来的）。</summary>
+        Constant,
+        /// <summary>X 费用（本体 <c>HasEnergyCostX</c> / <c>HasStarCostX</c> 那套）。</summary>
+        X,
+    }
+
+    /// <summary>费用栏的解析结果（<paramref name="Plus"/> 只在 <see cref="CostKind.X"/> 时有意义）。</summary>
+    public readonly record struct CostResolved(bool Ok, CostKind Kind, int Value, int Plus, string Text, string Error)
+    {
+        public bool IsX => Ok && Kind == CostKind.X;
+        public bool IsConstant => Ok && Kind == CostKind.Constant;
+    }
+
+    /// <summary>这一栏写的是不是一个光秃秃的 <c>X</c>（费用框 / 效果公式框共用这个判据）。</summary>
+    public static bool IsBareX(string? text) =>
+        string.Equals(ForgeFormula.DisplayText(text), "X", StringComparison.Ordinal);
+
+    /// <summary>这一栏写的是不是一个光秃秃的 <c>Y</c>（额外资源量费用框 / 效果公式框共用）。</summary>
+    public static bool IsBareY(string? text) =>
+        string.Equals(ForgeFormula.DisplayText(text), "Y", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 解析一个**费用栏**（消耗能量 / 消耗额外资源量 / 升级后费用）。
+    ///
+    /// 三档（顺序必须是「先数字、再折叠、最后看 X」—— 红线：老存档写纯数字时一个字符都不变）：
+    ///   ① 纯整数（含负号）→ <see cref="CostKind.Constant"/>；
+    ///   ② 公式、但生成期折叠得出常数（<c>1+1</c>、<c>A+3</c>，A 必须是「固定数值」来源的参数）
+    ///      → <see cref="CostKind.Constant"/>；
+    ///   ③ 只用了 <paramref name="symbol"/>（费用框是 <c>X</c>、额外资源量费用框是 <c>Y</c>）这一个标识符，
+    ///      而且是**一次项、系数为 1** → <see cref="CostKind.X"/>（<c>X</c> / <c>X+1</c> / <c>1+X</c>）；
+    ///   ④ 其余（运行时只读量、实时读数参数、两次项、系数不是 1）→ <c>Ok = false</c> + 中文原因。
+    ///
+    /// <paramref name="allowPlus"/>：额外资源量费用不认「升级后 +N」那种写法（本体 <c>HasStarCostX</c>
+    /// 没有这个语义），传 false 时 <c>Y+1</c> 会被拦住。
+    /// </summary>
+    public static CostResolved ResolveCost(CharacterProfile? p, string? text, string symbol, bool allowPlus, string fieldZh)
+    {
+        string src = ForgeFormula.DisplayText(text);
+        if (src.Length == 0) return new CostResolved(true, CostKind.None, 0, 0, src, "");
+
+        // ① 纯整数（老写法：费用框里就是一个数字）——一个字符都不动
+        if (int.TryParse(src, System.Globalization.NumberStyles.AllowLeadingSign,
+                System.Globalization.CultureInfo.InvariantCulture, out int plain))
+            return new CostResolved(true, CostKind.Constant, plain, 0, src, "");
+
+        // ② / ③ / ④
+        var root = ForgeFormula.TryParse(src, out string parseError);
+        if (root is null) return new CostResolved(false, CostKind.None, 0, 0, src, $"{fieldZh}看不懂：{parseError}");
+
+        // ② 生成期常量折叠（和锻造页数字框同一套：<see cref="ForgeFormula.TryEvalConst"/> + 固定数值参数）
+        if (ForgeFormula.TryEvalConst(root, id => ConstParam(p, id), out decimal folded, out _))
+        {
+            if (decimal.Truncate(folded) != folded)
+                return new CostResolved(false, CostKind.None, 0, 0, src,
+                    $"{fieldZh}算出来是 {folded}，不是整数 —— 费用必须是整数。");
+            return new CostResolved(true, CostKind.Constant, (int)folded, 0, src, "");
+        }
+
+        // ③ 只用了 symbol 这一个标识符、且是一次项：当作 X 费用（本体原生那套）
+        var ids = ForgeFormula.Identifiers(root);
+        string? bad = ids.FirstOrDefault(id => !string.Equals(id, symbol, StringComparison.Ordinal));
+        if (bad is not null)
+        {
+            string why = string.Equals(bad, "X", StringComparison.Ordinal) || string.Equals(bad, "Y", StringComparison.Ordinal)
+                ? $"这个框里只有 {symbol} 是本体认的（你写的是 {bad}）"
+                : $"「{bad}」是跑起来才知道的量（读血量 / 读状态 / 内置只读量 / 实时读数参数）";
+            return new CostResolved(false, CostKind.None, 0, 0, src,
+                $"{fieldZh}必须是**编译期常量**（本体 base(cost, …) / CanonicalStarCost 要的就是它）：{why}，本体收不了。"
+                + $"这一栏只支持：① 数字（2）；② 生成期算得出来的式子（1+1、A+3 —— A 必须是「固定数值」来源的参数）；"
+                + $"③ {symbol}（本体「消耗全部{(symbol == "Y" ? "额外资源量" : "能量")}」那套）。");
+        }
+
+        if (!ForgeFormula.TryEvalConst(root, id => string.Equals(id, symbol, StringComparison.Ordinal) ? 0m : ConstParam(p, id),
+                out decimal at0, out string e0))
+            return new CostResolved(false, CostKind.None, 0, 0, src, $"{fieldZh}算不出来：{e0}");
+        if (!ForgeFormula.TryEvalConst(root, id => string.Equals(id, symbol, StringComparison.Ordinal) ? 1m : ConstParam(p, id),
+                out decimal at1, out string e1))
+            return new CostResolved(false, CostKind.None, 0, 0, src, $"{fieldZh}算不出来：{e1}");
+        decimal slope = at1 - at0;
+        if (slope != 1m)
+            return new CostResolved(false, CostKind.None, 0, 0, src,
+                $"{fieldZh}里的 {symbol} 只能**单独出现或当一次项**（例：{symbol}、{symbol}+1、1+{symbol}）——"
+                + $"现在这个式子不是（{symbol} 的系数是 {slope}）。");
+        if (decimal.Truncate(at0) != at0)
+            return new CostResolved(false, CostKind.None, 0, 0, src, $"{fieldZh}的常数部分是 {at0}，不是整数。");
+        if (!allowPlus && at0 != 0m)
+            return new CostResolved(false, CostKind.None, 0, 0, src,
+                $"{fieldZh}不支持「{symbol} + 常数」（本体只有「消耗全部额外资源量」这一档，没有再 +N 的写法）。");
+        return new CostResolved(true, CostKind.X, 0, (int)at0, src, "");
+    }
+
     /// <summary>把一个标识符换成常数（单字母 + 「固定数值」来源的参数；其余一律返回 null = 运行时才知道）。</summary>
     private static decimal? ConstParam(CharacterProfile? p, string id)
     {

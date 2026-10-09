@@ -1224,7 +1224,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitGlobalCardEffect(CodeWriter w, EffectSpec e, string owner, bool useX = false,
         CharacterProfile? p = null)
     {
-        string n = (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string rng = $"{owner}.RunState.Rng.Niche";
         if (e.UsesSpawnOptions) w.Line(SpawnMarker(e));
@@ -1588,7 +1588,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     ? TempPowerClassName(e, owner)
                     : e.NextTurn ? DelayedPowerClassName(e, owner) : e.PowerId!.Trim();
                 // 「数值 = 层数 / X」时数量说不准，就不写数量（本体自己也有不写数量的写法）
-                string amount = (e.AmountIsX || e.AmountIsStack || e.Amount <= 0)
+                string amount = (e.AmountIsXEffective || e.AmountIsStack || e.Amount <= 0)
                     ? ""
                     : ((int)e.Amount).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 list.Add($"MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower<{type}>({amount})");
@@ -1684,7 +1684,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「数值 = X」和「数值公式」的卡牌不算：正负要到运行时才知道，判不出来，只能按「获得」生成。
     /// </summary>
     internal static bool IsNegativeAmount(EffectSpec e, bool useX) =>
-        e.Amount < 0 && !(useX && e.AmountIsX) && !e.UsesAmountFormula;
+        e.Amount < 0 && !(useX && e.AmountIsXEffective) && !e.UsesAmountFormula;
 
     /// <summary>取绝对值的那层壳（负数效果用；字面量和 DynamicVars 取值都适用）。</summary>
     internal static string AbsExpr(string expr) => $"System.Math.Abs({expr})";
@@ -1839,7 +1839,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitCardReward(CodeWriter w, EffectSpec e, string owner, bool useX = false, string? roomVar = null)
     {
-        string n = (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
 
         // 独立作用域：同一个地方配了两条「获得卡牌奖励」时，里面的局部变量不会重名（重名直接编译不过）
         w.Open("");
@@ -2268,7 +2268,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>取数值：X 费用卡牌上「数值 = X」就用 X，否则用固定数值。</summary>
     internal static string AmountExpr(EffectSpec e, bool useX, Dictionary<EffectSpec, string>? map = null) =>
-        useX && e.AmountIsX ? XVar : VarAccess(e, map);
+        useX && e.AmountIsXEffective ? XVar : VarAccess(e, map);
 
     /// <summary>
     /// 「取几张」这类效果的**张数表达式**（消耗 / 丢弃 / 升级 / 变化 / 复制 / 重放 / 预见 / 生成 / 从牌堆拿牌…）。
@@ -2282,7 +2282,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static string CountExprAt(EffectSpec e, Dictionary<EffectSpec, string>? map, bool useX)
     {
-        if (useX && e.AmountIsX) return XVar;
+        if (useX && e.AmountIsXEffective) return XVar;
         if (e.UpgradeAmount != 0 && !HasNoDynamicVar(e)) return $"(int){VarAccess(e, map)}";
         return Math.Max(1, (int)e.Amount).ToString();
     }
@@ -3626,24 +3626,35 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         // X 费用（本体储君「天际钻头」/ 亡灵契约师「挽歌」这种）：本体用 HasEnergyCostX 表示，
         // 构造函数里费用写 0，实际消耗由本体结算，X 值用 ResolveEnergyXValue() 取。
+        //
+        // V0.2.131：界面上那三个「= X」勾选框没了，改成在费用框 / 额外资源量费用框里写 X / Y ——
+        // 判据统一走 IsCostX / IsStarCostX（老字段照旧认，所以老存档生成文本逐字不变）。
+        bool costIsX = IsCostX(c);
+        bool starCostIsX = IsStarCostX(c);
         bool usesX = c.Effects.Any(e => e.UsesX);
-        bool xIsStar = c.StarCostIsX && !c.CostIsX;
-        if (c.CostIsX || c.StarCostIsX || usesX)
+        bool xIsStar = starCostIsX && !costIsX;
+        // V0.2.131：「额外资源量费用」框里写的原文（数字 / 生成期式子 / Y）——
+        // 生成出来的只有 `CanonicalStarCost => N` 或 `HasStarCostX => true`，反推不回原文，
+        // 而回读时旧口径会**凭空补一条负数效果**（那条效果会多出一段空代码 + 悬停说明）→ 幂等会破。
+        // 老存档（这个框是空的）不会走这里，所以生成文本一个字都不变。
+        if (!string.IsNullOrWhiteSpace(c.StarCostFormula))
+            w.Line("// CET:StarCostFormula=" + EscapeMarker(c.StarCostFormula));
+        if (costIsX || starCostIsX || usesX)
         {
             w.Line();
-            if (c.CostIsX)
+            if (costIsX)
                 w.Line("// 费用为 X：打出时消耗全部能量，X = 消耗掉的能量（本体 Whirlwind / 天际钻头 的做法）")
                  .Line("protected override bool HasEnergyCostX => true;");
-            if (c.StarCostIsX)
+            if (starCostIsX)
                 w.Line("// 额外资源量费用为 X：打出时消耗全部额外资源量，X = 消耗掉的资源量（本体 Stardust 的做法）")
                  .Line("public override bool HasStarCostX => true;");
         }
 
-        // 额外资源量花费：负数效果 = 打出这张牌需要的额外资源量。
+        // 额外资源量花费：负数效果 = 打出这张牌需要的额外资源量（或用户在「额外资源量费用」框里显式写的那个数）。
         // 直接复用本体的星星费用机制，本体就会在资源不足时禁止打出
         // （UnplayableReason.StarCostTooHigh），并把卡面费用数字显示成红色。
-        int starCost = StarCostOf(c);
-        if (starCost > 0 && !c.StarCostIsX)
+        int starCost = StarCostOf(p, c);
+        if (starCost > 0 && !starCostIsX)
         {
             w.Line()
              .Line("// 额外资源量花费（本体星星费用：不够时本体自带判定禁止打出）")
@@ -3791,7 +3802,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line("public override int MaxUpgradeLevel => 0;");
 
         w.Line()
-         .Line($"public {cls}() : base({(c.CostIsX ? 0 : CardCostOf(c))}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
+         .Line($"public {cls}() : base({(costIsX ? 0 : CardCostOf(p, c))}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
          .Line()
          .Open("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
 
@@ -3804,11 +3815,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // X 值：整张牌里只取一次，后面的效果都用这个变量
         if (usesX)
         {
-            if (c.CostIsX || xIsStar)
+            if (costIsX || xIsStar)
             {
                 string call = xIsStar ? "ResolveStarXValue()" : "ResolveEnergyXValue()";
-                string plus = c.XPlusOnUpgrade ? " + (base.IsUpgraded ? 1 : 0)" : "";
-                w.Line($"// X = {(xIsStar ? "打出时消耗掉的额外资源量" : "打出时消耗掉的能量")}{(c.XPlusOnUpgrade ? "（升级后 X + 1）" : "")}");
+                // 「升级后 X + N」：老勾选框 XPlusOnUpgrade → N = 1；「升级后费用」框里写 X+1 / X+2 → 1 / 2
+                int xPlus = CostXPlus(c);
+                string plus = xPlus > 0 ? $" + (base.IsUpgraded ? {xPlus} : 0)" : "";
+                w.Line($"// X = {(xIsStar ? "打出时消耗掉的额外资源量" : "打出时消耗掉的能量")}{(xPlus > 0 ? $"（升级后 X + {xPlus}）" : "")}");
                 w.Line($"int x = {call}{plus};");
             }
             else
@@ -3821,7 +3834,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         // 「数值公式」：把用到的自定义参数 / X / Y 先算一次（只算真的用到的那几个）。
         // 放在 X 那一块之后、目标判空之前：__fgTarget = cardPlay?.Target 不解引用，判空之前算它是安全的。
-        ForgeGraphGen.EmitCardFormulaPrologue(w, p, onPlayEffects);
+        ForgeGraphGen.EmitCardFormulaPrologue(w, p, onPlayEffects, xPlus: CostXPlus(c));
 
         if (NeedsTargetNullCheck(c))
         {
@@ -3967,15 +3980,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Close();
 
         // 需求⑩：卡牌时机的效果 —— 挂到本体对应钩子的 override 上（不在 OnPlay 里）
-        if (hasTiming) EmitCardTimingHooks(w, p, timingGroups, cardVars);
+        if (hasTiming) EmitCardTimingHooks(w, p, timingGroups, cardVars, CostXPlus(c));
         // 「将此牌放回手牌」：打完牌之后把它搬回手牌（本体 MakeItSo 用的就是 AfterCardPlayedLate）
         if (hasSelfReturn) EmitSelfReturnHook(w, p, c.Effects, cardVars);
         // 「抽到这张牌时它本场战斗费用 -N」：卡自己的 AfterCardDrawn（本体 KinglyKick 用的就是它）
         if (hasSelfDraw) EmitSelfDrawHook(w, p, c.Effects, cardVars);
 
         var upgradeable = c.Effects.Where(e => e.UpgradeAmount != 0 && !HasNoDynamicVar(e)).ToList();
-        int cardCostNow = CardCostOf(c);
+        int cardCostNow = CardCostOf(p, c);
         int? targetCost = c.UpgradeCost;
+        // V0.2.131：「升级后费用」框里写的**常量式子**（`2` / `1+1` / `A+3`）也当目标费用用。
+        // 写的是 X / X+N 时不走这里 —— 那是「X 费 + 升级后 X 加几」，已经在上面 xPlus 那一段处理掉了。
+        if (!string.IsNullOrWhiteSpace(c.UpgradeCostFormula))
+        {
+            var upR = ForgeNumbers.ResolveCost(p, c.UpgradeCostFormula, "X", allowPlus: true, "升级后费用");
+            if (upR.IsConstant) targetCost = upR.Value;
+        }
         // 锻造卡还多一条：两块布的【能量】模块填的费用不一样时，以「升级后」那块为准
         // （本体「升级后费用变少」就是 OnUpgrade 里 EnergyCost.UpgradeBy(负数)）。
         if (c.IsForged && c.UpgradedForgeGraph is { IsEmpty: false })
@@ -3983,10 +4003,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
             int upCost = ForgeGraphGen.EnergyCostOf(c.UpgradedForgeGraph);
             if (upCost != cardCostNow) targetCost = upCost;
         }
-        bool costChange = targetCost is not null && targetCost.Value != cardCostNow && !c.CostIsX;
+        bool costChange = targetCost is not null && targetCost.Value != cardCostNow && !costIsX;
+        // V0.2.131「升级后额外资源量费用」：本体 CardModel 上就有 protected void UpgradeStarCostBy(int addend)
+        //（和 OnUpgrade() 同一个 Family 可见性，另有 BaseStarCost / CurrentStarCost / WasStarCostJustUpgraded
+        // 那套机制）→ 照 EnergyCost.UpgradeBy 的同款思路写差值。
+        int starCostNow = StarCostOf(p, c);
+        int? targetStar = c.UpgradeStarCost;
+        bool starCostChange = targetStar is not null && targetStar.Value != starCostNow && !starCostIsX;
         var kwAdd = c.UpgradeKeywords?.Added ?? (IReadOnlyList<string>)Array.Empty<string>();
         var kwDel = c.UpgradeKeywords?.Removed ?? (IReadOnlyList<string>)Array.Empty<string>();
-        if (upgradeable.Count > 0 || costChange || kwAdd.Count > 0 || kwDel.Count > 0)
+        if (upgradeable.Count > 0 || costChange || starCostChange || kwAdd.Count > 0 || kwDel.Count > 0)
         {
             w.Line()
              .Open("protected override void OnUpgrade()");
@@ -4009,6 +4035,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 int delta = targetCost!.Value - cardCostNow;
                 w.Line($"base.EnergyCost.UpgradeBy({delta});   // 升级后费用 {targetCost.Value}（原 {cardCostNow}）");
             }
+            if (starCostChange)
+                w.Line($"UpgradeStarCostBy({targetStar!.Value - starCostNow});   // 升级后额外资源量费用 {targetStar.Value}（原 {starCostNow}）");
             // 升级后的关键字：本体「残影 / 幻影 / 寒冰」就是这么写的
             foreach (string kw in kwAdd)
                 w.Line($"AddKeyword(CardKeyword.{kw});   // 升级后获得「{Profile.KeywordUpgradeSpec.Zh(kw)}」");
@@ -4101,7 +4129,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   被给予自定义关键词 → 我们自己的「给予卡牌关键词」那一步直接调用（本体没有这个事件）
     /// </summary>
     private static void EmitCardTimingHooks(CodeWriter w, CharacterProfile p,
-        List<(string Timing, List<EffectSpec> Effects)> groups, Dictionary<EffectSpec, string> cardVars)
+        List<(string Timing, List<EffectSpec> Effects)> groups, Dictionary<EffectSpec, string> cardVars, int xPlus = 0)
     {
         foreach (var (timing, effects) in groups)
         {
@@ -4121,7 +4149,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("if (card != this || base.CombatState is null) return;")
                      .Line("// CET:CardTiming=Discarded");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4145,7 +4173,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("var choiceContext = new HookPlayerChoiceContext(this, MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
                     if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4170,7 +4198,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）")
                      .Line("// CET:CardTiming=Retained");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4196,7 +4224,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("// CET:CardTiming=Transformed");
                     if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4213,7 +4241,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("// CET:CardTiming=GivenKeyword")
                      .Line("if (base.CombatState is null) return;");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4234,7 +4262,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("// CET:CardTiming=HpLost");
                     if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
 
@@ -4246,7 +4274,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("if (card != this || base.CombatState is null) return;")
                      .Line("// CET:CardTiming=Exhausted");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus);
                     w.Close();
                     break;
             }
@@ -4286,7 +4314,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         : ForgeFormula.DisplayText(e.ChanceFormula) + "%（现算）";
 
     private static void EmitCardTimingBody(CodeWriter w, CharacterProfile p, IReadOnlyList<EffectSpec> effects,
-        Dictionary<EffectSpec, string> cardVars)
+        Dictionary<EffectSpec, string> cardVars, int xPlus = 0)
     {
         var slices = ChanceSlices(effects);
         // 「概率公式」那条不参与区间划分（见 ChanceSlices），但它照样要掷骰 → 这里也把它算上
@@ -4294,7 +4322,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「数值公式」：这些钩子里也要现算一次（用法和 OnPlay 一样）。
         // 注意必须放在 EmitCardEffect 之前，而且这类钩子会补一句 `CardPlay? cardPlay = null;`
         //（TimingBodyText 会扫到公式里的 cardPlay 从而把那一句加上），所以 __fgTarget 也拿得到。
-        ForgeGraphGen.EmitCardFormulaPrologue(w, p, effects);
+        ForgeGraphGen.EmitCardFormulaPrologue(w, p, effects, xPlus: xPlus);
         foreach (var e in effects)
         {
             w.Line($"// 卡牌时机「{EffectCatalog.CardTimingZh(e.Condition?.Timing)}」→「{EffectCatalog.FindKind(e.Kind).Display}」这条效果"
@@ -4595,7 +4623,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 玩家那个 Creature 的表达式：卡牌 / 遗物 / 药水那三条链里 base.Owner 就是 Player，所以是 owner.Creature。
         // 自定义状态那条链的默认档传的 playerExpr 直接就是 Creature（base.Owner），这时调用方会显式给 creatureExpr。
         creatureExpr ??= playerExpr + ".Creature";
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pile = e.SpawnToPile;
         string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
@@ -4704,7 +4732,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static void EmitGainPotion(CodeWriter w, EffectSpec e, bool useX = false, string playerExpr = "base.Owner",
         string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string nText = countExpr is null ? $" {n} 瓶" : "（瓶数 = 本状态的层数）";
         string? potion = string.IsNullOrWhiteSpace(e.PotionId) ? null : e.PotionId!.Trim();
@@ -4913,7 +4941,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line(SelfContainedMarker(e));
 
         // 数值 0 = 这张牌自己
-        if (!(useX && e.AmountIsX) && e.Amount <= 0m)
+        if (!(useX && e.AmountIsXEffective) && e.Amount <= 0m)
         {
             if (selfExpr is null)
             {
@@ -4925,7 +4953,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
 
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string pileExpr = PileExpr(e, playerExpr);
@@ -5066,7 +5094,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitExhaustCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -5124,7 +5152,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line("await CardCmd.Discard(choiceContext, this);");
             return;
         }
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -5174,7 +5202,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitReplayCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         // 「重放次数」写了公式（用户要求⑦）：现算，夹到 1~20（和固定值那条同一个上限）
         int times = Math.Max(1, Math.Min(20, e.ReplayTimes));
@@ -5248,7 +5276,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
         w.Line(SelfContainedMarker(e));
-        if (e.Amount <= 0m && !e.AmountIsX)
+        if (e.Amount <= 0m && !e.AmountIsXEffective)
         {
             if (selfExpr is null)
             {
@@ -5260,7 +5288,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
 
-        string n = (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? pred = CardScopePredicate(e, p);
         w.Line($"// 现在先选好 {n} 张{pileZh}里的牌，本回合结束时自动打出它们{ScopeZhSuffix(e)}");
@@ -5293,7 +5321,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static string SelfContainedMarker(EffectSpec e) =>
         $"// CET:Effect={e.Kind} CET:Amount={Lit.Dec(e.Amount)} CET:Pick={e.CardPick} CET:Pile={e.SelectPile}"
-        + (e.UsesCountFormula("Copies") ? "" : $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsX ? 1 : 0)} CET:Copies={Math.Max(1, e.Copies)}")
+        + (e.UsesCountFormula("Copies") ? "" : $" CET:Stack={(e.AmountIsStack ? 1 : 0)} CET:X={(e.AmountIsXEffective ? 1 : 0)} CET:Copies={Math.Max(1, e.Copies)}")
         // 自包含效果里「翻倍状态层数」要用到「哪一个状态 / 打谁」——顺手带上，回读时按它还原
         + $" CET:Power={Lit.Str(e.PowerId ?? "")} CET:Side={e.TargetSide}"
         // 「用目标卡填满手牌」要把选的那张卡带上（代码里只剩 CreateCard<那张卡>）；
@@ -5327,7 +5355,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitCopyCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null,
         string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature", string sourceExpr = "this")
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         // 「复制的份数」写了公式（用户要求⑦）：现算，夹到 1~20（和固定值那条同一个上限）
         int copies = Math.Max(1, Math.Min(20, e.Copies));
@@ -5388,7 +5416,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitUpgradeCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -5436,7 +5464,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitScry(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
@@ -5585,7 +5613,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature", string sourceExpr = "this",
         string combatStateExpr = "base.CombatState")
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
@@ -5670,7 +5698,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     private static void EmitTakeFromPile(CodeWriter w, CharacterProfile? p, EffectSpec e, string pile, bool useX = false, string? countExpr = null)
     {
-        string n = countExpr ?? (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = PileZh(pile);
         string expr = $"PileType.{pile}.GetPile(base.Owner)";
@@ -5802,7 +5830,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 将此牌放回手牌：纯开关型（1 = 生效），0 一定不生效 —— 见 IsInertZero 的特判
             or "ReturnSelfToHand"
             or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal" or "CardReward"
-        && !e.AmountIsX && !e.AmountIsStack
+        && !e.AmountIsXEffective && !e.AmountIsStack
         // 「数值公式」（需求：「另加一栏『数值公式』」）：数值栏只是**占位**（真正的数字打出时才算），
         // 所以就算它填 0，这条效果也照样存在 —— 不然后面 IsInertZero 会把整条效果丢掉，
         // 用户会看到「公式填了却什么都没发生」。和「数值 = X」同一个道理。
@@ -5817,7 +5845,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 判断里带上 `!AmountIsX`：勾了「数值 = X」时 0 只是占位，X 打出时才定。
     /// </summary>
     internal static bool AmountZeroIsSelf(EffectSpec? e) =>
-        e is not null && e.Kind == "DiscardCard" && e.Amount <= 0m && !e.AmountIsX;
+        e is not null && e.Kind == "DiscardCard" && e.Amount <= 0m && !e.AmountIsXEffective;
 
     /// <summary>数值 0、升级也不加数值 → 整条效果丢掉：描述不写、代码也不生成。</summary>
     public static bool IsInertZero(EffectSpec e) =>
@@ -5911,7 +5939,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   ②「看数值才知道」：额外资源量 ≤ 0、召唤伙伴 0 层、数值 = X、全部召唤物内联计算。
     ///
     /// ⚠️ 早先这里把 ② 的「数值 = X」写成挂在 <see cref="AmountIsStrength"/> 名单末尾的
-    /// <c>&amp;&amp; !e.AmountIsX</c>，把两件事混成了一件：
+    /// <c>&amp;&amp; !e.AmountIsXEffective</c>，把两件事混成了一件：
     ///   · 【数值 = X】的「从抽牌堆拿牌」被当成**有**动态变量 → 卡牌自定义描述的「填入参数…」菜单里
     ///     跑出一个 <c>{Value:diff()}</c>，可生成代码里根本没声明过它（卡面上显示不出来）——
     ///     用户报「自定义描述的参数怎么缺失」时查到的就是这一类；
@@ -5926,7 +5954,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 或者没声明却被回读当成有变量，都会让「生成 → 回读 → 再生成」两边对不上。
         || (e.Kind == "SummonPet" && e.Amount <= 0)
         // 「数值 = X」时数值不存在 DynamicVar 里（直接取 X），所以不声明变量、也不要 OnUpgrade
-        || e.AmountIsX
+        || e.AmountIsXEffective
         // 「全部召唤物」+「按生命值算收益」：改用内联计算（每只各自算），没有动态变量可声明，
         // 升级增量也直接写在表达式里（见 IsAllPetsInlineCalc）。
         || IsAllPetsInlineCalc(e)
@@ -5940,9 +5968,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>
     /// 额外资源量花费：把负数「获得额外资源量」效果（按生效次数放大）累加成这张牌需要消耗的额外资源量。
     /// 0 表示这张牌不花额外资源量。
+    ///
+    /// <para>⚠ V0.2.131：卡牌页新增了「额外资源量费用」框（用户可以显式写数字 / <c>Y</c>）。
+    /// 写了个式子时**以那个框为准**，不再从负数效果推算（避免「框里写了 3、效果里还留着 -2」两边打架）。</para>
     /// </summary>
-    public static int StarCostOf(CardSpec c)
+    public static int StarCostOf(CardSpec c) => StarCostOf(null, c);
+
+    /// <summary>带配置的版本（「额外资源量费用」框里的式子要拿自定义参数表才能折叠成常数）。</summary>
+    public static int StarCostOf(CharacterProfile? p, CardSpec c)
     {
+        // 「额外资源量费用」框写了东西 → 以它为准
+        if (!string.IsNullOrWhiteSpace(c.StarCostFormula))
+        {
+            var r = ForgeNumbers.ResolveCost(p, c.StarCostFormula, "Y", allowPlus: false, "额外资源量费用");
+            return r.IsConstant ? r.Value : 0;   // 写了 Y（全部资源量）时走 HasStarCostX，不声明固定费用
+        }
         decimal need = 0m;
         foreach (var e in c.Effects)
         {
@@ -5956,10 +5996,44 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 这张牌的**能量费用**是不是 X：
+    /// 老勾选框 <c>CostIsX</c>，或者费用框里写了一个光秃秃的 <c>X</c>（V0.2.131 的等价写法）。
+    /// </summary>
+    public static bool IsCostX(CardSpec c) => c.CostIsX || ForgeNumbers.IsBareX(c.CostFormula);
+
+    /// <summary>这张牌的**额外资源量费用**是不是 X/Y（老勾选框，或额外资源量费用框里写了 <c>Y</c>）。</summary>
+    public static bool IsStarCostX(CardSpec c) => c.StarCostIsX || ForgeNumbers.IsBareY(c.StarCostFormula);
+
+    /// <summary>
+    /// 升级后 X 要加几（0 = 不加）：老勾选框「升级后 X +1」→ 1；
+    /// 「升级后费用」框里写 <c>X</c> / <c>X+1</c> / <c>X+2</c> → 0 / 1 / 2。
+    /// </summary>
+    public static int CostXPlus(CardSpec c)
+    {
+        if (c.XPlusOnUpgrade) return 1;
+        if (string.IsNullOrWhiteSpace(c.UpgradeCostFormula)) return 0;
+        var r = ForgeNumbers.ResolveCost(null, c.UpgradeCostFormula, "X", allowPlus: true, "升级后费用");
+        return r.IsX ? r.Plus : 0;
+    }
+
+    /// <summary>
     /// 一张牌的**能量费用**：普通卡就是卡牌页那个「费用」；**锻造卡**的费用由布左上角【能量】模块定
     /// （用户报的坑：以前那块填了也只在打出时偷偷扣一次，卡面 / 游戏里一直显示 0 费）。
+    ///
+    /// <para>⚠ V0.2.131：真正的实现挂在带配置的那个重载上（费用框里的 <c>A+3</c> 要拿参数表才能折叠）。
+    /// 这里保留单参数版本给「拿不到配置」的老调用点（自检 / 界面列表显示）。</para>
     /// </summary>
-    public static int CardCostOf(CardSpec c) => c.IsForged ? ForgeGraphGen.EnergyCostOf(c.ForgeGraph) : c.Cost;
+    public static int CardCostOf(CardSpec c) => CardCostOf(null, c);
+
+    /// <summary>带配置的版本（费用框里的 <c>A+3</c> 要拿自定义参数表才能折叠成常数）。</summary>
+    public static int CardCostOf(CharacterProfile? p, CardSpec c)
+    {
+        // X 费：本体要求构造函数写 0（真正的消耗由本体按 HasEnergyCostX + ResolveEnergyXValue 结算）
+        if (IsCostX(c)) return 0;
+        if (c.IsForged) return ForgeGraphGen.EnergyCostOf(c.ForgeGraph);
+        var r = ForgeNumbers.ResolveCost(p, c.CostFormula, "X", allowPlus: true, "费用");
+        return r.IsConstant ? r.Value : c.Cost;
+    }
 
     /// <summary>
     /// 按「生效次数」包一层循环：整条效果重复生效 N 次。
@@ -6461,7 +6535,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         c => $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡");
                 else if (e.NextTurn)
                     w.Line($"await PowerCmd.Apply<BlockNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
-                else if (useX && e.AmountIsX)
+                else if (useX && e.AmountIsXEffective)
                     // 格挡 = X：BlockVar 那条重载只能吃固定值，X 要走 decimal 重载
                     EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
                         c => $"await CreatureCmd.GainBlock({c}, x, ValueProp.Move, cardPlay);");
@@ -6520,12 +6594,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 //       升级增量写在 OnUpgrade 里（UpgradeValueBy），卡面描述用 {Stars:diff()} 跟着变。
                 // 负数（花费）：不在这里扣，而是通过 CanonicalStarCost 声明成卡牌费用，
                 //       本体自带的判定会让「资源不够就打不出去」，并且卡面会显示红色的费用数字。
-                if (e.NextTurn && (e.Amount > 0 || e.AmountIsX))
+                if (e.NextTurn && (e.Amount > 0 || e.AmountIsXEffective))
                 {
                     // 下回合生效：本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars 再自毁）。
                     // 注意它的 GainStars 拒绝负数（本体直接抛 ArgumentException），所以只有「获得」走这条；
                     // 「需要 N 点」是卡牌费用，跟下回合无关（校验器会提醒）。
-                    string gainNext = useX && e.AmountIsX ? XVar : VarAccess(e, varMap);
+                    string gainNext = useX && e.AmountIsXEffective ? XVar : VarAccess(e, varMap);
                     w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {gainNext}, base.Owner.Creature, this);   // 下回合开始时获得 {gainNext} 点额外资源量");
                     break;
                 }
@@ -6533,7 +6607,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     // 有 StarsVar 就用它（升级增量由 OnUpgrade 的 UpgradeValueBy 处理），
                     // 卡面描述里的 {Stars:diff()} 也会跟着变 —— 以前用「IsUpgraded 三目」写死，描述永远显示原值。
-                    string gain = useX && e.AmountIsX
+                    string gain = useX && e.AmountIsXEffective
                         ? XVar
                         : VarAccess(e, varMap);
                     w.Line($"await PlayerCmd.GainStars({gain}, base.Owner);");
@@ -7243,7 +7317,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 否则两张「生成不同卡」的牌会合成一个类（后写的覆盖前写的）。
                 string key = "S:" + e.Kind + "|" + (e.SpawnCardId ?? "") + "|" + (e.SpawnFilter ?? "") + "|"
                     + (e.IsSpawnRandom ? "r" : "f") + "|" + e.SpawnChoice + "|" + e.SpawnToPile + "|" + (e.HasSpawnModifier ? "m" : "")
-                    + (e.AmountIsX ? "|X" : "");
+                    + (e.AmountIsXEffective ? "|X" : "");
                 if (seen.Add(key)) yield return e;
             }
         }
@@ -9541,7 +9615,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             EmitGiveKeywordTo(w, e, "this", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
             return;
         }
-        string n = (useX && e.AmountIsX ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         // ⚠ 不能用 $"PileType.{e.SelectPile}..."：SelectPile = Top（牌顶）时那不是合法的 PileType 名字。
         // PileExpr 会把 Top 映射成抽牌堆，别的值生成的文本和以前逐字一致。
         string pileExpr = PileExpr(e, playerExpr);
@@ -10039,7 +10113,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>这个配置里有没有「获得能量 = 负数 + 下回合生效」（有才生成那个负债 Power）。</summary>
     public static bool UsesEnergyNextTurnDebt(CharacterProfile p) =>
-        AllEffects(p).Any(e => e.Kind == "Energy" && e.NextTurn && e.Amount < 0 && !e.AmountIsX);
+        AllEffects(p).Any(e => e.Kind == "Energy" && e.NextTurn && e.Amount < 0 && !e.AmountIsXEffective);
 
     /// <summary>这个配置里有没有「生成 / 变化出来的卡：仅在本回合升级」（有才生成那个临时升级 Power）。</summary>
     public static bool UsesTempUpgrade(CharacterProfile p) =>

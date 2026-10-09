@@ -220,7 +220,7 @@ public static class ProfileFactory
             {
                 if (e is null) continue;
                 if (!EffectSpec.FormulaSupports(e.Kind)) continue;
-                if (e.AmountIsX) continue;                                     // 「数值 = X」：不是固定数值
+                if (e.AmountIsXEffective) continue;                                     // 「数值 = X」：不是固定数值
                 if (!string.IsNullOrWhiteSpace(e.AmountFormula)) continue;     // 已经写了公式
                 if (e.Amount == 0m) continue;                                  // 0 = 本来就不生效
                 e.AmountFormula = e.Amount.ToString("0.############################",

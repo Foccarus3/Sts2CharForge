@@ -447,29 +447,86 @@ public static class ProfileValidator
             // 诅咒：费用和类型都是生成时写死的（-1 / Curse），X 费用那几条不适用
             if (c.IsCurseCard) continue;
             bool usesX = c.Effects.Any(e => e.UsesX);
+            // ===== V0.2.131：费用 / 额外资源量费用 / 升级后那两栏 =====
+            // 判据都用「老字段 + 新式子」合并后的有效值（CSharpCodeGen.IsCostX 等），界面上的勾选框已经
+            // 撤掉、改成在这四个框里写 X / Y / X+N / 数字 / 生成期常量式子。
+            bool costIsX = CSharpCodeGen.IsCostX(c);
+            bool starIsX = CSharpCodeGen.IsStarCostX(c);
+            int costNow = CSharpCodeGen.CardCostOf(p, c);
+            int starNow = CSharpCodeGen.StarCostOf(p, c);
+            // 费用框：解析得出来吗（运行时表达式必须在这里**说清原因**拦住 —— 本体 base(cost, …) 收不了）
+            var costR = ForgeNumbers.ResolveCost(p, c.CostFormula, "X", allowPlus: true, "费用");
+            if (!costR.Ok)
+                issues.Add(new("错误", $"卡牌「{c.Name}」的{costR.Error}"));
+            else if (costR.IsConstant && costR.Value < 0)
+                issues.Add(new("警告", $"卡牌「{c.Name}」的费用填成 {costR.Value}（负数 = 特殊牌）："
+                    + "本体的改费逻辑会把结果夹到 0，可能让这张牌变成能打出。"));
+            // 额外资源量费用框
+            var starR = ForgeNumbers.ResolveCost(p, c.StarCostFormula, "Y", allowPlus: false, "额外资源量费用");
+            if (!starR.Ok)
+                issues.Add(new("错误", $"卡牌「{c.Name}」的{starR.Error}"));
+            else if (starR.IsConstant && starR.Value < 0)
+                issues.Add(new("错误", $"卡牌「{c.Name}」的「额外资源量费用」不能是负数：{starR.Value}。"));
+            // 框里写了费用、效果里又留着负数「花费额外资源量」：框优先决定实际费用，卡面那句还是按效果写
+            //（数字可能对不上）—— 说清，别让人以为哪个生效了。
+            if (!string.IsNullOrWhiteSpace(c.StarCostFormula)
+                && c.Effects.Any(e => e is not null && e.Kind == "ExtraResource" && e.Amount < 0))
+                issues.Add(new("提示", $"卡牌「{c.Name}」在「额外资源量费用」框里写了 {ForgeFormula.DisplayText(c.StarCostFormula)}，"
+                    + "效果列表里又留着一条负数「花费额外资源量」：**以框里那个为准**（生成的是 CanonicalStarCost 那条路），"
+                    + "卡面那句话仍然是按效果里那条写的 —— 数字可能对不上，建议只留一处（把效果里那条改成别的种类或删掉）。"));
+            // 升级后费用框（常量式子 / X+N 两档；运行时的量同样收不了）
+            if (!string.IsNullOrWhiteSpace(c.UpgradeCostFormula))
+            {
+                var upR = ForgeNumbers.ResolveCost(p, c.UpgradeCostFormula, "X", allowPlus: true, "升级后费用");
+                if (!upR.Ok)
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的{upR.Error}"));
+                else if (upR.IsConstant && upR.Value < 0)
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后费用」不能是负数：{upR.Value}。"));
+                else if (upR.IsX && !costIsX)
+                    issues.Add(new("警告", $"卡牌「{c.Name}」的「升级后费用」写的是 X+{upR.Plus}，"
+                        + "但这张牌现在的费用不是 X（费用框里也没写 X）：X 会被当成 0，这一段等于不生效。"));
+            }
+            // 升级后额外资源量费用：写进去却解析不出来的原文留在了 UpgradeStarCostFormula 里
+            if (!string.IsNullOrWhiteSpace(c.UpgradeStarCostFormula))
+                issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后额外资源量费用」看不懂：{c.UpgradeStarCostFormula}。"
+                    + "这一栏只支持整数（或生成期就算得出来的式子）—— 本体升级资源量费用走的是 "
+                    + "UpgradeStarCostBy(差值)，差值必须是生成时定下来的常量。"));
             // 升级后费用：X 费牌改不了、负数费用会被夹到 0，提前说清楚
             if (c.UpgradeCost is { } upCost)
             {
-                if (c.CostIsX)
+                if (costIsX)
                     issues.Add(new("警告", $"卡牌「{c.Name}」是 X 费用牌，「升级后费用」填的 {upCost} 不会生效"
-                        + "（本体改费用的逻辑遇到 X 费牌会直接返回）。"));
-                else if (c.Cost < 0)
-                    issues.Add(new("警告", $"卡牌「{c.Name}」现在的费用是 {c.Cost}（负数 = 特殊牌），"
+                        + "（本体改费用的逻辑遇到 X 费牌会直接返回）。想「升级后 X + 1」请在「升级后费用」框里写 X+1。"));
+                else if (costNow < 0)
+                    issues.Add(new("警告", $"卡牌「{c.Name}」现在的费用是 {costNow}（负数 = 特殊牌），"
                         + "本体的改费逻辑会把结果夹到 0，可能让这张牌变成能打出。"));
                 else if (upCost < 0)
                     issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后费用」不能是负数：{upCost}。"));
             }
-            if (usesX && !c.CostIsX && !c.StarCostIsX)
-                issues.Add(new("警告", $"卡牌「{c.Name}」的效果里勾了「= X」，但这张牌的费用不是 X（也没勾资源量 X）："
-                    + "X 会被当成 0，效果等于不生效。请到「费用」那一行勾上「X 费用」。"));
-            if (c.StarCostIsX && !c.Effects.Any(e => e.Kind == "ExtraResource" && e.Amount < 0))
+            if (c.UpgradeStarCost is { } upStar)
+            {
+                if (starIsX)
+                    issues.Add(new("警告", $"卡牌「{c.Name}」是「额外资源量费用 = X」的牌，「升级后额外资源量费用」"
+                        + $"填的 {upStar} 不会生效（本体改不了 X 那一档的资源量费用）。"));
+                else if (upStar < 0)
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后额外资源量费用」不能是负数：{upStar}。"));
+                else if (starNow == 0)
+                    issues.Add(new("提示", $"卡牌「{c.Name}」现在不花额外资源量，但填了「升级后额外资源量费用 {upStar}」——"
+                        + "升级后这张牌会开始要额外资源量（本体 UpgradeStarCostBy 会把它加上去）。"));
+            }
+            if (usesX && !costIsX && !starIsX)
+                issues.Add(new("警告", $"卡牌「{c.Name}」的效果里用了 X（「数值（公式）」/「次数公式」框里写了 X，"
+                    + "或者老存档勾了「= X」），但这张牌的费用不是 X（也没勾资源量 X）："
+                    + "X 会被当成 0，效果等于不生效。请在「费用」框里填 X（或到「额外资源量费用」框里填 Y）。"));
+            if (starIsX && string.IsNullOrWhiteSpace(c.StarCostFormula)
+                && !c.Effects.Any(e => e.Kind == "ExtraResource" && e.Amount < 0))
                 issues.Add(new("警告", $"卡牌「{c.Name}」勾了「额外资源量费用为 X」，但效果里没有「花费额外资源量」（负数）这一条："
                     + "牌面会比本体多显示一个资源量费用图标。"));
-            if (c.XPlusOnUpgrade && !c.CostIsX && !c.StarCostIsX)
+            if (c.XPlusOnUpgrade && !costIsX && !starIsX)
                 issues.Add(new("警告", $"卡牌「{c.Name}」勾了「升级后 X +1」，但它的费用不是 X —— 这个勾选会被忽略。"));
-            if (c.Effects.Any(e => e.AmountIsX && e.UpgradeAmount != 0))
+            if (c.Effects.Any(e => e.AmountIsXEffective && e.UpgradeAmount != 0))
                 issues.Add(new("警告", $"卡牌「{c.Name}」有一条「数值 = X」的效果填了「升级增量」：X 的数值不能直接升级（会被忽略），"
-                    + "要升级请用卡牌上的「升级后 X +1」。"));
+                    + "要升级请用卡牌上的「升级后费用」框写 X+1。"));
             // 可被无限升级：勾了却没有升级增量 = 能反复花钱升级但数值不变（本体的升级增量全靠 OnUpgrade 累加）
             if (c.InfinitelyUpgradable
                 && c.UpgradeCost is null
@@ -719,8 +776,12 @@ public static class ProfileValidator
                     issues.Add(new("错误", $"卡牌「{c.Name}」的稀有度不能既是先古卡又是 Basic。"));
             }
 
-            if (c.Cost is < 0 or > 5 && !c.IsCurseCard)
-                issues.Add(new("警告", $"卡牌「{c.Name}」费用 {c.Cost} 超出常规范围（0~5）。"));
+            // V0.2.131：费用栏可以写生成期常量式子（1+1 / A+3）—— 该报的是**算完之后的费用**，
+            // 而不是那个只当占位用的老字段 Cost（否则「费用框写 1+1、Cost 还是默认的 1」时看着没问题，
+            // 「Cost 填 9、式子折成 2」时反而平白报一条）。
+            int costForRange = CSharpCodeGen.CardCostOf(p, c);
+            if (!CSharpCodeGen.IsCostX(c) && costForRange is < 0 or > 5 && !c.IsCurseCard)
+                issues.Add(new("警告", $"卡牌「{c.Name}」费用 {costForRange} 超出常规范围（0~5）。"));
             if (c.InStartingDeck && c.StartingCopies is < 1 or > 10)
                 issues.Add(new("警告", $"卡牌「{c.Name}」初始份数 {c.StartingCopies} 建议 1~10。"));
             ValidateEffects(issues, $"卡牌「{c.Name}」", c.Effects, ctx: c.IsCurseCard ? "Curse" : "Card", p: p);
@@ -1848,7 +1909,7 @@ public static class ProfileValidator
             // 「数值 0 = 这张牌自己」那一档（给予关键词 / 回合结束自动打出 / 丢弃卡牌）**不挑牌**：
             // 界面现在不藏那几行了（藏了就没法填，用户实测报过「怎么不能填范围了」），
             // 所以「填了但这一档用不上」必须在这里说清楚，不能静默忽略。
-            if (CSharpCodeGen.AmountZeroIsSelf(e) || (e.Kind is "GiveKeyword" or "TurnEndPlay" && e.Amount <= 0m && !e.AmountIsX))
+            if (CSharpCodeGen.AmountZeroIsSelf(e) || (e.Kind is "GiveKeyword" or "TurnEndPlay" && e.Amount <= 0m && !e.AmountIsXEffective))
             {
                 if (e.HasCardScope || !string.IsNullOrWhiteSpace(e.SpawnFilter))
                     issues.Add(new("提示", $"{owner} 第 {index} 条「{kind.Display}」的作用档位是「数值 0 = 这张牌自己」 —— "
@@ -1899,7 +1960,7 @@ public static class ProfileValidator
                     + "没升级时这条**不显示、也不执行**（不会被力量 / 敏捷加成），升级之后才出现并生效。"));
             // 「获得能量 / 获得金币」填了负数 = 扣除（本体 GainEnergy / GainGold 对非正数直接返回，
             // 所以生成的是 LoseEnergy / LoseGold，数值会夹到 0、不会扣成负数）。这里是让用户确认一下语义。
-            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && !e.AmountIsX)
+            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && !e.AmountIsXEffective)
             {
                 string unit = e.Kind == "Energy" ? "点能量" : "枚金币";
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 {e.Amount}："
@@ -1908,7 +1969,7 @@ public static class ProfileValidator
                         : $"会生成「失去 {-e.Amount} {unit}」")
                     + $"，不够时只扣到 0（不会变成负数）。"));
             }
-            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsX)
+            if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsXEffective)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值 = X 且填了负数：X 要到打出时才知道正负，"
                     + "所以这条会按「获得 X」生成（负数被忽略）。"));
             // 负数 = 反向（扣除层数 / 失去格挡）：生成时会改走 PowerCmd.ModifyAmount(-N) / CreatureCmd.LoseBlock。
@@ -2031,7 +2092,7 @@ public static class ProfileValidator
                 if (e.Amount > 0)
                     issues.Add(new("提示", $"{owner} 的「获得额外资源量」会在**下回合开始时**获得 {e.Amount:0.##} 点"
                         + "（本体 StarNextTurnPower：回合开始时发放并自毁）。"));
-                else if (!e.AmountIsX)
+                else if (!e.AmountIsXEffective)
                     issues.Add(new("警告", $"{owner} 的「获得额外资源量」填的是 {e.Amount:0.##}（负数 = 卡牌费用「需要 N 点」），"
                         + "费用和「下回合生效」没关系 —— 这一勾会被忽略（想扣资源请用正数 + 负的升级增量，或直接改基础数值）。"));
             }
@@ -2274,7 +2335,7 @@ public static class ProfileValidator
             {
                 if (e.Amount is < 0m or > 5m)
                     issues.Add(new("错误", $"{owner} 的「回合结束时自动打出」数值 {e.Amount:0.##} 超出范围（0~5）。"));
-                if (e.Amount <= 0m && !e.AmountIsX)
+                if (e.Amount <= 0m && !e.AmountIsXEffective)
                 {
                     if (ctx is not ("Card" or "Curse"))
                         issues.Add(new("错误", $"{owner} 的「回合结束时自动打出」数值 0 = **这张牌自己**，只有卡牌才有「自己」—— "
@@ -2368,7 +2429,7 @@ public static class ProfileValidator
 
             // 放置卡牌（V0.2.116）：数值 0 = 这张牌自己；≥ 1 = 从某一摞挑 N 张放到「放到哪一摞」            if (e.Kind == "PlaceCard")
             {
-                bool self = e.Amount <= 0m && !e.AmountIsX;
+                bool self = e.Amount <= 0m && !e.AmountIsXEffective;
                 // 「卡牌」那几条链（普通卡 / 诅咒 / 先古 / 状态卡）都有「这张牌自己」；遗物 / 药水没有。
                 bool cardChain = ctx is "Card" or "Curse" or "Ancient" or "Status";
                 if (self && !cardChain)
@@ -2573,10 +2634,16 @@ public static class ProfileValidator
         string formula = ForgeFormula.DisplayText(e.AmountFormula);
         if (!EffectSpec.FormulaSupports(e.Kind))
         {
+            // V0.2.131：卡牌链上「数值（公式）」框**所有种类**都摆出来了 —— 非那 5 种只认光秃秃的 X
+            //（= 原来的「数值 = X」勾选框，用户要求去掉那个勾选框、把 X 搬进公式框）。
+            if (ctx == "Card" && Generation.ForgeNumbers.IsBareX(e.AmountFormula))
+                return;
             issues.Add(new("错误", $"{owner} 的「{kindZh}」不支持「数值公式」（现在填的是 {formula}）："
                 + "这个效果的数值必须在**生成的时候**就定下来 —— 抽几张 / 生成几张 / 消耗几张这类要提前分配"
                 + "动态变量、算好选牌上限，塞不进运行时表达式。"
-                + "支持公式的只有这 5 种：造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益。"
+                + "卡牌上这一栏只有两种情况能用：① 那 5 种（造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益）"
+                + "支持完整公式；② 其余种类只支持光秃秃写一个 X（= 老勾选框「数值 = X」，"
+                + "等于打出这张牌那一刻消耗掉的能量 —— 费用框里也要填 X）。"
                 + "请清空「数值公式」，改用左边的固定数值。"));
             return;
         }
@@ -2589,7 +2656,7 @@ public static class ProfileValidator
                 + "请清空公式；或者把这条效果放到卡牌上。"));
             return;
         }
-        if (e.AmountIsX)
+        if (e.AmountIsXEffective)
             issues.Add(new("错误", $"{owner} 的「{kindZh}」同时填了「数值公式」（{formula}）又勾了「数值 = X」——"
                 + "两个都是「改用算出来的值」，只能留一个（X 只能引用一个数，公式里也能用 X，所以留公式就够了）。"));
         var root = ForgeFormula.TryParse(e.AmountFormula, out string err);
@@ -2754,7 +2821,7 @@ public static class ProfileValidator
             issues.Add(new("错误", $"{owner} 的「给予卡牌关键词」要给的「{raw}」找不到："
                 + "既不是本体关键词（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒），也不是已定义的自定义关键词。"));
         }
-        if (e.AmountIsX)
+        if (e.AmountIsXEffective)
             issues.Add(new("提示", $"{owner} 的「给予卡牌关键词」数值 = X："
                 + "选几张牌取决于这张牌结算时的 X（X 费牌才有意义）。"));
         else if (e.Amount <= 0 && ctx != "Card")
