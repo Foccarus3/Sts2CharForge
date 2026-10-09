@@ -10,6 +10,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.App;
@@ -45,6 +46,9 @@ public sealed class ForgeCanvasView : Grid
     private readonly ComboBox _kindPick = new();
     private readonly TextBlock _zoomText = new();
 
+    /// <summary>布顶部那行「数值栏也能填公式/参数」的**可用量清单**（自检要断言它写了哪些量）。</summary>
+    private readonly TextBlock _formulaHint = new();
+
     private readonly Dictionary<string, FrameworkElement> _nodeViews = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Point> _portPos = new(StringComparer.Ordinal);
 
@@ -55,17 +59,33 @@ public sealed class ForgeCanvasView : Grid
     private readonly List<ForgeNodeSpec> _selectedNodes = new();
 
     /// <summary>
-    /// 【能量】是**固定模块**（左上角那一块，送上「能量 / 额外资源量」两个数）：
-    /// 不参与选中 / 框选 / 全选，也**删不掉**（它没有参数化的必要，删掉只会让 X / Y 用不了）。
-    /// 用户要求：「让【能量】无法被选中和删除」。
+    /// 【能量】和【触发时机】都是**固定模块**：删不掉，也**不参与全选 / 框选**（不会被「全选 + 删除」带走）。
+    ///
+    ///   · 【能量】—— 固定模块（左上角那一块，送上「能量 / 额外资源量」两个数），用户要求「无法被选中和删除」。
+    ///     它比【触发时机】更严：连选中 / 拖动都不给（见 <see cref="IsPinned"/>）。
+    ///   · 【触发时机】—— 用户要求（V0.2.128）：**不可被删除**。一块布只有一个触发时机，
+    ///     而整张图没有它就不生成（<c>ForgeGraphGen.Plan</c> 返回 null）。它还照常可以选中 / 拖动
+    ///     （它就在布上，位置是用户自己摆的），删它时会像【能量】一样说明一句。
     /// </summary>
     private static bool IsLocked(ForgeNodeSpec? n) =>
+        n is not null && n.Kind is "Energy" or "Trigger";
+
+    /// <summary>比「锁」更严的固定模块（<see cref="IsLocked"/> 的真子集）：不可选中、不可拖动。</summary>
+    private static bool IsPinned(ForgeNodeSpec? n) =>
         n is not null && string.Equals(n.Kind, "Energy", StringComparison.Ordinal);
 
     /// <summary>点到 / 想删【能量】时给的那句话（拦住并说清，不静默）。</summary>
     private const string EnergyLockedNote =
         "【能量】是固定模块（左上角那一块）：它只负责把「当前能量 / 当前额外资源量」送出去给别的模块用，"
         + "所以不能选中、也不能删除 —— 要改就在它自己身上那两栏里改（打出时消耗多少能量 / 额外资源量）。";
+
+    /// <summary>想删【触发时机】时给的那句话（用户要求：这一块不可删除）。</summary>
+    private const string TriggerLockedNote =
+        "【触发时机】是固定模块：一块布只能有一个触发时机，整张图也靠它决定什么时候执行 ——"
+        + "所以**删不掉**，也不会被「全选」带走。要换时机就在它自己身上那个下拉里换（可以照常拖动位置）。";
+
+    /// <summary>这个固定模块对应的说明（删它 / 点它时显示）。</summary>
+    private static string LockedNote(ForgeNodeSpec? n) => IsPinned(n) ? EnergyLockedNote : TriggerLockedNote;
 
     /// <summary>框选用的那一层（虚线框 + 已经画好的选中高亮）。</summary>
     private readonly Canvas _overlay = new();
@@ -178,6 +198,9 @@ public sealed class ForgeCanvasView : Grid
     public ForgeCanvasView()
     {
         RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        // 需求（V0.2.128 第 1 条）：模块里那些「能填数值的地方」也能填公式 / 参数 ——
+        // 这一行就是界面上的**可用量清单**（和【数值】模块的公式同一套，见 ForgeNumbers）。
+        RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
         RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
 
@@ -231,9 +254,25 @@ public sealed class ForgeCanvasView : Grid
 
         SetRow(_kindBar, 0);
         Children.Add(_kindBar);
-        SetRow(_scroll, 1);
+
+        // 可用量清单（见上面 RowDefinitions 的说明）
+        var formulaHint = _formulaHint;
+        formulaHint.Margin = new Thickness(6, 0, 6, 3);
+        formulaHint.FontSize = 10.5;
+        formulaHint.TextWrapping = TextWrapping.Wrap;
+        formulaHint.Foreground = new SolidColorBrush(Color.FromRgb(0x44, 0x55, 0x66));
+        formulaHint.Text = "数值栏也能填公式 / 参数（和【数值】模块同一套）：X = 当前所有能量，Y = 当前所有额外资源量，"
+             + "一个字母的自定义参数（在「自定义参数 / 组」页定义），以及内置只读量 —— "
+             + string.Join("、", FormulaBuiltins.All.Select(b => b.Id))
+             + "。点数值框右边的「…」可以直接插入。"
+             + "（费用那两栏【能量】只收生成期就算得出来的数：本体声明卡牌费用要编译期常量。）";
+        formulaHint.ToolTip = ForgeNumbers.FormulaHint + "\n\n内置只读量：\n" + FormulaBuiltins.HintList;
+        SetRow(formulaHint, 1);
+        Children.Add(formulaHint);
+
+        SetRow(_scroll, 2);
         Children.Add(_scroll);
-        SetRow(_statusText, 2);
+        SetRow(_statusText, 3);
         Children.Add(_statusText);
 
         _statusText.Margin = new Thickness(6, 3, 6, 3);
@@ -370,9 +409,10 @@ public sealed class ForgeCanvasView : Grid
         var doomed = _selectedNodes.Where(n => !IsLocked(n)).ToList();
         if (doomed.Count == 0)
         {
+            var only = _selectedNodes.FirstOrDefault(IsLocked);
             _selectedNodes.Clear();
             UpdateSelectionVisual();
-            Touch(EnergyLockedNote);
+            Touch(LockedNote(only));
             return;
         }
         foreach (var node in doomed)
@@ -384,7 +424,7 @@ public sealed class ForgeCanvasView : Grid
         _selectedNodes.Clear();
         Rebuild();
         Touch($"已删掉 {doomed.Count} 个模块和它们身上的连线。"
-            + (doomed.Count < picked ? "（选中的里面有【能量】，它留着 —— 固定模块删不掉。）" : ""));
+            + (doomed.Count < picked ? "（选中的里面有固定模块（【能量】/【触发时机】），它们留着 —— 固定模块删不掉。）" : ""));
     }
 
     // ==================================================================================
@@ -439,7 +479,8 @@ public sealed class ForgeCanvasView : Grid
         var kind = node.KindDef;
         bool unknown = kind is null;
         string accent = kind?.Accent ?? "#B00020";
-        bool isEnergy = node.Kind == "Energy";
+        bool pinned = IsPinned(node);            // 【能量】：固定 + 不可选中 / 不可拖动
+        bool locked = IsLocked(node);            // 【能量】/【触发时机】：固定 + 不可删除（标题栏上不摆「×」）
 
         var border = new Border
         {
@@ -461,7 +502,7 @@ public sealed class ForgeCanvasView : Grid
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(accent)),
             CornerRadius = new CornerRadius(2, 2, 0, 0),
             Padding = new Thickness(6, 3, 4, 3),
-            Cursor = isEnergy ? Cursors.Arrow : Cursors.SizeAll,
+            Cursor = pinned ? Cursors.Arrow : Cursors.SizeAll,
             ToolTip = kind?.Hint,
         };
         var headerRow = new DockPanel();
@@ -476,8 +517,9 @@ public sealed class ForgeCanvasView : Grid
             ToolTip = "删掉这个模块（连着它的线一起清掉）",
         };
         del.Click += (_, e) => { e.Handled = true; RemoveNode(node); };
-        // 【能量】是固定模块：标题栏上不摆「×」（它删不掉，摆一个按不动的按钮只会让人困惑）
-        if (!isEnergy)
+        // 固定模块（【能量】/【触发时机】）标题栏上不摆「×」：
+        // 它们删不掉，摆一个按不动的按钮只会让人困惑（用户要求：【触发时机】不可被删除）。
+        if (!locked)
         {
             DockPanel.SetDock(del, Dock.Right);
             headerRow.Children.Add(del);
@@ -577,8 +619,8 @@ public sealed class ForgeCanvasView : Grid
     private void RemoveNode(ForgeNodeSpec node)
     {
         if (_graph is null) return;
-        // 【能量】删不掉（它的标题栏上那个「×」也一起藏了，这里是兜底）
-        if (IsLocked(node)) { Touch(EnergyLockedNote); return; }
+        // 固定模块删不掉（【能量】标题栏上那个「×」也一起藏了，这里是兜底；【触发时机】同理）
+        if (IsLocked(node)) { Touch(LockedNote(node)); return; }
         _graph.Nodes.Remove(node);
         _graph.Links.RemoveAll(l => l is not null && (l.From == node.Id || l.To == node.Id));
         _selectedNodes.Remove(node);
@@ -754,15 +796,71 @@ public sealed class ForgeCanvasView : Grid
             }
             case ForgeFieldType.Number:
             {
+                // V0.2.128（需求 1 + 用户拍板 Q2=A）：数字框**保留单行**，但里面也能直接填公式 / 参数。
+                // 界面上做三件事：① ToolTip 写清这一栏能用什么量；② 旁边一个小「…」按钮插入参数 / 内置只读量；
+                // ③ 当场校验：填错了描红并把原因写进 ToolTip（**不再静默变成默认值** —— 用户点名要的）。
+                bool needConst = ForgeGraphCatalog.NumberFieldNeedsConst(kind.Id, field.Key);
+                string tip = field.Hint + "\n\n" + (needConst
+                    ? "⚠ 这一栏会写进卡牌自己的费用（本体 base(cost, …)）——**必须**是生成期就算得出来的数："
+                      + "只能填数字，或者用「固定数值」来源的参数写 A+3；X / Y / 实时读数不能用。"
+                    : ForgeGraphCatalog.NumberFormulaHint);
                 var box = new TextBox
                 {
                     Margin = new Thickness(4, 1, 4, 2),
                     FontSize = 11,
                     Text = node.Get(field.Key, field.Default),
-                    ToolTip = field.Hint,
+                    ToolTip = tip,
                 };
-                box.TextChanged += (_, _) => node.SetField(field.Key, box.Text);
-                return WithLabel(field, box);
+                var wrap = new StackPanel { ToolTip = tip };
+                wrap.Children.Add(new TextBlock
+                {
+                    Text = field.Label,
+                    FontSize = 10,
+                    Margin = new Thickness(4, 3, 4, 0),
+                    Foreground = Brushes.DimGray,
+                    TextWrapping = TextWrapping.Wrap,
+                });
+                var row = new DockPanel();
+                var insert = new Button
+                {
+                    Content = "…",
+                    Width = 22,
+                    Padding = new Thickness(0),
+                    FontSize = 11,
+                    Margin = new Thickness(0, 1, 4, 2),
+                    ToolTip = "插入参数 / 可用量（X、Y、自定义参数、内置只读量）",
+                };
+                insert.Click += (_, _) => InsertParamInto(box);
+                DockPanel.SetDock(insert, Dock.Right);
+                row.Children.Add(insert);
+                row.Children.Add(box);
+                wrap.Children.Add(row);
+                void Revalidate()
+                {
+                    if (Owner is null) return;                       // 没有配置时（构造期）不判，免得误报
+                    var r = ForgeNumbers.Resolve(Owner, node, field.Key, 0);
+                    if (!r.Ok)
+                    {
+                        box.BorderBrush = Brushes.Firebrick;
+                        box.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF0, 0xF0));
+                        box.ToolTip = tip + "\n\n❌ " + r.Error;
+                    }
+                    else if (r.Runtime)
+                    {
+                        box.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x6F, 0xB5));
+                        box.Background = new SolidColorBrush(Color.FromRgb(0xF0, 0xF7, 0xFF));
+                        box.ToolTip = tip + $"\n\n✓ 运行时才算：{r.Text} → {r.Expr}";
+                    }
+                    else
+                    {
+                        box.ClearValue(TextBox.BorderBrushProperty);
+                        box.ClearValue(TextBox.BackgroundProperty);
+                        box.ToolTip = tip;
+                    }
+                }
+                box.TextChanged += (_, _) => { node.SetField(field.Key, box.Text); Revalidate(); };
+                Revalidate();
+                return wrap;
             }
             case ForgeFieldType.Formula:
             case ForgeFieldType.Text:
@@ -856,7 +954,10 @@ public sealed class ForgeCanvasView : Grid
         return wrap;
     }
 
-    /// <summary>「填入参数…」：列出已定义的参数 + X / Y，点一下插到光标处。</summary>
+    /// <summary>
+    /// 「填入参数…」：列出已定义的参数 + X / Y + 那 21 条**内置只读量**，点一下插到光标处。
+    /// 内置只读量（V0.2.128 加）：和【数值】模块的公式是同一套可用量，界面上得让人找得到它们叫什么。
+    /// </summary>
     private void InsertParamInto(TextBox box)
     {
         var items = new List<string> { "X", "Y" };
@@ -865,16 +966,27 @@ public sealed class ForgeCanvasView : Grid
         var menu = new ContextMenu();
         foreach (string id in items.Distinct(StringComparer.Ordinal))
         {
+            if (id.Length == 0) continue;
             var mi = new MenuItem { Header = id == "X" ? "X（当前所有能量）" : id == "Y" ? "Y（当前所有额外资源量）" : id + "=" };
-            mi.Click += (_, _) =>
-            {
-                int at = box.CaretIndex;
-                box.Text = box.Text.Insert(at, id);
-                box.CaretIndex = at + id.Length;
-            };
+            mi.Click += (_, _) => InsertAtCaret(box, id);
+            menu.Items.Add(mi);
+        }
+        menu.Items.Add(new Separator());
+        menu.Items.Add(new MenuItem { Header = "内置只读量（实时读数）", IsEnabled = false });
+        foreach (var b in FormulaBuiltins.All)
+        {
+            var mi = new MenuItem { Header = $"{b.Id}（{b.Display}）" };
+            mi.Click += (_, _) => InsertAtCaret(box, b.Id);
             menu.Items.Add(mi);
         }
         menu.IsOpen = true;
+    }
+
+    private static void InsertAtCaret(TextBox box, string text)
+    {
+        int at = box.CaretIndex;
+        box.Text = box.Text.Insert(at, text);
+        box.CaretIndex = at + text.Length;
     }
 
     /// <summary>这块布归属的配置（「填入参数…」要列参数）。</summary>
@@ -902,7 +1014,7 @@ public sealed class ForgeCanvasView : Grid
     private void BeginDrag(ForgeNodeSpec node, Border view, MouseButtonEventArgs e)
     {
         // 【能量】不可选中 / 不可拖动（它固定在左上角）—— 点它就只说明一句
-        if (IsLocked(node)) { Touch(EnergyLockedNote); return; }
+        if (IsPinned(node)) { Touch(LockedNote(node)); return; }
         SelectNode(node, view);
         // 拖一个 = 把**当前选中的那一批**一起拖（多选之后整块挪动）
         if (!_selectedNodes.Contains(node)) _selectedNodes.Add(node);
@@ -1112,6 +1224,30 @@ public sealed class ForgeCanvasView : Grid
     /// <summary>自检用：当前选中的模块（拷贝一份，改它不影响画布）。</summary>
     public IReadOnlyList<ForgeNodeSpec> SelectedNodesForCheck => _selectedNodes.ToList();
 
+    /// <summary>自检用：状态栏那一行（「固定模块删不掉」这类说明写到那里）。</summary>
+    public string StatusText => _statusText.Text;
+
+    /// <summary>自检用：布顶部那行**可用量清单**的原文（V0.2.128 需求 1：界面要写清这些位置能用什么）。</summary>
+    public string FormulaHintTextForCheck => _formulaHint.Text;
+
+    /// <summary>
+    /// 自检用：某个数字栏当前画成什么样（有没有「…」插入按钮 / 填错了有没有描红 / 是不是运行时公式）。
+    /// 走的是真界面那条路（<see cref="BuildField"/>），不是另写一套判断。
+    /// </summary>
+    public (bool HasInsert, bool Invalid, bool Runtime, string Tip) NumberFieldUiForCheck(ForgeNodeSpec node, string key)
+    {
+        var kind = node?.KindDef;
+        var field = kind?.Fields.FirstOrDefault(f => string.Equals(f.Key, key, StringComparison.Ordinal));
+        if (node is null || kind is null || field is null) return (false, false, false, "");
+        var ui = BuildField(node, kind, field);
+        if (ui is null) return (false, false, false, "");
+        var box = FindDescendant<TextBox>(ui, _ => true);
+        bool hasInsert = FindButton(ui, "…") is not null;
+        bool invalid = box?.BorderBrush is SolidColorBrush ib && ib.Color == Colors.Firebrick;
+        bool runtime = box?.BorderBrush is SolidColorBrush rb && rb.Color == Color.FromRgb(0x2A, 0x6F, 0xB5);
+        return (hasInsert, invalid, runtime, box?.ToolTip as string ?? "");
+    }
+
     /// <summary>自检用：清空选中。</summary>
     public void ClearSelectionForCheck()
     {
@@ -1224,7 +1360,7 @@ public sealed class ForgeCanvasView : Grid
         UpdateSelectionVisual();
         int locked = _graph.Nodes.Count(n => IsLocked(n));
         Touch($"已全选 {_selectedNodes.Count} 个模块 —— 拖任意一个的标题栏可以一起移动；Delete 一起删。"
-            + (locked > 0 ? $"（【能量】是固定模块，不参与选中 / 删除。）" : ""));
+            + (locked > 0 ? $"（固定模块（【能量】/【触发时机】）不参与选中 / 删除，共 {locked} 块。）" : ""));
     }
 
     /// <summary>框选 / 多选之后，当前选了多少个（自检用）。</summary>
@@ -1252,7 +1388,7 @@ public sealed class ForgeCanvasView : Grid
     {
         if (node is null) return;
         // 【能量】不可选中：点它就只说明一句（不然选中了再拖 / 再删又是麻烦）
-        if (IsLocked(node)) { Touch(EnergyLockedNote); return; }
+        if (IsPinned(node)) { Touch(LockedNote(node)); return; }
         bool add = (Keyboard.Modifiers & ModifierKeys.Shift) != 0;
         if (!add) _selectedNodes.Clear();
         if (add && _selectedNodes.Contains(node)) _selectedNodes.Remove(node);

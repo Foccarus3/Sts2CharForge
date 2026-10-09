@@ -1,5 +1,17 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 15 批需求（用户 2026-10-XX 提，按《锻造优化.md》第 1、2 条往下做；**第 3 条没动**）
+
+> 需求原文：`docs\需求\锻造优化.md`。
+> 用户拍板：`docs\需求\已拍板决定.md`（Q1 决定第 3 条「锻造【效果】模块直接复用卡牌那套 `EffectSpec` 编辑器」——
+> 那是大改，**主代理会单开一版**，本轮一个字都没碰；Q2=A = 保留数字框、允许里面直接填公式文本）。
+> 盘点报告：`D:\ds\s\t3\_tmp\需求盘点_锻造页与卡牌页.md`（本轮只读参考）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **锻造页 12 个数字框都能填参数 / 公式**（用户原话：「锻造页中所有模块里能填入数值的地方，都能填入参数或者公式」） | 用户选 Q2=A：**保留单行数字框**，里面可以直接填公式。新增 `ForgeNumbers`（解析三档：纯数字 → 生成期常量折叠 → 运行时表达式；失败 = `Ok=false` + 中文原因，**不再静默回落默认值**）+ `ForgeFormula.TryEvalConst`（生成期折叠，卡牌费用那种「要编译期常量」的位置只收前两档）。12 处逐处接上：`GetNumber` 先按公式解析、`UsedParams` 收公式里用到的参数、`EmitEffect`（数值 / 生效次数 `EmitRepeatLoop` / 命中次数 `WithHitCount` / 概率 `Roll`）、`RuntimeCondition`（【条件】的 N / M，顺带补了 `HpInRange` 的运行时判据）、`RelateExpr` 右值、`EmitTimingGate`（血量阈值 / 生效次数写了运行时公式时**挪到序幕之后**，默认档位置文本一个字不变）、`ForgeTriggerGuardLines`（「到达 N 层」运行时表达式）。界面：数字框旁「…」插入参数 / 内置只读量按钮、布顶那行**可用量清单**、填错描红 + 运行时公式标蓝 + ToolTip 写出表达式；积木视图摘要也不再吞掉公式文本。校验器：逐栏报「哪个模块 · 哪一栏」，费用栏写运行时公式 → 错误（本体 `base(cost, …)` 要编译期常量）。**回读**：锻造节点图这一阶段本来就不从工程回读（字段只存在存档里），本轮核实并把边界写进报告 | ✅V0.2.128 |
+| ② | **【触发时机】不可被删除 + 新增「卡牌被保留时」** | 锁定照【能量】那套机制：`ForgeCanvasView.IsLocked`（= 【能量】+【触发时机】：删不掉、不被全选带走）+ 新的 `IsPinned`（= 只有【能量】还额外不可选中 / 不可拖动）；`LockedNote` 按模块给说明文案，标题栏不摆「×」，`RemoveSelected` / `RemoveNode` / `SelectAll` / `Rebuild` / `BeginDrag` / `SelectNode` 六处判断一起改（**「一块布只能有一个触发时机」的既有逻辑没动**）。新时机 = `ForgeTimings.CardRetained`（Id `Retained`、Display「这张牌被保留时」、Hook `AfterFlush`，和卡牌页「卡牌时机」那份同名同语义）。生成端：`Signature` 补 `AfterFlush` 分支（不补会落到默认分支生成不存在的签名 → CS0114/CS0115）+ `TimingEntryGuardLines` 写进门守卫 `if (!retainedCards.Contains(this)) return;` + **顺手修掉一个老 bug**：卡牌档挂在「没有 cardPlay 参数」的钩子上（被消耗 / 被丢弃 / 被抽到 / 被保留）时，`__fgTarget = cardPlay.Target` 会 CS0103 —— 现在按生成出来的文本判断，需要时补一句 `CardPlay? cardPlay = null;` 并用 `cardPlay?.Target`。回读：锻造节点图不从工程回读（见 ①），但**顺手修掉**「图里那几段方法体被当成卡牌时机 / 遗物触发时机去解析、平白留下 6 条『没认出来』」的老坑（`ProjectRecovery.ReadForRecovery` 整段跳过带「锻造节点图」标记的方法）。老存档安全：`Plan()` 本来在「图里没有 Trigger」时返回 null（整张图不生成），锁界面不改生成语义 | ✅V0.2.128（`--uicheck` Debug **2933/0**、发布版 **2933/0**（基线 2899/0，新增 34 条断言）；`dotnet build` 0 错误；`--samplegen` 112 个文件里 **111 个逐文件 SHA256 一致**、只差 `ExampleMod.sln` 的随机 GUID；**锻造页老形状存档**（在 `git worktree` 的 HEAD 版本上跑同一份探针存档）160 个文件里 **159 个逐字节一致**、同样只差 `.sln`；探针 `D:\ds\s\_tmp\v02128`：新特性存档 → CLI `--build --install` 真 `dotnet build` **0 错误** + `--recover` **0 条「没认出来」**） |
+
 ## 第 14 批需求（用户 2026-10-XX 提，按《遗物、药水优化.md》往下做；**药水页照抄 + 额外资源量页那条**）
 
 > 需求原文：`docs\需求\遗物、药水优化.md` 第 1 条（额外资源量页）+ 第 6 条（药水方面参考遗物的优化方案）。

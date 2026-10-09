@@ -240,7 +240,7 @@ public static class LocalizationGen
     private static string EffectText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec node, string unitPick)
     {
         var (pick, summonId) = ForgeGraphGen.ResolvedPickForText(g, node, unitPick);
-        var e = EffectSpecOfNode(g, node);
+        var e = EffectSpecOfNode(p, g, node);
         var (side, targetPhrase, whoPhrase) = UnitPhrases(pick);
         e.TargetSide = side;
         if (summonId.Length > 0) e.PetSummon = summonId;
@@ -288,19 +288,32 @@ public static class LocalizationGen
         => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>把图里那块【效果】的字段搬进一个 EffectSpec（数值/公式由调用方另外覆盖）。</summary>
-    private static EffectSpec EffectSpecOfNode(ForgeGraphSpec g, ForgeNodeSpec node) => new()
+    /// <param name="p">整份配置（V0.2.128：生效次数 / 命中次数 / 概率那几栏也能写公式，卡面文案要印公式）。</param>
+    private static EffectSpec EffectSpecOfNode(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec node)
     {
-        Kind = node.Get("Effect", "Damage"),
-        PowerId = node.Get("PowerId", ""),
-        SpawnCardId = node.Get("SpawnCardId", ""),
-        SpawnTo = node.Get("SpawnTo", "Hand"),
-        CardPick = node.Get("Pick", "Random"),
-        RepeatCount = Math.Max(1, (int)node.GetNumber("Hits", 1)),
-        Times = Math.Max(1, (int)node.GetNumber("Times", 1)),
-        NextTurn = node.GetFlag("NextTurn", false),
-        ChanceEnabled = (int)node.GetNumber("Chance", 100) < 100,
-        ChancePercent = (decimal)node.GetNumber("Chance", 100),
-    };
+        // ⚠ 这里**只做文案**（见 EffectText）：不参与生成，所以可以放心把公式塞进
+        // EffectSpec 的次数公式字段（CSharpCodeGen 的文案路径本来就认它们）。
+        var timesN = ForgeNumbers.Resolve(p, node, "Times", 1);
+        var hitsN = ForgeNumbers.Resolve(p, node, "Hits", 1);
+        var chanceN = ForgeNumbers.Resolve(p, node, "Chance", 100);
+        var spec = new EffectSpec
+        {
+            Kind = node.Get("Effect", "Damage"),
+            PowerId = node.Get("PowerId", ""),
+            SpawnCardId = node.Get("SpawnCardId", ""),
+            SpawnTo = node.Get("SpawnTo", "Hand"),
+            CardPick = node.Get("Pick", "Random"),
+            RepeatCount = hitsN.Runtime ? 1 : Math.Max(1, (int)Math.Round((double)hitsN.Value)),
+            Times = timesN.Runtime ? 1 : Math.Max(1, (int)Math.Round((double)timesN.Value)),
+            NextTurn = node.GetFlag("NextTurn", false),
+            ChanceEnabled = chanceN.Runtime || (int)Math.Round((double)chanceN.Value) < 100,
+            ChancePercent = chanceN.Runtime ? 100m : (decimal)chanceN.Value,
+        };
+        if (hitsN.Runtime) spec.RepeatFormula = hitsN.Text;
+        if (timesN.Runtime) spec.TimesFormula = timesN.Text;
+        if (chanceN.Runtime) spec.ChanceFormula = chanceN.Text;
+        return spec;
+    }
 
     /// <summary>条件那一块写成一句中文（【条件】/【关系符】/【且】/【或】）。</summary>
     private static string CondText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec? node)
@@ -310,14 +323,18 @@ public static class LocalizationGen
         {
             case "Condition":
             {
+                // 数值 N / M 写了**运行时**公式时，卡面文案里把公式印出来（和「数值公式」同一套观感）
+                var cn = ForgeNumbers.Resolve(p, node, "Amount", 1);
+                var cm = ForgeNumbers.Resolve(p, node, "Amount2", 0);
                 var spec = new ConditionSpec
                 {
                     Kind = node.Get("Cond", "None"),
-                    Amount = (decimal)node.GetNumber("Amount", 1),
-                    Amount2 = (decimal)node.GetNumber("Amount2", 0),
+                    Amount = (decimal)cn.Value,
+                    Amount2 = (decimal)cm.Value,
                     PowerId = string.IsNullOrWhiteSpace(node.Get("PowerId")) ? null : node.Get("PowerId"),
                 };
-                return CSharpCodeGen.ConditionText(spec, ResourceName(p));
+                return CSharpCodeGen.ConditionText(spec, ResourceName(p),
+                    cn.Runtime ? cn.Text : null, cm.Runtime ? cm.Text : null);
             }
             case "Relate":
             {
@@ -325,10 +342,14 @@ public static class LocalizationGen
                 bool needsBool = ForgeGraphCatalog.RelateNeedsBool(op);
                 string left = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 1), "");
                 if (left.Length == 0) left = "（左值没接）";
-                // 右值没接线时：比较类用模块上那个数（生成端也是 GetNumber("Amount", 3)）；
-                // 「且 / 或 / 非」比的是条件，没接就不写右边。
-                string right = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 2),
-                    needsBool ? "" : NumberText(node.GetNumber("Amount", 3)));
+                // 右值没接线时：比较类用模块上那个数（生成端也是 ForgeNumbers.Resolve("Amount", 3)）；
+                // 「且 / 或 / 非」比的是条件，没接就不写右边。写了运行时公式就把公式印出来。
+                string rightFallback;
+                {
+                    var ra = ForgeNumbers.Resolve(p, node, "Amount", 3);
+                    rightFallback = needsBool ? "" : (ra.Runtime ? ra.Text : NumberText((double)ra.Value));
+                }
+                string right = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 2), rightFallback);
                 string opZh = op switch
                 {
                     "Lt" => "小于", "Eq" => "等于", "Ge" => "大于等于", "Le" => "小于等于",

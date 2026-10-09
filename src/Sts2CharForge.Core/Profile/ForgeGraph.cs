@@ -83,12 +83,22 @@ public sealed class ForgeNodeSpec : SpecBase
         Raise(nameof(Display));
     }
 
-    /// <summary>读一个数值字段（认不出来就用兜底值）。</summary>
+    /// <summary>
+    /// 读一个数值字段。
+    ///
+    /// V0.2.128（用户拍板 Q2=A：数字框里也能直接填公式）之后**不再「解析失败 → 静默回落」**：
+    ///   ① 纯数字 → 直接用（老存档一个字符都不变）；
+    ///   ② 公式、且生成期能折叠成常数（<c>2*3</c>）→ 用折出来的数；
+    ///   ③ 公式里用了 X / Y / 自定义参数 / 内置只读量 → 这里**算不出数**（要在运行时才算），
+    ///      返回 fallback，但**校验器会报错**说清是哪个模块哪一栏（见 <c>ForgeGraphGen.Issues</c>），
+    ///      真正要生成代码的地方一律走 <c>ForgeNumbers.Resolve</c>（它拿得到整份配置）+ 生成运行时表达式；
+    ///   ④ 解析不出来（拼错 / 括号不配 / 不存在的参数）→ 同样返回 fallback，由校验器报错拦住。
+    /// 需要「知道到底是哪一档」的调用点请用 <c>ForgeNumbers.Resolve</c>。
+    /// </summary>
     public double GetNumber(string key, double fallback = 0)
     {
-        string raw = Get(key);
-        return double.TryParse(raw, System.Globalization.NumberStyles.Float,
-            System.Globalization.CultureInfo.InvariantCulture, out double d) ? d : fallback;
+        var r = Generation.ForgeNumbers.Resolve(null, this, key, fallback);
+        return r.Ok && !r.Runtime ? (double)r.Value : fallback;
     }
 
     public void SetNumber(string key, double value) =>

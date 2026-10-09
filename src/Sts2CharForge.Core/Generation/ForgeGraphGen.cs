@@ -143,6 +143,7 @@ public sealed class ForgePileCountVar : DynamicVar
     private sealed class GenState
     {
         public readonly HashSet<string> ValueEmitted = new(StringComparer.Ordinal);   // 已经算过的【数值】/【状态】/【能量】
+        public readonly HashSet<string> NumEmitted = new(StringComparer.Ordinal);     // 已经声明过的「数字栏公式」局部变量
         public readonly HashSet<string> Busy = new(StringComparer.Ordinal);           // 正在算的（防环）
         public readonly HashSet<string> Chained = new(StringComparer.Ordinal);        // 已经作为执行链走过的模块
         public int Depth;
@@ -567,15 +568,22 @@ public sealed class ForgePileCountVar : DynamicVar
         if (plan is null) return "";
 
         var trig = plan.Trigger;
-        int limit = (int)Math.Round(trig.GetNumber("CountLimit", 0));
-        // 填 0 = 无限次：一个计数字段 / 复位钩子都不需要（以前会生成一个「用不上」的字段
-        // 和一个多余的复位 override —— 后者还可能和别的钩子撞成 CS0111）。
-        if (limit <= 0) return "";
+        var lim = ForgeNumbers.Resolve(p, trig, "CountLimit", 0);
+        // 「仅生效 N 次」那一栏现在也能填公式（V0.2.128）：
+        //   · 填 0 = 无限次（老行为）：计数字段 / 复位钩子都不生成；
+        //   · 常数（含 2*3 这种折叠成常数的公式）：老行为；
+        //   · 运行时公式：**按「有限次」生成**（算出来是多少就是多少；算出来是 0 / 负数时
+        //     那一支一次都不会跑 —— 校验器会给一条提示）。
+        bool runtimeLimit = lim.Runtime;
+        int limit = runtimeLimit ? 0 : (int)Math.Round((double)lim.Value);
+        if (!runtimeLimit && limit <= 0) return "";
 
         string uses = "__fgUses" + (upgraded ? "Up" : "");
         var sb = new StringBuilder();
         string scope = trig.Get("CountScope", "Combat");
-        string comment = limit <= 0 ? "不限次数（填 0 = 无限次）" : ForgeTimings.CountZh(limit, scope);
+        string comment = runtimeLimit
+            ? $"生效次数按公式算（{lim.Text}）"
+            : ForgeTimings.CountZh(limit, scope);
 
         sb.AppendLine();
         // 用 plan 里那条时机自己的中文名（同名时机在卡牌档 / 遗物档显示名不一样，别用全局 Find 猜）
@@ -583,7 +591,7 @@ public sealed class ForgePileCountVar : DynamicVar
         sb.AppendLine($"    private int {uses};");
 
         // 作用域复位：本回合 / 本场战斗开始时清零（「本次游玩」不清零 —— 那正是它的意思）
-        if (limit > 0 && !string.Equals(scope, "Run", StringComparison.Ordinal))
+        if (!string.Equals(scope, "Run", StringComparison.Ordinal))
         {
             bool turn = string.Equals(scope, "Turn", StringComparison.Ordinal);
             // 「本回合」用 AfterPlayerTurnStart 清零；「本场战斗」用 AfterCombatVictory 清零
@@ -641,6 +649,11 @@ public sealed class ForgePileCountVar : DynamicVar
             "AfterCardExhausted" => "public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)",
             "AfterCardDiscarded" => "public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)",
             "AfterCardDrawn" => "public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)",
+            // 卡牌时机「被保留」（用户要求 V0.2.128）：本体**没有** AfterCardRetained 之类的钩子，
+            // 走 AbstractModel.AfterFlush —— 签名和 CSharpCodeGen.EmitCardTimingHooks 的 case "Retained" 逐字相同
+            //（不漏这一条的话会落到最后那个默认分支，生成 `AfterFlush(PlayerChoiceContext)` 这个**不存在的签名**，
+            //  整个工程 CS0114 / CS0115）。
+            "AfterFlush" => "public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)",
             "AfterCardPlayed" => "public override async Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)",
             "AfterObtained" => "public override async Task AfterObtained()",
             "BeforeSideTurnStart" => "public override async Task BeforeSideTurnStart(PlayerChoiceContext choiceContext, CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)",
@@ -676,6 +689,12 @@ public sealed class ForgePileCountVar : DynamicVar
 
         sb.AppendLine($"    {Signature(plan.Timing, ctx, methodName)}");
         sb.AppendLine("    {");
+        // 方法体起点：卡牌档挂在**没有 cardPlay 参数**的钩子上时（被消耗 / 被丢弃 / 被抽到 / 被保留），
+        // 最后要按「生成出来的文本有没有引用 cardPlay」决定往这里插一句 `CardPlay? cardPlay = null;`
+        //（和 CSharpCodeGen.EmitCardPlayPlaceholder 同一套做法，见那里的说明）。插回去而不是重写一遍，
+        // 是为了让默认档（有 cardPlay 的那些时机）的输出**一个字符都不变**。
+        int bodyMark = sb.Length;
+        bool hookHasPlay = HookHasCardPlay(plan.Timing);
 
         // ---- 0.0) 归属守卫（第 9 批 ④）：遗物档的图走**和遗物页同一套**判据 ----
         // 为什么必须补：锻造页以前一条守卫都没有 —— 敌人打我 / 敌人打牌 / 别人掉血
@@ -687,15 +706,34 @@ public sealed class ForgePileCountVar : DynamicVar
         //   · 那个普通方法**没有**钩子参数（cardPlay / creature / card…），写了会 CS0103。
         if (methodName is null && string.Equals(ctx.Scope, "Relic", StringComparison.Ordinal))
         {
+            // 「到达 N 层」那一栏现在也能写公式：写成运行时表达式就内联展开（这一句在序幕之前，
+            // 只能依赖 base.Owner —— 遗物档的 __fgPlayer / __fgSelf / __fgTarget 正好就是它，
+            // 所以内联写法和平常那套**等价**，见 ForgeNumbers.Place.Inline）。
+            var amountField = ForgeNumbers.Resolve(p, plan.Trigger, "PowerAmount", 1,
+                ForgeNumbers.Place.Inline, playTargetExpr: "null");
             foreach (string line in CSharpCodeGen.ForgeTriggerGuardLines(plan.Timing.Id,
-                         plan.Trigger.Get("PowerId"), (decimal)plan.Trigger.GetNumber("PowerAmount", 1)))
+                         plan.Trigger.Get("PowerId"), (decimal)plan.Trigger.GetNumber("PowerAmount", 1),
+                         amountField.Runtime ? amountField.Expr : null))
                 sb.AppendLine("        " + line);
         }
+
+        // ---- 0.05) 时机自己的进门守卫（V0.2.128 新增「这张牌被保留时」）----
+        // 「被保留」不是本体的虚方法（本体没有 AfterCardRetained），挂在 AfterFlush 上，
+        // 所以方法体最前面要先判「这张牌真的被保留了」——判据和卡牌页那份逐字相同
+        //（CSharpCodeGen.EmitCardTimingHooks 的 case "Retained"：retainedCards.Contains(this)）。
+        foreach (string line in TimingEntryGuardLines(plan.Timing))
+            sb.AppendLine("        " + line);
 
         // ---- 0) 血量阈值 / 生效次数（遗物的「当遗物被点击时」「血量低于 N」用得到）----
         // 注意：这一段在「自己 / 目标」那两个变量之前，所以里面只用 base.Owner 推算，
         // 不能引用 __fgSelf（会「在使用之前声明」编译不过）。
-        EmitTimingGate(sb, plan, ctx);
+        //
+        // V0.2.128：这两栏现在也能写公式。写了**运行时**公式时，它要用到序幕里算好的
+        // __X / __Y / __pM / __fgTarget（用户要的「和【数值】模块同一套可用量」），
+        // 所以把它挪到序幕之后再写 —— 序幕只是一串纯赋值（没有任何副作用），顺序换了语义不变；
+        // 没写公式（默认档）时**还是老位置老文本**，一个字符都不动（红线）。
+        bool deferGate = GateUsesFormula(p, plan);
+        if (!deferGate) EmitTimingGate(sb, plan, ctx, p);
 
         // ---- 0.5) 需要 choiceContext、但钩子签名里没有的时机：按本体的做法自己造一个 ----
         // （见 EmitCtx.CtxFrom / RelicCtxFrom；「获得时」用阻塞式，战斗里那几条用 HookPlayerChoiceContext。
@@ -723,7 +761,10 @@ public sealed class ForgePileCountVar : DynamicVar
         sb.AppendLine("        Player __fgPlayer = base.Owner;");
         sb.AppendLine("        Creature __fgSelf = __fgPlayer.Creature;");
         sb.AppendLine(ctx.Scope == "Card"
-            ? "        Creature? __fgTarget = cardPlay.Target;"
+            // 卡牌那几个**没有 cardPlay 参数**的钩子（被消耗 / 被丢弃 / 被抽到 / 被保留）：
+            // 用 ?. 取目标（那一档下面会插一句 `CardPlay? cardPlay = null;`），
+            // 不然生成出来是 CS8602（对可能为 null 的引用解引用）。
+            ? (hookHasPlay ? "        Creature? __fgTarget = cardPlay.Target;" : "        Creature? __fgTarget = cardPlay?.Target;")
             : "        Creature? __fgTarget = null;");
         // 没有 choiceContext 的时机（「获得时」「遗物被点击」以及造不出来的那几条）：效果里不引用那个名字，
         // 需要它的那几种效果会传 null!（本体自己在运行时会拦下并报错，比默默不做事清楚）——
@@ -769,6 +810,10 @@ public sealed class ForgePileCountVar : DynamicVar
         if (hasCardReward && ctx.AllowCardReward && !string.Equals(ctx.Scope, "Card", StringComparison.Ordinal))
             sb.AppendLine("        // 「战斗胜利时」的钩子签名里带着这个房间 —— 【卡牌奖励】要往它身上加一条奖励");
 
+        // ---- 1.9) 血量阈值 / 生效次数（写了运行时公式的那一档，见上面 deferGate 的说明）----
+        // 放在这里 = 序幕之后，所以 X / Y / 自定义参数 / 内置只读量 / __fgTarget 全都能用。
+        if (deferGate) EmitTimingGate(sb, plan, ctx, p);
+
         // ---- 2) 执行链：从【触发时机】的出口往后走，if / 且 / 或 真正接管分支 ----
         var state = new GenState();
         var triggerOut = g.Outgoing(plan.Trigger.Id, 0).FirstOrDefault();
@@ -783,8 +828,53 @@ public sealed class ForgePileCountVar : DynamicVar
             if (next is not null) EmitChain(sb, p, g, next, ctx, state, "        ");
         }
 
+        // 卡牌档挂在**没有 cardPlay 参数**的钩子上、而且生成出来的代码真的用到了它（DamageCmd 的 FromCard /
+        // CreatureCmd.GainBlock 的来源卡参数…）：补一句 `CardPlay? cardPlay = null;`
+        //（本体那几条 API 允许传 null；真会解引用 cardPlay.Target 的用法校验器会拦，见 ProfileValidator）。
+        // 判据是**生成出来的文本**，不是「按效果种类猜」——猜错会平白多一个用不上的局部变量（CS0219）。
+        if (methodName is null && string.Equals(ctx.Scope, "Card", StringComparison.Ordinal) && !hookHasPlay
+            && sb.ToString(bodyMark, sb.Length - bodyMark).Contains("cardPlay", StringComparison.Ordinal))
+        {
+            var ins = new StringBuilder();
+            ins.AppendLine("        // 这些钩子里没有「打出记录」（cardPlay）：下面把它传 null（那几条本体 API 允许传 null），");
+            ins.AppendLine("        // 用 ?. 取「打出的目标」；真会解引用 cardPlay.Target 的用法由校验器拦住。");
+            ins.AppendLine("        CardPlay? cardPlay = null;");
+            sb.Insert(bodyMark, ins.ToString());
+        }
+
         sb.AppendLine("    }");
     }
+
+    /// <summary>
+    /// 这个卡牌档时机的钩子签名里有没有 <c>CardPlay cardPlay</c> 参数。
+    /// 只有「卡牌被打出时」（OnPlay）和「卡牌被自动打出时」（AfterCardPlayed）有；
+    /// 被消耗 / 被丢弃 / 被抽到 / **被保留（AfterFlush）** 都没有 —— 那几档要自己补一句占位（见 EmitHook 末尾）。
+    /// </summary>
+    private static bool HookHasCardPlay(ForgeTimings.TimingOption t) =>
+        t.Hook is "OnPlay" or "AfterCardPlayed";
+
+    /// <summary>
+    /// 【触发时机】自己的进门守卫（V0.2.128：「卡牌被保留时」用得到）。
+    /// 默认（没有守卫的时机）返回空 = 生成文本一个字符都不变。
+    /// </summary>
+    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t) => t.Hook switch
+    {
+        "AfterFlush" => new[]
+        {
+            "// 「这张牌被保留时」：本体没有 AfterCardRetained 钩子，用 AfterFlush 交出来的 retainedCards 判自己",
+            "//（判据 = 本体 CombatManager.FlushPlayerHand 把这张牌归进 retainedCards：有保留关键词 / 这回合被单回合保留 / 整手牌都不丢）",
+            "if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）",
+        },
+        _ => Array.Empty<string>(),
+    };
+
+    /// <summary>
+    /// 「血量低于 N」/「仅生效 N 次」这两栏是不是写了**运行时**公式
+    /// （写了的话进门条件要挪到执行点序幕之后才写，见 EmitHook）。
+    /// </summary>
+    private static bool GateUsesFormula(CharacterProfile p, HookPlan plan)
+        => (plan.Timing.NeedHp && ForgeNumbers.Resolve(p, plan.Trigger, "HpThreshold", 0.5).Runtime)
+        || ForgeNumbers.Resolve(p, plan.Trigger, "CountLimit", 0).Runtime;
 
     /// <summary>
     /// 顺着执行链走：一个模块之后所有出口接到的模块，**按顺序依次执行**。
@@ -980,9 +1070,9 @@ public sealed class ForgePileCountVar : DynamicVar
                     // 卡牌写在 OnPlay 里（能用「指定敌人」= cardPlay.Target）；
                     // 遗物 / 药水没有 cardPlay，用 Relic 那个上下文（CombatState 从 Owner.Creature 取）。
                     var ctxKind = string.Equals(ctxScope, "Card", StringComparison.Ordinal) ? CSharpCodeGen.CondCtx.Card : CSharpCodeGen.CondCtx.Relic;
-                    // 「数值 N」那一栏接了【数值】模块 → N 是运行时才算出来的，
-                    // 那几种最常用的判据（手牌数 / 生命百分比 / 状态层数 / 额外资源量）直接写成运行时比较；
-                    // 其余条件种类仍然用模块上填的常数（本体那套判据照旧复用）。
+                    // 「数值 N」那一栏接了【数值】模块**或者自己写了公式** → N 是运行时才算出来的，
+                    // 那几种最常用的判据（手牌数 / 生命百分比 / 状态层数 / 额外资源量 / 生命区间）
+                    // 直接写成运行时比较；其余条件种类仍然用模块上填的常数（本体那套判据照旧复用）。
                     var vnode = IncomingNode(g, node, 0);
                     if (vnode is not null && IsValueLike(vnode))
                     {
@@ -993,11 +1083,30 @@ public sealed class ForgePileCountVar : DynamicVar
                             if (runtime is not null) return runtime;
                         }
                     }
+                    // 数值 N / 数值 M 自己写了**运行时**公式（V0.2.128）：同样走运行时判据
+                    var condAmount = ForgeNumbers.Resolve(p, node, "Amount", 1);
+                    var condAmount2 = ForgeNumbers.Resolve(p, node, "Amount2", 0);
+                    if (condAmount.Runtime || condAmount2.Runtime)
+                    {
+                        string nExpr = DeclareNumberLocal(sb, indent, st, node, "Amount", condAmount, "数值 N");
+                        string? runtime;
+                        if (condAmount2.Runtime)
+                        {
+                            string mExpr = DeclareNumberLocal(sb, indent, st, node, "Amount2", condAmount2, "数值 M");
+                            runtime = RuntimeCondition(node.Get("Cond", "None"), nExpr, node, ctxKind, mExpr);
+                        }
+                        else runtime = RuntimeCondition(node.Get("Cond", "None"), nExpr, node, ctxKind);
+                        if (runtime is not null) return runtime;
+                        // 这个条件种类这一阶段还不支持运行时 N：**不静默**（校验器会报一条错误说明）
+                        sb.AppendLine(indent + $"// ⚠【条件】的数值写了公式，但这个条件种类还不支持运行时判断 —— 这一条恒为「不成立」"
+                            + "（去「配置检查」看那条错误）。");
+                        return "false";
+                    }
                     var spec = new ConditionSpec
                     {
                         Kind = node.Get("Cond", "None"),
-                        Amount = (decimal)node.GetNumber("Amount", 1),
-                        Amount2 = (decimal)node.GetNumber("Amount2", 0),
+                        Amount = (decimal)condAmount.Value,
+                        Amount2 = (decimal)condAmount2.Value,
                         PowerId = string.IsNullOrWhiteSpace(node.Get("PowerId")) ? null : node.Get("PowerId"),
                     };
                     return CSharpCodeGen.ConditionExpr(spec, ctxKind, inOnPlay: ctxKind == CSharpCodeGen.CondCtx.Card);
@@ -1068,8 +1177,16 @@ public sealed class ForgePileCountVar : DynamicVar
         string right;
         if (rn is null)
         {
-            // 比较类：右值没接线就用模块上填的数字；且 / 或：没接线当"成立"
-            right = needsBool ? "true" : Lit(node.GetNumber("Amount", 3));
+            // 比较类：右值没接线就用模块上填的数字（V0.2.128：那一栏也能写公式/参数）；
+            // 且 / 或：没接线当"成立"
+            if (needsBool) right = "true";
+            else
+            {
+                var amt = ForgeNumbers.Resolve(p, node, "Amount", 3);
+                right = amt.Runtime
+                    ? DeclareNumberLocal(sb, indent, st, node, "Amount", amt, "右值")
+                    : Lit((double)amt.Value);
+            }
         }
         else if (IsBoolProducer(rn) != needsBool)
         {
@@ -1097,15 +1214,20 @@ public sealed class ForgePileCountVar : DynamicVar
         node.Kind is "Value" or "Power" or "Energy";
 
     /// <summary>
-    /// 「数值 N」接了【数值】模块时（N 要运行时才算），最常用的那几种条件直接写成运行时比较。
-    /// 返回 null = 这个条件种类这一阶段还不支持运行时 N（调用方会用模块上填的常数）。
+    /// 「数值 N」接了【数值】模块、或者那一栏自己写了运行时公式时（N 要运行时才算），
+    /// 最常用的那几种条件直接写成运行时比较。
+    /// 返回 null = 这个条件种类这一阶段还不支持运行时 N（调用方会写一行说明 + 校验器报错，不静默）。
+    /// <paramref name="mExpr">「数值 M」也是运行时才算的那种（只有「生命值在 N%~M% 之间」用得到）。</param>
     /// </summary>
-    private static string? RuntimeCondition(string kind, string nExpr, ForgeNodeSpec node, CSharpCodeGen.CondCtx ctxKind)
+    private static string? RuntimeCondition(string kind, string nExpr, ForgeNodeSpec node, CSharpCodeGen.CondCtx ctxKind,
+        string? mExpr = null)
     {
         string player = ctxKind == CSharpCodeGen.CondCtx.Power ? "base.Owner.Player" : "base.Owner";
         string ownerCreature = ctxKind == CSharpCodeGen.CondCtx.Power ? "base.Owner" : "base.Owner.Creature";
         string st = ctxKind == CSharpCodeGen.CondCtx.Card ? "base.CombatState" : "base.Owner.Creature.CombatState";
         string hand = $"CardPile.GetCards({player}, PileType.Hand)";
+        // 生命区间：下界 / 上界（都按百分比）。M 也是运行时才算时用两个算出来的数比。
+        string lo = nExpr, hi = mExpr ?? nExpr;
         return kind switch
         {
             "HandAtLeast" => $"{player} is not null && {hand}.Count() >= (int)({nExpr})",
@@ -1115,14 +1237,34 @@ public sealed class ForgePileCountVar : DynamicVar
             "ExtraResourceAtLeast" => $"(({player}?.PlayerCombatState?.Stars) ?? 0) >= (decimal)({nExpr})",
             "HpBelowPercent" =>
                 $"({ownerCreature}.MaxHp <= 0 || {ownerCreature}.CurrentHp * 100m <= {ownerCreature}.MaxHp * (decimal)({nExpr}))",
+            "HpInRange" =>
+                // 两头都是现算的：用 Min/Max 保证区间是「小的一头 → 大的一头」（和常数那条路「顺序写反了自动排好」一致）
+                $"({ownerCreature}.MaxHp <= 0 || ({ownerCreature}.CurrentHp * 100m"
+                + $" >= {ownerCreature}.MaxHp * (decimal)System.Math.Min(({lo}), ({hi}))"
+                + $" && {ownerCreature}.CurrentHp * 100m <= {ownerCreature}.MaxHp * (decimal)System.Math.Max(({lo}), ({hi}))))",
             "HasPowerAtLeast" when !string.IsNullOrWhiteSpace(node.Get("PowerId")) =>
                 $"{ownerCreature}.GetPowerAmount<{Sts2CharForge.Core.Generation.Lit.Identifier(node.Get("PowerId"), "VulnerablePower")}>() >= (decimal)({nExpr})",
             _ => null,
         };
     }
 
+    /// <summary>
+    /// 把一个**运行时公式**的数字栏位算成一个局部变量（同一个模块的同一栏只声明一次：
+    /// 同一个【条件】块可能被两条链各走一遍，直接各声明一次会 CS0128 重复定义）。
+    /// 返回变量名。
+    /// </summary>
+    private static string DeclareNumberLocal(StringBuilder sb, string indent, GenState st, ForgeNodeSpec node,
+        string key, ForgeNumbers.Resolved r, string label)
+    {
+        string varName = UniqueVar(node, "__fgN" + key);
+        if (!st.NumEmitted.Add(node.Id + "#" + key)) return varName;     // 已经声明过了
+        sb.AppendLine(indent + $"decimal {varName} = {r.Expr};   // fg:{node.Id}{label}（公式：{r.Text}）");
+        return varName;
+    }
+
     /// <summary>「血量低于 N」「仅生效 N 次」这些**进门条件**。</summary>
-    private static void EmitTimingGate(StringBuilder sb, HookPlan plan, EmitCtx ctx)
+    /// <param name="p">整份配置（这两栏现在也能写公式 / 用自定义参数，见 <see cref="ForgeNumbers"/>）。</param>
+    private static void EmitTimingGate(StringBuilder sb, HookPlan plan, EmitCtx ctx, CharacterProfile p)
     {
         var trig = plan.Trigger;
         string uses = "__fgUses" + (ctx.Upgraded ? "Up" : "");
@@ -1135,30 +1277,54 @@ public sealed class ForgePileCountVar : DynamicVar
 
         if (plan.Timing.NeedHp)
         {
-            double raw = trig.GetNumber("HpThreshold", 0.5);
-            bool percent = raw < 1;
-            sb.AppendLine($"        // 「血量低于 {Lit(raw)}{(percent ? "（按百分比）" : " 点")}」");
-            sb.AppendLine("        {");
-            sb.AppendLine("            Creature __fgWatch = base.Owner?.Creature;");
-            sb.AppendLine(percent
-                ? $"            if (__fgWatch is null || __fgWatch.MaxHp <= 0 || (decimal)__fgWatch.CurrentHp > (decimal)__fgWatch.MaxHp * {Lit(raw)}m) return;"
-                : $"            if (__fgWatch is null || (decimal)__fgWatch.CurrentHp >= {Lit(raw)}m) return;");
-            sb.AppendLine("        }");
+            // ⚠ 这一栏也能写公式（V0.2.128）：写了运行时公式时**两档都按运行时判**
+            //（公式算出来小于 1 = 按百分比、算出 ≥ 1 = 按点数 ——和那一栏的文字说明同一套口径，
+            //  生成期分不出来是哪一档，所以生成一句自适应的判断）。
+            var hp = ForgeNumbers.Resolve(p, trig, "HpThreshold", 0.5);
+            if (hp.Runtime)
+            {
+                sb.AppendLine($"        // 「血量低于 {hp.Text}（按公式算：小于 1 = 百分比，≥ 1 = 点数）」");
+                sb.AppendLine("        {");
+                sb.AppendLine("            Creature __fgWatch = base.Owner?.Creature;");
+                sb.AppendLine($"            decimal __fgHpTh = {hp.Expr};");
+                sb.AppendLine("            if (__fgWatch is null || __fgWatch.MaxHp <= 0) return;");
+                sb.AppendLine("            if (__fgHpTh < 1m)");
+                sb.AppendLine("            {");
+                sb.AppendLine("                if ((decimal)__fgWatch.CurrentHp > (decimal)__fgWatch.MaxHp * __fgHpTh) return;");
+                sb.AppendLine("            }");
+                sb.AppendLine("            else if ((decimal)__fgWatch.CurrentHp >= __fgHpTh) return;");
+                sb.AppendLine("        }");
+            }
+            else
+            {
+                double raw = (double)hp.Value;
+                bool percent = raw < 1;
+                sb.AppendLine($"        // 「血量低于 {Lit(raw)}{(percent ? "（按百分比）" : " 点")}」");
+                sb.AppendLine("        {");
+                sb.AppendLine("            Creature __fgWatch = base.Owner?.Creature;");
+                sb.AppendLine(percent
+                    ? $"            if (__fgWatch is null || __fgWatch.MaxHp <= 0 || (decimal)__fgWatch.CurrentHp > (decimal)__fgWatch.MaxHp * {Lit(raw)}m) return;"
+                    : $"            if (__fgWatch is null || (decimal)__fgWatch.CurrentHp >= {Lit(raw)}m) return;");
+                sb.AppendLine("        }");
+            }
         }
 
-        int limit = (int)Math.Round(trig.GetNumber("CountLimit", 0));
-        if (plan.Timing.NeedCount || limit > 0)
+        var lim = ForgeNumbers.Resolve(p, trig, "CountLimit", 0);
+        int limit = lim.Runtime ? 0 : (int)Math.Round((double)lim.Value);
+        if (plan.Timing.NeedCount || lim.Runtime || limit > 0)
         {
             string scope = trig.Get("CountScope", "Combat");
-            sb.AppendLine($"        // 生效次数：{ForgeTimings.CountZh(limit, scope)}（填 0 = 无限次）");
+            // 运行时公式：比的是算出来的那个数（算出来 0 / 负数 = 这一支一次都不跑 —— 校验器有提示）
+            string cmp = lim.Runtime ? $"(int)({lim.Expr})" : Lit(limit);
+            sb.AppendLine($"        // 生效次数：{(lim.Runtime ? "按公式算（" + lim.Text + "）" : ForgeTimings.CountZh(limit, scope))}（填 0 = 无限次）");
             // ⚠ 填 0 = 无限次时**不能**写「__fgUses >= 0 就 return」：那个条件恒成立，
             // 整张图一次都不会跑 —— 正是「菜单/栏位里有、生成出来什么都不做」那种坑
             //（自检里「血量低于 N」「当遗物被点击时」两条都造了图验它真的会做事）。
-            if (limit > 0)
+            if (lim.Runtime || limit > 0)
             {
-                sb.AppendLine($"        if ({uses} >= {Lit(limit)}) return;");
+                sb.AppendLine($"        if ({uses} >= {cmp}) return;");
                 sb.AppendLine($"        {uses}++;");
-                sb.AppendLine($"        if ({uses} >= {Lit(limit)})");
+                sb.AppendLine($"        if ({uses} >= {cmp})");
                 sb.AppendLine("        {");
                 sb.AppendLine("            Status = RelicStatus.Disabled;   // 用尽之后和本体一样变灰");
                 sb.AppendLine("            InvokeDisplayAmountChanged();");
@@ -1179,6 +1345,13 @@ public sealed class ForgePileCountVar : DynamicVar
         {
             if (n is null || n.Kind != "Value") continue;
             var root = ForgeFormula.TryParse(n.Get("Formula"), out _);
+            foreach (string id in ForgeFormula.Identifiers(root)) names.Add(id);
+        }
+        // V0.2.128：那 12 个「数字框」里也能写公式/参数 —— 用到哪个参数就要把 `__pM` 声明出来
+        //（只有**运行时**的那些才要：生成期能折叠成常数的公式里那个参数一个变量都不需要）。
+        foreach (var (node, key, _) in ForgeNumbers.FormulaFields(p, g))
+        {
+            var root = ForgeFormula.TryParse(node.Get(key), out _);
             foreach (string id in ForgeFormula.Identifiers(root)) names.Add(id);
         }
         return p.CustomParams.Where(x => x is not null && names.Contains(ParamNames.Normalize(x.Name))).ToList();
@@ -1530,7 +1703,17 @@ public sealed class ForgePileCountVar : DynamicVar
         // 数值：优先「数值」入口（下标 1）接上来的那一块，其次模块自带的数字
         var (valueNode, valueNodePort) = IncomingNodeAt(g, node, 1);
         string? varName = valueNode is null ? null : ValueVar(p, g, valueNode, st, sb, indent, valueNodePort);
-        string amount = varName is not null ? varName : "(" + Lit(node.GetNumber("Amount", 6)) + "m)";
+        // 数值（V0.2.128：那一栏也能写公式/参数）
+        var amountN = ForgeNumbers.Resolve(p, node, "Amount", 6);
+        string amount;
+        if (varName is not null) amount = varName;
+        else if (amountN.Runtime)
+        {
+            string amtVar = UniqueVar(node, "__fgAmt");
+            sb.AppendLine(indent + $"decimal {amtVar} = {amountN.Expr};   // fg:{node.Id}【效果】数值（公式：{amountN.Text}）");
+            amount = amtVar;
+        }
+        else amount = "(" + Lit((double)amountN.Value) + "m)";
 
         // 指向对象：「指向对象」入口（下标 2）接的对象模块；
         // 没接就用**这条链上最近一个【指向对象】声明的那一只**（用户要求：那是「这张牌选中谁」），
@@ -1560,9 +1743,40 @@ public sealed class ForgePileCountVar : DynamicVar
             if (targetCard is not null) spawnCardClass = Naming.From(p).CardClassName(p, targetCard);
         }
 
-        int times = Math.Max(1, (int)Math.Round(node.GetNumber("Times", 1)));
-        int hits = Math.Max(1, (int)Math.Round(node.GetNumber("Hits", 1)));
-        int chance = (int)Math.Round(node.GetNumber("Chance", 100));
+        // 生效次数 / 命中次数 / 概率（V0.2.128：这三栏也能写公式/参数）
+        //   · 纯数字 / 折叠成常数 → 走老路（生成文本一个字都不变）；
+        //   · 运行时公式 → 先算成一个局部变量，再照原样用（循环上界 / WithHitCount / 概率判定）。
+        var timesN = ForgeNumbers.Resolve(p, node, "Times", 1);
+        int times = timesN.Runtime ? 1 : Math.Max(1, (int)Math.Round((double)timesN.Value));
+        string timesExpr = Lit(times);
+        if (timesN.Runtime)
+        {
+            timesExpr = UniqueVar(node, "__fgTimes");
+            sb.AppendLine(indent + $"int {timesExpr} = Math.Max(1, (int)({timesN.Expr}));   // fg:{node.Id}【效果】生效次数（公式：{timesN.Text}）");
+        }
+
+        var hitsN = ForgeNumbers.Resolve(p, node, "Hits", 1);
+        int hits = hitsN.Runtime ? 1 : Math.Max(1, (int)Math.Round((double)hitsN.Value));
+        // 写了公式的命中次数**一律按多段攻击写**（和卡牌链的 CSharpCodeGen.RepeatIsMulti 同一个道理：
+        // 生成期不知道公式算出来是几，不能因为「固定值那条算出来是 1」就省掉 .WithHitCount）；
+        // 公式算出 1 时 WithHitCount(1) 与不写它**语义相同**。
+        bool hitsMulti = hitsN.Runtime || hits > 1;
+        string hitsExpr = Lit(hits);
+        if (hitsN.Runtime)
+        {
+            hitsExpr = UniqueVar(node, "__fgHits");
+            sb.AppendLine(indent + $"int {hitsExpr} = Math.Max(1, (int)({hitsN.Expr}));   // fg:{node.Id}【效果】命中次数（公式：{hitsN.Text}）");
+        }
+
+        var chanceN = ForgeNumbers.Resolve(p, node, "Chance", 100);
+        int chance = chanceN.Runtime ? 100 : (int)Math.Round((double)chanceN.Value);
+        bool chanceRoll = chanceN.Runtime || chance < 100;
+        string chanceExpr = Lit(chance);
+        if (chanceN.Runtime)
+        {
+            chanceExpr = UniqueVar(node, "__fgChance");
+            sb.AppendLine(indent + $"int {chanceExpr} = (int)({chanceN.Expr});   // fg:{node.Id}【效果】概率生效（公式：{chanceN.Text}）");
+        }
         bool nextTurn = node.GetFlag("NextTurn");
         if (nextTurn && kind is not ("Block" or "Draw" or "ApplyPower"))
         {
@@ -1588,11 +1802,11 @@ public sealed class ForgePileCountVar : DynamicVar
                 "TakeFromDiscard" => "PileType.Discard",
                 _ => "PileType.Exhaust",
             };
-            for (int t = 0; t < times; t++)
+            EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
-                sb.AppendLine(indent + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})))).ToList())");
-                sb.AppendLine(indent + "    await CardPileCmd.Add(__fgTake, PileType.Hand);");
-            }
+                sb.AppendLine(__ind + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})))).ToList())");
+                sb.AppendLine(__ind + "    await CardPileCmd.Add(__fgTake, PileType.Hand);");
+            });
             return;
         }
         // 变化 / 复制（本体「下去 / 二刀流」那两套写法）
@@ -1601,25 +1815,25 @@ public sealed class ForgePileCountVar : DynamicVar
             bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
             // 变量名按模块 Id 取，**每条效果一套** —— 同一条链上有两个同种效果时不会撞名（编译期就报 CS0128）
             string selVar = UniqueVar(node, "__fgSel");
-            for (int t = 0; t < times; t++)
+            EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
                 if (chosen)
-                    sb.AppendLine(indent + $"var {selVar} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})), filter: null, source: {ctx.CardSelfExpr})).ToList();");
+                    sb.AppendLine(__ind + $"var {selVar} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})), filter: null, source: {ctx.CardSelfExpr})).ToList();");
                 else
-                    sb.AppendLine(indent + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : CardPile.GetCards(__fgPlayer, PileType.Hand).OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList());");
+                    sb.AppendLine(__ind + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : CardPile.GetCards(__fgPlayer, PileType.Hand).OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList());");
                 if (kind == "CopyCard")
                 {
-                    sb.AppendLine(indent + $"foreach (CardModel {selVar}C in {selVar}) await CardPileCmd.AddGeneratedCardToCombat({selVar}C.CreateClone(), PileType.Hand, __fgPlayer);");
+                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardPileCmd.AddGeneratedCardToCombat({selVar}C.CreateClone(), PileType.Hand, __fgPlayer);");
                 }
                 else if (spawnCardClass is null)
                 {
-                    sb.AppendLine(indent + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
+                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
                 }
                 else
                 {
-                    sb.AppendLine(indent + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{spawnCardClass}>(), __fgPlayer));");
+                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{spawnCardClass}>(), __fgPlayer));");
                 }
-            }
+            });
             return;
         }
         // 预见（看抽牌堆顶 N 张，想丢的丢进弃牌堆 —— 本体没有这个机制，照「卡牌」页那套拼）
@@ -1627,15 +1841,15 @@ public sealed class ForgePileCountVar : DynamicVar
         {
             string topVar = UniqueVar(node, "__fgTop");
             string dropVar = UniqueVar(node, "__fgDrop");
-            for (int t = 0; t < times; t++)
+            EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
-                sb.AppendLine(indent + $"var {topVar} = PileType.Draw.GetPile(__fgPlayer).Cards.Take((int)({amount})).ToList();");
-                sb.AppendLine(indent + $"if ({topVar}.Count > 0)");
-                sb.AppendLine(indent + "{");
-                sb.AppendLine(indent + $"    var {dropVar} = (await CardSelectCmd.FromSimpleGrid({ctx.ChoiceVar}, {topVar}, __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, {topVar}.Count))).ToList();");
-                sb.AppendLine(indent + $"    if ({dropVar}.Count > 0) await CardCmd.Discard(choiceContext, {dropVar});");
-                sb.AppendLine(indent + "}");
-            }
+                sb.AppendLine(__ind + $"var {topVar} = PileType.Draw.GetPile(__fgPlayer).Cards.Take((int)({amount})).ToList();");
+                sb.AppendLine(__ind + $"if ({topVar}.Count > 0)");
+                sb.AppendLine(__ind + "{");
+                sb.AppendLine(__ind + $"    var {dropVar} = (await CardSelectCmd.FromSimpleGrid({ctx.ChoiceVar}, {topVar}, __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, {topVar}.Count))).ToList();");
+                sb.AppendLine(__ind + $"    if ({dropVar}.Count > 0) await CardCmd.Discard(choiceContext, {dropVar});");
+                sb.AppendLine(__ind + "}");
+            });
             return;
         }
         // 获得药水（指定 / 随机）—— 药水栏满时本体 TryToProcure 什么都不做
@@ -1649,13 +1863,13 @@ public sealed class ForgePileCountVar : DynamicVar
                     if (string.Equals(pot.Id, potionId, StringComparison.Ordinal)) { potionClass = pot.Id; break; }
             }
             bool fixedPotion = !string.Equals(node.Get("PotionPick", "Fixed"), "Random", StringComparison.OrdinalIgnoreCase);
-            for (int t = 0; t < times; t++)
+            EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
                 if (fixedPotion && potionClass is not null)
-                    sb.AppendLine(indent + $"await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.{potionClass}>(__fgPlayer);");
+                    sb.AppendLine(__ind + $"await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.{potionClass}>(__fgPlayer);");
                 else
-                    sb.AppendLine(indent + $"await PotionCmd.TryToProcure(MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionInCombat(__fgPlayer, __fgPlayer.RunState.Rng.CombatPotionGeneration), __fgPlayer);");
-            }
+                    sb.AppendLine(__ind + $"await PotionCmd.TryToProcure(MegaCrit.Sts2.Core.Factories.PotionFactory.CreateRandomPotionInCombat(__fgPlayer, __fgPlayer.RunState.Rng.CombatPotionGeneration), __fgPlayer);");
+            });
             return;
         }
         // 卡牌奖励：**只能挂在「战斗胜利时」那一支上**（本体没有"战斗中直接弹奖励"的入口）
@@ -1704,11 +1918,11 @@ public sealed class ForgePileCountVar : DynamicVar
             //（那是「每个敌人各打 N 下」，用户实测报过）。
             // 【随机敌人】仍然逐个动手：随机挑一个 → 挑中的那个打 N 下（那是「随机 N 下」的本体语义）。
             "Damage" when !unit.PerFoe =>
-                hits > 1
-                    ? $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).WithHitCount({Lit(hits)}).Execute({ctx.ChoiceVar});"
+                hitsMulti
+                    ? $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar});"
                     : $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).Execute({ctx.ChoiceVar});",
-            "Damage" => hits > 1
-                ? $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({Lit(hits)}).Execute({ctx.ChoiceVar}); }}"
+            "Damage" => hitsMulti
+                ? $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar}); }}"
                 : $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).Execute({ctx.ChoiceVar}); }}",
             "Block" => nextTurn
                 ? $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<BlockNextTurnPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});"
@@ -1772,20 +1986,40 @@ public sealed class ForgePileCountVar : DynamicVar
             return;
         }
 
-        for (int t = 0; t < times; t++)
+        EmitRepeatLoop(sb, indent, timesExpr, __ind =>
         {
-            if (chance < 100)
+            if (chanceRoll)
             {
-                sb.AppendLine(indent + $"if (ForgeFormulaRuntime.Roll(__fgPlayer, {Lit(chance)}))");
-                sb.AppendLine(indent + "{");
-                sb.AppendLine(indent + "    " + body);
-                sb.AppendLine(indent + "}");
+                sb.AppendLine(__ind + $"if (ForgeFormulaRuntime.Roll(__fgPlayer, {chanceExpr}))");
+                sb.AppendLine(__ind + "{");
+                sb.AppendLine(__ind + "    " + body);
+                sb.AppendLine(__ind + "}");
             }
             else
             {
-                sb.AppendLine(indent + body);
+                sb.AppendLine(__ind + body);
             }
+        });
+    }
+
+    /// <summary>
+    /// 「这几条代码重复 N 遍」——生效次数那一栏的两种档位：
+    ///   · <paramref name="bound"/> 是**数字**（纯数字 / 生成期折叠成常数的公式）→ 照老写法**在生成期展开**
+    ///     （生成出来的文本和 V0.2.127 逐字相同，红线）；
+    ///   · <paramref name="bound"/> 是**运行时变量名**（那一栏写了公式）→ 生成一个真的
+    ///     <c>for (int t = 0; t &lt; 那个变量; t++)</c> 循环把它包起来。
+    /// </summary>
+    private static void EmitRepeatLoop(StringBuilder sb, string indent, string bound, Action<string> body)
+    {
+        if (int.TryParse(bound, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n))
+        {
+            for (int t = 0; t < n; t++) body(indent);
+            return;
         }
+        sb.AppendLine(indent + $"for (int t = 0; t < {bound}; t++)");
+        sb.AppendLine(indent + "{");
+        body(indent + "    ");
+        sb.AppendLine(indent + "}");
     }
 
     private static string Lit(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);
@@ -1901,6 +2135,56 @@ public sealed class ForgePileCountVar : DynamicVar
         foreach (var n in g.Nodes)
         {
             if (n is null) continue;
+            // ===== V0.2.128：每个模块里那些「能填数值的地方」现在也能填公式/参数 =====
+            // 逐栏核一遍（清单 = ForgeNumbers.NumberFields，生成端 / 界面提示 / 这里共用同一份）：
+            //   · 解析不出来 → **错误**（说清是哪个模块哪一栏）——绝不再静默回落默认值；
+            //   · 用了不存在的参数 → 错误；
+            //   · 卡牌费用那两栏要编译期常量 → 写了运行时公式就报错（本体 base(cost, …) 收不了运行时值）。
+            string kindId = n.KindDef?.Id ?? n.Kind;
+            string kindZh = n.KindDef?.Display ?? n.Kind;
+            foreach (var (fieldKind, key, label) in ForgeNumbers.NumberFields)
+            {
+                if (!string.Equals(kindId, fieldKind, StringComparison.Ordinal)) continue;
+                string text = ForgeNumbers.TextOf(n, key);
+                if (text.Length == 0) continue;
+                var num = ForgeNumbers.Resolve(p, n, key, 0);
+                if (!num.Ok)
+                {
+                    string why = num.Error.Length > 0 ? num.Error : "解析不出来";
+                    list.Add(("错误", $"【{kindZh}】的「{label}」填的「{text}」有问题：{why}"
+                        + "（这一栏可以填数字，也可以填公式：X = 当前能量，Y = 当前额外资源量，一个字母的自定义参数。"
+                        + $"内置只读量：{FormulaBuiltins.Names}）"));
+                    continue;
+                }
+                var root = ForgeFormula.TryParse(text, out _);
+                foreach (string id in ForgeFormula.Identifiers(root))
+                {
+                    if (id is "X" or "Y") continue;
+                    if (FormulaBuiltins.Find(id) is not null) continue;
+                    if (!p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)))
+                        list.Add(("错误", $"【{kindZh}】的「{label}」用了参数 {id}=，但「自定义参数 / 组」页里没有这个参数"
+                            + $"（内置只读量可以直接写：{FormulaBuiltins.Names}）。"));
+                }
+                if (num.Runtime && ForgeNumbers.NeedsCompileTimeConst(fieldKind, key))
+                    list.Add(("错误", $"【{kindZh}】的「{label}」只能填**生成期就算得出来的数**："
+                        + "这一栏会写进卡牌自己的费用（本体 base(cost, …) / CanonicalStarCost），**必须**是编译期常量。"
+                        + $"「{text}」里用了运行时才算的量 —— 改成固定数字，或者用「固定数值」来源的参数写 A+3。"));
+                if (num.Runtime && string.Equals(kindId, "Effect", StringComparison.Ordinal)
+                    && string.Equals(key, "Amount", StringComparison.Ordinal)
+                    && string.Equals(n.Get("Effect", "Damage"), "TempPower", StringComparison.Ordinal))
+                    list.Add(("提示", $"【{kindZh}】的「{label}」写了公式：「临时增益 / 临时减益」是按**数值是正还是负**"
+                        + "分两条路生成的（负数 = 扣层那条），生成期看不出公式算出正还是负 —— 所以按「正数那条路」生成。"
+                        + "要用扣层那条路，请把数值改成固定的负数。"));
+                if (num.Runtime && string.Equals(kindId, "Trigger", StringComparison.Ordinal)
+                    && string.Equals(key, "CountLimit", StringComparison.Ordinal))
+                    list.Add(("提示", $"【{kindZh}】的「{label}」写了公式（{text}）：按「有限次」生成 ——"
+                        + "公式算出来是 0 或负数时这一支**一次都不会跑**。"));
+                if (num.Runtime && string.Equals(kindId, "Condition", StringComparison.Ordinal)
+                    && string.Equals(n.Get("Cond", "None"), "HasPowerAtLeast", StringComparison.Ordinal)
+                    && string.IsNullOrWhiteSpace(n.Get("PowerId")))
+                    list.Add(("错误", $"【{kindZh}】选了「拥有某状态至少 N 层」、数值写了公式，但**没选状态** ——"
+                        + "生成出来那一支恒为「不成立」。")); 
+            }
             if (n.Kind == "Value")
             {
                 string f = n.Get("Formula").Trim();

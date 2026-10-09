@@ -244,7 +244,8 @@ public static class ForgeBlockLayout
                 if (num == 0m && f.Default == "0") continue;          // 默认 0 的栏不显示
                 parts.Add($"{f.Label}：{num.ToString("0.##", CultureInfo.InvariantCulture)}");
             }
-            else if (f.Type == ForgeFieldType.Text || f.Type == ForgeFieldType.Formula)
+            // V0.2.128：数字框里写的是**公式**（不是纯数字）时照样显示出来
+            else if (f.Type == ForgeFieldType.Number || f.Type == ForgeFieldType.Text || f.Type == ForgeFieldType.Formula)
             {
                 parts.Add($"{f.Label}：{v}");
             }

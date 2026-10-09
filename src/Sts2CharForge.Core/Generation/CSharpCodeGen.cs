@@ -1876,6 +1876,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static string ConditionText(ConditionSpec c, string? resourceName = null) =>
         EffectCatalog.ConditionZh(c.Kind, c.Amount, c.Amount2, c.PowerId, c.TargetZh, resourceName, c.Timing);
 
+    /// <summary>
+    /// 同上，但把「数值 N / 数值 M 写了公式」那一档也带上（V0.2.128：锻造页【条件】模块的数值栏
+    /// 也能写公式，卡面文案要印公式 —— 和卡牌页『条件数值公式』同一套口径，见 EffectCatalog.ConditionZh）。
+    /// </summary>
+    public static string ConditionText(ConditionSpec c, string? resourceName, string? amountFormula, string? amount2Formula) =>
+        EffectCatalog.ConditionZh(c.Kind, c.Amount, c.Amount2, c.PowerId, c.TargetZh, resourceName, c.Timing,
+            amountFormula, amount2Formula);
+
     // ==================== 三个池 ====================
     public static string CardPoolSource(CharacterProfile p)
     {
@@ -7997,11 +8005,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///
     /// <paramref name="triggerPowerId"/> / <paramref name="triggerAmount"/> = 状态层数那三条
     /// （到达 N 层 / 层数变化 / 被移除）要的「盯哪个状态」「到达 N 层」（锻造页存在【触发时机】模块的这两栏上）。
+    /// <paramref name="triggerAmountExpr"/>（V0.2.128）= 「到达 N 层」那一栏写了**运行时公式**时用它
+    /// （非空就替掉那个常数；内联表达式，见 ForgeNumbers.Place.Inline）。null = 老行为（常数），逐字不变。
     ///
     /// 可见性 = public：自检（App 那一侧）要直接调这两份守卫做「三份完全一致」的对照，
     /// 而 App 是另一个程序集（Core 没有 InternalsVisibleTo）。生成逻辑本身一个字没动。
     /// </summary>
-    public static IReadOnlyList<string> ForgeTriggerGuardLines(string triggerId, string? triggerPowerId, decimal triggerAmount)
+    public static IReadOnlyList<string> ForgeTriggerGuardLines(string triggerId, string? triggerPowerId, decimal triggerAmount,
+        string? triggerAmountExpr = null)
     {
         var lines = new List<string>();
         switch (triggerId)
@@ -8052,8 +8063,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
                 if (!string.IsNullOrWhiteSpace(triggerPowerId))
                     lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
-                lines.Add($"if (!(power.Amount >= {Lit.Dec(Math.Max(0m, triggerAmount))} && power.Amount - amount < {Lit.Dec(Math.Max(0m, triggerAmount))})) return;"
-                    + $"   // 只有「层数跨过 {Math.Max(0m, triggerAmount):0.##}」那一下才触发");
+                if (triggerAmountExpr is not null)
+                {
+                    // 运行时公式（V0.2.128）：算两遍（判据里两边都要那个数）——公式是纯表达式，没有副作用
+                    lines.Add($"if (!(power.Amount >= ({triggerAmountExpr}) && power.Amount - amount < ({triggerAmountExpr}))) return;"
+                        + "   // 只有「层数跨过公式算出来的那个数」那一下才触发");
+                }
+                else
+                {
+                    lines.Add($"if (!(power.Amount >= {Lit.Dec(Math.Max(0m, triggerAmount))} && power.Amount - amount < {Lit.Dec(Math.Max(0m, triggerAmount))})) return;"
+                        + $"   // 只有「层数跨过 {Math.Max(0m, triggerAmount):0.##}」那一下才触发");
+                }
                 break;
             case "PowerChanged":
                 lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");

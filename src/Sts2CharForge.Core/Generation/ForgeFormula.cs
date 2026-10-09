@@ -202,6 +202,91 @@ public static class ForgeFormula
     private static readonly string[] Functions = { "min", "max", "floor", "ceil", "round", "abs" };
 
     /// <summary>
+    /// 把表达式树在**生成期**折叠成一个常数。
+    ///
+    /// 用途（V0.2.128）：锻造页那 12 个「数字框」现在也能填公式，而有些位置要的是**编译期常量**
+    /// （卡牌费用 <c>base(cost, …)</c> / 「升级后费用」的差值…）。这些位置上：
+    ///   · 只写数字 → 走老路（一个字符都不变）；
+    ///   · 写 <c>2*3</c> / <c>A+3</c>（A = 「固定数值」来源的参数）→ 这里算出常数，生成出来还是老样子；
+    ///   · 写了 X / Y / 实时读数 / 运行时参数 → 折叠不出来（返回 false，<paramref name="error"/> = 那个名字），
+    ///     调用方必须**报错**说清「这里要生成期就算得出来的数」，不许悄悄当默认值。
+    ///
+    /// <paramref name="constOf"/>：把一个标识符换成常数（认不出来返回 null）。
+    /// </summary>
+    public static bool TryEvalConst(Node? root, Func<string, decimal?> constOf, out decimal value, out string error)
+    {
+        value = 0m;
+        error = "";
+        return EvalConst(root, constOf, 0, ref value, ref error);
+    }
+
+    private static bool EvalConst(Node? n, Func<string, decimal?> constOf, int depth, ref decimal value, ref string error)
+    {
+        if (n is null) { error = "（空公式）"; return false; }
+        if (depth > 32) { error = "（公式嵌得太深）"; return false; }
+        switch (n)
+        {
+            case NumberNode num:
+                value = num.Value;
+                return true;
+            case VarNode v:
+            {
+                decimal? c = constOf(v.Name);
+                if (c is null) { error = v.Name; return false; }     // 运行时才算得出来
+                value = c.Value;
+                return true;
+            }
+            case UnaryNode u:
+            {
+                decimal inner = 0m;
+                if (!EvalConst(u.Inner, constOf, depth + 1, ref inner, ref error)) return false;
+                value = u.Op == '-' ? -inner : inner;
+                return true;
+            }
+            case BinaryNode b:
+            {
+                decimal l = 0m, r = 0m;
+                if (!EvalConst(b.Left, constOf, depth + 1, ref l, ref error)) return false;
+                if (!EvalConst(b.Right, constOf, depth + 1, ref r, ref error)) return false;
+                switch (b.Op)
+                {
+                    case '+': value = l + r; return true;
+                    case '-': value = l - r; return true;
+                    case '*': value = l * r; return true;
+                    case '/':
+                        if (r == 0m) { error = "（除以 0）"; return false; }
+                        value = l / r;
+                        return true;
+                    case '%':
+                        if (r == 0m) { error = "（对 0 取余）"; return false; }
+                        value = l % r;
+                        return true;
+                    default: error = "（认不出来的运算符）"; return false;
+                }
+            }
+            case CallNode c:
+            {
+                var args = new decimal[c.Args.Count];
+                for (int i = 0; i < c.Args.Count; i++)
+                    if (!EvalConst(c.Args[i], constOf, depth + 1, ref args[i], ref error)) return false;
+                switch (c.Func)
+                {
+                    case "min" when args.Length == 2: value = Math.Min(args[0], args[1]); return true;
+                    case "max" when args.Length == 2: value = Math.Max(args[0], args[1]); return true;
+                    case "floor" when args.Length == 1: value = Math.Floor(args[0]); return true;
+                    case "ceil" when args.Length == 1: value = Math.Ceiling(args[0]); return true;
+                    case "round" when args.Length == 1: value = Math.Round(args[0]); return true;
+                    case "abs" when args.Length == 1: value = Math.Abs(args[0]); return true;
+                    default: error = "（认不出来的函数）"; return false;
+                }
+            }
+            default:
+                error = "（认不出来的公式）";
+                return false;
+        }
+    }
+
+    /// <summary>
     /// 把表达式树翻成生成代码里的 C# 表达式。
     /// <paramref name="resolveVar"/> 负责把标识符换成 C# 片段（参数名 → 提前算好的局部变量；X/Y → 那两个变量）。
     /// 返回 null = 里面有认不出来的标识符（<paramref name="error"/> 里有说明）。

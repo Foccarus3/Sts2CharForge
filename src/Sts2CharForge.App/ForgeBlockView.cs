@@ -345,6 +345,8 @@ public sealed class ForgeBlockView : Grid
                 if (num == 0m && f.Default == "0") continue;
                 parts.Add($"= {num.ToString("0.##", CultureInfo.InvariantCulture)}");
             }
+            // V0.2.128：数字框里写的是**公式**（不是纯数字）时照样显示出来（以前会被这里悄悄吞掉）
+            else if (f.Type == ForgeFieldType.Number) parts.Add($"= {v}");
             else if (f.Type is ForgeFieldType.Text or ForgeFieldType.Formula) parts.Add(v);
         }
         return string.Join("  ", parts);

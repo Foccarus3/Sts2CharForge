@@ -525,7 +525,7 @@ public static class ProjectRecovery
             if (cls.Equals(cc + "Strike", StringComparison.OrdinalIgnoreCase)) cls = "Strike";
             else if (cls.Equals(cc + "Defend", StringComparison.OrdinalIgnoreCase)) cls = "Defend";
         }
-        string text = File.ReadAllText(file, Encoding.UTF8);
+        string text = ReadForRecovery(file);      // V0.2.128：锻造节点图那几段方法体整段抠掉（见 ReadForRecovery）
         string entry = EffectCatalog.SlugFor(emitted);
         var card = new CardSpec
         {
@@ -3065,7 +3065,7 @@ public static class ProjectRecovery
         Dictionary<string, string> nameToPowerId, RecoveryResult result)
     {
         string cls = Path.GetFileNameWithoutExtension(file);
-        string text = File.ReadAllText(file, Encoding.UTF8);
+        string text = ReadForRecovery(file);      // V0.2.128：锻造节点图那几段方法体整段抠掉（见 ReadForRecovery）
         string entry = EffectCatalog.SlugFor(cls);
         var relic = new RelicSpec
         {
@@ -3448,7 +3448,7 @@ public static class ProjectRecovery
         Dictionary<string, string> nameToPowerId, RecoveryResult result)
     {
         string cls = Path.GetFileNameWithoutExtension(file);
-        string text = File.ReadAllText(file, Encoding.UTF8);
+        string text = ReadForRecovery(file);      // V0.2.128：锻造节点图那几段方法体整段抠掉（见 ReadForRecovery）
         string entry = EffectCatalog.SlugFor(cls);
         var potion = new PotionSpec
         {
@@ -3683,7 +3683,7 @@ public static class ProjectRecovery
     private static CustomPowerSpec ParseCustomPower(string file, CharacterProfile profile, LocTables loc, RecoveryResult result)
     {
         string cls = Path.GetFileNameWithoutExtension(file);
-        string text = File.ReadAllText(file, Encoding.UTF8);
+        string text = ReadForRecovery(file);      // V0.2.128：锻造节点图那几段方法体整段抠掉（见 ReadForRecovery）
         string entry = EffectCatalog.SlugFor(cls);
         var power = new CustomPowerSpec
         {
@@ -4102,6 +4102,67 @@ public static class ProjectRecovery
     }
 
     /// <summary>把文件里某个方法/属性的方法体抠出来（按大括号配对）。</summary>
+    /// <summary>
+    /// 读一个生成出来的类文件，并**把「锻造节点图」那几段方法体整段抠掉**（V0.2.128）。
+    ///
+    /// 为什么要抠：锻造页那张节点图生成的钩子方法（<c>ForgeGraphOnPlay</c> / <c>AfterFlush</c> /
+    /// <c>ForgeGraphOnTrigger</c> / 遗物那个和它自己触发时机同名的钩子…）**和卡牌页的效果钩子是同一批方法名**：
+    ///   · 图的时机选「被消耗 / 被丢弃 / 被抽到 / 被保留」时，方法名正好是 <c>AfterCardExhausted</c> /
+    ///     <c>AfterFlush</c>…，回读会把图里的代码当成「卡牌时机」的效果去解析；
+    ///   · 遗物那边更直接：<c>RelicHookMethods</c> 会把类里**所有**钩子方法都当成一条触发时机。
+    /// 节点图的字段这一阶段**不从工程回读**（配置存档里那份还在），所以这些语句一条都不该参与解析 ——
+    /// 以前它们会平白留下好几行「没认出来」，让用户以为配置丢了（探针实测 6 条）。
+    ///
+    /// 认法 = 方法体里有生成端写的 <c>// ===== 锻造节点图</c> 那一行（EmitHook 固定写它）。
+    /// 只抠方法体、不动别的：类里其它方法（OnPlay / 触发时机钩子 / OnUpgrade…）逐字保持原样。
+    /// </summary>
+    private static string ReadForRecovery(string file)
+    {
+        string text = File.ReadAllText(file, Encoding.UTF8);
+        if (!text.Contains("锻造节点图", StringComparison.Ordinal)) return text;
+        // 行尾保持原样（生成的类文件是 CRLF；按原约定拼回去，别让回读顺手改了行尾）
+        bool crlf = text.Contains("\r\n", StringComparison.Ordinal);
+        var lines = text.Replace("\r\n", "\n").Split('\n');
+        var keep = new List<string>(lines.Length);
+        int i = 0;
+        while (i < lines.Length)
+        {
+            // 方法签名行：`public override async Task X(...)`（生成端把 `{` 写在下一行）
+            bool mayBeMethod = lines[i].TrimStart().StartsWith("public ", StringComparison.Ordinal)
+                || lines[i].TrimStart().StartsWith("protected ", StringComparison.Ordinal)
+                || lines[i].TrimStart().StartsWith("private ", StringComparison.Ordinal)
+                || lines[i].TrimStart().StartsWith("internal ", StringComparison.Ordinal);
+            if (mayBeMethod && i + 1 < lines.Length && lines[i + 1].Trim() == "{")
+            {
+                int end = i + 1, depth = 0, j = i + 1;
+                for (; j < lines.Length; j++)
+                {
+                    foreach (char c in lines[j])
+                    {
+                        if (c == '{') depth++;
+                        else if (c == '}') depth--;
+                    }
+                    if (depth <= 0) { end = j; break; }
+                }
+                bool forge = false;
+                for (int k = i; k <= end && k < lines.Length; k++)
+                    if (lines[k].Contains("锻造节点图", StringComparison.Ordinal)) { forge = true; break; }
+                if (forge)
+                {
+                    keep.Add("    // （锻造节点图的代码：这一阶段不从工程回读 —— 配置存档里那份还在）");
+                    i = end + 1;
+                    continue;
+                }
+                for (int k = i; k <= end && k < lines.Length; k++) keep.Add(lines[k]);
+                i = end + 1;
+                continue;
+            }
+            keep.Add(lines[i]);
+            i++;
+        }
+        return string.Join(crlf ? "\r\n" : "\n", keep);
+    }
+
     private static string BodyOf(string text, string marker)
     {
         int at = text.IndexOf(marker, StringComparison.Ordinal);

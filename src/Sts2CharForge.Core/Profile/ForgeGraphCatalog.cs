@@ -19,6 +19,8 @@ public static class ForgeTimings
     public const string CardExhausted = "CardExhausted";
     public const string CardDiscarded = "CardDiscarded";
     public const string CardDrawn = "CardDrawn";
+    /// <summary>卡牌（用户要求 V0.2.128）：这张牌被保留时 —— 和「卡牌」页「卡牌时机」那一档同名同语义。</summary>
+    public const string CardRetained = "Retained";
     public const string PotionUsed = "PotionUsed";
     public const string Obtained = "Obtained";
     public const string CombatStart = "CombatStart";
@@ -69,6 +71,16 @@ public static class ForgeTimings
             "本体「战鼓」的做法：override AfterCardExhausted 里判 card == this。"),
         new TimingOption(CardDiscarded, "这张牌被丢弃时", "Card", "AfterCardDiscarded", "override AfterCardDiscarded 里判 card == this。"),
         new TimingOption(CardDrawn, "这张牌被抽到时", "Card", "AfterCardDrawn", "override AfterCardDrawn 里判 card == this。"),
+        // 用户要求（V0.2.128）：新增「卡牌被保留时」。
+        //   · Id = 卡牌页「卡牌时机」那一档的 Retained（同一套语义，回读 / 文案对得上）；
+        //   · 本体**没有** AfterCardRetained 之类的钩子，走 AbstractModel.AfterFlush
+        //     （本体丢手牌那一步会把「这回合要留下的牌」单独交出来）+ retainedCards.Contains(this)，
+        //     和 CSharpCodeGen.EmitCardTimingHooks 的 case "Retained" 完全同一套判据；
+        //   · ⚠ 查时机一律用 ForgeTimings.Find(id, scope)：Retained 在卡牌档只有这一条，
+        //     但 CardPlayed / CardExhausted 等 id 卡牌档和遗物档都有，不带 scope 会命中错的那条。
+        new TimingOption(CardRetained, "这张牌被保留时", "Card", "AfterFlush",
+            "本体没有「被保留」这个钩子，它丢手牌时会把「这回合留下的牌」交出来（AfterFlush）——"
+            + "判据 = 有「保留」关键词 / 这回合被单回合保留 / 整手牌都不丢。"),
 
         // ===== 药水 =====
         new TimingOption(PotionUsed, "药水被使用时", "Potion", "Use", "本体药水就是 Use()（喝下这瓶药水时执行）。"),
@@ -185,6 +197,7 @@ public static class ForgeTimings
             "这张牌被消耗时" => "被消耗时",
             "这张牌被丢弃时" => "被丢弃时",
             "这张牌被抽到时" => "被抽到时",
+            "这张牌被保留时" => "被保留时",
             "药水被使用时" => "被使用时",
             "受到伤害时（每一下）" => "受伤时",
             "受到攻击后（连击只算一次）" => "受击后",
@@ -232,6 +245,16 @@ public static class ForgeGraphCatalog
 
     /// <summary>模块宽度（界面绘制和连线锚点都用它，改一处就够）。</summary>
     public const double NodeWidth = 210;
+
+    /// <summary>
+    /// 「数值栏里也能填公式」那句话（V0.2.128 需求 1）——界面提示和 ToolTip 共用这一份，
+    /// 免得界面上写一套、校验器里写另一套。
+    /// </summary>
+    public const string NumberFormulaHint = Generation.ForgeNumbers.FormulaHint;
+
+    /// <summary>这一栏的值是不是「必须编译期常量」（费用那两栏：本体 <c>base(cost, …)</c> 要常量）。</summary>
+    public static bool NumberFieldNeedsConst(string? kindId, string fieldKey) =>
+        Generation.ForgeNumbers.NeedsCompileTimeConst(kindId ?? "", fieldKey);
 
     /// <summary>模块标题栏高度。</summary>
     public const double HeaderHeight = 26;
@@ -411,7 +434,11 @@ public static class ForgeGraphCatalog
         // ---------- 1.【触发时机】 ----------
         new ForgeNodeKind(
             "Trigger", "触发时机", "触发", "#B8860B",
-            "整张图的起点：决定什么时候开始执行这条链。默认「卡牌被打出时」。",
+            // 用户要求（V0.2.128）：【触发时机】是**固定模块** —— 不能被删、也不会被「全选」带走
+            //（一块布只有一个触发时机，删掉整张图就不生成了：见 ForgeGraphGen.Plan）。
+            "整张图的起点：决定什么时候开始执行这条链。默认「卡牌被打出时」。"
+            + "这一块是**固定模块**：不能删除、也不会被「全选」带走（一块布只能有一个触发时机），"
+            + "但可以照常拖动位置。",
             Array.Empty<ForgePort>(),
             new[] { new ForgePort("Out", "", "接到下一块（对象 / if / 效果…）", false) },
             new[]

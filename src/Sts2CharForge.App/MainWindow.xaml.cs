@@ -14622,9 +14622,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					ForgeCanvas.SelectAll();
 					int sel = ForgeCanvas.SelectedCount;
 					int energyNodes = forged.ForgeGraph!.Nodes.Count(n => n.Kind == "Energy");
-					Check("画布「全选」选上了全部模块（【能量】是固定模块，不参与选中）",
-						sel == forged.ForgeGraph.Nodes.Count - energyNodes,
-						$"{sel} / {forged.ForgeGraph.Nodes.Count}（能量 {energyNodes} 块）");
+					// V0.2.128：固定模块变成两个 —— 【能量】和【触发时机】都不参与全选（都删不掉）
+					int triggerNodes = forged.ForgeGraph.Nodes.Count(n => n.Kind == "Trigger");
+					Check("画布「全选」选上了全部模块（【能量】/【触发时机】是固定模块，不参与选中）",
+						sel == forged.ForgeGraph.Nodes.Count - energyNodes - triggerNodes,
+						$"{sel} / {forged.ForgeGraph.Nodes.Count}（能量 {energyNodes} 块、触发时机 {triggerNodes} 块）");
 					// 需求：「让【能量】无法被选中和删除」。用一张**自己的小图**验（不动 forged 那块布）。"
 					{
 						var lkTrig = new ForgeNodeSpec { Kind = "Trigger", X = 20, Y = 20 };
@@ -14644,8 +14646,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("（准备）小图上画出了 4 块（含一块【能量】）", ForgeCanvas.DrawnNodeCount == 4, $"{ForgeCanvas.DrawnNodeCount} 块");
 						// ① 全选不含它
 						ForgeCanvas.SelectAll();
-						Check("「全选」选上 3 块（【能量】被跳过）",
-							ForgeCanvas.SelectedCount == 3 && !ForgeCanvas.SelectedNodesForCheck.Contains(lkEnergy),
+						Check("「全选」选上 2 块（【能量】和【触发时机】都被跳过）",
+							ForgeCanvas.SelectedCount == 2 && !ForgeCanvas.SelectedNodesForCheck.Contains(lkEnergy)
+							&& !ForgeCanvas.SelectedNodesForCheck.Contains(lkTrig),
 							$"{ForgeCanvas.SelectedCount} 块");
 						// ① 点它的标题栏不会选中它（也不会开始拖动）
 						ForgeCanvas.ClearSelectionForCheck();
@@ -14672,10 +14675,222 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						ForgeCanvas.SelectAll();
 						ForgeCanvas.ForceSelectForCheck(lkEnergy);
 						ForgeCanvas.RemoveSelectedForCheck();
-						Check("和别的模块混在一起删：【能量】**留着**，别的照旧删掉",
-							lockGraph.Nodes.Count == 1 && ReferenceEquals(lockGraph.Nodes[0], lkEnergy),
+						Check("和别的模块混在一起删：【能量】和【触发时机】都**留着**，别的照旧删掉",
+							lockGraph.Nodes.Count == 2 && lockGraph.Nodes.Any(n => ReferenceEquals(n, lkEnergy))
+							&& lockGraph.Nodes.Any(n => ReferenceEquals(n, lkTrig)),
 							$"剩 {lockGraph.Nodes.Count} 块：{string.Join(",", lockGraph.Nodes.Select(n => n.Kind))}");
 						ForgeCanvas.Graph = forged.ForgeGraph;      // 换回原来那块布，给后面的自检用 
+						UpdateLayout();
+					}
+					// ===== V0.2.128 需求 2：【触发时机】不可被删除 + 新增「这张牌被保留时」 =====
+					{
+						var tTrig = new ForgeNodeSpec { Kind = "Trigger", X = 20, Y = 20 };
+						tTrig.SetField("Timing", ForgeTimings.CardPlayed);
+						var tEnergy = new ForgeNodeSpec { Kind = "Energy", X = ForgeGraphCatalog.EnergyX, Y = ForgeGraphCatalog.EnergyY };
+						var tEff = new ForgeNodeSpec { Kind = "Effect", X = 320, Y = 200 };
+						tEff.SetField("Effect", "Block");
+						tEff.SetField("Amount", "5");
+						var trigGraph = new ForgeGraphSpec { Nodes = { tTrig, tEnergy, tEff } };
+						trigGraph.Links.Add(new ForgeLinkSpec { From = tTrig.Id, To = tEff.Id, FromPort = 0, ToPort = 0 });
+						ForgeCanvas.Graph = trigGraph;
+						UpdateLayout();
+						Check("【触发时机】的标题栏上没有「×」删除按钮（用户要求：不可被删除）",
+							!ForgeCanvas.NodeHeaderHasDeleteForCheck(tTrig), "没有 ×");
+						Check("（对照）别的模块的标题栏上照旧有「×」", ForgeCanvas.NodeHeaderHasDeleteForCheck(tEff), "有 ×");
+						ForgeCanvas.SelectAll();
+						Check("「全选」不带上【触发时机】（也不能被全选带走）",
+							!ForgeCanvas.SelectedNodesForCheck.Contains(tTrig) && ForgeCanvas.SelectedCount == 1,
+							$"选中 {ForgeCanvas.SelectedCount} 块");
+						// 只选它一个 → 删除什么都不做，并把说明写到状态栏
+						ForgeCanvas.ClearSelectionForCheck();
+						ForgeCanvas.ForceSelectForCheck(tTrig);
+						ForgeCanvas.RemoveSelectedForCheck();
+						Check("只选【触发时机】再点删除 → 一块都不删（图原样），状态栏说明「固定模块」",
+							trigGraph.Nodes.Count == 3 && trigGraph.Links.Count == 1
+							&& ForgeCanvas.StatusText.Contains("触发时机") && ForgeCanvas.StatusText.Contains("固定模块"),
+							$"节点 {trigGraph.Nodes.Count} / 线 {trigGraph.Links.Count}｜{ForgeCanvas.StatusText}");
+						// 混在一起删 → 别的照删、它留着
+						ForgeCanvas.SelectAll();
+						ForgeCanvas.ForceSelectForCheck(tTrig);
+						ForgeCanvas.RemoveSelectedForCheck();
+						Check("和别的模块混在一起删：【触发时机】和【能量】都**留着**，别的照旧删掉",
+							trigGraph.Nodes.Count == 2 && trigGraph.Nodes.Any(n => ReferenceEquals(n, tTrig))
+							&& trigGraph.Nodes.Any(n => ReferenceEquals(n, tEnergy)),
+							$"剩 {trigGraph.Nodes.Count} 块：{string.Join(",", trigGraph.Nodes.Select(n => n.Kind))}");
+						// 它照样可以选中 / 拖动（只锁「删除」，位置还是用户自己摆）
+						ForgeCanvas.ClearSelectionForCheck();
+						bool startedTrig = ForgeCanvas.BeginDragFromHeader(tTrig);
+						Check("【触发时机】照常能选中 / 拖动（只锁删除，不是像【能量】那样钉死）",
+							startedTrig && ForgeCanvas.SelectedCount == 1, $"{ForgeCanvas.SelectedCount} 块被选中");
+						double tx = tTrig.X;
+						ForgeCanvas.NudgeSelection(30, 10);
+						Check("拖动它位置真的变了",
+							Math.Abs(tTrig.X - (tx + 30)) < 0.01, $"({tTrig.X:0},{tTrig.Y:0})");
+						ForgeCanvas.EndDragForCheck();
+						ForgeCanvas.Graph = forged.ForgeGraph;
+						UpdateLayout();
+
+						// 新时机：卡牌档多一条「这张牌被保留时」（Id = 卡牌页那份 Retained，Hook = AfterFlush）
+						var cardTimings = ForgeTimings.For("Card");
+						var retained = ForgeTimings.Find(ForgeTimings.CardRetained, "Card");
+						Check("锻造页卡牌档的时机里多了一条「这张牌被保留时」（Id=Retained）",
+							retained is not null && cardTimings.Any(x => x.Id == ForgeTimings.CardRetained),
+							$"卡牌档 {cardTimings.Count} 条：{string.Join(" / ", cardTimings.Select(x => x.Display))}");
+						Check("它的钩子是 AfterFlush（本体没有 AfterCardRetained，走丢手牌那一刻的回调）",
+							retained is not null && retained.Hook == "AfterFlush", retained?.Hook ?? "(没有)");
+						Check("按 scope 查时机不会串档（Retained 只在卡牌档；遗物档没有它）",
+							ForgeTimings.Find("Retained", "Relic") is null || ForgeTimings.Find("Retained", "Relic")?.Scope == "Card",
+							ForgeTimings.Find("Retained", "Relic")?.Scope ?? "（遗物档没有）");
+						// 生成端：签名必须是本体那个 AfterFlush（以前会落到默认分支生成不存在的签名 → CS0114/CS0115）
+						var retCard = new CardSpec { Name = "自检保留卡", ClassName = "UiCheckRetained", CardType = "Skill", Rarity = "Common", IsForged = true, InCardPool = true };
+						{
+							var g = new ForgeGraphSpec();
+							var retTrig = new ForgeNodeSpec { Kind = "Trigger" };
+							retTrig.SetField("Timing", ForgeTimings.CardRetained);
+							var eff = new ForgeNodeSpec { Kind = "Effect" };
+							eff.SetField("Effect", "Block");
+							eff.SetField("Amount", "3");
+							g.Nodes.AddRange(new[] { retTrig, eff });
+							g.Links.Add(new ForgeLinkSpec { From = retTrig.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+							retCard.ForgeGraph = g;
+						}
+						string refSrc = CSharpCodeGen.CardSource(Profile, retCard, 0);
+						Check("生成端：签名 = 本体那个 AfterFlush(choiceContext, player, flushedCards, retainedCards)",
+							refSrc.Contains("public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)"),
+							refSrc.Split('\n').FirstOrDefault(l => l.Contains("AfterFlush("))?.Trim() ?? "(没生成)");
+						Check("生成端：进门守卫 = retainedCards.Contains(this)（和卡牌页「被保留」那档同一套判据）",
+							refSrc.Contains("if (!retainedCards.Contains(this)) return;"), "守卫在");
+						Check("生成端：**没有**生成那个不存在的 AfterFlush(PlayerChoiceContext)（那会 CS0114/CS0115）",
+							!refSrc.Contains("AfterFlush(PlayerChoiceContext choiceContext)"), "没生成错签名");
+						Check("生成端：这个钩子没有 cardPlay 参数 → 补一句 CardPlay? cardPlay = null;（不然 CS0103）",
+							refSrc.Contains("CardPlay? cardPlay = null;"), "占位在");
+						Check("生成端：正文里没出现「卡牌被打出时」那种 OnPlay 转发（时机确实是保留）",
+							!refSrc.Contains("await ForgeGraphOnPlay("), "没走 OnPlay");
+						// 校验器：图的时机和卡牌档对得上（认不出来时报错）
+						Check("校验器：用「这张牌被保留时」的图**没有**错误级问题",
+							!ForgeGraphGen.Issues(retCard.ForgeGraph, Profile, "Card").Any(x => x.Level == "错误"),
+							string.Join(" / ", ForgeGraphGen.Issues(retCard.ForgeGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
+						// 老存档安全实测：图里**没有**【触发时机】时整张图不生成。
+						// 这正是「锁住【触发时机】不改生成语义」的根据（Plan() 返回 null；锁定只动界面）。
+						var noTrigCard = new CardSpec { Name = "自检无时机卡", ClassName = "UiCheckNoTrigger", CardType = "Skill", Rarity = "Common", IsForged = true, InCardPool = true };
+						{
+							var ng = new ForgeGraphSpec();
+							var ne = new ForgeNodeSpec { Kind = "Effect" };
+							ne.SetField("Effect", "Block");
+							ne.SetField("Amount", "5");
+							ng.Nodes.Add(ne);
+							noTrigCard.ForgeGraph = ng;
+						}
+						string ngSrc = CSharpCodeGen.CardSource(Profile, noTrigCard, 0);
+						Check("老存档安全：图里没有【触发时机】→ 整张图一个字符都不生成（锁定只动界面、不改生成语义）",
+							!ngSrc.Contains("锻造节点图") && !ngSrc.Contains("__fgPlayer"),
+							ngSrc.Contains("锻造节点图") ? "居然生成了节点图代码" : "没生成（对）");
+						Check("（对照）同一条链补上【触发时机】就会生成（说明上面那条不是因为图太简单）",
+							CSharpCodeGen.CardSource(Profile, retCard, 0).Contains("锻造节点图"), "补了时机就生成");
+					}
+					// ===== V0.2.128 需求 1：12 个数字框都能填公式/参数（用户拍板 Q2=A：保留数字框） =====
+					{
+						Check("数字框清单就是那 12 处（生成端 / 校验器 / 界面共用这一份）",
+							ForgeNumbers.NumberFields.Count == 12,
+							string.Join(" / ", ForgeNumbers.NumberFields.Select(f => f.Kind + "." + f.Key)));
+						// ① 纯数字 / 常量公式：还是老样子（红线：默认档一个字符都不变）
+						var numNode = new ForgeNodeSpec { Kind = "Effect" };
+						numNode.SetField("Effect", "Damage");
+						numNode.SetField("Amount", "6");
+						Check("纯数字还是老样子（GetNumber=6）", Math.Abs(numNode.GetNumber("Amount", 0) - 6) < 0.001, $"{numNode.GetNumber("Amount", 0)}");
+						numNode.SetField("Amount", "2*3");
+						Check("常量公式在生成期折叠（2*3 → 6，生成出来还是老样子）",
+							Math.Abs(numNode.GetNumber("Amount", 0) - 6) < 0.001, $"{numNode.GetNumber("Amount", 0)}");
+						// ② 运行时公式：解析成运行时表达式，不再是「静默回落成默认值」
+						numNode.SetField("Amount", "X*2");
+						var resolved = ForgeNumbers.Resolve(Profile, numNode, "Amount", 6);
+						Check("运行时公式（X*2）认得出来：Runtime=true、生成了表达式（不再静默变默认值）",
+							resolved.Ok && resolved.Runtime && resolved.Expr.Contains("__X"), resolved.Expr);
+						numNode.SetField("Amount", "2+");
+						var bad = ForgeNumbers.Resolve(Profile, numNode, "Amount", 6);
+						Check("写错的公式：Ok=false + 中文原因（校验器会报错说清哪一栏）",
+							!bad.Ok && bad.Error.Length > 0, bad.Error);
+						// 校验器只在一张「有触发时机」的图上跑（没触发时机时它第一句就返回了）
+						var badTrig = new ForgeNodeSpec { Kind = "Trigger" };
+						badTrig.SetField("Timing", ForgeTimings.CardPlayed);
+						var badIssues = ForgeGraphGen.Issues(
+							new ForgeGraphSpec { Nodes = { badTrig, numNode } }, Profile, "Card");
+						Check("校验器：写错的公式报「错误」并说清模块 + 哪一栏",
+							badIssues.Any(x => x.Level == "错误" && x.Message.Contains("【效果】") && x.Message.Contains("数值")),
+							string.Join(" / ", badIssues.Select(x => x.Level + ":" + x.Message)));
+						// ③ 卡牌费用那两栏只收「生成期算得出来」的数
+						var costNode = new ForgeNodeSpec { Kind = "Energy" };
+						costNode.SetField("EnergyCost", "X");
+						var costGraph = new ForgeGraphSpec { Nodes = { badTrig, costNode } };
+						var costIssues = ForgeGraphGen.Issues(costGraph, Profile, "Card");
+						Check("校验器：【能量】的费用写了 X（运行时）→ 报错说清要编译期常量",
+							costIssues.Any(x => x.Level == "错误" && x.Message.Contains("编译期常量")),
+							string.Join(" / ", costIssues.Select(x => x.Level + ":" + x.Message)));
+						costNode.SetField("EnergyCost", "1+1");
+						Check("【能量】的费用写常量公式（1+1）→ 折叠成 2、没有错误",
+							ForgeGraphGen.EnergyCostOf(costGraph) == 2
+							&& !ForgeGraphGen.Issues(costGraph, Profile, "Card").Any(x => x.Level == "错误"),
+							$"费用={ForgeGraphGen.EnergyCostOf(costGraph)}");
+						// ④ 生成端：数值 / 生效次数 / 命中次数 / 概率四栏写公式都要落到生成代码里
+						// （临时加一个「固定数值」来源的参数 A，验「能折叠成常数的公式」这一档）
+						var savedParams = Profile.CustomParams.ToList();
+						Profile.CustomParams.Add(new ParamSpec { Name = "A", Source = ParamSources.Value, Value = 2m });
+						var fCard = new CardSpec { Name = "自检公式卡", ClassName = "UiCheckFormula", CardType = "Attack", Rarity = "Common", IsForged = true, InCardPool = true };
+						{
+							var g = new ForgeGraphSpec();
+							var fTrig = new ForgeNodeSpec { Kind = "Trigger" };
+							fTrig.SetField("Timing", ForgeTimings.CardPlayed);
+							var tgt = new ForgeNodeSpec { Kind = "Target" };
+							tgt.SetField("Pick", "ChosenEnemy");
+							var eff = new ForgeNodeSpec { Kind = "Effect" };
+							eff.SetField("Effect", "Damage");
+							eff.SetField("Amount", "X");            // X = 当前能量
+							eff.SetField("Hits", "A");              // 自定义参数（固定数值 2 → 生成期折叠）
+							eff.SetField("Times", "Y");             // Y = 当前额外资源量（运行时循环上界）
+							eff.SetField("Chance", "Turn");         // 内置只读量
+							g.Nodes.AddRange(new[] { fTrig, tgt, eff });
+							g.Links.Add(new ForgeLinkSpec { From = fTrig.Id, To = tgt.Id, FromPort = 0, ToPort = 0 });
+							g.Links.Add(new ForgeLinkSpec { From = tgt.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+							g.Links.Add(new ForgeLinkSpec { From = tgt.Id, To = eff.Id, FromPort = 1, ToPort = 2 });
+							fCard.ForgeGraph = g;
+						}
+						string fSrc = CSharpCodeGen.CardSource(Profile, fCard, 0);
+						Check("生成端：数值写 X → decimal __fgAmt… = __X;（不再当成默认值 6）",
+							fSrc.Contains("= __X;") && fSrc.Contains("【效果】数值（公式：X）"), "数值公式在");
+						Check("生成端：生效次数写 Y → 真的生成一个以公式为界的 for 循环",
+							fSrc.Contains("= Math.Max(1, (int)(__Y))") && fSrc.Contains("for (int t = 0; t <"), "运行时循环在");
+						Check("生成端：概率写 Turn（内置只读量）→ 概率判定用算出来的值",
+							fSrc.Contains("int __fgChance") && fSrc.Contains("ForgeFormulaRuntime.Roll(__fgPlayer, __fgChance"), "概率公式在");
+						Check("生成端：命中次数写 A（固定数值参数）→ 生成期折叠成 2（老写法 .WithHitCount(2)）",
+							fSrc.Contains(".WithHitCount(2)"), ".WithHitCount(2)");
+						Check("校验器：这张卡的图**没有**错误级问题",
+							!ForgeGraphGen.Issues(fCard.ForgeGraph, Profile, "Card").Any(x => x.Level == "错误"),
+							string.Join(" / ", ForgeGraphGen.Issues(fCard.ForgeGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
+						// ⑤ 界面：数字框旁边有「…」插入按钮 + 填错描红 + 运行时公式标蓝
+						ForgeCanvas.Graph = fCard.ForgeGraph;
+						UpdateLayout();
+						var uiEff = fCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect");
+						var uiNum = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						Check("界面：数字框旁边有「…」插入参数 / 可用量的按钮", uiNum.HasInsert, $"HasInsert={uiNum.HasInsert}");
+						Check("界面：填了运行时公式的框标蓝 + ToolTip 里写出它变成什么表达式",
+							uiNum.Runtime && uiNum.Tip.Contains("运行时才算"), uiNum.Tip.Replace("\n", " "));
+						uiEff.SetField("Amount", "2+");
+						var uiBad = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						Check("界面：填错的框当场描红 + ToolTip 里写出原因（不再静默变默认值）",
+							uiBad.Invalid && uiBad.Tip.Contains("❌"), uiBad.Tip.Replace("\n", " "));
+						uiEff.SetField("Amount", "6");
+						var uiPlain = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						Check("界面：纯数字的框不标色（默认档观感和以前一样）",
+							!uiPlain.Invalid && !uiPlain.Runtime, $"Invalid={uiPlain.Invalid} Runtime={uiPlain.Runtime}");
+						Check("界面：「可用量」清单写清了这些位置能用什么（X / Y / 内置只读量名字都在）",
+							ForgeCanvas.FormulaHintTextForCheck.Contains("X = 当前所有能量")
+							&& ForgeCanvas.FormulaHintTextForCheck.Contains("HandCount")
+							&& ForgeCanvas.FormulaHintTextForCheck.Contains("编译期常量"),
+							ForgeCanvas.FormulaHintTextForCheck);
+						// 还原临时加的参数（后面的自检项按原样那份配置跑）
+						Profile.CustomParams.Clear();
+						foreach (var sp in savedParams) Profile.CustomParams.Add(sp);
+						ForgeCanvas.Graph = forged.ForgeGraph;
 						UpdateLayout();
 					}
 					// 锻造页【状态」 【效果」 【条件】模块里那个「增益 / 减益」下拉的数据源：
