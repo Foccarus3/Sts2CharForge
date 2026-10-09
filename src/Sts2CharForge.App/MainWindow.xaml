@@ -584,7 +584,40 @@
                             <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
                                     IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
                         </WrapPanel>
-                        <ListBox x:Name="CardList" SelectionMode="{Binding MultiSelectCards, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Cards}" DisplayMemberPath="Display"/>
+                        <!-- 用户要求第 1 条《卡牌页优化.md》：卡牌名最左侧是**序号列**（从上到下 1..N，
+                             序号是位置号、不跟随卡牌移动），可以**拖动卡牌项**换位置；
+                             自动生成的英文类名跟着这个序号走（见 Naming.RenumberCardClassNames）。
+                             ⚠ 序号口径按用户拍板 Q5 = A：**列表里全部行都占号** —— 本体卡 / 初始的
+                             打击与防御也占第 1、2 号。
+                             ⚠ 卡牌列表**不用界面镜像集合**（不像遗物 / 药水页要补「每块 5 个」空槽）：
+                             序号要的就是 1..N 连续，所以 ItemsSource 仍然直接绑 Profile.Cards，
+                             CardList.SelectedItem 照旧是 CardSpec（那一百多处引用一个字都不用改）。 -->
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
+                                   Text="最左边的数字 = 这张卡**现在排第几位**（1..N，含最上面的本体卡 / 初始打击防御；拖动换位置后跟着重排）。自动生成的英文类名会跟着这个序号走，手填的不会被改。"/>
+                        <TextBlock DockPanel.Dock="Bottom" x:Name="CardDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
+                                   Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
+                        <ListBox x:Name="CardList" SelectionMode="{Binding MultiSelectCards, Converter={StaticResource MultiSelectMode}}"
+                                 ItemsSource="{Binding Profile.Cards}" DisplayMemberPath="{x:Null}"
+                                 AllowDrop="True" PreviewMouseLeftButtonDown="OnCardListPreviewMouseDown"
+                                 PreviewMouseMove="OnCardListPreviewMouseMove"
+                                 DragOver="OnCardListDragOver" Drop="OnCardListDrop"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 HorizontalContentAlignment="Stretch">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid x:Name="CardRowRoot" ToolTip="{Binding RowTip}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="34"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="CardRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                                   Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="CardRowName" Grid.Column="1" Text="{Binding Display}" TextWrapping="Wrap"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </DockPanel>
 
                     <!-- 没选中卡牌时：收起属性/效果栏，只留一句提示 -->
@@ -636,8 +669,9 @@
                             </Border>
                             <TextBlock Text="名称（中文，列表里显示用）" Style="{StaticResource Label}"/>
                             <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
-                            <TextBlock Text="英文类名（本体卡 = 本体英文类名，如 StrikeIronclad / DefendIronclad；自定义卡留空 = 自动生成 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBlock Text="英文类名（本体卡 = 本体英文类名，如 StrikeIronclad / DefendIronclad；自定义卡留空 = 自动生成 &lt;角色类名&gt;Card&lt;序号&gt;，序号 = 左边列表的行号）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                             <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock TextWrapping="Wrap" Margin="6,0,0,2" Foreground="#888" FontSize="11" Text="{Binding ClassNameHint}"/>
                             <TextBlock Text="类型" Style="{StaticResource Label}"/>
                             <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
@@ -672,9 +706,6 @@
                             <CheckBox Content="可被无限升级（每次升级数值再涨一次）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
                                       IsChecked="{Binding InfinitelyUpgradable}"
                                       ToolTip="本体默认每张牌只能升级一次（MaxUpgradeLevel => 1）。勾上以后生成 MaxUpgradeLevel => int.MaxValue：可以反复升级，每升一级 OnUpgrade() 就再跑一遍，升级增量会累加；卡面标题显示成「名字+N」。" />
-                            <CheckBox Content="卡面显示牌堆张数（{DrawPile} / {DiscardPile} / {ExhaustPile}）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
-                                      IsChecked="{Binding ShowPileCounts}"
-                                      ToolTip="勾上之后这张卡会声明三个**实时**变量：抽牌堆 / 弃牌堆 / 消耗牌堆现在有几张。在「自定义描述」里点「填入参数…」就能选它们（值每一刻现取，会跟着牌堆变化）。不勾则不声明这三个变量（老存档生成的代码一个字符都不变）。" />
                             <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                             <WrapPanel Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}">
                                 <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>

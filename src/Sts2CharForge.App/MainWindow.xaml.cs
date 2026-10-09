@@ -342,6 +342,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			HookPotionListOrder();
 			SyncPotionRows();
 			PotionUiSelection = null;
+			// 卡牌页（V0.2.130）：左侧序号也是**位置号**，换存档后立刻按新存档的顺序重发一遍
+			// （和遗物 / 药水那两行同一个位置、同一个理由）
+			RefreshCardOrdinals();
 			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
 			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
 			HookAnimationSpec();
@@ -517,11 +520,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		};
 		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
 		var hints = CSharpCodeGen.ParamHints(effects ?? Enumerable.Empty<EffectSpec>(), isCard);
-		// 卡牌多三个「牌堆实时张数」占位符（需求：「自定义描述怎么没有抽牌堆 / 弃牌堆 / 消耗牌堆的数量」）。"
-		// 它们不来自效果，而是卡牌自己的三个实时动态变量；勾了「卡面显示牌堆张数」才会声明，
-		// 所以这里跟着那个开关一起放（顺带提示用户先去勾它）。"
-		bool pileCountsOn = isCard && ActivePortraitCard() is { ShowPileCounts: true };
-		if (isCard) hints = hints.Concat(CSharpCodeGen.PileCountHints).ToList();
+		// ⚠ V0.2.130：原来这里给卡牌多塞三个「牌堆实时张数」占位符
+		//   （{DrawPile} / {DiscardPile} / {ExhaustPile}，配「卡面显示牌堆张数」那个勾选框）。
+		//   用户要求整块去掉 → 那三个候选、那句「先去勾它」的提示、以及那个勾选框一起删了。
 		if (hints.Count == 0)
 		{
 			SetStatus("这条还没有能填的数值参数：先给它加一条带数值的效果（伤害 / 格挡 / 抽牌 / 状态层数…）。");
@@ -529,12 +530,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 		if (hints.Count == 1) { InsertAtCaret(box, hints[0].Token); return; }
 		var menu = new ContextMenu { PlacementTarget = btn };
-		if (isCard && !pileCountsOn)
-		{
-			var tip = new MenuItem { Header = "牌堆张数那三个要先勾「卡面显示牌堆张数」（在卡牌属性那一栏）", IsEnabled = false };
-			menu.Items.Add(tip);
-			menu.Items.Add(new Separator());
-		}
 		foreach (var (token, desc) in hints)
 		{
 			var item = new MenuItem { Header = $"{token} — {desc}" };
@@ -2729,6 +2724,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RefreshPotionOrdinals();
 		RefreshPotionUiSelection();
 		Raise("HasPotionSelection");
+		// 卡牌页（V0.2.130）：左侧序号是**位置号**（不跟随卡牌移动），每次重铺详情前先按当前顺序重发一遍
+		RefreshCardOrdinals();
 		CardDetail.DataContext = CardList.SelectedItem;
 		RelicDetail.DataContext = RelicUiSelection;
 		PotionDetail.DataContext = PotionUiSelection;
@@ -4203,6 +4200,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		HookCardCount();
 		Raise(nameof(CardCountText));
+		// 卡牌页左侧序号是**位置号**（用户要求第 1 条）：加 / 删 / 撤回 / 拖动之后都要重发一遍。
+		// 三张列表（卡牌 / 诅咒 / 先古卡）的 CollectionChanged 都挂在这里，一起算正好。
+		RefreshCardOrdinals();
 		// 加 / 删卡之后「目标卡（生成 / 变化用）」也要跟着更新 ——
 		// 以前这里只刷数量，新加的卡在下拉里搜不到（用户报的「保存的卡在目标卡处搜不到」就是这个）。
 		RefreshCardChoices();
@@ -5148,6 +5148,152 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		System.Text.Json.JsonSerializer.Deserialize<CardSpec>(
 			System.Text.Json.JsonSerializer.Serialize(src, ProfileFactory.JsonOpts),
 			ProfileFactory.JsonOpts) ?? new CardSpec();
+
+	// ==================== 卡牌列表：序号 + 拖动换位置（用户要求第 1 条《卡牌页优化.md》）====================
+	//
+	// 序号显示在卡牌名最左侧、从上到下 1..N，序号是**位置号**（用户原话「序号不会跟随卡牌的移动」）。
+	// 口径按用户拍板 Q5 = A：**列表里全部行都占号** —— 本体卡 / 初始的打击与防御也占第 1、2 号，
+	// 自动英文类名跟的就是这个号（见 Naming.CardClassName / RenumberCardClassNames）。
+	//
+	// ⚠ 和遗物页 / 药水页**不一样**：卡牌页没有「每块留 5 个空槽」（需求要的就是 1..N 连续），
+	// 所以这里**不需要界面镜像集合** —— CardList.ItemsSource 仍然直接绑 Profile.Cards，
+	// CardList.SelectedItem 照旧是 CardSpec（MainWindow.xaml.cs 里那一百多处引用一个字都不用改），
+	// 也就不存在「Clear() 引发 SelectionChanged 重入」那一类坑。
+
+	/// <summary>
+	/// 给每张卡重新发一遍「我在列表里排第几」（1 起算）。
+	///
+	/// <para>为什么要有它：序号 = **当前位置**，不是跟着卡牌走的标记（用户原话「序号不会跟随卡牌的移动」）
+	/// —— 所以每次增删 / 拖动 / 载入存档之后都要重算一遍，绑在界面上的 <c>OrdinalText</c> 才会跟着变。
+	/// 由 <see cref="OnCardsChanged"/>（<c>Profile.Cards</c> 的 <c>CollectionChanged</c>）和
+	/// <see cref="SyncDetail"/> 各调一次，覆盖加 / 删 / 撤回 / 拖动 / 换存档全部路径。</para>
+	///
+	/// <para><c>Ordinal</c> = 它在**自己那个列表**里排第几（卡牌 / 诅咒 / 先古卡各自 1..N，界面上只显示
+	/// 卡牌列表那一份）；<c>LastAutoOrdinal</c> = 它在**连续编号**（普通卡 → 诅咒 → 先古卡）里排第几
+	/// —— 那才是自动英文类名的号，界面「英文类名」下面那行小字读它。</para>
+	/// </summary>
+	internal void RefreshCardOrdinals()
+	{
+		if (_profile?.Cards is null) return;
+		int next = 0;
+		foreach (var list in new[] { _profile.Cards, _profile.Curses, _profile.AncientCards })
+		{
+			if (list is null) continue;
+			for (int i = 0; i < list.Count; i++)
+			{
+				CardSpec? c = list[i];
+				if (c is null) continue;
+				if (c.Ordinal != i + 1) c.Ordinal = i + 1;
+				// ⚠ LastAutoOrdinal 只在「界面上那行小字」里用（[JsonIgnore]，不写存档、不参与生成）；
+				//   生成端认的是 Naming.CardClassName(p, c)，和这里算出来的号是同一个口径。
+				if (c.LastAutoOrdinal != next + i + 1) c.LastAutoOrdinal = next + i + 1;
+			}
+			next += list.Count;
+		}
+	}
+
+	// 拖动换位置：MouseDown 记起点 → MouseMove 超过系统阈值才开始拖 → DragOver 画插入线 → Drop 真插进去
+	private Point _cardDragStart;
+	private CardSpec? _cardDragItem;
+
+	/// <summary>
+	/// 拖动换位置（用户要求：拖谁到哪就插到哪，<c>Profile.Cards</c> 里的顺序真的变）。
+	/// 只在按住某一行往下 / 往上拖超过系统拖动阈值时才起拖 ——
+	/// 不然「点一下选中一行」会被当成拖动（列表就点不动了）。
+	/// </summary>
+	private void OnCardListPreviewMouseDown(object sender, MouseButtonEventArgs e)
+	{
+		_cardDragStart = e.GetPosition(CardList);
+		_cardDragItem = CardAtPoint(e.GetPosition(CardList));
+	}
+
+	/// <summary>
+	/// 鼠标位置下面是**哪一行**（用可视树往上找 ListBoxItem，再按它在列表里的位置给行号；
+	/// 比按坐标算索引可靠）。返回值里 <c>Card</c> 为 null = 鼠标下面是列表空白处。
+	/// </summary>
+	private (int Index, CardSpec? Card) CardRowAtPoint(Point p)
+	{
+		DependencyObject? hit = CardList.InputHitTest(p) as DependencyObject;
+		while (hit is not null && hit is not ListBoxItem)
+			hit = VisualTreeHelper.GetParent(hit);
+		if (hit is not ListBoxItem item) return (-1, null);
+		int index = CardList.ItemContainerGenerator.IndexFromContainer(item);
+		return (index, item.DataContext as CardSpec);
+	}
+
+	/// <summary>鼠标位置下面是哪张卡（空白处 → null）。拖动「拿起来」那条路径用它。</summary>
+	private CardSpec? CardAtPoint(Point p) => CardRowAtPoint(p).Card;
+
+	private void OnCardListPreviewMouseMove(object sender, MouseEventArgs e)
+	{
+		if (e.LeftButton != MouseButtonState.Pressed || _cardDragItem is null) return;
+		Point now = e.GetPosition(CardList);
+		if (Math.Abs(now.X - _cardDragStart.X) < SystemParameters.MinimumHorizontalDragDistance
+			&& Math.Abs(now.Y - _cardDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+		CardSpec dragged = _cardDragItem;
+		_cardDragItem = null;
+		try
+		{
+			DragDrop.DoDragDrop(CardList, new DataObject(typeof(CardSpec), dragged), DragDropEffects.Move);
+		}
+		catch (Exception ex)
+		{
+			// 拖放起不来不该把界面搞崩（极端情况：鼠标已经松开 / 另一个拖放正在进行）
+			SetStatus("拖动卡牌失败：" + ex.Message);
+		}
+	}
+
+	private void OnCardListDragOver(object sender, DragEventArgs e)
+	{
+		e.Effects = e.Data.GetDataPresent(typeof(CardSpec)) ? DragDropEffects.Move : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	/// <summary>
+	/// 松手：把被拖的那张卡**移到**鼠标下面那一行的位置（插到它前面；拖到列表空白处 = 移到末尾）。
+	/// </summary>
+	private void OnCardListDrop(object sender, DragEventArgs e)
+	{
+		if (!e.Data.GetDataPresent(typeof(CardSpec))) return;
+		if (e.Data.GetData(typeof(CardSpec)) is not CardSpec dragged) return;
+		(int index, CardSpec? over) = CardRowAtPoint(e.GetPosition(CardList));
+		if (!MoveCardTo(dragged, over, index))
+		{
+			SetStatus($"「{dragged.Name}」已经在这个位置了。");
+			return;
+		}
+		SetStatus($"已把卡牌「{dragged.Name}」拖到第 {Profile.Cards.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+	}
+
+	/// <summary>
+	/// 拖动落点的那一步（**纯逻辑**，和鼠标 / 拖放事件无关 —— 自检直接调它）。
+	///
+	/// <para><paramref name="over"/> = 鼠标松手时下面那一行的卡；
+	/// <paramref name="overRowIndex"/> = 那一行在列表里的行号（空白处时 <paramref name="over"/> 是 null，
+	/// 这时就按行号算落点：行号 k → 插到第 k 位，超出末尾就夹到末尾）。
+	/// 语义：**插到那一行的位置**（拖谁到哪就插到哪）。返回 false = 位置没变（不用刷界面）。</para>
+	/// </summary>
+	internal bool MoveCardTo(CardSpec dragged, CardSpec? over, int overRowIndex = -1)
+	{
+		int from = _profile.Cards.IndexOf(dragged);
+		if (from < 0) return false;
+		int to;
+		if (over is not null)
+		{
+			to = _profile.Cards.IndexOf(over);
+		}
+		else
+		{
+			to = overRowIndex >= 0 ? overRowIndex : _profile.Cards.Count - 1;
+		}
+		to = Math.Clamp(to, 0, Math.Max(_profile.Cards.Count - 1, 0));
+		if (to == from) return false;
+		_profile.Cards.Move(from, to);          // 顺序真的变 → 序号 / 自动类名都跟着它走
+		RefreshCardOrdinals();
+		CardList.SelectedItem = dragged;
+		SyncDetail();
+		return true;
+	}
 
 	private bool ConfirmDelete(string what)
 	{
@@ -11814,40 +11960,261 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			UpdateLayout();
 		}
 
-		// ===== 牌堆实时张数（用户报：「自定义描述怎么没有从抽牌堆 / 消耗牌堆 / 弃牌堆的数量参数了」）=====
+		// ===== 牌堆实时张数（V0.2.130：用户要求整块删掉「卡面显示牌堆张数」）=====
+		// 老版本这里钉着 9 条断言（三个占位符 / 不带 :diff() / 辅助文件 / 三个变量名 / 现取 /
+		// 不在战斗返回 0 / 勾了声明三行 / 没勾一个字符不多 / 自定义描述里原样写进卡面）。
+		// 功能删掉之后那些断言全部失效 → 改成「功能真的没了」这一组（逐条对应）。
 		{
-			Check("「填入参数」里有抽牌堆 / 弃牌堆 / 消耗牌堆三个占位符",
-				CSharpCodeGen.PileCountHints.Select(h => h.Token).SequenceEqual(new[] { "{DrawPile}", "{DiscardPile}", "{ExhaustPile}" }),
-				string.Join(" / ", CSharpCodeGen.PileCountHints.Select(h => h.Token)));
-			Check("这三个占位符**不带 :diff()**（牌堆张数每一刻都在变，没有「升级后」这一说）",
-				CSharpCodeGen.PileCountHints.All(h => !h.Token.Contains(":diff")), "没带");
+			Check("卡牌属性面板上不再有「卡面显示牌堆张数」勾选框",
+				!TextsIn(CardDetail).Any((string t) => t.Contains("卡面显示牌堆张数")), "没这个勾选框了");
+			Check("CardSpec 上已经没有 ShowPileCounts 这个属性（模型层删干净）",
+				typeof(CardSpec).GetProperty("ShowPileCounts") is null, "属性不存在");
+			Check("CSharpCodeGen 上已经没有 PileCountHints（占位符表删干净）",
+				typeof(CSharpCodeGen).GetProperty("PileCountHints") is null, "占位符表不存在");
+			Check("ForgeGraphGen 上已经没有 PileCountSource / NeedsPileCountVars / PileCountFile（辅助类删干净）",
+				typeof(ForgeGraphGen).GetMethod("PileCountSource") is null
+				&& typeof(ForgeGraphGen).GetMethod("NeedsPileCountVars") is null
+				&& typeof(ForgeGraphGen).GetField("PileCountFile") is null, "三个都不存在");
+			Check("本工具自己的代码里不再有 ForgePileCountVar 这个类（生成端不再写它）",
+				typeof(ForgeGraphGen).Assembly.GetTypes().All((Type t) => t.Name != "ForgePileCountVar"), "类型不存在");
+			// 老存档兼容：JSON 里带 "ShowPileCounts": true 也要能读进来（不报错、字段被忽略）
+			string legacyJson = Path.Combine(Path.GetTempPath(), "forge_uicheck_pilecount_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+			CardSpec? pileLegacy = null;
+			try
+			{
+				const string legacyText = """
+{
+  "ModId": "PileLegacyMod",
+  "CharacterClass": "PileLegacy",
+  "DisplayName": "旧存档",
+  "Cards": [
+    { "Name": "旧卡", "ClassName": "UiPileLegacy", "CardType": "Attack", "Rarity": "Common", "Cost": 1, "ShowPileCounts": true }
+  ]
+}
+""";
+				File.WriteAllText(legacyJson, legacyText, new System.Text.UTF8Encoding(false));
+				pileLegacy = ProfileFactory.Load(legacyJson).Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiPileLegacy");
+			}
+			finally { try { if (File.Exists(legacyJson)) File.Delete(legacyJson); } catch { } }
+			Check("老存档里那个字段（\"ShowPileCounts\": true）读进来**不报错**、被直接忽略",
+				pileLegacy is not null, pileLegacy is null ? "没读回来（加载报错了）" : $"读回来「{pileLegacy.Name}」（{pileLegacy.ClassName}），旧字段被忽略");
+			// 真的生成一次：工程里不许再有 cs/ForgePileCountVar.cs（老版本勾过开关才会写这个文件）
 			CharacterProfile pileProf = ProfileFactory.Sample();
-			pileProf.Cards.Clear();
-			pileProf.Cards.Add(new CardSpec { Name = "数牌", ClassName = "UiPileCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, ShowPileCounts = true });
-			Check("没卡勾这个开关时不生成辅助文件（默认档一个文件都不多）",
-				!ForgeGraphGen.NeedsPileCountVars(ProfileFactory.Sample()), "干净");
-			Check("有卡勾了就生成辅助文件（ForgePileCountVar）", ForgeGraphGen.NeedsPileCountVars(pileProf), "要生成");
-			string pileHelper = ForgeGraphGen.PileCountSource(pileProf);
-			Check("辅助类里三个变量名就是 DrawPile / DiscardPile / ExhaustPile",
-				pileHelper.Contains("DrawPileName = \"DrawPile\"") && pileHelper.Contains("DiscardPileName = \"DiscardPile\"")
-				&& pileHelper.Contains("ExhaustPileName = \"ExhaustPile\""), "三个名字在");
-			Check("辅助类重写了 GetBaseValueForIConvertible（每次格式化现取牌堆张数，不是写死的占位 0）",
-				pileHelper.Contains("protected override decimal GetBaseValueForIConvertible()")
-				&& pileHelper.Contains("_pile.GetPile(player).Cards.Count"), "现取");
-			Check("不在战斗里（CombatState 为空）时返回 0，不抛异常",
-				pileHelper.Contains("if (player is null || card.CombatState is null) return 0m;"), "有兜底");
-			string pileCardSrc = CSharpCodeGen.CardSource(pileProf, pileProf.Cards[0], 0);
-			Check("勾了开关的卡会声明这三个变量（否则卡面占位符取不到、开牌组就白屏）",
-				pileCardSrc.Contains("new ForgePileCountVar(ForgePileCountVar.DrawPileName, PileType.Draw)")
-				&& pileCardSrc.Contains("PileType.Discard") && pileCardSrc.Contains("PileType.Exhaust"), "三个都在");
-			Check("没勾的卡一个字符都不多（回归红线）",
-				!CSharpCodeGen.CardSource(ProfileFactory.Sample(), new CardSpec { Name = "普通", ClassName = "UiPileNone", CardType = "Skill", Cost = 1 }, 0)
-					.Contains("ForgePileCountVar"), "干净");
-			// 卡面文本：自定义描述里的占位符原样写进本地化（本体运行时替换）"
-			var pileCard2 = pileProf.Cards[0];
-			pileCard2.CustomDescription = "抽牌堆还有 {DrawPile} 张」";
-			Check("自定义描述里的 {DrawPile} 会原样写进卡面文本（运行时替换成当前张数）",
-				LocalizationGen.CardsJson(pileProf).Contains("{DrawPile}"), "写进去了");
+			pileProf.Cards[0].CustomDescription = "抽牌堆还有 {DrawPile} 张";   // 老存档里写过这个占位符也照旧不生成变量
+			string pileRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_pilecount_gen_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				pileProf.Paths.OutputDir = pileRoot;
+				pileProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				pileProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var pileGen = ModGenerator.Generate(pileProf);
+				Check("生成出来的工程里不再有 cs/ForgePileCountVar.cs（连老存档写过占位符也一样）",
+					pileGen.Success && !File.Exists(Path.Combine(pileGen.ProjectRoot, "cs", "ForgePileCountVar.cs"))
+					&& !Directory.GetFiles(pileGen.ProjectRoot, "*ForgePileCountVar*", SearchOption.AllDirectories).Any(),
+					pileGen.Success ? "没有这个文件" : (pileGen.Issues.FirstOrDefault((ValidationIssue i) => i.IsError)?.Message ?? "生成失败"));
+				Check("生成出来的卡牌源码里一个 ForgePileCountVar 都没有",
+					!CSharpCodeGen.CardSource(pileProf, pileProf.Cards[0], 0).Contains("ForgePileCountVar"), "干净");
+			}
+			finally
+			{
+				try { if (Directory.Exists(pileRoot)) Directory.Delete(pileRoot, true); } catch { }
+			}
+			Check("「填入参数…」菜单里不再列出 {DrawPile} / {DiscardPile} / {ExhaustPile}",
+				CSharpCodeGen.ParamHints(pileProf.Cards[0].Effects, true).All((h) => !h.Token.Contains("Pile")
+					&& !h.Token.Contains("DrawPile") && !h.Token.Contains("DiscardPile") && !h.Token.Contains("ExhaustPile")),
+				string.Join(" / ", CSharpCodeGen.ParamHints(pileProf.Cards[0].Effects, true).Select((h) => h.Token)));
+		}
+
+		// ===== 卡牌页：左侧序号 + 拖动换位置 + 按序号自动英文类名（用户要求第 1 条，V0.2.130）=====
+		// 口径按用户拍板 Q5 = A：序号 = **列表里全部行**（含本体卡 / 初始打击防御），序号是位置号、不跟随卡牌。
+		// 自动英文类名跟这个号走：清掉以前工具自动生成的类名 → 按当前序号重拼；手填的一个字不动；
+		// 没填的保持留空只记序号（判据照遗物 / 药水那套「按名字形状认」，见 Naming.IsAutoCardClassName）。
+		{
+			// ---- 纯模型逻辑：自动类名跟序号走 ----
+			{
+				var rn = Naming.From(ProfileFactory.Sample());
+				var rnProfile = ProfileFactory.Sample();
+				rnProfile.Curses.Clear();
+				rnProfile.AncientCards.Clear();
+				rnProfile.Cards.Clear();
+				var rnHand = new CardSpec { Name = "手填甲", ClassName = "MyOwnSlash", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				var rnEmpty = new CardSpec { Name = "留空乙", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				var rnAuto = new CardSpec { Name = "自动丙", ClassName = rn.CharClass + "Card9", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				var rnForeign = new CardSpec { Name = "别家丁", ClassName = "SomebodyElseCard5", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				rnProfile.Cards.Add(rnHand);
+				rnProfile.Cards.Add(rnEmpty);
+				rnProfile.Cards.Add(rnAuto);
+				rnProfile.Cards.Add(rnForeign);
+				// 用户上传的卡面是按**类名**存的（ArtSpec.CardPortraits）—— 改号不能把上传的图弄丢
+				rnProfile.Art.CardPortraits[rn.CharClass + "Card9"] = @"D:\fake\probe_art.png";
+				// 这里走**生成端真正走的那一步**（NameStabilizer.RenumberCardNames：改号 + 把引用 / 卡面一起搬）
+				int rnMoved = NameStabilizer.RenumberCardNames(rnProfile);
+				Check("改号时顺手把「上传的卡面」也搬到新类名上（不然卡面会静悄悄退回占位图）",
+					rnProfile.Art.CardPortraits.TryGetValue(rn.CharClass + "Card3", out string? movedArt)
+					&& movedArt == @"D:\fake\probe_art.png"
+					&& !rnProfile.Art.CardPortraits.ContainsKey(rn.CharClass + "Card9"),
+					"CardPortraits = " + string.Join(" / ", rnProfile.Art.CardPortraits.Select(kv => kv.Key + "→" + kv.Value)));
+				Check("卡牌自动类名跟序号走：手填的一个字不动、留空的保持留空只记序号、工具自动生成的按当前序号重命名",
+					rnHand.ClassName == "MyOwnSlash" && rnHand.LastAutoOrdinal == 0
+					&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 2
+					&& rnAuto.ClassName == rn.CharClass + "Card3" && rnAuto.LastAutoOrdinal == 3
+					&& rnForeign.ClassName == "SomebodyElseCard5",
+					$"手填={rnHand.ClassName} / 留空='{rnEmpty.ClassName}':{rnEmpty.LastAutoOrdinal} / 自动={rnAuto.ClassName} / 别家={rnForeign.ClassName}（改了 {rnMoved} 处）");
+				Check("卡牌自动名的编号只认**本角色类名**前缀（别的角色的 CardN 不会被当成我们的自动名）",
+					rn.IsAutoCardClassName(rn.CharClass + "Card1") && !rn.IsAutoCardClassName("SomebodyElseCard5")
+					&& !rn.IsAutoCardClassName(rn.CharClass + "Card0") && !rn.IsAutoCardClassName(rn.CharClass + "CardX"),
+					rn.CharClass + "Card1=true / SomebodyElseCard5=false / Card0=false / CardX=false");
+				// 幂等：再跑两遍一个字节都不动
+				string rnSig = string.Join("|", rnProfile.Cards.Select(c => c.Name + ":" + c.ClassName + ":" + c.LastAutoOrdinal));
+				rn.RenumberCardClassNames(rnProfile.AllCards);
+				rn.RenumberCardClassNames(rnProfile.AllCards);
+				Check("卡牌自动类名重编号是**幂等**的（连跑三遍：类名 / 序号一个字节都不变）",
+					string.Join("|", rnProfile.Cards.Select(c => c.Name + ":" + c.ClassName + ":" + c.LastAutoOrdinal)) == rnSig,
+					rnSig);
+				Check("「拖到第 3 位、类名早就正好是 Card3」也把 LastAutoOrdinal 同步好（界面小字不写上一个序号）",
+					rnAuto.LastAutoOrdinal == 3, rnAuto.LastAutoOrdinal.ToString());
+				// 拖到别的序号之后：自动名跟着换（用户要的链路）
+				rnProfile.Cards.Move(2, 0);                       // 「自动丙」从第 3 位拖到第 1 位
+				rn.RenumberCardClassNames(rnProfile.AllCards);
+				Check("把自动命名的卡拖到第 1 位后重新生成 → 类名变成 <角色类名>Card1（用户要的链路）",
+					rnAuto.ClassName == rn.CharClass + "Card1" && rnHand.ClassName == "MyOwnSlash"
+					&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 3,
+					$"自动={rnAuto.ClassName} / 手填={rnHand.ClassName} / 留空序号={rnEmpty.LastAutoOrdinal}");
+				// 「删掉英文类名 → 重新生成」：留空的保持留空，但记的序号是当前的
+				rnAuto.ClassName = "";
+				rn.RenumberCardClassNames(rnProfile.AllCards);
+				Check("删掉英文类名后再生成 → 类名保持留空（生成端按当前序号拼）、只记序号",
+					rnAuto.ClassName == "" && rnAuto.LastAutoOrdinal == 1
+					&& rn.CardClassName(rnProfile, rnAuto) == rn.CharClass + "Card1",
+					$"留空 / 序号={rnAuto.LastAutoOrdinal} / 生成端会写 {rn.CardClassName(rnProfile, rnAuto)}");
+			}
+			// ---- 用户原话的验收场景（sparkle 存档「面具虚影」排第三 → SparkleCard3）----
+			{
+				var sparkle = new CharacterProfile { ModId = "SparkleMod", CharacterClass = "Sparkle", DisplayName = "星光" };
+				sparkle.Cards.Add(new CardSpec { Name = "序幕", ClassName = "SparkleDance", CardType = "Attack", Rarity = "Common", Cost = 1 });
+				sparkle.Cards.Add(new CardSpec { Name = "假面", ClassName = "SparkleWard", CardType = "Skill", Rarity = "Common", Cost = 1 });
+				var mask = new CardSpec { Name = "面具虚影", ClassName = "", CardType = "Skill", Rarity = "Common", Cost = 1 };
+				sparkle.Cards.Add(mask);
+				Check("用户原话的验收场景：面具虚影排第 3 行、英文类名留空 → 生成 SparkleCard3",
+					Naming.From(sparkle).CardClassName(sparkle, mask) == "SparkleCard3",
+					Naming.From(sparkle).CardClassName(sparkle, mask));
+				// 老存档里的自动名（SparkleCard7）也要按新序号清掉重拼
+				var sparkle2 = new CharacterProfile { ModId = "SparkleMod", CharacterClass = "Sparkle", DisplayName = "星光" };
+				sparkle2.Cards.Add(new CardSpec { Name = "序幕", ClassName = "SparkleDance", CardType = "Attack", Rarity = "Common", Cost = 1 });
+				sparkle2.Cards.Add(new CardSpec { Name = "假面", ClassName = "SparkleWard", CardType = "Skill", Rarity = "Common", Cost = 1 });
+				var mask2 = new CardSpec { Name = "面具虚影", ClassName = "SparkleCard7", CardType = "Skill", Rarity = "Common", Cost = 1 };
+				sparkle2.Cards.Add(mask2);
+				int sparkleMoved = Naming.From(sparkle2).RenumberCardClassNames(sparkle2.AllCards);
+				Check("老存档里的自动名（SparkleCard7）排到第 3 行 → 自动清掉、按当前序号重拼成 SparkleCard3",
+					mask2.ClassName == "SparkleCard3" && sparkleMoved == 1, $"{mask2.ClassName}（改了 {sparkleMoved} 处）");
+				Check("（对照）手填的 SparkleDance / SparkleWard 一动不动",
+					sparkle2.Cards[0].ClassName == "SparkleDance" && sparkle2.Cards[1].ClassName == "SparkleWard", "没动");
+			}
+			// ---- 校验器：手打的「像自动编号但序号对不上」要提示（不许静默）----
+			{
+				var rnWarn = ProfileFactory.Sample();
+				rnWarn.Cards.Clear();
+				rnWarn.Curses.Clear();
+				rnWarn.AncientCards.Clear();
+				rnWarn.Cards.Add(new CardSpec { Name = "像自动名", ClassName = "SevenCard7", CardType = "Attack", Rarity = "Common", Cost = 1 });
+				Check("校验器：手填的卡牌类名长得像自动编号但序号对不上 → 提示「下次生成会改名」（不许静默）",
+					ProfileValidator.Validate(rnWarn).Any(i => i.Level == "提示" && i.Message.Contains("自动生成的编号")),
+					ProfileValidator.Validate(rnWarn).FirstOrDefault(i => i.Message.Contains("自动生成的编号"))?.Message ?? "(没报)");
+				rnWarn.Cards[0].ClassName = "SevenSlash";
+				Check("（对照）手填一个不像自动编号的名字 → 不报（别刷没用的提示）",
+					!ProfileValidator.Validate(rnWarn).Any(i => i.Message.Contains("自动生成的编号")), "没报");
+			}
+			// ---- 界面：序号列 / 可拖动 / 拖动真的换位置 ----
+			{
+				List<string> VisibleCardOrdinals()
+				{
+					UpdateLayout();
+					List<TextBlock> blocks = new List<TextBlock>();
+					CollectTextBlocks(CardList, blocks);
+					return blocks.Select(t => t.Text ?? "")
+						.Where(t => System.Text.RegularExpressions.Regex.IsMatch(t, @"^\d+\.$"))
+						.ToList();
+				}
+				List<CardSpec> keptCards = Profile.Cards.ToList();     // 这一轮的临时改动最后原样还回去
+				CardSpec? keptCardSel = CardList.SelectedItem as CardSpec;
+				try
+				{
+					SelectTabRoot("卡牌");
+					Check("卡牌列表不再用 DisplayMemberPath（改成带序号列的模板）",
+						CardList.DisplayMemberPath is null && CardList.ItemTemplate is not null,
+						(CardList.DisplayMemberPath ?? "(null)") + " / " + (CardList.ItemTemplate is null ? "无模板" : "有模板"));
+					Check("卡牌列表允许拖放（AllowDrop=True，四个拖放事件都接上了）",
+						CardList.AllowDrop, "AllowDrop=" + CardList.AllowDrop);
+					Check("ItemsSource 仍然是 Profile.Cards（没有多套一层界面镜像集合 —— 卡牌页不需要空槽行）",
+						ReferenceEquals(CardList.ItemsSource, Profile.Cards), "绑的是真集合");
+					// 序号从 1 连续到 N（含本体卡 / 初始打击防御）
+					UpdateLayout();
+					string ordAll = string.Join(",", Profile.Cards.Select(c => c.OrdinalText));
+					Check("左侧序号从上到下就是 1..N（口径 = 列表里全部行，含本体卡 / 初始打击防御）",
+						Profile.Cards.Select(c => c.Ordinal).SequenceEqual(Enumerable.Range(1, Profile.Cards.Count))
+						&& ordAll == string.Join(",", Enumerable.Range(1, Profile.Cards.Count).Select(i => i + ".")),
+						$"共 {Profile.Cards.Count} 张 / 序号 {ordAll}");
+					List<string> visibleOrds = VisibleCardOrdinals();
+					Check("界面上真画出了「N.」序号（序号在卡牌名最左侧一列），而且是从 1 开始连续的下标",
+						visibleOrds.Count >= 3
+						&& visibleOrds.SequenceEqual(Enumerable.Range(1, visibleOrds.Count).Select(i => i + ".")),
+						$"看到 {visibleOrds.Count} 个（{string.Join(",", visibleOrds)}）/ 共 {Profile.Cards.Count} 张"
+						+ "（列表虚拟化：只画出可见的那几行，所以看到的不一定等于总张数）");
+					Check("打击 / 防御（本体卡）也占号：它们就是第 1、2 行",
+						Profile.Cards.Count >= 2 && Profile.Cards[0].IsStartingBasic && Profile.Cards[0].Ordinal == 1
+						&& Profile.Cards[1].Ordinal == 2,
+						$"第 1 行 {Profile.Cards[0].Name}（{Profile.Cards[0].ClassName}），第 2 行 {Profile.Cards[1].Name}");
+					// 拖动：第 1 张拖到第 3 张的位置 → 真集合顺序变、序号仍 1..N 连续
+					string cardsBefore = string.Join("→", Profile.Cards.Select(c => c.Name));
+					CardSpec draggedCard = Profile.Cards[0];
+					CardList.SelectedItem = draggedCard;
+					UpdateLayout();
+					CardSpec overCard = Profile.Cards[2];
+					bool cardMoved = MoveCardTo(draggedCard, overCard, 2);
+					UpdateLayout();
+					Check("拖动卡牌项换位置：Profile.Cards 顺序真的变、序号仍是 1..N 连续、选中项跟着被拖的那张",
+						cardMoved && ReferenceEquals(Profile.Cards[2], draggedCard)
+						&& Profile.Cards.Select(c => c.Ordinal).SequenceEqual(Enumerable.Range(1, Profile.Cards.Count))
+						&& ReferenceEquals(CardList.SelectedItem, draggedCard),
+						$"{cardsBefore} → " + string.Join("→", Profile.Cards.Select(c => c.Name))
+						+ $" ／ 序号 {string.Join(",", Profile.Cards.Select(c => c.OrdinalText))}");
+					// 拖到列表最后一行的位置（over = null 时按行号算落点）
+					CardSpec lastDragged = Profile.Cards[0];
+					bool movedToEnd = MoveCardTo(lastDragged, null, Profile.Cards.Count - 1);
+					UpdateLayout();
+					Check("拖到列表末尾（落点没有卡、只给行号）：照样真换位置、序号仍 1..N 连续",
+						movedToEnd && ReferenceEquals(Profile.Cards[Profile.Cards.Count - 1], lastDragged)
+						&& Profile.Cards.Select(c => c.Ordinal).SequenceEqual(Enumerable.Range(1, Profile.Cards.Count)),
+						string.Join("→", Profile.Cards.Select(c => c.Name)));
+					// 行命中：屏幕上点得到某一行、拿到的是那一行的卡
+					int probeRow = Math.Min(2, Profile.Cards.Count - 1);
+					DependencyObject? rowC = CardList.ItemContainerGenerator.ContainerFromIndex(probeRow) as DependencyObject;
+					string rowDetail = "(没有容器)";
+					bool rowHitOk = false;
+					if (rowC is FrameworkElement rowCFe)
+					{
+						Point offset = rowCFe.TransformToVisual(CardList).Transform(new Point(0, 0));
+						var at = CardRowAtPoint(new Point(offset.X + rowCFe.ActualWidth * 0.5, offset.Y + rowCFe.ActualHeight * 0.5));
+						rowHitOk = at.Index == probeRow && ReferenceEquals(at.Card, Profile.Cards[probeRow]);
+						rowDetail = $"行{at.Index}/{at.Card?.Name ?? "无卡"}";
+					}
+					Check("CardRowAtPoint 能按行号认出鼠标下面是哪张卡（拖动起手 / 落点都用它）",
+						rowHitOk, rowDetail);
+					// 拖动本身不改卡的任何字段（只改顺序）
+					Check("拖动只改顺序，不改卡的任何字段（名称 / 类名 / 费用一个都没动）",
+						Profile.Cards.All(c => c.ClassName is not null) && Profile.Cards.Count == keptCards.Count, "字段没动");
+				}
+				finally
+				{
+					// 原样还回去（顺序 + 选中项），免得影响后面的断言
+					Profile.Cards.Clear();
+					foreach (CardSpec c in keptCards) Profile.Cards.Add(c);
+					RefreshCardOrdinals();
+					if (keptCardSel is not null) CardList.SelectedItem = keptCardSel;
+					SyncDetail();
+					UpdateLayout();
+				}
+			}
 		}
 
 		// ===== 临时增益：两档撤法（本回合结束 / 下回合开始）=====
@@ -12944,12 +13311,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("老存档里被放到末尾/顺序颠倒的初始牌会被挪到最前面并纠正顺序",
 			misplaced.Cards[0].ClassName == "Strike" && misplaced.Cards[1].ClassName == "Defend" && misplaced.Cards.Count == ProfileFactory.Sample().Cards.Count,
 			string.Join(" / ", misplaced.Cards.Take(3).Select((CardSpec c) => c.Name)));
-		// 自动编号不受初始牌影响（打击 / 防御不占号）
+		// 自动编号口径（V0.2.130 用户拍板 Q5 = A）：**列表里全部行都占号**（含本体卡 / 初始打击防御），
+		// 所以打击（第 1 行）、防御（第 2 行）也占号 —— 第一张自有卡是第 3 行 → SevenCard3。
 		CharacterProfile numbering = ProfileFactory.Sample();
 		numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend")).ClassName = "";   // 第一张自有卡改成自动编号
-		Check("初始牌排在前面也不会让「自动编号」的卡改名（打击 / 防御不占号）",
-			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))) == "SevenCard1",
+		Check("序号口径 = 列表里全部行：打击 / 防御占第 1、2 行，第一张自有卡就是第 3 行（SevenCard3）",
+			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))) == "SevenCard3",
 			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))));
+		Check("自动号和它「在列表里的行号」一致（就是左侧那个序号）",
+			Naming.From(numbering).CardClassName(numbering, numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend")))
+				== "SevenCard" + (numbering.Cards.IndexOf(numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))) + 1),
+			"行号=" + (numbering.Cards.IndexOf(numbering.Cards.First((CardSpec c) => c.ClassName is not ("Strike" or "Defend"))) + 1));
 		Check("迁移后生成的初始卡组和以前完全一样（5 打击 + 5 防御）",
 			System.Text.RegularExpressions.Regex.Matches(CSharpCodeGen.CharacterSource(legacyBasics),
 				"ModelDb\\.Card<" + Naming.From(legacyBasics).CharClass + "Strike>\\(\\)").Count == 5, "5 张");
@@ -12989,7 +13361,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			auto.Cards.Add(new CardSpec { Name = "没填类名的新卡", ClassName = "", CardType = "Attack", Rarity = "Common", Cost = 1 });
 			CardSpec autoCard = auto.Cards.Last();
 			string autoCls = Naming.From(auto).CardClassName(auto, autoCard);
-			Check("没填类名的卡按「自有卡序号」编号（打击 / 防御不占号）", autoCls == "SevenCard9", autoCls);
+			Check("没填类名的卡按「列表里全部行的行号」编号（打击 / 防御占第 1、2 行 → 第 11 张卡是 Card11）",
+				autoCls == "SevenCard11", autoCls);
 			string autoSrc = CSharpCodeGen.CardSource(auto, autoCard, auto.Cards.IndexOf(autoCard));
 			Check("生成的类名和文件名用的是同一个名字（就是卡池引用的那个）",
 				autoSrc.Contains($"public sealed class {autoCls} : CardModel") && CSharpCodeGen.CardPoolSource(auto).Contains($"ModelDb.Card<{autoCls}>()"),

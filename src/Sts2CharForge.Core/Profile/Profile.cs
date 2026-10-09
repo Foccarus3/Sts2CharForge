@@ -1905,20 +1905,11 @@ public sealed class CardSpec : SpecBase
     private bool _starCostIsX;
     private bool _xPlusOnUpgrade;
     private int? _upgradeCost;
-    private bool _showPileCounts;
 
-    /// <summary>
-    /// 卡面 / 自定义描述里想写「当前抽牌堆 / 弃牌堆 / 消耗牌堆有几张」时勾上它。
-    ///
-    /// 勾上之后这张卡会声明三个**实时**动态变量：<c>{DrawPile}</c> / <c>{DiscardPile}</c> / <c>{ExhaustPile}</c>
-    /// （值在每次渲染卡面时现取牌堆张数 —— 本体没有这种变量，是我们生成的 ForgePileCountVar）。
-    /// 不勾就不声明（默认逐字不变的回归红线：老存档生成的代码一个字符都不多）。
-    /// </summary>
-    public bool ShowPileCounts
-    {
-        get => _showPileCounts;
-        set => Set(ref _showPileCounts, value);
-    }
+    // ⚠ V0.2.130 按用户要求删掉了 `ShowPileCounts`（「卡面显示牌堆张数（{DrawPile}/{DiscardPile}/{ExhaustPile}）」）。
+    //   老存档里那个字段（`"ShowPileCounts": true`）读进来会被 System.Text.Json **直接忽略**
+    //   （ProfileFactory.JsonOpts 没有开 UnmappedMemberHandling.Disallow，未知成员一律跳过），
+    //   不报错、不会拦住加载；再次保存时这个字段自然消失 —— 见 docs\QUEUE.md 第 17 批的口径说明。
 
     public string Name { get => _name; set => Set(ref _name, value); }
     /// <summary>英文类名，留空自动生成 &lt;角色类名&gt;Card&lt;序号&gt;</summary>
@@ -2300,6 +2291,77 @@ public sealed class CardSpec : SpecBase
             return StarCostIsX ? " + 资源量X" : "";
         }
     }
+
+    // ===== 左侧列表的序号（用户要求第 1 条：序号在卡牌名最左侧、从上到下 1..N，
+    //       序号是**位置号**、不跟随卡牌移动）=====
+    private int _ordinal;
+
+    /// <summary>
+    /// 这张卡在 <c>Profile.Cards</c> 里的**当前位置**（1 起算），只给界面显示用。
+    ///
+    /// <para>⚠ 它**不写进存档**（<see cref="JsonIgnoreAttribute"/>）：序号是「当前的排序位置」，
+    /// 不是跟着卡牌走的标记 —— 拖动换位置 / 删掉中间一张之后，由界面自己的
+    /// <c>RefreshCardOrdinals</c> 重新发一遍。和 <see cref="RelicSpec.Ordinal"/> /
+    /// <see cref="PotionSpec.Ordinal"/> 同一套做法（写进存档会给老存档多一个字段）。</para>
+    ///
+    /// <para>⚠ 按用户拍板 Q5 = A，**序号口径 = 列表里全部行**：本体卡 / 初始的打击与防御也占号
+    /// （它们在卡牌列表最上面，就是第 1、2 号）。自动英文类名跟的就是这个号。</para>
+    /// </summary>
+    [JsonIgnore]
+    public int Ordinal { get => _ordinal; set => Set(ref _ordinal, value); }
+
+    // ===== 「自动类名」的痕迹（用户要求第 1 条：自动的跟序号走、手填的不动）=====
+    private int _lastAutoOrdinal;
+
+    /// <summary>
+    /// 上一次生成时，这张卡的「自动类名」是第几号（对应 <c>&lt;角色类名&gt;Card&lt;它&gt;</c>）。
+    ///
+    /// <para>⚠ 和遗物 / 药水那边同一个理由：英文类名留空时**类名本身要保持空白**（一写实就再也分不出
+    /// 「工具生成的」和「用户手打的」—— 见 <c>Naming.RenumberCardClassNames</c> 的注释）。
+    /// 但界面上「英文类名」那一栏总得让用户看到「不填会用哪个名字」，所以单独把**序号**记在这里，
+    /// 由 <see cref="AutoClassNameHint"/> 拼出完整名字。不写进存档。</para>
+    ///
+    /// <para>⚠ 这个号是**全部卡（普通卡 + 诅咒 + 先古卡）里连续编号**的那个号，普通卡的号正好等于它在
+    /// 「卡牌」列表里的行号；诅咒 / 先古卡排在普通卡后面，所以它们的号会比各自列表里的行号大。</para>
+    /// </summary>
+    [JsonIgnore]
+    public int LastAutoOrdinal { get => _lastAutoOrdinal; set => Set(ref _lastAutoOrdinal, value); }
+
+    /// <summary>界面用：不填类名时，这张卡会用哪个自动名（还没生成过就按当前行号推）。</summary>
+    [JsonIgnore]
+    public string AutoClassNameHint
+    {
+        get
+        {
+            int n = _lastAutoOrdinal >= 1 ? _lastAutoOrdinal : _ordinal;
+            return "<角色类名>Card" + (n >= 1 ? n : 1);
+        }
+    }
+
+    /// <summary>
+    /// 界面用：这张卡的英文类名现在是不是「自动生成的那一个」
+    /// （判据 = <see cref="Generation.Naming.IsAutoCardClassNameFor"/>，按名字形状认；
+    /// 认不出的都当手填）。
+    /// </summary>
+    [JsonIgnore]
+    public bool ClassNameIsAuto =>
+        !Generation.Naming.IsValidIdentifier(_className)
+        || Generation.Naming.IsAutoCardClassNameFor(null, _className);
+
+    /// <summary>界面用：「英文类名」那一栏下面那行小字。</summary>
+    [JsonIgnore]
+    public string ClassNameHint => ClassNameIsAuto
+        ? "留空 = 自动。现在对应 " + AutoClassNameHint + "（重新生成 / 构建时按左边列表的序号重算，拖动换位置就跟着变）。"
+        : "现在这个名字是**你手填的**：重新生成 / 构建都不会改它（想让它跟着序号走就把这一栏清空）。";
+
+    /// <summary>界面用：左侧列表那一行的提示（序号 + 类名是自动还是手填）。</summary>
+    [JsonIgnore]
+    public string RowTip => "第 " + (_ordinal >= 1 ? _ordinal : 0) + " 位 ｜ "
+        + (ClassNameIsAuto ? "英文类名自动（跟序号走）" : "英文类名手填（不会自动改）") + " ｜ 可以拖动这一行换位置";
+
+    /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
+    [JsonIgnore]
+    public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
 }
 
 /// <summary>

@@ -54,6 +54,18 @@ public static class ModGenerator
         int potionRenumbered = n.RenumberPotionClassNames(profile.Potions);
         if (potionRenumbered > 0)
             Log($"  药水英文类名已按当前顺序重新编号（自动名 / 没填类名的 {potionRenumbered} 瓶；手填的没动）");
+        // 卡牌同理（用户要求第 1 条《卡牌页优化.md》，拍板 Q5 = A）：
+        // 序号口径 = **列表里全部行**（本体卡 / 初始打击防御也占号），自动名跟着这个号走。
+        // 语义：手填的一律不动 / 工具自动生成的按当前行号重命名 / 没填的保持留空只记序号。
+        // ⚠ 同样必须在 NameStabilizer 的 Freeze 之前（Freeze 会把留空的卡牌类名永久写实）。
+        // ⚠ 走 NameStabilizer.RenumberCardNames 而不是 Naming.RenumberCardClassNames：
+        //    卡牌是唯一一种**会被别的模型按类名引用**的东西（效果里的「目标卡」/「转化为先古卡」/
+        //    锻造图的「目标卡」字段），改号的同时必须把那些引用一起改掉，否则会指向同名的新主人。
+        var cardRenameNotes = new List<string>();
+        int cardRenumbered = NameStabilizer.RenumberCardNames(profile, cardRenameNotes);
+        if (cardRenumbered > 0)
+            Log($"  卡牌英文类名已按当前序号重新编号（自动名 / 没填类名的 {cardRenumbered} 张；手填的没动）");
+        foreach (string note in cardRenameNotes) Log("  " + note);
         if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
             profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
         string root = ProjectRootOf(profile);
@@ -157,9 +169,9 @@ public static class ModGenerator
             if (clickPatch.Length > 0)
                 ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.RelicClickPatchFile + ".cs"), clickPatch);
         }
-        // 牌堆实时张数的动态变量：只有真的有卡勾了「卡面显示牌堆张数」才写（不勾 = 一个文件都不多）
-        if (ForgeGraphGen.NeedsPileCountVars(profile))
-            ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.PileCountFile + ".cs"), ForgeGraphGen.PileCountSource(profile));
+        // ⚠ V0.2.130：原来这里写「牌堆实时张数」的辅助文件（cs/ForgePileCountVar.cs）——
+        //    用户要求整块去掉「卡面显示牌堆张数（{DrawPile}/{DiscardPile}/{ExhaustPile}）」，
+        //    所以那个开关 / 那三个变量 / 这个辅助类**一起删了**（见 docs\QUEUE.md 第 17 批）。
         // 自定义状态的「覆盖血条」：只有真的配了颜色才写（不配 = 一个文件都不多，也不打那个补丁）
         if (HpBarOverlayGen.Needs(profile))
             ProjectFilesGen.WriteText(Path.Combine(cs, HpBarOverlayGen.File + ".cs"), HpBarOverlayGen.Source(profile));

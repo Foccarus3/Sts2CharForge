@@ -236,23 +236,142 @@ public sealed record Naming(
     public string SpecialFrameMaterial(string stem) => $"{CharSlug}_{stem}_frame";
 
     /// <summary>
-    /// 卡牌类名（没填类名时，按「这是第几张自有卡」自动编号）。
-    /// 为什么要单独一个重载：初始卡组里的本体卡（打击 / 防御）排在卡牌列表最上面，
-    /// 如果按<b>列表下标</b>编号，没填类名的卡会因为前面多了两条本体卡而集体改名
-    /// （类名一变，卡面素材文件名、存档里的引用全都跟着错位）。本体卡不占号，自有卡永远从 1 开始数。
+    /// 卡牌类名（没填类名时，按它**在列表里是第几行**自动编号，1 起算）。
+    ///
+    /// <para>编号口径（用户拍板 Q5 = A）：**列表里每一行都占号** —— 本体卡 / 初始的打击与防御
+    /// 也占（它们固定排在卡牌列表最前面，各占第 1、2 号）。用户原话的验收场景：
+    /// 「sparkle 存档里『面具虚影』在卡牌中排第三张 → 对应左侧序列号 3 → 删掉英文类名后生成 SparkleCard3」。</para>
+    ///
+    /// <para>⚠ 老口径是「只数自有卡」（打击 / 防御不占号），V0.2.130 按用户拍板改成「全部行」——
+    /// 这会让既有存档里**工具自动生成的**类名集体改号（手填的一个字不动、没填的仍按新序号拼），
+    /// 所以生成前必须先跑 <see cref="RenumberCardClassNames"/> 把自动名按新序号重排一遍。
+    /// 见 <c>docs\QUEUE.md</c> 第 17 批里那张「改前 → 改后」映射表。</para>
+    ///
+    /// <para>为什么把**诅咒 / 先古卡**也一起数进去：它们和普通卡用同一个命名空间，
+    /// 各自从 1 开始编号会撞类名 → 本体注册时 DuplicateModelException，模组直接加载不了。
+    /// 它们排在 <see cref="CharacterProfile.AllCards"/> 的后面（Cards → Curses → AncientCards），
+    /// 所以普通卡的号仍然等于它在「卡牌」列表里的行号。</para>
     /// </summary>
     public string CardClassName(CharacterProfile p, CardSpec c)
     {
         if (IsValidIdentifier(c.ClassName)) return EmittedCardClass(c.ClassName!.Trim());
-        int own = 0;
-        // 自动编号要把**诅咒 / 先古卡**一起数进去（它们和普通卡用同一个命名空间，
-        // 各自从 1 开始编号会撞类名 → 本体注册时 DuplicateModelException，模组直接加载不了）。
+        int row = 0;
         foreach (var x in p.AllCards)
         {
             if (ReferenceEquals(x, c)) break;
-            if (!x.IsVanillaCard && !x.IsStartingBasic) own++;      // 初始的打击 / 防御不占号
+            row++;
         }
-        return CharClass + "Card" + (own + 1).ToString();
+        return CharClass + "Card" + (row + 1).ToString();
+    }
+
+    /// <summary>
+    /// 这个名字是不是「本工具自动生成过的卡牌类名」：<c>&lt;角色类名&gt;Card&lt;数字&gt;</c>（1 起算）。
+    ///
+    /// <para>和 <see cref="IsAutoRelicClassName"/> / <see cref="IsAutoPotionClassName"/> 同一个理由
+    /// （用户要求第 1 条）：重新生成 / 构建的时候，**没填英文类名**的卡要先清掉以前自动生成的那个类名，
+    /// 再按它**现在的行号**重新生成；但**用户手填的类名绝不能被清掉**，所以必须能把两者区分开。</para>
+    ///
+    /// <para>⚠ 判据是**按名字形状认**（整串正好是 <c>角色类名 + Card + 数字</c>），不加存档字段
+    /// —— 理由见 <see cref="IsAutoRelicClassNameFor"/> 的注释（老存档一个字节都不用改）。
+    /// 命中面窄：<c>SparkleCardMask</c> / <c>Abb2</c> / 别的角色前缀都不算。</para>
+    /// </summary>
+    public bool IsAutoCardClassName(string? className) => IsAutoCardClassNameFor(CharClass, className);
+
+    /// <summary>
+    /// 同上，但可以**不依赖一份配好的 <see cref="Naming"/>**（给界面 / 模型用：
+    /// <see cref="Sts2CharForge.Core.Profile.CardSpec"/> 自己不知道角色类名，只想知道
+    /// 「这串名字长得像不像自动编号」，所以把角色类名留空 = 只按**形状**判断
+    /// —— 任意一串「英文标识 + Card + 数字」都算）。
+    /// </summary>
+    public static bool IsAutoCardClassNameFor(string? charClass, string? className)
+    {
+        if (string.IsNullOrWhiteSpace(className)) return false;
+        string s = className.Trim();
+        int at = s.LastIndexOf("Card", StringComparison.Ordinal);
+        if (at < 0) return false;
+        string prefix = s.Substring(0, at + "Card".Length);
+        string digits = s.Substring(at + "Card".Length);
+        // 前缀必须是「角色类名」本身（给了 charClass 时）或一个合法英文标识
+        if (!string.IsNullOrWhiteSpace(charClass))
+        {
+            if (!string.Equals(prefix, charClass!.Trim() + "Card", StringComparison.Ordinal)) return false;
+        }
+        else if (!IsValidIdentifier(prefix)) return false;
+        if (digits.Length == 0) return false;
+        for (int i = 0; i < digits.Length; i++)
+            if (digits[i] < '0' || digits[i] > '9') return false;
+        // 编号得是合法正整数：`...Card0` 不是自动生成出来的（人手打的）
+        return int.TryParse(digits, out int n) && n >= 1;
+    }
+
+    /// <summary>
+    /// 生成前的「卡牌自动类名重新编号」（用户要求第 1 条）：语义和
+    /// <see cref="RenumberRelicClassNames"/> / <see cref="RenumberPotionClassNames"/> **完全一致**，
+    /// 只是对象换成 <see cref="CardSpec"/>（<paramref name="cards"/> 传
+    /// <see cref="CharacterProfile.AllCards"/> —— 普通卡 + 诅咒 + 先古卡是**一条连续编号**）：
+    /// <list type="bullet">
+    /// <item>没填英文类名的 → 记下它**当前行号**对应的自动名（<see cref="CardSpec.LastAutoOrdinal"/>，
+    ///       类名本身**留空** —— 生成端 / 校验器读 <see cref="CardClassName(CharacterProfile, CardSpec)"/>
+    ///       时自己会拼出来）；</item>
+    /// <item>写着本工具以前自动生成的那个名字的（<see cref="IsAutoCardClassName"/>）→ 改成**当前行号**对应的名字
+    ///       （拖到哪就跟着哪）；</item>
+    /// <item>用户手填的（认不出是自动名的）→ 一个字都不动。</item>
+    /// </list>
+    ///
+    /// <para>⚠ 为什么「没填」的**不写实**：一写实就再也分不出「这串名字是工具生成的」还是「用户手打的」——
+    /// 用户手打一个正好长得像自动编号的名字时，下一次生成会被当成自动名改写；
+    /// 留空 + 单独记序号，两边都不会误判（生成端读
+    /// <see cref="CardClassName(CharacterProfile, CardSpec)"/> 时自己会拼出来）。</para>
+    ///
+    /// <para>⚠ 为什么自动名也要「跟着拖」：这正是用户要的（「重新生成构建的时候，如果没有填写英文类名，
+    /// 自动清除之前自动生成的英文类名，然后按照左侧序列号生成对应的英文类名」）。
+    /// 这一步**必须排在 <c>NameStabilizer.Freeze</c> 之前** —— Freeze 会把留空的类名永久写实。</para>
+    ///
+    /// <para>返回「按新行号重算了几张」。**幂等**：编号正好对上的不会被动。</para>
+    ///
+    /// <para><paramref name="renamedOut"/> 非空时，把「这一次真的改了名的卡」记成
+    /// <c>旧类名 → 新类名</c>（给 <see cref="NameStabilizer.RenumberCardNames"/> 用：
+    /// 类名改掉以后，别的效果里按类名存的「目标卡 / 先古卡」引用**必须跟着改**，
+    /// 否则它们会指向同名的新主人或者干脆不存在）—— 见那里的说明。</para>
+    /// </summary>
+    public int RenumberCardClassNames(IEnumerable<CardSpec> cards, IDictionary<string, string>? renamedOut = null)
+    {
+        int renumbered = 0;
+        int index = 0;
+        foreach (var c in cards)
+        {
+            if (c is null) { index++; continue; }
+            string want = CharClass + "Card" + (index + 1).ToString();
+            if (IsValidIdentifier(c.ClassName))
+            {
+                // 有类名：只有「认得出是自动名」的才跟着行号走（手填的原样保留）；
+                // 自动名本来就正好等于当前行号那个名字的，就不用动（幂等：反复生成结果一样）
+                if (IsAutoCardClassName(c.ClassName))
+                {
+                    if (!string.Equals(c.ClassName!.Trim(), want, StringComparison.Ordinal))
+                    {
+                        renamedOut?.TryAdd(c.ClassName!.Trim(), want);
+                        c.ClassName = want;
+                        renumbered++;
+                    }
+                    // 和药水那版一致：界面上「英文类名」下面那行小字读 LastAutoOrdinal，
+                    // 「行号早就等于自动名」的分支也要同步好，否则小字还写着上一个号、界面自相矛盾。
+                    // 这个字段是 [JsonIgnore]，不写存档、不参与生成，改了不影响老存档的生成结果。
+                    if (c.LastAutoOrdinal != index + 1) c.LastAutoOrdinal = index + 1;
+                }
+            }
+            else
+            {
+                // 没填类名：只记「这个位置对应的自动名是第几号」，类名留空（生成端会自己拼）
+                if (c.LastAutoOrdinal != index + 1)
+                {
+                    c.LastAutoOrdinal = index + 1;
+                    renumbered++;
+                }
+            }
+            index++;
+        }
+        return renumbered;
     }
 
     public string RelicClassName(RelicSpec r, int index) =>

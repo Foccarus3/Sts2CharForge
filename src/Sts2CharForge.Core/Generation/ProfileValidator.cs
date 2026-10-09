@@ -612,6 +612,28 @@ public static class ProfileValidator
             string cls = n.CardClassName(p, c);
             if (!cardNames.Add(cls))
                 issues.Add(new("错误", $"卡牌类名重复：{cls}（自定义卡牌的英文类名需唯一）。"));
+            // 「自动类名跟序号走」（用户要求第 1 条《卡牌页优化.md》，拍板 Q5 = A）不许**静默**生效：
+            // 用户手打了一个正好长得像自动编号的名字（`<角色类名>Card<数字>`）、而那个数字和它现在排的
+            // 位置对不上时，下一次生成 / 构建会被按当前位置改名（`Naming.RenumberCardClassNames`）
+            // —— 这种「名字会被改掉」的事必须在报告里明说，否则用户只会看到「我没改它，它自己变了」。
+            // 名字数字 == 当前位置（幂等那条路）就不报，免得每次生成都刷一行没用的提示。
+            // ⚠ 比的是「这个位置**应该**用的自动名」，不能用 n.CardClassName(p, c) ——
+            // 那个函数在有类名时原样返回用户的类名，一比就永远相等、永远不报。
+            // ⚠ 号的口径和 Naming.CardClassName 完全一致：**AllCards 里连续编号**（卡牌 → 诅咒 → 先古卡），
+            // 所以普通卡的号正好等于它在「卡牌」列表里的行号（本体卡 / 初始打击防御也占号）。
+            // ⚠ 这里用**带角色类名**的判据（`n.IsAutoCardClassName`）：生成端
+            // `RenumberCardClassNames` 用的就是它，两边必须一字不差 —— 用「只按形状认」那版
+            // 会对手打的 `MyCard1`（本角色类名不是 My）报一条永远不会发生的「下次会改名」。
+            if (n.IsAutoCardClassName(c.ClassName))
+            {
+                int autoRow = 0;
+                foreach (var x in p.AllCards) { if (ReferenceEquals(x, c)) break; autoRow++; }
+                string wantAuto = n.CharClass + "Card" + (autoRow + 1).ToString();
+                if (!string.Equals(c.ClassName!.Trim(), wantAuto, StringComparison.Ordinal))
+                    issues.Add(new("提示", $"卡牌「{c.Name}」的英文类名 {c.ClassName.Trim()} 长得像**工具自动生成的编号**，"
+                        + $"但它现在排第 {autoRow + 1} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
+                        + "如果你想让它固定不变，请换一个不像自动编号的名字（例：SevenSlash）。"));
+            }
             // 多人联机：本体模型 ID 只看**类名**（不含命名空间），而且联机时所有人的模组都得装齐 ——
             // 两个模组里有同名类就会在加载模型库时抛 DuplicateModelException（游戏起不来）。
             // 自己起的类名带上角色类名前缀最省事（自动生成的类名已经带了，所以这里只提醒手填的那些）。

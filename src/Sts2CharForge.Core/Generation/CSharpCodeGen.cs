@@ -2225,20 +2225,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return list;
     }
 
-    /// <summary>
-    /// 「牌堆实时张数」这三个占位符（需求原文：「自定义描述怎么没有从抽牌堆 / 消耗牌堆 / 弃牌堆的数量参数了」）。
-    ///
-    /// 它们不是效果带来的变量，而是**卡牌自己的**三个动态变量（勾了「卡面显示牌堆张数」才声明，
-    /// 见 <see cref="ForgeGraphGen.PileCountSource"/>），所以单独列一份给「填入参数…」菜单用。
-    /// 只有卡牌能用（遗物 / 药水没有牌堆这个上下文）。
-    /// 注意**不带 <c>:diff()</c>**：牌堆张数每一刻都在变，没有「升级后」这一说。
-    /// </summary>
-    public static IReadOnlyList<(string Token, string Desc)> PileCountHints { get; } = new[]
-    {
-        ("{DrawPile}", "抽牌堆现在有几张"),
-        ("{DiscardPile}", "弃牌堆现在有几张"),
-        ("{ExhaustPile}", "消耗牌堆现在有几张"),
-    };
+    // ⚠ V0.2.130 用户要求删掉整块「卡面显示牌堆张数」：原来这里有一份 PileCountHints
+    //   （{DrawPile} / {DiscardPile} / {ExhaustPile} 三个占位符），连同「填入参数…」菜单里
+    //   那三个候选与那句提示一起删了。老存档里写了这三个占位符的自定义描述会原样留在文本里
+    //   （本体运行时替换不了它们，卡面上就按字面显示）—— 这是用户明确要求的取舍，见 QUEUE 第 17 批。
 
     /// <summary>
     /// 这个模型的动态变量「基础名」清单（用来校验有没有同种变量出现多次）。
@@ -3600,14 +3590,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         bool anyPetCmdMissing = varOrder.Any(x => CanonicalVarNeedsPetCmd(x) && PetGen.Resolve(p, x.PetSummon) is null);
         foreach (var e in varOrder.Where(x => !HasNoDynamicVar(x)))
             w.Line($"    {VarDeclaration(e, cardVars, p)},");
-        // 「卡面显示牌堆张数」：声明三个**实时**变量（值在渲染时现取牌堆张数，见 ForgePileCountVar）。
-        // 只有勾了这个开关的卡才有这三行 —— 老存档生成的代码一个字符都不变。
-        if (c.ShowPileCounts)
-        {
-            w.Line($"    new {ForgeGraphGen.PileCountFile}({ForgeGraphGen.PileCountFile}.DrawPileName, PileType.Draw),");
-            w.Line($"    new {ForgeGraphGen.PileCountFile}({ForgeGraphGen.PileCountFile}.DiscardPileName, PileType.Discard),");
-            w.Line($"    new {ForgeGraphGen.PileCountFile}({ForgeGraphGen.PileCountFile}.ExhaustPileName, PileType.Exhaust),");
-        }
+        // ⚠ V0.2.130：原来这里在 c.ShowPileCounts 为真时声明三个 ForgePileCountVar
+        //   （{DrawPile} / {DiscardPile} / {ExhaustPile}）—— 用户要求整块去掉，连变量声明一起删。
         w.Line("];");
         if (needsPetCmd && anyPetCmdMissing)
             w.Line("// ⚠ 上面这条「按生命值算」的宠物效果没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」"

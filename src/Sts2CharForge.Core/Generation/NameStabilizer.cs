@@ -151,6 +151,97 @@ public static class NameStabilizer
     }
 
     /// <summary>
+    /// 卡牌的「自动类名跟着序号走」+ **把按类名存的卡牌引用一起改过来**（V0.2.130 用户要求第 1 条）。
+    ///
+    /// <para>为什么不能只调 <see cref="Naming.RenumberCardClassNames"/>：卡牌是**唯一一种会被别的模型
+    /// 按类名引用**的东西（效果里的「目标卡」<c>SpawnCardId</c>、「转化为先古卡」的类名清单、
+    /// 锻造图里的「目标卡」字段）。遗物 / 药水重编号时没有这个问题（没人按类名引用它们）。
+    /// 自动名一改号，那些引用就会指向**同名的新主人**（比如原来叫 <c>XCard7</c> 的卡改成 <c>XCard4</c>
+    /// 之后，第 7 行那张卡正好也叫 <c>XCard7</c>）或者干脆不存在 —— 必须同一次改掉。
+    /// 靠 <see cref="RepairReferences"/> 那张「上一次构建的类名表」是**不够**的：那张表只在上一次
+    /// 构建真的落盘之后才对，而 CLI（<c>--build</c>）连着跑两次时存档一个字节都没变（用户没保存），
+    /// 表却已经翻到新一轮了 —— 实测就会出现「第一次生成对、第二次生成引用跑到别的卡身上」（不幂等）。</para>
+    ///
+    /// <para>这一步是**纯内存**变换（不改存档），所以「加载 → 生成」连跑多少次结果都一样：
+    /// 每次都从同一份存档出发、算出同一张「旧名 → 新名」表、改出同样的结果。</para>
+    /// </summary>
+    /// <param name="notes">改过哪些引用（给生成日志用）。</param>
+    /// <returns>按新序号重算了几张卡（和 <see cref="Naming.RenumberCardClassNames"/> 的计数一致）。</returns>
+    public static int RenumberCardNames(CharacterProfile p, List<string>? notes = null)
+    {
+        var renamed = new Dictionary<string, string>(StringComparer.Ordinal);
+        int count = Naming.From(p).RenumberCardClassNames(p.AllCards, renamed);
+        if (renamed.Count > 0) RepairCardClassReferences(p, renamed, notes);
+        return count;
+    }
+
+    /// <summary>
+    /// 把「按卡牌类名存的引用」按 <paramref name="renamed"/>（旧类名 → 新类名）改过来。
+    /// 覆盖：效果里的「目标卡」（<c>EffectSpec.SpawnCardId</c>，卡牌 / 遗物 / 药水 / 自定义状态 /
+    /// 额外资源量 / 锻造图效果模块都算）、「转化为先古卡」的类名清单、锻造图老字段里的「目标卡」。
+    /// </summary>
+    private static void RepairCardClassReferences(CharacterProfile p, Dictionary<string, string> renamed, List<string>? notes)
+    {
+        void Fix(EffectSpec? e, string where)
+        {
+            if (e is null) return;
+            string want = (e.SpawnCardId ?? "").Trim();
+            if (want.Length > 0 && renamed.TryGetValue(want, out string? to))
+            {
+                notes?.Add($"{where}引用的卡牌「{want}」已跟着新序号改成「{to}」");
+                e.SpawnCardId = to;
+            }
+            if (e.AncientRows is not { Count: > 0 }) return;
+            foreach (var row in e.AncientRows)
+            {
+                if (row?.AncientCards is null) continue;
+                for (int i = 0; i < row.AncientCards.Count; i++)
+                {
+                    string oldName = (row.AncientCards[i] ?? "").Trim();
+                    if (oldName.Length == 0 || !renamed.TryGetValue(oldName, out string? to2)) continue;
+                    notes?.Add($"{where}「转化为先古卡」里引用的「{oldName}」已跟着新序号改成「{to2}」");
+                    row.AncientCards[i] = to2;
+                }
+            }
+        }
+
+        foreach (var e in AllEffects(p)) Fix(e, "");
+        if (p.ExtraResource?.Effects is { } erEffects)
+            foreach (var e in erEffects) Fix(e, "额外资源量遗物的效果");
+        // 用户上传的卡面是按**类名**存的（`ArtSpec.CardPortraits[cls]`，见 ArtGenerator 与「上传卡面」）——
+        // 自动名改号之后那一条就再也对不上了，卡面会**静悄悄地退回占位图**。所以跟着搬一次。
+        // 目标键已经有图时不覆盖（那条老键就留着了，不丢数据，用户可以在界面上重传）。
+        if (p.Art?.CardPortraits is { Count: > 0 } portraits)
+        {
+            foreach (var (oldName, newName) in renamed)
+            {
+                if (!portraits.TryGetValue(oldName, out string? src) || string.IsNullOrWhiteSpace(src)) continue;
+                if (portraits.ContainsKey(newName)) continue;
+                portraits[newName] = src;
+                portraits.Remove(oldName);
+                notes?.Add($"上传的卡面（{oldName}）已跟着新类名挂到「{newName}」上");
+            }
+        }
+        foreach (var g in ForgeEffectBridge.GraphsOf(p))
+        {
+            if (g?.Nodes is null) continue;
+            foreach (var node in g.Nodes)
+            {
+                if (node is null) continue;
+                Fix(node.EffectSpec, "锻造图【效果】模块");
+                // ⚠ 老存档的【效果】模块以 Fields 为事实来源（EffectFromLegacy = true）——
+                //   spec 改了不算数，字段也要一起改。
+                string f = node.Get("SpawnCardId").Trim();
+                if (f.Length > 0 && renamed.TryGetValue(f, out string? to3))
+                {
+                    notes?.Add($"锻造图【效果】模块里「目标卡」填的「{f}」已跟着新序号改成「{to3}」");
+                    node.SetField("SpawnCardId", to3);
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// 这个「目标卡」引用现在应该指向哪张卡：
     ///   ① 类名表里记着它当时的名字 → 现在那张**同名**的卡（中间插 / 删导致编号变了时靠这条纠正）；
     ///   ② 否则：这个名字现在还能对上我们自己的卡 / 本体卡 → 不动（返回那张 / null）；
