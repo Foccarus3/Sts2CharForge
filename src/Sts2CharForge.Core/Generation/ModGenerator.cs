@@ -42,6 +42,12 @@ public static class ModGenerator
         int relicRenumbered = n.RenumberRelicClassNames(profile.Relics);
         if (relicRenumbered > 0)
             Log($"  遗物英文类名已按当前顺序重新编号（自动名 / 没填类名的 {relicRenumbered} 只；手填的没动）");
+        // 药水同理（用户要求第 6 条「药水方面参考遗物的优化方案」）：同一套语义、同一个位置。
+        // 语义：手填的一律不动 / 工具自动生成的按当前序号重命名 / 没填的保持留空只记序号。
+        // ⚠ 同样必须在 NameStabilizer 的 Freeze 之前（Freeze 会把留空的药水类名永久写实）。
+        int potionRenumbered = n.RenumberPotionClassNames(profile.Potions);
+        if (potionRenumbered > 0)
+            Log($"  药水英文类名已按当前顺序重新编号（自动名 / 没填类名的 {potionRenumbered} 瓶；手填的没动）");
         if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
             profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
         string root = ProjectRootOf(profile);

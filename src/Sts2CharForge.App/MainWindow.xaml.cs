@@ -338,6 +338,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			HookRelicListOrder();
 			SyncRelicRows();
 			RelicUiSelection = null;
+			// 药水页同理（V0.2.127：「药水方面参考遗物的优化方案」——序号 + 空槽 + 拖动）
+			HookPotionListOrder();
+			SyncPotionRows();
+			PotionUiSelection = null;
 			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
 			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
 			HookAnimationSpec();
@@ -448,6 +452,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public IReadOnlyList<RarityOption> RelicRarityOptions => EffectCatalog.RelicRarityOptions;
 
 	public IReadOnlyList<string> PotionRarities => EffectCatalog.PotionRarities;
+
+	/// <summary>
+	/// 药水稀有度下拉的界面选项（用户要求第 6 条「药水方面参考遗物的优化方案」
+	/// → 照抄遗物页第 3 条「稀有度英文改中文」）。显示中文（常见 / 罕见 / 稀有）、
+	/// 存的值还是 <see cref="EffectCatalog.PotionRarities"/> 里那串英文 id
+	/// （生成端写的是本体的 <c>PotionRarity</c> 枚举，老存档读得回来）。
+	/// </summary>
+	public IReadOnlyList<RarityOption> PotionRarityOptions => EffectCatalog.PotionRarityOptions;
 
 	public IReadOnlyList<string> PotionUsages => EffectCatalog.PotionUsages;
 
@@ -2607,6 +2619,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 遗物列表的「序号」（用户要求第 2 条）：载入存档后先算一遍，
 		// 并挂上 CollectionChanged —— 之后任何增删（撤回删除 / 导入 / 自检造数据）都会自动重排
 		HookRelicListOrder();
+		// 药水列表同理（V0.2.127：药水照抄遗物页的序号 + 空槽 + 拖动）——
+		// ⚠ 启动这条路径**不走 Profile 的 setter**（上面 RefreshAll 用的是 _profile 字段），
+		// 所以这里必须自己挂一次，否则 PotionRows 一直是空的（自检实测：镜像 0 行）。
+		HookPotionListOrder();
+		SyncPotionRows();
+		// 换存档（`Raise("Profile")`）：两个界面镜像集合必须跟着新存档重铺一遍。
+		//
+		// ⚠ 为什么非要在**通知**上做，而不是只在 <see cref="Profile"/> 的 setter 里做：
+		// 有几处历史自检是**直接给 `_profile` 字段赋值**再 `Raise("Profile")` 的（不走属性 setter），
+		// 那种路径下 setter 里那两条重铺根本不会跑。
+		// 以前这条链是被一个**副作用**兜住的：药水列表当时直接绑 `Profile.Potions`，
+		// `Raise("Profile")` 一刷新绑定就把选中项打断 → `PotionList.SelectionChanged` → `SyncDetail()`
+		// → `RefreshRelicOrdinals()` → `SyncRelicRows()` 的「挂错存档就重挂」自愈跑起来。
+		// V0.2.127 把药水列表改成绑 `PotionRows` 镜像（不再绑 Profile.*）之后，那条副作用没有了 ——
+		// 实测：「转化为先古卡」那组界面断言全红（RelicRows 还停在上一份存档的 5 只，选中的效果变成旧遗物的「获得格挡」）。
+		// 所以把这个契约**显式**写出来：收到「Profile 换了」的通知就把两个镜像重铺一遍（幂等，重复调没副作用）。
+		PropertyChanged += delegate(object? _, PropertyChangedEventArgs e)
+		{
+			if (e.PropertyName != "Profile") return;
+			HookRelicListOrder();
+			SyncRelicRows();
+			HookPotionListOrder();
+			SyncPotionRows();
+		};
 		CardList.SelectionChanged += delegate
 		{
 			SyncDetail();
@@ -2624,6 +2660,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		};
 		PotionList.SelectionChanged += delegate
 		{
+			// 「详情栏显隐」看的是列表里有没有选中一行（含空槽行），它不在 PotionUiSelection 的变化里，得单独通知一次
+			Raise("HasPotionSelection");
+			// ⚠ 正在铺镜像集合（SyncPotionRows）时**不要**再递归进 SyncDetail：
+			// 那一次选中变化是 PotionRows.Clear() / SelectedItem = null 自己引发的，外层那次 SyncDetail
+			// 会把该做的（数据上下文 / 效果列表绑定 / 显隐）全做完。递归进去的坏处是**时机**：
+			// 那一刻遗物页的镜像集合还没铺完（RelicUiSelection 还是上一份存档的那只），
+			// 这一层会把 RelicEffectList 的数据源绑到**旧遗物**身上 —— 实测踩到：「转化为先古卡」
+			// 那一组界面断言全红（选中的效果变成了旧遗物的「获得格挡」）。
+			if (_inSyncPotionRows) return;
 			SyncDetail();
 		};
 		// 「自定义关键词」和「召唤物」两个列表也必须接上 —— 详情是「换选中项 → 重新指向新对象」，
@@ -2680,9 +2725,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RefreshRelicUiSelection();
 		// 增删 / 撤回 / 换存档之后列表选中项可能自己变成 null（不是通过点击），显隐判据要重算一遍
 		Raise("HasRelicSelection");
+		// 药水页同理（V0.2.127）：序号 / 空槽行 + 「当前选中的是哪瓶真药水」
+		RefreshPotionOrdinals();
+		RefreshPotionUiSelection();
+		Raise("HasPotionSelection");
 		CardDetail.DataContext = CardList.SelectedItem;
 		RelicDetail.DataContext = RelicUiSelection;
-		PotionDetail.DataContext = PotionList.SelectedItem;
+		PotionDetail.DataContext = PotionUiSelection;
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
 		Raise("KeywordChoices");
@@ -2700,7 +2749,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RaisePetSummonChoices();
 		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
 		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("RelicRows") { Source = this });
-		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
+		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("PotionRows") { Source = this });
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
 		SummonList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Summons"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
@@ -2746,7 +2795,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// 认一遍「界面上当前选中的那一只真遗物」：选中项是真遗物就跟着它；选中项是空槽行时**保持不变**
 	/// （用户要的是「空槽不能被当成遗物」，不是「点一下空槽就把右边详情清空」）。
 	///
-	/// <para>⚠ 判据是 <c>is RelicSpec</c> 而不是 cast：空槽行 <c>RelicSlotPlaceholder</c> 不是 <c>RelicSpec</c>
+	/// <para>⚠ 判据是 <c>is RelicSpec</c> 而不是 cast：空槽行 <c>SlotPlaceholder</c> 不是 <c>RelicSpec</c>
 	/// —— 这一条就是「空槽不可能变成 RelicUiSelection / 污染 RelicSpec 相关逻辑」的保证；
 	/// 配套的 <c>SelectedOf&lt;RelicSpec&gt;</c> / 全选里的 <c>IsPlaceholder</c> 跳过也是同一个道理。</para>
 	/// </summary>
@@ -5327,9 +5376,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		int skipped = 0;
 		foreach (object item in (IEnumerable)lb.Items)
 		{
-			// 遗物页末尾那些**空槽行**（RelicSlotPlaceholder）不能被选中：它们不是遗物，
-			// 一起选中会污染「选中几只遗物 / 删除 / 全选」这些统计（真遗物集合里根本没它们）。
-			if (item is IRelicSlotRow { IsPlaceholder: true })
+			// 遗物页 / 药水页末尾那些**空槽行**（SlotPlaceholder）不能被选中：它们不是遗物 / 药水，
+			// 一起选中会污染「选中几只 / 删除 / 全选」这些统计（真集合里根本没它们）。
+			if (item is ISlotRow { IsPlaceholder: true })
 			{
 				skipped++;
 				continue;
@@ -5853,7 +5902,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	// 比如有 3 个选项时，左侧序号显示 1~5，加第 6 个的时候，显示 6~10.」）：
 	//   列表里显示的**行数** = 5 × ceil(max(N,1) / 5)，N = 真遗物数（Profile.Relics 是唯一事实来源）。
 	//   3 只 → 1~5 行（4、5 是空槽）；5 只 → 1~5；6 只 → 1~10（7~10 是空槽）；11 只 → 1~15。
-	//   空槽行 = Reactive 的**界面占位项**（RelicSlotPlaceholder），只显示灰色序号、没有内容、
+	//   空槽行 = Reactive 的**界面占位项**（SlotPlaceholder），只显示灰色序号、没有内容、
 	//   不能被当成遗物选中，但可以当拖放落点（拖到第 k 行 = 放到第 k 位，夹到合法范围）。
 	// ⚠ 空槽**只在** RelicRows 这个界面镜像集合里；Profile.Relics 里永远只有真遗物。
 
@@ -5994,7 +6043,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			for (int i = relics.Count; i < total; i++)
 			{
-				if (RelicRows[i] is not RelicSlotPlaceholder ph || ph.Slot != i + 1) { inPlace = false; break; }
+				if (RelicRows[i] is not SlotPlaceholder ph || ph.Slot != i + 1) { inPlace = false; break; }
 			}
 		}
 		if (inPlace) return;
@@ -6012,7 +6061,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 末尾补齐空槽：序号就按「行号」给，凑满当前这一块（1~5 / 1~10 / 1~15…）
 		for (int i = relics.Count; i < total; i++)
 		{
-			RelicRows.Add(new RelicSlotPlaceholder(i + 1));
+			RelicRows.Add(new SlotPlaceholder(i + 1));
 		}
 	}
 
@@ -6141,6 +6190,283 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		return true;
 	}
 
+	// ==================== 药水列表：序号 + 空槽 + 拖动换位置（用户要求第 6 条「药水方面参考遗物的优化方案」）====================
+	//
+	// 照遗物页那套**逐字搬过来**（V0.2.125 的「每块 5 个预留空槽」+ V0.2.124 的「左侧序号 / 拖动 / 自动类名跟序号走」）：
+	//   行数 = 5 × ceil(max(N, 1) / 5)，N = 真药水数（Profile.Potions 是唯一事实来源）：
+	//   3 瓶 → 1~5 行（4、5 是空槽）；5 瓶 → 1~5；6 瓶 → 1~10（7~10 是空槽）。
+	//   序号是**位置号**（1..N 连续）、不跟随药水移动；空槽只显示灰色序号，
+	//   不能被当成药水选中（不污染选中 / 删除 / 全选 / 生成），但可以当拖放落点。
+	// ⚠ 空槽**只在** PotionRows 这个界面镜像集合里；Profile.Potions 里永远只有真药水。
+
+	/// <summary>每「一块」预留多少个序号（和遗物页同一个数：一次多生成五个序号）。</summary>
+	internal const int PotionSlotsPerBlock = 5;
+
+	/// <summary>
+	/// 药水页左侧列表**真正绑的那个集合**：真药水（按 <c>Profile.Potions</c> 的顺序）+ 末尾的空槽行。
+	///
+	/// <para>为什么要镜像一层：<c>Profile.Potions</c> 是 <c>ObservableCollection&lt;PotionSpec&gt;</c>，
+	/// 塞不进占位项；而且「真药水集合 = 唯一事实来源」这条不能破 —— 所以占位项只活在这个界面集合里，
+	/// 由 <see cref="SyncPotionRows"/> 单向从 <c>Profile.Potions</c> 铺出来。</para>
+	///
+	/// <para>⚠ 必须是 <c>public</c>，不能是 <c>internal</c>：WPF 的 <c>PropertyPath</c> 走反射时
+	/// **读不到 internal 成员**（遗物页实测踩过：绑 internal 字段时绑定状态直接是 <c>PathError</c>、
+	/// <c>ItemsSource</c> 永远是 null，界面上一行都没有）。</para>
+	/// </summary>
+	public ObservableCollection<ISlotRow> PotionRows { get; } = new();
+
+	/// <summary>
+	/// 界面上「当前选中的那一瓶真药水」：选中项是真药水就是它；点中空槽行时**保持上一瓶**
+	/// （点空槽不该把右边详情清空）。详情栏的数据上下文绑它。
+	/// </summary>
+	public PotionSpec? PotionUiSelection
+	{
+		get => _potionUiSelection;
+		private set
+		{
+			if (!ReferenceEquals(_potionUiSelection, value))
+			{
+				_potionUiSelection = value;
+				Raise("PotionUiSelection");
+			}
+		}
+	}
+
+	private PotionSpec? _potionUiSelection;
+
+	/// <summary>
+	/// 详情栏 / 「请选择药水」提示的显隐判据：**列表里有没有选中一行**（选中的那行是空槽也算选了
+	/// —— 空槽行照样是列表里的一行，右侧详情不该闪没）。
+	/// </summary>
+	public bool HasPotionSelection => PotionList?.SelectedItem is not null;
+
+	/// <summary>序号行数：<c>5 × ceil(max(N,1) / 5)</c>（N=0 也显示 1~5）。</summary>
+	internal static int PotionSlotRowCount(int potionCount)
+	{
+		int n = Math.Max(potionCount, 1);
+		return ((n + PotionSlotsPerBlock - 1) / PotionSlotsPerBlock) * PotionSlotsPerBlock;
+	}
+
+	/// <summary>给每瓶药水重新发一遍「我在列表里排第几」（1 起算），再把界面镜像集合铺一遍。</summary>
+	internal void RefreshPotionOrdinals()
+	{
+		if (_profile?.Potions is null) return;
+		for (int i = 0; i < _profile.Potions.Count; i++)
+		{
+			PotionSpec? s = _profile.Potions[i];
+			if (s is not null) s.Ordinal = i + 1;
+		}
+		SyncPotionRows();
+	}
+
+	/// <summary>
+	/// 把界面镜像集合铺成「真药水 1..N + 空槽 N+1..5×ceil(N/5)」。
+	///
+	/// <para>⚠ 和遗物页一样有两个坑要一起挡：
+	/// ① <c>Clear()</c> 会让列表的选中项被 WPF 清掉 → 触发 <c>SelectionChanged → SyncDetail → 又回到这里</c>
+	/// 的**重入**，两次调用各按自己那份快照铺一遍 → 差一行的陈旧状态（遗物页实测踩到）；
+	/// ② 有几处历史代码直接给 <c>Profile</c> 字段赋值（不走属性 setter），
+	/// <c>CollectionChanged</c> 还挂在**上一份存档**上 → 这里发现不一致就重挂一次。</para>
+	/// </summary>
+	internal void SyncPotionRows()
+	{
+		if (_profile?.Potions is null) return;
+		if (!ReferenceEquals(_potionOrderHookedOn, _profile)) HookPotionListOrder();
+		if (_inSyncPotionRows)
+		{
+			_potionRowsDirty = true;
+			return;
+		}
+		_inSyncPotionRows = true;
+		try
+		{
+			do
+			{
+				_potionRowsDirty = false;
+				SyncPotionRowsCore();
+			}
+			while (_potionRowsDirty);
+		}
+		finally
+		{
+			_inSyncPotionRows = false;
+		}
+	}
+
+	private bool _inSyncPotionRows;
+
+	private bool _potionRowsDirty;
+
+	private void SyncPotionRowsCore()
+	{
+		if (_profile?.Potions is null) return;
+		IList<PotionSpec> potions = _profile.Potions;
+		int total = PotionSlotRowCount(potions.Count);
+		bool inPlace = PotionRows.Count == total;
+		if (inPlace)
+		{
+			for (int i = 0; i < potions.Count; i++)
+			{
+				if (!ReferenceEquals(PotionRows[i], potions[i])) { inPlace = false; break; }
+			}
+		}
+		if (inPlace)
+		{
+			for (int i = potions.Count; i < total; i++)
+			{
+				if (PotionRows[i] is not SlotPlaceholder ph || ph.Slot != i + 1) { inPlace = false; break; }
+			}
+		}
+		if (inPlace) return;
+		if (PotionList is not null && PotionList.SelectedItem is ISlotRow)
+		{
+			PotionList.SelectedItem = null;
+		}
+		PotionRows.Clear();
+		for (int i = 0; i < potions.Count; i++)
+		{
+			if (potions[i] is not null) PotionRows.Add(potions[i]);
+		}
+		for (int i = potions.Count; i < total; i++)
+		{
+			PotionRows.Add(new SlotPlaceholder(i + 1));
+		}
+	}
+
+	/// <summary>只挂一次：药水列表增删 → 重排序号 + 重铺空槽。</summary>
+	private void HookPotionListOrder()
+	{
+		if (ReferenceEquals(_potionOrderHookedOn, _profile)) return;
+		if (_potionOrderHookedOn is not null) _potionOrderHookedOn.Potions.CollectionChanged -= OnPotionCollectionChanged;
+		_potionOrderHookedOn = _profile;
+		if (_profile?.Potions is null) return;
+		_profile.Potions.CollectionChanged += OnPotionCollectionChanged;
+		RefreshPotionOrdinals();
+	}
+
+	private void OnPotionCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshPotionOrdinals();
+
+	/// <summary>已经挂过 <c>CollectionChanged</c> 的那份存档（换存档时先摘再重挂，避免重复订阅）。</summary>
+	private CharacterProfile? _potionOrderHookedOn;
+
+	/// <summary>认一遍「界面上当前选中的那一瓶真药水」（选中项是空槽行 / 已失效时就保持 / 清空）。</summary>
+	private void RefreshPotionUiSelection()
+	{
+		if (PotionList?.SelectedItem is PotionSpec sel && _profile.Potions.Contains(sel))
+		{
+			PotionUiSelection = sel;
+			return;
+		}
+		if (_potionUiSelection is not null && !_profile.Potions.Contains(_potionUiSelection)) PotionUiSelection = null;
+	}
+
+	// 拖动换位置：MouseDown 记起点 → MouseMove 超过系统阈值才开始拖 → Drop 真插进去
+	private Point _potionDragStart;
+	private PotionSpec? _potionDragItem;
+
+	/// <summary>拖动换位置：按住某一行的文字往下 / 往上拖超过系统拖动阈值才起拖（不然点一下选中会被当成拖动）。</summary>
+	private void OnPotionListPreviewMouseDown(object sender, MouseButtonEventArgs e)
+	{
+		_potionDragStart = e.GetPosition(PotionList);
+		_potionDragItem = PotionAtPoint(e.GetPosition(PotionList));
+	}
+
+	/// <summary>
+	/// 鼠标位置下面是**哪一行**（可视树往上找 ListBoxItem，再按它在列表里的位置给行号）。
+	/// 返回值里 <c>Potion</c> 为 null = 那一行是空槽（或鼠标下面是列表空白处）。
+	///
+	/// <para>为什么要给行号而不是只给药水：空槽行也要能当**拖放落点**（拖到第 k 行 = 放到第 k 位），
+	/// 而空槽行没有 <c>PotionSpec</c> 可以拿。</para>
+	/// </summary>
+	private (int Index, PotionSpec? Potion) PotionRowAtPoint(Point p)
+	{
+		DependencyObject? hit = PotionList.InputHitTest(p) as DependencyObject;
+		while (hit is not null && hit is not ListBoxItem)
+			hit = VisualTreeHelper.GetParent(hit);
+		if (hit is not ListBoxItem item) return (-1, null);
+		int index = PotionList.ItemContainerGenerator.IndexFromContainer(item);
+		return (index, item.DataContext as PotionSpec);
+	}
+
+	/// <summary>鼠标位置下面是哪瓶真药水（空槽 / 空白处 → null）。拖动「拿起来」那条路径用它。</summary>
+	private PotionSpec? PotionAtPoint(Point p) => PotionRowAtPoint(p).Potion;
+
+	private void OnPotionListPreviewMouseMove(object sender, MouseEventArgs e)
+	{
+		if (e.LeftButton != MouseButtonState.Pressed || _potionDragItem is null) return;
+		Point now = e.GetPosition(PotionList);
+		if (Math.Abs(now.X - _potionDragStart.X) < SystemParameters.MinimumHorizontalDragDistance
+			&& Math.Abs(now.Y - _potionDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+		PotionSpec dragged = _potionDragItem;
+		_potionDragItem = null;
+		try
+		{
+			DragDrop.DoDragDrop(PotionList, new DataObject(typeof(PotionSpec), dragged), DragDropEffects.Move);
+		}
+		catch (Exception ex)
+		{
+			SetStatus("拖动药水失败：" + ex.Message);
+		}
+	}
+
+	private void OnPotionListDragOver(object sender, DragEventArgs e)
+	{
+		e.Effects = e.Data.GetDataPresent(typeof(PotionSpec)) ? DragDropEffects.Move : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	private void OnPotionListDrop(object sender, DragEventArgs e)
+	{
+		if (!e.Data.GetDataPresent(typeof(PotionSpec))) return;
+		if (e.Data.GetData(typeof(PotionSpec)) is not PotionSpec dragged) return;
+		(int index, PotionSpec? over) = PotionRowAtPoint(e.GetPosition(PotionList));
+		if (!MovePotionTo(dragged, over, index))
+		{
+			SetStatus($"「{dragged.Name}」已经在这个位置了。");
+			return;
+		}
+		SetStatus($"已把药水「{dragged.Name}」拖到第 {Profile.Potions.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+	}
+
+	/// <summary>
+	/// 拖动落点的那一步（**纯逻辑**，和鼠标 / 拖放事件无关 —— 自检直接调它）。
+	/// 语义和遗物页的 <see cref="MoveRelicTo"/> 完全一致：**插到那一行的位置**（拖谁到哪就插到哪）。
+	/// 返回 false = 位置没变（不用刷界面）。
+	/// </summary>
+	internal bool MovePotionTo(PotionSpec dragged, PotionSpec? over, int overRowIndex = -1)
+	{
+		int from = _profile.Potions.IndexOf(dragged);
+		if (from < 0) return false;
+		int to;
+		if (over is not null)
+		{
+			to = _profile.Potions.IndexOf(over);
+		}
+		else
+		{
+			to = overRowIndex >= 0 ? overRowIndex : _profile.Potions.Count - 1;
+		}
+		to = Math.Clamp(to, 0, Math.Max(_profile.Potions.Count - 1, 0));
+		if (to == from) return false;
+		_profile.Potions.Move(from, to);
+		RefreshPotionOrdinals();
+		PotionList.SelectedItem = dragged;
+		SyncDetail();
+		return true;
+	}
+
+	/// <summary>自检用：药水效果列表里最高的那一行有多宽（照遗物页那条：行宽必须 ≤ 列表宽）。</summary>
+	internal double PotionEffectListActualMaxItemWidth()
+	{
+		double max = 0;
+		for (int i = 0; i < PotionEffectList.Items.Count; i++)
+		{
+			if (PotionEffectList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+				max = Math.Max(max, fe.ActualWidth);
+		}
+		return max;
+	}
+
 	/// <summary>自检用：效果列表里最高的那一行有多宽（V0.2.124 那个 bug 里它是 8260、视口只有 414）。</summary>
 	internal double RelicEffectListActualMaxItemWidth()
 	{
@@ -6220,7 +6546,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			TargetType = "Self"
 		});
 		SyncDetail();
-		PotionList.SelectedIndex = _profile.Potions.Count - 1;
+		// V0.2.127：列表 ItemsSource 改成**界面镜像集合** PotionRows（真药水 + 末尾空槽行），
+		// SelectedIndex 会被空槽占掉 —— 选对象本身更稳（和 OnAddRelic 同一套）。
+		PotionList.SelectedItem = _profile.Potions[_profile.Potions.Count - 1];
 	}
 
 	private void OnRemovePotion(object sender, RoutedEventArgs e)
@@ -7494,7 +7822,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			&& RelicRows.Take(Profile.Relics.Count).SequenceEqual<IRelicSlotRow>(Profile.Relics)
 			&& RelicRows.Skip(Profile.Relics.Count).All(r => r.IsPlaceholder),
 			$"镜像 {RelicRows.Count} 行 = 真遗物 {Profile.Relics.Count} + 空槽 {RelicRows.Count - Profile.Relics.Count}");
-		Check("药水列表绑定到 Profile.Potions", PotionList.ItemsSource == Profile.Potions);
+		Check("药水列表绑定到 Profile.Potions 的界面镜像（真药水一截 + 末尾空槽行）—— V0.2.127 起和遗物页同一套",
+			PotionList.ItemsSource == PotionRows
+			&& PotionRows.Count == PotionSlotRowCount(Profile.Potions.Count)
+			&& PotionRows.Take(Profile.Potions.Count).SequenceEqual<ISlotRow>(Profile.Potions)
+			&& PotionRows.Skip(Profile.Potions.Count).All(r => r.IsPlaceholder),
+			$"镜像 {PotionRows.Count} 行 = 真药水 {Profile.Potions.Count} + 空槽 {PotionRows.Count - Profile.Potions.Count}");
 		Check("关键词列表绑定到 Profile.CustomKeywords", KeywordList.ItemsSource == Profile.CustomKeywords);
 		Check("美术槽位已建立（13 个上传槽位 + 描边颜色输入）", ArtSlots.Count == 13, $"{ArtSlots.Count} 个");
 		// ===== 无色卡（用户要求：进本体无色卡池 + 用本体无色卡框）=====
@@ -7570,14 +7903,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		// 「额外资源量遗物」（那只隐藏起始遗物）的界面：列表绑到 ExtraResource.Effects。"
 		// ⚠ 第 11 批 ①（用户要求「遗物页去除左上角关于额外资源量的内容」）：这一整块**搬到
-		// 「额外资源量/状态」页底部**了 —— 所以这里也要切到那一页去验（以前切的是遗物页）。
+		// 「额外资源量」页**了 —— 所以这里也要切到那一页去验（以前切的是遗物页）。
+		// V0.2.127：那一页改成「左=额外资源量本体 + 那只载体遗物 / 右=效果栏」，效果列表搬到**右栏**
+		//（用户要求「在右侧增加效果栏」），所以下面找那个「在游戏中隐藏」勾选框要从**页根**收。
 		{
 			bool wasEnabled = Profile.ExtraResource.Enabled;
 			Profile.ExtraResource.Enabled = true;
 			Raise("ExtraResourceRelicVisible");
 			Check("「额外资源量遗物」块在启用时显示（选中它的效果时会把遗物列表的选择清掉）",
 				ExtraResourceRelicVisible, "启用时可见");
-			SelectTabRoot("额外资源量/状态");
+			SelectTabRoot("额外资源量");
 			UpdateLayout();
 			var erList = (ExtraResourceEffectList as ListBox);
 			Check("遗物页左上角不再有「额外资源量」的内容（那块搬到额外资源量页了）",
@@ -8587,7 +8922,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("遗物效果列表不再用 DisplayMemberPath（改成每条效果直接在行里编辑的模板）",
 			RelicEffectList.DisplayMemberPath is null && RelicEffectList.ItemTemplate is not null,
 			(RelicEffectList.DisplayMemberPath ?? "(null)") + " / " + (RelicEffectList.ItemTemplate is null ? "无模板" : "有模板"));
-		Check("药水效果列表绑定的是不带升级的显示文本", PotionEffectList.DisplayMemberPath == "DisplayPlain", PotionEffectList.DisplayMemberPath ?? "(空)");
+		// V0.2.127：药水效果列表也改成 ItemTemplate（照遗物页 —— 每条效果直接在列表行里编辑），
+		// 不再用 DisplayMemberPath；模板里的显示仍然走**不带「升级 +N」**的那一份（DisplayPlain）。
+		Check("药水效果列表改成每条效果直接在行里编辑的模板（不再用 DisplayMemberPath）",
+			PotionEffectList.DisplayMemberPath is null && PotionEffectList.ItemTemplate is not null,
+			(PotionEffectList.DisplayMemberPath ?? "(null)") + " / " + (PotionEffectList.ItemTemplate is null ? "无模板" : "有模板"));
 		Check("卡牌效果列表仍然显示升级增量（卡牌能升级）", CardEffectList.DisplayMemberPath == "Display", CardEffectList.DisplayMemberPath ?? "(空)");
 		DependencyObject root9 = (DependencyObject)((TabItem)MainTabs.SelectedItem).Content;
 		List<TextBox> list15 = new List<TextBox>();
@@ -8904,19 +9243,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				hideSrc.Contains($"return relic is not {Naming.From(erProfile).ExtraResourceRelicClass};"), "只挡它");
 			Check("说明里写清「发放资源量 / 跨战斗继承照常、存档也兼容」",
 				erProfile.ExtraResource.HideInGameHint.Contains("照常") && erProfile.ExtraResource.HideInGameHint.Contains("遗物栏"), erProfile.ExtraResource.HideInGameHint);
-			// 真界面：「额外资源量/状态」页底下那块里能看到它的身份 + 那个勾选框，勾上真的改到配置"
+			// 真界面：「额外资源量」页底下那块里能看到它的身份 + 那个勾选框，勾上真的改到配置"
 			{
 				bool erWasEnabled = Profile.ExtraResource.Enabled;
 				bool erWasHidden = Profile.ExtraResource.HideInGame;
 				Profile.ExtraResource.Enabled = true;
-				MainTabs.SelectedItem = MainTabs.Items.OfType<TabItem>().FirstOrDefault(x => (x.Header as string) == "额外资源量/状态");
+				DependencyObject erPage = SelectTabRoot("额外资源量");
 				UpdateLayout();
 				Check("额外资源量页底部那块「额外资源量遗物」看得到它是什么（类名 + 稀有度 + 说明它不在遗物页那张列表里）",
 					ExtraResourceRelicVisible && ExtraResourceRelicSummary.Contains("ExtraResourceRelic")
 					&& ExtraResourceRelicSummary.Contains("初始") && ExtraResourceRelicSummary.Contains("不在遗物页那张列表里"),
 					ExtraResourceRelicSummary);
 				List<CheckBox> erBoxes = new List<CheckBox>();
-				CollectCheckBoxes(ExtraResourceEffectList.Parent ?? (DependencyObject)this, erBoxes);
+				// ⚠ 这一块必须从**页根**收（不能像以前那样从 ExtraResourceEffectList.Parent 收）：
+				// V0.2.127 把效果列表搬到了右栏（用户要求「在右侧增加效果栏」），
+				// 那个勾选框还在左栏，从列表的父节点上再也走不到它。
+				CollectCheckBoxes(erPage, erBoxes);
 				CheckBox? hideBox = erBoxes.FirstOrDefault(x => (x.Content as string) == "在游戏中隐藏（不显示在遗物栏里）");
 				Check("额外资源量页有「在游戏中隐藏（不显示在遗物栏里）」这个勾选框（用户第 11 批 ① 的后半句）", hideBox is not null,
 					hideBox is null ? $"找到 {erBoxes.Count} 个勾选框" : "在");
@@ -10377,6 +10719,420 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					zeroSized.Count == 0,
 					zeroSized.Count == 0 ? "没有" : string.Join(" · ", zeroSized.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0"))));
 			}
+			// ===== 药水页照抄遗物页（用户要求第 6 条「药水方面参考遗物的优化方案」，V0.2.127）=====
+			// 逐条：① 左侧序号列（每块 5 个预留空槽，序号是位置号、不跟着药水走）；
+			// ② 拖动药水项换位置（空槽也能当落点）；③ 自动英文类名跟序号走（手填的不动、幂等）；
+			// ④ 稀有度英文改中文；⑤ 右侧效果栏（列表行内编辑 + 右下角单条效果的条件）+ 自定义描述保留。
+			// 不适用、没做的：药水**没有「触发时机」**这个概念（遗物的「触发时机列表 / 关系开关 / 重置范围」
+			// 一律不搬），「范围界定 / 关键词」这类药水用不到的效果模块也不无中生有。
+			{
+				// ---- ④ 稀有度英文改中文 ----
+				Check("药水稀有度下拉显示中文（常见 / 罕见 / 稀有），存的值还是英文 id",
+					EffectCatalog.PotionRarityOptions.Count == 3
+					&& EffectCatalog.PotionRarityOptions.Select(o => o.Display).SequenceEqual(new[] { "常见", "罕见", "稀有" })
+					&& EffectCatalog.PotionRarityOptions.Select(o => o.Id).SequenceEqual(EffectCatalog.PotionRarities),
+					string.Join(" / ", EffectCatalog.PotionRarityOptions.Select(o => o.Id + "=" + o.Display)));
+				Check("药水稀有度下拉真的绑到 PotionRarityOptions（DisplayMemberPath=Display / SelectedValuePath=Id）",
+					PotionRarityCombo is not null && ReferenceEquals(PotionRarityCombo.ItemsSource, PotionRarityOptions)
+					&& PotionRarityCombo.DisplayMemberPath == "Display" && PotionRarityCombo.SelectedValuePath == "Id"
+					&& BindingOperations.GetBinding(PotionRarityCombo, Selector.SelectedValueProperty)?.Path?.Path == "Rarity",
+					PotionRarityCombo is null ? "(没找到下拉)" : "绑定对");
+				Check("药水列表里显示的稀有度也是中文（不再是 Common / Uncommon / Rare）",
+					new PotionSpec { Name = "自检药水", Rarity = "Uncommon" }.Display.Contains("罕见")
+					&& !new PotionSpec { Name = "自检药水", Rarity = "Uncommon" }.Display.Contains("Uncommon"),
+					new PotionSpec { Name = "自检药水", Rarity = "Uncommon" }.Display);
+
+				// ---- ③ 自动英文类名跟序号走（纯模型逻辑，和界面无关）----
+				{
+					var rn = Naming.From(ProfileFactory.Sample());
+					var rnProfile = ProfileFactory.Sample();
+					rnProfile.Potions.Clear();
+					var rnHand = new PotionSpec { Name = "手填甲", ClassName = "MyOwnFlask", Rarity = "Common" };
+					var rnEmpty = new PotionSpec { Name = "留空乙", ClassName = "", Rarity = "Common" };
+					var rnAuto = new PotionSpec { Name = "自动丙", ClassName = rn.CharClass + "Potion9", Rarity = "Common" };
+					var rnForeign = new PotionSpec { Name = "别家丁", ClassName = "SomebodyElsePotion5", Rarity = "Common" };
+					rnProfile.Potions.Add(rnHand);
+					rnProfile.Potions.Add(rnEmpty);
+					rnProfile.Potions.Add(rnAuto);
+					rnProfile.Potions.Add(rnForeign);
+					int rnMoved = rn.RenumberPotionClassNames(rnProfile.Potions);
+					Check("自动类名跟序号走：手填的一个字不动、留空的保持留空只记序号、工具自动生成的按当前序号重命名",
+						rnHand.ClassName == "MyOwnFlask" && rnHand.LastAutoOrdinal == 0
+						&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 2
+						&& rnAuto.ClassName == rn.CharClass + "Potion3" && rnAuto.LastAutoOrdinal == 3
+						&& rnForeign.ClassName == "SomebodyElsePotion5",
+						$"手填={rnHand.ClassName} / 留空='{rnEmpty.ClassName}':{rnEmpty.LastAutoOrdinal} / 自动={rnAuto.ClassName} / 别家={rnForeign.ClassName}（改了 {rnMoved} 处）");
+					Check("自动类名的编号只认**本角色类名**前缀（别的角色的 PotionN 不会被当成我们的自动名）",
+						rn.IsAutoPotionClassName(rn.CharClass + "Potion1") && !rn.IsAutoPotionClassName("SomebodyElsePotion5")
+						&& !rn.IsAutoPotionClassName(rn.CharClass + "Potion0") && !rn.IsAutoPotionClassName(rn.CharClass + "PotionX"),
+						rn.CharClass + "Potion1 = true / SomebodyElsePotion5 = false");
+					// 幂等：再跑两遍一个字节都不动
+					string rnSig = string.Join("|", rnProfile.Potions.Select(s => s.Name + ":" + s.ClassName + ":" + s.LastAutoOrdinal));
+					rn.RenumberPotionClassNames(rnProfile.Potions);
+					rn.RenumberPotionClassNames(rnProfile.Potions);
+					Check("自动类名重编号是**幂等**的（连跑三遍：类名 / 序号一个字节都不变）",
+						string.Join("|", rnProfile.Potions.Select(s => s.Name + ":" + s.ClassName + ":" + s.LastAutoOrdinal)) == rnSig,
+						rnSig);
+					Check("「拖到第 3 位、类名早就正好是 Potion3」也把 LastAutoOrdinal 同步好（界面小字不写上一个序号）",
+						rnAuto.LastAutoOrdinal == 3, rnAuto.LastAutoOrdinal.ToString());
+					// 拖到别的序号之后：自动名跟着换
+					rnProfile.Potions.Move(2, 0);                       // 「自动丙」从第 3 位拖到第 1 位
+					rn.RenumberPotionClassNames(rnProfile.Potions);
+					Check("把自动命名的药水拖到第 1 位后重新生成 → 类名变成 <角色类名>Potion1（用户要的链路）",
+						rnAuto.ClassName == rn.CharClass + "Potion1" && rnHand.ClassName == "MyOwnFlask"
+						&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 3,
+						$"自动={rnAuto.ClassName} / 手填={rnHand.ClassName} / 留空序号={rnEmpty.LastAutoOrdinal}");
+					// 「删掉英文类名 → 重新生成」：留空的保持留空，但记的序号是当前的
+					rnAuto.ClassName = "";
+					rn.RenumberPotionClassNames(rnProfile.Potions);
+					Check("删掉英文类名后再生成 → 类名保持留空（生成端按当前序号拼）、只记序号",
+						rnAuto.ClassName == "" && rnAuto.LastAutoOrdinal == 1
+						&& rn.PotionClassName(rnAuto, 0) == rn.CharClass + "Potion1",
+						$"留空 / 序号={rnAuto.LastAutoOrdinal} / 生成端会写 {rn.PotionClassName(rnAuto, 0)}");
+					// 校验器不许静默：手打了一个「长得像自动编号但序号对不上」的名字要提示
+					var rnWarn = ProfileFactory.Sample();
+					rnWarn.Potions.Clear();
+					rnWarn.Potions.Add(new PotionSpec { Name = "像自动名", ClassName = Naming.From(rnWarn).CharClass + "Potion7", Rarity = "Common" });
+					Check("校验器：手填的类名长得像自动编号但序号对不上 → 提示「下次生成会改名」（不许静默）",
+						ProfileValidator.Validate(rnWarn).Any(i => i.Level == "提示" && i.Message.Contains("自动生成的编号")),
+						ProfileValidator.Validate(rnWarn).FirstOrDefault(i => i.Message.Contains("自动生成的编号"))?.Message ?? "(没报)");
+					rnWarn.Potions[0].ClassName = "SevenFlask";
+					Check("（对照）手填一个不像自动编号的名字 → 不报（别刷没用的提示）",
+						!ProfileValidator.Validate(rnWarn).Any(i => i.Message.Contains("自动生成的编号")), "没报");
+				}
+
+				// ---- ①②⑤ 界面：序号 / 空槽 / 拖动 / 效果栏 ----
+				List<PotionSpec> keptPotions = Profile.Potions.ToList();     // 这一轮的临时改动最后原样还回去
+				PotionSpec? savedPotionSel = PotionUiSelection;
+				int VisiblePotionOrdinals()
+				{
+					UpdateLayout();
+					List<TextBlock> blocks = new List<TextBlock>();
+					CollectTextBlocks(PotionList, blocks);
+					return blocks.Count(t => (t.Text ?? "").EndsWith(".") && (t.Text ?? "").Length >= 2
+						&& char.IsDigit((t.Text ?? "x")[0]) && t.Text!.Length <= 3);
+				}
+				try
+				{
+					SelectTabRoot("药水");
+					// 断言 1：3 瓶 → 1~5 行（4、5 空槽），空槽不能被当成药水选中
+					Profile.Potions.Clear();
+					Profile.Potions.Add(new PotionSpec { Name = "瓶甲", ClassName = "UiCheckPotion1", Rarity = "Common" });
+					Profile.Potions.Add(new PotionSpec { Name = "瓶乙", ClassName = "UiCheckPotion2", Rarity = "Uncommon" });
+					Profile.Potions.Add(new PotionSpec { Name = "瓶丙", ClassName = "UiCheckPotion3", Rarity = "Rare" });
+					PotionList.SelectedItem = Profile.Potions[0];
+					UpdateLayout();
+					string pOrd3 = string.Join(",", PotionRows.Select(r => r.OrdinalText));
+					Check("（药水空槽 ①）3 瓶药水 → 列表显示 1~5 行（4、5 是空槽）",
+						PotionRows.Count == 5 && pOrd3 == "1.,2.,3.,4.,5."
+						&& PotionRows.Take(3).All(r => !r.IsPlaceholder) && PotionRows.Skip(3).All(r => r.IsPlaceholder)
+						&& PotionList.Items.Count == 5,
+						$"行 {PotionRows.Count} / 序号 {pOrd3} / 列表 Items {PotionList.Items.Count}");
+					Check("（药水空槽 ①）界面上真画出了 5 个序号（序号在药水名最左侧一列）",
+						VisiblePotionOrdinals() == 5, $"看到 {VisiblePotionOrdinals()} 个「N.」");
+					string pBeforeDump = string.Join(" | ", Profile.Potions.Select(s => s.Name + ":" + s.Ordinal + ":" + s.ClassName));
+					PotionList.SelectedItem = Profile.Potions[0];
+					PotionSpec? pBeforeSel = PotionUiSelection;
+					PotionList.SelectedItem = PotionRows[3];
+					UpdateLayout();
+					Check("（药水空槽 ①）选中空槽行：选中项不是 PotionSpec、当前选中的真药水没变、真药水一个字段都没被改",
+						PotionList.SelectedItem is not PotionSpec && ReferenceEquals(PotionUiSelection, pBeforeSel)
+						&& string.Join(" | ", Profile.Potions.Select(s => s.Name + ":" + s.Ordinal + ":" + s.ClassName)) == pBeforeDump
+						&& Profile.Potions.Count == 3,
+						$"SelectedItem={PotionList.SelectedItem?.GetType().Name ?? "(null)"}（空槽行） UiSel={PotionUiSelection?.Name ?? "(null)"} 药水 {Profile.Potions.Count} 瓶");
+					// 断言 2：加到 6 瓶 → 1~10 行
+					for (int i = 4; i <= 6; i++)
+						Profile.Potions.Add(new PotionSpec { Name = "瓶" + i, ClassName = "UiCheckPotion" + i, Rarity = "Common" });
+					UpdateLayout();
+					string pOrd6 = string.Join(",", PotionRows.Select(r => r.OrdinalText));
+					Check("（药水空槽 ②）加到 6 瓶 → 列表显示 1~10 行（7~10 是空槽）",
+						PotionRows.Count == 10 && pOrd6 == string.Join(",", Enumerable.Range(1, 10).Select(i => i + "."))
+						&& PotionRows.Take(6).All(r => !r.IsPlaceholder) && PotionRows.Skip(6).All(r => r.IsPlaceholder),
+						$"行 {PotionRows.Count} / 序号 {pOrd6}");
+					Check("（药水空槽 ②）界面上真画出了 10 个序号", VisiblePotionOrdinals() == 10, $"看到 {VisiblePotionOrdinals()} 个「N.」");
+					// 断言 3：删回 5 瓶 → 5 行
+					Profile.Potions.RemoveAt(5);
+					UpdateLayout();
+					string pOrd5 = string.Join(",", PotionRows.Select(r => r.OrdinalText));
+					Check("（药水空槽 ③）删回 5 瓶 → 行数回到 5（序号 1~5，没有空槽）",
+						PotionRows.Count == 5 && pOrd5 == "1.,2.,3.,4.,5." && PotionRows.All(r => !r.IsPlaceholder)
+						&& Profile.Potions.Count == 5,
+						$"行 {PotionRows.Count} / 序号 {pOrd5} / 真药水 {Profile.Potions.Count}");
+					// 断言 4：拖一瓶到空槽 → Profile.Potions 顺序真的变、序号仍是 1..N 连续
+					Profile.Potions.RemoveAt(4);                    // 退回 4 瓶：1~4 真药水 + 第 5 行空槽
+					PotionSpec draggedPotion = Profile.Potions[0];
+					PotionList.SelectedItem = draggedPotion;
+					UpdateLayout();
+					DependencyObject? pRowC = PotionList.ItemContainerGenerator.ContainerFromIndex(4) as DependencyObject;
+					bool pSlotHitNull = false;
+					string pSlotDetail = "(没有容器)";
+					if (pRowC is FrameworkElement pRowCFe)
+					{
+						Point pOffset = pRowCFe.TransformToVisual(PotionList).Transform(new Point(0, 0));
+						var pAt = PotionRowAtPoint(new Point(pOffset.X + pRowCFe.ActualWidth * 0.5, pOffset.Y + pRowCFe.ActualHeight * 0.5));
+						pSlotHitNull = pAt.Potion is null && pAt.Index == 4;
+						pSlotDetail = $"行{pAt.Index}/{(pAt.Potion?.Name ?? "无药水")}";
+					}
+					Check("（药水空槽 ④）空槽那一行在屏幕上点得到、而且它不给任何药水（Potion = null）",
+						pSlotHitNull, pSlotDetail);
+					string pNamesBefore = string.Join("→", Profile.Potions.Select(s => s.Name));
+					bool pMoved = MovePotionTo(draggedPotion, null, 4);       // 拖到第 5 行（空槽）→ 夹到末尾
+					UpdateLayout();
+					Check("（药水空槽 ④）拖一瓶药水到空槽：Profile.Potions 顺序真的变、序号仍是 1..N 连续",
+						pMoved && Profile.Potions[Profile.Potions.Count - 1] == draggedPotion
+						&& Profile.Potions.Select(s => s.Ordinal).SequenceEqual(Enumerable.Range(1, Profile.Potions.Count))
+						&& PotionRows.Take(Profile.Potions.Count).SequenceEqual<ISlotRow>(Profile.Potions)
+						&& PotionRows[Profile.Potions.Count].IsPlaceholder && PotionRows.Count == 5,
+						$"{pNamesBefore} → " + string.Join("→", Profile.Potions.Select(s => s.Name))
+						+ $" ／ 序号 {string.Join(",", PotionRows.Select(r => r.OrdinalText))}");
+					// 断言 5：空槽不出现在真集合 / 生成结果里
+					Check("（药水空槽 ⑤）Profile.Potions 里只有真药水，空槽项一个都没混进去",
+						Profile.Potions.Count == 4 && Profile.Potions.All(s => s is not null)
+						&& !PotionRows.OfType<PotionSpec>().Any(r => !Profile.Potions.Contains(r) && !ReferenceEquals(r, draggedPotion)),
+						$"{Profile.Potions.Count} 瓶 / 镜像 {PotionRows.Count} 行");
+					{
+						var pSlotProfile = ProfileFactory.Sample();
+						pSlotProfile.Potions.Clear();
+						pSlotProfile.Potions.Add(new PotionSpec { Name = "唯一瓶", ClassName = "UiCheckSlotPotion", Rarity = "Common" });
+						pSlotProfile.Paths.OutputDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_potionslot_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+						// ⚠ 这两条必须从当前存档抄过来：生成要先看「解包工程目录 / 游戏 data 目录」在不在，
+						// 不抄就是两条「环境没配」的错误（遗物页那段同样是这么补的）。
+						pSlotProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+						pSlotProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+						var pSlotGen = ModGenerator.Generate(pSlotProfile);
+						string pSlotFiles = pSlotGen.Success
+							? string.Join("\n", Directory.GetFiles(pSlotGen.ProjectRoot, "*", SearchOption.AllDirectories)
+								.Select(f => Path.GetRelativePath(pSlotGen.ProjectRoot, f).Replace('\\', '/'))
+								.OrderBy(x => x, StringComparer.Ordinal))
+							: "";
+						Check("（药水空槽 ⑤）真生成一遍：没有空槽类 / 空槽文件（也没多出第 2 瓶药水）",
+							pSlotGen.Success && pSlotFiles.Length > 0
+							&& !pSlotFiles.Contains("SlotPlaceholder") && !pSlotFiles.Contains("空槽")
+							&& pSlotProfile.Potions.Count == 1,
+							pSlotGen.Success ? $"生成 {pSlotFiles.Split('\n').Length} 个文件，一个「空槽」都没有" : string.Join(" / ", pSlotGen.Issues.Where(i => i.IsError).Take(3)));
+						try { if (Directory.Exists(pSlotProfile.Paths.OutputDir)) Directory.Delete(pSlotProfile.Paths.OutputDir, true); } catch { }
+					}
+					// 断言 6：空槽行是灰序号、名字列空、全选不含空槽
+					UpdateLayout();
+					List<TextBlock> pOrdBlocks = new List<TextBlock>();
+					CollectTextBlocks(PotionList, pOrdBlocks);
+					var pOrdInfos = pOrdBlocks
+						.Where(t => (t.Text ?? "").Length is 2 or 3 && (t.Text ?? "").EndsWith(".") && char.IsDigit((t.Text ?? "x")[0]))
+						.Select(t => (Text: t.Text!, Color: (t.Foreground as SolidColorBrush)?.Color.ToString() ?? "(不是纯色)", Visible: t.IsVisible))
+						.ToList();
+					var pRealInfos = pOrdInfos.Where(o => Profile.Potions.Any(s => s.OrdinalText == o.Text)).ToList();
+					var pSlotInfos = pOrdInfos.Where(o => PotionRows.Any(r => r.IsPlaceholder && r.OrdinalText == o.Text)).ToList();
+					Check("（药水空槽 ⑥）空槽行的序号是**灰**的：颜色和真药水行不一样、行本身可见",
+						pRealInfos.Count > 0 && pSlotInfos.Count > 0
+						&& pSlotInfos.All(s => s.Visible
+							&& (s.Color.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase) || s.Color.Contains("170,170,170", StringComparison.Ordinal)))
+						&& pRealInfos.All(r => !r.Color.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase) && !r.Color.Contains("170,170,170", StringComparison.Ordinal)),
+						$"实化序号 {string.Join(" / ", pOrdInfos.Select(o => o.Text + "=" + o.Color))} ／ 真药水 {pRealInfos.Count} 行、空槽 {pSlotInfos.Count} 行");
+					Check("（药水空槽 ⑥）空槽行的「药水名」那一列是空的（没有内容、也不给提示）",
+						PotionRows[Profile.Potions.Count] is SlotPlaceholder pPh && pPh.Display.Length == 0 && pPh.RowTip is null
+						&& !string.IsNullOrEmpty(PotionRows[Profile.Potions.Count].OrdinalText),
+						$"Display='{((SlotPlaceholder)PotionRows[Profile.Potions.Count]).Display}' RowTip={(PotionRows[Profile.Potions.Count].RowTip ?? "(null)")}");
+					ToggleButton? pMulti = FindToggleButtonByContent("多选", SelectTabRoot("药水"));
+					if (pMulti is not null && pMulti.IsChecked != true) ToggleViaClick(pMulti);
+					UpdateLayout();
+					ClickButtonByContent("全选", SelectTabRoot("药水"));
+					UpdateLayout();
+					Check("（药水空槽 ⑥）「全选」只选中真药水：SelectedItems 里一个空槽都没有",
+						PotionList.SelectedItems.Count == Profile.Potions.Count
+						&& PotionList.SelectedItems.OfType<SlotPlaceholder>().Count() == 0
+						&& !PotionList.SelectedItems.Cast<object>().Any(o => o is ISlotRow { IsPlaceholder: true }),
+						$"选中 {PotionList.SelectedItems.Count} / 真药水 {Profile.Potions.Count} / 行数 {PotionRows.Count}");
+					PotionList.SelectedItems.Clear();
+					if (pMulti is not null && pMulti.IsChecked == true) ToggleViaClick(pMulti);
+					UpdateLayout();
+				}
+				finally
+				{
+					Profile.Potions.Clear();
+					foreach (PotionSpec s in keptPotions) Profile.Potions.Add(s);
+					RefreshPotionOrdinals();
+					PotionList.SelectedItem = (savedPotionSel is not null && Profile.Potions.Contains(savedPotionSel))
+						? savedPotionSel
+						: Profile.Potions.FirstOrDefault();
+					SyncDetail();
+					UpdateLayout();
+				}
+
+				// ---- ⑤ 右侧效果栏 + 右下角单条效果的条件（照遗物页那套）----
+				SelectTabRoot("药水");
+				if (PotionList.Items.Count > 0) PotionList.SelectedIndex = 0;
+				if (PotionEffectList.Items.Count > 0) PotionEffectList.SelectedIndex = 0;
+				UpdateLayout();
+				Check("药水页右边是**效果栏**：每条效果直接在列表行里编辑（不再用 DisplayMemberPath）",
+					PotionEffectList.ItemTemplate is not null && PotionEffectList.DisplayMemberPath is null,
+					(PotionEffectList.DisplayMemberPath ?? "(null)") + " / " + (PotionEffectList.ItemTemplate is null ? "无模板" : "有模板"));
+				List<ComboBox> potionCondCombos = new List<ComboBox>();
+				CollectCombos(PotionEffectConditionBox, potionCondCombos);
+				Check("药水页右下角能选「单条效果的触发条件」（PotionEffectConditionBox 里绑 EffectSpec.Condition.Kind）",
+					PotionEffectConditionBox is not null && PotionEffectConditionBox.IsVisible
+					&& potionCondCombos.Any(c => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Kind"),
+					potionCondCombos.Count + " 个下拉 / 可见=" + (PotionEffectConditionBox?.IsVisible ?? false));
+				// 药水**没有**「触发时机」：不要把遗物的时机列表 / 关系开关硬塞过来
+				Check("药水页没有「触发时机」那套（药水没有这个概念，需求里也说了不适用）",
+					!TextsIn(PotionDetail).Any(t => t.Contains("触发时机列表"))
+					&& !TextsIn(PotionDetail).Any(t => t.Contains("满足其中一个就触发") || t.Contains("全部满足才触发")),
+					"没有时机列表 / 关系开关");
+				Check("药水自定义描述保留（绑 CustomDescription / CustomDescriptionReplaces）",
+					PotionCustomDesc is not null && PotionCustomDesc.IsVisible
+					&& BindingOperations.GetBinding(PotionCustomDesc, TextBox.TextProperty)?.Path?.Path == "CustomDescription",
+					PotionCustomDesc is null ? "(没找到)" : "在");
+				// ---- 布局体检（照遗物页：行宽 / 0 尺寸 / 别横向跑出面板）----
+				double pMaxItemW = PotionEffectListActualMaxItemWidth();
+				Check("药水效果编辑器不再被排成超宽（行宽 <= 列表宽 + 2px）",
+					PotionEffectList.Items.Count == 0 || pMaxItemW <= PotionEffectList.ActualWidth + 2.0,
+					pMaxItemW.ToString("F0") + " <= " + PotionEffectList.ActualWidth.ToString("F0"));
+				Check("药水页关键面板都没有 0 尺寸（列表 / 效果栏 / 效果条件 / 自定义描述 / 稀有度下拉）",
+					PotionList.ActualWidth > 10 && PotionList.ActualHeight > 10
+					&& PotionEffectList.ActualWidth > 10 && PotionEffectList.ActualHeight > 10
+					&& PotionEffectConditionBox.ActualWidth > 10 && PotionEffectConditionBox.ActualHeight > 10
+					&& PotionCustomDesc.ActualWidth > 10 && PotionCustomDesc.ActualHeight > 10
+					&& PotionRarityCombo.ActualWidth > 10 && PotionRarityCombo.ActualHeight > 10,
+					$"列表 {PotionList.ActualWidth:F0}x{PotionList.ActualHeight:F0}，效果 {PotionEffectList.ActualWidth:F0}x{PotionEffectList.ActualHeight:F0}，"
+					+ $"条件 {PotionEffectConditionBox.ActualWidth:F0}x{PotionEffectConditionBox.ActualHeight:F0}，"
+					+ $"自定义描述 {PotionCustomDesc.ActualWidth:F0}x{PotionCustomDesc.ActualHeight:F0}，稀有度 {PotionRarityCombo.ActualWidth:F0}x{PotionRarityCombo.ActualHeight:F0}");
+				List<FrameworkElement> pOutOfPanel = VisibleElementsOutside(PotionDetail, 4.0);
+				Check("药水页没有控件横向跑出窗口",
+					pOutOfPanel.Count == 0 && PotionDetail.ActualWidth <= ActualWidth + 1.0,
+					pOutOfPanel.Count == 0
+						? $"详情宽 {PotionDetail.ActualWidth:F0} <= 窗口 {ActualWidth:F0}"
+						: string.Join(" · ", pOutOfPanel.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0"))));
+				List<FrameworkElement> pZeroSized = VisibleZeroSizedControls(PotionDetail, 24.0);
+				Check("药水页没有「看得见却量成 0 尺寸」的控件",
+					pZeroSized.Count == 0,
+					pZeroSized.Count == 0 ? "没有" : string.Join(" · ", pZeroSized.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0"))));
+
+				// ---- 额外资源量页：改名后的页头 + 「在游戏中隐藏」勾选框 + 右侧效果栏（用户要求第 1 条）----
+				{
+					bool erWasEnabled2 = Profile.ExtraResource.Enabled;
+					Profile.ExtraResource.Enabled = true;
+					Raise("ExtraResourceRelicVisible");
+					DependencyObject erRoot = SelectTabRoot("额外资源量");
+					UpdateLayout();
+					Check("页头就叫「额外资源量」（用户原话：额外资源量/状态页改名为额外资源量页）",
+						(ExtraResourceTab?.Header as string) == "额外资源量"
+						&& FindTab("额外资源量/状态") is null,
+						"Header=" + (ExtraResourceTab?.Header as string ?? "(null)"));
+					List<CheckBox> erChecks = new List<CheckBox>();
+					CollectCheckBoxes(erRoot, erChecks);
+					Check("这一页有「是否隐藏额外资源量遗物」的勾选项、而且是勾得动、真的写回配置",
+						erChecks.Any(c => (c.Content as string ?? "").StartsWith("在游戏中隐藏", StringComparison.Ordinal)
+							&& BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path == "HideInGame"),
+						string.Join(" / ", erChecks.Select(c => c.Content as string)));
+					Check("这一页右侧有**效果栏**（效果列表行内编辑 + 添加/删除效果 + 右下角单条效果的条件）",
+						ExtraResourceEffectList.ItemTemplate is not null && ExtraResourceEffectList.DisplayMemberPath is null
+						&& ExtraResourceEffectList.ItemsSource == Profile.ExtraResource.Effects
+						&& ExtraResourceEffectList.IsVisible
+						&& TextsIn(erRoot).Contains("效果栏：额外资源量遗物的效果（触发时机固定「战斗开始时」）"),
+						ExtraResourceEffectList.Items.Count + " 条效果 / 模板=" + (ExtraResourceEffectList.ItemTemplate is null ? "无" : "有"));
+					List<ComboBox> erCondCombos = new List<ComboBox>();
+					CollectCombos(ExtraResourceEffectConditionBox, erCondCombos);
+					Check("额外资源量页右下角也能选「单条效果的条件」（和遗物页右下角那块一一对应）",
+						ExtraResourceEffectConditionBox is not null
+						&& (ExtraResourceEffectList.Items.Count == 0 || ExtraResourceEffectConditionBox.IsVisible),
+						erCondCombos.Count + " 个下拉");
+					// 效果只有**一份**（就是那只载体遗物的效果）——不许搞出第二份数据
+					Check("效果仍然只有一份（Profile.ExtraResource.Effects 那一个集合，界面没有第二份镜像）",
+						ReferenceEquals(ExtraResourceEffectList.ItemsSource, Profile.ExtraResource.Effects)
+						&& ReferenceEquals(Profile.ExtraResource.Effects, Profile.ExtraResource.Effects),
+						"同一份集合");
+					double erMaxItemW = 0;
+					for (int i = 0; i < ExtraResourceEffectList.Items.Count; i++)
+					{
+						if (ExtraResourceEffectList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+							erMaxItemW = Math.Max(erMaxItemW, fe.ActualWidth);
+					}
+					Check("额外资源量效果栏的编辑器也没被排成超宽（行宽 <= 列表宽 + 2px）",
+						ExtraResourceEffectList.Items.Count == 0 || erMaxItemW <= ExtraResourceEffectList.ActualWidth + 2.0,
+						erMaxItemW.ToString("F0") + " <= " + ExtraResourceEffectList.ActualWidth.ToString("F0"));
+					Check("额外资源量页关键面板都没有 0 尺寸（效果栏 / 效果条件 / 隐藏勾选框）",
+						ExtraResourceEffectList.ActualWidth > 10 && ExtraResourceEffectList.ActualHeight > 10
+						&& ExtraResourceEffectConditionBox.ActualWidth > 10 && ExtraResourceEffectConditionBox.ActualHeight > 10,
+						$"效果 {ExtraResourceEffectList.ActualWidth:F0}x{ExtraResourceEffectList.ActualHeight:F0}，条件 {ExtraResourceEffectConditionBox.ActualWidth:F0}x{ExtraResourceEffectConditionBox.ActualHeight:F0}");
+					List<FrameworkElement> erOut = VisibleElementsOutside(ExtraResourceTab.Content as DependencyObject ?? erRoot, 4.0);
+					Check("额外资源量页没有控件横向跑出页面",
+						erOut.Count == 0,
+						erOut.Count == 0 ? "没有" : string.Join(" · ", erOut.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0"))));
+					Profile.ExtraResource.Enabled = erWasEnabled2;
+					Raise("ExtraResourceRelicVisible");
+					SelectTabRoot("遗物");
+				}
+				// ---- 生成端 / 校验器 / 回读：本轮顺手补的几处（都是老缺口，和界面一一对应）----
+				{
+					// ① 药水效果的条件：以前校验器**一律报错**（「药水不支持条件选项」）、生成端也不生成。
+					//    用户要求药水页右下角也能选条件 → 现在两边都真的支持（CondCtx.Potion + EmitPotionEffect 包一层 if）。
+					var condPotion = new PotionSpec { Name = "自检条件药水", ClassName = "UiCheckCondPotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self", InPotionPool = true };
+					var condEff = new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" };
+					condEff.Condition = new ConditionSpec { Kind = "HpBelowPercent", Amount = 50m, Target = "Self" };
+					condPotion.Effects.Add(condEff);
+					var condProfile = ProfileFactory.Sample();
+					condProfile.Potions.Clear();
+					condProfile.Potions.Add(condPotion);
+					Check("校验器：药水效果的条件不再被一律拦死（遗物那一档的条件可以用在药水上）",
+						!ProfileValidator.Validate(condProfile).Any(i => i.IsError && i.Message.Contains("药水不支持条件选项")),
+						ProfileValidator.Validate(condProfile).FirstOrDefault(i => i.IsError)?.Message ?? "(没报错)");
+					string condPotionSrc = CSharpCodeGen.PotionSource(condProfile, condPotion, 0);
+					Check("生成端：药水效果自己的条件真的包了一层 if（照遗物页那一套，不满足时只跳过这一条）",
+						condPotionSrc.Contains("// 条件（只对「获得格挡"),
+						condPotionSrc.Contains("if (base.Owner.Creature.CurrentHp * 100 <= base.Owner.Creature.MaxHp * 50)") ? "if 在" : "没包 if");
+					Check("生成端：药水条件用的战斗状态走 base.Owner.Creature.CombatState（药水模型上没有 CombatState）",
+						condPotionSrc.Contains("// 条件（只对「获得格挡") && !condPotionSrc.Contains("base.CombatState is not null &&"),
+						condPotionSrc.Contains("base.CombatState") ? "写成了 base.CombatState" : "没写错");
+					// ② 药水的「概率生效」「命中次数」是老缺口（勾了不生效、且一句提示都没有）→ 现在明确报出来
+					var chancePotion = new PotionSpec { Name = "自检概率药水", ClassName = "UiCheckChancePotion", Rarity = "Common" };
+					chancePotion.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self", ChanceEnabled = true, ChancePercent = 50m });
+					chancePotion.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "Enemy", RepeatCount = 3 });
+					var chanceProfile = ProfileFactory.Sample();
+					chanceProfile.Potions.Clear();
+					chanceProfile.Potions.Add(chancePotion);
+					var chanceIssues = ProfileValidator.Validate(chanceProfile);
+					Check("校验器：药水上勾了「概率生效」→ 警告说清不会生成（以前是静默忽略）",
+						chanceIssues.Any(i => i.Level == "警告" && i.Message.Contains("药水**不支持概率**")),
+						chanceIssues.FirstOrDefault(i => i.Message.Contains("不支持概率"))?.Message ?? "(没报)");
+					Check("校验器：药水「造成伤害」填了「命中次数」→ 警告说清不生效（以前是静默忽略）",
+						chanceIssues.Any(i => i.Level == "警告" && i.Message.Contains("药水不支持命中次数")),
+						chanceIssues.FirstOrDefault(i => i.Message.Contains("不支持命中次数"))?.Message ?? "(没报)");
+					// ③ 额外资源量遗物的效果链：以前 `CanonicalVars =>` 多开一层 `{` 从来没关上，
+					//    一开「额外资源量 + 效果」生成的 cs/ExtraResource.cs 就是编译不过的（老坑，探针实测）。
+					//    这里直接盯生成源码的括号配平 + 两个老坑的具体形状。
+					var erSrcProfile = ProfileFactory.Sample();
+					erSrcProfile.ExtraResource.Enabled = true;
+					erSrcProfile.ExtraResource.Max = 5;
+					erSrcProfile.ExtraResource.Effects.Clear();
+					erSrcProfile.ExtraResource.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+					var erOnce = new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" };
+					erOnce.Condition = new ConditionSpec { Kind = "OncePerCombat", Amount = 1m, Target = "Self" };
+					erSrcProfile.ExtraResource.Effects.Add(erOnce);
+					string erSrc = CSharpCodeGen.ExtraResourceSource(erSrcProfile);
+					int brace = erSrc.Count(c => c == '{') - erSrc.Count(c => c == '}');
+					Check("生成端：额外资源量遗物的效果链括号配平（老坑：CanonicalVars => 多开一层 { 从没关上 → 整份文件编译不过）",
+						brace == 0, $"{{ 与 }} 相差 {brace}");
+					Check("生成端：CanonicalVars 那一行后面直接是数组（不再多开一层块）",
+						erSrc.Contains("protected override IEnumerable<DynamicVar> CanonicalVars =>\n") || erSrc.Contains("CanonicalVars =>\r\n"),
+						"写法对");
+					Check("生成端：「每场战斗只触发一次」用到的 _condUsedThisCombat 字段真的声明了（老坑：勾了就 CS0103）",
+						erSrc.Contains("private bool _condUsedThisCombat;") && erSrc.Contains("_condUsedThisCombat = true;")
+						&& erSrc.Contains("_condUsedThisCombat = false;"),
+						"声明 + 置位 + 复位都在");
+					Check("生成端：没用到那条条件时不写这个字段（不用就不加，老存档输出逐字不变）",
+						!CSharpCodeGen.ExtraResourceSource(erSrcProfileNoCond()).Contains("_condUsedThisCombat"),
+						"没多写");
+
+					// 造一份「额外资源量 + 一条普通效果（没有 OncePerCombat）」的存档（局部函数，上面那条断言用）
+					CharacterProfile erSrcProfileNoCond()
+					{
+						var pp = ProfileFactory.Sample();
+						pp.ExtraResource.Enabled = true;
+						pp.ExtraResource.Effects.Clear();
+						pp.ExtraResource.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+						return pp;
+					}
+				}
+			}
 			List<ComboBox> relicPropCombos = new List<ComboBox>();
 			CollectCombos(RelicDetail, relicPropCombos);
 			Check("遗物属性区不再有单时机那条下拉（避免两处都能改）",
@@ -10567,7 +11323,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				case "角色":
 					num14 = num17;
 					break;
-				case "额外资源量/状态":
+				case "额外资源量":
 					num15 = num17;
 					break;
 				case "卡牌":
@@ -10579,12 +11335,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 		}
-		Check("有「额外资源量/状态」选项卡", num15 >= 0, $"下标={num15}");
+		Check("有「额外资源量」选项卡（V0.2.127 起页头去掉了「/状态」）", num15 >= 0, $"下标={num15}");
 		// 注意：「召唤物卡牌」选项卡删除之后，排在它后面的那些页的绝对下标全部 -1。
-		Check("「角色」→「召唤物」→「额外资源量/状态」→「卡牌」按顺序排（下标依次 +1）",
+		Check("「角色」→「召唤物」→「额外资源量」→「卡牌」按顺序排（下标依次 +1）",
 			num14 == 0 && numPet == 1 && num15 == 2 && num16 == 3,
 			$"角色={num14} / 召唤物={numPet} / 额外={num15} / 卡牌={num16}");
-		DependencyObject root13 = SelectTabRoot("额外资源量/状态");
+		DependencyObject root13 = SelectTabRoot("额外资源量");
 		List<CheckBox> list20 = new List<CheckBox>();
 		CollectCheckBoxes(root13, list20);
 		Check("额外资源量页的开关挂在「额外资源量」配置对象上（DataContext）", list20.Count > 0 && list20.All((CheckBox c) => c.DataContext == Profile.ExtraResource), (list20.Count == 0) ? "一个开关都没有" : $"{list20.Count} 个开关 / DataContext={((list20[0].DataContext == null) ? "null" : list20[0].DataContext.GetType().Name)}");
@@ -11691,7 +12447,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			Check("生成工程时会真的写出 cs/ExtraResource.cs", ok: false, "跳过条件不成立：本机还没指定「解包工程目录」，无法跑生成");
 		}
-		DependencyObject root14 = SelectTabRoot("额外资源量/状态");
+		DependencyObject root14 = SelectTabRoot("额外资源量");
 		List<TextBox> list23 = new List<TextBox>();
 		CollectTextBoxes(root14, list23);
 		Check("额外资源量页有「显示名」输入框（绑 Profile.ExtraResource.Name）", list23.Any((TextBox t) => t.DataContext == Profile.ExtraResource && BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == "Name"), string.Join(" / ", list23.Select((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path)));
@@ -12822,7 +13578,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					case "角色": idxRole = ti; break;
 					case "召唤物": idxSummon = ti; break;
-					case "额外资源量/状态": idxExtra = ti; break;
+					case "额外资源量": idxExtra = ti; break;
 					case "卡牌": idxCard = ti; break;
 					case "自定义参数 / 组": idxParam = ti; break;
 					case "锻造": idxForge = ti; break;
@@ -20092,11 +20848,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("非法色值能被识别", !CardColorSpec.IsHex("ZZZZZZ") && CardColorSpec.IsHex("#5ebd00"));
 		PotionSpec? potionSpec3 = PotionList.SelectedItem as PotionSpec;
 		// 兜底一：列表有货但没选中（换过存档之后可能出现）→ 手动选第 0 项"
-		if (potionSpec3 is null && PotionList.Items.Count > 0) { PotionList.SelectedIndex = 0; potionSpec3 = PotionList.SelectedItem as PotionSpec; }
-		// 兜底二：列表是空的（换过存档把绑定刷掉了）→ 直接把存档里第一瓶药水补进列表，别让自检崩在这 
+		if (potionSpec3 is null && Profile.Potions.Count > 0) { PotionList.SelectedIndex = 0; potionSpec3 = PotionList.SelectedItem as PotionSpec; }
+		// 兜底二：列表是空的（换过存档把绑定刷掉了）→ 重新按镜像铺一遍再选，别让自检崩在这
 		if (potionSpec3 is null && Profile.Potions.Count > 0)
 		{
-			PotionList.ItemsSource = Profile.Potions;
+			SyncPotionRows();
 			PotionList.SelectedIndex = 0;
 			potionSpec3 = PotionList.SelectedItem as PotionSpec;
 		}
@@ -20478,7 +21234,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (Profile.Potions.Count > 0)
 		{
 			PotionList.SelectedIndex = 0;
-			Check("切换药水后右侧详情跟随", PotionDetail.DataContext == PotionList.SelectedItem);
+			Check("切换药水后右侧详情跟随", PotionDetail.DataContext == PotionUiSelection);
 		}
 		// ===== 本轮新增：条件「填负数 = 反向」/ 生命区间（含区间外）/ 抽牌堆洗过牌 =====
 		{
@@ -22202,7 +22958,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			// 用户原话：「左侧序号直接显示，可以每次多生成五个序号，比如有 3 个选项时，左侧序号显示 1~5，
 			// 加第 6 个的时候，显示 6~10.」
 			// 实现口径（也和用户对齐过）：列表里显示的**序号行数** = 5 × ceil(max(N,1)/5)（N = 真遗物数）；
-			// 多出来的行是**空槽**（RelicSlotPlaceholder，只显示灰色序号，没有内容，不能被当成遗物选中，
+			// 多出来的行是**空槽**（SlotPlaceholder，只显示灰色序号，没有内容，不能被当成遗物选中，
 			// 但可以当拖放落点）；序号仍然是**位置号 1..N 连续**，不是块内 1..5 循环；
 			// 空槽只活在界面镜像集合 RelicRows 里，Profile.Relics 里永远只有真遗物。
 			{
@@ -22342,7 +23098,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						: "";
 					Check("（空槽 ⑤）真生成一遍：没有空槽类 / 空槽文件（也没多出第 2 只遗物）",
 						slotGen.Success && slotFiles.Length > 0
-						&& !slotFiles.Contains("RelicSlotPlaceholder") && !slotFiles.Contains("UiCheckSlot")
+						&& !slotFiles.Contains("SlotPlaceholder") && !slotFiles.Contains("UiCheckSlot")
 						&& !slotFiles.Contains("空槽") && slotProfileA.Relics.Count == 1,
 						slotGen.Success ? $"生成 {slotFiles.Split('\n').Length} 个文件，一个「空槽」都没有" : string.Join(" / ", slotGen.Issues.Where(i => i.IsError).Take(3)));
 					try { if (Directory.Exists(slotProfileA.Paths.OutputDir)) Directory.Delete(slotProfileA.Paths.OutputDir, true); } catch { }
@@ -22367,9 +23123,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& realInfos.All(r => !r.Color.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase) && !r.Color.Contains("170,170,170", StringComparison.Ordinal)),
 						$"实化序号 {string.Join(" / ", ordInfos.Select(o => o.Text + "=" + o.Color + (o.Visible ? "" : "(不可见)")))} ／ 真遗物 {realInfos.Count} 行、空槽 {slotInfos.Count} 行");
 					Check("（空槽 ⑥）空槽行的「遗物名」那一列是空的（没有内容）",
-						RelicRows[4] is RelicSlotPlaceholder ph6 && ph6.Display.Length == 0 && ph6.RowTip is null
+						RelicRows[4] is SlotPlaceholder ph6 && ph6.Display.Length == 0 && ph6.RowTip is null
 						&& string.IsNullOrEmpty(RelicRows[4].OrdinalText) == false,
-						$"Display='{((RelicSlotPlaceholder)RelicRows[4]).Display}' RowTip={(RelicRows[4].RowTip ?? "(null)")}");
+						$"Display='{((SlotPlaceholder)RelicRows[4]).Display}' RowTip={(RelicRows[4].RowTip ?? "(null)")}");
 					// 全选也不能把空槽算进去（它比真遗物多，是最容易漏掉的一条链路）
 					RelicList.SelectedItems.Clear();
 					foreach (IRelicSlotRow row in RelicRows)
@@ -22378,7 +23134,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					}
 					Check("（空槽 ⑥）「全选」只选中真遗物：SelectedItems 里一个空槽都没有",
 						RelicList.SelectedItems.Count == Profile.Relics.Count
-						&& RelicList.SelectedItems.OfType<RelicSlotPlaceholder>().Count() == 0
+						&& RelicList.SelectedItems.OfType<SlotPlaceholder>().Count() == 0
 						&& !RelicList.SelectedItems.Cast<object>().Any(o => o is IRelicSlotRow { IsPlaceholder: true }),
 						$"选中 {RelicList.SelectedItems.Count} / 真遗物 {Profile.Relics.Count} / 行数 {RelicRows.Count}");
 					RelicList.SelectedItems.Clear();

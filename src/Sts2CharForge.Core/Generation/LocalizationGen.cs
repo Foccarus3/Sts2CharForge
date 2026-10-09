@@ -697,6 +697,28 @@ public static class LocalizationGen
                 custom.Contains("[img]", StringComparison.OrdinalIgnoreCase) ? custom : iconPrefix + custom;
             return LocJson(dict);
         }
+
+        dict[$"{n.CharEntry}_EXTRA_RESOURCE.description"] = ExtraResourceAutoDescription(p);
+        return LocJson(dict);
+    }
+
+    /// <summary>
+    /// 额外资源量**自动写**的那段描述（用户没填「自定义描述」时用的）。
+    ///
+    /// <para>为什么单独抽成一个 public 方法：<c>ProjectRecovery.ParseExtraResource</c> 要判断
+    /// 「工程里那段描述是用户自定义的、还是工具自动写的」—— 自动写的那份**不该**回读成
+    /// 「用户填了自定义描述」（回读一次就多一段自己长出来的文字）。两边共用这一份文本，
+    /// 将来改措辞也不会对不上。</para>
+    ///
+    /// <para>⚠ 这段文本**带**图标前缀（<c>[img]…[/img]</c>，按「有没有自定义图标」自动补）——
+    /// 回读端要先把前缀剥掉再和这里比。</para>
+    /// </summary>
+    public static string ExtraResourceAutoDescription(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        string name = ResourceName(p);
+        string? icon = ArtGenerator.ExtraResourceIconInlineResPath(p);
+        string iconPrefix = icon is null ? "" : $"[img]{icon}[/img]";
         var bits = new List<string>();
         if (p.ExtraResource.Initial > 0)
             bits.Add(p.ExtraResource.CarryOver
@@ -709,8 +731,7 @@ public static class LocalizationGen
         if (spends)
             bits.Add("打出需要消耗它的牌时会扣除，数量不足时无法打出");
 
-        dict[$"{n.CharEntry}_EXTRA_RESOURCE.description"] = $"{iconPrefix}{name}：{string.Join("；", bits)}。";
-        return LocJson(dict);
+        return $"{iconPrefix}{name}：{string.Join("；", bits)}。";
     }
 
     /// <summary>

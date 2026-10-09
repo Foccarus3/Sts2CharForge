@@ -45,8 +45,8 @@
                 <TextBlock Text="药水名称" Style="{StaticResource Label}"/>
                 <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
-                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionRarities, RelativeSource={RelativeSource AncestorType=Window}}"
-                          SelectedItem="{Binding Rarity}"/>
+                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionRarityOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                 <TextBlock Text="使用时机" Style="{StaticResource Label}"/>
                 <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionUsages, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding Usage}"/>
@@ -381,10 +381,19 @@
                 </Grid>
             </TabItem>
 
-            <!-- ============ 额外资源量 / 状态 ============ -->
-            <TabItem x:Name="ExtraResourceTab" Header="额外资源量/状态">
-                <ScrollViewer>
-                    <StackPanel Margin="14" DataContext="{Binding Profile.ExtraResource}">
+            <!-- ============ 额外资源量（V0.2.127 起页头去掉「/状态」）============ -->
+            <!-- 页头按需求改名为「额外资源量」（原「额外资源量/状态」）：用户原话「额外资源量/状态页改名为额外资源量页」。
+                 ⚠ 改名要**全局一致**：MainWindow.xaml.cs 里所有 SelectTabRoot("额外资源量") / 选项卡顺序断言
+                 都跟着改（改名后自检必须仍然 PASS）。 -->
+            <TabItem x:Name="ExtraResourceTab" Header="额外资源量">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.15*" MinWidth="420"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="340"/>
+                    </Grid.ColumnDefinitions>
+                    <!-- 左：额外资源量本体（数量 / 上限 / 继承 / 显示名 / 描述 / 图标）+ 那只隐藏起始遗物（用户要求：
+                         「增加选择是否隐藏额外资源量遗物的选项」= 那个勾选框，V0.2.113 就有了，这里只是保证它还在、绑得对）。 -->
+                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel Margin="6,0,6,0" DataContext="{Binding Profile.ExtraResource}">
                         <TextBlock Text="额外资源量（和能量一样是个计数器，显示在血条下方、与状态同一行）"
                                    FontSize="15" FontWeight="Bold" TextWrapping="Wrap"/>
                         <TextBlock Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#777"
@@ -472,22 +481,50 @@
                                           ToolTip="这只遗物只是载体（开场发资源量 / 记跨战斗继承），不是藏品。&#10;勾上 = 生成一个补丁，把 NRelicInventory.Add 里的这一只跳过（不进遗物栏）；&#10;发放资源量、跨战斗继承这些功能一个字都不变（存档也兼容）。"/>
                                 <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"
                                            Text="{Binding HideInGameHint}"/>
-                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                                    <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
-                                    <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
-                                    <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
-                                            IsEnabled="{Binding CanUndoCard, RelativeSource={RelativeSource AncestorType=Window}}"
-                                            ToolTip="{Binding UndoCardHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                                </WrapPanel>
-                                <ListBox x:Name="ExtraResourceEffectList" Height="150"
-                                         ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
-                                         SelectionChanged="OnExtraResourceEffectSelectionChanged"
-                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
-                                         ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。选中一条，右边就是它的参数。"/>
+                                <TextBlock TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,2,0,0"
+                                           Text="效果栏在右边：这一份效果就是那只载体遗物的效果（触发时机固定「战斗开始时」），只能有一份 —— 这里没有第二份数据。"/>
                             </DockPanel>
                         </GroupBox>
                     </StackPanel>
-                </ScrollViewer>
+                    </ScrollViewer>
+
+                    <!-- ============ 右 = 效果栏（用户要求第 1 条：「在右侧增加效果栏」，照遗物页那套）============
+                         上：效果列表（每条效果**在列表行里**直接编辑 —— 模板复用遗物页那一份 EffectEditorPlain，
+                              ⚠ 必须带 ScrollViewer.HorizontalScrollBarVisibility="Disabled"，否则会重演 V0.2.124
+                              那个「编辑器被排成 8260px 宽、视口只有 160px」的 bug）
+                         下：单条效果自己的「条件」（面板最底下那一块，和遗物页右下角那块一一对应）
+                         最底：添加效果 / 删除效果 / 撤回删除
+                         数据还是**同一份** Profile.ExtraResource.Effects（列表没选中任何遗物时，遗物页右边那块
+                         也会借这一份显示 —— 靠选择互斥，见 OnExtraResourceEffectSelectionChanged）。 -->
+                    <DockPanel Grid.Column="2" DataContext="{Binding Profile.ExtraResource}">
+                        <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                            <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
+                            <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
+                            <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                    IsEnabled="{Binding CanUndoCard, RelativeSource={RelativeSource AncestorType=Window}}"
+                                    ToolTip="{Binding UndoCardHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                        </WrapPanel>
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Text="效果栏：额外资源量遗物的效果（触发时机固定「战斗开始时」）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                            <ListBox x:Name="ExtraResourceEffectList" Grid.Row="1"
+                                     ItemsSource="{Binding Effects}" DisplayMemberPath="{x:Null}"
+                                     SelectionChanged="OnExtraResourceEffectSelectionChanged"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     HorizontalContentAlignment="Stretch"
+                                     ItemTemplate="{StaticResource EffectEditorPlain}"
+                                     ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。每条效果直接在这里改；单条效果的条件在最下面那块。"/>
+                            <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                            <Border Grid.Row="3" x:Name="ExtraResourceEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
+                                    DataContext="{Binding SelectedItem, ElementName=ExtraResourceEffectList}">
+                                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                            </Border>
+                        </Grid>
+                    </DockPanel>
+                </Grid>
             </TabItem>
 
             <!-- ============ 卡牌 ============ -->
@@ -1104,7 +1141,7 @@
                     <DockPanel Grid.Column="0">
                         <!-- 用户要求（第 11 批 ①②）：「遗物页去除左上角关于额外资源量的内容」——
                              那块「额外资源量遗物（自动生成的隐藏起始遗物）」已经整块搬到
-                             「额外资源量/状态」页底部了（那里才是它该在的地方；这个页面只剩纯遗物列表）。 -->
+                             「额外资源量」页了（那里才是它该在的地方；这个页面只剩纯遗物列表）。 -->
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="添加遗物" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelic"/>
                             <Button Content="删除" Padding="8,4" Click="OnRemoveRelic"/>
@@ -1122,7 +1159,7 @@
                         <TextBlock DockPanel.Dock="Bottom" x:Name="RelicDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
                                    Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
                         <!-- 用户要求：序号按「每块 5 个」预留显示 —— 行数 = 5 × ceil(max(N,1)/5)，
-                             多出来的行是**空槽**（RelicSlotPlaceholder，只显示灰色序号、没有内容）。
+                             多出来的行是**空槽**（SlotPlaceholder，只显示灰色序号、没有内容）。
                              ItemsSource 绑的是 MainWindow.RelicRows 这个**界面镜像集合**
                              （真遗物 + 末尾空槽）；真遗物集合 Profile.Relics 仍是唯一事实来源。 -->
                         <ListBox x:Name="RelicList" SelectionMode="{Binding MultiSelectRelics, Converter={StaticResource MultiSelectMode}}"
@@ -1145,7 +1182,7 @@
                                                    VerticalAlignment="Center"/>
                                     </Grid>
                                     <!-- 空槽行：只有灰色序号（遗物名那一列整块收起来）。判据是接口上的 IsPlaceholder，
-                                         真遗物 = false、空槽 = true（见 RelicSlotPlaceholder / IRelicSlotRow）。 -->
+                                         真遗物 = false、空槽 = true（见 SlotPlaceholder / IRelicSlotRow）。 -->
                                     <DataTemplate.Triggers>
                                         <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
                                             <Setter TargetName="RelicRowRoot" Property="ToolTip" Value="{x:Null}"/>
@@ -1165,7 +1202,9 @@
                     <!-- 额外资源量遗物里选中的那条效果：编辑区（和遗物详情同一格，靠选择互斥 + 代码里藏掉空提示） -->
                     <!-- 额外资源量遗物里选中的那条效果：编辑区（借遗物页右边那一格显示 ——
                          遗物列表没选中任何遗物时才出现，靠的是两个 Visibility 互斥）。
-                         那块列表本身现在长在「额外资源量/状态」页（用户要求：遗物页左上角不再有额外资源量的内容）。 -->
+                         V0.2.127 起「额外资源量」页右侧有了**自己的**效果栏（用户要求「在右侧增加效果栏」），
+                         所以这一块在正常操作下不会再出现（用户点那条效果时人在「额外资源量」页）；
+                         留着它是为了不改动遗物页既有行为（V0.2.124 起就是这个形状）。 -->
                     <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                                   DataContext="{Binding SelectedItem, ElementName=ExtraResourceEffectList}"
                                   Visibility="{Binding SelectedItem, ElementName=ExtraResourceEffectList, Converter={StaticResource NotEmptyToVisibility}}">
@@ -1430,14 +1469,57 @@
                             <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoPotion"
                                     IsEnabled="{Binding CanUndoPotion}" ToolTip="{Binding UndoPotionHint}"/>
                         </WrapPanel>
-                        <ListBox x:Name="PotionList" SelectionMode="{Binding MultiSelectPotions, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Potions}" DisplayMemberPath="Display"/>
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
+                                   Text="最左边的数字 = 这瓶药水**现在排第几位**（拖动换位置后跟着重排）。序号每次多留 5 个：不够 5 瓶时后面几行是**灰色空槽**（拖药水过去就放到那个位置）；空槽不能被选中。自动生成的英文类名会跟着序号走，手填的不会被改。"/>
+                        <TextBlock DockPanel.Dock="Bottom" x:Name="PotionDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
+                                   Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
+                        <!-- 用户要求第 6 条「药水方面参考遗物的优化方案」：序号按「每块 5 个」预留显示 ——
+                             行数 = 5 × ceil(max(N,1)/5)，多出来的行是**空槽**（SlotPlaceholder，只显示灰色序号、没有内容）。
+                             ItemsSource 绑的是 MainWindow.PotionRows 这个**界面镜像集合**
+                             （真药水 + 末尾空槽）；真药水集合 Profile.Potions 仍是唯一事实来源。 -->
+                        <ListBox x:Name="PotionList" SelectionMode="{Binding MultiSelectPotions, Converter={StaticResource MultiSelectMode}}"
+                                 ItemsSource="{Binding PotionRows}"
+                                 AllowDrop="True" PreviewMouseLeftButtonDown="OnPotionListPreviewMouseDown"
+                                 PreviewMouseMove="OnPotionListPreviewMouseMove"
+                                 DragOver="OnPotionListDragOver" Drop="OnPotionListDrop"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 HorizontalContentAlignment="Stretch">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid x:Name="PotionRowRoot" ToolTip="{Binding RowTip}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="34"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock x:Name="PotionRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                                   Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock x:Name="PotionRowName" Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                    <!-- 空槽行：只有灰色序号（名字那一列整块收起来）。判据是接口上的 IsPlaceholder，
+                                         真药水 = false、空槽 = true（见 SlotPlaceholder / ISlotRow）。 -->
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                            <Setter TargetName="PotionRowRoot" Property="ToolTip" Value="{x:Null}"/>
+                                            <Setter TargetName="PotionRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+                                            <Setter TargetName="PotionRowOrdinal" Property="FontWeight" Value="Normal"/>
+                                            <Setter TargetName="PotionRowName" Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </DockPanel>
                     <TextBlock x:Name="PotionEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择药水"
-                               Visibility="{Binding SelectedItem, ElementName=PotionList, Converter={StaticResource EmptyToVisibility}}"/>
+                               Visibility="{Binding HasPotionSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToCollapsed}}"/>
 
-                    <Grid x:Name="PotionDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=PotionList}"
-                          Visibility="{Binding SelectedItem, ElementName=PotionList, Converter={StaticResource NotEmptyToVisibility}}">
+                    <!-- ⚠ 显隐判据绑在**窗口**上（RelativeSource AncestorType=Window）：不能写裸
+                         {Binding HasPotionSelection} —— PotionDetail 自己把 DataContext 换成了选中的那瓶药水，
+                         裸绑定会去找 PotionSpec.HasPotionSelection（不存在 → PathError → Visibility 停在默认值 Visible）。
+                         详情的数据上下文是 PotionUiSelection（点中空槽行时它保持上一瓶，右侧不闪）。 -->
+                    <Grid x:Name="PotionDetail" Grid.Column="2" DataContext="{Binding PotionUiSelection}"
+                          Visibility="{Binding HasPotionSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/></Grid.ColumnDefinitions>
                         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
                         <StackPanel>
@@ -1446,8 +1528,14 @@
                             <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Text="英文类名（留空 = 自动生成 &lt;角色类名&gt;Potion&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                             <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock TextWrapping="Wrap" Margin="6,0,0,2" Foreground="#888" FontSize="11" Text="{Binding ClassNameHint}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
-                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                            <!-- 稀有度英文改中文（用户要求第 6 条：药水照抄遗物页）：
+                                 界面显示中文（常见/罕见/稀有），存进存档的还是英文 id
+                                 （PotionRarityOptions 一项 = Id + Display；生成端写的是本体 PotionRarity 枚举）。 -->
+                            <ComboBox x:Name="PotionRarityCombo" Style="{StaticResource Pick}"
+                                      ItemsSource="{Binding PotionRarityOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                             <TextBlock Text="使用时机" Style="{StaticResource Label}"/>
                             <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding PotionUsages, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Usage}"/>
                             <TextBlock Text="作用目标" Style="{StaticResource Label}"/>
@@ -1462,6 +1550,12 @@
                                        Text="提示：选「任意时机」时不要用造成伤害/抽牌/挂减益这类需要战斗的效果，生成时会被忽略。&#10;药水实际打谁由上面的「作用目标」决定，卡面描述会按它生成（效果里的「作用对象」对药水不起作用）。"/>
                         </StackPanel>
                         </ScrollViewer>
+                        <!-- ============ 右 = 效果栏 + 自定义描述（照遗物页那套：用户要求第 6 条「药水方面参考遗物的优化方案」）============
+                             上：效果列表（每条效果**在列表行里**直接编辑 = ItemTemplate，模板还是药水那一份 EffectEditorPotion）
+                             下：单条效果自己的「条件」（右下角那一块 —— 药水没有「触发时机」，
+                                 所以只剩「条件」这一块，和遗物页右下角那块一一对应）
+                             最底：添加效果 / 删除效果 / 撤回删除
+                             之后：药水自定义描述（保留原样） -->
                         <DockPanel Grid.Column="2">
                             <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                                 <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=PotionEffectList}"/>
@@ -1470,14 +1564,29 @@
                                         IsEnabled="{Binding CanUndoPotion}" ToolTip="{Binding UndoPotionHint}"/>
                             </WrapPanel>
                             <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <ListBox x:Name="PotionEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
-                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Grid.Row="0" Text="效果栏：这瓶药水的效果" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <!-- ⚠ ScrollViewer.HorizontalScrollBarVisibility="Disabled" 是**必须**的（照遗物页那条真坑）：
+                                     ListBox 默认允许横向滚动 → 虚拟化面板按无限宽度量每一行 → 行里那个
+                                     ScrollViewer 会把内容排成自然宽度（实测 8260px）→ 每行 507px 高、视口只有一百多像素，
+                                     编辑器（含「条件」）全被切掉、点不着。禁掉横向滚动，行宽才会被夹回列表宽度。 -->
+                                <ListBox x:Name="PotionEffectList" Grid.Row="1"
+                                         SelectionMode="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         ItemsSource="{Binding Effects}" DisplayMemberPath="{x:Null}"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         HorizontalContentAlignment="Stretch"
+                                         ItemTemplate="{StaticResource EffectEditorPotion}"/>
+                                <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                <Border Grid.Row="3" x:Name="PotionEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
                                         DataContext="{Binding SelectedItem, ElementName=PotionEffectList}">
-                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotion}"/>
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
                                 </Border>
                                 <!-- 药水自定义描述（用户要求：药水也能自己写描述） -->
-                                <GroupBox Grid.Row="3" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
+                                <GroupBox Grid.Row="4" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
                                     <StackPanel Margin="4">
                                         <TextBox x:Name="PotionCustomDesc" Style="{StaticResource Field}" MinHeight="56" AcceptsReturn="True" TextWrapping="Wrap"
                                                  VerticalScrollBarVisibility="Auto"

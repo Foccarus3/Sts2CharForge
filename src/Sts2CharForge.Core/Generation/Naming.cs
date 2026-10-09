@@ -354,6 +354,108 @@ public sealed record Naming(
     public string PotionClassName(PotionSpec s, int index) =>
         IsValidIdentifier(s.ClassName) ? s.ClassName.Trim() : CharClass + "Potion" + (index + 1).ToString();
 
+    /// <summary>
+    /// 这个名字是不是「本工具自动生成过的药水类名」：<c>&lt;角色类名&gt;Potion&lt;数字&gt;</c>（1 起算）。
+    ///
+    /// <para>和 <see cref="IsAutoRelicClassName"/> 同一个理由（用户要求第 6 条「药水方面参考遗物的优化方案」）：
+    /// 重新生成 / 构建的时候，**没填英文类名**的药水要先清掉以前自动生成的那个类名，再按它**现在的序号**
+    /// 重新生成，这样拖动换位置后自动类名会跟着走；但**用户手填的类名绝不能被清掉**，所以必须把两者区分开。</para>
+    ///
+    /// <para>⚠ 判据是**按名字形状认**（整串正好是 <c>角色类名 + Potion + 数字</c>），
+    /// 不加存档字段 —— 理由见 <see cref="IsAutoRelicClassNameFor"/> 的注释（老存档一个字节都不用改）。</para>
+    /// </summary>
+    public bool IsAutoPotionClassName(string? className) => IsAutoPotionClassNameFor(CharClass, className);
+
+    /// <summary>
+    /// 同上，但可以**不依赖一份配好的 <see cref="Naming"/>**（给界面 / 模型用：
+    /// <see cref="Sts2CharForge.Core.Profile.PotionSpec"/> 自己不知道角色类名，只想知道
+    /// 「这串名字长得像不像自动编号」，所以把角色类名留空 = 只按**形状**判断
+    /// —— 任意一串「英文标识 + Potion + 数字」都算）。
+    /// </summary>
+    public static bool IsAutoPotionClassNameFor(string? charClass, string? className)
+    {
+        if (string.IsNullOrWhiteSpace(className)) return false;
+        string s = className.Trim();
+        int at = s.LastIndexOf("Potion", StringComparison.Ordinal);
+        if (at < 0) return false;
+        string prefix = s.Substring(0, at + "Potion".Length);
+        string digits = s.Substring(at + "Potion".Length);
+        // 前缀必须是「角色类名」本身（给了 charClass 时）或一个合法英文标识
+        if (!string.IsNullOrWhiteSpace(charClass))
+        {
+            if (!string.Equals(prefix, charClass!.Trim() + "Potion", StringComparison.Ordinal)) return false;
+        }
+        else if (!IsValidIdentifier(prefix)) return false;
+        if (digits.Length == 0) return false;
+        for (int i = 0; i < digits.Length; i++)
+            if (digits[i] < '0' || digits[i] > '9') return false;
+        // 编号得是合法正整数：`...Potion0` 不是自动生成出来的（人手打的）
+        return int.TryParse(digits, out int n) && n >= 1;
+    }
+
+    /// <summary>
+    /// 生成前的「药水自动类名重新编号」：语义和 <see cref="RenumberRelicClassNames"/> **完全一致**
+    /// （用户要求第 6 条「药水方面参考遗物的优化方案」），只是对象换成 <see cref="PotionSpec"/>：
+    /// <list type="bullet">
+    /// <item>没填英文类名的 → 记下它**当前序号**对应的自动名（<see cref="PotionSpec.LastAutoOrdinal"/>，
+    ///       类名本身**留空** —— 生成端 / 校验器读 <see cref="PotionClassName"/> 时自己会拼出来）；</item>
+    /// <item>写着本工具以前自动生成的那个名字的（<see cref="IsAutoPotionClassName"/>）→ 改成**当前序号**对应的名字
+    ///       （拖到哪就跟着哪）；</item>
+    /// <item>用户手填的（认不出是自动名的）→ 一个字都不动。</item>
+    /// </list>
+    ///
+    /// <para>⚠ 为什么「没填」的**不写实**：一写实就再也分不出「这串名字是工具生成的」还是「用户手打的」——
+    /// 用户手打一个正好长得像自动编号的名字时，下一次生成会被当成自动名改写；留空 + 单独记序号，
+    /// 两边都不会误判（生成端读 <see cref="PotionClassName"/> 时自己会拼出来）。</para>
+    ///
+    /// <para>⚠ 为什么自动名也要「跟着拖」：这正是用户要的（「重新生成构建的时候，如果没有填写英文类名，
+    /// 自动清除之前自动生成的英文类名，然后按照左侧序列号生成对应的英文类名」）。
+    /// 这一步**必须排在 <c>NameStabilizer.Freeze</c> 之前** —— Freeze 会把留空的类名永久写实。</para>
+    ///
+    /// 返回「按新序号重算了几瓶」。**幂等**：编号正好对上的不会被动。
+    /// </summary>
+    public int RenumberPotionClassNames(IEnumerable<PotionSpec> potions)
+    {
+        int renumbered = 0;
+        int index = 0;
+        foreach (var s in potions)
+        {
+            if (s is null) { index++; continue; }
+            string want = CharClass + "Potion" + (index + 1).ToString();
+            if (IsValidIdentifier(s.ClassName))
+            {
+                // 有类名：只有「认得出是自动名」的才跟着序号走（手填的原样保留）；
+                // 自动名本来就正好等于当前序号那个名字的，就不用动（幂等：反复生成结果一样）
+                if (IsAutoPotionClassName(s.ClassName))
+                {
+                    if (!string.Equals(s.ClassName!.Trim(), want, StringComparison.Ordinal))
+                    {
+                        s.ClassName = want;
+                        renumbered++;
+                    }
+                    // ⚠ 这一行和遗物那版**不一样**（遗物那版只在改名成功时才写 LastAutoOrdinal）：
+                    // 药水的 `PotionSpec.AutoClassNameHint`（→ 「英文类名」下面那行小字）会读它，
+                    // 遗物的 `RelicSpec.AutoClassNameHint` 也会读 —— 但遗物页的行为这轮不许动，
+                    // 所以只在这里把「已经是当前序号那个自动名」的分支也同步好：
+                    // 否则「拖到第 3 位、类名早就正好是 Potion3」时小字还写着上一个序号，界面自相矛盾。
+                    // 这个字段是 [JsonIgnore]，不写存档、不参与生成，改了不影响老存档的生成结果。
+                    if (s.LastAutoOrdinal != index + 1) s.LastAutoOrdinal = index + 1;
+                }
+            }
+            else
+            {
+                // 没填类名：只记「这个位置对应的自动名是第几号」，类名留空（生成端会自己拼）
+                if (s.LastAutoOrdinal != index + 1)
+                {
+                    s.LastAutoOrdinal = index + 1;
+                    renumbered++;
+                }
+            }
+            index++;
+        }
+        return renumbered;
+    }
+
     public static string EntryOf(string className) => Slug(className);
 
     public static bool IsValidIdentifier(string? name)

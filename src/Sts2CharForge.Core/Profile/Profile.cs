@@ -3841,7 +3841,7 @@ public sealed class ConditionSpec : SpecBase
     public string Summary => IsNone ? "" : DisplayShort;
 }
 
-public sealed class PotionSpec : SpecBase
+public sealed class PotionSpec : SpecBase, ISlotRow
 {
     private string _name = "新药水";
     private string _className = "";
@@ -3851,14 +3851,104 @@ public sealed class PotionSpec : SpecBase
     private bool _inPotionPool = true;
 
     public string Name { get => _name; set => Set(ref _name, value); }
-    public string ClassName { get => _className; set => Set(ref _className, value); }
-    /// <summary>Common / Uncommon / Rare</summary>
-    public string Rarity { get => _rarity; set => Set(ref _rarity, value); }
+
+    /// <summary>英文类名。留空 = 由工具按位置自动生成（见 Naming.PotionClassName）。</summary>
+    public string ClassName
+    {
+        get => _className;
+        set
+        {
+            if (!Set(ref _className, value)) return;
+            // 「英文类名」那一栏下面的小字（自动 / 手填）跟着变
+            Raise(nameof(ClassNameIsAuto));
+            Raise(nameof(ClassNameHint));
+        }
+    }
+
+    /// <summary>Common / Uncommon / Rare（存的是英文 id，界面显示中文）</summary>
+    public string Rarity
+    {
+        get => _rarity;
+        set
+        {
+            if (!Set(ref _rarity, value)) return;
+            Raise(nameof(Display));
+        }
+    }
     /// <summary>CombatOnly / AnyTime</summary>
     public string Usage { get => _usage; set => Set(ref _usage, value); }
     /// <summary>Self / AnyEnemy / AllEnemies</summary>
     public string TargetType { get => _targetType; set => Set(ref _targetType, value); }
     public bool InPotionPool { get => _inPotionPool; set => Set(ref _inPotionPool, value); }
+
+    // ===== 左侧列表的序号（用户要求第 6 条「药水方面参考遗物的优化方案」：
+    //       序号显示在药水名最左侧、从上到下 1..N，序号是**位置号**、不跟随药水移动）=====
+    private int _ordinal;
+
+    /// <summary>
+    /// 这瓶药水在 <c>Profile.Potions</c> 里的**当前位置**（1 起算），只给界面显示用。
+    ///
+    /// <para>⚠ 它**不写进存档**（<see cref="JsonIgnoreAttribute"/>）：序号是「当前的排序位置」，
+    /// 不是跟着物品走的标记 —— 拖动换位置 / 删掉中间一瓶之后，由
+    /// <c>Naming.RenumberPotionClassNames</c>（生成前）和界面自己的刷新重新发一遍。
+    /// 和 <see cref="RelicSpec.Ordinal"/> 同一套做法（写进存档会给老存档多一个字段）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public int Ordinal { get => _ordinal; set => Set(ref _ordinal, value); }
+
+    // ===== 「自动类名」的痕迹（用户要求：自动的跟序号走、手填的不动）=====
+    private int _lastAutoOrdinal;
+
+    /// <summary>
+    /// 上一次生成时，这瓶药水的「自动类名」是第几号（对应 <c>&lt;角色类名&gt;Potion&lt;它&gt;</c>）。
+    ///
+    /// <para>⚠ 和遗物那边同一个理由：英文类名留空时**类名本身要保持空白**（一写实就再也分不出
+    /// 「工具生成的」和「用户手打的」—— 见 <c>Naming.RenumberPotionClassNames</c> 的注释）。
+    /// 但界面上「英文类名」那一栏总得让用户看到「不填会用哪个名字」，所以单独把**序号**记在这里，
+    /// 由 <see cref="AutoClassNameHint"/> 拼出完整名字。不写进存档。</para>
+    /// </summary>
+    [JsonIgnore]
+    public int LastAutoOrdinal { get => _lastAutoOrdinal; set => Set(ref _lastAutoOrdinal, value); }
+
+    /// <summary>界面用：不填类名时，这瓶药水会用哪个自动名（还没生成过就按当前序号推）。</summary>
+    [JsonIgnore]
+    public string AutoClassNameHint
+    {
+        get
+        {
+            int n = _lastAutoOrdinal >= 1 ? _lastAutoOrdinal : _ordinal;
+            return "<角色类名>Potion" + (n >= 1 ? n : 1);
+        }
+    }
+
+    /// <summary>
+    /// 界面用：这瓶药水的英文类名现在是不是「自动生成的那一个」
+    /// （判据 = <c>Naming.IsAutoPotionClassNameFor</c>，按名字形状认；认不出的都当手填）。
+    /// </summary>
+    [JsonIgnore]
+    public bool ClassNameIsAuto =>
+        !Generation.Naming.IsValidIdentifier(_className)
+        || Generation.Naming.IsAutoPotionClassNameFor(null, _className);
+
+    /// <summary>界面用：「英文类名」那一栏下面那行小字。</summary>
+    [JsonIgnore]
+    public string ClassNameHint => ClassNameIsAuto
+        ? "留空 = 自动。现在对应 " + AutoClassNameHint + "（重新生成 / 构建时按左边列表的序号重算，拖动换位置就跟着变）。"
+        : "现在这个名字是**你手填的**：重新生成 / 构建都不会改它（想让它跟着序号走就把这一栏清空）。";
+
+    /// <summary>界面用：左侧列表那一行的提示（序号 + 类名是自动还是手填）。</summary>
+    [JsonIgnore]
+    public string RowTip => "第 " + (_ordinal >= 1 ? _ordinal : 0) + " 位 ｜ "
+        + (ClassNameIsAuto ? "英文类名自动（跟序号走）" : "英文类名手填（不会自动改）") + " ｜ 可以拖动这一行换位置";
+
+    /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
+    [JsonIgnore]
+    public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
+
+    /// <summary>界面用：真药水行当然不是空槽（空槽行是界面那边的 <c>PotionSlotPlaceholder</c>）。</summary>
+    [JsonIgnore]
+    public bool IsPlaceholder => false;
+
 
     private bool _isForged;
 
@@ -3912,9 +4002,16 @@ public sealed class PotionSpec : SpecBase
     [JsonIgnore]
     public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
+    /// <summary>
+    /// 列表里显示的整行文本。
+    ///
+    /// <para>稀有度用**中文**（用户要求：药水页照抄遗物页的「稀有度英文改中文」）——
+    /// 遗物页 <see cref="RelicSpec.Display"/> 早就是这么做的（<c>EffectCatalog.RelicRarityZh</c>），
+    /// 这里改成 <c>EffectCatalog.PotionRarityZh</c>。存进存档的 <see cref="Rarity"/> 还是英文 id。</para>
+    /// </summary>
     [JsonIgnore]
     public string Display =>
-        $"{(IsForged ? "*" : "")}{Name}  ｜ {Rarity} ｜ {Usage} → {TargetType}{(InPotionPool ? "" : " ｜ 不入池")}";
+        $"{(IsForged ? "*" : "")}{Name}  ｜ {EffectCatalog.PotionRarityZh(Rarity)} ｜ {Usage} → {TargetType}{(InPotionPool ? "" : " ｜ 不入池")}";
 }
 
 /// <summary>

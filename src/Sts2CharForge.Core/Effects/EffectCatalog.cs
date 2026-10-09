@@ -1848,6 +1848,33 @@ public static class EffectCatalog
         ?? (string.IsNullOrWhiteSpace(id) ? "常见" : id!.Trim());
 
     public static IReadOnlyList<string> PotionRarities { get; } = new[] { "Common", "Uncommon", "Rare" };
+
+    /// <summary>
+    /// 药水稀有度下拉的**界面选项**（用户要求：《遗物、药水优化.md》第 6 条「药水方面参考遗物的优化方案」
+    /// → 遗物页第 3 条「将中间部分的稀有度显示的英文更改成中文」照抄到药水页）。
+    ///
+    /// <para><c>Id</c> 还是 <see cref="PotionRarities"/> 里那串英文（存档 / 生成端一个字符都不变），
+    /// 只有 <c>Display</c> 是中文；界面用 <c>DisplayMemberPath="Display"</c> +
+    /// <c>SelectedValuePath="Id"</c> 绑 <c>PotionSpec.Rarity</c>。</para>
+    ///
+    /// <para>档位只有三档（<c>Common</c> / <c>Uncommon</c> / <c>Rare</c>）—— 和
+    /// <see cref="PotionRarities"/> 一模一样，**没有加档**：本体 <c>PotionRarity</c> 枚举其实还有
+    /// <c>None</c> / <c>Event</c> / <c>Token</c>，但那是本体内部用的档（事件 / 代币药水不是从奖励池里抽的），
+    /// 工具从来没给过它们，加了反而会让用户配出抽不到的药水。中文名和遗物页**同一套词**
+    /// （常见 / 罕见 / 稀有），两页看同一个概念不会出现两个叫法。</para>
+    /// </summary>
+    public static IReadOnlyList<RarityOption> PotionRarityOptions { get; } = new[]
+    {
+        new RarityOption("Common",   "常见"),
+        new RarityOption("Uncommon", "罕见"),
+        new RarityOption("Rare",     "稀有"),
+    };
+
+    /// <summary>药水稀有度的中文显示名（列表 / 提示里显示用；认不出来的原样返回）。</summary>
+    public static string PotionRarityZh(string? id) =>
+        PotionRarityOptions.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display
+        ?? (string.IsNullOrWhiteSpace(id) ? "常见" : id!.Trim());
+
     /// <summary>
     /// 效果的「作用对象」候选。
     ///

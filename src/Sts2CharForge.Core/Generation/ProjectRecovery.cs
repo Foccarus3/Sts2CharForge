@@ -405,6 +405,26 @@ public static class ProjectRecovery
         }
         Apply(p.Relics, PoolOrder("RelicPool", "GenerateAllRelics()", "Relic"), r => r.ClassName);
         Apply(p.Potions, PoolOrder("PotionPool", "GenerateAllPotions()", "Potion"), s => s.ClassName);
+
+        // 「加入药水池」这个勾（V0.2.127 起补的回读规则）：生成端把**所有**药水都列进
+        // <角色>PotionPool.GenerateAllPotions()，没勾的那些是在 GetUnlockedPotions() 里
+        // 用 `keep.RemoveAll(p => p.Id == ModelDb.Potion<X>().Id …)` 剔掉的
+        //（掉落/商店走的就是 GetUnlockedPotions）。所以：类名出现在那个方法体里 = **没勾**。
+        // ⚠ 以前完全没回读这一项 → 从工程恢复出来的「不入池」药水会静默变回入池（探针实测踩到）。
+        {
+            string poolFile = Path.Combine(cs, Naming.From(p).PotionPoolClass + ".cs");
+            if (File.Exists(poolFile) && p.Potions.Count > 0)
+            {
+                string poolText = File.ReadAllText(poolFile, Encoding.UTF8);
+                string unlocked = BodyOf(poolText, "GetUnlockedPotions(");
+                if (unlocked.Length > 0)
+                    foreach (var s in p.Potions)
+                    {
+                        if (string.IsNullOrWhiteSpace(s.ClassName)) continue;
+                        s.InPotionPool = !unlocked.Contains($"ModelDb.Potion<{s.ClassName}>()");
+                    }
+            }
+        }
     }
 
     /// <summary>把配置里引用到的图片复制到 <c>&lt;assetDir&gt;\_恢复素材</c> 并改写路径。</summary>
@@ -3810,6 +3830,22 @@ public static class ProjectRecovery
         p.ExtraResource.Enabled = true;
         p.ExtraResource.Initial = Int(text, @"InitialAmount = (\d+)", 0);
         p.ExtraResource.CarryOver = text.Contains("CarryOver = true");
+        // 「在游戏中隐藏那只载体遗物」（V0.2.127 起补的回读规则）：勾了才会生成 cs/HideCarrierRelic.cs，
+        // **文件在 = 勾着**（这个补丁除了这件事没有别的用途，也没有别的路径会写它）。
+        p.ExtraResource.HideInGame = File.Exists(Path.Combine(cs, "HideCarrierRelic.cs"));
+        // 「始终显示计数器」：勾了才在角色类里写这一句（见 CSharpCodeGen 的 ShouldAlwaysShowStarCounter）。
+        {
+            string charFile = Path.Combine(cs, p.CharacterClass + ".cs");
+            p.ExtraResource.AlwaysShowCounter = File.Exists(charFile)
+                && File.ReadAllText(charFile, Encoding.UTF8).Contains("ShouldAlwaysShowStarCounter => true");
+        }
+        // 「数量上限」：基础值写成 ExtraResourceUiConst.MaxAmount（那个文件只在「配了名字/图标」或
+        // 「用得到上限机制」时才生成 —— 填了上限就一定会生成，所以读得到就一定是准的）。
+        {
+            string uiFile = Path.Combine(cs, "ExtraResourceUi.cs");
+            if (File.Exists(uiFile))
+                p.ExtraResource.Max = Int(File.ReadAllText(uiFile, Encoding.UTF8), @"MaxAmount = (\d+)", 0);
+        }
         // 用户在「遗物」页给这只隐藏起始遗物加的效果：生成时挂在它的 BeforeSideTurnStart（带 choiceContext）上。
         p.ExtraResource.Effects.Clear();
         string extraBody = BodyOf(text, "BeforeSideTurnStart(");
@@ -3830,8 +3866,26 @@ public static class ProjectRecovery
                 if (File.Exists(src)) p.ExtraResource.Icon = src;
             }
         }
+        // 「自定义描述」（V0.2.127 起补的回读规则）：它写在静态悬停文案表里
+        //（`<CharEntry>_EXTRA_RESOURCE.description`）。⚠ 没填时生成的是**工具自动写**的那段
+        //（`LocalizationGen.ExtraResourceAutoDescription`）—— 那份**不能**当成「用户填的自定义描述」
+        // 回读回去，否则每恢复一次就长出一段自己写的文字。所以：剥掉生成时补的 `[img]…[/img]` 前缀后
+        // 和自动文本比，一样就是「没填」，不一样才是用户自己写的。
+        {
+            string key = $"{Naming.From(p).CharEntry}_EXTRA_RESOURCE.description";
+            string stored = (loc.Get(key, "") ?? "").Trim();
+            if (stored.Length > 0)
+            {
+                stored = System.Text.RegularExpressions.Regex.Replace(stored, @"^\[img\][^\[]*\[/img\]", "");
+                if (!string.Equals(stored.Trim(), LocalizationGen.ExtraResourceAutoDescription(p), StringComparison.Ordinal))
+                    p.ExtraResource.Description = stored.Trim();
+            }
+        }
         result.Notes.Add($"额外资源量：名字「{p.ExtraResource.Name}」开场 {p.ExtraResource.Initial} 点"
             + (p.ExtraResource.CarryOver ? "（跨战斗继承）" : "（每场重置）")
+            + (p.ExtraResource.Max > 0 ? $"、上限 {p.ExtraResource.Max}" : "、不限上限")
+            + (p.ExtraResource.AlwaysShowCounter ? "、始终显示计数器" : "")
+            + (p.ExtraResource.HideInGame ? "、游戏里隐藏载体遗物" : "")
             + (string.IsNullOrWhiteSpace(p.ExtraResource.Icon) ? "" : "，图标已找回"));
     }
 

@@ -1,5 +1,15 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 14 批需求（用户 2026-10-XX 提，按《遗物、药水优化.md》往下做；**药水页照抄 + 额外资源量页那条**）
+
+> 需求原文：`docs\需求\遗物、药水优化.md` 第 1 条（额外资源量页）+ 第 6 条（药水方面参考遗物的优化方案）。
+> 《锻造优化.md》《卡牌页优化.md》两条**本轮没动**（下一批）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **额外资源量/状态页改名为额外资源量页 + 「是否隐藏额外资源量遗物」的选项 + 右侧效果栏**（用户原话：「额外资源量/状态页改名为额外资源量页，增加选择是否隐藏额外资源量遗物的选项。在右侧增加效果栏。」） | 页头 `ExtraResourceTab.Header` 改「额外资源量」，**所有按名字定位页面的代码一起改**（`SelectTabRoot("额外资源量")` 5 处 + 两处选项卡顺序断言的 `case`）；「在游戏中隐藏」勾选框（V0.2.113 就有）核对为在、绑得对、可用；版面重排成 **左 = 额外资源量本体 + 那只载体遗物 / 右 = 效果栏**（效果列表改成 `ItemTemplate="{StaticResource EffectEditorPlain}"`（行内编辑）+ 右下角 `ExtraResourceEffectConditionBox` 绑那条效果的 `Condition.Kind`），效果仍**只有一份**（`Profile.ExtraResource.Effects`）。**顺手修掉两个只在「启用额外资源量 + 有效果」时才炸的老坑**（示例存档的额外资源量是关的，所以一直没暴露）：`ExtraResourceSource` 的 `CanonicalVars =>` 用 `.Open(...)` 多开了一层 `{` 且从没关上（生成的 `cs/ExtraResource.cs` 编译不过，实测一串 CS1002/CS1519）→ 改成照遗物链的 `.Line(...)` 写法；「每场战斗只触发一次」用到的 `_condUsedThisCombat` **压根没声明**（CS0103）→ 用到了才声明 + 跑过置位 + 换战斗复位（复位写进已有的 `AfterCombatEnd` 方法体，不能另开一个同名 override） | ✅V0.2.127 |
+| ② | **药水页照抄遗物页**（用户原话：「药水方面参考遗物的优化方案。」） | 照 V0.2.124（序号 / 拖动 / 自动类名 / 稀有度中文 / 右侧效果栏 + 右下角条件）+ V0.2.125（每 5 个一块预留空槽）**逐条搬**：`ISlotRow` 抽成通用接口（`IRelicSlotRow` 保留成别名，遗物页代码一个字不动）、`SlotPlaceholder` 通用空槽行、`PotionRows` 界面镜像集合（`public`，WPF 反射读不到 internal）、`PotionUiSelection` / `HasPotionSelection` 替掉绑 `SelectedItem` 的两处、`PotionRowAtPoint` / `MovePotionTo`、`Naming.RenumberPotionClassNames` + `PotionSpec.Ordinal` / `LastAutoOrdinal`（都 `[JsonIgnore]`，存档面零变化）、`EffectCatalog.PotionRarityOptions`（Id 英文 / Display 中文：常见 / 罕见 / 稀有）。**不抄**：遗物的「触发时机列表 / 关系开关 / 重置范围」（药水没有这个概念）。**顺手补的老缺口**：(a) 药水效果的条件以前「界面没入口 + 校验器一律报错 + 生成端不生成」→ 新增 `CondCtx.Potion` + `EmitPotionEffect` 包 `if` + 校验器改成允许遗物那一档；(b) 药水的「概率生效」「命中次数」勾了不生成且无提示 → 校验器**明确报警告**（不补生成，补了会动老存档）；(c) 回读补上「在游戏中隐藏 / 始终显示计数器 / 数量上限 / 加入药水池 / 额外资源量自定义描述」五项（都用既有规则 / 既有文件，**无新标记**） | ✅V0.2.127（`--uicheck` Debug **2899/0**、发布版 **2899/0**；`dotnet build` 0 错误；改动前/后 `--samplegen` 113 个文件里 **112 个逐文件 SHA256 一致**、只差 `ExampleMod.sln` 的随机 GUID；探针 `_tmp\v02127\cli` 新存档 + 老存档各一份 → CLI `--build --install` 真 `dotnet build` **0 错误 / 0 错误** + `--recover` **0 条「没认出来」**、药水类名重编号 / 入池 / 中文稀有度 / 条件 / 额外资源量 8 项字段逐项还原） |
+
 ## 第 13 批需求（用户 2026-10-XX 提，接着遗物页往下做）
 
 | # | 需求 | 做法要点 | 状态 |
@@ -16,7 +26,7 @@
 
 | # | 需求 | 做法要点 | 状态 |
 |---|---|---|---|
-| ① | 遗物页：**先修「现在的问题」**，再做「去掉左上角额外资源量那块 + 左侧序号 + 拖动换位置 + 自动类名跟序号走 + 稀有度中文 + 中间底下触发时机列表/自定义描述 + 右侧效果栏 + 右下角单条效果条件」 | **根因**：V0.2.122 把「整块效果编辑器」塞进了 `RelicEffectList` 的 `ItemTemplate`，而 ListBox 默认允许横向滚动 → 虚拟化面板按**无限宽度**量每一行 → 行里那个 `EffectEditorPlain` 的 ScrollViewer 把内容排成自然宽度（实测 **8260px**）→ 每行 507px 高、视口只有 160px + 一条横向滚动条，效果编辑器（含底下的「条件」）被切掉。**修**：`RelicEffectList` / `RelicTriggerList` 加 `ScrollViewer.HorizontalScrollBarVisibility="Disabled"`（+ `HorizontalContentAlignment="Stretch"`），行宽夹回 414。**布局重排**：中间 = 属性 + 触发时机列表/该条编辑器 + 自定义描述（两栏）+ 整只遗物条件；右侧 = 效果栏 + 「单条效果的触发条件」；额外资源量那块整块搬回「额外资源量/状态」页底部。**新模型**：`RelicSpec.Ordinal`（`[JsonIgnore]`，位置序号，拖动/增删后重算）、`RelicSpec.LastAutoOrdinal`（`[JsonIgnore]`，自动名对应第几号）、`Naming.RenumberRelicClassNames`（生成前跑：手填的不动、自动名跟序号走、没填的**类名保持留空**只记序号 —— 一写实就再也分不出手打的和工具生成的）、`EffectCatalog.RelicRarityOptions`（Id 英文 / Display 中文）。**自检**：序号 1..N 跟位置变、拖动后顺序真变、自动名跟序号走 + 手填不动 + 幂等、稀有度中文、中间底下触发时机列表/自定义描述、右侧效果栏 + 右下角条件、行宽 <= 列表宽、无 0 尺寸/跑出面板 | ✅ 本轮（`--uicheck` Debug 2806/0、发布版 2806/0 FAIL；`dotnet build` 0 错误；`ProfileFactory.Sample()` 生成 114 个文件只有 `.sln` 的随机 GUID 不同、其余逐文件 SHA256 一致）。药水页照抄 + 额外资源量页那条留到下一版 |
+| ① | 遗物页：**先修「现在的问题」**，再做「去掉左上角额外资源量那块 + 左侧序号 + 拖动换位置 + 自动类名跟序号走 + 稀有度中文 + 中间底下触发时机列表/自定义描述 + 右侧效果栏 + 右下角单条效果条件」 | **根因**：V0.2.122 把「整块效果编辑器」塞进了 `RelicEffectList` 的 `ItemTemplate`，而 ListBox 默认允许横向滚动 → 虚拟化面板按**无限宽度**量每一行 → 行里那个 `EffectEditorPlain` 的 ScrollViewer 把内容排成自然宽度（实测 **8260px**）→ 每行 507px 高、视口只有 160px + 一条横向滚动条，效果编辑器（含底下的「条件」）被切掉。**修**：`RelicEffectList` / `RelicTriggerList` 加 `ScrollViewer.HorizontalScrollBarVisibility="Disabled"`（+ `HorizontalContentAlignment="Stretch"`），行宽夹回 414。**布局重排**：中间 = 属性 + 触发时机列表/该条编辑器 + 自定义描述（两栏）+ 整只遗物条件；右侧 = 效果栏 + 「单条效果的触发条件」；额外资源量那块整块搬回「额外资源量/状态」页底部。**新模型**：`RelicSpec.Ordinal`（`[JsonIgnore]`，位置序号，拖动/增删后重算）、`RelicSpec.LastAutoOrdinal`（`[JsonIgnore]`，自动名对应第几号）、`Naming.RenumberRelicClassNames`（生成前跑：手填的不动、自动名跟序号走、没填的**类名保持留空**只记序号 —— 一写实就再也分不出手打的和工具生成的）、`EffectCatalog.RelicRarityOptions`（Id 英文 / Display 中文）。**自检**：序号 1..N 跟位置变、拖动后顺序真变、自动名跟序号走 + 手填不动 + 幂等、稀有度中文、中间底下触发时机列表/自定义描述、右侧效果栏 + 右下角条件、行宽 <= 列表宽、无 0 尺寸/跑出面板 | ✅ 本轮（`--uicheck` Debug 2806/0、发布版 2806/0 FAIL；`dotnet build` 0 错误；`ProfileFactory.Sample()` 生成 114 个文件只有 `.sln` 的随机 GUID 不同、其余逐文件 SHA256 一致）。**药水页照抄 + 额外资源量页那条已做 → 见第 14 批 ✅V0.2.127** |
 
 ## 第 10 批需求（用户 2026-10-09 提，一条一版）
 

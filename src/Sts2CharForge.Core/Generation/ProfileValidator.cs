@@ -887,6 +887,19 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"药水「{s.Name}」使用时机非法：{s.Usage}"));
             if (!EffectCatalog.PotionTargets.Contains(s.TargetType))
                 issues.Add(new("错误", $"药水「{s.Name}」目标非法：{s.TargetType}"));
+            // 「自动类名跟序号走」（用户要求第 6 条「药水方面参考遗物的优化方案」）不许**静默**生效：
+            // 用户手打了一个正好长得像自动编号的名字（`<角色类名>Potion<数字>`）、而那个数字和它现在排的
+            // 位置对不上时，下一次生成 / 构建会被按当前位置改名（`Naming.RenumberPotionClassNames`）——
+            // 这种「名字会被改掉」的事必须在生成日志里明说，否则用户只会看到「我没改它，它自己变了」。
+            // 名字数字 == 当前位置（幂等那条路）就不报，免得每次生成都刷一行没用的提示。
+            // ⚠ 比的是「这个位置**应该**用的自动名」，不能用 n.PotionClassName(s, i) ——
+            // 那个函数在有类名时原样返回用户的类名，一比就永远相等、永远不报。
+            string wantAuto = n.CharClass + "Potion" + (i + 1).ToString();
+            if (Naming.IsAutoPotionClassNameFor(null, s.ClassName)
+                && !string.Equals(s.ClassName.Trim(), wantAuto, StringComparison.Ordinal))
+                issues.Add(new("提示", $"药水「{s.Name}」的英文类名 {s.ClassName.Trim()} 长得像**工具自动生成的编号**，"
+                    + $"但它现在排第 {i + 1} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
+                    + "如果你想让它固定不变，请换一个不像自动编号的名字（例：SevenFlask）。"));
             ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion", p: p);
             AddDuplicateVarNotice(issues, $"药水「{s.Name}」", s.Effects);
             ValidateForgeGraph(issues, $"药水「{s.Name}」", s.ForgeGraph, p, "Potion");
@@ -1786,6 +1799,16 @@ public static class ProfileValidator
                         + "但这一条效果不会用到它（只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到）—— "
                         + "这个数字不生效。想「整条效果重复几遍」请改填「生效次数」。"));
             }
+            // 药水链**根本不读**「命中次数」（V0.2.127 查明的老缺口）：上面那条 UsesRepeatCount 是按**种类**判的
+            //（「造成伤害」在卡牌上确实会用到多段），而 `EmitPotionEffectOnce` 的「造成伤害」只有一句
+            // `CreatureCmd.Damage(...)` —— 药水打谁由「作用目标」决定，没有多段 / 随机敌人那几条路。
+            // 探针实测：药水上 RepeatCount=2 生成出来只有一次 Damage。以前**一句提示都没有**。
+            // 和「概率生效」同样的处理：这一版**不补生成**（补了会改掉老存档的生成结果），改成明确报出来。
+            if (ctx == "Potion" && e.UsesRepeatCount && (e.RepeatCount > 1 || !string.IsNullOrWhiteSpace(e.RepeatFormula)))
+                issues.Add(new("警告", $"{owner} 第 {index} 条「{kind.Display}」填了「命中次数 / 对群数」"
+                    + $"（{(string.IsNullOrWhiteSpace(e.RepeatFormula) ? e.RepeatCount.ToString() : ForgeFormula.DisplayText(e.RepeatFormula))}），"
+                    + "但**药水不支持命中次数**：这一栏不会生成（在药水上一直是这样，打几下由「作用目标」决定）。"
+                    + "想要「这条效果重复执行几遍」请改填「生效次数」。"));
             // 「升级增量」填了、但**这个种类没有可以升级的数值**：生成端在 OnUpgrade 里根本不会写那一行
             //（这些种类的数字是写死的循环次数，或者压根没有数字）→ 以前是**静默忽略**的。
             // 用户问过「升级卡牌的升级增量没用吗」：战斗内的「升级卡牌」是有用的（它声明了 Cards 变量），
@@ -1985,18 +2008,18 @@ public static class ProfileValidator
                     issues.Add(new("警告", $"{owner} 的「获得额外资源量」填的是 {e.Amount:0.##}（负数 = 卡牌费用「需要 N 点」），"
                         + "费用和「下回合生效」没关系 —— 这一勾会被忽略（想扣资源请用正数 + 负的升级增量，或直接改基础数值）。"));
             }
-            // 额外资源量上限：这一条改的是**上限**，上限本身是「额外资源量/状态」页的东西
+            // 额外资源量上限：这一条改的是**上限**，上限本身是「额外资源量」页的东西
             if (e.Kind == "RaiseResourceCap" && p is not null)
             {
                 if (!p.ExtraResource.Enabled)
                     issues.Add(new("错误", $"{owner} 用了「增加额外资源量上限值」，但这个存档**没启用额外资源量** —— "
-                        + "上限机制整个不会生成，这一条等于白配（先去「额外资源量/状态」页把开关打开）。"));
+                        + "上限机制整个不会生成，这一条等于白配（先去「额外资源量」页把开关打开）。"));
                 else if (e.Amount <= 0m)
                     issues.Add(new("警告", $"{owner} 的「增加额外资源量上限值」填的是 {e.Amount:0.##}："
-                        + "正数才是「把上限抬高多少」，0 / 负数不会让上限变小（想调低上限请改「额外资源量/状态」页那个基础值）。"));
+                        + "正数才是「把上限抬高多少」，0 / 负数不会让上限变小（想调低上限请改「额外资源量」页那个基础值）。"));
                 else if (p.ExtraResource.Max <= 0)
                     issues.Add(new("提示", $"{owner} 的「增加额外资源量上限值」加 {e.Amount:0.##} 层，"
-                        + "但「额外资源量/状态」页的「数量上限」填的是 0（= 不限）——"
+                        + "但「额外资源量」页的「数量上限」填的是 0（= 不限）——"
                         + "这种情况下实际上限就等于这个加成层数，想要一个固定顶请把基础值填上。"));
             }
             // 「取几张」（需求：「消耗任意张手牌」）：
@@ -2040,6 +2063,14 @@ public static class ProfileValidator
                 issues.Add(new("错误", $"{owner} 的重复次数 {e.RepeatCount} 超出范围（1~20）。"));
             if (e.ChanceEnabled && e.ChancePercent is < 1 or > 100)
                 issues.Add(new("错误", $"{owner} 的「{kind.Display}」概率 {e.ChancePercent} 超出范围（1~100，单位是 %）。"));
+            // 药水的「概率生效」是老缺口（V0.2.127 查明）：界面上药水效果一直有那个勾选框，
+            // 但生成端 `EmitPotionEffect` 从来没有为药水写掷骰 —— 勾了等于没勾，而且**一句提示都没有**。
+            // 这一版**不补生成**（补了会改掉老存档的生成结果：老存档里可能勾过、一直被忽略，
+            // 而「老存档生成结果逐字不变」是红线），改成在这里明确报出来，不再静默。
+            if (ctx == "Potion" && e.ChanceEnabled)
+                issues.Add(new("警告", $"{owner} 的「{kind.Display}」勾了「概率生效」，但药水**不支持概率**："
+                    + "这一勾不会生成任何掷骰（在药水上一直是这样）。想去掉这条提示就把勾去掉；"
+                    + "真要「有概率地生效」请把它做成卡牌 / 遗物上的效果。"));
             // 全局（牌组）类效果：直接改玩家的牌组、跨战斗永久生效，这类改动值得先提醒一句
             if (CSharpCodeGen.IsGlobalCardEffect(e.Kind))
             {
@@ -2752,13 +2783,17 @@ public static class ProfileValidator
             "Curse" => opt.ForCard,
             "Relic" => opt.ForRelic,
             "Power" => opt.ForPower,
+            // 药水（V0.2.127，用户要求第 6 条「药水方面参考遗物的优化方案」）：
+            // 药水页右下角现在也有「单条效果的条件」，生成端 `EmitPotionEffect` 真的会包这层 if
+            //（`CondCtx.Potion` 的表达式和遗物同形）。所以可用范围和遗物**同一档**。
+            // ⚠ 以前这里对 Potion 一律报「药水不支持条件选项」—— 那条是**当时**生成端确实没做；
+            // 老存档带药水条件本来就生成不出来，放宽不会改到任何老存档的生成结果。
+            "Potion" => opt.ForRelic,
             _ => false,
         };
         if (!allowed)
         {
-            issues.Add(new("错误", ctx == "Potion"
-                ? $"{owner}：药水不支持条件选项（条件要用在卡牌 / 遗物 / 自定义状态上）。"
-                : $"{owner} 的条件「{opt.Display}」不能用在这里，请换一个。"));
+            issues.Add(new("错误", $"{owner} 的条件「{opt.Display}」不能用在这里，请换一个。"));
             return;
         }
         // 卡牌时机（需求⑩）：子时机必须认得出来，而且这条条件只对**普通卡牌**有意义 ——
