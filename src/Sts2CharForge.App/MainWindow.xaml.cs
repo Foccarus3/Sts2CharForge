@@ -21580,6 +21580,103 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("自定义状态里的「自己受到伤害后（每一下）」也有 UnblockedDamage > 0 的判据",
 				perHitPowerSrc.Contains("if (result.UnblockedDamage <= 0) return;"), "有");
 
+			// ---- ④c 第 10 批 ②：「失去生命」不再算「受到伤害」（用户实测：血祭 / 献祭这种掉血也触发了「自己受到伤害后」）----
+			//     本体 DamageProps.cardHpLoss = Unblockable | Unpowered（穿盾 + 没有来源加成）= 血祭 / 献祭 / 中毒那类掉血；
+			//     Hook.AfterDamageReceived 在 CreatureCmd.Damage 里**无条件**广播（不看 props）→ 必须自己判。
+			//     三份守卫（遗物页 / 锻造页 / 状态页）都得有这一句，而且只有 DamageReceived / DamageDealt 这两条有；
+			//     敌人那两条**故意不加**（敌人侧没有「敌人失去生命」这条时机可以替代，排掉就等于功能丢了）。
+			{
+				const string hpLossGuard = "if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;";
+				var selfDmgGuardProf = ProfileFactory.Sample();
+				selfDmgGuardProf.Relics.Clear();
+				selfDmgGuardProf.Relics.Add(new RelicSpec
+				{
+					Name = "自检失去生命不算受伤", ClassName = "UiCheckHpLossGuard", Rarity = "Common",
+					Trigger = "DamageReceived", Effects = { new EffectSpec { Kind = "Block", Amount = 1m } },
+				});
+				// 守卫必须**排在那条归属守卫之后**：`if (target != base.Owner.Creature) return;` 是「只认自己」，
+				// 新守卫插在它后面、其它判据之前（顺序错了行为一样，但自检里钉住位置，以后重构不会挪错地方）。
+				string selfDmgGuardSrc = CSharpCodeGen.RelicSource(selfDmgGuardProf, selfDmgGuardProf.Relics[0], 0);
+				int guardAt = selfDmgGuardSrc.IndexOf(hpLossGuard, StringComparison.Ordinal);
+				bool relicOk = guardAt >= 0
+					&& selfDmgGuardSrc.IndexOf("if (target != base.Owner.Creature) return;", StringComparison.Ordinal) < guardAt;
+				Check("遗物页「自己受到伤害后」：生成结果里带「失去生命不算受到伤害」的那句守卫，"
+					+ "而且排在「只认自己」那条归属守卫**之后**（排除 Unblockable + Unpowered = 本体 DamageProps.cardHpLoss）",
+					relicOk, relicOk ? "在（位置也对）" : "不在 / 顺序不对");
+
+				bool forgeReceivedGuard = CSharpCodeGen.ForgeTriggerGuardLines(ForgeTimings.DamageReceived, "", 0m)
+					.Any(l => l.Contains(hpLossGuard, StringComparison.Ordinal));
+				bool forgeDealtGuard = CSharpCodeGen.ForgeTriggerGuardLines(ForgeTimings.DamageDealt, "", 0m)
+					.Any(l => l.Contains(hpLossGuard, StringComparison.Ordinal));
+				bool pageReceivedGuard = CSharpCodeGen.RelicTriggerGuardLines("DamageReceived", "", 0m, "Any", selfDmgGuardProf)
+					.Any(l => l.Contains(hpLossGuard, StringComparison.Ordinal));
+				bool pageDealtGuard = CSharpCodeGen.RelicTriggerGuardLines("DamageDealt", "", 0m, "Any", selfDmgGuardProf)
+					.Any(l => l.Contains(hpLossGuard, StringComparison.Ordinal));
+				var hpLossProf = ProfileFactory.Sample();
+				hpLossProf.CustomPowers.Clear();
+				hpLossProf.CustomPowers.Add(new CustomPowerSpec
+				{
+					Name = "自检失去生命不算受伤状态", ClassName = "UiCheckHpLossGuardPower", Type = "Buff",
+					Triggers = { new PowerTriggerSpec { Kind = "DamageTaken", Effects = { new EffectSpec { Kind = "Block", Amount = 1m } } } },
+				});
+				hpLossProf.CustomPowers.Add(new CustomPowerSpec
+				{
+					Name = "自检失去生命不算造成伤害状态", ClassName = "UiCheckHpLossGuardDealtPower", Type = "Buff",
+					Triggers = { new PowerTriggerSpec { Kind = "DamageDealt", Effects = { new EffectSpec { Kind = "Block", Amount = 1m } } } },
+				});
+				string hpLossPowerSrc = CustomPowerGen.Source(hpLossProf, hpLossProf.CustomPowers[0], 0);
+				string hpLossPowerDealtSrc = CustomPowerGen.Source(hpLossProf, hpLossProf.CustomPowers[1], 0);
+				bool powerOk = hpLossPowerSrc.Contains(hpLossGuard, StringComparison.Ordinal)
+					&& hpLossPowerDealtSrc.Contains(hpLossGuard, StringComparison.Ordinal);
+				Check("三份守卫**完全一致**：遗物页 / 锻造页 / 状态页的「自己受到伤害后」和「自己造成伤害后」都带同一句"
+					+ "（`props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)`），缺一份就会有一处照旧被血祭骗到",
+					pageReceivedGuard && pageDealtGuard && forgeReceivedGuard && forgeDealtGuard && powerOk,
+					$"遗物页 受伤={pageReceivedGuard} 造成={pageDealtGuard} ｜ 锻造页 受伤={forgeReceivedGuard} 造成={forgeDealtGuard} ｜ 状态页 受伤={hpLossPowerSrc.Contains(hpLossGuard, StringComparison.Ordinal)} 造成={hpLossPowerDealtSrc.Contains(hpLossGuard, StringComparison.Ordinal)}");
+				Check("敌人那两条（敌人受到伤害后 / 敌人造成伤害后）**故意不带**这句守卫 —— "
+					+ "敌人侧没有「敌人失去生命」这条时机可以替代，排掉就等于功能丢了（代码注释里也写了为什么不动）",
+					(CSharpCodeGen.RelicTriggerGuardLines("EnemyDamaged", "", 0m, "Any", selfDmgGuardProf)
+						.Concat(CSharpCodeGen.RelicTriggerGuardLines("EnemyDealtDamage", "", 0m, "Any", selfDmgGuardProf))
+						.Concat(CSharpCodeGen.ForgeTriggerGuardLines(ForgeTimings.EnemyDamaged, "", 0m))
+						.Concat(CSharpCodeGen.ForgeTriggerGuardLines(ForgeTimings.EnemyDealtDamage, "", 0m)))
+					.All(l => !l.Contains(hpLossGuard, StringComparison.Ordinal)), "没带（对）");
+
+				// 「对自己造成伤害」（卡牌链，Kind="Damage" + TargetSide="Self"）生成的是 Unpowered | Move（**格挡能挡**）——
+				// 不含 Unblockable → 新守卫不会误伤它，照旧算「受到伤害」（想无视格挡请用效果种类「失去生命」）。
+				var selfDmgProf = ProfileFactory.Sample();
+				selfDmgProf.Relics.Clear();
+				selfDmgProf.Relics.Add(new RelicSpec
+				{
+					Name = "自检对自己造成伤害", ClassName = "UiCheckSelfDamage", Rarity = "Common", Trigger = "DamageReceived",
+					Effects = { new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Self" } },
+				});
+				string selfDmgSrc = CSharpCodeGen.RelicSource(selfDmgProf, selfDmgProf.Relics[0], 0);
+				string selfDmgLine = "await CreatureCmd.Damage(choiceContext, base.Owner.Creature, base.DynamicVars.Damage.BaseValue, ValueProp.Unpowered, null, null);";
+				bool selfDmgOk = selfDmgSrc.Contains(selfDmgLine, StringComparison.Ordinal)
+					&& !selfDmgSrc.Contains("ValueProp.Unblockable | ValueProp.Unpowered", StringComparison.Ordinal);
+				string selfDmgActual = selfDmgSrc.Split('\n')
+					.FirstOrDefault(l => l.Contains("base.Owner.Creature, ", StringComparison.Ordinal)
+						&& l.Contains("CreatureCmd.Damage", StringComparison.Ordinal))?.Trim() ?? "(没生成)";
+				Check("「对自己造成伤害」（TargetSide=Self）= Unpowered（不含 Unblockable，**格挡能挡**）→ 仍旧算「受到伤害」，"
+					+ "不会被新守卫误伤（和「失去生命」分得开）",
+					selfDmgOk, selfDmgOk ? selfDmgLine : ("实际生成：" + selfDmgActual));
+
+				// 卡牌链上同一件事（本体 DamageProps.cardUnpowered = `Unpowered | Move`，也**没有** Unblockable）：
+				// 新守卫要求「同时带 Unblockable」，所以卡面上的「对自己造成伤害」照旧算「受到伤害」（格挡能挡）。
+				var selfDmgCardProf = ProfileFactory.Sample();
+				var selfDmgCard = new CardSpec
+				{
+					Name = "自检自伤牌", ClassName = "UiCheckSelfDamageCard", CardType = "Skill", Rarity = "Common",
+					Cost = 1, InCardPool = true,
+					Effects = { new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Self" } },
+				};
+				selfDmgCardProf.Cards.Add(selfDmgCard);
+				string selfDmgCardLine = "await CreatureCmd.Damage(choiceContext, base.Owner.Creature, base.DynamicVars.Damage.BaseValue, ValueProp.Unpowered | ValueProp.Move, this, cardPlay);";
+				string selfDmgCardSrc = CSharpCodeGen.CardSource(selfDmgCardProf, selfDmgCard, 0);
+				Check("卡牌链的「对自己造成伤害」= 本体 DamageProps.cardUnpowered（`Unpowered | Move`，不含 Unblockable）→ "
+					+ "新守卫也不会误伤它（卡面写「受到 N 点伤害」、护盾能挡）",
+					selfDmgCardSrc.Contains(selfDmgCardLine, StringComparison.Ordinal), selfDmgCardLine);
+			}
+
 			// ⑤ 本轮新增：「自己失去生命时」= 本体 AfterCurrentHpChanged 里 delta < 0 的那一半。
 			//    它比「受到伤害后」更宽（那条只认伤害管线），而且这个钩子本体不给 choiceContext。
 			Check("自定义状态的触发时机里有「自己失去生命时」，走本体的 AfterCurrentHpChanged",

@@ -7955,8 +7955,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///
     /// <paramref name="triggerPowerId"/> / <paramref name="triggerAmount"/> = 状态层数那三条
     /// （到达 N 层 / 层数变化 / 被移除）要的「盯哪个状态」「到达 N 层」（锻造页存在【触发时机】模块的这两栏上）。
+    ///
+    /// 可见性 = public：自检（App 那一侧）要直接调这两份守卫做「三份完全一致」的对照，
+    /// 而 App 是另一个程序集（Core 没有 InternalsVisibleTo）。生成逻辑本身一个字没动。
     /// </summary>
-    internal static IReadOnlyList<string> ForgeTriggerGuardLines(string triggerId, string? triggerPowerId, decimal triggerAmount)
+    public static IReadOnlyList<string> ForgeTriggerGuardLines(string triggerId, string? triggerPowerId, decimal triggerAmount)
     {
         var lines = new List<string>();
         switch (triggerId)
@@ -7973,6 +7976,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "DamageReceived":
                 lines.Add("if (target != base.Owner.Creature) return;");
+                // 「失去生命」不算「受到伤害」：本体 DamageProps.cardHpLoss = Unblockable | Unpowered
+                //（血祭 / 献祭 / 中毒这类穿盾且没有来源加成的掉血）—— 它由「自己失去生命时」那条时机负责，别两边都触发。
+                // 注意别把它和「对自己造成伤害」搞混：那条生成的是 Unpowered | Move（**格挡能挡**），
+                // 不含 Unblockable → 不会被这一句挡掉，照旧算「受到伤害」。
+                lines.Add("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 lines.Add("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
                 break;
             case "Attacked":
@@ -7985,6 +7993,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "DamageDealt":
                 lines.Add("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
+                // 「失去生命」不算「受到伤害」，也就不算「自己造成伤害」（同上：本体 DamageProps.cardHpLoss =
+                // Unblockable | Unpowered；「对自己造成伤害」是 Unpowered | Move，不含 Unblockable → 照旧算）。
+                lines.Add("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 break;
             case "EnergySpent":
                 lines.Add("if (amount <= 0 || card?.Owner?.Creature != base.Owner.Creature) return;   // 只认「我方角色花的能量」（0 费不算）");
@@ -8043,9 +8054,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
                 break;
             case "EnemyDamaged":
+                // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
+                //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
                 lines.Add("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
                 break;
             case "EnemyDealtDamage":
+                // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
                 lines.Add("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
                 break;
             case "EnemyBlockGained":
@@ -8102,7 +8116,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 多条时机那条路径拿同一份行文本改写成 if 块（见 <see cref="EmitRelicMultiTriggerHook"/>）。
     /// </summary>
     /// <param name="triggerCardFilter">「打出一张牌后」只对哪类牌生效（遗物页那一栏；`Any` = 不过滤）。</param>
-    internal static IReadOnlyList<string> RelicTriggerGuardLines(string triggerId, string? triggerPowerId,
+    public static IReadOnlyList<string> RelicTriggerGuardLines(string triggerId, string? triggerPowerId,
         decimal triggerAmount, string? triggerCardFilter, CharacterProfile p)
     {
         var lines = new List<string>();
@@ -8120,6 +8134,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "DamageReceived":
                 lines.Add("if (target != base.Owner.Creature) return;");
+                // 「失去生命」不算「受到伤害」：本体 DamageProps.cardHpLoss = Unblockable | Unpowered
+                //（血祭 / 献祭 / 中毒这类穿盾且没有来源加成的掉血）—— 它由「自己失去生命时」那条时机负责，别两边都触发。
+                // 注意别把它和「对自己造成伤害」搞混：那条生成的是 Unpowered | Move（**格挡能挡**），
+                // 不含 Unblockable → 不会被这一句挡掉，照旧算「受到伤害」。
+                lines.Add("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 // 本体「原体黏土 SelfFormingClay / 残存之心 BeatingRemnant」都是这么判的：
                 // 全被格挡（或 0 伤害）的那一下不算「受到伤害」。（每一下都会进这个钩子 —— 连击就是多次触发）
                 lines.Add("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
@@ -8139,6 +8158,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 和自定义状态那条「自己造成伤害后」口径一致（本体 AfterDamageGiven 是每一下命中都调）。
             case "DamageDealt":
                 lines.Add("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
+                // 「失去生命」不算「受到伤害」，也就不算「自己造成伤害」（同上：本体 DamageProps.cardHpLoss =
+                // Unblockable | Unpowered；「对自己造成伤害」是 Unpowered | Move，不含 Unblockable → 照旧算）。
+                lines.Add("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 break;
             // 每消耗一个能量：本体这条钩子**0 费也会调**（本体源码里 amount > 0 只包住历史记录 / 扣能量，
             // 钩子调用在外面），所以必须自己挡掉 amount <= 0；「是谁花的」只能从 card.Owner 认
@@ -8238,9 +8260,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
                 break;
             case "EnemyDamaged":
+                // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
+                //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
                 lines.Add("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
                 break;
             case "EnemyDealtDamage":
+                // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
                 lines.Add("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
                 break;
             case "EnemyBlockGained":

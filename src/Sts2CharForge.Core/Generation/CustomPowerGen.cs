@@ -440,6 +440,11 @@ public static class CustomPowerGen
             case "DamageReceived":
                 w.Open("public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)");
                 w.Line("if (target != base.Owner) return;");
+                // 「失去生命」不算「受到伤害」：本体 DamageProps.cardHpLoss = Unblockable | Unpowered
+                //（血祭 / 献祭 / 中毒这类穿盾且没有来源加成的掉血）—— 它由「自己失去生命时」那条时机负责，别两边都触发。
+                // 注意别把它和「对自己造成伤害」搞混：那条生成的是 Unpowered | Move（**格挡能挡**），
+                // 不含 Unblockable → 不会被这一句挡掉，照旧算「受到伤害」。
+                w.Line("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 // 本体「原体黏土 SelfFormingClay」就是这么多判一句的：全被格挡 / 0 伤害的那一下不算「受到伤害」。
                 // 注意这个钩子**每一下伤害都会进**：敌人一次「1 点 × 5 下」的连击会触发 5 次
                 //（想「一次攻击只算一次」用下面的「自己受到攻击后」）。
@@ -481,6 +486,9 @@ public static class CustomPowerGen
             case "DamageDealt":
                 w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
                 w.Line("if (dealer != base.Owner) return;");
+                // 「失去生命」不算「受到伤害」，也就不算「自己造成伤害」（同上：本体 DamageProps.cardHpLoss =
+                // Unblockable | Unpowered；「对自己造成伤害」是 Unpowered | Move，不含 Unblockable → 照旧算）。
+                w.Line("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "target");
                 w.Close();
                 break;
@@ -674,6 +682,8 @@ public static class CustomPowerGen
             case "EnemyDamaged":
                 w.Open("public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyDamaged", items);
+                // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
+                //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
                 w.Line("if (target == base.Owner || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "target");
                 w.Close();
@@ -682,6 +692,7 @@ public static class CustomPowerGen
             case "EnemyDealtDamage":
                 w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyDealtDamage", items);
+                // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
                 w.Line("if (dealer is null || dealer == base.Owner) return;   // 打人的是敌人（自己不算）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "dealer");
                 w.Close();

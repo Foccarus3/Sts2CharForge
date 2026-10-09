@@ -1276,6 +1276,17 @@ else
   用户实测报过「敌人造成 5 点伤害，这个触发时机会生效五次」，就是这种情况。
 - 生成代码里「每一下」那条会判 **`if (result.UnblockedDamage <= 0) return;`**（全被格挡 / 0 伤害的那一下不算「受到伤害」），
   和本体原体黏土的判法一致。
+- **「失去生命」不算「受到伤害」**（V0.2.123 起）：生成代码里还有一句
+  `if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;`，
+  排掉的就是本体 `DamageProps.cardHpLoss`（`Unblockable | Unpowered`）那种掉血 ——
+  **血祭 / 献祭代价 / 放血 / 中毒**这类「穿盾而且没有来源加成」的掉血都走它，
+  请用「**自己失去生命时**」那条时机去接（那条才是为它准备的）。
+  为什么以前会串：本体 `CreatureCmd.Damage` 里 `Hook.AfterDamageReceived` 是**无条件**广播的（不看 props），
+  所以「失去生命」以前也会触发「受到伤害后」。
+  ⚠ **「对自己造成伤害」照旧算「受到伤害」**：它生成的是 `Unpowered | Move`（**格挡能挡**），
+  不含 `Unblockable`，不会被这一句挡掉。想「无视格挡的自伤代价」请用效果种类「失去生命」。
+  敌人那两条（敌人受到伤害后 / 敌人造成伤害后）**故意不加**这一句：敌人侧没有「敌人失去生命」
+  这条时机可以替代，排掉就等于功能丢了。
 - 「受到攻击后（连击只算一次）」生成的是
   `public override async Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command)`，
   判据是**这一次攻击真的打到了我身上**：
@@ -1301,8 +1312,14 @@ else
 | 自己获得格挡后 / 敌人获得格挡后 | `AfterBlockGained` | 只认自己 / 只认敌人；自己造 context |
 | 一个敌人死亡后 | `AfterDeath` | `!creature.IsEnemy` → 返回 |
 | 敌人回合开始时 / 结束时 | `AfterSideTurnStart` / `BeforeSideTurnEnd` | `side != CombatSide.Enemy` → 返回 |
-| 敌人受到伤害后 / 造成伤害后 | `AfterDamageReceived` / `AfterDamageGiven` | 受伤的是敌人 / 打人的是敌人 |
+| 敌人受到伤害后 / 造成伤害后 | `AfterDamageReceived` / `AfterDamageGiven` | 受伤的是敌人 / 打人的是敌人（**故意不排「失去生命」**：敌人侧没有「敌人失去生命」这条时机替代） |
 | 某个状态层数变化后 | `AfterPowerAmountChanged` | 只看自己身上的状态（可选「盯哪个状态」） |
+
+> ⚠ 遗物侧 / 状态侧的「**自己受到伤害后**」和「**自己造成伤害后**」都带一句
+> `if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;` ——
+> **「失去生命」不再算「受到伤害」**（V0.2.123 起，「戴罪者的镣铐 / 血祭 / 献祭代价 / 中毒」那种
+> 穿盾且无来源加成的掉血用「**自己失去生命时**」那条时机接）。
+> 「对自己造成伤害」是 `Unpowered | Move`（可格挡、不含 `Unblockable`）→ **照旧算「受到伤害」**，没被误伤。
 
 **同一个时机在两边的叫法完全一样**（以前一边叫「受到伤害时（每一下）」、另一边叫「自己受到伤害后（每一下）」，
 现在统一成后者）；老工程里写的老名字也认得回来（`// 触发时机：<老显示名>` 兜底），回读不会丢触发时机。
@@ -1414,7 +1431,7 @@ public async Task OnForgePowerRemovedAsync(PowerModel power) {
 | 打出一张牌后 / 消耗一张牌后 / 丢弃一张牌后 / 抽到一张牌后 / 生成卡牌时 | **每累计几次触发** | 再加一行「**统计范围**」：本回合 / 本场战斗 |
 | 一个敌人死亡后 | **每累计几次触发** | 本场战斗内计数（工具自己数的，见更新说明） |
 | 花掉能量后 / 花掉额外资源量后 | **花掉多少点触发** | 再加一行「统计范围」 |
-| 受到伤害后 / 造成伤害后 | **伤害至少多少才触发** | — |
+| 受到伤害后 / 造成伤害后 | **伤害至少多少才触发** | —（⚠ 这里的「伤害」**不含**「失去生命」那种穿盾掉血，见「受到伤害时（每一下）」那一节） |
 | 自己失去生命时 | **失去生命至少多少才触发** | — |
 | 获得格挡后 | **获得格挡至少多少才触发** | — |
 | 某个状态层数到达 N 层时 | （不在这栏）**到达 N 层**，在它自己的那一行 | 配合「盯哪个状态」 |
@@ -1937,10 +1954,13 @@ public override async Task AfterCurrentHpChanged(Creature creature, decimal delt
 
 | 触发时机 | 本体钩子 | 什么时候触发 |
 |---|---|---|
-| 自己受到伤害后（每一下） | `AfterDamageReceived` | 走**伤害管线**的那一下（判据 `UnblockedDamage > 0`：全被格挡 / 0 伤害不算） |
+| 自己受到伤害后（每一下） | `AfterDamageReceived` | 走**伤害管线**的那一下（判据 `UnblockedDamage > 0`：全被格挡 / 0 伤害不算）。⚠ **「失去生命」不算**（`Unblockable \| Unpowered` = 血祭 / 献祭代价 / 中毒那种穿盾且无来源加成的掉血已被排除，见上）—— 那种掉血用这条「自己失去生命时」 |
 | **自己失去生命时（每一下）** | `AfterCurrentHpChanged` | 只要**生命值真的少了**：伤害、自己「失去生命」、直接扣血（致死那套）都算；回血不算 |
 
-所以后者把前者包含在内。两个都是**每一下都会触发一次**（敌人「1 点 × 5 下」的连击就是 5 次）。
+所以后者把前者包含在内，**但前者不包含「失去生命」**（V0.2.123 起）：「受到伤害后」只管伤害管线那一下，
+「失去生命」这一类掉血只走「失去生命时」那条（本体 `Hook.AfterDamageReceived` 是无条件广播的，
+以前两边都会触发，用户实测报过「自己受到伤害时怎么还是被失去生命触发」）。
+两个都是**每一下都会触发一次**（敌人「1 点 × 5 下」的连击就是 5 次）。
 配置检查会把这条差别写成「提示」；从工程反推存档时按 `AfterCurrentHpChanged` 认回这条触发时机。
 
 顺带修掉一个回读漏洞：自定义状态的触发器**没有动态变量**（数值是生成期字面量），
