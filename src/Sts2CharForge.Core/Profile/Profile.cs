@@ -2316,13 +2316,215 @@ public sealed class KeywordUpgradeSpec : SpecBase
     }
 }
 
+/// <summary>
+/// 遗物上的一条触发时机：什么时候触发 + 触发时做哪些事。
+///
+/// 用户要求（第 10 批）：「遗物页底下新增触发时机列表，并且可以添加多个触发时机」——
+/// 一只遗物能挂好几条时机，每条各自配自己的效果；还能像「自定义状态」页那样勾
+/// 「要和其他时机同时成立（都成立才触发）」。
+///
+/// 存储以 <see cref="RelicSpec.Triggers"/> 为准；<see cref="RelicSpec"/> 上那几个老字段
+/// （<c>Trigger</c> / <c>Effects</c> / <c>TriggerPowerId</c> / <c>TriggerAmount</c> /
+/// <c>TriggerScope</c> / <c>TriggerCardFilter</c>）现在是**第 1 条时机的代理** ——
+/// 老存档里只有一个时机，读进来正好是「列表里一条」，生成结果一个字都不变。
+/// </summary>
+public sealed class RelicTriggerSpec : SpecBase
+{
+    private string _kind = "CombatStart";
+    private string? _powerId;
+    private decimal _amount = 1m;
+    private string _scope = "Turn";
+    private string _cardFilter = "Any";
+    private bool _requireAllTriggers;
+
+    /// <summary>触发器种类（见 EffectCatalog.RelicTriggers）</summary>
+    public string Kind
+    {
+        get => _kind;
+        set
+        {
+            if (!Set(ref _kind, value)) return;
+            Raise(nameof(Display));
+            Raise(nameof(Summary));
+            Raise(nameof(ShowPowerFields));
+            Raise(nameof(ShowCardFilterField));
+            Raise(nameof(ShowAmountField));
+            Raise(nameof(ShowScopeField));
+            Raise(nameof(AmountLabel));
+            Raise(nameof(SpendHint));
+            Raise(nameof(Hint));
+        }
+    }
+
+    /// <summary>「某个状态层数到达 N 层 / 变化 / 被移除」盯哪个状态（本体 Power 类名；留空 = 任意状态）。</summary>
+    public string? PowerId
+    {
+        get => _powerId;
+        set { if (Set(ref _powerId, value)) { Raise(nameof(Hint)); Raise(nameof(Summary)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>触发时机上的数值：每累计 N 次 / 每 N 点 / 数值 ≥ N / 到达 N 层（按种类换含义）。</summary>
+    public decimal Amount
+    {
+        get => _amount;
+        set { if (Set(ref _amount, value)) { Raise(nameof(Hint)); Raise(nameof(SpendHint)); Raise(nameof(Summary)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>计数类时机的统计范围：<c>Turn</c> = 本回合（默认）/ <c>Combat</c> = 本场战斗。</summary>
+    public string Scope
+    {
+        get => _scope;
+        set { if (Set(ref _scope, string.IsNullOrWhiteSpace(value) ? "Turn" : value)) { Raise(nameof(SpendHint)); Raise(nameof(Summary)); } }
+    }
+
+    /// <summary>「打出一张牌后」只对哪类牌生效（Any / Attack / Skill / Power / Curse / Status / Keyword:x / Group:x）。</summary>
+    public string CardFilter
+    {
+        get => _cardFilter;
+        set
+        {
+            // ⚠ 空值要**归一成 "Any"**：生成端的老写法是 `if (!string.Equals(TriggerCardFilter, "Any"))`
+            // 才加筛选守卫 —— 留个 null 进去，那边会走进「加了筛选」的分支但对 null 判不出类型，
+            // 而校验器读 PowerTriggers.CardFilterZh(_cardFilter) 也会炸。手写 JSON / 老工具写出来的
+            // 存档里可能有 `"CardFilter": null`，所以在这里兜住。
+            string v = string.IsNullOrWhiteSpace(value) ? "Any" : value;
+            if (Set(ref _cardFilter, v)) { Raise(nameof(Summary)); Raise(nameof(Display)); }
+        }
+    }
+
+    /// <summary>
+    /// 勾上 = 这条时机要和同一只遗物上**同样勾了**的那几条「都在同一个窗口里成立过」才触发
+    /// （用户要求：和「自定义状态」页同一套语义；最后凑齐的那条跑它自己的效果，然后清标记）。
+    /// </summary>
+    public bool RequireAllTriggers
+    {
+        get => _requireAllTriggers;
+        set
+        {
+            if (Set(ref _requireAllTriggers, value))
+            {
+                Raise(nameof(Summary));
+                Raise(nameof(Display));
+                Raise(nameof(ShowAndScope));   // 勾/取消都会影响「重置范围」那一行要不要显示
+            }
+        }
+    }
+
+    /// <summary>这条时机属于哪只遗物（列表增删时由 <see cref="RelicSpec"/> 挂上；「同时成立」的范围存在遗物上）。</summary>
+    [JsonIgnore]
+    public RelicSpec? OwnerRelic { get; set; }
+
+    /// <summary>界面用：「重置范围」只在勾了 2 条以上「同时成立」时才显示（和状态页一致）。</summary>
+    [JsonIgnore]
+    public bool ShowAndScope => OwnerRelic?.ShowAndScope == true;
+
+    /// <summary>「同时成立」的重置范围（存在整只遗物上）。</summary>
+    [JsonIgnore]
+    public string AndScope
+    {
+        get => OwnerRelic?.AndScope ?? "Turn";
+        set { if (OwnerRelic is not null) OwnerRelic.AndScope = value; }
+    }
+
+    /// <summary>这条时机触发时做的事（用户已选：每条时机各自配自己的效果）。</summary>
+    public ObservableCollection<EffectSpec> Effects { get; set; } = new();
+
+    /// <summary>界面用：这三栏只在选到那几条时机时才显示。</summary>
+    [JsonIgnore]
+    public bool ShowPowerFields => Kind is "PowerReached" or "PowerChanged" or "PowerRemoved";
+
+    /// <summary>界面用：「只对哪类牌生效」只在「打出一张牌后」时显示。</summary>
+    [JsonIgnore]
+    public bool ShowCardFilterField => string.Equals(_kind, "CardPlayed", StringComparison.Ordinal);
+
+    /// <summary>界面用：「花掉 N 点 + 本回合 / 本场战斗」那两行只在 花掉能量 / 花掉额外资源量 时显示。</summary>
+    [JsonIgnore]
+    public bool ShowSpendFields => Kind is "EnergySpent" or "StarsSpent";
+
+    /// <summary>界面用：**触发时机上的数值**那一栏要不要显示（和状态那边同一套）。</summary>
+    [JsonIgnore]
+    public bool ShowAmountField => ShowSpendFields || Generation.CSharpCodeGen.TriggerSupportsAmount(Kind);
+
+    /// <summary>「本回合 / 本场战斗」那一栏要不要显示（只有计数类用得到）。</summary>
+    [JsonIgnore]
+    public bool ShowScopeField => ShowSpendFields || Generation.CSharpCodeGen.TriggerAmountNeedsScope(Kind);
+
+    /// <summary>数值那一栏的标题（按触发时机换说法）。</summary>
+    [JsonIgnore]
+    public string AmountLabel => Kind switch
+    {
+        "EnergySpent" or "StarsSpent" => "花掉多少点触发",
+        "DamageReceived" or "DamageDealt" => "伤害至少多少才触发",
+        "HpLost" => "失去生命至少多少才触发",
+        "BlockGained" => "获得格挡至少多少才触发",
+        "PowerReached" => "到达 N 层",
+        _ => "每累计几次触发",
+    };
+
+    /// <summary>数值那一行底下的说明。</summary>
+    [JsonIgnore]
+    public string SpendHint => Amount <= 0m
+        ? (Generation.CSharpCodeGen.TriggerValueExpr(Kind) is not null && !ShowSpendFields
+            ? "留空 / 填 0 = 不过滤（老行为）；填 N = **只有数值 ≥ N 的那次才触发**。"
+            : ShowSpendFields || Generation.CSharpCodeGen.TriggerAmountNeedsScope(Kind)
+                ? "留空 / 填 0 = 每次都触发（老行为）；填 N = **每累计 N 次触发一次**（花能量 / 花资源量 = 每 N 点）。"
+                : "这条触发时机暂时没有数值可填。")
+          + (ShowScopeField ? "范围见下面那栏（本回合 / 本场战斗）。" : "")
+        : Generation.CSharpCodeGen.TriggerValueExpr(Kind) is not null && !ShowSpendFields
+            ? $"现在只有数值 ≥ {Amount:0.##} 的那次才触发。"
+            : $"现在每累计 {(ShowSpendFields ? "花掉 " : "")}{Amount:0.##} {(ShowSpendFields ? "点" : "次")}触发一次，范围 = "
+              + (_scope == "Combat" ? "本场战斗" : "本回合") + "。";
+
+    /// <summary>界面用：触发时机那一行底下的说明（说清「留空 = 任意状态」和「跨过才触发」）。</summary>
+    [JsonIgnore]
+    public string Hint
+    {
+        get
+        {
+            if (!ShowPowerFields) return "";
+            string who = string.IsNullOrWhiteSpace(_powerId)
+                ? "自己身上**任何**状态"
+                : $"自己身上的「{EffectCatalog.PowerName(_powerId, _powerId)}」";
+            if (string.Equals(_kind, "PowerRemoved", StringComparison.Ordinal))
+                return $"「某个状态被移除时」：自己身上的状态**被移除**那一刻触发（层数掉到 0 自然消失、"
+                     + "被「清除状态」直接清掉都算）。现在盯的是" + who + "；把「盯哪个状态」留空就是任何状态被移除都触发。"
+                     + "⚠ 本体没有「状态被移除」的全局钩子，这条是工具自己打补丁补的（用到时才会多生成一个 cs/PowerRemoval.cs）。"
+                     + "「到达 N 层」那一栏在这种时机下**不用填**（不生效）。";
+            if (string.Equals(_kind, "PowerChanged", StringComparison.Ordinal))
+                return $"「某个状态层数变化时」：只有自己身上的状态层数**一变**（升或降）就触发（每层一次）。"
+                     + $"现在盯的是{who}；把「盯哪个状态」留空就是任何状态的层数变化都触发。"
+                     + "「到达 N 层」那一栏在这种时机下**不用填**（不生效）。";
+            return $"「某个状态层数到达 N 层时」：只在自己身上的状态层数**跨过** {_amount:0.##} 层那一下触发"
+                 + $"（之前不到、变化后到了 N 或更多；已经是 N 层再加一层不会重复触发）。现在盯的是{who}；"
+                 + "把「盯哪个状态」留空就是任何状态层数变化都触发（那时可用效果自己的条件再筛）。"
+                 + "本体的钩子是 AfterPowerAmountChanged（每层变化都会调，所以「上 3 层」只算跨过的那一下）。";
+        }
+    }
+
+    /// <summary>界面用：列表里那一行（时机名 + 做了几件事 + 同时成立标记）。</summary>
+    [JsonIgnore]
+    public string Summary
+    {
+        get
+        {
+            string when = EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == _kind)?.Display ?? _kind;
+            if (ShowCardFilterField && !string.Equals(_cardFilter, "Any", StringComparison.Ordinal))
+                when += "（" + Sts2CharForge.Core.Effects.PowerTriggers.CardFilterZh(_cardFilter) + "牌）";
+            string what = Effects.Count == 0 ? "（还没配效果）" : (Effects.Count + " 条效果");
+            return when + " → " + what + (_requireAllTriggers ? " ｜ 同时成立" : "");
+        }
+    }
+
+    [JsonIgnore]
+    public string Display => Summary;
+}
+
 public sealed class RelicSpec : SpecBase
 {
     private string _name = "新遗物";
     private string _className = "";
     private string _rarity = "Common";
     private bool _isStartingRelic;
-    private string _trigger = "CombatStart";
     private bool _inRelicPool = true;
 
     public string Name { get => _name; set => Set(ref _name, value); }
@@ -2330,13 +2532,74 @@ public sealed class RelicSpec : SpecBase
     /// <summary>Starter / Common / Uncommon / Rare / Shop</summary>
     public string Rarity { get => _rarity; set => Set(ref _rarity, value); }
     public bool IsStartingRelic { get => _isStartingRelic; set => Set(ref _isStartingRelic, value); }
-    /// <summary>CombatStart / PlayerTurnStart / PlayerTurnEnd / CombatVictory / DamageReceived / GoldGained / PowerReached</summary>
-    public string Trigger
+
+    // ===== 触发时机列表（用户要求：遗物页底下也能加多条时机，每条各自配效果）=====
+    private ObservableCollection<RelicTriggerSpec> _triggers = new();
+
+    /// <summary>
+    /// 构造函数：把「列表增删 → 给每条时机挂 OwnerRelic」这个监听挂上。
+    ///
+    /// ⚠ 为什么非要有它：字段初始化器 <c>= new()</c> **不走属性 setter**，所以不在构造函数里订阅的话，
+    /// 直接 <c>relic.Triggers.Add(...)</c> 加的时机**永远不会**被挂上 OwnerRelic ——
+    /// 界面里「要和其他时机同时成立」的「重置范围」那一行就永远不显示（ShowAndScope 一直是 false），
+    /// 生成端读 trig.AndScope 也会退回默认值。反序列化（老存档）走的是属性 setter，那条路本来就有订阅。
+    /// </summary>
+    public RelicSpec() => _triggers.CollectionChanged += OnTriggersChanged;
+
+    /// <summary>这只遗物的触发时机（至少一条；老存档读进来会在这里合成一条）。</summary>
+    public ObservableCollection<RelicTriggerSpec> Triggers
     {
-        get => _trigger;
+        get => _triggers;
         set
         {
-            if (!Set(ref _trigger, value)) return;
+            var v = value ?? new ObservableCollection<RelicTriggerSpec>();
+            if (ReferenceEquals(_triggers, v)) return;
+            _triggers.CollectionChanged -= OnTriggersChanged;
+            _triggers = v;
+            _triggers.CollectionChanged += OnTriggersChanged;
+            foreach (var t in _triggers) if (t is not null) t.OwnerRelic = this;
+            Raise(nameof(Display));
+            Raise(nameof(ShowAndScope));
+        }
+    }
+
+    /// <summary>列表增删时机：给每条时机挂上「主人」（它靠这个读「同时成立」的重置范围），并刷新列表那一行。</summary>
+    private void OnTriggersChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        foreach (var t in (e.NewItems?.OfType<RelicTriggerSpec>() ?? Enumerable.Empty<RelicTriggerSpec>()))
+            t.OwnerRelic = this;
+        Raise(nameof(Display));
+        Raise(nameof(Trigger));
+        Raise(nameof(Effects));
+        Raise(nameof(ShowTriggerPowerFields));
+        Raise(nameof(TriggerHint));
+        Raise(nameof(ShowTriggerAmountField));
+        Raise(nameof(ShowTriggerScopeField));
+        Raise(nameof(ShowTriggerCardFilterField));
+        Raise(nameof(ShowAndScope));
+    }
+
+    /// <summary>第 1 条时机（下面的老字段都是它的代理；列表为空时按需造一条出来）。</summary>
+    [JsonIgnore]
+    public RelicTriggerSpec First
+    {
+        get
+        {
+            if (Triggers.Count == 0) Triggers.Add(new RelicTriggerSpec());
+            return Triggers[0];
+        }
+    }
+
+    /// <summary>
+    /// 老字段：触发时机（**第 1 条时机的代理**）。老存档 / 老命令行读的就是它。
+    /// </summary>
+    public string Trigger
+    {
+        get => First.Kind;
+        set
+        {
+            if (string.Equals(First.Kind, value, StringComparison.Ordinal)) return;
+            First.Kind = value;
             Raise(nameof(ShowTriggerPowerFields));
             Raise(nameof(TriggerHint));
             // 「触发时机上的数值」那一栏的显隐 / 标题 / 说明也都是按触发时机算出来的 —— 换了时机必须通知，
@@ -2352,42 +2615,52 @@ public sealed class RelicSpec : SpecBase
     }
     public bool InRelicPool { get => _inRelicPool; set => Set(ref _inRelicPool, value); }
 
-    // ===== 「只对哪类牌生效」（用户要求：遗物侧也要有范围，和状态侧同步）=====
-    private string _triggerCardFilter = "Any";
-
     /// <summary>
-    /// 触发时机是「打出一张牌后」时，**只对这一类牌生效**：
+    /// 老字段：「只对哪类牌生效」（**第 1 条时机的代理**）。
     /// <c>Any</c>（默认，不过滤）/ <c>Attack</c> / <c>Skill</c> / <c>Power</c> / <c>Curse</c> / <c>Status</c>，
     /// 以及自定义关键词（<c>Keyword:xxx</c>）与「组」（<c>Group:xxx</c>）—— 和状态那边是同一份候选
     /// （<see cref="Effects.PowerTriggers.CardFiltersFor"/>）。别的触发时机读它没有副作用（界面也不显示）。
     /// </summary>
     public string TriggerCardFilter
     {
-        get => _triggerCardFilter;
-        set
-        {
-            string v = string.IsNullOrWhiteSpace(value) ? "Any" : value;
-            if (Set(ref _triggerCardFilter, v)) Raise(nameof(Display));
-        }
+        get => First.CardFilter;
+        set { if (!string.Equals(First.CardFilter, value, StringComparison.Ordinal)) { First.CardFilter = value; Raise(nameof(Display)); } }
     }
 
     /// <summary>界面用：「只对哪类牌生效」那一栏只在触发时机是「打出一张牌后」时显示。</summary>
     [JsonIgnore]
-    public bool ShowTriggerCardFilterField => string.Equals(_trigger, "CardPlayed", StringComparison.Ordinal);
-    public ObservableCollection<EffectSpec> Effects { get; set; } = new();
+    public bool ShowTriggerCardFilterField => First.ShowCardFilterField;
 
-    // ===== 触发时机「某个状态层数到达 N 层时」（用户要求）=====
-    private string? _triggerPowerId;
-    private decimal _triggerAmount = 1m;
+    /// <summary>
+    /// 这只遗物**所有触发时机**的效果（按时机顺序、时机内按效果顺序摊平）。
+    ///
+    /// 为什么需要它（第 10 批）：遗物以前只有一个触发时机，很多地方直接读 <c>r.Effects</c>
+    /// （动态变量声明 / 悬停提示 / 文案 / 校验 / 美术 / 命名）—— 现在一条遗物能挂好几条时机，
+    /// 那些地方必须看**全部**时机的效果，否则「第 2 条时机上的效果」会被悄悄漏掉
+    /// （典型症状：悬停提示里没有那条状态、CanonicalVars 里没有那个变量 → 生成的代码 CS0103）。
+    /// 列表为空时按需造一条（和 <see cref="First"/> 同一套），保证结果至少是空集合、不是 null。
+    /// </summary>
+    [JsonIgnore]
+    public IEnumerable<EffectSpec> AllEffects => First is null
+        ? Enumerable.Empty<EffectSpec>()
+        : Triggers.Where(t => t is not null).SelectMany(t => t.Effects).Where(e => e is not null);
 
+    /// <summary>老字段：第 1 条时机触发时做的事（**代理**）。</summary>
+    public ObservableCollection<EffectSpec> Effects
+    {
+        get => First.Effects;
+        set { if (!ReferenceEquals(First.Effects, value)) { First.Effects = value ?? new(); Raise(nameof(Display)); } }
+    }
+
+    // ===== 触发时机「某个状态层数到达 N 层时」（用户要求）—— 老字段，代理到第 1 条时机 =====
     /// <summary>
     /// 「某个状态层数到达 N 层时」触发时机要**盯哪个状态**（本体的 Power 类名）。
     /// 留空 = 自己身上**任何**状态的层数变化都触发（那时可以用效果自己的条件再筛）。
     /// </summary>
     public string? TriggerPowerId
     {
-        get => _triggerPowerId;
-        set { if (Set(ref _triggerPowerId, value)) { Raise(nameof(TriggerHint)); Raise(nameof(Display)); } }
+        get => First.PowerId;
+        set { if (!string.Equals(First.PowerId, value, StringComparison.Ordinal)) { First.PowerId = value; Raise(nameof(TriggerHint)); Raise(nameof(Display)); } }
     }
 
     /// <summary>
@@ -2396,91 +2669,75 @@ public sealed class RelicSpec : SpecBase
     /// </summary>
     public decimal TriggerAmount
     {
-        get => _triggerAmount;
-        set { if (Set(ref _triggerAmount, value)) { Raise(nameof(TriggerHint)); Raise(nameof(TriggerSpendHint)); Raise(nameof(Display)); } }
+        get => First.Amount;
+        set { if (First.Amount != value) { First.Amount = value; Raise(nameof(TriggerHint)); Raise(nameof(TriggerSpendHint)); Raise(nameof(Display)); } }
     }
 
     /// <summary>界面用：这两个输入框只在触发时机选了「某状态层数到达 N / 变化 / 被移除」时显示。</summary>
     [JsonIgnore]
-    public bool ShowTriggerPowerFields =>
-        string.Equals(_trigger, "PowerReached", StringComparison.Ordinal)
-        || string.Equals(_trigger, "PowerChanged", StringComparison.Ordinal)
-        || string.Equals(_trigger, "PowerRemoved", StringComparison.Ordinal);
+    public bool ShowTriggerPowerFields => First.ShowPowerFields;
 
-    // ===== 「花掉 N 点能量 / 额外资源量」+「本回合 / 本场战斗」（用户要求）=====
-    private string _triggerScope = "Turn";
-
+    // ===== 「花掉 N 点能量 / 额外资源量」+「本回合 / 本场战斗」—— 老字段，代理到第 1 条时机 =====
     /// <summary>「花掉多少能量 / 额外资源量」的统计范围：<c>Turn</c> = 本回合（默认）/ <c>Combat</c> = 本场战斗。</summary>
     public string TriggerScope
     {
-        get => _triggerScope;
-        set { if (Set(ref _triggerScope, string.IsNullOrWhiteSpace(value) ? "Turn" : value)) Raise(nameof(TriggerSpendHint)); }
+        get => First.Scope;
+        set { if (!string.Equals(First.Scope, value, StringComparison.Ordinal)) { First.Scope = value; Raise(nameof(TriggerSpendHint)); } }
     }
 
     /// <summary>界面用：「花掉 N 点 + 本回合 / 本场战斗」那两行只在 花掉能量 / 花掉额外资源量 时显示。</summary>
     [JsonIgnore]
-    public bool ShowTriggerSpendFields =>
-        string.Equals(_trigger, "EnergySpent", StringComparison.Ordinal)
-        || string.Equals(_trigger, "StarsSpent", StringComparison.Ordinal);
+    public bool ShowTriggerSpendFields => First.ShowSpendFields;
 
-    /// <summary>数值那一栏的标题（按触发时机换说法，用户要求）。</summary>
+    /// <summary>数值那一栏的标题（按触发时机换说法）。</summary>
     [JsonIgnore]
-    public string TriggerAmountLabel => _trigger switch
-    {
-        "EnergySpent" or "StarsSpent" => "花掉多少点触发",
-        "DamageReceived" or "DamageDealt" => "伤害至少多少才触发",
-        "HpLost" => "失去生命至少多少才触发",
-        "BlockGained" => "获得格挡至少多少才触发",
-        _ => "每累计几次触发",
-    };
+    public string TriggerAmountLabel => First.AmountLabel;
 
     /// <summary>界面用：**触发时机上的数值**那一栏要不要显示（和状态那边同一套）。</summary>
     [JsonIgnore]
-    public bool ShowTriggerAmountField => ShowTriggerSpendFields || Generation.CSharpCodeGen.TriggerSupportsAmount(_trigger);
+    public bool ShowTriggerAmountField => First.ShowAmountField;
 
     /// <summary>「本回合 / 本场战斗」那一栏要不要显示（只有计数类用得到）。</summary>
     [JsonIgnore]
-    public bool ShowTriggerScopeField => ShowTriggerSpendFields || Generation.CSharpCodeGen.TriggerAmountNeedsScope(_trigger);
+    public bool ShowTriggerScopeField => First.ShowScopeField;
 
     /// <summary>数值那一行底下的说明。</summary>
     [JsonIgnore]
-    public string TriggerSpendHint => TriggerAmount <= 0m
-        ? (Generation.CSharpCodeGen.TriggerValueExpr(_trigger) is not null && !ShowTriggerSpendFields
-            ? "留空 / 填 0 = 不过滤（老行为）；填 N = **只有数值 ≥ N 的那次才触发**。"
-            : ShowTriggerSpendFields || Generation.CSharpCodeGen.TriggerAmountNeedsScope(_trigger)
-                ? "留空 / 填 0 = 每次都触发（老行为）；填 N = **每累计 N 次触发一次**（花能量 / 花资源量 = 每 N 点）。"
-                : "这条触发时机暂时没有数值可填。")
-          + (ShowTriggerScopeField ? "范围见下面那栏（本回合 / 本场战斗）。" : "")
-        : Generation.CSharpCodeGen.TriggerValueExpr(_trigger) is not null && !ShowTriggerSpendFields
-            ? $"现在只有数值 ≥ {TriggerAmount:0.##} 的那次才触发。"
-            : $"现在每累计 {(ShowTriggerSpendFields ? "花掉 " : "")}{TriggerAmount:0.##} {(ShowTriggerSpendFields ? "点" : "次")}触发一次，范围 = "
-              + (_triggerScope == "Combat" ? "本场战斗" : "本回合") + "。";
+    public string TriggerSpendHint => First.SpendHint;
 
     /// <summary>界面用：触发时机那一行底下的说明（说清「留空 = 任意状态」和「跨过才触发」）。</summary>
     [JsonIgnore]
-    public string TriggerHint
+    public string TriggerHint => First.Hint;
+
+    // ===== 「要和其他时机同时成立」（用户要求：和「自定义状态」页同一套）=====
+    private string _andScope = "Turn";
+
+    /// <summary>
+    /// 勾了「要和其他时机同时成立」的那几条时机，它们的「成立窗口」重置范围：
+    /// <c>Turn</c> = 本回合（默认，每回合重新凑）/ <c>Combat</c> = 本场战斗（整场凑一次就够）。
+    /// </summary>
+    public string AndScope
     {
-        get
+        get => _andScope;
+        set
         {
-            if (!ShowTriggerPowerFields) return "";
-            string who = string.IsNullOrWhiteSpace(_triggerPowerId)
-                ? "自己身上**任何**状态"
-                : $"自己身上的「{EffectCatalog.PowerName(_triggerPowerId, _triggerPowerId)}」";
-            if (string.Equals(_trigger, "PowerRemoved", StringComparison.Ordinal))
-                return $"「某个状态被移除时」：自己身上的状态**被移除**那一刻触发（层数掉到 0 自然消失、"
-                     + "被「清除状态」直接清掉都算）。现在盯的是" + who + "；把「盯哪个状态」留空就是任何状态被移除都触发。"
-                     + "⚠ 本体没有「状态被移除」的全局钩子，这条是工具自己打补丁补的（用到时才会多生成一个 cs/PowerRemoval.cs）。"
-                     + "「到达 N 层」那一栏在这种时机下**不用填**（不生效）。";
-            if (string.Equals(_trigger, "PowerChanged", StringComparison.Ordinal))
-                return $"「某个状态层数变化时」：只有自己身上的状态层数**一变**（升或降）就触发（每层一次）。"
-                     + $"现在盯的是{who}；把「盯哪个状态」留空就是任何状态的层数变化都触发。"
-                     + "「到达 N 层」那一栏在这种时机下**不用填**（不生效）。";
-            return $"「某个状态层数到达 N 层时」：只在自己身上的状态层数**跨过** {_triggerAmount:0.##} 层那一下触发"
-                 + $"（之前不到、变化后到了 N 或更多；已经是 N 层再加一层不会重复触发）。现在盯的是{who}；"
-                 + "把「盯哪个状态」留空就是任何状态层数变化都触发（那时可用效果自己的条件再筛）。"
-                 + "本体的钩子是 AfterPowerAmountChanged（每层变化都会调，所以「上 3 层」只算跨过的那一下）。";
+            string v = string.IsNullOrWhiteSpace(value) ? "Turn" : value;
+            if (Set(ref _andScope, v)) { Raise(nameof(AndScopeHint)); Raise(nameof(ShowAndScope)); }
         }
     }
+
+    /// <summary>勾了「同时成立」的那几条时机（界面用它判断要不要显示「重置范围」）。</summary>
+    [JsonIgnore]
+    public IEnumerable<RelicTriggerSpec> AndTriggers => Triggers.Where(t => t is not null && t.RequireAllTriggers);
+
+    /// <summary>界面用：勾了 2 条以上「同时成立」时才显示「重置范围」那一行。</summary>
+    [JsonIgnore]
+    public bool ShowAndScope => AndTriggers.Count() > 1;
+
+    [JsonIgnore]
+    public string AndScopeHint => _andScope == "Combat"
+        ? "本场战斗：整场战斗里凑齐一次就行（换战斗重新算）。"
+        : "本回合：每个回合重新凑（回合结束清零）。";
 
     private bool _isForged;
 
@@ -2544,9 +2801,11 @@ public sealed class RelicSpec : SpecBase
         $"{(IsForged ? "*" : "")}{Name}  ｜ {Rarity} ｜ {Trigger}{(IsStartingRelic ? " ｜ 初始遗物" : "")}{(InRelicPool ? "" : " ｜ 不入池")}"
         + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort)
         // 「只对哪类牌生效」（第 9 批 ④）：选了筛选就在列表里也写出来（和状态页那条时机的写法一致）
-        + (ShowTriggerCardFilterField && !string.Equals(_triggerCardFilter, "Any", StringComparison.Ordinal)
-            ? "  ｜ 只对" + PowerTriggers.CardFilterZh(_triggerCardFilter) + "牌生效"
-            : "");
+        + (ShowTriggerCardFilterField && !string.Equals(First.CardFilter, "Any", StringComparison.Ordinal)
+            ? "  ｜ 只对" + PowerTriggers.CardFilterZh(First.CardFilter) + "牌生效"
+            : "")
+        // 「多条触发时机」（第 10 批）：不止一条时把条数也写出来，一眼看得出这只遗物挂了几条
+        + (Triggers.Count > 1 ? "  ｜ " + Triggers.Count + " 条时机" : "");
 }
 
 /// <summary>

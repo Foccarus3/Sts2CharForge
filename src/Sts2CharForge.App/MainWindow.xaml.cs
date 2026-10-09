@@ -1445,6 +1445,89 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("AncientRowHint");
 	}
 
+	// ==================== 遗物的「触发时机列表」（第 10 批，用户要求） ====================
+	//
+	// 用户原话：「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，
+	// 并且可以添加多个触发时机」。做法和「自定义状态」页那一套完全一样：
+	//   · 列表 = RelicSpec.Triggers（每条一行 Summary）；
+	//   · 列表下面那条 Border = 选中那条时机的编辑器（触发时机 / 盯哪个状态 / 数值 /
+	//     只对哪类牌生效 /「要和其他时机同时成立」/ 重置范围）；
+	//   · 「效果列表」RelicEffectList 绑的是**当前选中那条时机**的 Effects。
+
+	/// <summary>选中某条遗物触发时机：把「同时成立」的重置范围挂到它主人那只遗物上（不写进存档）。</summary>
+	private void OnRelicTriggerSelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		// 「重置范围」存在整只遗物上（RelicSpec.AndScope），触发时机自己靠 OwnerRelic 读它 ——
+		// 列表增删时 RelicSpec 会自动挂；这里再兜一次（老存档 / 从工程恢复的时机可能没挂上）
+		if (RelicTriggerList?.SelectedItem is RelicTriggerSpec sel && RelicList?.SelectedItem is RelicSpec owner)
+			sel.OwnerRelic = owner;
+		// 效果列表跟着选中的时机换（XAML 里绑的是 SelectedItem.Effects，这里再显式刷一次，
+		// 免得 WPF 在切换遗物 / 从工程恢复存档时没重算绑定）
+		if (RelicEffectList is not null && RelicTriggerList?.SelectedItem is RelicTriggerSpec cur)
+			RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects") { Source = cur });
+		Raise("RelicTriggerSummary");
+	}
+
+	/// <summary>「添加触发时机」：新的一条默认「每回合开始时 → 获得 3 点格挡」（和状态页同一个默认）。</summary>
+	private void OnAddRelicTrigger(object sender, RoutedEventArgs e)
+	{
+		if (!(RelicList.SelectedItem is RelicSpec relic))
+		{
+			SetStatus("请先在上面选中一只遗物。");
+			return;
+		}
+		var trig = new RelicTriggerSpec { Kind = "PlayerTurnStart" };
+		trig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+		relic.Triggers.Add(trig);       // RelicSpec 会自动把 OwnerRelic 挂上
+		if (RelicTriggerList is not null) RelicTriggerList.SelectedItem = trig;
+		Raise("RelicTriggerSummary");
+		SetStatus("已给这只遗物加了一条触发时机（默认「每回合开始时 → 获得 3 点格挡」，在下面改）。");
+	}
+
+	/// <summary>「删除触发时机」：支持 Ctrl / Shift 多选一次删掉多条。</summary>
+	private void OnRemoveRelicTrigger(object sender, RoutedEventArgs e)
+	{
+		if (!(RelicList.SelectedItem is RelicSpec relic))
+		{
+			SetStatus("请先在上面选中一只遗物。");
+			return;
+		}
+		List<RelicTriggerSpec> picked = SelectedOf<RelicTriggerSpec>(RelicTriggerList);
+		if (picked.Count == 0)
+		{
+			SetStatus("请先选中要删除的触发时机（可 Ctrl/Shift 多选）。");
+			return;
+		}
+		// 至少留一条：全删光的话这只遗物就没有触发时机了（生成出来什么都不做，用户会以为坏了）
+		if (picked.Count >= relic.Triggers.Count)
+		{
+			SetStatus("至少得留一条触发时机（想让它什么都不做请直接删掉这只遗物）。");
+			return;
+		}
+		string what = picked.Count == 1 ? "「" + picked[0].Summary + "」这条触发时机" : $"选中的 {picked.Count} 条触发时机";
+		if (Confirm($"确定删掉{what}吗？", "确认删除"))
+		{
+			int value = RemoveManyWithUndo(relic.Triggers, picked, _relicUndo, "触发时机", delegate
+			{
+				if (RelicTriggerList is not null) RelicTriggerList.SelectedItem = picked[0];
+			});
+			Raise("RelicTriggerSummary");
+			SetStatus($"已删除 {value} 条触发时机（可点「撤回删除」恢复）。");
+		}
+	}
+
+	/// <summary>遗物页那句「这只遗物配了哪些时机」的汇总（改了时机 / 效果就重算）。</summary>
+	public string RelicTriggerSummary
+	{
+		get
+		{
+			if (!(RelicList?.SelectedItem is RelicSpec r)) return "";
+			var list = r.Triggers.Where(t => t is not null).ToList();
+			if (list.Count == 0) return "这只遗物还没有触发时机。";
+			return $"这只遗物有 {list.Count} 条触发时机：" + string.Join("；", list.Select(t => t.Summary));
+		}
+	}
+
 	/// <summary>卡牌属性栏里那一排组勾选框后面的一句小字」 /summary>
 	public string CardGroupRowHint => _profile.CardGroups.Count == 0
 		? "（还没建组 —— 到「自定义参数 / 组」页下面点「新建组」）"
@@ -2595,13 +2678,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("SelectedSummonImagePreview");
 		RaisePetSummonChoices();
 		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
-		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Relics"));
-		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
+		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Relics"));		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
 		SummonList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Summons"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
-		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
-		// 遗物效果列表换选中项 → 重刷「转化为先古卡」的配对表（配对表跟着选中的那条效果走）"
+		// 第 10 批：遗物页的「触发时机列表」绑到当前选中遗物的 Triggers；
+		// 效果列表绑到**当前选中那条时机**的 Effects（选中项由 OnRelicTriggerSelectionChanged 换绑）。
+		if (RelicList.SelectedItem is RelicSpec selRelic)
+		{
+			if (selRelic.Triggers.Count == 0) selRelic.Triggers.Add(new RelicTriggerSpec());
+			RelicTriggerList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Triggers") { Source = selRelic });
+			if (RelicTriggerList.SelectedItem is null) RelicTriggerList.SelectedIndex = 0;
+		}
+		else
+		{
+			RelicTriggerList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Triggers"));
+		}
+		RelicTriggerList.SelectionChanged -= OnRelicTriggerSelectionChanged;
+		RelicTriggerList.SelectionChanged += OnRelicTriggerSelectionChanged;
+		OnRelicTriggerSelectionChanged(RelicTriggerList, new SelectionChangedEventArgs(ListBox.SelectionChangedEvent, new List<object>(), new List<object>()));
+		Raise("RelicTriggerSummary");
+		// ⚠ 这里**不能**再把 RelicEffectList 绑到裸 "Effects"（RelicDetail 的 DataContext 是 RelicSpec，
+		// 那会绑回「第 1 条时机」）——它的 ItemsSource 在 XAML 里已经绑成
+		// `SelectedItem.Effects, ElementName=RelicTriggerList`，OnRelicTriggerSelectionChanged 也会换绑。
+		RelicEffectList.SelectionChanged -= OnRelicEffectSelectionChanged;
 		RelicEffectList.SelectionChanged += OnRelicEffectSelectionChanged;
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		// 新增的两页：列表数据源 + 算出来的候选"
@@ -5838,7 +5938,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus("请先选中要删除的效果（可 Ctrl/Shift 多选）。");
 			return;
 		}
-		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果")))));
+		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is RelicTriggerSpec relicTriggerSpec) ? (_relicUndo, "遗物「" + (RelicList.SelectedItem as RelicSpec)?.Name + "」那条触发时机的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果"))))));
 		(Stack<UndoEntry>, string) tuple2 = tuple;
 		Stack<UndoEntry> item = tuple2.Item1;
 		string item2 = tuple2.Item2;
@@ -5859,6 +5959,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			if (!(spec is RelicSpec relicSpec))
 			{
+				// 遗物的「效果列表」现在挂在**当前选中的那条触发时机**上（第 10 批）
+				if (spec is RelicTriggerSpec relicTriggerSpec)
+				{
+					return relicTriggerSpec.Effects;
+				}
 				if (!(spec is PotionSpec potionSpec))
 				{
 					if (spec is PowerTriggerSpec powerTriggerSpec)
@@ -8046,7 +8151,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		};
 		Check("卡牌效果列表会显示「（升级 +N）」", effectSpec.Display.Contains("（升级 +3）"), effectSpec.Display);
 		Check("遗物 / 药水用的显示文本不带「（升级 +N）」", !effectSpec.DisplayPlain.Contains("升级"), effectSpec.DisplayPlain);
-		Check("遗物效果列表绑定的是不带升级的显示文本", RelicEffectList.DisplayMemberPath == "DisplayPlain", RelicEffectList.DisplayMemberPath ?? "(空)");
+		// 第 10 批：遗物效果列表改成 ItemTemplate（每条效果直接在列表行里编辑）——
+		// 不再用 DisplayMemberPath，但**显示文本仍然是不带「升级 +N」的那一份**（模板里的显示走 DisplayPlain）。
+		Check("遗物效果列表不再用 DisplayMemberPath（改成每条效果直接在行里编辑的模板）",
+			RelicEffectList.DisplayMemberPath is null && RelicEffectList.ItemTemplate is not null,
+			(RelicEffectList.DisplayMemberPath ?? "(null)") + " / " + (RelicEffectList.ItemTemplate is null ? "无模板" : "有模板"));
 		Check("药水效果列表绑定的是不带升级的显示文本", PotionEffectList.DisplayMemberPath == "DisplayPlain", PotionEffectList.DisplayMemberPath ?? "(空)");
 		Check("卡牌效果列表仍然显示升级增量（卡牌能升级）", CardEffectList.DisplayMemberPath == "Display", CardEffectList.DisplayMemberPath ?? "(空)");
 		DependencyObject root9 = (DependencyObject)((TabItem)MainTabs.SelectedItem).Content;
@@ -8103,8 +8212,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				shown.Any(t => t.Contains("当前能量") && t.Contains("参数名")), "写了");
 			Check("「数值公式」的说明文字指向了这块清单（用户照着说明就能找到）",
 				formulaSpec.AmountFormulaHint.Contains("可用量"), "指向了");
-			Check("（对照）遗物 / 药水的效果编辑器里**没有**这块清单（公式只做在卡牌上，免得填了才被拦）",
-				!TextsIn(RelicDetail).Any(t => t.Contains("可用量")), "没有");
+			Check("（对照）遗物 / 药水的效果编辑器里**没有**这块「可用量」清单（公式只做在卡牌上，免得填了才被拦）",
+				!TextsIn(RelicDetail).Any(t => t.Contains("可用量（直接写进公式")),
+				string.Join(" ｜ ", TextsIn(RelicDetail).Where(t => t.Contains("可用量（")).Take(2)));
 			Profile.Cards.Remove(clearCard);
 			CardList.SelectedItem = null;
 			UpdateLayout();
@@ -9395,6 +9505,69 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		CollectTextBoxes(root11, list17);
 		Check("药水的效果编辑器里也没有「升级增量」", !list17.Any((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path == "UpgradeAmount"), "药水没有");
 		Check("遗物/药水页也不再用文字提「升级增量」", !TextsIn(root10).Any((string x) => x.Contains("升级增量")) && !TextsIn(root11).Any((string x) => x.Contains("升级增量")), "文字里没有");
+		// ===== 第 10 批①（用户要求）：遗物页那条「触发时机列表」（可以加好几条，每条各自配效果）=====
+		// 用户原话：「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，
+		// 并且可以添加多个触发时机」——这里从界面侧验一遍：列表在、能加第二条、选中哪条就编辑哪条、
+		// 勾 2 条「同时成立」时「重置范围」看得见。
+		{
+			SelectTabRoot("遗物");
+			if (RelicList.Items.Count > 0 && RelicList.SelectedItem == null) RelicList.SelectedIndex = 0;
+			UpdateLayout();
+			var relicUi = RelicList.SelectedItem as RelicSpec;
+			Check("遗物页有「触发时机列表」（绑在选中遗物的 Triggers 上）",
+				relicUi != null && RelicTriggerList.ItemsSource == relicUi.Triggers, RelicTriggerList.Items.Count + " 条");
+			Check("遗物页「触发时机列表」的每一行显示的是时机摘要（Summary）",
+				RelicTriggerList.DisplayMemberPath == "Summary", RelicTriggerList.DisplayMemberPath ?? "(空)");
+			Check("遗物页有「添加触发时机」按钮", TextsIn(RelicDetail).Contains("添加触发时机"), "按钮在");
+			int relicsBefore = Profile.Relics.Count;
+			OnAddRelicTrigger(this, new RoutedEventArgs());
+			var lastRelic = RelicList.SelectedItem as RelicSpec;
+			Check("「添加触发时机」给这只遗物加了第二条",
+				lastRelic != null && lastRelic.Triggers.Count == 2 && ReferenceEquals(lastRelic, relicUi),
+				lastRelic is null ? "(没选中)" : lastRelic.Triggers.Count + " 条");
+			Check("加完自动选中新加的那条（编辑的是第二条）",
+				lastRelic != null && lastRelic.Triggers.Count >= 2 && ReferenceEquals(RelicTriggerList.SelectedItem, lastRelic.Triggers[1]),
+				(lastRelic?.Triggers.Count > 1) ? lastRelic.Triggers[1].Summary : "(没加上)");
+			Check("遗物数没被改动（加的是这只遗物的时机，不是新遗物）", Profile.Relics.Count == relicsBefore,
+				Profile.Relics.Count + "/" + relicsBefore);
+			if (lastRelic != null && lastRelic.Triggers.Count >= 2)
+			{
+				// 选中第二条 → 效果列表绑的必须是**第二条**的 Effects（不是第 1 条的代理）
+				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
+				UpdateLayout();
+				Check("效果列表跟着选中的那条时机换（绑第二条的 Effects）",
+					ReferenceEquals(RelicEffectList.ItemsSource, lastRelic.Triggers[1].Effects),
+					RelicEffectList.ItemsSource is null ? "(null)" : "已换绑");
+				RelicEffectList.SelectedIndex = 0;
+				UpdateLayout();
+				// 效果编辑器就长在列表行里（ItemTemplate = EffectEditorPlain）——每行的 DataContext
+				// 必须是**选中那条时机**的效果（第 10 批改成 ItemTemplate 的原因见 XAML 里的注释）
+				Check("选中第二条时，效果列表里的行挂的是第二条的效果（不是第一条）",
+					RelicEffectList.Items.Count == lastRelic.Triggers[1].Effects.Count
+					&& RelicEffectList.Items.Count > 0
+					&& ReferenceEquals(RelicEffectList.Items[0], lastRelic.Triggers[1].Effects[0]),
+					RelicEffectList.Items.Count + " 条效果");
+				// 勾 2 条「同时成立」→「重置范围」那一行才显示
+				lastRelic.Triggers[0].RequireAllTriggers = true;
+				lastRelic.Triggers[1].RequireAllTriggers = true;
+				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
+				UpdateLayout();
+				Check("勾 2 条「同时成立」→ ShowAndScope 为真（界面显示「重置范围」）",
+					lastRelic.Triggers[1].ShowAndScope && lastRelic.ShowAndScope, "重置范围可见");
+				Check("「重置范围」绑的是 AndScope（落在整只遗物上）",
+					lastRelic.Triggers[1].AndScope == lastRelic.AndScope, lastRelic.Triggers[1].AndScope);
+				// 删掉刚加的那条，别影响后面的自检
+				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
+				OnRemoveRelicTrigger(this, new RoutedEventArgs());
+				Check("「删除触发时机」删掉后只剩 1 条", lastRelic.Triggers.Count == 1, lastRelic.Triggers.Count + " 条");
+			}
+			List<ComboBox> relicPropCombos = new List<ComboBox>();
+			CollectCombos(RelicDetail, relicPropCombos);
+			Check("遗物属性区不再有单时机那条下拉（避免两处都能改）",
+				!relicPropCombos.Any((ComboBox c) => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Trigger"),
+				"属性区没有 Trigger 下拉");
+			SelectTabRoot("卡牌");
+		}
 		SelectTabRoot("卡牌");
 		DependencyObject root12 = SelectTabRoot("遗物");
 		if (Profile.Relics.Count > 0)
@@ -21148,7 +21321,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					MainTabs.SelectedItem = MainTabs.Items.OfType<TabItem>().FirstOrDefault(x => (x.Header as string) == "遗物");
 					RelicList.SelectedItem = amtUiRelic;
 					UpdateLayout();
-					ComboBox? amtCombo = FindComboBoundTo(RelicDetail, "Trigger");
+					// 第 10 批起：「触发时机」下拉搬到了「触发时机列表」下面那条编辑器里
+					// （属性区不再放单时机控件，免得两处都能改）——找到那一条并选中它。
+					// ⚠ 不能只按属性名 "Kind" 找：遗物页同时还有「条件选项」的下拉（绑 Condition.Kind），
+					//   按 ItemsSource 认那一个才是触发时机（候选 = RelicTriggers）。
+					RelicTriggerList.SelectedItem = amtUiRelic.Triggers.FirstOrDefault();
+					UpdateLayout();
+					List<ComboBox> allRelicCombos = new List<ComboBox>();
+					CollectComboBoxes(RelicDetail, allRelicCombos);
+					ComboBox? amtCombo = allRelicCombos.FirstOrDefault(c => ReferenceEquals(c.ItemsSource, RelicTriggers))
+						?? FindComboBoundTo(RelicDetail, "Kind");
 					Check("（准备）遗物页打开了、也找到了「触发时机」那个下拉", amtCombo is not null,
 						amtCombo is null ? "(没找到 " : (amtCombo.SelectedValue as string) ?? "(空 ");
 					Check("（对照）「战斗开始时」这种没有数值的时机：那一栏确实不显示",

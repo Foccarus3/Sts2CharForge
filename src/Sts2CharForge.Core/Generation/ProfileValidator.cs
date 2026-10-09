@@ -714,7 +714,7 @@ public static class ProfileValidator
             ValidateCondition(issues, $"卡牌「{c.Name}」", c.Condition, "Card");
         }
 
-        // 遗物
+            // 遗物
         var relicNames = new HashSet<string>(StringComparer.Ordinal);
         for (int i = 0; i < p.Relics.Count; i++)
         {
@@ -723,124 +723,147 @@ public static class ProfileValidator
             if (!relicNames.Add(cls)) issues.Add(new("错误", $"遗物类名重复：{cls}"));
             if (!EffectCatalog.RelicRarities.Contains(r.Rarity))
                 issues.Add(new("错误", $"遗物「{r.Name}」稀有度非法：{r.Rarity}"));
-            if (!EffectCatalog.RelicTriggers.Any(t => t.Id == r.Trigger))
-                issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{r.Trigger}"));
-            if (r.Trigger == "Obtained")
-                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「获得时」：拿到这只遗物的那一刻触发一次"
-                    + "（本体钩子 AfterObtained —— 本体的「好吃饼干 YummyCookie / 磨刀石 Whetstone / 爪子 Claws」"
-                    + "这些「拾取时生效」的遗物都是它）。这个钩子本体没给选牌上下文，需要的那几条效果"
-                    + "（生成卡牌 / 抽牌 / 卡牌奖励…）生成时会自己造一个阻塞式上下文，能用。"));
-            // 「受到伤害时」是**每一下**都触发的钩子：本体的敌人攻击很多是「1 点 × N 下」的连击，
-            // 所以一次「5 点伤害」的攻击会触发 5 次（本体原体黏土 SelfFormingClay 也是这样）。
-            // 用户报过「5 点伤害触发了五次」——这里直接说清楚，并指路「受到攻击后（连击只算一次）」。
-            if (r.Trigger == "DamageReceived")
-                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「受到伤害时（每一下）」：**每一下伤害都会触发一次** —— "
-                    + "敌人的多次连击（本体很多攻击是「1 点 × 5 下」，意图上也写着次数）会触发多次。"
-                    + "想让「一次攻击只触发一次」请把触发时机改成「受到攻击后（连击只算一次）」（本体钩子 AfterAttack，"
-                    + "在所有命中都结束之后才跑一次）。全被格挡 / 0 伤害的那一下不算（生成时会判 UnblockedDamage > 0）。"));
-            if (r.Trigger == "Attacked")
-                issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「受到攻击后（连击只算一次）」："
-                    + "一次攻击的**所有命中都结束之后**只触发一次（本体钩子 AfterAttack），"
-                    + "所以「1 点 × 5 下」的连击也只算一次。判据是这一次攻击真的打到了你身上"
-                    + "（全被格挡 / 打的是别人时不触发）。注意它只认「攻击」：中毒、事件掉血这类不是攻击的伤害不会触发它。"));
-            // 「只对哪类牌生效」（用户要求，第 9 批 ④：遗物侧和状态侧同步）：
-            // 只有「打出一张牌后」用得到。关键词组 / 自定义组里**一张牌都没有**时，
-            // 生成出来的判据是 `if (false)` —— 这条时机永远不会触发，必须拦住并说清（不静默）。
-            if (r.Trigger == "CardPlayed"
-                && (EffectCatalog.IsKeywordFilter(r.TriggerCardFilter) || EffectCatalog.IsCardGroupFilter(r.TriggerCardFilter)))
+            // 第 10 批：一只遗物能挂**多条触发时机**，每条各自校验一遍。
+            // 错误信息前面带上「第 N 条时机」——只有一条时**一个字都不加**（老存档的消息逐字不变）。
+            var relicTriggerList = r.Triggers.Where(t => t is not null).ToList();
+            if (relicTriggerList.Count == 0) relicTriggerList.Add(r.First);
+            bool multiTrigger = relicTriggerList.Count > 1;
+            for (int ti = 0; ti < relicTriggerList.Count; ti++)
             {
-                int relicGroupCount = EffectCatalog.IsCardGroupFilter(r.TriggerCardFilter)
-                    ? EffectCatalog.CardGroupCards(p, r.TriggerCardFilter).Count
-                    : EffectCatalog.KeywordGroupCards(p, r.TriggerCardFilter).Count;
-                if (relicGroupCount == 0)
-                    issues.Add(new("错误", $"遗物「{r.Name}」的「只对哪类牌生效」选的是"
-                        + $"「{PowerTriggers.CardFilterZh(r.TriggerCardFilter)}」，但这一组里**一张牌都没有**"
-                        + "（没勾任何牌 / 那个关键词没人用）—— 这条时机永远不会触发。"
-                        + "请到「卡牌」页把牌勾进这个组，或者把筛选改回「任意 / 攻击 / 技能 / 能力」。"));
+                var trig = relicTriggerList[ti];
+                // 只有一条时机时前缀为空串 → 下面所有消息文本和以前完全一致
+                string tPrefix = multiTrigger ? $"第 {ti + 1} 条时机（{RelicTriggerName(trig.Kind)}）的" : "";
+                string tWhere = multiTrigger ? $"第 {ti + 1} 条时机（{RelicTriggerName(trig.Kind)}）" : "";
+                if (!EffectCatalog.RelicTriggers.Any(t => t.Id == trig.Kind))
+                    issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{trig.Kind}"));
+                if (trig.Kind == "Obtained")
+                    issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}触发时机是「获得时」：拿到这只遗物的那一刻触发一次"
+                        + "（本体钩子 AfterObtained —— 本体的「好吃饼干 YummyCookie / 磨刀石 Whetstone / 爪子 Claws」"
+                        + "这些「拾取时生效」的遗物都是它）。这个钩子本体没给选牌上下文，需要的那几条效果"
+                        + "（生成卡牌 / 抽牌 / 卡牌奖励…）生成时会自己造一个阻塞式上下文，能用。"));
+                // 「受到伤害时」是**每一下**都触发的钩子：本体的敌人攻击很多是「1 点 × N 下」的连击，
+                // 所以一次「5 点伤害」的攻击会触发 5 次（本体原体黏土 SelfFormingClay 也是这样）。
+                // 用户报过「5 点伤害触发了五次」——这里直接说清楚，并指路「受到攻击后（连击只算一次）」。
+                if (trig.Kind == "DamageReceived")
+                    issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}触发时机是「受到伤害时（每一下）」：**每一下伤害都会触发一次** —— "
+                        + "敌人的多次连击（本体很多攻击是「1 点 × 5 下」，意图上也写着次数）会触发多次。"
+                        + "想让「一次攻击只触发一次」请把触发时机改成「受到攻击后（连击只算一次）」（本体钩子 AfterAttack，"
+                        + "在所有命中都结束之后才跑一次）。全被格挡 / 0 伤害的那一下不算（生成时会判 UnblockedDamage > 0）。"));
+                if (trig.Kind == "Attacked")
+                    issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}触发时机是「受到攻击后（连击只算一次）」："
+                        + "一次攻击的**所有命中都结束之后**只触发一次（本体钩子 AfterAttack），"
+                        + "所以「1 点 × 5 下」的连击也只算一次。判据是这一次攻击真的打到了你身上"
+                        + "（全被格挡 / 打的是别人时不触发）。注意它只认「攻击」：中毒、事件掉血这类不是攻击的伤害不会触发它。"));
+                // 「只对哪类牌生效」（用户要求，第 9 批 ④：遗物侧和状态侧同步）：
+                // 只有「打出一张牌后」用得到。关键词组 / 自定义组里**一张牌都没有**时，
+                // 生成出来的判据是 `if (false)` —— 这条时机永远不会触发，必须拦住并说清（不静默）。
+                if (trig.Kind == "CardPlayed"
+                    && (EffectCatalog.IsKeywordFilter(trig.CardFilter) || EffectCatalog.IsCardGroupFilter(trig.CardFilter)))
+                {
+                    int relicGroupCount = EffectCatalog.IsCardGroupFilter(trig.CardFilter)
+                        ? EffectCatalog.CardGroupCards(p, trig.CardFilter).Count
+                        : EffectCatalog.KeywordGroupCards(p, trig.CardFilter).Count;
+                    if (relicGroupCount == 0)
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「只对哪类牌生效」选的是"
+                            + $"「{PowerTriggers.CardFilterZh(trig.CardFilter)}」，但这一组里**一张牌都没有**"
+                            + "（没勾任何牌 / 那个关键词没人用）—— 这条时机永远不会触发。"
+                            + "请到「卡牌」页把牌勾进这个组，或者把筛选改回「任意 / 攻击 / 技能 / 能力」。"));
+                }
+                else if (trig.Kind != "CardPlayed" && !string.Equals(trig.CardFilter, "Any", StringComparison.Ordinal))
+                {
+                    issues.Add(new("提示", $"遗物「{r.Name}」{tWhere}填了「只对哪类牌生效 = {PowerTriggers.CardFilterZh(trig.CardFilter)}」，"
+                        + "但触发时机不是「打出一张牌后」—— 这个值**不生效**（留着不碍事，换成那个时机就会用上）。"));
+                }
+                // 「要和其他时机同时成立」（用户要求：和「自定义状态」页同一套）：
+                // 只勾了 1 条时「没有别的时机和它同时成立」→ 按老行为跑，这里给一句提示（和状态页同一句）。
+                int andCount = relicTriggerList.Count(x => x.RequireAllTriggers);
+                if (trig.RequireAllTriggers && andCount <= 1)
+                {
+                    issues.Add(new("提示", $"遗物「{r.Name}」{tWhere}勾了「要和其他时机同时成立」，"
+                        + "但这只遗物上只有这一条勾了它 —— 没有「别的时机」和它同时成立，所以按普通触发处理。"
+                        + "想真的「都成立才触发」，请再加一条触发时机并把它也勾上。"));
+                }
+                ValidateEffects(issues, $"遗物「{r.Name}」{tWhere}", trig.Effects, ctx: "Relic", p: p);
+                AddDuplicateVarNotice(issues, $"遗物「{r.Name}」{tWhere}", trig.Effects);
+
+                // 「转化为先古卡」：只在「获得时」有意义（那时牌组是稳定的；战斗里改的是战斗牌堆，
+                // 而且本体的先古卡替换遗物（古老牙齿 / 潘多拉魔盒）清一色挂在 AfterObtained）。
+                foreach (var e in trig.Effects.Where(x => x.Kind == "AncientTranscend"))
+                {
+                    if (trig.Kind != "Obtained")
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「转化为先古卡」的触发时机是"
+                            + $"「{RelicTriggerName(trig.Kind)}」"
+                            + "—— 这条效果只允许挂在「获得时」（它是改**牌组**的：本体的古老牙齿 / 潘多拉魔盒都在拾取那一刻做）。"));
+                    ValidateAncientRows(issues, $"遗物「{r.Name}」", e, p);
+                }
+                // 「某个状态层数到达 N 层时」（用户要求）：两个参数只有选了这个时机才有意义
+                if (trig.Kind == "PowerReached")
+                {
+                    if (trig.Amount <= 0m)
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}触发时机是「某个状态层数到达 N 层时」，但「到达 N 层」填的是 {trig.Amount:0.##}："
+                            + "层数要从 0 往上跨才可能触发，请填 ≥ 1 的数（一般就是这个状态最有意义的那一档层数）。"));
+                    if (string.IsNullOrWhiteSpace(trig.PowerId))
+                        issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}触发时机是「某个状态层数到达 N 层时」，但「盯哪个状态」留空 —— "
+                            + "这样自己身上**任何**状态的层数跨过 N 层都会触发。想只盯某一个状态就在上面选一个。"));
+                    if (trig.Effects.Count == 0)
+                        issues.Add(new("警告", $"遗物「{r.Name}」{tWhere}选了「某个状态层数到达 N 层时」但一个效果都没有 —— 它不会做任何事。"));
+                }
+                else if (!string.IsNullOrWhiteSpace(trig.PowerId) || trig.Amount != 1m)
+                {
+                    issues.Add(new("提示", $"遗物「{r.Name}」{tWhere}填了「盯哪个状态 / 到达 N 层」（{trig.PowerId ?? "任意"} / {trig.Amount:0.##}），"
+                        + "但触发时机不是「某个状态层数到达 N 层时」—— 这两个值**不生效**（留着不碍事，换成那个时机就会用上）。"));
+                }
+                // 「花掉 N 点」的数值（用户要求）：只对「花掉能量 / 花掉额外资源量」有意义
+                if (trig.Kind is "EnergySpent" or "StarsSpent")
+                {
+                    if (trig.Amount < 0m)
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「花掉多少点触发」填的是 {trig.Amount:0.##}：不能是负数，请填 ≥ 1 的数（留空 / 0 = 每 1 点）。"));
+                }
+                else if (trig.Amount < 0m)
+                {
+                    issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}触发时机数值填的是 {trig.Amount:0.##}：不能是负数。"));
+                }
+                // 「转化为先古遗物」（用户要求）：同样只在「获得时」有意义（本体欧洛巴斯之触就是 AfterObtained）。
+                foreach (var e in trig.Effects.Where(x => x.Kind == "AncientRelicSwap"))
+                {
+                    if (trig.Kind != "Obtained")
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「转化为先古遗物」的触发时机是"
+                            + $"「{RelicTriggerName(trig.Kind)}」"
+                            + "—— 这条效果只允许挂在「获得时」（本体「欧洛巴斯之触」就是拾取那一刻换的）。"));
+                    if (string.IsNullOrWhiteSpace(e.SpawnCardId))
+                        issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「转化为先古遗物」还没选「目标遗物」（效果下面那一栏）—— 这一条会被跳过。"));
+                    else
+                    {
+                        string want = e.SpawnCardId!.Trim();
+                        bool mine = p.Relics.Any(x => x is not null && string.Equals(Naming.From(p).RelicClassName(x, p.Relics.IndexOf(x)), want, StringComparison.Ordinal));
+                        bool vanilla = AncientCatalog.VanillaRelics.Any(v => string.Equals(v.Id, want, StringComparison.Ordinal));
+                        if (!mine && !vanilla && AncientCatalog.VanillaRelics.Count > 0)
+                            issues.Add(new("错误", $"遗物「{r.Name}」的{tPrefix}「转化为先古遗物」要换成「{want}」，但这个类名在本存档和本体遗物表里都找不到 —— 请重新选一个。"));
+                        // 换成自己做的「初始遗物」会有点怪：初始遗物是开局就带着的，换出来等于凭空多一只
+                        var myRelic = p.Relics.FirstOrDefault(x => x is not null && string.Equals(x.ClassName, want, StringComparison.Ordinal));
+                        if (myRelic is { IsStartingRelic: true })
+                            issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}「转化为先古遗物」要换成「{myRelic.Name}」，"
+                                + "但那只勾了「作为初始遗物」—— 换出来的话它会**额外**出现在遗物栏（初始遗物本来是开局就带着的）。"));
+                        if (string.Equals(e.SpawnFilter, EffectCatalog.RelicFilterStarter, StringComparison.Ordinal)
+                            && !p.Relics.Any(x => x is not null && x.IsStartingRelic))
+                            issues.Add(new("警告", $"遗物「{r.Name}」的{tPrefix}「转化为先古遗物」只换初始遗物，"
+                                + "但你还没有任何遗物勾了「作为初始遗物」—— 生成出来的效果永远不会触发。"));
+                    }
+                }
+
+                if (!CSharpCodeGen.HasContext(trig.Kind) && !CSharpCodeGen.CanBootstrapContext(trig.Kind))
+                {
+                    foreach (var e in trig.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower" or "TempPower"
+                                                           || (x.Kind == "MaxHp" && x.Amount < 0)))
+                    {
+                        issues.Add(new("警告",
+                            $"遗物「{r.Name}」的{tPrefix}「{EffectCatalog.FindKind(e.Kind).Display}」在「{RelicTriggerName(trig.Kind)}」缺少 choiceContext，生成时会被忽略。"));
+                    }
+                }
             }
-            else if (r.Trigger != "CardPlayed" && !string.Equals(r.TriggerCardFilter, "Any", StringComparison.Ordinal))
-            {
-                issues.Add(new("提示", $"遗物「{r.Name}」填了「只对哪类牌生效 = {PowerTriggers.CardFilterZh(r.TriggerCardFilter)}」，"
-                    + "但触发时机不是「打出一张牌后」—— 这个值**不生效**（留着不碍事，换成那个时机就会用上）。"));
-            }
-            ValidateEffects(issues, $"遗物「{r.Name}」", r.Effects, ctx: "Relic", p: p);
-            AddDuplicateVarNotice(issues, $"遗物「{r.Name}」", r.Effects);
+            // 这两条是**整只遗物**的（不属于某一条时机），所以留在时机循环外面
             ValidateForgeGraph(issues, $"遗物「{r.Name}」", r.ForgeGraph, p, "Relic");
             ValidateCondition(issues, $"遗物「{r.Name}」（整只遗物的触发条件）", r.Condition, "Relic");
-
-            // 「转化为先古卡」：只在「获得时」有意义（那时牌组是稳定的；战斗里改的是战斗牌堆，
-            // 而且本体的先古卡替换遗物（古老牙齿 / 潘多拉魔盒）清一色挂在 AfterObtained）。
-            foreach (var e in r.Effects.Where(x => x.Kind == "AncientTranscend"))
-            {
-                if (r.Trigger != "Obtained")
-                    issues.Add(new("错误", $"遗物「{r.Name}」用了「转化为先古卡」，但触发时机是"
-                        + $"「{EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == r.Trigger)?.Display ?? r.Trigger}」"
-                        + "—— 这条效果只允许挂在「获得时」（它是改**牌组**的：本体的古老牙齿 / 潘多拉魔盒都在拾取那一刻做）。"));
-                ValidateAncientRows(issues, $"遗物「{r.Name}」", e, p);
-            }
-            // 「某个状态层数到达 N 层时」（用户要求）：两个参数只有选了这个时机才有意义
-            if (r.Trigger == "PowerReached")
-            {
-                if (r.TriggerAmount <= 0m)
-                    issues.Add(new("错误", $"遗物「{r.Name}」的触发时机是「某个状态层数到达 N 层时」，但「到达 N 层」填的是 {r.TriggerAmount:0.##}："
-                        + "层数要从 0 往上跨才可能触发，请填 ≥ 1 的数（一般就是这个状态最有意义的那一档层数）。"));                if (string.IsNullOrWhiteSpace(r.TriggerPowerId))
-                    issues.Add(new("提示", $"遗物「{r.Name}」的触发时机是「某个状态层数到达 N 层时」，但「盯哪个状态」留空 —— "
-                        + "这样自己身上**任何**状态的层数跨过 N 层都会触发。想只盯某一个状态就在上面选一个。"));
-                if (r.Effects.Count == 0)
-                    issues.Add(new("警告", $"遗物「{r.Name}」选了「某个状态层数到达 N 层时」但一个效果都没有 —— 它不会做任何事。"));
-            }
-            else if (!string.IsNullOrWhiteSpace(r.TriggerPowerId) || r.TriggerAmount != 1m)
-            {
-                issues.Add(new("提示", $"遗物「{r.Name}」填了「盯哪个状态 / 到达 N 层」（{r.TriggerPowerId ?? "任意"} / {r.TriggerAmount:0.##}），"
-                    + "但触发时机不是「某个状态层数到达 N 层时」—— 这两个值**不生效**（留着不碍事，换成那个时机就会用上）。"));
-            }
-            // 「花掉 N 点」的数值（用户要求）：只对「花掉能量 / 花掉额外资源量」有意义
-            if (r.Trigger is "EnergySpent" or "StarsSpent")
-            {
-                if (r.TriggerAmount < 0m)
-                    issues.Add(new("错误", $"遗物「{r.Name}」的「花掉多少点触发」填的是 {r.TriggerAmount:0.##}：不能是负数，请填 ≥ 1 的数（留空 / 0 = 每 1 点）。"));
-            }
-            else if (r.TriggerAmount < 0m)
-            {
-                issues.Add(new("错误", $"遗物「{r.Name}」的触发时机数值填的是 {r.TriggerAmount:0.##}：不能是负数。"));
-            }
-            // 「转化为先古遗物」（用户要求）：同样只在「获得时」有意义（本体欧洛巴斯之触就是 AfterObtained）。
-            foreach (var e in r.Effects.Where(x => x.Kind == "AncientRelicSwap"))
-            {
-                if (r.Trigger != "Obtained")
-                    issues.Add(new("错误", $"遗物「{r.Name}」用了「转化为先古遗物」，但触发时机是"
-                        + $"「{EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == r.Trigger)?.Display ?? r.Trigger}」"
-                        + "—— 这条效果只允许挂在「获得时」（本体「欧洛巴斯之触」就是拾取那一刻换的）。"));
-                if (string.IsNullOrWhiteSpace(e.SpawnCardId))
-                    issues.Add(new("错误", $"遗物「{r.Name}」的「转化为先古遗物」还没选「目标遗物」（效果下面那一栏）—— 这一条会被跳过。"));
-                else
-                {
-                    string want = e.SpawnCardId!.Trim();
-                    bool mine = p.Relics.Any(x => x is not null && string.Equals(Naming.From(p).RelicClassName(x, p.Relics.IndexOf(x)), want, StringComparison.Ordinal));
-                    bool vanilla = AncientCatalog.VanillaRelics.Any(v => string.Equals(v.Id, want, StringComparison.Ordinal));
-                    if (!mine && !vanilla && AncientCatalog.VanillaRelics.Count > 0)
-                        issues.Add(new("错误", $"遗物「{r.Name}」的「转化为先古遗物」要换成「{want}」，但这个类名在本存档和本体遗物表里都找不到 —— 请重新选一个。"));
-                    // 换成自己做的「初始遗物」会有点怪：初始遗物是开局就带着的，换出来等于凭空多一只
-                    var myRelic = p.Relics.FirstOrDefault(x => x is not null && string.Equals(x.ClassName, want, StringComparison.Ordinal));
-                    if (myRelic is { IsStartingRelic: true })
-                        issues.Add(new("提示", $"遗物「{r.Name}」的「转化为先古遗物」要换成「{myRelic.Name}」，"
-                            + "但那只勾了「作为初始遗物」—— 换出来的话它会**额外**出现在遗物栏（初始遗物本来是开局就带着的）。"));
-                    if (string.Equals(e.SpawnFilter, EffectCatalog.RelicFilterStarter, StringComparison.Ordinal)
-                        && !p.Relics.Any(x => x is not null && x.IsStartingRelic))
-                        issues.Add(new("警告", $"遗物「{r.Name}」的「转化为先古遗物」只换初始遗物，"
-                            + "但你还没有任何遗物勾了「作为初始遗物」—— 生成出来的效果永远不会触发。"));
-                }
-            }
-
-            if (!CSharpCodeGen.HasContext(r.Trigger) && !CSharpCodeGen.CanBootstrapContext(r.Trigger))
-            {
-                foreach (var e in r.Effects.Where(x => x.Kind is "Draw" or "Damage" or "HpLoss" or "ApplyPower" or "TempPower"
-                                                       || (x.Kind == "MaxHp" && x.Amount < 0)))
-                {
-                    issues.Add(new("警告",
-                        $"遗物「{r.Name}」的「{EffectCatalog.FindKind(e.Kind).Display}」在「{EffectCatalog.RelicTriggers.First(t => t.Id == r.Trigger).Display}」缺少 choiceContext，生成时会被忽略。"));
-                }
-            }
         }
         if (p.Relics.Count(r => r.IsStartingRelic) > 3)
             issues.Add(new("警告", "初始遗物超过 3 个，界面可能显示不下。"));
@@ -1456,13 +1479,15 @@ public static class ProfileValidator
                     + "**不会从普通奖励 / 商店里抽出来**，是先古之民给的。你现在还勾着「加入遗物池」——"
                     + "想让它在奖励池里出现就把稀有度改成 Common / Uncommon / Rare / Shop；"
                     + "确实要做先古遗物就取消那个勾，用「先古之民」页安排它（或自己的效果发放）。"));
-            Scan($"遗物「{r.Name}」", r.Effects, forPotion: false);
+            // 第 10 批：遗物能挂多条触发时机 → 每条时机的效果都要扫（只看第 1 条会漏报）
+            var relicAllFx = r.Triggers.Where(t => t is not null).SelectMany(t => t.Effects).Where(e => e is not null).ToList();
+            Scan($"遗物「{r.Name}」", relicAllFx, forPotion: false);
             // 「伙伴攻击」必须挂在卡牌上：遗物没有「玩家选中的目标」
             // 新增的那批宠物效果同理（这一档只做在卡牌上，见 CSharpCodeGen.EmitRelicEffectOnce）。
-            if (r.Effects.Any(e => e.Kind == "PetAttack"))
+            if (relicAllFx.Any(e => e.Kind == "PetAttack"))
                 issues.Add(new("错误", $"遗物「{r.Name}」里放了「伙伴攻击」—— 遗物没有「玩家选中的目标」，"
                     + "宠物该打谁说不清。请把它放到卡牌上（遗物只支持「召唤伙伴」）。"));
-            var relicPetFx = r.Effects.Where(e => EffectCatalog.IsPetKind(e.Kind) && e.Kind != "SummonPet").ToList();
+            var relicPetFx = relicAllFx.Where(e => EffectCatalog.IsPetKind(e.Kind) && e.Kind != "SummonPet").ToList();
             if (relicPetFx.Count > 0)
                 issues.Add(new("错误", $"遗物「{r.Name}」里放了宠物效果"
                     + $"（{string.Join("、", relicPetFx.Select(e => EffectCatalog.FindKind(e.Kind).Display).Distinct())}）"
@@ -1560,18 +1585,26 @@ public static class ProfileValidator
                 + "（中毒 / 失去生命这类穿盾伤害照旧打在主人身上）。"));
 
         // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）
+        // 第 10 批：遗物能挂多条触发时机 → 每条时机的效果都要看（只看第 1 条会漏报）
         bool anyCardOrRelicSummons = p.AllCards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
-            || p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet"));
+            || p.Relics.Any(r => r.Triggers.Any(t => t is not null && t.Effects.Any(e => e.Kind == "SummonPet")));
         if (!anyCardOrRelicSummons)
             issues.Add(new("提示", $"召唤物已启用（{enabled.Count} 只），但没有任何卡牌 / 遗物在「召唤」它们"
                 + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」）—— 游戏里永远不会上场。"));
-        if (p.Relics.Any(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger)))
-            issues.Add(new("警告", "有遗物在「" + string.Join(" / ", p.Relics
-                    .Where(r => r.Effects.Any(e => e.Kind == "SummonPet") && RelicTriggerLacksContext(r.Trigger))
-                    .Select(r => r.Name)) + "」上配了「召唤伙伴」，但那个触发时机的本体钩子拿不到 choiceContext"
+        var summonRelicsWithoutCtx = p.Relics
+            .Where(r => r.Triggers.Any(t => t is not null && t.Effects.Any(e => e.Kind == "SummonPet")
+                                            && RelicTriggerLacksContext(t.Kind)))
+            .ToList();
+        if (summonRelicsWithoutCtx.Count > 0)
+            issues.Add(new("警告", "有遗物在「" + string.Join(" / ", summonRelicsWithoutCtx.Select(r => r.Name)) + "」上配了「召唤伙伴」，"
+                + "但那个触发时机的本体钩子拿不到 choiceContext"
                 + "（只有「战斗开始时 / 每回合开始时 / 每回合结束时 / 受到伤害时」有）→ 生成时会被忽略。"
                 + "想要「战斗开始时召唤伙伴」，请把触发时机改成「战斗开始时」。"));
     }
+
+    /// <summary>触发时机的显示名（错误信息里用；认不出来就退回 id）。</summary>
+    private static string RelicTriggerName(string kind) =>
+        EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == kind)?.Display ?? kind;
 
     /// <summary>这个遗物触发时机的本体钩子有没有 choiceContext（没有的话召唤伙伴实现不了）。</summary>
     private static bool RelicTriggerLacksContext(string? trigger) =>

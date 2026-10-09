@@ -1140,54 +1140,12 @@
                             <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
                             <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding RelicRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
-                            <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
-                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
-                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Trigger}"/>
-                            <!-- 「只对哪类牌生效」（用户要求，第 9 批 ④：遗物侧和状态侧同步）：
-                                 只在触发时机 =「打出一张牌后」时显示；候选和状态页是同一份（含关键词组 / 组）。 -->
-                            <StackPanel Visibility="{Binding ShowTriggerCardFilterField, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="只对哪类牌生效" Style="{StaticResource Label}"/>
-                                <ComboBox Style="{StaticResource Pick}"
-                                          ItemsSource="{Binding CardFilterOptions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          DisplayMemberPath="Display" SelectedValuePath="Id"
-                                          SelectedValue="{Binding TriggerCardFilter}"
-                                          ToolTip="任意 / 攻击 / 技能 / 能力 / 诅咒 / 状态，以及你自己配的「自定义关键词」与「组」那一组牌（和状态页同一份候选）。&#10;只有「打出一张牌后」用得到。"/>
-                                <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,4,0,0"
-                                           Text="「任意」= 不过滤（老行为）；选了别的就只对这类牌生效（游戏里的遗物描述也会写出来）。"/>
-                            </StackPanel>
-                            <!-- 触发时机「某个状态层数到达 N 层时」（用户要求）：只在选它时显示这两行 -->
-                            <StackPanel Visibility="{Binding ShowTriggerPowerFields, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="盯哪个状态（留空 = 任意状态）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                <local:SearchComboBox SearchPath="Display"
-                                                      ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      SelectedValuePath="Id" SelectedValue="{Binding TriggerPowerId, Mode=TwoWay}"
-                                                      ToolTip="只在自己身上这个状态的层数**跨过** N 层那一下触发。留空 = 任何状态的层数变化都触发（可以再用效果自己的条件去筛）。直接打字搜索。">
-                                    <local:SearchComboBox.ItemTemplate>
-                                        <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
-                                    </local:SearchComboBox.ItemTemplate>
-                                </local:SearchComboBox>
-                                <TextBlock Text="到达 N 层" Style="{StaticResource Label}"/>
-                                <TextBox Style="{StaticResource Field}" Text="{Binding TriggerAmount, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="层数**跨过**这个数的那一下触发：之前不到 N、变化后到了 N 或更多（已经是 N 层再加一层不会重复触发）。"/>
-                                <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,4,0,0"
-                                           Text="{Binding TriggerHint}"/>
-                            </StackPanel>
-                            <!-- 触发时机上的数值（用户要求）：按时机换含义 ——
-                                 花掉能量/资源量 = 每 N 点；打牌/消耗/弃掉/抽到/生成 = 每 N 次（可切本回合/本场战斗）；
-                                 受到·造成伤害 / 失去生命 / 获得格挡 = 数值 ≥ N 才触发。 -->
-                            <StackPanel Visibility="{Binding ShowTriggerAmountField, Converter={StaticResource BoolToVis}}">
-                                <TextBlock Text="{Binding TriggerAmountLabel}" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                <TextBox Style="{StaticResource Field}" Text="{Binding TriggerAmount, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="留空或填 0 = 老行为（每次都触发 / 每 1 点）；填 N = 见下面那句说明。"/>
-                                <StackPanel Visibility="{Binding ShowTriggerScopeField, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock Text="统计范围" Style="{StaticResource Label}"/>
-                                    <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
-                                              DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding TriggerScope}"
-                                              ToolTip="本回合 = 每个回合重新计数；本场战斗 = 整场战斗累计（换战斗重新算）。"/>
-                                </StackPanel>
-                                <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,4,0,0"
-                                           Text="{Binding TriggerSpendHint}"/>
-                            </StackPanel>
+                            <!-- 第 10 批（用户要求）：「触发时机」不在这里单选了 —— 移到右边新加的
+                                 「触发时机列表」里（每条时机各自配自己的触发时机 / 盯哪个状态 / 数值 /
+                                 只对哪类牌生效 / 效果），还能勾「要和其他时机同时成立」。
+                                 两处都能改会看起来像 bug，所以属性区只留名称 / 类名 / 稀有度 / 图标 / 两个勾选。 -->
+                            <TextBlock TextWrapping="Wrap" Margin="6,8,0,0" Foreground="#888" FontSize="11"
+                                       Text="触发时机（可以有**好几条**，每条各自配效果）在右边那栏「触发时机列表」里改；想让几条时机都成立才触发，就在那儿勾「要和其他时机同时成立」。"/>
                             <CheckBox Content="作为初始遗物" Style="{StaticResource Check}" IsChecked="{Binding IsStartingRelic}"/>
                             <CheckBox Content="加入遗物池（宝箱/精英/商店）" Style="{StaticResource Check}" IsChecked="{Binding InRelicPool}"/>
                             <Button Content="上传遗物图标…（建议 256×256 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickRelicIcon"/>
@@ -1206,11 +1164,101 @@
                                         IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
                             </WrapPanel>
                             <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                <ListBox x:Name="RelicEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"/>
-                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
-                                        DataContext="{Binding SelectedItem, ElementName=RelicEffectList}">
-                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlain}"/>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="160"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="8"/><RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+
+                                <!-- ========== 触发时机列表（第 10 批，用户要求）==========
+                                     一只遗物可以挂**好几条**触发时机，每条各自配自己的效果；
+                                     勾「要和其他时机同时成立」= 那几条都在同一个窗口里成立过才触发。 -->
+                                <TextBlock Grid.Row="0" Text="触发时机列表（可以加好几条，每条各自配效果）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <Grid Grid.Row="1">
+                                    <Grid.RowDefinitions><RowDefinition Height="110"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                                    <ListBox x:Name="RelicTriggerList" Grid.Row="0"
+                                             SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                             ItemsSource="{Binding Triggers}" DisplayMemberPath="Summary"
+                                             SelectionChanged="OnRelicTriggerSelectionChanged"/>
+                                    <WrapPanel Grid.Row="1" Margin="0,6,0,0">
+                                        <Button Content="添加触发时机" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelicTrigger"/>
+                                        <Button Content="删除触发时机" Padding="8,4" Click="OnRemoveRelicTrigger"/>
+                                        <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#888" TextWrapping="Wrap"
+                                                   Text="例：「每回合开始时 → 获得格挡」+「打出一张牌后 → 造成伤害」两条可以同时挂着"/>
+                                    </WrapPanel>
+                                </Grid>
+
+                                <!-- 遗物效果列表：绑的是**当前选中的那条时机**的效果
+                                     （见 MainWindow.xaml.cs 的 OnRelicTriggerSelectionChanged）。
+                                     每条效果直接在列表里编辑（第 10 批改成 ItemTemplate ——
+                                     原来「列表 + 下面单独一个 ContentControl」那套要用
+                                     RelicEffectList.DataContext 才能绑上，而那个 DataContext 是遗物、
+                                     不是那条时机；效果一进列表就没法编辑了）。 -->
+                                <ListBox x:Name="RelicEffectList" Grid.Row="2"
+                                         SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                         ItemsSource="{Binding SelectedItem.Effects, ElementName=RelicTriggerList}"
+                                         DisplayMemberPath="{x:Null}"
+                                         ItemTemplate="{StaticResource EffectEditorPlain}"/>
+                                <Border Grid.Row="4" BorderBrush="#DDD" BorderThickness="1" Padding="8"
+                                        DataContext="{Binding SelectedItem, ElementName=RelicTriggerList}">
+                                    <StackPanel>
+                                        <TextBlock Text="选中的这条触发时机" FontWeight="Bold"/>
+                                        <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
+                                        <ComboBox Style="{StaticResource Pick}"
+                                                  ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Kind}"/>
+                                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                                   Text="{Binding Hint}"/>
+                                        <!-- 「只对哪类牌生效」（第 9 批 ④：遗物侧和状态侧同步）：只在「打出一张牌后」显示 -->
+                                        <StackPanel Visibility="{Binding ShowCardFilterField, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="只对哪类牌生效" Style="{StaticResource Label}"/>
+                                            <ComboBox Style="{StaticResource Pick}"
+                                                      ItemsSource="{Binding CardFilterOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                      SelectedValue="{Binding CardFilter}"
+                                                      ToolTip="任意 / 攻击 / 技能 / 能力 / 诅咒 / 状态，以及你自己配的「自定义关键词」与「组」那一组牌（和状态页同一份候选）。&#10;只有「打出一张牌后」用得到。"/>
+                                        </StackPanel>
+                                        <!-- 「某个状态层数到达 N 层 / 变化 / 被移除」：盯哪个状态 -->
+                                        <StackPanel Visibility="{Binding ShowPowerFields, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="盯哪个状态（留空 = 任意状态）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                            <local:SearchComboBox SearchPath="Display"
+                                                                  ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                                  SelectedValuePath="Id" SelectedValue="{Binding PowerId, Mode=TwoWay}"
+                                                                  ToolTip="只盯自己身上这个状态；留空 = 任何状态都算。直接打字搜索。">
+                                                <local:SearchComboBox.ItemTemplate>
+                                                    <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                                </local:SearchComboBox.ItemTemplate>
+                                            </local:SearchComboBox>
+                                        </StackPanel>
+                                        <!-- 触发时机上的数值（按时机换含义：每 N 次 / 每 N 点 / 数值 ≥ N / 到达 N 层） -->
+                                        <StackPanel Visibility="{Binding ShowAmountField, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="{Binding AmountLabel}" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                            <TextBox Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <StackPanel Visibility="{Binding ShowScopeField, Converter={StaticResource BoolToVis}}">
+                                                <TextBlock Text="统计范围" Style="{StaticResource Label}"/>
+                                                <ComboBox Style="{StaticResource Pick}"
+                                                          ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Scope}"
+                                                          ToolTip="本回合 = 每个回合重新计数；本场战斗 = 整场战斗累计（换战斗重新算）。"/>
+                                            </StackPanel>
+                                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                                       Text="{Binding SpendHint}"/>
+                                        </StackPanel>
+                                        <!-- 「要和其他时机同时成立」（和「自定义状态」页同一套语义） -->
+                                        <CheckBox Margin="0,8,0,0" Content="要和其他时机同时成立（都成立才触发）"
+                                                  IsChecked="{Binding RequireAllTriggers}"
+                                                  ToolTip="勾上 = 这条时机要和**同一只遗物上别的也勾了它的时机**都在同一个窗口里成立过，才会触发（最后凑齐的那条跑它自己的效果）。&#10;⚠ 只有 1 条勾了 = 凑不齐，那条设置不生效（生成前的检查会给提示）。"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                                    Visibility="{Binding ShowAndScope, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="重置范围" VerticalAlignment="Center"/>
+                                            <ComboBox Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"
+                                                      ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                      SelectedValue="{Binding AndScope}"
+                                                      ToolTip="本回合 = 每个回合重新凑一次（默认）；本场战斗 = 整场战斗里凑齐一次就够。"/>
+                                        </StackPanel>
+                                    </StackPanel>
                                 </Border>
 
                                 <!-- 条件选项：整只遗物的触发条件（不满足时整个遗物不触发）；每条效果自己的条件在效果栏里 -->

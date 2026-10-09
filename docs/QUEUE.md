@@ -1,5 +1,11 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 10 批需求（用户 2026-10-09 提，一条一版）
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | 「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，并且可以添加多个触发时机」 | 用户已选：**每条时机各自配自己的效果** + **也要能勾「要和其他时机同时成立」**（都和「自定义状态」页同一套）。做法：`RelicTriggerSpec`（Kind / PowerId / Amount / Scope / CardFilter / RequireAllTriggers / Effects + 界面派生属性）+ `RelicSpec.Triggers` 列表（`First` 按需造一条；`Trigger` / `Effects` / `TriggerPowerId` / `TriggerAmount` / `TriggerScope` / `TriggerCardFilter` 全变成**第 1 条时机的代理** → 老存档逐字不变）；生成端**按钩子分组**（同一钩子多条时机放进一个 override，各自包守卫，避免 CS0111）+ 同时成立标记；回读扫类里所有钩子各成一条时机；校验器 / 描述文案 / 图标收集都遍历所有时机；遗物页照「自定义状态」页那套加时机列表 + 编辑器 | ⏳已实现待发版（`_tmp\relicmulti` 55/0、`_tmp\relicmulti_cli` 真 build 0 错误 + 回读 0「没认出来」、`--uicheck` 2776/0 FAIL） |
+
 ## 第 9 批需求（用户 2025 一次列 4 条）
 
 | # | 需求 | 做法要点 | 状态 |

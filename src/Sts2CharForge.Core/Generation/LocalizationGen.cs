@@ -412,18 +412,24 @@ public static class LocalizationGen
             var r = p.Relics[i];
             string entry = Naming.EntryOf(n.RelicClassName(r, i));
             dict[$"{entry}.title"] = r.Name;
-            if (NeedsSelectPrompt(r.Effects))
-                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(r.Effects);
+            // 第 10 批：遗物能挂多条触发时机 → 选牌提示文案要看**全部**时机的效果
+            var relicAllEffects = r.Triggers.Where(t => t is not null)
+                .SelectMany(t => t.Effects).Where(e => e is not null).ToList();
+            if (NeedsSelectPrompt(relicAllEffects))
+                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(relicAllEffects);
             // 遗物自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
-            string relicBody = Describe(r.Effects, p);
-            // 「只对哪类牌生效」（用户要求，第 9 批 ④）：筛选不是「任意」时，把「只对哪类牌」写在描述最前面 ——
-            // 不写的话玩家在游戏里只看得到效果，看不出它只对某类牌生效。
-            // 默认（任意）**一个字都不加**：老存档的遗物描述逐字不变。
-            if (r.Trigger == "CardPlayed" && !string.Equals(r.TriggerCardFilter, "Any", StringComparison.Ordinal))
-            {
-                string relicWhen = $"打出一张牌后（只对{PowerTriggers.CardFilterZh(r.TriggerCardFilter)}牌生效）：";
-                relicBody = relicBody.Length > 0 ? relicWhen + "\n" + relicBody : relicWhen;
-            }
+            // 第 10 批：遗物能挂**多条触发时机**，每条各自配效果 —— 那种情况下把所有时机的效果
+            // 都写进描述，每段前面写清是哪个时机（例：「每回合开始时：获得 3 点格挡。」）。
+            // **一条时机时逐字不变**（老存档的遗物描述一个字符都不动）。
+            var relicTriggerList = r.Triggers.Where(t => t is not null).ToList();
+            string relicBody = relicTriggerList.Count > 1
+                ? string.Join("\n", relicTriggerList.Select(t =>
+                {
+                    string one = RelicTriggerBody(t, p, prefixWhen: false);
+                    return one.Length == 0 ? "" : RelicTriggerHeading(t) + "：" + one;
+                }).Where(s => s.Length > 0))
+                // 单条时机：**逐字**用老写法（筛选那句「打出一张牌后（只对X牌生效）：」拼在最前面）
+                : RelicTriggerBody(r.First, p, prefixWhen: true);
             relicBody += ConditionSuffix(r.Condition, isCard: false, p);
             string relicCustom = (r.CustomDescription ?? "").Trim();
             if (relicCustom.Length > 0)
@@ -435,7 +441,8 @@ public static class LocalizationGen
         }
         // 「转化为先古卡」的预览界面顶部那行说明（本体 NSimpleCardsViewScreen 的 infoText）。
         // 所有用到这个效果的遗物共用一条键 —— 文案是固定的，没必要每只遗物各写一份。
-        if (p.Relics.Any(r => r is not null && r.Effects.Any(e => e.Kind == "AncientTranscend")))
+        if (p.Relics.Any(r => r is not null
+                && r.Triggers.Any(t => t is not null && t.Effects.Any(e => e.Kind == "AncientTranscend"))))
             dict[CSharpCodeGen.AncientPreviewLocKey] = "这些牌被转化成了先古版本。";
         // 额外资源量的载体遗物也要有名字，否则遗物栏里会显示成缺键
         if (p.ExtraResource.Enabled)
@@ -450,6 +457,41 @@ public static class LocalizationGen
             dict[$"{entry}.flavor"] = RenameResource("由 Sts2CharForge 生成的隐藏起始遗物，用来承载额外资源量。", p);
         }
         return LocJson(dict);
+    }
+
+    /// <summary>
+    /// 一条**遗物触发时机**的效果描述（第 10 批：每条时机各自一段）。
+    ///
+    /// 「只对哪类牌生效」（第 9 批 ④）的说明就拼在这一段里 —— 筛选不是「任意」时把
+    /// 「打出一张牌后（只对X牌生效）：」写在效果最前面（不写的话玩家在游戏里只看得到效果，
+    /// 看不出它只对某类牌生效）。默认（任意）**一个字都不加**：老存档的遗物描述逐字不变。
+    ///
+    /// <paramref name="prefixWhen"/>：
+    ///   · true（**单条时机**那一档）→ 现在就把那句拼上（逐字保留老写法）；
+    ///   · false（多条时机）→ 不在这里拼 —— 段首已经有「打出一张牌后（…）：」，再拼一次
+    ///     就成了「打出一张牌后（…）：打出一张牌后（只对攻击牌生效）：」（实测读起来像 bug）。
+    /// </summary>
+    private static string RelicTriggerBody(RelicTriggerSpec t, CharacterProfile p, bool prefixWhen = true)
+    {
+        string body = Describe(t.Effects, p);
+        bool filtered = string.Equals(t.Kind, "CardPlayed", StringComparison.Ordinal)
+            && !string.Equals(t.CardFilter, "Any", StringComparison.Ordinal);
+        if (!filtered) return body;
+        string when = $"打出一张牌后（只对{PowerTriggers.CardFilterZh(t.CardFilter)}牌生效）：";
+        return prefixWhen ? (body.Length > 0 ? when + "\n" + body : when) : body;
+    }
+
+    /// <summary>
+    /// 多条时机时，每段前面那句「哪个时机」（用触发时机的显示名，勾了「同时成立」也标出来）。
+    /// 「打出一张牌后」还带筛选时，把「只对X牌生效」并进这一句里（不另起一句，见 RelicTriggerBody）。
+    /// </summary>
+    private static string RelicTriggerHeading(RelicTriggerSpec t)
+    {
+        string when = EffectCatalog.RelicTriggers.FirstOrDefault(x => x.Id == t.Kind)?.Display ?? t.Kind;
+        if (string.Equals(t.Kind, "CardPlayed", StringComparison.Ordinal)
+            && !string.Equals(t.CardFilter, "Any", StringComparison.Ordinal))
+            when += $"（只对{PowerTriggers.CardFilterZh(t.CardFilter)}牌生效）";
+        return t.RequireAllTriggers ? when + "（要和其他时机同时成立）" : when;
     }
 
     /// <summary>

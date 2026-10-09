@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -1704,7 +1705,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     public static IEnumerable<EffectSpec> AllEffects(CharacterProfile p) =>
         p.AllCards.SelectMany(c => c.Effects)
-            .Concat(p.Relics.SelectMany(r => r.Effects))
+            // 第 10 批：遗物能挂多条触发时机 → 每条时机的效果都要收（只收第 1 条会漏掉后面那几条时机
+            // 用到的「用到才生成」的东西：伙伴类 / 战斗计数器 / PowerRemoval 补丁…）
+            .Concat(p.Relics.SelectMany(RelicEffects))
             .Concat(p.Potions.SelectMany(s => s.Effects))
             .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects));
 
@@ -2615,8 +2618,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             var r = p.Relics[i];
             if (r is null) continue;
-            // 遗物**自己**的触发时机是「某个状态被移除时」
-            if (string.Equals(r.Trigger, "PowerRemoved", StringComparison.Ordinal)) { yield return (r, i); continue; }
+            // 遗物**自己**的触发时机里（第 10 批：可能有好几条）有「某个状态被移除时」
+            if (r.Triggers.Any(t => t is not null && string.Equals(t.Kind, "PowerRemoved", StringComparison.Ordinal)))
+            { yield return (r, i); continue; }
             // 或者它的**锻造节点图**挑了这条时机（第 9 批 ④ 后半段把这条时机补进锻造页的菜单）——
             // 那种图和遗物自己的触发时机是两个钩子，图会生成一个 `OnForgePowerRemovedAsync` 普通方法
             //（见 RelicTriggerSignature）；补丁里不把这个类列进来的话，那个方法永远不会被调用
@@ -2821,7 +2825,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>这份存档有没有用到「敌人死亡计数」（用到才生成那个小运行时）。</summary>
     public static bool UsesEnemyDeathCounter(CharacterProfile p) =>
-        p.Relics.Any(r => r is not null && r.Trigger == "EnemyDeath" && r.TriggerAmount > 0m)
+        // 第 10 批：遗物有多条触发时机 → 每一条都要看（只看第 1 条会漏掉「第 2 条是每 N 个敌人死亡」
+        // 那种存档，生成出来会 CS0103「找不到 ForgeCombatCounters」）
+        p.Relics.Any(r => r is not null && r.Triggers.Any(t => t is not null
+            && t.Kind == "EnemyDeath" && t.Amount > 0m))
         || p.CustomPowers.Any(cp => cp is not null && cp.Triggers.Any(t => t is not null
             && Effects.PowerTriggers.Canonical(t.Kind) == "EnemyDeath" && t.TriggerAmount > 0m));
 
@@ -4397,7 +4404,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         foreach (var r in p.Relics)
         {
             if (Hit(r.Condition)) return true;
-            if (r.Effects.Any(e => Hit(e.Condition))) return true;
+            if (RelicEffects(r).Any(e => Hit(e.Condition))) return true;
         }
         foreach (var s in p.Potions)
             if (s.Effects.Any(e => Hit(e.Condition))) return true;
@@ -6058,7 +6065,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 string s = item.Trim();
                 if (s.Length == 0) continue;
                 // 1) 起了名字的（new DynamicVar("PetHp", 0m) / new BlockVar("PetSacrificeBlock", 6m, …)）
-                var named = System.Text.RegularExpressions.Regex.Match(s, "\"([^\"]+)\"");
+                //    ⚠ 只认「构造函数**第一个参数**就是字符串」的写法。以前是「这一项里随便哪个字符串都算」，
+                //    而「数值公式」的 lambda 里会写状态的类名（例：`ForgeFormulaRuntime.PowerAmount(…, "StellePower4")`）
+                //    → 自检把变量名认成了状态的类名，于是误报「Damage / Block 没有声明」把生成整个拦住
+                //    （用户实测：公式里引用了自定义状态层数的那几张卡全中招）。
+                var named = System.Text.RegularExpressions.Regex.Match(s, @"^new\s+[A-Za-z0-9_<>,\.\s]+\(\s*""([^""]+)""");
                 if (named.Success) { declared.Add(named.Groups[1].Value); continue; }
                 // 2) 没起名字的：按变量类型的默认键名（和本体一致）
                 var ty = System.Text.RegularExpressions.Regex.Match(s, @"new\s+([A-Za-z0-9_]+)");
@@ -7762,8 +7773,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     // ==================== 遗物 ====================
+
+    /// <summary>
+    /// 这只遗物**所有触发时机**的效果（按时机顺序摊平）。
+    ///
+    /// 第 10 批起一条遗物能挂多条触发时机，每条各自配效果 —— 生成端的「动态变量声明 / 悬停提示 /
+    /// 概率掷骰 / 先古预览 / 条件」这些**是按整只遗物算**的东西必须看全部时机的效果，
+    /// 只读 <c>r.Effects</c>（= 第 1 条时机）会把第 2 条时机上的效果漏掉。
+    /// 一条时机的老存档结果和以前逐字一致（就那一条）。
+    /// </summary>
+    private static IEnumerable<EffectSpec> RelicEffects(RelicSpec r) =>
+        r.Triggers.Where(t => t is not null).SelectMany(t => t.Effects).Where(e => e is not null);
+
     public static string RelicSource(CharacterProfile p, RelicSpec r, int index)
     {
+        // ===== 第 10 批：一只遗物可以挂**多条触发时机**（每条各自配自己的效果）=====
+        // 只有一条时机时**完全走下面那条老路径**（一个字符都不变 —— 老存档的回归红线）；
+        // 两条以上才走 EmitRelicMultiTriggerHook（按「钩子」分组，同一条钩子只生成一个 override）。
+        if (r.Triggers.Count(t => t is not null) > 1)
+            return EmitRelicMultiTriggerHook(p, r, index);
+
         var n = Naming.From(p);
         string cls = n.RelicClassName(r, index);
         var trigger = EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == r.Trigger) ?? EffectCatalog.RelicTriggers[0];
@@ -7793,16 +7822,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line()
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
-        var relicVars = VarNamesOf(r.Effects);
-        foreach (var e in r.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars, p)},");
+        // 第 10 批：动态变量要覆盖**所有触发时机**的效果（只看 r.Effects = 第 1 条时机会漏掉后面的）
+        var relicAllEffects = RelicEffects(r).ToList();
+        var relicVars = VarNamesOf(relicAllEffects);
+        foreach (var e in relicAllEffects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars, p)},");
         w.Line("];");
 
         // 鼠标悬停遗物描述里的状态 → 弹出那条说明（自定义状态 / 被改写的本体状态都有）
-        w.Raw(HoverTipsOverride(r.Effects, isPublic: false, owner: p));
+        w.Raw(HoverTipsOverride(relicAllEffects, isPublic: false, owner: p));
 
         // 条件选项：「每场战斗只触发一次」需要一个标记（本体「百年积木」的做法）
         bool hasCond = r.Condition is not null && !r.Condition.IsNone;
-        var relicEffectConds = r.Effects.Where(x => x.Condition is not null && !x.Condition.IsNone).ToList();
+        var relicEffectConds = relicAllEffects.Where(x => x.Condition is not null && !x.Condition.IsNone).ToList();
         bool oncePerCombat = (hasCond && r.Condition.Kind == "OncePerCombat")
                              || relicEffectConds.Any(x => x.Condition.Kind == "OncePerCombat");
         string condExpr = hasCond ? ConditionExpr(r.Condition, CondCtx.Relic) : "true";
@@ -7825,151 +7856,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (trigger.Id == "PowerRemoved")
             w.Line($"// CET:PowerWatch={Lit.Identifier(r.TriggerPowerId ?? "", "")}");
 
-        switch (trigger.Id)
-        {
-            case "CombatStart":
-                w.Line("// 只在本次战斗自己的第一个回合开始前触发一次");
-                w.Line("if (!participants.Contains(base.Owner.Creature) || base.Owner.PlayerCombatState.TurnNumber > 1) return;");
-                break;
-            case "PlayerTurnStart":
-                w.Line("if (player != base.Owner) return;");
-                break;
-            case "PlayerTurnEnd":
-                w.Line("if (side != base.Owner.Creature.Side) return;");
-                break;
-            case "DamageReceived":
-                w.Line("if (target != base.Owner.Creature) return;");
-                // 本体「原体黏土 SelfFormingClay / 残存之心 BeatingRemnant」都是这么判的：
-                // 全被格挡（或 0 伤害）的那一下不算「受到伤害」。（每一下都会进这个钩子 —— 连击就是多次触发）
-                w.Line("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
-                break;
-            // 「受到攻击后」：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次
-            //（AbstractModel.AfterAttack 的注释就是这么写的）—— 所以连击只算一次。
-            // 判据：这一次攻击的命中结果里，有没有真的打到「我」身上的伤害。
-            case "Attacked":
-                w.Line("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
-                w.Line("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner.Creature).Sum(r => r.UnblockedDamage);");
-                w.Line("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
-                break;
-            case "GoldGained":
-                w.Line("if (player != base.Owner) return;");
-                break;
-            // 造成伤害时（每一下）：只认自己造成的伤害。**不判「有没有真的打穿格挡」**——
-            // 和自定义状态那条「自己造成伤害后」口径一致（本体 AfterDamageGiven 是每一下命中都调）。
-            case "DamageDealt":
-                w.Line("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
-                break;
-            // 每消耗一个能量：本体这条钩子**0 费也会调**（本体源码里 amount > 0 只包住历史记录 / 扣能量，
-            // 钩子调用在外面），所以必须自己挡掉 amount <= 0；「是谁花的」只能从 card.Owner 认
-            // （本体 EnvenomPower / OrbitPower 都是这么判的）—— 不判的话联机时别人打牌也会触发你的遗物。
-            case "EnergySpent":
-                w.Line("if (amount <= 0 || card?.Owner?.Creature != base.Owner.Creature) return;   // 只认「我方角色花的能量」（0 费不算）");
-                break;
-            // 每消耗一个额外资源量：同上（本体这条钩子带 spender，直接比 Player）
-            case "StarsSpent":
-                w.Line("if (amount <= 0 || spender != base.Owner) return;   // 只认「我方角色花的额外资源量」");
-                break;
-            // 生成卡牌时：本体注释写明「只算玩家自己生成的那几张」（敌人塞给你的状态牌不算），
-            // 而且 creator 可能为 null（本体自己的写法就是判 null）。
-            case "CardGenerated":
-                w.Line("if (creator is null || creator != base.Owner) return;   // 只认「我方角色主动生成」的牌");
-                break;
-            // 某个状态层数到达 N 层时（用户要求）：本体 AfterPowerAmountChanged 任何单位的状态层数一变就会调
-            //（而且是**每层一次** —— 上 3 层会连着调 3 次），所以这里判三件事：
-            //   ① 是自己身上的状态（遗物的 Owner 是 Player，所以比 base.Owner.Creature）；
-            //   ② 是不是你盯的那个状态（留空 = 任何状态都算）；
-            //   ③ 这一次变化**跨过**了 N 层（之前不到 N、变化后到了 N 或更多）——
-            //      power.Amount 是变化后的层数，amount 是这一次的增量，所以「之前」= power.Amount - amount。
-            case "PowerReached":
-                w.Line("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
-                if (!string.IsNullOrWhiteSpace(r.TriggerPowerId))
-                    w.Line($"if (power is not {Lit.Identifier(r.TriggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(r.TriggerPowerId, r.TriggerPowerId)}」");
-                w.Line($"if (!(power.Amount >= {Lit.Dec(Math.Max(0m, r.TriggerAmount))} && power.Amount - amount < {Lit.Dec(Math.Max(0m, r.TriggerAmount))})) return;"
-                     + $"   // 只有「层数跨过 {Math.Max(0m, r.TriggerAmount):0.##}」那一下才触发");
-                break;
-            // 某个状态层数变化时（升或降都触发）：同一个钩子，只是不判「跨过 N」那一条
-            //（用户要求「两边触发时机一致」，所以状态那边有的这一条遗物也有）
-            case "PowerChanged":
-                w.Line("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
-                if (!string.IsNullOrWhiteSpace(r.TriggerPowerId))
-                    w.Line($"if (power is not {Lit.Identifier(r.TriggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(r.TriggerPowerId, r.TriggerPowerId)}」");
-                break;
-            // 「某个状态被移除时」（用户要求）：走工具自己打的补丁（见 PowerRemovalSource）——
-            // 补丁会把「谁身上哪个状态被移除了」传进来，这里只做归属 + 盯哪个状态的过滤。
-            case "PowerRemoved":
-                w.Line("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
-                if (!string.IsNullOrWhiteSpace(r.TriggerPowerId))
-                    w.Line($"if (power is not {Lit.Identifier(r.TriggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(r.TriggerPowerId, r.TriggerPowerId)}」");
-                break;
-            // ===== 用户要求「遗物 / 状态触发时机合并成同一套」后补上的这批 =====
-            // 守卫都按**遗物**的归属判据写（状态那条链的 base.Owner 是 Creature，遗物这边是 Player →
-            // 一律比 base.Owner.Creature），本体给的钩子签名两边完全一样。
-            case "CardPlayed":
-                // 本体 AfterCardPlayed：任意一方打出牌都会调 → 只认「自己打的」
-                w.Line("if (cardPlay.Player != base.Owner) return;   // 只认自己打出的牌");
-                // 「只对哪类牌生效」（用户要求：遗物侧也要有范围，和状态侧同一套 —— 第 9 批 ④）：
-                // 老四档（攻击 / 技能 / 能力）生成的判据和状态侧**逐字同款**；新增的
-                // 诅咒 / 状态 / 关键词组 / 组 走卡牌那边同一套「范围界定」谓词（见 ScopeCondForFilter），
-                // 并写一行 `// CET:CardFilter=` 供回读（守卫语句以后改写法也不丢配置）。
-                if (!string.Equals(r.TriggerCardFilter, "Any", StringComparison.Ordinal))
-                {
-                    if (r.TriggerCardFilter is "Attack" or "Skill" or "Power")
-                    {
-                        w.Line($"if (cardPlay.Card.Type != CardType.{r.TriggerCardFilter}) return;"
-                             + $"   // 只对「{PowerTriggers.CardFilterZh(r.TriggerCardFilter)}」牌生效");
-                    }
-                    else
-                    {
-                        w.Line("// CET:CardFilter=" + r.TriggerCardFilter);
-                        string? relicFilterCond = ScopeCondForFilter(r.TriggerCardFilter, p);
-                        // 认不出来的筛选值：不乱猜、不筛（校验器会报错说清），但标记照旧写出来，回读不丢配置
-                        if (relicFilterCond is not null)
-                            w.Line($"if (!({relicFilterCond.Replace("c.", "cardPlay.Card.")})) return;"
-                                 + $"   // 只对「{PowerTriggers.CardFilterZh(r.TriggerCardFilter)}」生效");
-                    }
-                }
-                break;
-            case "CardExhausted":
-                w.Line("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己被消耗的牌");
-                break;
-            case "CardDrawn":
-                w.Line("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己抽到的牌");
-                break;
-            case "CardDiscarded":
-                w.Line("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己被弃掉的牌");
-                break;
-            case "HpLost":
-                // 本体 AfterCurrentHpChanged：delta 为正是回血，只有 delta < 0 才算「失去生命」
-                w.Line("if (creature != base.Owner.Creature) return;   // 只认自己掉血");
-                w.Line("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
-                break;
-            case "BlockGained":
-                w.Line("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
-                break;
-            case "EnemyDeath":
-                w.Line("if (!creature.IsEnemy) return;   // 只认敌人死亡（自己人死了不算）");
-                break;
-            case "EnemyTurnStart":
-                w.Line("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
-                break;
-            case "EnemyTurnEnd":
-                w.Line("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
-                break;
-            case "EnemyDamaged":
-                w.Line("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
-                break;
-            case "EnemyDealtDamage":
-                w.Line("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
-                break;
-            case "EnemyBlockGained":
-                w.Line("if (creature == base.Owner.Creature) return;   // 拿格挡的是敌人（自己不算）");
-                break;
-            // 洗牌：只看**自己**的抽牌堆被洗（本体 BiiigHug / TheAbacus 都是这个判法）。
-            // 条件「本回合 / 本场战斗洗过牌」不靠这里记 —— 那是 ShuffleTracker 的补丁负责的（用到才生成）。
-            case "Shuffle":
-                w.Line("if (shuffler != base.Owner) return;");
-                break;
-        }
+        // 守卫那一大段 switch 抽成了 RelicTriggerGuardLines（下面那个方法）——**文本一个字都没动**：
+        // 单条时机这条路径仍然把它们原样写进方法体（return 式守卫），红线（逐字不变）不受影响；
+        // 多条时机那条路径用同一份行文本改写成 if 块（见 EmitRelicMultiTriggerHook）。
+        foreach (string guardLine in RelicTriggerGuardLines(trigger.Id, r.TriggerPowerId, r.TriggerAmount, r.TriggerCardFilter, p))
+            w.Line(guardLine);
 
         // 触发时机上的数值（用户要求：遗物 / 状态两边都要有）：
         //   计数族（打牌 / 消耗 / 弃掉 / 抽到 / 生成）→ 每累计 N 次触发一次（本回合 / 本场战斗）；
@@ -8009,63 +7900,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (r.Condition.Kind == "OncePerCombat") w.Line("_condUsedThisCombat = true;");
         }
 
-        if (r.Effects.Count > 0) w.Line();
-        // 「每消耗一个能量 / 每消耗一个额外资源量」：本体那个 amount 是**这一张牌一共花的**点数，
-        // 所以整段效果按点数各跑一次（本体 OrbitPower 也是按点数累加的）。掷骰留在循环外面 ——
-        // 一次触发只掷一次，和「同一只遗物这一次触发共用一次掷骰」那条规矩一致。
-        bool perPoint = PerPointTrigger(trigger.Id);
-        // 「花掉 N 点」的数值（用户要求）：填了 N 就按「每累计花掉 N 点触发一次」筛，范围 = 本回合 / 本场战斗
-        bool spendThreshold = perPoint && r.TriggerAmount > 0m;
-        if (perPoint)
-        {
-            if (spendThreshold)
-            {
-                w.Line($"// 数值：每累计花掉 {r.TriggerAmount:0.##} 点触发一次（范围：{(r.TriggerScope == "Combat" ? "本场战斗" : "本回合")}）");
-                w.Line(SpendBeforeLine(trigger.Id, r.TriggerScope, "base.Owner.Creature", "base.Owner.Creature.CombatState"));
-            }
-            w.Line($"// 这个钩子的 amount 是「这一张牌一共花的」点数 → 下面的效果按点数各触发一次（{trigger.Display}）");
-            w.Open($"for (int __{trigger.Id}Idx = 0; __{trigger.Id}Idx < amount; __{trigger.Id}Idx++)");
-            if (spendThreshold)
-                w.Line(SpendTickLine(r.TriggerAmount, $"__{trigger.Id}Idx", "__spentBefore"));
-        }
-        // 概率生效：这只遗物这一次触发里，所有勾了概率的效果共用一次掷骰
-        var relicChanceSlices = ChanceSlices(r.Effects);
-        if (relicChanceSlices.Count > 0) w.Line(ChanceRollLine());
-        int petAllSeq = 0;
+        // 效果那一整段（按点数循环 / 概率掷骰 / 先古预览）抽成了 EmitRelicEffectBlock ——
+        // 单条路径和多条路径共用同一份文本，免得两边慢慢长歪。这里的输出和以前**逐字一致**。
         int relicEffectIndex = 0;
-        // 「转化为先古卡」的预览收集：所有配对行的结果汇总到这一个 List，方法末尾一次性弹本体那个预览界面
-        bool hasAncientTranscend = r.Effects.Any(x => x.Kind == "AncientTranscend");
-        if (hasAncientTranscend)
-        {
-            w.Line();
-            w.Line("// 「转化为先古卡」变出来的牌先收在这里，最后一次性弹预览（本体潘多拉魔盒的 NSimpleCardsViewScreen）");
-            w.Line("var __fgAncientPreview = new List<CardPileAddResult>();");
-        }
-        foreach (var e in r.Effects)
-        {
-            // 每条效果自己的条件：不满足时只跳过这一条
-            string? cond = EffectConditionGuard(e, CondCtx.Relic, chanceSlices: relicChanceSlices);
-            if (cond is not null)
-            {
-                w.Line($"// 条件（只对「{EffectCatalog.FindKind(e.Kind).Display}」这条效果）：{ConditionText(e.Condition)}（不满足时这条效果不触发）");
-                w.Open(cond);
-            }
-            // 「全部召唤物」的「召唤伙伴」：给这一组一个组号，回读时把展开的多份合并回一条
-            string? petAllGroup = PetGen.IsAll(e.PetSummon) && e.Kind == "SummonPet" ? "r" + petAllSeq++ : null;
-            EmitRelicEffect(w, p, e, hasContext, relicVars, roomVar, petAllGroup, relicEffectIndex++);
-            if (cond is not null) w.Close();
-        }
-        // 按点数循环到此为止：下面这些是「一次触发只做一次」的东西（预览界面 / 标记 / 节点图）
-        if (perPoint) w.Close();
-        // 预览：本体那个界面是 public static，模组里能直接调（潘多拉魔盒就是它）；
-        // TestMode 下本体自己会 return null，所以自检不会被弹窗卡住。
-        if (hasAncientTranscend)
-        {
-            w.Line();
-            w.Open("if (__fgAncientPreview.Count > 0)");
-            w.Line($"MegaCrit.Sts2.Core.Nodes.Screens.NSimpleCardsViewScreen.ShowScreen(__fgAncientPreview, new MegaCrit.Sts2.Core.Localization.LocString(\"relics\", \"{AncientPreviewLocKey}\"));");
-            w.Close();
-        }
+        EmitRelicEffectBlock(w, p, r.First, r.Effects.ToList(), hasContext, relicVars, roomVar, ref relicEffectIndex);
         // 效果级「每场战斗只触发一次」：跑过一次就打标记（整只遗物级的已经在上面打过标记了）
         if (!hasCond || r.Condition.Kind != "OncePerCombat")
             if (relicEffectConds.Any(x => x.Condition.Kind == "OncePerCombat"))
@@ -8219,6 +8057,685 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         return lines;
     }
+
+    // ==================== 遗物：多条触发时机（第 10 批） ====================
+    //
+    // 用户原话：「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，
+    // 并且可以添加多个触发时机」。设计（用户已确认）：
+    //   · 每条触发时机**各自配自己的效果**（和「自定义状态」页一模一样）；
+    //   · 也能勾「要和其他时机同时成立（都成立才触发）」，和状态页同一套语义。
+    //
+    // 关键约束（红线）：**只有一条时机、且没勾「同时成立」的遗物，生成文本必须和以前逐字一致**
+    // —— 所以 RelicSource 在那种情况下压根不走这里（见它的开头），这里只处理 ≥ 2 条的遗物。
+    //
+    // 另一个必须解决的坑：同一个**本体钩子方法**只能生成一个 override（写两个同名同参数的 → CS0111，
+    // 整个模组编译不过）。所以这里按「钩子」分组（不是按「配置里的时机」分组）：两条时机都落在
+    // AfterDamageReceived 上时，只生成**一个** override，方法体里按顺序放各自的条件块 + 效果块。
+
+    /// <summary>多条触发时机时，一条时机在某个钩子方法里的全部内容（守卫 / 数值门 / 效果）。</summary>
+    private sealed class RelicTriggerPlan
+    {
+        public RelicSpec Relic = null!;
+        public RelicTriggerSpec Trigger = null!;
+        public string Id = "";
+        public string Display = "";
+        /// <summary>要写在方法体里的注释（`// 触发时机：X` / `// CET:PowerWatch=`）。</summary>
+        public List<string> Comments = new();
+        /// <summary>变量声明行（`decimal __takenThisAttack = …`）——不带 return，放在 if 块**外面**。</summary>
+        public List<string> Decls = new();
+        /// <summary>守卫行（`if (…) return;`）——多时机时改写成 `if (!(…)) { … }`。</summary>
+        public List<string> Guards = new();
+        /// <summary>「触发时机上的数值」那几行（`if (…) return;` / `int __deaths = …`）。</summary>
+        public List<string> AmountLines = new();
+        public bool NeedsCtx;
+        /// <summary>效果里能不能直接用 <c>choiceContext</c>（本体钩子给的参数 + 生成端自己造的那两种）。</summary>
+        public bool HasContext;
+        public string? RoomVar;
+        public int AndIndex = -1;   // 「同时成立」里的序号（-1 = 没勾）
+    }
+
+    /// <summary>
+    /// 遗物触发时机的**归属守卫行**（`if (…) return;`）。
+    ///
+    /// 这是原来 <see cref="RelicSource"/> 里那个大 <c>switch (trigger.Id)</c> 的**逐字搬家** ——
+    /// 文本一个字都没改，所以只有一条时机的老存档生成结果完全不变（红线）；
+    /// 多条时机那条路径拿同一份行文本改写成 if 块（见 <see cref="EmitRelicMultiTriggerHook"/>）。
+    /// </summary>
+    /// <param name="triggerCardFilter">「打出一张牌后」只对哪类牌生效（遗物页那一栏；`Any` = 不过滤）。</param>
+    internal static IReadOnlyList<string> RelicTriggerGuardLines(string triggerId, string? triggerPowerId,
+        decimal triggerAmount, string? triggerCardFilter, CharacterProfile p)
+    {
+        var lines = new List<string>();
+        switch (triggerId)
+        {
+            case "CombatStart":
+                lines.Add("// 只在本次战斗自己的第一个回合开始前触发一次");
+                lines.Add("if (!participants.Contains(base.Owner.Creature) || base.Owner.PlayerCombatState.TurnNumber > 1) return;");
+                break;
+            case "PlayerTurnStart":
+                lines.Add("if (player != base.Owner) return;");
+                break;
+            case "PlayerTurnEnd":
+                lines.Add("if (side != base.Owner.Creature.Side) return;");
+                break;
+            case "DamageReceived":
+                lines.Add("if (target != base.Owner.Creature) return;");
+                // 本体「原体黏土 SelfFormingClay / 残存之心 BeatingRemnant」都是这么判的：
+                // 全被格挡（或 0 伤害）的那一下不算「受到伤害」。（每一下都会进这个钩子 —— 连击就是多次触发）
+                lines.Add("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
+                break;
+            // 「受到攻击后」：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次
+            //（AbstractModel.AfterAttack 的注释就是这么写的）—— 所以连击只算一次。
+            // 判据：这一次攻击的命中结果里，有没有真的打到「我」身上的伤害。
+            case "Attacked":
+                lines.Add("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
+                lines.Add("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner.Creature).Sum(r => r.UnblockedDamage);");
+                lines.Add("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
+                break;
+            case "GoldGained":
+                lines.Add("if (player != base.Owner) return;");
+                break;
+            // 造成伤害时（每一下）：只认自己造成的伤害。**不判「有没有真的打穿格挡」**——
+            // 和自定义状态那条「自己造成伤害后」口径一致（本体 AfterDamageGiven 是每一下命中都调）。
+            case "DamageDealt":
+                lines.Add("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
+                break;
+            // 每消耗一个能量：本体这条钩子**0 费也会调**（本体源码里 amount > 0 只包住历史记录 / 扣能量，
+            // 钩子调用在外面），所以必须自己挡掉 amount <= 0；「是谁花的」只能从 card.Owner 认
+            // （本体 EnvenomPower / OrbitPower 都是这么判的）—— 不判的话联机时别人打牌也会触发你的遗物。
+            case "EnergySpent":
+                lines.Add("if (amount <= 0 || card?.Owner?.Creature != base.Owner.Creature) return;   // 只认「我方角色花的能量」（0 费不算）");
+                break;
+            // 每消耗一个额外资源量：同上（本体这条钩子带 spender，直接比 Player）
+            case "StarsSpent":
+                lines.Add("if (amount <= 0 || spender != base.Owner) return;   // 只认「我方角色花的额外资源量」");
+                break;
+            // 生成卡牌时：本体注释写明「只算玩家自己生成的那几张」（敌人塞给你的状态牌不算），
+            // 而且 creator 可能为 null（本体自己的写法就是判 null）。
+            case "CardGenerated":
+                lines.Add("if (creator is null || creator != base.Owner) return;   // 只认「我方角色主动生成」的牌");
+                break;
+            // 某个状态层数到达 N 层时（用户要求）：本体 AfterPowerAmountChanged 任何单位的状态层数一变就会调
+            //（而且是**每层一次** —— 上 3 层会连着调 3 次），所以这里判三件事：
+            //   ① 是自己身上的状态（遗物的 Owner 是 Player，所以比 base.Owner.Creature）；
+            //   ② 是不是你盯的那个状态（留空 = 任何状态都算）；
+            //   ③ 这一次变化**跨过**了 N 层（之前不到 N、变化后到了 N 或更多）——
+            //      power.Amount 是变化后的层数，amount 是这一次的增量，所以「之前」= power.Amount - amount。
+            case "PowerReached":
+                lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
+                if (!string.IsNullOrWhiteSpace(triggerPowerId))
+                    lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
+                lines.Add($"if (!(power.Amount >= {Lit.Dec(Math.Max(0m, triggerAmount))} && power.Amount - amount < {Lit.Dec(Math.Max(0m, triggerAmount))})) return;"
+                     + $"   // 只有「层数跨过 {Math.Max(0m, triggerAmount):0.##}」那一下才触发");
+                break;
+            // 某个状态层数变化时（升或降都触发）：同一个钩子，只是不判「跨过 N」那一条
+            //（用户要求「两边触发时机一致」，所以状态那边有的这一条遗物也有）
+            case "PowerChanged":
+                lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
+                if (!string.IsNullOrWhiteSpace(triggerPowerId))
+                    lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
+                break;
+            // 「某个状态被移除时」（用户要求）：走工具自己打的补丁（见 PowerRemovalSource）——
+            // 补丁会把「谁身上哪个状态被移除了」传进来，这里只做归属 + 盯哪个状态的过滤。
+            case "PowerRemoved":
+                lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
+                if (!string.IsNullOrWhiteSpace(triggerPowerId))
+                    lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
+                break;
+            // ===== 用户要求「遗物 / 状态触发时机合并成同一套」后补上的这批 =====
+            // 守卫都按**遗物**的归属判据写（状态那条链的 base.Owner 是 Creature，遗物这边是 Player →
+            // 一律比 base.Owner.Creature），本体给的钩子签名两边完全一样。
+            case "CardPlayed":
+                // 本体 AfterCardPlayed：任意一方打出牌都会调 → 只认「自己打的」
+                lines.Add("if (cardPlay.Player != base.Owner) return;   // 只认自己打出的牌");
+                // 「只对哪类牌生效」（用户要求：遗物侧也要有范围，和状态侧同一套 —— 第 9 批 ④）：
+                // 老四档（攻击 / 技能 / 能力）生成的判据和状态侧**逐字同款**；新增的
+                // 诅咒 / 状态 / 关键词组 / 组 走卡牌那边同一套「范围界定」谓词（见 ScopeCondForFilter），
+                // 并写一行 `// CET:CardFilter=` 供回读（守卫语句以后改写法也不丢配置）。
+                string filter = string.IsNullOrWhiteSpace(triggerCardFilter) ? "Any" : triggerCardFilter;
+                if (!string.Equals(filter, "Any", StringComparison.Ordinal))
+                {
+                    if (filter is "Attack" or "Skill" or "Power")
+                    {
+                        lines.Add($"if (cardPlay.Card.Type != CardType.{filter}) return;"
+                             + $"   // 只对「{PowerTriggers.CardFilterZh(filter)}」牌生效");
+                    }
+                    else
+                    {
+                        lines.Add("// CET:CardFilter=" + filter);
+                        string? relicFilterCond = ScopeCondForFilter(filter, p);
+                        // 认不出来的筛选值：不乱猜、不筛（校验器会报错说清），但标记照旧写出来，回读不丢配置
+                        if (relicFilterCond is not null)
+                            lines.Add($"if (!({relicFilterCond.Replace("c.", "cardPlay.Card.")})) return;"
+                                 + $"   // 只对「{PowerTriggers.CardFilterZh(filter)}」生效");
+                    }
+                }
+                break;
+            case "CardExhausted":
+                lines.Add("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己被消耗的牌");
+                break;
+            case "CardDrawn":
+                lines.Add("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己抽到的牌");
+                break;
+            case "CardDiscarded":
+                lines.Add("if (card?.Owner?.Creature != base.Owner.Creature) return;   // 只认自己被弃掉的牌");
+                break;
+            case "HpLost":
+                // 本体 AfterCurrentHpChanged：delta 为正是回血，只有 delta < 0 才算「失去生命」
+                lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己掉血");
+                lines.Add("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
+                break;
+            case "BlockGained":
+                lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
+                break;
+            case "EnemyDeath":
+                lines.Add("if (!creature.IsEnemy) return;   // 只认敌人死亡（自己人死了不算）");
+                break;
+            case "EnemyTurnStart":
+                lines.Add("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
+                break;
+            case "EnemyTurnEnd":
+                lines.Add("if (side != CombatSide.Enemy) return;   // 只认敌人那一侧");
+                break;
+            case "EnemyDamaged":
+                lines.Add("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
+                break;
+            case "EnemyDealtDamage":
+                lines.Add("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
+                break;
+            case "EnemyBlockGained":
+                lines.Add("if (creature == base.Owner.Creature) return;   // 拿格挡的是敌人（自己不算）");
+                break;
+            // 洗牌：只看**自己**的抽牌堆被洗（本体 BiiigHug / TheAbacus 都是这个判法）。
+            // 条件「本回合 / 本场战斗洗过牌」不靠这里记 —— 那是 ShuffleTracker 的补丁负责的（用到才生成）。
+            case "Shuffle":
+                lines.Add("if (shuffler != base.Owner) return;");
+                break;
+        }
+        return lines;
+    }
+
+    /// <summary>前置行里用来分隔「守卫」与「触发时机数值」的哨兵注释（只在生成期用，不会写进结果）。</summary>
+    private const string RelicAmountSentinel = "//__CET_AMOUNT__";
+
+    /// <summary>
+    /// 一条触发时机的**前置行**（守卫 / 注释 / 变量声明）：从写好的方法体开头往前扫连续的
+    /// 注释行 + 声明行 + 守卫行 —— 这样「`// CET:PowerWatch=` / `// 触发时机：` 这类标记」
+    /// 不用再抄第二份（抄两份必然有一天不同步）。
+    ///
+    /// 中间插一行**哨兵**（<see cref="RelicAmountSentinel"/>）：它后面才是「触发时机上的数值」那几行 ——
+    /// 为什么需要：数值行和守卫行长得一样（都是 `if (…) return;`），不按位置切分不出来；
+    /// 而回读标记 `// CET:TriggerAmount=` 是**单独写在数值行后面**的、不在这些行里，
+    /// 以前拿它去 IndexOf 永远找不到 → 数值行整段丢失（实测：两条时机的遗物生成出来
+    /// 「每累计花掉 N 次」那一条**根本没写**，触发时机数值静默失效）。
+    /// </summary>
+    private static List<string> RelicTriggerPreludeLines(string triggerId, string? powerId, decimal amount,
+        string scope, string? cardFilter, CharacterProfile p)
+    {
+        var w2 = new CodeWriter();
+        if (triggerId == "PowerReached")
+            w2.Line($"// CET:PowerWatch={Lit.Identifier(powerId ?? "", "")} CET:PowerReach={Lit.Dec(Math.Max(0m, amount))}");
+        else if (triggerId == "PowerRemoved")
+            w2.Line($"// CET:PowerWatch={Lit.Identifier(powerId ?? "", "")}");
+        foreach (string g in RelicTriggerGuardLines(triggerId, powerId, amount, cardFilter, p)) w2.Line(g);
+        w2.Line(RelicAmountSentinel);
+        // ⚠ 这里必须传这条时机自己的 Scope（以前写死 "Turn" —— 数值那行注释里的范围会错，回读就认错）
+        foreach (string a in TriggerAmountLines(triggerId, amount, scope,
+                     "base.Owner.Creature", "base.Owner.Creature.CombatState", "base.Owner", TriggerValueExpr(triggerId),
+                     CombatCountersClass(p)))
+            w2.Line(a);
+        return w2.ToString().Replace("\r\n", "\n").Split('\n').Where(l => l.Length > 0).ToList();
+    }
+
+    /// <summary>
+    /// 多条触发时机时的钩子方法：**按钩子分组**，一组只生成一个 override。
+    ///
+    /// 两条时机落在同一个钩子上时（例：都是 AfterDamageReceived），方法体里按顺序放：
+    /// <code>
+    /// // 触发时机：自己受到伤害后（每一下）
+    /// if (!(target == base.Owner.Creature)) { …效果… }
+    /// // 触发时机：敌人受到伤害后
+    /// if (!(target == base.Owner.Creature) || !(result.UnblockedDamage > 0)) { …效果… }
+    /// </code>
+    /// 为什么不是「第一条用 return 式守卫、后面几条用 if」：那样同一个钩子里的第一条一旦不成立就
+    /// <c>return</c>，把后面几条时机一起跳过了。全部包成 if 块才是「各自独立判断」。
+    /// </summary>
+    private static string EmitRelicMultiTriggerHook(CharacterProfile p, RelicSpec r, int index)
+    {
+        var n = Naming.From(p);
+        string cls = n.RelicClassName(r, index);
+        var triggers = r.Triggers.Where(t => t is not null).ToList();
+        var allEffects = triggers.SelectMany(t => t.Effects).Where(e => e is not null).ToList();
+
+        // 「同时成立」：参与的那几条（勾了 RequireAllTriggers 的）各自一个成立标记。
+        // 语义和「自定义状态」页完全一样（见 CustomPowerGen.TryWrapRequireAll）：谁成立谁打标记，
+        // **最后凑齐的那一条**跑它自己的效果，然后清标记（一个窗口只触发一次）。
+        var andTriggers = triggers.Where(t => t.RequireAllTriggers).ToList();
+        bool andOn = andTriggers.Count >= 2;
+
+        var plans = new List<RelicTriggerPlan>();
+        foreach (var t in triggers)
+        {
+            var plan = new RelicTriggerPlan
+            {
+                Relic = r,
+                Trigger = t,
+                Id = t.Kind,
+                Display = EffectCatalog.RelicTriggers.FirstOrDefault(x => x.Id == t.Kind)?.Display ?? t.Kind,
+                RoomVar = t.Kind is "CombatVictory" or "CombatEnd" ? "room" : null,
+                HasContext = HasContext(t.Kind),
+            };
+            var prelude = RelicTriggerPreludeLines(t.Kind, t.PowerId, t.Amount, t.Scope, t.CardFilter, p);
+            // 哨兵前 = 注释 / 声明 / 守卫；哨兵后 = 「触发时机上的数值」那几行（见 RelicTriggerPreludeLines）
+            int amountStart = prelude.IndexOf(RelicAmountSentinel);
+            if (amountStart < 0) amountStart = prelude.Count;
+            else
+            {
+                // 数值那一行标记要跟着数值行走（回读全靠它）——见 ctor 里 RelicTriggerPlan 的说明
+                prelude.RemoveAt(amountStart);
+                if (t.Amount > 0m && (TriggerSupportsAmount(t.Kind) || PerPointTrigger(t.Kind)))
+                    prelude.Insert(amountStart,
+                        "// CET:TriggerAmount=" + TriggerAmountForMarker(t.Amount) + " CET:TriggerScope=" + t.Scope);
+            }
+            plan.AmountLines.AddRange(prelude.Skip(amountStart));
+            foreach (string line in prelude.Take(amountStart))
+            {
+                if (line.StartsWith("//", StringComparison.Ordinal)) plan.Comments.Add(line);
+                else if (IsRelicGuardLine(line)) plan.Guards.Add(line);
+                else plan.Decls.Add(line);
+            }
+            // 上下文：这个钩子本体没给 choiceContext、而这条时机的效果里有用得到它的 → 生成端自己造一个
+            plan.NeedsCtx = (CanBootstrapContext(t.Kind) || BootstrapInCombat(t.Kind))
+                            && t.Effects.Any(x => RelicNeedsChoiceContext(x));
+            plan.AndIndex = -1;
+            if (andOn)
+            {
+                for (int i = 0; i < andTriggers.Count; i++)
+                    if (ReferenceEquals(andTriggers[i], t)) { plan.AndIndex = i; break; }
+            }
+            plans.Add(plan);
+        }
+
+        // 同一个钩子里**重复**的变量名要各加后缀（例：两条「受到攻击后」各声明一个 __takenThisAttack
+        // → 同一个方法体里两次声明 = CS0128）。只有真重复时才加后缀，别的声明文本一个字不动。
+        var perHook = new Dictionary<string, List<RelicTriggerPlan>>(StringComparer.Ordinal);
+        var hookOrder = new List<string>();
+        foreach (var plan in plans)
+        {
+            string sig = RelicTriggerSignature(plan.Id);
+            if (!perHook.TryGetValue(sig, out var list)) { list = new List<RelicTriggerPlan>(); perHook[sig] = list; hookOrder.Add(sig); }
+            list.Add(plan);
+        }
+
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 自定义遗物 </auto-generated>");
+        if (r.HasCustomDescription)
+            w.Line($"// CET:CustomDescReplace={(r.CustomDescriptionReplaces ? 1 : 0)} CET:CustomDescription={EscapeMarker(r.CustomDescription)}");
+        w.Line($"namespace {n.Namespace};")
+         .Line()
+         .Open($"public sealed class {cls} : RelicModel")
+         .Line($"public override RelicRarity Rarity => RelicRarity.{r.Rarity};");
+        // 「获得时」= 拾取时生效：只要有一条时机是「获得时」就声明（和单条路径同一句）
+        if (triggers.Any(t => t.Kind == "Obtained"))
+            w.Line("public override bool HasUponPickupEffect => true;");
+        w.Line()
+         .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
+         .Line("[");
+        var relicVars = VarNamesOf(allEffects);
+        foreach (var e in allEffects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars, p)},");
+        w.Line("];");
+
+        w.Raw(HoverTipsOverride(allEffects, isPublic: false, owner: p));
+
+        bool hasCond = r.Condition is not null && !r.Condition.IsNone;
+        var relicEffectConds = allEffects.Where(x => x.Condition is not null && !x.Condition.IsNone).ToList();
+        bool oncePerCombat = (hasCond && r.Condition.Kind == "OncePerCombat")
+                             || relicEffectConds.Any(x => x.Condition.Kind == "OncePerCombat");
+        string condExpr = hasCond ? ConditionExpr(r.Condition, CondCtx.Relic) : "true";
+        if (oncePerCombat)
+        {
+            w.Line()
+             .Line("// 条件：每场战斗只触发一次（本体「百年积木」的做法：用完打标记，战斗结束清零）")
+             .Line("private bool _condUsedThisCombat;");
+        }
+        if (andOn)
+        {
+            w.Line()
+             .Line("/// <summary>")
+             .Line("/// 【要和其他时机同时成立】这几条时机各自照常判断自己那件事，谁成立了就打个标记；")
+             .Line("/// **最后凑齐的那一条**才会跑它自己的效果，然后把这一轮的标记清掉（一个窗口只触发一次）。")
+             .Line("/// 窗口 = " + (r.AndScope == "Combat" ? "本场战斗（整场凑齐一次就行）" : "本回合（换回合按回合号自动清零）") + "。")
+             .Line("/// </summary>")
+             .Line("private bool " + string.Join(", ", andTriggers.Select((_, i) => $"__andHit{i}")) + ";");
+            if (r.AndScope != "Combat")
+                w.Line("private int __andTurn;   // 上一次记下的回合数（变了就清标记 = 本回合窗口）");
+        }
+
+        int relicEffectIndex = 0;   // 「转化为先古卡」的预览序号：跨触发时机连续编号（和单条路径同一套）
+
+        foreach (string sig in hookOrder)
+        {
+            var group = perHook[sig];
+            // 同一组里重复的**生成期临时变量** → 各加一个后缀（`__takenThisAttack` → `__takenThisAttack1`），
+            // 否则同一个方法体里声明两次 = CS0128。只碰 `__` 开头的名字，而且只碰真的重复的那些。
+            var dupes = group.SelectMany(pl => pl.Decls.Concat(pl.AmountLines))
+                .SelectMany(RelicTempVars)
+                .GroupBy(x => x, StringComparer.Ordinal)
+                .Where(g => g.Count() > 1)
+                .Select(g => g.Key)
+                .ToHashSet(StringComparer.Ordinal);
+
+            w.Line()
+             .Line($"// 触发时机：{group[0].Display}" + (group.Count > 1 ? $"（这个方法里合并了 {group.Count} 条时机）" : ""))
+             .Open(sig);
+            for (int gi = 0; gi < group.Count; gi++)
+            {
+                var plan = group[gi];
+                // 重命名要和「名字判据」对得上：只改 `__` 开头的临时变量（`__deaths` 在守卫行里也要一起改）
+                for (int i = 0; i < plan.Decls.Count; i++)
+                    plan.Decls[i] = RenameRelicTempVars(plan.Decls[i], dupes, gi);
+                for (int i = 0; i < plan.AmountLines.Count; i++)
+                    plan.AmountLines[i] = RenameRelicTempVars(plan.AmountLines[i], dupes, gi);
+                for (int i = 0; i < plan.Guards.Count; i++)
+                    plan.Guards[i] = RenameRelicTempVars(plan.Guards[i], dupes, gi);
+            }
+            for (int gi = 0; gi < group.Count; gi++)
+            {
+                var plan = group[gi];
+                foreach (string c in plan.Comments) w.Line(c);
+                // 守卫 / 数值门 / 上下文 / 条件一行行地收集成「这个分支里要写的东西」——
+                // 守卫是**合并**的（多个 `return` 守卫 = 多个条件与起来；本分支不成立就整段跳过）。
+                // 为什么不用 `return`：同一个钩子方法里还有别的触发时机，`return` 会把它们一起跳过。
+                var conds = new List<string>();
+                foreach (string d in plan.Decls) w.Line(d);
+                if (plan.NeedsCtx && !plan.HasContext)
+                {
+                    w.Line();
+                    if (CanBootstrapContext(plan.Id))
+                    {
+                        w.Line("// 这个钩子（AfterObtained）本体没给 choiceContext：按本体的做法自己造一个阻塞式的");
+                        w.Line("// （本体的 BlockingPlayerChoiceContext 注释里点名的第一个场景就是「遗物 AfterObtained 回调」）");
+                        w.Line("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext();");
+                    }
+                    else
+                    {
+                        w.Line("// 这个钩子本体没给 choiceContext（战斗里那几条）：按本体 Hook.cs 的做法造一个 HookPlayerChoiceContext");
+                        w.Line("// —— 战斗里**不能**用 BlockingPlayerChoiceContext（那是局外的阻塞式上下文，会卡住）");
+                        w.Line("// 遗物的 Owner 就是 Player，所以用「(source, owner, netId, type)」这个重载（不用传 CombatState）。");
+                        w.Line("ulong __netId = MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL;");
+                        w.Line("var choiceContext = new MegaCrit.Sts2.Core.Hooks.HookPlayerChoiceContext(this, base.Owner, __netId, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
+                    }
+                }
+                foreach (string a in plan.AmountLines)
+                {
+                    if (IsRelicGuardLine(a)) conds.Add(NegateRelicGuard(a));
+                    else w.Line(a);
+                }
+                foreach (string g in plan.Guards) conds.Add(NegateRelicGuard(g));
+                bool condBites = false;
+                if (hasCond)
+                {
+                    w.Line();
+                    w.Line($"// 条件（整只遗物）：{ConditionText(r.Condition)}（不满足时不触发）");
+                    conds.Add(NegateRelicGuard(ConditionGuard(r.Condition)));
+                    condBites = true;
+                }
+                // 一个分支里的条件合并成一句（多个 `return` 守卫 = 多个条件与起来）
+                if (conds.Count > 0) w.Open("if (" + string.Join(" && ", conds) + ")");
+                // 「同时成立」：这条时机成立时打个标记，**最后凑齐的那一条**才跑它自己的效果
+                if (plan.AndIndex >= 0)
+                {
+                    var all = andTriggers;
+                    string flags = string.Join(" && ", all.Select((_, i) => $"__andHit{i}"));
+                    if (r.AndScope != "Combat")
+                    {
+                        // 本回合窗口：换回合先把标记清掉（按回合号认，不需要额外的重置钩子）
+                        // ⚠ 遗物的 base.Owner **就是 Player**，所以直接取 PlayerCombatState；
+                        //   不能照抄状态页那版（状态那边 base.Owner 是 Creature，才要多一层 `.Player?`）——
+                        //   抄错会生成 `base.Owner.Player?.PlayerCombatState` → CS1061（真 build 抓到的）。
+                        w.Open("if (base.Owner.PlayerCombatState is { } __andPcs && __andPcs.TurnNumber != __andTurn)");
+                        w.Line("__andTurn = __andPcs.TurnNumber;   // 新的一回合：把「同时成立」的标记清掉");
+                        w.Line(string.Join(" ", all.Select((_, i) => $"__andHit{i} = false;")));
+                        w.Close();
+                    }
+                    w.Line($"// 「要和其他时机同时成立」：这条已经成立（{plan.AndIndex + 1}/{all.Count}）");
+                    // 回读用的一行标记（和状态页同一个格式；回读时这个钩子方法里哪一段有它，
+                    // 就说明那一段属于「同时成立」那组）
+                    w.Line($"// CET:RequireAll=1 CET:AndScope={r.AndScope}");
+                    w.Line($"__andHit{plan.AndIndex} = true;");
+                    w.Line("// 参与的那几条时机在同一个窗口里都成立过了");
+                    w.Open($"if ({flags})");
+                }
+                if (condBites && r.Condition.Kind == "OncePerCombat") w.Line("_condUsedThisCombat = true;");
+                int before = w.Length;
+                EmitRelicEffectBlock(w, p, plan.Trigger, plan.Trigger.Effects.ToList(), plan.HasContext,
+                    relicVars, plan.RoomVar, ref relicEffectIndex);
+                if (plan.AndIndex >= 0)
+                {
+                    w.Line(string.Join(" ", andTriggers.Select((_, i) => $"__andHit{i} = false;")) + "   // 这一轮用掉了，下个窗口重新凑");
+                    w.Close();
+                }
+                if (conds.Count > 0) w.Close();
+                // 这条时机一个字符都没写（没效果 / 没上下文 / 没条件）：async 的方法体不能空着
+                if (w.Length == before && conds.Count == 0 && plan.AndIndex < 0)
+                    w.Line("await Task.CompletedTask;   // 这条时机什么都没配：保持 async 方法的签名一致");
+                // 锻造节点图里【触发时机】和这条时机是同一个钩子时，把节点图嵌进这个方法里（不能另写同名 override）
+                if (ForgeGraphGen.UsesGraph(r) && ForgeGraphGen.RelicGraphNestsInTrigger(r, plan.Id))
+                    w.Line($"await {ForgeRelicGraphMethod}({(plan.Id is "CombatVictory" or "CombatEnd" ? "room" : "")});   // 锻造节点图：{plan.Display}");
+            }
+            // 效果级「每场战斗只触发一次」：跑过一次就打标记（整只遗物级的已经在上面打过标记了）
+            if (!hasCond || r.Condition.Kind != "OncePerCombat")
+                if (relicEffectConds.Any(x => x.Condition.Kind == "OncePerCombat"))
+                    w.Line("_condUsedThisCombat = true;");
+            // 清理钩子和触发钩子是同一个方法时（触发时机就是「战斗结束时」）在末尾清标记（另写一个 = CS0111）
+            if (oncePerCombat && group.Any(pl => pl.Id == "CombatEnd"))
+                w.Line("_condUsedThisCombat = false;   // 触发时机就是「战斗结束时」→ 顺手把「每场战斗只触发一次」的标记清掉");
+            w.Close();
+        }
+
+        if (oncePerCombat && !triggers.Any(t => t.Kind == "CombatEnd"))
+        {
+            w.Line()
+             .Line("/// <summary>战斗结束：把「每场战斗只触发一次」的标记清掉。</summary>")
+             .Open("public override Task AfterCombatEnd(CombatRoom room)")
+             .Line("_condUsedThisCombat = false;")
+             .Line("return Task.CompletedTask;")
+             .Close();
+        }
+        // 锻造节点图：图非空时把它的钩子附加在类末尾（空图 = 一个字符都不写）
+        if (ForgeGraphGen.UsesGraph(r))
+        {
+            string fields = ForgeGraphGen.TimingFields(p, r);
+            if (fields.Length > 0) w.Raw(fields);
+            string hooks = ForgeGraphGen.RelicHooks(p, r);
+            if (hooks.Length > 0) w.Raw(hooks);
+        }
+        w.Close();
+        return w.ToString();
+    }
+
+    /// <summary>
+    /// 这个遗物钩子里「一条触发时机自己的那份效果」——单条路径和多条路径共用同一份文本，
+    /// 免得两边慢慢长歪（单条路径调它时输出和以前逐字一致）。
+    ///
+    /// <paramref name="relicEffectIndex"/> 是**跨触发时机连续**的序号（「转化为先古卡」的预览收集要用它）。
+    /// </summary>
+    private static void EmitRelicEffectBlock(CodeWriter w, CharacterProfile p, RelicTriggerSpec t,
+        List<EffectSpec> effects, bool hasContext, Dictionary<EffectSpec, string> relicVars, string? roomVar,
+        ref int relicEffectIndex)
+    {
+        if (effects.Count > 0) w.Line();
+        // 「每消耗一个能量 / 每消耗一个额外资源量」：本体那个 amount 是**这一张牌一共花的**点数，
+        // 所以整段效果按点数各跑一次（本体 OrbitPower 也是按点数累加的）。掷骰留在循环外面 ——
+        // 一次触发只掷一次，和「同一只遗物这一次触发共用一次掷骰」那条规矩一致。
+        bool perPoint = PerPointTrigger(t.Kind);
+        // 「花掉 N 点」的数值（用户要求）：填了 N 就按「每累计花掉 N 点触发一次」筛，范围 = 本回合 / 本场战斗
+        bool spendThreshold = perPoint && t.Amount > 0m;
+        if (perPoint)
+        {
+            if (spendThreshold)
+            {
+                w.Line($"// 数值：每累计花掉 {t.Amount:0.##} 点触发一次（范围：{(t.Scope == "Combat" ? "本场战斗" : "本回合")}）");
+                w.Line(SpendBeforeLine(t.Kind, t.Scope, "base.Owner.Creature", "base.Owner.Creature.CombatState"));
+            }
+            w.Line($"// 这个钩子的 amount 是「这一张牌一共花的」点数 → 下面的效果按点数各触发一次（{t.Display}）");
+            w.Open($"for (int __{t.Kind}Idx = 0; __{t.Kind}Idx < amount; __{t.Kind}Idx++)");
+            if (spendThreshold)
+                w.Line(SpendTickLine(t.Amount, $"__{t.Kind}Idx", "__spentBefore"));
+        }
+        // 概率生效：这只遗物这一次触发里，所有勾了概率的效果共用一次掷骰
+        var relicChanceSlices = ChanceSlices(effects);
+        if (relicChanceSlices.Count > 0) w.Line(ChanceRollLine());
+        int petAllSeq = 0;
+        // 「转化为先古卡」的预览收集：所有配对行的结果汇总到这一个 List，方法末尾一次性弹本体那个预览界面
+        bool hasAncientTranscend = effects.Any(x => x.Kind == "AncientTranscend");
+        if (hasAncientTranscend)
+        {
+            w.Line();
+            w.Line("// 「转化为先古卡」变出来的牌先收在这里，最后一次性弹预览（本体潘多拉魔盒的 NSimpleCardsViewScreen）");
+            w.Line("var __fgAncientPreview = new List<CardPileAddResult>();");
+        }
+        foreach (var e in effects)
+        {
+            // 每条效果自己的条件：不满足时只跳过这一条
+            string? cond = EffectConditionGuard(e, CondCtx.Relic, chanceSlices: relicChanceSlices);
+            if (cond is not null)
+            {
+                w.Line($"// 条件（只对「{EffectCatalog.FindKind(e.Kind).Display}」这条效果）：{ConditionText(e.Condition)}（不满足时这条效果不触发）");
+                w.Open(cond);
+            }
+            // 「全部召唤物」的「召唤伙伴」：给这一组一个组号，回读时把展开的多份合并回一条
+            string? petAllGroup = PetGen.IsAll(e.PetSummon) && e.Kind == "SummonPet" ? "r" + petAllSeq++ : null;
+            EmitRelicEffect(w, p, e, hasContext, relicVars, roomVar, petAllGroup, relicEffectIndex++);
+            if (cond is not null) w.Close();
+        }
+        // 按点数循环到此为止：下面这些是「一次触发只做一次」的东西（预览界面 / 标记 / 节点图）
+        if (perPoint) w.Close();
+        // 预览：本体那个界面是 public static，模组里能直接调（潘多拉魔盒就是它）；
+        // TestMode 下本体自己会 return null，所以自检不会被弹窗卡住。
+        if (hasAncientTranscend)
+        {
+            w.Line();
+            w.Open("if (__fgAncientPreview.Count > 0)");
+            w.Line($"MegaCrit.Sts2.Core.Nodes.Screens.NSimpleCardsViewScreen.ShowScreen(__fgAncientPreview, new MegaCrit.Sts2.Core.Localization.LocString(\"relics\", \"{AncientPreviewLocKey}\"));");
+            w.Close();
+        }
+    }
+
+    /// <summary>生成出来的那一行是不是「不满足就退出本钩子」的守卫（`return;` 结尾）。</summary>
+    private static bool IsRelicGuardLine(string line) =>
+        line.Contains("return;", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 把守卫行 <c>if (条件) return;</c> 取反成条件表达式（多条时机合并时用 —— 同一个钩子方法里
+    /// 不能再用 <c>return</c>，否则第一条不成立就把后面的时机全跳过了）。
+    ///
+    /// 取反规则（必须**按运算符归类**做 De Morgan，不能只换 <c>!=</c> —— 那些 <c>&amp;&amp;</c> /
+    /// <c>||</c> 连起来的复合条件只换一部分会**静默改掉语义**）：
+    /// <code>
+    /// !(A &amp;&amp; B) = !A || !B        !(A || B) = !A &amp;&amp; !B
+    /// a != b  → a == b          a &lt;= b → a &gt; b
+    /// a == b  → a != b          a &gt;= b → a &lt; b
+    /// a &lt; b   → a &gt;= b          a &gt; b  → a &lt;= b
+    /// x is Y  → x is not Y      x is not Y → x is Y
+    /// x is null → x is not null （反过来同理）
+    /// !x      → x（其余情况整个括起来取反）
+    /// </code>
+    /// 例子：<c>if (!participants.Contains(X) || TurnNumber &gt; 1) return;</c> →
+    /// <c>participants.Contains(X) &amp;&amp; TurnNumber &lt;= 1</c>。
+    /// </summary>
+    internal static string NegateRelicGuard(string line)
+    {
+        string body = line;
+        int at = body.IndexOf("return;", StringComparison.Ordinal);
+        if (at > 0) body = body[..at];
+        body = body.Trim();
+        if (body.StartsWith("if (", StringComparison.Ordinal) && body.EndsWith(")", StringComparison.Ordinal))
+            body = body[4..^1].Trim();
+        return NegateConditionExpr(body);
+    }
+
+    /// <summary>
+    /// 条件表达式取反（见 <see cref="NegateRelicGuard"/> 的规则表）。
+    ///
+    /// ⚠ 为什么比较运算符那一层要做「插在中间就整个括起来」：<c>x == y</c> 取反时把 <c>==</c> 换成
+    /// <c>!=</c> 是对的，但 <c>a == !(b)</c> 这种（说明右侧本身已经是取反过的表达式）再换就成了
+    /// <c>a != !(b)</c> —— 语法还合法但**语义完全错**（实测：`player == !(base.Owner)`）。
+    /// 所以只有「两边都不是以 <c>!</c> 开头的原子表达式」才换运算符，其余一律整个括起来取反。
+    /// </summary>
+    internal static string NegateConditionExpr(string expr)
+    {
+        string s = expr.Trim();
+        if (s.Length == 0) return "true";
+        if (s.StartsWith("!(", StringComparison.Ordinal) && s.EndsWith(")", StringComparison.Ordinal)) return s[2..^1];
+        if (s.StartsWith("!", StringComparison.Ordinal)) return s[1..].Trim();
+        // 顶层 ||：!(A || B) = !A && !B
+        var orParts = SplitTopLevel(s, "||");
+        if (orParts.Count > 1)
+            return string.Join(" && ", orParts.Select(NegateConditionExpr));
+        // 顶层 &&：!(A && B) = !A || !B
+        var andParts = SplitTopLevel(s, "&&");
+        if (andParts.Count > 1)
+            return string.Join(" || ", andParts.Select(NegateConditionExpr));
+        // 比较：只有两边都不是 `!` 开头的表达式才换运算符
+        foreach (var (op, not) in new[] { (" != ", " == "), (" == ", " != "), (" <= ", " > "), (" >= ", " < "),
+                                         (" < ", " >= "), (" > ", " <= ") })
+        {
+            int i = s.IndexOf(op, StringComparison.Ordinal);
+            if (i < 0) continue;
+            string left = s[..i].Trim();
+            string right = s[(i + op.Length)..].Trim();
+            if (left.StartsWith("!", StringComparison.Ordinal) || right.StartsWith("!", StringComparison.Ordinal))
+                return "!(" + s + ")";
+            return left + not + right;
+        }
+        // is 模式
+        if (s.EndsWith(" is null", StringComparison.Ordinal)) return s[..^" is null".Length] + " is not null";
+        if (s.EndsWith(" is not null", StringComparison.Ordinal)) return s[..^" is not null".Length] + " is null";
+        if (s.Contains(" is not ", StringComparison.Ordinal)) return s.Replace(" is not ", " is ", StringComparison.Ordinal);
+        if (s.Contains(" is ", StringComparison.Ordinal)) return s.Replace(" is ", " is not ", StringComparison.Ordinal);
+        return "!(" + s + ")";
+    }
+
+    /// <summary>
+    /// 按**顶层**运算符切分（括号里的不算）：<c>a &amp;&amp; foo(b || c)</c> 按 <c>&amp;&amp;</c> 切 = 2 段。
+    /// 自己数括号深度、找不到就返回单元素列表（调用方按「不是复合条件」处理）。
+    /// </summary>
+    private static List<string> SplitTopLevel(string expr, string op)
+    {
+        var parts = new List<string>();
+        int depth = 0, start = 0;
+        for (int i = 0; i < expr.Length; i++)
+        {
+            char c = expr[i];
+            if (c == '(' || c == '[') depth++;
+            else if (c == ')' || c == ']') depth--;
+            else if (depth == 0 && i + op.Length <= expr.Length
+                     && string.CompareOrdinal(expr, i, op, 0, op.Length) == 0)
+            {
+                parts.Add(expr[start..i]);
+                i += op.Length - 1;
+                start = i + 1;
+            }
+        }
+        if (parts.Count == 0) return new List<string> { expr };
+        parts.Add(expr[start..]);
+        return parts;
+    }
+
+    /// <summary>给同一条钩子里重复出现的临时变量加后缀（`__takenThisAttack` → `__takenThisAttack1`）。</summary>
+    private static string RenameRelicTempVars(string line, HashSet<string> names, int suffix)
+    {
+        if (names.Count == 0) return line;
+        foreach (string name in names)
+            line = Regex.Replace(line, $@"\b{Regex.Escape(name)}(?!\d)\b",
+                name + suffix.ToString(System.Globalization.CultureInfo.InvariantCulture), RegexOptions.None);
+        return line;
+    }
+
+    /// <summary>这一行里的「生成期临时变量」名字（`__` 开头，句点在名字里也算 —— `__takenThisAttack.s` 那种）。</summary>
+    private static IEnumerable<string> RelicTempVars(string line) =>
+        Regex.Matches(line, @"__[A-Za-z0-9_.]+").Select(m => m.Value.TrimEnd('.'));
 
     /// <summary>
     /// 遗物触发时机对应的**钩子方法名**（从 <see cref="RelicTriggerSignature"/> 的签名里取）。
@@ -9450,7 +9967,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         foreach (var r in p.Relics)
         {
             if (Hit(r.Condition)) return true;
-            if (r.Effects.Any(e => Hit(e.Condition))) return true;
+            if (RelicEffects(r).Any(e => Hit(e.Condition))) return true;
         }
         foreach (var s in p.Potions)
             if (s.Effects.Any(e => Hit(e.Condition))) return true;

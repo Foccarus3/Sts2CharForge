@@ -28,6 +28,15 @@ public sealed class CodeWriter
     public CodeWriter Dedent() { _indent = Math.Max(0, _indent - 1); return this; }
     public CodeWriter Close(string text = "}") { _indent = Math.Max(0, _indent - 1); Line(text); return this; }
 
+    /// <summary>
+    /// 已经写出去的字符数。
+    ///
+    /// 用途（第 10 批「遗物多条触发时机」）：一个分支里到底有没有写出东西 ——
+    /// 什么都没写时 <c>async</c> 方法体是空的（编译告警 / 更容易被后续改动弄坏），要补一句
+    /// <c>await Task.CompletedTask;</c>。用长度差判「有没有写」比再维护一个 bool 稳。
+    /// </summary>
+    public int Length => _sb.Length;
+
     public override string ToString() => _sb.ToString();
 }
 
