@@ -2317,16 +2317,20 @@ public sealed class KeywordUpgradeSpec : SpecBase
 }
 
 /// <summary>
-/// 遗物上的一条触发时机：什么时候触发 + 触发时做哪些事。
+/// 遗物上的一条触发时机：**只描述「什么时候触发」**（触发后做什么是**整只遗物共用**的那份效果，
+/// 见 <see cref="RelicSpec.Effects"/>）。
 ///
-/// 用户要求（第 10 批）：「遗物页底下新增触发时机列表，并且可以添加多个触发时机」——
-/// 一只遗物能挂好几条时机，每条各自配自己的效果；还能像「自定义状态」页那样勾
-/// 「要和其他时机同时成立（都成立才触发）」。
+/// 用户要求（V0.2.126，原话）：「中间的触发时机并不是每条各配效果，而是决定整只遗物的触发时机，
+/// 只有同时满足或者满足其中一个才能触发遗物的效果」—— 所以从这一版起：
+///   · 效果列表挂在**遗物**上（右侧效果栏能加多条效果种类）；
+///   · 触发时机列表只留 Kind / PowerId / Amount / Scope / CardFilter；
+///   · 关系（任意一条 / 全部满足）挂在遗物上：<see cref="RelicSpec.TriggerMode"/>。
 ///
-/// 存储以 <see cref="RelicSpec.Triggers"/> 为准；<see cref="RelicSpec"/> 上那几个老字段
-/// （<c>Trigger</c> / <c>Effects</c> / <c>TriggerPowerId</c> / <c>TriggerAmount</c> /
-/// <c>TriggerScope</c> / <c>TriggerCardFilter</c>）现在是**第 1 条时机的代理** ——
-/// 老存档里只有一个时机，读进来正好是「列表里一条」，生成结果一个字都不变。
+/// V0.2.122~V0.2.125 的老存档里每条时机各带一份 <see cref="Effects"/>（还能勾
+/// <see cref="RequireAllTriggers"/>）—— 那两个字段**降级成「只读老存档的遗留字段」**：
+/// 载入时由 <c>ProfileFactory.NormalizeRelicEffects</c> 把各条时机的效果按顺序合并进遗物，
+/// 合并完就清空 / 置 false，所以新存档里不再写它们。**不能加 [JsonIgnore]**：加了老存档里的
+/// 效果就读不进来了。
 /// </summary>
 public sealed class RelicTriggerSpec : SpecBase
 {
@@ -2393,40 +2397,31 @@ public sealed class RelicTriggerSpec : SpecBase
     }
 
     /// <summary>
-    /// 勾上 = 这条时机要和同一只遗物上**同样勾了**的那几条「都在同一个窗口里成立过」才触发
-    /// （用户要求：和「自定义状态」页同一套语义；最后凑齐的那条跑它自己的效果，然后清标记）。
+    /// <b>老存档遗留字段</b>（V0.2.122~V0.2.125：这条时机要和同一只遗物上**同样勾了**的那几条
+    /// 「都在同一个窗口里成立过」才触发）。
+    ///
+    /// V0.2.126 起关系模式移到整只遗物上（<see cref="RelicSpec.TriggerMode"/>）——
+    /// 载入老存档时只要**有任意一条**勾过它，就切到「全部满足才触发」（用户已确认的迁移口径）。
+    /// 迁移完置 false，新存档不再写它。界面不再绑它（没有对应的勾选框了）。
     /// </summary>
     public bool RequireAllTriggers
     {
         get => _requireAllTriggers;
-        set
-        {
-            if (Set(ref _requireAllTriggers, value))
-            {
-                Raise(nameof(Summary));
-                Raise(nameof(Display));
-                Raise(nameof(ShowAndScope));   // 勾/取消都会影响「重置范围」那一行要不要显示
-            }
-        }
+        set { if (Set(ref _requireAllTriggers, value)) { Raise(nameof(Summary)); Raise(nameof(Display)); } }
     }
 
-    /// <summary>这条时机属于哪只遗物（列表增删时由 <see cref="RelicSpec"/> 挂上；「同时成立」的范围存在遗物上）。</summary>
+    /// <summary>这条时机属于哪只遗物（列表增删时由 <see cref="RelicSpec"/> 挂上）。</summary>
     [JsonIgnore]
     public RelicSpec? OwnerRelic { get; set; }
 
-    /// <summary>界面用：「重置范围」只在勾了 2 条以上「同时成立」时才显示（和状态页一致）。</summary>
-    [JsonIgnore]
-    public bool ShowAndScope => OwnerRelic?.ShowAndScope == true;
-
-    /// <summary>「同时成立」的重置范围（存在整只遗物上）。</summary>
-    [JsonIgnore]
-    public string AndScope
-    {
-        get => OwnerRelic?.AndScope ?? "Turn";
-        set { if (OwnerRelic is not null) OwnerRelic.AndScope = value; }
-    }
-
-    /// <summary>这条时机触发时做的事（用户已选：每条时机各自配自己的效果）。</summary>
+    /// <summary>
+    /// <b>老存档遗留字段</b>（V0.2.122~V0.2.125：这条时机各自配的那份效果）。
+    ///
+    /// ⚠ 它**不能**加 <c>[JsonIgnore]</c>：老存档里的效果就是存在这里的，加了就读不进来
+    /// （用户要求原话：「不能加 [JsonIgnore]，否则老存档里的效果读不进来」）。
+    /// 载入时由 <c>ProfileFactory.NormalizeRelicEffects</c> 按顺序合并进
+    /// <see cref="RelicSpec.Effects"/>，合并完**清空**，所以新存档里是空数组。
+    /// </summary>
     public ObservableCollection<EffectSpec> Effects { get; set; } = new();
 
     /// <summary>界面用：这三栏只在选到那几条时机时才显示。</summary>
@@ -2501,7 +2496,7 @@ public sealed class RelicTriggerSpec : SpecBase
         }
     }
 
-    /// <summary>界面用：列表里那一行（时机名 + 做了几件事 + 同时成立标记）。</summary>
+    /// <summary>界面用：列表里那一行（时机名 + 只对哪类牌 + 同时成立标记）。</summary>
     [JsonIgnore]
     public string Summary
     {
@@ -2510,8 +2505,9 @@ public sealed class RelicTriggerSpec : SpecBase
             string when = EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == _kind)?.Display ?? _kind;
             if (ShowCardFilterField && !string.Equals(_cardFilter, "Any", StringComparison.Ordinal))
                 when += "（" + Sts2CharForge.Core.Effects.PowerTriggers.CardFilterZh(_cardFilter) + "牌）";
-            string what = Effects.Count == 0 ? "（还没配效果）" : (Effects.Count + " 条效果");
-            return when + " → " + what + (_requireAllTriggers ? " ｜ 同时成立" : "");
+            // 「效果」现在挂在整只遗物上（V0.2.126），这条时机只说明「什么时候触发」——
+            // 所以这里不再写「几条效果」，也不再有「同时成立」的勾选。
+            return when;
         }
     }
 
@@ -2563,7 +2559,7 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     [JsonIgnore]
     public int Ordinal { get => _ordinal; set => Set(ref _ordinal, value); }
 
-    // ===== 触发时机列表（用户要求：遗物页底下也能加多条时机，每条各自配效果）=====
+    // ===== 触发时机列表（用户要求：遗物页里能加多条时机；V0.2.126 起时机只管「什么时候触发」）=====
     private ObservableCollection<RelicTriggerSpec> _triggers = new();
 
     /// <summary>
@@ -2571,8 +2567,7 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     ///
     /// ⚠ 为什么非要有它：字段初始化器 <c>= new()</c> **不走属性 setter**，所以不在构造函数里订阅的话，
     /// 直接 <c>relic.Triggers.Add(...)</c> 加的时机**永远不会**被挂上 OwnerRelic ——
-    /// 界面里「要和其他时机同时成立」的「重置范围」那一行就永远不显示（ShowAndScope 一直是 false），
-    /// 生成端读 trig.AndScope 也会退回默认值。反序列化（老存档）走的是属性 setter，那条路本来就有订阅。
+    /// 生成端读时机字段时拿不到主人那只遗物。反序列化（老存档）走的是属性 setter，那条路本来就有订阅。
     /// </summary>
     public RelicSpec() => _triggers.CollectionChanged += OnTriggersChanged;
 
@@ -2589,11 +2584,11 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
             _triggers.CollectionChanged += OnTriggersChanged;
             foreach (var t in _triggers) if (t is not null) t.OwnerRelic = this;
             Raise(nameof(Display));
-            Raise(nameof(ShowAndScope));
+            Raise(nameof(TriggerModeHint));
         }
     }
 
-    /// <summary>列表增删时机：给每条时机挂上「主人」（它靠这个读「同时成立」的重置范围），并刷新列表那一行。</summary>
+    /// <summary>列表增删时机：给每条时机挂上「主人」，并刷新列表那一行 / 关系开关底下那句说明。</summary>
     private void OnTriggersChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
         foreach (var t in (e.NewItems?.OfType<RelicTriggerSpec>() ?? Enumerable.Empty<RelicTriggerSpec>()))
@@ -2606,7 +2601,8 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
         Raise(nameof(ShowTriggerAmountField));
         Raise(nameof(ShowTriggerScopeField));
         Raise(nameof(ShowTriggerCardFilterField));
-        Raise(nameof(ShowAndScope));
+        // 「全部满足才触发」只配 1 条时机时那句「不生效」的提示跟着条数变（见 TriggerModeHint）
+        Raise(nameof(TriggerModeHint));
     }
 
     /// <summary>第 1 条时机（下面的老字段都是它的代理；列表为空时按需造一条出来）。</summary>
@@ -2662,25 +2658,33 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     public bool ShowTriggerCardFilterField => First.ShowCardFilterField;
 
     /// <summary>
-    /// 这只遗物**所有触发时机**的效果（按时机顺序、时机内按效果顺序摊平）。
+    /// 这只遗物的效果列表（V0.2.126 起是**整只遗物唯一的一份**）。
     ///
-    /// 为什么需要它（第 10 批）：遗物以前只有一个触发时机，很多地方直接读 <c>r.Effects</c>
-    /// （动态变量声明 / 悬停提示 / 文案 / 校验 / 美术 / 命名）—— 现在一条遗物能挂好几条时机，
-    /// 那些地方必须看**全部**时机的效果，否则「第 2 条时机上的效果」会被悄悄漏掉
-    /// （典型症状：悬停提示里没有那条状态、CanonicalVars 里没有那个变量 → 生成的代码 CS0103）。
-    /// 列表为空时按需造一条（和 <see cref="First"/> 同一套），保证结果至少是空集合、不是 null。
+    /// 用户要求原话：「中间的触发时机并不是每条各配效果，而是决定整只遗物的触发时机，
+    /// 只有同时满足或者满足其中一个才能触发遗物的效果，另外效果右侧应能添加多个效果种类」
+    /// —— 所以效果挂在遗物上（右侧效果栏），触发时机只决定「什么时候跑这份效果」。
+    ///
+    /// <para>⚠ V0.2.122~V0.2.125 里它是「第 1 条时机的 Effects」的**代理**；现在是真字段。
+    /// 老存档里效果存在每条时机上（<see cref="RelicTriggerSpec.Effects"/>），
+    /// 载入时由 <c>ProfileFactory.NormalizeRelicEffects</c> 合并上来（幂等）。</para>
     /// </summary>
-    [JsonIgnore]
-    public IEnumerable<EffectSpec> AllEffects => First is null
-        ? Enumerable.Empty<EffectSpec>()
-        : Triggers.Where(t => t is not null).SelectMany(t => t.Effects).Where(e => e is not null);
-
-    /// <summary>老字段：第 1 条时机触发时做的事（**代理**）。</summary>
     public ObservableCollection<EffectSpec> Effects
     {
-        get => First.Effects;
-        set { if (!ReferenceEquals(First.Effects, value)) { First.Effects = value ?? new(); Raise(nameof(Display)); } }
+        get => _effects;
+        set
+        {
+            var v = value ?? new ObservableCollection<EffectSpec>();
+            if (ReferenceEquals(_effects, v)) return;
+            _effects = v;
+            Raise(nameof(Display));
+        }
     }
+
+    private ObservableCollection<EffectSpec> _effects = new();
+
+    /// <summary>这只遗物配的效果（V0.2.125 及更早的代码到处读 <c>AllEffects</c>，留着当兼容别名）。</summary>
+    [JsonIgnore]
+    public IEnumerable<EffectSpec> AllEffects => _effects.Where(e => e is not null);
 
     // ===== 触发时机「某个状态层数到达 N 层时」（用户要求）—— 老字段，代理到第 1 条时机 =====
     /// <summary>
@@ -2739,12 +2743,58 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     [JsonIgnore]
     public string TriggerHint => First.Hint;
 
-    // ===== 「要和其他时机同时成立」（用户要求：和「自定义状态」页同一套）=====
+    // ===== 触发时机之间的关系（V0.2.126，用户要求）=====
+    //
+    // 用户原话：「中间的触发时机并不是每条各配效果，而是决定整只遗物的触发时机，只有同时满足
+    // 或者满足其中一个才能触发遗物的效果」。已确认的两档：
+    //   · Any（**默认**）：任意一条时机成立就触发遗物的效果；
+    //   · All（全部满足才触发）：所有时机都在同一个窗口里成立过才触发一次（效果只跑一次，跑完清标记）。
+    // 选 All 时才有「重置范围」（AndScope）：本回合（默认，每回合重新凑）/ 本场战斗（整场凑一次）。
+    private string _triggerMode = "Any";
+
+    /// <summary>触发时机之间的关系：<c>Any</c>（默认，满足其中一个就触发）/ <c>All</c>（全部满足才触发）。</summary>
+    public string TriggerMode
+    {
+        get => _triggerMode;
+        set
+        {
+            string v = string.Equals(value, "All", StringComparison.Ordinal) ? "All" : "Any";
+            if (!Set(ref _triggerMode, v)) return;
+            Raise(nameof(TriggerModeIsAny));
+            Raise(nameof(TriggerModeIsAll));
+            Raise(nameof(ShowAndScope));
+            Raise(nameof(AndScopeHint));
+            Raise(nameof(TriggerModeHint));
+            Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>界面用：关系开关的两个单选按钮（WPF 的 RadioButton 绑 bool，所以给两个属性）。</summary>
+    [JsonIgnore]
+    public bool TriggerModeIsAny
+    {
+        get => !IsAllTriggers;
+        set { if (value) TriggerMode = "Any"; }
+    }
+
+    /// <summary>界面用：见 <see cref="TriggerModeIsAny"/>。</summary>
+    [JsonIgnore]
+    public bool TriggerModeIsAll
+    {
+        get => IsAllTriggers;
+        set { if (value) TriggerMode = "All"; }
+    }
+
+    /// <summary>生成端 / 文案 / 校验都用它判「全部满足才触发」。</summary>
+    [JsonIgnore]
+    public bool IsAllTriggers => string.Equals(_triggerMode, "All", StringComparison.Ordinal);
+
     private string _andScope = "Turn";
 
     /// <summary>
-    /// 勾了「要和其他时机同时成立」的那几条时机，它们的「成立窗口」重置范围：
+    /// 「全部满足才触发」时那几条时机的「成立窗口」重置范围：
     /// <c>Turn</c> = 本回合（默认，每回合重新凑）/ <c>Combat</c> = 本场战斗（整场凑一次就够）。
+    /// 只在 <see cref="TriggerMode"/> = <c>All</c> 时显示 / 生效（Any 模式下每条时机各自独立，不需要窗口）。
     /// </summary>
     public string AndScope
     {
@@ -2752,22 +2802,26 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
         set
         {
             string v = string.IsNullOrWhiteSpace(value) ? "Turn" : value;
-            if (Set(ref _andScope, v)) { Raise(nameof(AndScopeHint)); Raise(nameof(ShowAndScope)); }
+            if (Set(ref _andScope, v)) Raise(nameof(AndScopeHint));
         }
     }
 
-    /// <summary>勾了「同时成立」的那几条时机（界面用它判断要不要显示「重置范围」）。</summary>
+    /// <summary>界面用：「重置范围」那一行只在关系的「全部满足才触发」档显示。</summary>
     [JsonIgnore]
-    public IEnumerable<RelicTriggerSpec> AndTriggers => Triggers.Where(t => t is not null && t.RequireAllTriggers);
-
-    /// <summary>界面用：勾了 2 条以上「同时成立」时才显示「重置范围」那一行。</summary>
-    [JsonIgnore]
-    public bool ShowAndScope => AndTriggers.Count() > 1;
+    public bool ShowAndScope => IsAllTriggers;
 
     [JsonIgnore]
     public string AndScopeHint => _andScope == "Combat"
         ? "本场战斗：整场战斗里凑齐一次就行（换战斗重新算）。"
         : "本回合：每个回合重新凑（回合结束清零）。";
+
+    /// <summary>界面用：关系开关底下那句说明。</summary>
+    [JsonIgnore]
+    public string TriggerModeHint => IsAllTriggers
+        ? (Triggers.Count(t => t is not null) <= 1
+            ? "⚠ 现在只有 1 条触发时机：「全部满足」和「满足其中一个」是同一条，所以这条设置**不生效**（生成前的检查也会提示）。"
+            : "所有触发时机都成立过 → 才跑一次遗物的效果（效果只跑一次，跑完重新凑；凑不齐就永远不跑）。")
+        : "任意一条触发时机成立 → 就跑一次遗物的效果（每条时机互相独立）。";
 
     private bool _isForged;
 
@@ -2889,8 +2943,11 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
         + (ShowTriggerCardFilterField && !string.Equals(First.CardFilter, "Any", StringComparison.Ordinal)
             ? "  ｜ 只对" + PowerTriggers.CardFilterZh(First.CardFilter) + "牌生效"
             : "")
-        // 「多条触发时机」（第 10 批）：不止一条时把条数也写出来，一眼看得出这只遗物挂了几条
-        + (Triggers.Count > 1 ? "  ｜ " + Triggers.Count + " 条时机" : "");
+        // 「多条触发时机」（第 10 批）：不止一条时把条数也写出来，一眼看得出这只遗物挂了几条；
+        // 「全部满足才触发」（V0.2.126）也标出来 —— 否则光看列表看不出关系模式。
+        + (Triggers.Count > 1
+            ? "  ｜ " + Triggers.Count + " 条时机" + (IsAllTriggers ? "（全部满足才触发）" : "（满足其中一个就触发）")
+            : "");
 }
 
 /// <summary>

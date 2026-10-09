@@ -335,6 +335,10 @@ public static class ProfileFactory
         // 召唤物：老存档只能配一只（存在单个 Summon 对象里）→ 搬进列表；新存档就把每只的字段兜底规整
         NormalizeSummons(p);
 
+        // 遗物（V0.2.126，用户要求）：老存档里「效果挂在每一条触发时机上」→ 按顺序合并成遗物唯一那份效果；
+        // 勾过「要和其他时机同时成立」的自动切到「全部满足才触发」。见 NormalizeRelicEffects。
+        NormalizeRelicEffects(p);
+
         foreach (var card in p.Cards)
         {
             if (card.Condition is null || card.Condition.IsNone) continue;
@@ -383,6 +387,79 @@ public static class ProfileFactory
         MoveVanillaBasicsToTop(p);
         return p;
     }
+
+    /// <summary>
+    /// 遗物：把「每条触发时机各自带的效果」合并成**整只遗物唯一的那份效果**（V0.2.126，用户要求）。
+    ///
+    /// 用户已确认的迁移口径：
+    ///   ① 把各条触发时机原有的效果**按顺序**合并进遗物的效果列表；
+    ///   ② **完全重复的只留一份**；
+    ///   ③ 以前勾过「同时成立」的遗物自动切到「全部满足才触发」（<c>TriggerMode = All</c>），
+    ///      重置范围沿用原来的 <c>AndScope</c>；
+    ///   ④ 迁移完把时机上的老字段清空 / 置 false —— 新存档不再写它们（但**不能加 [JsonIgnore]**，
+    ///      否则老存档里的效果读不进来）。
+    ///
+    /// <para><b>幂等</b>：合并完时机上的 <c>Effects</c> 就是空的了，第二次跑「没有任何时机带效果」→
+    /// 一个字节都不改（<c>RelicSpec.Effects</c> 原样留着）。<c>TriggerMode</c> 也只在检测到
+    /// <c>RequireAllTriggers</c> 时才写 <c>All</c>，写完那个标记就是 false 了。</para>
+    ///
+    /// <para><b>老存档（V0.2.121 及更早，只有一个时机、效果直接挂在遗物上）逐字不变</b>：那种存档的
+    /// 效果本来就在遗物级 <c>Effects</c> 里（旧版是「第 1 条时机的代理」），时机上一条效果都没有 →
+    /// 这个函数什么都不做：效果顺序 / 内容 / <c>TriggerMode=Any</c> 全都不变。</para>
+    ///
+    /// <para><b>「完全重复」的判据</b>：用 <see cref="EffectKeyOpts"/> 序列化后的**紧凑 JSON 字符串相等**
+    /// （键顺序由类型定义决定、稳定），也就是「存到存档里写出来一模一样」。这样判与存档字面一致，
+    /// 而且 <c>[JsonIgnore]</c> 的界面派生属性（Display / IsCardChain 之类）不参与比较 ——
+    /// 手写一个字段白名单迟早会和 <c>EffectSpec</c> 以后新加的字段脱节。</para>
+    /// </summary>
+    public static void NormalizeRelicEffects(CharacterProfile p)
+    {
+        if (p.Relics is null) return;
+        foreach (var r in p.Relics)
+        {
+            if (r is null || r.Triggers is null) continue;
+
+            var triggerEffects = r.Triggers
+                .Where(t => t is not null && t.Effects is { Count: > 0 })
+                .SelectMany(t => t.Effects)
+                .Where(e => e is not null)
+                .ToList();
+            if (triggerEffects.Count == 0) continue;      // 新存档 / 极老存档：没有要合并的东西（幂等的关键）
+
+            // 以前勾过「要和其他时机同时成立」→ 关系切到「全部满足才触发」（重置范围沿用原 AndScope）
+            bool anyRequireAll = r.Triggers.Any(t => t is not null && t.RequireAllTriggers);
+
+            r.Effects ??= new ObservableCollection<EffectSpec>();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var e in r.Effects) if (e is not null) seen.Add(EffectKey(e));   // 已有的也算一份
+            int before = r.Effects.Count;
+            foreach (var e in triggerEffects)
+            {
+                if (!seen.Add(EffectKey(e))) continue;      // 完全重复的只留一份
+                r.Effects.Add(e);
+            }
+
+            foreach (var t in r.Triggers)
+            {
+                if (t is null) continue;
+                t.Effects ??= new ObservableCollection<EffectSpec>();
+                t.Effects.Clear();
+                t.RequireAllTriggers = false;
+            }
+            if (anyRequireAll) r.TriggerMode = "All";
+        }
+    }
+
+    /// <summary>
+    /// 判定「两条效果完全重复」用的键：按存档口径序列化的紧凑 JSON（见 <see cref="NormalizeRelicEffects"/>）。
+    /// </summary>
+    private static string EffectKey(EffectSpec e) => JsonSerializer.Serialize(e, EffectKeyOpts);
+
+    private static readonly JsonSerializerOptions EffectKeyOpts = new()
+    {
+        WriteIndented = false,
+        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
 
     /// <summary>
     /// 召唤物列表的载入规整：

@@ -7775,21 +7775,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
     // ==================== 遗物 ====================
 
     /// <summary>
-    /// 这只遗物**所有触发时机**的效果（按时机顺序摊平）。
+    /// 这只遗物的效果（V0.2.126 起是**整只遗物唯一的一份**：效果挂在遗物上，
+    /// 触发时机只说明「什么时候触发」，见 <see cref="RelicSpec.Effects"/>）。
     ///
-    /// 第 10 批起一条遗物能挂多条触发时机，每条各自配效果 —— 生成端的「动态变量声明 / 悬停提示 /
-    /// 概率掷骰 / 先古预览 / 条件」这些**是按整只遗物算**的东西必须看全部时机的效果，
-    /// 只读 <c>r.Effects</c>（= 第 1 条时机）会把第 2 条时机上的效果漏掉。
-    /// 一条时机的老存档结果和以前逐字一致（就那一条）。
+    /// 为什么留成方法：生成端有十几处「按整只遗物算」的判断（动态变量声明 / 悬停提示 / 概率掷骰 /
+    /// 先古预览 / 条件 / 「用到才生成」的东西）都走它，改一处就全改到。空集合不是 null。
     /// </summary>
     private static IEnumerable<EffectSpec> RelicEffects(RelicSpec r) =>
-        r.Triggers.Where(t => t is not null).SelectMany(t => t.Effects).Where(e => e is not null);
+        r.Effects is null ? Enumerable.Empty<EffectSpec>() : r.Effects.Where(e => e is not null);
 
     public static string RelicSource(CharacterProfile p, RelicSpec r, int index)
     {
-        // ===== 第 10 批：一只遗物可以挂**多条触发时机**（每条各自配自己的效果）=====
-        // 只有一条时机时**完全走下面那条老路径**（一个字符都不变 —— 老存档的回归红线）；
-        // 两条以上才走 EmitRelicMultiTriggerHook（按「钩子」分组，同一条钩子只生成一个 override）。
+        // ===== V0.2.126：效果是**整只遗物那一份**，触发时机只决定「什么时候跑它」=====
+        // 只有一条时机时**完全走下面那条老路径**（一个字符都不变 —— 单时机 Any 的回归红线，
+        // 那种形状就是 V0.2.121 及更早的老存档）；两条以上才走 EmitRelicMultiTriggerHook
+        // （按「钩子」分组，同一条钩子只生成一个 override）。
         if (r.Triggers.Count(t => t is not null) > 1)
             return EmitRelicMultiTriggerHook(p, r, index);
 
@@ -7902,6 +7902,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         // 效果那一整段（按点数循环 / 概率掷骰 / 先古预览）抽成了 EmitRelicEffectBlock ——
         // 单条路径和多条路径共用同一份文本，免得两边慢慢长歪。这里的输出和以前**逐字一致**。
+        // ⚠ 「关系 = 全部满足才触发、但只配了 1 条时机」也走这条路径（校验器会提示「不生效」）：
+        //   单条时机下「全部满足」和「满足其中一个」是同一条，生成的代码一个字都一样。
+        //   ⚠ 为了让这种情况回读得回来，只有这时候多写一行标记 —— **单条 + Any 不写**
+        //   （红线：那种形状 = V0.2.121 及更早的老存档，生成文本必须逐字一致）。
+        if (r.IsAllTriggers) w.Line(RelicTriggerModeMarker(r));
         int relicEffectIndex = 0;
         EmitRelicEffectBlock(w, p, r.First, r.Effects.ToList(), hasContext, relicVars, roomVar, ref relicEffectIndex);
         // 效果级「每场战斗只触发一次」：跑过一次就打标记（整只遗物级的已经在上面打过标记了）
@@ -8105,7 +8110,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         /// <summary>效果里能不能直接用 <c>choiceContext</c>（本体钩子给的参数 + 生成端自己造的那两种）。</summary>
         public bool HasContext;
         public string? RoomVar;
-        public int AndIndex = -1;   // 「同时成立」里的序号（-1 = 没勾）
+        /// <summary>
+        /// 这一段要不要跑**遗物那份共享效果**（V0.2.126）：Any 模式每条时机都跑；
+        /// All 模式只有最后那条跑（前面几条只打 <c>__andHit</c> 标记）。
+        /// </summary>
+        public bool SharedEffects;
     }
 
     /// <summary>
@@ -8313,6 +8322,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 关系模式的**回读标记行**（V0.2.126）：<c>// CET:TriggerMode=Any|All CET:AndScope=Turn|Combat</c>。
+    ///
+    /// 为什么要有它：生成端两种模式写出来的代码形状相近（都是一堆守卫 + 一段效果），
+    /// 光看代码反推不出「这几条时机是任意一条就触发，还是全都要满足」；而「重置范围」只在
+    /// All 模式下存在，没有标记就丢了。位置照其他 <c>CET:</c> 标记的风格写在效果段之前。
+    /// </summary>
+    internal static string RelicTriggerModeMarker(RelicSpec r) =>
+        $"// CET:TriggerMode={(r.IsAllTriggers ? "All" : "Any")} CET:AndScope={r.AndScope}"
+        + (r.IsAllTriggers ? "   // 整只遗物：全部触发时机都满足才跑一次效果" : "   // 整只遗物：任意一条触发时机满足就跑一次效果");
+
+    /// <summary>
     /// 多条触发时机时的钩子方法：**按钩子分组**，一组只生成一个 override。
     ///
     /// 两条时机落在同一个钩子上时（例：都是 AfterDamageReceived），方法体里按顺序放：
@@ -8330,14 +8350,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
         var n = Naming.From(p);
         string cls = n.RelicClassName(r, index);
         var triggers = r.Triggers.Where(t => t is not null).ToList();
-        var allEffects = triggers.SelectMany(t => t.Effects).Where(e => e is not null).ToList();
+        // V0.2.126：效果是**整只遗物唯一那一份**（不再按时机各配一份）
+        var allEffects = RelicEffects(r).ToList();
 
-        // 「同时成立」：参与的那几条（勾了 RequireAllTriggers 的）各自一个成立标记。
-        // 语义和「自定义状态」页完全一样（见 CustomPowerGen.TryWrapRequireAll）：谁成立谁打标记，
-        // **最后凑齐的那一条**跑它自己的效果，然后清标记（一个窗口只触发一次）。
-        var andTriggers = triggers.Where(t => t.RequireAllTriggers).ToList();
-        bool andOn = andTriggers.Count >= 2;
-
+        // 「全部满足才触发」（用户要求）＝ V0.2.122 那套「同时成立」的语义推广到整只遗物：
+        // 每条时机各自照常判断自己那件事，谁成立了就打个标记；**最后凑齐的那一条**才跑
+        // 遗物那份共享效果，然后把这一轮的标记清掉（一个窗口只触发一次）。
+        // 实现口径和「自定义状态」页完全一样（见 CustomPowerGen.TryWrapRequireAll）。
+        bool andOn = r.IsAllTriggers;
+        // 谁负责跑那份共享效果：All 模式 = **最后一条时机**（前面各条只打标记，凑齐了才轮到它）；
+        // Any 模式 = 每条时机各自跑（见下面 plan.SharedEffects 的赋值）。
+        var lastTrigger = triggers[triggers.Count - 1];
+        var firstTrigger = triggers[0];
         var plans = new List<RelicTriggerPlan>();
         foreach (var t in triggers)
         {
@@ -8369,15 +8393,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 else if (IsRelicGuardLine(line)) plan.Guards.Add(line);
                 else plan.Decls.Add(line);
             }
-            // 上下文：这个钩子本体没给 choiceContext、而这条时机的效果里有用得到它的 → 生成端自己造一个
+            // 上下文：这个钩子本体没给 choiceContext、而遗物那份效果里有用得到它的 → 生成端自己造一个
             plan.NeedsCtx = (CanBootstrapContext(t.Kind) || BootstrapInCombat(t.Kind))
-                            && t.Effects.Any(x => RelicNeedsChoiceContext(x));
-            plan.AndIndex = -1;
-            if (andOn)
-            {
-                for (int i = 0; i < andTriggers.Count; i++)
-                    if (ReferenceEquals(andTriggers[i], t)) { plan.AndIndex = i; break; }
-            }
+                            && allEffects.Any(x => RelicNeedsChoiceContext(x));
+            // Any 模式：每条时机各自跑共享效果；All 模式：只有最后那条跑（前面几条只打标记）
+            plan.SharedEffects = !andOn || ReferenceEquals(lastTrigger, t);
             plans.Add(plan);
         }
 
@@ -8427,11 +8447,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             w.Line()
              .Line("/// <summary>")
-             .Line("/// 【要和其他时机同时成立】这几条时机各自照常判断自己那件事，谁成立了就打个标记；")
-             .Line("/// **最后凑齐的那一条**才会跑它自己的效果，然后把这一轮的标记清掉（一个窗口只触发一次）。")
+             .Line("/// 【全部满足才触发】这几条触发时机各自照常判断自己那件事，谁成立了就打个标记；")
+             .Line("/// **最后凑齐的那一条**才会跑遗物那份效果，然后把这一轮的标记清掉（一个窗口只触发一次）。")
              .Line("/// 窗口 = " + (r.AndScope == "Combat" ? "本场战斗（整场凑齐一次就行）" : "本回合（换回合按回合号自动清零）") + "。")
              .Line("/// </summary>")
-             .Line("private bool " + string.Join(", ", andTriggers.Select((_, i) => $"__andHit{i}")) + ";");
+             .Line("private bool " + string.Join(", ", triggers.Select((_, i) => $"__andHit{i}")) + ";");
             if (r.AndScope != "Combat")
                 w.Line("private int __andTurn;   // 上一次记下的回合数（变了就清标记 = 本回合窗口）");
         }
@@ -8468,6 +8488,30 @@ public static class ExtraResourceEnergyCounterDiagPatch
             {
                 var plan = group[gi];
                 foreach (string c in plan.Comments) w.Line(c);
+                // 「全部满足才触发」（用户要求）：这条时机成立时打自己的标记；
+                // **最后凑齐的那一条**（= 最后一条时机）才跑遗物那份共享效果，然后清标记。
+                string flags = string.Join(" && ", triggers.Select((_, i) => $"__andHit{i}"));
+                int myIdx = 0;
+                for (int i = 0; i < triggers.Count; i++) if (ReferenceEquals(triggers[i], plan.Trigger)) { myIdx = i; break; }
+                if (andOn && r.AndScope != "Combat")
+                {
+                    // 本回合窗口：换回合先把标记清掉（按回合号认，不需要额外的重置钩子）。
+                    // ⚠ 每个分支里都写一遍（不是只写第一段）：前面那些分支的守卫一旦不成立，
+                    //   写在它们后面的代码就永远不会跑到，标记会一直留着。
+                    // ⚠ 遗物的 base.Owner **就是 Player**，所以直接取 PlayerCombatState；
+                    //   不能照抄状态页那版（状态那边 base.Owner 是 Creature，才要多一层 `.Player?`）——
+                    //   抄错会生成 `base.Owner.Player?.PlayerCombatState` → CS1061（真 build 抓到的）。
+                    w.Open("if (base.Owner.PlayerCombatState is { } __andPcs && __andPcs.TurnNumber != __andTurn)");
+                    w.Line("__andTurn = __andPcs.TurnNumber;   // 新的一回合：把「全部满足」的标记清掉");
+                    w.Line(string.Join(" ", triggers.Select((_, i) => $"__andHit{i} = false;")));
+                    w.Close();
+                }
+                // 关系模式 + 「这条时机跑共享效果」的标记。⚠ 必须写在 `if` **外面**（缩进 0）：
+                // 回读靠这一行认「关系 + 重置范围」和「共享效果在哪一段」（见 ProjectRecovery 的
+                // RelicTriggerModeFromText / SplitRelicTriggerSegments）；缩进进 if 块里就切不出这一段了。
+                // 只写在**真正跑共享效果的那一段**（All = 最后一条时机；Any = 第一条）——
+                // 每一段都写的话回读会拿第一段去解析效果，而 All 模式的第一段里根本没有效果。
+                if (ReferenceEquals(andOn ? lastTrigger : firstTrigger, plan.Trigger)) w.Line(RelicTriggerModeMarker(r));
                 // 守卫 / 数值门 / 上下文 / 条件一行行地收集成「这个分支里要写的东西」——
                 // 守卫是**合并**的（多个 `return` 守卫 = 多个条件与起来；本分支不成立就整段跳过）。
                 // 为什么不用 `return`：同一个钩子方法里还有别的触发时机，`return` 会把它们一起跳过。
@@ -8507,42 +8551,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 }
                 // 一个分支里的条件合并成一句（多个 `return` 守卫 = 多个条件与起来）
                 if (conds.Count > 0) w.Open("if (" + string.Join(" && ", conds) + ")");
-                // 「同时成立」：这条时机成立时打个标记，**最后凑齐的那一条**才跑它自己的效果
-                if (plan.AndIndex >= 0)
+                if (andOn)
                 {
-                    var all = andTriggers;
-                    string flags = string.Join(" && ", all.Select((_, i) => $"__andHit{i}"));
-                    if (r.AndScope != "Combat")
-                    {
-                        // 本回合窗口：换回合先把标记清掉（按回合号认，不需要额外的重置钩子）
-                        // ⚠ 遗物的 base.Owner **就是 Player**，所以直接取 PlayerCombatState；
-                        //   不能照抄状态页那版（状态那边 base.Owner 是 Creature，才要多一层 `.Player?`）——
-                        //   抄错会生成 `base.Owner.Player?.PlayerCombatState` → CS1061（真 build 抓到的）。
-                        w.Open("if (base.Owner.PlayerCombatState is { } __andPcs && __andPcs.TurnNumber != __andTurn)");
-                        w.Line("__andTurn = __andPcs.TurnNumber;   // 新的一回合：把「同时成立」的标记清掉");
-                        w.Line(string.Join(" ", all.Select((_, i) => $"__andHit{i} = false;")));
-                        w.Close();
-                    }
-                    w.Line($"// 「要和其他时机同时成立」：这条已经成立（{plan.AndIndex + 1}/{all.Count}）");
-                    // 回读用的一行标记（和状态页同一个格式；回读时这个钩子方法里哪一段有它，
-                    // 就说明那一段属于「同时成立」那组）
-                    w.Line($"// CET:RequireAll=1 CET:AndScope={r.AndScope}");
-                    w.Line($"__andHit{plan.AndIndex} = true;");
-                    w.Line("// 参与的那几条时机在同一个窗口里都成立过了");
+                    w.Line($"__andHit{myIdx} = true;   // 这条成立（第 {myIdx + 1}/{triggers.Count} 条）");
+                    w.Line("// 所有参与的那几条时机在同一个窗口里都成立过了");
                     w.Open($"if ({flags})");
                 }
                 if (condBites && r.Condition.Kind == "OncePerCombat") w.Line("_condUsedThisCombat = true;");
                 int before = w.Length;
-                EmitRelicEffectBlock(w, p, plan.Trigger, plan.Trigger.Effects.ToList(), plan.HasContext,
-                    relicVars, plan.RoomVar, ref relicEffectIndex);
-                if (plan.AndIndex >= 0)
+                if (plan.SharedEffects)
+                    EmitRelicEffectBlock(w, p, plan.Trigger, allEffects, plan.HasContext,
+                        relicVars, plan.RoomVar, ref relicEffectIndex);
+                if (andOn)
                 {
-                    w.Line(string.Join(" ", andTriggers.Select((_, i) => $"__andHit{i} = false;")) + "   // 这一轮用掉了，下个窗口重新凑");
+                    w.Line(string.Join(" ", triggers.Select((_, i) => $"__andHit{i} = false;")) + "   // 这一轮用掉了，下个窗口重新凑");
                     w.Close();
                 }
                 if (conds.Count > 0) w.Close();
                 // 这条时机一个字符都没写（没效果 / 没上下文 / 没条件）：async 的方法体不能空着
-                if (w.Length == before && conds.Count == 0 && plan.AndIndex < 0)
+                if (w.Length == before && conds.Count == 0 && !andOn)
                     w.Line("await Task.CompletedTask;   // 这条时机什么都没配：保持 async 方法的签名一致");
                 // 锻造节点图里【触发时机】和这条时机是同一个钩子时，把节点图嵌进这个方法里（不能另写同名 override）
                 if (ForgeGraphGen.UsesGraph(r) && ForgeGraphGen.RelicGraphNestsInTrigger(r, plan.Id))

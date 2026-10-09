@@ -1458,30 +1458,27 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("AncientRowHint");
 	}
 
-	// ==================== 遗物的「触发时机列表」（第 10 批，用户要求） ====================
+	// ==================== 遗物的「触发时机列表」（第 10 批；V0.2.126 起时机只管「什么时候触发」） ====================
 	//
-	// 用户原话：「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，
-	// 并且可以添加多个触发时机」。做法和「自定义状态」页那一套完全一样：
-	//   · 列表 = RelicSpec.Triggers（每条一行 Summary）；
-	//   · 列表下面那条 Border = 选中那条时机的编辑器（触发时机 / 盯哪个状态 / 数值 /
-	//     只对哪类牌生效 /「要和其他时机同时成立」/ 重置范围）；
-	//   · 「效果列表」RelicEffectList 绑的是**当前选中那条时机**的 Effects。
+	// 用户原话（V0.2.126）：「中间的触发时机并不是每条各配效果，而是决定整只遗物的触发时机，
+	// 只有同时满足或者满足其中一个才能触发遗物的效果，另外效果右侧应能添加多个效果种类」。
+	// 所以现在的结构是：遗物 = **一份效果**（右栏效果栏，RelicSpec.Effects）+ **一组触发时机**
+	// （中间栏列表，每条只有 种类 / 盯哪个状态 / 数值 / 统计范围 / 只对哪类牌生效）。
+	// 关系（任意一条 / 全部满足）在**中间栏上面那个开关**上（RelicSpec.TriggerMode）。
 
-	/// <summary>选中某条遗物触发时机：把「同时成立」的重置范围挂到它主人那只遗物上（不写进存档）。</summary>
+	/// <summary>选中某条遗物触发时机：给「重置范围」兜一下主人（列表增删时 RelicSpec 会自动挂）。</summary>
 	private void OnRelicTriggerSelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
 		// 「重置范围」存在整只遗物上（RelicSpec.AndScope），触发时机自己靠 OwnerRelic 读它 ——
-		// 列表增删时 RelicSpec 会自动挂；这里再兜一次（老存档 / 从工程恢复的时机可能没挂上）
+		// 老存档 / 从工程恢复的时机可能没挂上，这里再兜一次
 		if (RelicTriggerList?.SelectedItem is RelicTriggerSpec sel && RelicList?.SelectedItem is RelicSpec owner)
 			sel.OwnerRelic = owner;
-		// 效果列表跟着选中的时机换（XAML 里绑的是 SelectedItem.Effects，这里再显式刷一次，
-		// 免得 WPF 在切换遗物 / 从工程恢复存档时没重算绑定）
-		if (RelicEffectList is not null && RelicTriggerList?.SelectedItem is RelicTriggerSpec cur)
-			RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects") { Source = cur });
 		Raise("RelicTriggerSummary");
 	}
 
-	/// <summary>「添加触发时机」：新的一条默认「每回合开始时 → 获得 3 点格挡」（和状态页同一个默认）。</summary>
+	/// <summary>
+	/// 「添加触发时机」：新的一条默认「每回合开始时」（效果是遗物那一份，这里不再塞效果）。
+	/// </summary>
 	private void OnAddRelicTrigger(object sender, RoutedEventArgs e)
 	{
 		if (!(RelicList.SelectedItem is RelicSpec relic))
@@ -1490,11 +1487,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			return;
 		}
 		var trig = new RelicTriggerSpec { Kind = "PlayerTurnStart" };
-		trig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
 		relic.Triggers.Add(trig);       // RelicSpec 会自动把 OwnerRelic 挂上
 		if (RelicTriggerList is not null) RelicTriggerList.SelectedItem = trig;
 		Raise("RelicTriggerSummary");
-		SetStatus("已给这只遗物加了一条触发时机（默认「每回合开始时 → 获得 3 点格挡」，在下面改）。");
+		SetStatus("已给这只遗物加了一条触发时机（默认「每回合开始时」，在下面改）；触发后做什么在右边效果栏里配。");
 	}
 
 	/// <summary>「删除触发时机」：支持 Ctrl / Shift 多选一次删掉多条。</summary>
@@ -2708,8 +2704,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
 		SummonList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Summons"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
-		// 第 10 批：遗物页的「触发时机列表」绑到当前选中遗物的 Triggers；
-		// 效果列表绑到**当前选中那条时机**的 Effects（选中项由 OnRelicTriggerSelectionChanged 换绑）。
+		// V0.2.126：遗物页的「触发时机列表」绑到当前选中遗物的 Triggers；
+		// 效果列表绑的是**遗物那一份** Effects（和 RelicDetail 的 DataContext 一致，不随选中哪条时机变）。
 		if (RelicUiSelection is RelicSpec selRelic)
 		{
 			if (selRelic.Triggers.Count == 0) selRelic.Triggers.Add(new RelicTriggerSpec());
@@ -2724,9 +2720,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RelicTriggerList.SelectionChanged += OnRelicTriggerSelectionChanged;
 		OnRelicTriggerSelectionChanged(RelicTriggerList, new SelectionChangedEventArgs(ListBox.SelectionChangedEvent, new List<object>(), new List<object>()));
 		Raise("RelicTriggerSummary");
-		// ⚠ 这里**不能**再把 RelicEffectList 绑到裸 "Effects"（RelicDetail 的 DataContext 是 RelicSpec，
-		// 那会绑回「第 1 条时机」）——它的 ItemsSource 在 XAML 里已经绑成
-		// `SelectedItem.Effects, ElementName=RelicTriggerList`，OnRelicTriggerSelectionChanged 也会换绑。
+		// 遗物的效果栏 = **整只遗物那一份**（RelicDetail 的 DataContext 就是 RelicSpec，裸 "Effects" 正好是它）
+		RelicEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		RelicEffectList.SelectionChanged -= OnRelicEffectSelectionChanged;
 		RelicEffectList.SelectionChanged += OnRelicEffectSelectionChanged;
 		PotionEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
@@ -6364,7 +6359,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus("请先选中要删除的效果（可 Ctrl/Shift 多选）。");
 			return;
 		}
-		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is RelicTriggerSpec relicTriggerSpec) ? (_relicUndo, "遗物「" + (RelicList.SelectedItem as RelicSpec)?.Name + "」那条触发时机的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果"))))));
+		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果")))));
 		(Stack<UndoEntry>, string) tuple2 = tuple;
 		Stack<UndoEntry> item = tuple2.Item1;
 		string item2 = tuple2.Item2;
@@ -6385,11 +6380,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			if (!(spec is RelicSpec relicSpec))
 			{
-				// 遗物的「效果列表」现在挂在**当前选中的那条触发时机**上（第 10 批）
-				if (spec is RelicTriggerSpec relicTriggerSpec)
-				{
-					return relicTriggerSpec.Effects;
-				}
+				// ⚠ V0.2.126：触发时机**不再挂效果**（效果是整只遗物那一份）—— 所以这里没有
+				// RelicTriggerSpec 分支了（效果栏的 DataContext 现在一定是 RelicSpec / 卡牌 / 药水 / 状态）。
 				if (!(spec is PotionSpec potionSpec))
 				{
 					if (spec is PowerTriggerSpec powerTriggerSpec)
@@ -9944,10 +9936,199 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		CollectTextBoxes(root11, list17);
 		Check("药水的效果编辑器里也没有「升级增量」", !list17.Any((TextBox b) => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path == "UpgradeAmount"), "药水没有");
 		Check("遗物/药水页也不再用文字提「升级增量」", !TextsIn(root10).Any((string x) => x.Contains("升级增量")) && !TextsIn(root11).Any((string x) => x.Contains("升级增量")), "文字里没有");
-		// ===== 第 10 批①（用户要求）：遗物页那条「触发时机列表」（可以加好几条，每条各自配效果）=====
-		// 用户原话：「在哪选择多个触发时机，我怎么看不到，能不能在遗物页底下新增触发时机列表，
-		// 并且可以添加多个触发时机」——这里从界面侧验一遍：列表在、能加第二条、选中哪条就编辑哪条、
-		// 勾 2 条「同时成立」时「重置范围」看得见。
+		// ===== V0.2.126（用户要求）：遗物 = 一份效果 + 一组触发时机 =====
+		// 原话：「中间的触发时机并不是每条各配效果，而是决定整只遗物的触发时机，只有同时满足或者
+		// 满足其中一个才能触发遗物的效果，另外效果右侧应能添加多个效果种类」。
+		// 这一块验：老存档迁移（合并 / 去重 / 幂等 / 同时成立→全部满足）、生成（单条逐字不变 / Any / All）、
+		// 回读（时机条数 + 字段 + 关系 + 共享效果，0 条「没认出来」）。
+		{
+			// ① 迁移：2 条时机各带 1 条效果（其中第 2 条与第 1 条**完全重复**）+ 都勾过「同时成立」
+			var migRelic = new RelicSpec { Name = "迁移试验", ClassName = "UiCheckMigrateRelic", Rarity = "Common", AndScope = "Combat" };
+			migRelic.Triggers.Clear();
+			var migT1 = new RelicTriggerSpec { Kind = "PlayerTurnStart", RequireAllTriggers = true };
+			migT1.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			var migT2 = new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", RequireAllTriggers = true };
+			migT2.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });   // 与上面完全重复
+			migT2.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy" });
+			migRelic.Triggers.Add(migT1);
+			migRelic.Triggers.Add(migT2);
+			var migProfile = ProfileFactory.Sample();
+			migProfile.Relics.Clear();
+			migProfile.Relics.Add(migRelic);
+			ProfileFactory.NormalizeRelicEffects(migProfile);
+			Check("迁移：2 条时机各带效果 → 合并进遗物（完全重复的只留 1 份：格挡/伤害 = 2 条）",
+				migRelic.Effects.Count == 2
+				&& migRelic.Effects[0].Kind == "Block" && migRelic.Effects[0].Amount == 3m
+				&& migRelic.Effects[1].Kind == "Damage" && migRelic.Effects[1].Amount == 5m,
+				string.Join("+", migRelic.Effects.Select(e => e.Kind + ":" + e.Amount)));
+			Check("迁移：时机上的效果被清空（新存档不再写老字段）",
+				migRelic.Triggers.All(t => t.Effects.Count == 0) && migRelic.Triggers.All(t => !t.RequireAllTriggers),
+				"清空 + 置 false");
+			Check("迁移：勾过「同时成立」→ 关系切成「全部满足才触发」，重置范围沿用原值（Combat）",
+				migRelic.TriggerMode == "All" && migRelic.IsAllTriggers && migRelic.AndScope == "Combat",
+				migRelic.TriggerMode + "/" + migRelic.AndScope);
+			// 幂等：再跑一遍，一个字节都不动
+			int migEffectCount = migRelic.Effects.Count;
+			string migSignature = string.Join("|", migRelic.Effects.Select(e => e.Kind + ":" + e.Amount));
+			ProfileFactory.NormalizeRelicEffects(migProfile);
+			ProfileFactory.NormalizeRelicEffects(migProfile);
+			Check("迁移是幂等的（再跑两遍：效果条数 / 内容 / 关系 / 范围全都不变）",
+				migRelic.Effects.Count == migEffectCount
+				&& string.Join("|", migRelic.Effects.Select(e => e.Kind + ":" + e.Amount)) == migSignature
+				&& migRelic.TriggerMode == "All" && migRelic.AndScope == "Combat",
+				migRelic.Effects.Count + " 条 / " + migRelic.TriggerMode);
+			// 老存档（V0.2.121 及更早：只有一个时机、效果直接挂在遗物上）迁移后一个字符都不变
+			var oldStyle = new RelicSpec { Name = "极老遗物", ClassName = "UiCheckOldStyleRelic", Trigger = "PlayerTurnStart" };
+			oldStyle.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+			var oldProfile = ProfileFactory.Sample();
+			oldProfile.Relics.Clear();
+			oldProfile.Relics.Add(oldStyle);
+			ProfileFactory.NormalizeRelicEffects(oldProfile);
+			Check("迁移：极老存档（效果本来就挂在遗物上）→ 内容 / 条数 / 关系一个都不变",
+				oldStyle.Effects.Count == 1 && oldStyle.Effects[0].Amount == 4m
+				&& oldStyle.TriggerMode == "Any" && oldStyle.Triggers.Count == 1
+				&& oldStyle.Triggers[0].Effects.Count == 0,
+				oldStyle.Effects.Count + " 条 / " + oldStyle.TriggerMode);
+
+			// ② 生成：单条时机 + Any（= 老存档形状）逐字一致
+			var genProfile = ProfileFactory.Sample();
+			genProfile.Relics.Clear();
+			var oneRelic = new RelicSpec { Name = "单条", ClassName = "UiCheckOneTriggerRelic", Rarity = "Common", Trigger = "PlayerTurnStart" };
+			oneRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			genProfile.Relics.Add(oneRelic);
+			string oneSrc = CSharpCodeGen.RelicSource(genProfile, oneRelic, 0);
+			Check("生成：单条时机 + Any **不写** CET:TriggerMode 标记（老存档生成文本逐字不变）",
+				!oneSrc.Contains("CET:TriggerMode") && !oneSrc.Contains("CET:RequireAll"), "没写标记");
+			Check("生成：单条时机 + Any 里跑的就是遗物那份效果（获得格挡）", oneSrc.Contains("CreatureCmd.GainBlock"), "有格挡");
+
+			// 三条生成形状做「逐字对照」：同一个效果、不同关系/时机数
+			var twoAny = new RelicSpec { Name = "两条任意", ClassName = "UiCheckTwoAnyRelic", Rarity = "Common" };
+			twoAny.Triggers.Clear();
+			twoAny.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			twoAny.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack" });
+			twoAny.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			string twoAnySrc = CSharpCodeGen.RelicSource(genProfile, twoAny, 0);
+			Check("生成：2 条时机 + Any → 两个钩子各自跑**同一份**共享效果（格挡出现 2 次）",
+				twoAnySrc.Contains("AfterPlayerTurnStart") && twoAnySrc.Contains("AfterCardPlayed")
+				&& System.Text.RegularExpressions.Regex.Matches(twoAnySrc, "CreatureCmd\\.GainBlock").Count == 2,
+				"格挡 ×" + System.Text.RegularExpressions.Regex.Matches(twoAnySrc, "CreatureCmd\\.GainBlock").Count);
+			Check("生成：2 条时机 + Any 不生成 __andHit 标记位（复用老字段的写法都没出现）",
+				!twoAnySrc.Contains("private bool __andHit") && !twoAnySrc.Contains("__andHit0 = "),
+				"没有标记位");
+
+			var twoAll = new RelicSpec { Name = "两条全部", ClassName = "UiCheckTwoAllRelic", Rarity = "Common", TriggerMode = "All", AndScope = "Turn" };
+			twoAll.Triggers.Clear();
+			twoAll.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			twoAll.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack" });
+			twoAll.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			string twoAllSrc = CSharpCodeGen.RelicSource(genProfile, twoAll, 0);
+			Check("生成：2 条时机 + All → 两条各打标记（__andHit0 / __andHit1）",
+				twoAllSrc.Contains("private bool __andHit0, __andHit1;") && twoAllSrc.Contains("__andHit0 = true;") && twoAllSrc.Contains("__andHit1 = true;"), "有标记");
+			Check("生成：2 条时机 + All → 「凑齐跑一次 + 跑完清标记」（if (__andHit0 && __andHit1) + 两个置 false）",
+				twoAllSrc.Contains("if (__andHit0 && __andHit1)")
+				&& twoAllSrc.Contains("__andHit0 = false; __andHit1 = false;"), "凑齐才跑");
+			Check("生成：2 条时机 + All → 共享效果只跑**一次**（格挡只出现 1 次）",
+				System.Text.RegularExpressions.Regex.Matches(twoAllSrc, "CreatureCmd\\.GainBlock").Count == 1,
+				"格挡 ×" + System.Text.RegularExpressions.Regex.Matches(twoAllSrc, "CreatureCmd\\.GainBlock").Count);
+			Check("生成：All 写回读标记 CET:TriggerMode=All CET:AndScope=Turn",
+				twoAllSrc.Contains("CET:TriggerMode=All CET:AndScope=Turn"), "有标记");
+			Check("生成：Turn 档有「换回合清标记」（__andTurn + 回合号比较）",
+				twoAllSrc.Contains("__andTurn = __andPcs.TurnNumber;"), "Turn 档清零");
+			var twoAllCombat = new RelicSpec { Name = "两条全部战斗", ClassName = "UiCheckTwoAllCombatRelic", Rarity = "Common", TriggerMode = "All", AndScope = "Combat" };
+			twoAllCombat.Triggers.Clear();
+			twoAllCombat.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			twoAllCombat.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack" });
+			twoAllCombat.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			string twoAllCombatSrc = CSharpCodeGen.RelicSource(genProfile, twoAllCombat, 0);
+			Check("生成：Combat 档**不写** __andTurn（整场凑齐一次，不需要按回合清零）",
+				!twoAllCombatSrc.Contains("__andTurn") && twoAllCombatSrc.Contains("CET:AndScope=Combat"), "Combat 档不重置");
+
+			// ③ 校验器：遗物那份效果只校验一次；All 但只有 1 条时机 → 提示「不生效」
+			var vOne = ProfileFactory.Sample();
+			vOne.Relics.Clear();
+			var vAllOne = new RelicSpec { Name = "全部只有一条", ClassName = "UiCheckValidateAllOne", Rarity = "Common", TriggerMode = "All" };
+			vAllOne.Triggers.Clear();
+			vAllOne.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Group:没有这个组" });
+			vAllOne.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			vOne.Relics.Add(vAllOne);
+			var vAllOneIssues = ProfileValidator.Validate(vOne);
+			Check("校验器：All 但只有 1 条时机 → 提示「不生效」",
+				vAllOneIssues.Any(i => !i.IsError && i.Message.Contains("不生效") && i.Message.Contains("全部满足才触发")),
+				"提示了");
+			// 「只对哪类牌生效」选了个空组是**错误**级 —— 遗物那份共享效果只该被校验一次，
+			// 所以这条错误在整份校验结果里只出现 1 次（老写法按每条时机各校验一遍会重复）。
+			int filterErrors = vAllOneIssues.Count(i => i.IsError && i.Message.Contains("只对哪类牌生效"));
+			Check("校验器：遗物那份效果只校验**一次**（空组错误只报 1 条，不按时机数重复）",
+				filterErrors == 1, filterErrors + " 条");
+
+			// ④ 生成 → 回读（Any / All 各一只，字段逐项还原、0 条「没认出来」）
+			var recProfile2 = ProfileFactory.Sample();
+			recProfile2.Paths.VanillaProject = Profile.Paths.VanillaProject;
+			recProfile2.Paths.GameDataDir = Profile.Paths.GameDataDir;
+			recProfile2.Relics.Clear();
+			var recAny = new RelicSpec { Name = "回读任意", ClassName = "UiCheckRecAnyRelic", Rarity = "Common", TriggerMode = "Any" };
+			recAny.Triggers.Clear();
+			recAny.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			recAny.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", Amount = 2m, Scope = "Combat" });
+			recAny.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			recAny.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 7m, TargetSide = "Enemy" });
+			recProfile2.Relics.Add(recAny);
+			var recAll = new RelicSpec { Name = "回读全部", ClassName = "UiCheckRecAllRelic", Rarity = "Rare", TriggerMode = "All", AndScope = "Combat" };
+			recAll.Triggers.Clear();
+			recAll.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			recAll.Triggers.Add(new RelicTriggerSpec { Kind = "PowerReached", PowerId = "VulnerablePower", Amount = 3m });
+			recAll.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+			recProfile2.Relics.Add(recAll);
+			string recRoot2 = Path.Combine(Path.GetTempPath(), "forge_uicheck_relicshared_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				recProfile2.Paths.OutputDir = recRoot2;
+				var recGen2 = ModGenerator.Generate(recProfile2, delegate { });
+				Check("（准备）V0.2.126 探针存档能生成", recGen2.Success, recGen2.Success ? recGen2.ProjectRoot
+					: string.Join(" | ", recGen2.Issues.Where(i => i.IsError).Select(i => i.Message).Take(2)));
+				if (recGen2.Success)
+				{
+					var recRes2 = ProjectRecovery.FromProject(recGen2.ProjectRoot);
+					var backAny = recRes2.Profile.Relics.FirstOrDefault(delegate (RelicSpec x) { return x.ClassName == "UiCheckRecAnyRelic"; });
+					var backAll = recRes2.Profile.Relics.FirstOrDefault(delegate (RelicSpec x) { return x.ClassName == "UiCheckRecAllRelic"; });
+					Check("回读：Any 那只回来了 2 条时机 + 字段对（第 2 条 筛选=攻击 / 数值=2 / 范围=本场战斗）",
+						backAny is not null && backAny.Triggers.Count == 2
+						&& backAny.Triggers[0].Kind == "PlayerTurnStart"
+						&& backAny.Triggers[1].Kind == "CardPlayed"
+						&& backAny.Triggers[1].CardFilter == "Attack"
+						&& backAny.Triggers[1].Amount == 2m && backAny.Triggers[1].Scope == "Combat",
+						backAny is null ? "(缺" : string.Join("/", backAny.Triggers.Select(delegate (RelicTriggerSpec t) { return t.Kind + ":" + t.CardFilter; })));
+					Check("回读：Any 那只的**共享效果**原样回来（格挡 3 + 伤害 7，共 2 条）",
+						backAny is not null && backAny.Effects.Count == 2
+						&& backAny.Effects[0].Kind == "Block" && backAny.Effects[0].Amount == 3m
+						&& backAny.Effects[1].Kind == "Damage" && backAny.Effects[1].Amount == 7m,
+						backAny is null ? "(缺" : string.Join("+", backAny.Effects.Select(delegate (EffectSpec e) { return e.Kind + ":" + e.Amount; })));
+					Check("回读：Any 那只的关系是 TriggerMode=Any",
+						backAny is not null && backAny.TriggerMode == "Any", backAny?.TriggerMode ?? "(缺");
+					Check("回读：All 那只回来了 2 条时机 + 关系=全部满足 + 重置范围=本场战斗",
+						backAll is not null && backAll.Triggers.Count == 2 && backAll.TriggerMode == "All" && backAll.AndScope == "Combat",
+						backAll is null ? "(缺" : backAll.Triggers.Count + " 条 / " + backAll.TriggerMode + "/" + backAll.AndScope);
+					Check("回读：All 那只是「某个状态层数到达 N 层」的盯状态 / 到达层数也回来了",
+						backAll is not null && backAll.Triggers[1].Kind == "PowerReached"
+						&& backAll.Triggers[1].PowerId == "VulnerablePower" && backAll.Triggers[1].Amount == 3m,
+						backAll?.Triggers.ElementAtOrDefault(1) is { } t2 ? t2.Kind + "/" + t2.PowerId + "/" + t2.Amount : "(缺");
+					Check("回读：All 那只的共享效果原样回来（格挡 4）",
+						backAll is not null && backAll.Effects.Count == 1 && backAll.Effects[0].Kind == "Block" && backAll.Effects[0].Amount == 4m,
+						backAll is null ? "(缺" : string.Join("+", backAll.Effects.Select(delegate (EffectSpec e) { return e.Kind + ":" + e.Amount; })));
+					Check("回读：这两只遗物 0 条「没认出来」",
+						!recRes2.Unparsed.Any(delegate (string u) { return u.Contains("UiCheckRecAnyRelic") || u.Contains("UiCheckRecAllRelic"); }),
+						string.Join(" | ", recRes2.Unparsed.Take(2)));
+					Check("回读：回读结果**再生成一次**是同构的（时机条数 / 共享效果条数 / 关系都不变）",
+						backAll is not null && CSharpCodeGen.RelicSource(recRes2.Profile, backAll, 0) == CSharpCodeGen.RelicSource(recProfile2, recAll, 1),
+						"逐字相同");
+				}
+			}
+			finally
+			{
+				try { if (Directory.Exists(recRoot2)) Directory.Delete(recRoot2, true); } catch { }
+			}
+		}
+		// ===== 第 10 批①（用户要求）：遗物页那条「触发时机列表」（V0.2.126 起时机只管「什么时候触发」）=====
 		{
 			SelectTabRoot("遗物");
 			if (RelicList.Items.Count > 0 && RelicList.SelectedItem == null) RelicList.SelectedIndex = 0;
@@ -9971,31 +10152,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Profile.Relics.Count + "/" + relicsBefore);
 			if (lastRelic != null && lastRelic.Triggers.Count >= 2)
 			{
-				// 选中第二条 → 效果列表绑的必须是**第二条**的 Effects（不是第 1 条的代理）
+				// V0.2.126：效果是**整只遗物那一份** → 换选中哪条时机，效果栏绑的都不该变
 				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
 				UpdateLayout();
-				Check("效果列表跟着选中的那条时机换（绑第二条的 Effects）",
-					ReferenceEquals(RelicEffectList.ItemsSource, lastRelic.Triggers[1].Effects),
-					RelicEffectList.ItemsSource is null ? "(null)" : "已换绑");
-				RelicEffectList.SelectedIndex = 0;
+				Check("效果栏绑的是**整只遗物**那一份效果（RelicSpec.Effects），换时机不换绑",
+					ReferenceEquals(RelicEffectList.ItemsSource, lastRelic.Effects),
+					RelicEffectList.ItemsSource is null ? "(null)" : "绑在遗物上");
+				Check("效果栏那一份效果不是「哪条时机的 Effects」（时机的 Effects 一直是空的）",
+					lastRelic.Triggers[1].Effects.Count == 0 && lastRelic.Triggers[0].Effects.Count == 0,
+					$"{lastRelic.Triggers[0].Effects.Count} / {lastRelic.Triggers[1].Effects.Count}");
+				// 关系开关：默认「满足其中一个就触发」→「重置范围」不显示；切到「全部满足才触发」→ 显示
+				Check("关系开关默认是「满足其中一个就触发」（TriggerMode = Any）",
+					lastRelic.TriggerMode == "Any" && lastRelic.TriggerModeIsAny && !lastRelic.ShowAndScope,
+					lastRelic.TriggerMode);
+				Check("关系开关的两个单选按钮绑的是 TriggerModeIsAny / TriggerModeIsAll，且「全部满足」那个可见可用",
+					BindingOperations.GetBinding(RelicTriggerModeAny, ToggleButton.IsCheckedProperty)?.Path?.Path == "TriggerModeIsAny"
+					&& BindingOperations.GetBinding(RelicTriggerModeAll, ToggleButton.IsCheckedProperty)?.Path?.Path == "TriggerModeIsAll"
+					&& RelicTriggerModeAll.IsVisible && RelicTriggerModeAll.IsEnabled,
+					"绑定 / 可见都对");
+				Check("默认（Any）时「重置范围」下拉那一行不显示",
+					!RelicAndScopeCombo.IsVisible, RelicAndScopeCombo.IsVisible.ToString());
+				lastRelic.TriggerMode = "All";     // 界面上的单选按钮绑的就是它
 				UpdateLayout();
-				// 效果编辑器就长在列表行里（ItemTemplate = EffectEditorPlain）——每行的 DataContext
-				// 必须是**选中那条时机**的效果（第 10 批改成 ItemTemplate 的原因见 XAML 里的注释）
-				Check("选中第二条时，效果列表里的行挂的是第二条的效果（不是第一条）",
-					RelicEffectList.Items.Count == lastRelic.Triggers[1].Effects.Count
-					&& RelicEffectList.Items.Count > 0
-					&& ReferenceEquals(RelicEffectList.Items[0], lastRelic.Triggers[1].Effects[0]),
-					RelicEffectList.Items.Count + " 条效果");
-				// 勾 2 条「同时成立」→「重置范围」那一行才显示
-				lastRelic.Triggers[0].RequireAllTriggers = true;
-				lastRelic.Triggers[1].RequireAllTriggers = true;
-				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
-				UpdateLayout();
-				Check("勾 2 条「同时成立」→ ShowAndScope 为真（界面显示「重置范围」）",
-					lastRelic.Triggers[1].ShowAndScope && lastRelic.ShowAndScope, "重置范围可见");
-				Check("「重置范围」绑的是 AndScope（落在整只遗物上）",
-					lastRelic.Triggers[1].AndScope == lastRelic.AndScope, lastRelic.Triggers[1].AndScope);
-				// 删掉刚加的那条，别影响后面的自检
+				Check("切到「全部满足才触发」→ ShowAndScope 为真、「重置范围」看得见",
+					lastRelic.ShowAndScope && RelicAndScopeCombo.IsVisible
+					&& VisibleTextsIn(RelicDetail).Contains("重置范围"),
+					"重置范围可见");
+				Check("「重置范围」下拉绑的是 AndScope（落在整只遗物上）",
+					BindingOperations.GetBinding(RelicAndScopeCombo, Selector.SelectedValueProperty)?.Path?.Path == "AndScope"
+					&& lastRelic.AndScope == "Turn",
+					lastRelic.AndScope);
+				lastRelic.AndScope = "Combat";
+				Check("「重置范围」能改成「本场战斗」", lastRelic.AndScope == "Combat", lastRelic.AndScope);
+				lastRelic.TriggerMode = "Any";
+				lastRelic.AndScope = "Turn";
+				// 删除时机时如果关系是「全部满足才触发」会被拦？——不会（只是提示不生效），这里先切回 Any
 				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
 				OnRemoveRelicTrigger(this, new RoutedEventArgs());
 				Check("「删除触发时机」删掉后只剩 1 条", lastRelic.Triggers.Count == 1, lastRelic.Triggers.Count + " 条");

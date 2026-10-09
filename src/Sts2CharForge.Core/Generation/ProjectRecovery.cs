@@ -3053,20 +3053,28 @@ public static class ProjectRecovery
             Name = loc.Get($"{entry}.title", cls),
             Rarity = Match(text, @"=>\s*RelicRarity\.(\w+)") ?? "Common",
         };
-        // ===== 第 10 批：一只遗物可以挂**多条触发时机** =====
+        // ===== V0.2.126：遗物 = **一份效果 + 一组触发时机** =====
         // 老工程（只有一个钩子）走下面那条老路径，回读结果逐字不变；
-        // 多条时机时把类里**所有**钩子方法都扫出来，每个方法体里各自解析自己的时机字段 + 效果。
+        // 多条时机时把类里**所有**钩子方法都扫出来（每个方法体 = 一条触发时机，
+        // 只管「什么时候触发」），共享效果从**写了 CET:TriggerMode 标记的那一段**（或唯一那一段）解析**一次**。
         var relicHooks = RelicHookMethods(text);
         if (relicHooks.Count > 1)
         {
             var varsAll = ParseVars(text);
             foreach (var (hook, kind, body) in relicHooks)
             {
-                var trig = RelicTriggerFromBody(hook, kind, body, text, varsAll, nameToPowerId, result, cls, relic);
+                var trig = RelicTriggerFromBody(hook, kind, body, text, nameToPowerId, result, cls, relic);
                 if (trig is null) continue;
                 relic.Triggers.Add(trig);
             }
             if (relic.Triggers.Count == 0) relic.Triggers.Add(new RelicTriggerSpec());
+            // 共享效果：先看关系标记（All 模式只有「凑齐后跑效果」那一段有标记），
+            // 没有标记（Any 模式）就用**第一段**的方法体解析一次（正式生成的 Any 模式每段都跑同一份效果）。
+            relic.Effects.Clear();
+            RelicTriggerModeFromText(text, relic);
+            string effectsBody = SharedEffectsBody(relicHooks);
+            ParseEffects(relic.Effects, effectsBody, varsAll, nameToPowerId, EffectCtx.Relic, result, cls, result.PetClassNames);
+            ParseRelicTail(text, relic, nameToPowerId, result);
             return relic;
         }
 
@@ -3081,20 +3089,71 @@ public static class ProjectRecovery
         // ⚠ 先把 Triggers 清空：RelicSpec 建出来时**自带一条占位时机**（字段初始化器 new() 那条），
         // 直接 Add 会留下「占位 + 真」两条 —— 回读结果凭空多一条空时机。
         relic.Triggers.Clear();
-        var singleTrigger = RelicTriggerFromBody(singleHook, singleKind, singleBody, text, ParseVars(text),
+        // 单条时机：效果是**遗物级**那一份（生成端单条路径读的就是 r.Effects），
+        // 所以这里直接把方法体里的效果解析进 relic.Effects（老工程的回读结果逐字不变）。
+        relic.Effects.Clear();
+        RelicTriggerModeFromText(text, relic);
+        var singleTrigger = RelicTriggerFromBody(singleHook, singleKind, singleBody, text,
             nameToPowerId, result, cls, relic);
+        ParseEffects(relic.Effects, singleBody, ParseVars(text), nameToPowerId, EffectCtx.Relic,
+            result, cls, result.PetClassNames);
         if (singleTrigger is not null)
         {
             relic.Triggers.Add(singleTrigger);
         }
         else
         {
-            // 方法体认不出来（空遗物 / 老工程）：至少把触发时机留下，效果再由旧写法尽最大努力解析一遍
-            var fallback = new RelicTriggerSpec { Kind = singleKind };
-            ParseEffects(fallback.Effects, singleBody, ParseVars(text), nameToPowerId, EffectCtx.Relic,
-                result, cls, result.PetClassNames);
-            relic.Triggers.Add(fallback);
+            // 方法体认不出来（空遗物 / 老工程）：至少把触发时机留下
+            relic.Triggers.Add(new RelicTriggerSpec { Kind = singleKind });
         }
+        ParseRelicTail(text, relic, nameToPowerId, result);
+        return relic;
+    }
+
+    /// <summary>
+    /// 多时机遗物的**共享效果**要从哪个方法体里解析：生成端把关系标记
+    /// （<c>CET:TriggerMode=</c>）只写在**真正跑共享效果的那一段**（All = 最后一条时机，
+    /// Any = 第一条）—— 所以「带标记的那一段」就是答案；一个标记都没有（理论上不会发生）时退回最后一段。
+    /// </summary>
+    private static string SharedEffectsBody(List<(string Hook, string Kind, string Body)> hooks)
+    {
+        foreach (var h in hooks)
+            if (h.Body is { } body && body.Contains("CET:TriggerMode=", StringComparison.Ordinal))
+                return body;
+        return hooks.Count > 0 && hooks[^1].Body is { } last ? last : "";
+    }
+
+    /// <summary>
+    /// 诊断用：把某个遗物类文件里认出来的触发时机段落 / 共享效果 dump 出来
+    /// （「生成 → 回读」对不上时用它看回读到底认出了什么；界面自检与探针会调）。
+    /// </summary>
+    public static IReadOnlyList<string> DebugRelicHooks(string file)
+    {
+        string text = File.ReadAllText(file, Encoding.UTF8);
+        var list = new List<string>();
+        var hooks = RelicHookMethods(text);
+        list.Add("hooks=" + hooks.Count);
+        foreach (var (hook, kind, body) in hooks)
+            list.Add(hook + " | " + kind + " | len=" + (body?.Length ?? -1)
+                + " | hasMarker=" + (body is not null && body.Contains("CET:TriggerMode=", StringComparison.Ordinal))
+                + " | " + (body ?? "").Replace("\n", "⏎"));
+        foreach (var (hook, kind, body) in hooks)
+        {
+            var t = RelicTriggerFromBody(hook, kind, body ?? "", text);
+            list.Add("PARSE> " + hook + " → " + (t is null ? "(null)" : t.Kind + "/" + t.CardFilter + "/" + t.Amount + "/" + t.Scope));
+        }
+        string effectsBody = SharedEffectsBody(hooks);
+        var fx = new List<EffectSpec>();
+        ParseEffects(fx, effectsBody, ParseVars(text), new Dictionary<string, string>(StringComparer.Ordinal), EffectCtx.Relic,
+            new RecoveryResult(), Path.GetFileNameWithoutExtension(file));
+        list.Add("EFFECTS> 段长=" + effectsBody.Length + " 效果=" + string.Join("+", fx.Select(e => e.Kind + ":" + e.Amount)));
+        return list;
+    }
+
+    /// <summary>遗物类的尾部共同部分：自定义描述 + 整只遗物的条件选项。</summary>
+    private static void ParseRelicTail(string text, RelicSpec relic, Dictionary<string, string> nameToPowerId,
+        RecoveryResult result)
+    {
         // 遗物自定义描述（和卡牌同一套标记：本地化表里是拼好的，认不出来）
         if (ParseCustomDescription(text) is var (rdText, rdReplace))
         {
@@ -3105,7 +3164,28 @@ public static class ProjectRecovery
         string? expr = Match(text, @"if \(!\((.+)\)\) return;") ?? Match(text, @"if \((_condUsedThisCombat)\)");
         var cond = ConditionFrom(comment, expr, nameToPowerId) ?? ConditionFromExpr(expr, nameToPowerId);
         if (cond is not null) relic.Condition = cond;
-        return relic;
+    }
+
+    /// <summary>
+    /// 从类文本里还原「触发时机之间的关系」（V0.2.126 的 <c>// CET:TriggerMode=Any|All CET:AndScope=…</c>）。
+    ///
+    /// 老工程（V0.2.125 及更早）没有这个标记，但那时勾「同时成立」会在方法体里写
+    /// <c>// CET:RequireAll=1 CET:AndScope=X</c> —— 认它等于「全部满足才触发」（和存档迁移同一口径）。
+    /// 两个标记都没有 = Any（默认）。
+    /// </summary>
+    private static void RelicTriggerModeFromText(string text, RelicSpec relic)
+    {
+        if (Match(text, @"CET:TriggerMode=(\w+)") is { } mode && mode.Length > 0)
+        {
+            relic.TriggerMode = mode;
+            if (Match(text, @"CET:AndScope=(\w+)") is { } scope && scope.Length > 0) relic.AndScope = scope;
+            return;
+        }
+        if (text.Contains("CET:RequireAll=1", StringComparison.Ordinal))
+        {
+            relic.TriggerMode = "All";
+            if (Match(text, @"CET:AndScope=(\w+)") is { } oldScope && oldScope.Length > 0) relic.AndScope = oldScope;
+        }
     }
 
     /// <summary>
@@ -3185,8 +3265,8 @@ public static class ProjectRecovery
     ///     …效果…
     /// }
     /// </code>
-    /// 段首是这几种行之一：<c>// 触发时机：</c> / <c>// CET:RequireAll=1</c> /
-    /// <c>// CET:PowerWatch=</c> / <c>// 条件（整只遗物）：</c>。
+    /// 段首是这几种行之一：<c>// 触发时机：</c> / <c>// CET:RequireAll=1</c>（老格式）/
+    /// <c>// CET:TriggerMode=</c>（V0.2.126）/ <c>// CET:PowerWatch=</c> / <c>// 条件（整只遗物）：</c>。
     /// **切段时按大括号配对**（进入标记行前先收尾上一段）—— 不按缩进猜，改写法也不会切错。
     /// 只有一段时返回整段（老工程回读逐字不变）。
     /// </summary>
@@ -3201,11 +3281,29 @@ public static class ProjectRecovery
             string t = lines[i].Trim();
             bool marker = t.StartsWith("// 触发时机：", StringComparison.Ordinal)
                 || t.StartsWith("// CET:RequireAll=1", StringComparison.Ordinal)
+                || t.StartsWith("// CET:TriggerMode=", StringComparison.Ordinal)
                 || t.StartsWith("// CET:PowerWatch=", StringComparison.Ordinal)
                 || t.StartsWith("// 条件（整只遗物）：", StringComparison.Ordinal);
             if (marker && depth == 0) starts.Add((i, depth));
             // 计数放在这一行之后（标记行之前不可能有 `{`，但 `}` 归上一段是正确的）
             depth += lines[i].Count(c => c == '{') - lines[i].Count(c => c == '}');
+        }
+        // ⚠ 有些时机**没有**任何段落标记（既不是含糊钩子、也没有 PowerWatch / CardFilter / 数值）——
+        //   它那一段只有一句 `// 触发时机：…` 头注释 + 守卫 + 效果。这种情况下 starts 可能只有 1 个
+        //   （甚至一个都没有），而**真正的内容从第一行注释就开始了**。不把段首补到那行，那一段就会在
+        //   切段时被整段丢掉（实测：Any 模式两条时机的遗物回读只回来 1 条）。
+        if (starts.Count == 0 || starts[0].Line > 0)
+        {
+            int firstComment = -1;
+            depth = 0;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.StartsWith("//", StringComparison.Ordinal) && depth == 0) { firstComment = i; break; }
+                depth += lines[i].Count(c => c == '{') - lines[i].Count(c => c == '}');
+            }
+            if (firstComment >= 0 && (starts.Count == 0 || firstComment < starts[0].Line))
+                starts.Insert(0, (firstComment, 0));
         }
         if (starts.Count < 2) return new List<string> { body };
         var segments = new List<string>();
@@ -3226,51 +3324,70 @@ public static class ProjectRecovery
     }
 
     /// <summary>
-    /// 从某个钩子方法体里还原**一条**遗物触发时机（盯哪个状态 / 到达 N 层 / 数值范围 / 只对哪类牌生效 /
-    /// 同时成立 / 效果列表）。一条都认不出来返回 null。
+    /// 从某个钩子方法体的一段里还原**一条**遗物触发时机的**触发条件**（盯哪个状态 / 到达 N 层 /
+    /// 数值范围 / 只对哪类牌生效）。
     ///
-    /// <paramref name="wholeText"/> = 整个类的文本（老工程里有几处标记习惯写在整个类上，比如条件 / 空组），
-    /// <paramref name="body"/> = 这个方法体（新写的标记都在方法体里 —— 多时机时这样才认得出是哪一条的）。
+    /// ⚠ V0.2.126 起**效果不在这里解析**（效果是整只遗物唯一那一份，由 <see cref="ParseRelic"/> 解析一次）。
+    /// 参数 <paramref name="wholeText"/> / <paramref name="nameToPowerId"/> / <paramref name="result"/> /
+    /// <paramref name="cls"/> 现在只为兼容旧调用点保留（老工程里有几处标记写在整个类上）。
     /// </summary>
     private static RelicTriggerSpec? RelicTriggerFromBody(string hook, string kind, string body, string wholeText,
-        List<Var> vars, Dictionary<string, string> nameToPowerId, RecoveryResult result, string cls,
-        RelicSpec relic)
+        Dictionary<string, string>? nameToPowerId = null, RecoveryResult? result = null, string cls = "",
+        RelicSpec? relic = null)
     {
+        // 类型不认识 → 不是触发时机（RelicHookMethods 已经用 EffectCatalog 过滤过一遍，这里再兜一层）
         if (kind.Length == 0) return null;
-        if (EffectCatalog.RelicTriggers.All(t => t.Id != kind))
-        {
-            return null;
-        }
+        if (EffectCatalog.RelicTriggers.All(t => t.Id != kind)) return null;
         var trig = new RelicTriggerSpec { Kind = kind };
+        // 「有内容」判据（决定这条时机算不算数）：认出了任何一项配置就算。
+        // ⚠ 「只对哪类牌生效」也算 —— 否则「打出一张牌后（只对攻击牌生效）」那种只有筛选、
+        //   没有别的配置的时机会被当成空段丢掉。
+        bool recognized = false;
         // 「只对哪类牌生效」（用户要求，第 9 批 ④：遗物侧和状态侧同一套候选）：
         //   · 新档（诅咒 / 状态 / 关键词组 / 组）按生成端写的那行 `// CET:CardFilter=<id>` 还原
         //     （判据是展开出来的，从代码反推不回来）；
         //   · 老四档（攻击 / 技能 / 能力）生成的是守卫式判据 `if (cardPlay.Card.Type != CardType.Attack) return;`，
         //     直接从这句反推（和状态侧 ProjectRecovery.SplitCardPlayedBody 同一个口径）。
         if (Match(body, @"// CET:CardFilter=(\S+)") is { } relicCardFilter && relicCardFilter.Length > 0)
+        {
             trig.CardFilter = relicCardFilter;
+            recognized = true;
+        }
         // 老四档（攻击 / 技能 / 能力）直接从守卫那句反推 —— 两种写法都要认：
         //   · 单条时机用的是 `!=`（`if (cardPlay.Card.Type != CardType.Attack) return;`）；
         //   · **多条时机**合并到同一个钩子时守卫被改写成 `==`（`if (… && cardPlay.Card.Type == CardType.Attack)`），
         //     以前只认 `!=` → 合并写法下筛选静默退回「任意」（实测）。
         else if (Match(body, @"cardPlay\.Card\.Type (?:!=|==) CardType\.(\w+)") is { } relicFilterType)
+        {
             trig.CardFilter = relicFilterType;
+            recognized = true;
+        }
         // 盯哪个状态 / 到达 N 层（守卫语句以后改写法就会丢配置，所以生成端单独写了一行标记）
         if (Match(body, @"CET:PowerWatch=(\w*) CET:PowerReach=([\d.]+)") is { } watch && watch.Length > 0)
+        {
             trig.PowerId = watch;
+            recognized = true;
+        }
         // 「某个状态被移除时」只写盯哪个状态（没有「到达 N 层」那一半）——
         // ⚠ 这里**不能**写 `$` 收尾：Match 用的是不带 Multiline 的 Regex，`$` 只认整个文本的末尾。
         else if (Match(body, @"CET:PowerWatch=(\w+)") is { } watchOnly)
+        {
             trig.PowerId = watchOnly;
+            recognized = true;
+        }
         if (Match(body, @"CET:PowerWatch=\w* CET:PowerReach=([\d.]+)") is { } reach
             && decimal.TryParse(reach, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal reachV))
+        {
             trig.Amount = reachV;
+            recognized = true;
+        }
         // 「花掉 N 点」的数值（用户要求）：按生成端那句注释还原（N + 范围）
         if (Match(body, @"数值：每累计花掉 ([\d.]+) 点触发一次（范围：(本回合|本场战斗)）") is { } relicSpend
             && decimal.TryParse(relicSpend, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal relicSpendV))
         {
             trig.Amount = relicSpendV;
             trig.Scope = body.Contains("范围：本场战斗", StringComparison.Ordinal) ? "Combat" : "Turn";
+            recognized = true;
         }
         // 触发时机上的数值（每个 N 次 / 数值 ≥ N / 每 N 点）：生成端统一写了
         // `// CET:TriggerAmount=3m CET:TriggerScope=Turn` —— 按标记还原（最稳，守卫改写法也不丢）
@@ -3280,22 +3397,31 @@ public static class ProjectRecovery
             trig.Amount = relicAmtV;
             string? scope = Match(body, @"CET:TriggerAmount=[\d.]+m CET:TriggerScope=(\w+)");
             if (scope is not null) trig.Scope = scope;
+            recognized = true;
         }
-        // 「要和其他时机同时成立」（和状态页同一个格式）：生成时在那条时机的实现里写了
-        // `// CET:RequireAll=1 CET:AndScope=Turn` —— 按它还原（重置范围挂在整只遗物上）。
+        // 「要和其他时机同时成立」（V0.2.122~V0.2.125 的每时机勾选框，和状态页同一个格式）→
+        // 关系切成「全部满足才触发」；V0.2.126 的整只遗物关系标记由 RelicTriggerModeFromText 认。
         if (body.Contains("CET:RequireAll=1", StringComparison.Ordinal))
         {
+            if (relic is not null) relic.TriggerMode = "All";
             trig.RequireAllTriggers = true;
             string? andScope = Match(body, @"CET:AndScope=(\w+)");
-            if (andScope is not null) relic.AndScope = andScope;
+            if (andScope is not null && relic is not null) relic.AndScope = andScope;
+            recognized = true;
         }
-        ParseEffects(trig.Effects, body, vars, nameToPowerId, EffectCtx.Relic, result, cls, result.PetClassNames);
-        // 类里什么都没认出来、也没盯任何东西 → 这条不算（避免多出一条空时机）
-        if (trig.Effects.Count == 0 && string.IsNullOrWhiteSpace(trig.PowerId)
-            && trig.Amount == 1m && !trig.RequireAllTriggers
-            && string.Equals(trig.CardFilter, "Any", StringComparison.Ordinal))
-            return null;
-        return trig;
+        // ⚠ 效果**不在这里**解析：V0.2.126 起效果是整只遗物唯一那一份，
+        //   由 ParseRelic 从「负责跑效果的那一段」解析一次（见 ParseRelic 的注释）。
+        // 这一段里没有任何**值类**配置（盯哪个状态 / 到达 N 层 / 数值 / 只对哪类牌生效 / 老「同时成立」标记）？
+        // 那它是不是「一条真的触发时机」就看**钩子名本身**：钩子 → 时机 id 是**一对一**的那些
+        // （AfterPlayerTurnStart=玩家回合开始时、AfterCardPlayed=打出一张牌后…）只要认出来就算数。
+        // 含糊的那几个（AfterDamageReceived / BeforeSideTurnEnd / AfterPowerAmountChanged…）**故意不列**，
+        // 它们靠 body 里的判据/标记（见 RelicHookMethods / RelicTriggerOfHook），所以这里只会漏掉
+        // 「含糊钩子 + 一点配置都没填」那种空时机的重复段 —— 那正是我们要丢的。
+        if (!recognized && hook.Length > 0
+            && string.Equals(RelicTriggerOfHook(hook), kind, StringComparison.Ordinal))
+            recognized = true;
+        // 一段里什么都没认出来 → 这条不算（避免多出一条空时机）
+        return recognized ? trig : null;
     }
 
     private static PotionSpec ParsePotion(string file, CharacterProfile profile, LocTables loc,

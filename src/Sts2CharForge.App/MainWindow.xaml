@@ -1205,10 +1205,12 @@
                             <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,8,0,0"
                                        Text="提示：本体的遗物都靠「稀有度 + 触发时机 + 效果」组成；初始遗物请把稀有度设为「初始」，并勾选「作为初始遗物」。"/>
 
-                            <!-- ========== 触发时机列表（第 10 批 ①；第 11 批 ④ 从右栏顶上搬到中间部分底下）==========
-                                 一只遗物可以挂**好几条**触发时机，每条各自配自己的效果；
-                                 勾「要和其他时机同时成立」= 那几条都在同一个窗口里成立过才触发。 -->
-                            <TextBlock Text="触发时机列表（可以加好几条，每条各自配效果）" FontWeight="Bold" Margin="0,12,0,4" TextWrapping="Wrap"/>
+                            <!-- ========== 触发时机列表 + 关系开关（V0.2.126：遗物 = 一份效果 + 一组触发时机）==========
+                                 触发时机**只描述「什么时候触发」**（种类 / 盯哪个状态 / 数值 / 统计范围 / 只对哪类牌生效）；
+                                 触发后做什么 = 右边效果栏那**一份共享效果**。
+                                 关系开关（用户要求）：满足其中一个就触发（默认）/ 全部满足才触发；
+                                 后者才有「重置范围」（本回合 / 本场战斗）。 -->
+                            <TextBlock Text="触发时机列表（只决定「什么时候触发」，效果在右边那栏）" FontWeight="Bold" Margin="0,12,0,4" TextWrapping="Wrap"/>
                             <ListBox x:Name="RelicTriggerList" MinHeight="110" MaxHeight="150"
                                      SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                      ItemsSource="{Binding Triggers}" DisplayMemberPath="Summary"
@@ -1219,11 +1221,31 @@
                                 <Button Content="删除触发时机" Padding="8,4" Click="OnRemoveRelicTrigger"/>
                             </WrapPanel>
                             <TextBlock Margin="0,4,0,0" Foreground="#888" FontSize="11" TextWrapping="Wrap"
-                                       Text="例：「每回合开始时 → 获得格挡」+「打出一张牌后 → 造成伤害」两条可以同时挂着。想让几条都成立才触发，就在下面那条时机的编辑器里勾「要和其他时机同时成立」。"/>
+                                       Text="例：「每回合开始时」+「打出一张牌后」两条可以同时挂着：任意一条成立就跑一次效果，或者让两条都成立才跑（见下面的关系）。"/>
+                            <!-- 关系开关（用户要求：整只遗物一个开关）-->
+                            <TextBlock Text="触发时机之间的关系" Style="{StaticResource Label}" Margin="0,8,0,0"/>
+                            <RadioButton x:Name="RelicTriggerModeAny" GroupName="RelicTriggerMode" Content="满足其中一个就触发（默认）"
+                                         Margin="0,2,0,0" IsChecked="{Binding TriggerModeIsAny}"
+                                         ToolTip="任意一条触发时机成立 → 就跑一次遗物的效果（每条时机互相独立）。"/>
+                            <RadioButton x:Name="RelicTriggerModeAll" GroupName="RelicTriggerMode" Content="全部满足才触发"
+                                         Margin="0,2,0,0" IsChecked="{Binding TriggerModeIsAll}"
+                                         ToolTip="所有触发时机都成立过 → 才跑一次遗物的效果（效果跑完重新凑；凑不齐就永远不跑）。"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                       Text="{Binding TriggerModeHint}"/>
+                            <!-- 「重置范围」：只在「全部满足才触发」时显示（用户要求）-->
+                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                        Visibility="{Binding ShowAndScope, Converter={StaticResource BoolToVis}}">
+                                <TextBlock Text="重置范围" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="RelicAndScopeCombo" Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"
+                                          ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                                          SelectedValue="{Binding AndScope}"
+                                          ToolTip="本回合 = 每个回合重新凑一次（默认）；本场战斗 = 整场战斗里凑齐一次就够。"/>
+                            </StackPanel>
                             <Border BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,6,0,0"
                                     DataContext="{Binding SelectedItem, ElementName=RelicTriggerList}">
                                 <StackPanel>
-                                    <TextBlock Text="选中的这条触发时机（它的效果在右边那栏编）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="选中的这条触发时机（它只管「什么时候触发」）" FontWeight="Bold" TextWrapping="Wrap"/>
                                     <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
                                     <ComboBox Style="{StaticResource Pick}"
                                               ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
@@ -1265,21 +1287,9 @@
                                         <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
                                                    Text="{Binding SpendHint}"/>
                                     </StackPanel>
-                                    <!-- 「要和其他时机同时成立」（和「自定义状态」页同一套语义） -->
-                                    <CheckBox Margin="0,8,0,0" Content="要和其他时机同时成立（都成立才触发）"
-                                              IsChecked="{Binding RequireAllTriggers}"
-                                              ToolTip="勾上 = 这条时机要和**同一只遗物上别的也勾了它的时机**都在同一个窗口里成立过，才会触发（最后凑齐的那条跑它自己的效果）。&#10;⚠ 只有 1 条勾了 = 凑不齐，那条设置不生效（生成前的检查会给提示）。"/>
-                                    <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
-                                               Text="「全部或者单个满足时才生效」：只勾 1 条 = 它自己满足就触发；勾 2 条以上 = 这几条都凑齐了才触发。"/>
-                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
-                                                Visibility="{Binding ShowAndScope, Converter={StaticResource BoolToVis}}">
-                                        <TextBlock Text="重置范围" VerticalAlignment="Center"/>
-                                        <ComboBox Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"
-                                                  ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                                  SelectedValue="{Binding AndScope}"
-                                                  ToolTip="本回合 = 每个回合重新凑一次（默认）；本场战斗 = 整场战斗里凑齐一次就够。"/>
-                                    </StackPanel>
+                                    <!-- V0.2.126：「要和其他时机同时成立」的每时机勾选框已经删掉 ——
+                                         关系现在是**整只遗物一个开关**（在上面「触发时机之间的关系」），
+                                         这条时机的编辑器里不再有「效果」和「重置范围」。 -->
                                 </StackPanel>
                             </Border>
 
@@ -1374,9 +1384,9 @@
                                     <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
                                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
-                                <TextBlock Grid.Row="0" Text="效果栏：当前选中那一条触发时机的效果" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                                <!-- 遗物效果列表：绑的是**当前选中的那条时机**的效果
-                                     （见 MainWindow.xaml.cs 的 OnRelicTriggerSelectionChanged）。
+                                <TextBlock Grid.Row="0" Text="效果栏：这只遗物的效果（触发时机满足后跑的就是这一份）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                                <!-- 遗物效果列表（V0.2.126）：绑的是**整只遗物那一份**效果（RelicSpec.Effects）——
+                                     触发时机只管「什么时候触发」，所以换选中哪条时机都不换绑。
                                      每条效果直接在列表里编辑（第 10 批改成 ItemTemplate）。
                                      ⚠ ScrollViewer.HorizontalScrollBarVisibility="Disabled" 是修「效果编辑器被排成 8260px 宽」那个 bug 的关键：
                                      ListBox 默认允许横向滚动 → 虚拟化面板按**无限宽度**量每一行 →
@@ -1385,7 +1395,7 @@
                                      效果编辑器和「条件」全被切掉、点不着。禁掉横向滚动，行宽才会被夹回列表宽度。 -->
                                 <ListBox x:Name="RelicEffectList" Grid.Row="1"
                                          SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
-                                         ItemsSource="{Binding SelectedItem.Effects, ElementName=RelicTriggerList}"
+                                         ItemsSource="{Binding Effects}"
                                          DisplayMemberPath="{x:Null}"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          HorizontalContentAlignment="Stretch"

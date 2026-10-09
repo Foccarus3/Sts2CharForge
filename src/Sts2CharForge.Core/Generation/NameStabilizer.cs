@@ -413,12 +413,9 @@ public static class NameStabilizer
                 foreach (var e in list) yield return e;
         foreach (var r in p.Relics)
         {
-            // 第 10 批：遗物能挂多条触发时机 → 每条时机的效果都要收（名字稳定器漏掉后面那几条时机
-            // 用到的状态 / 关键词，生成出来的类名就会和上一次不一致）
-            if (r?.Triggers is not { } relicTriggers) continue;
-            foreach (var t in relicTriggers)
-                if (t?.Effects is { } list)
-                    foreach (var e in list) yield return e;
+            // V0.2.126：遗物的效果是**整只遗物唯一那一份**（触发时机只说明「什么时候触发」）
+            if (r?.Effects is not { } list) continue;
+            foreach (var e in list) yield return e;
         }
         foreach (var s in p.Potions)
             if (s?.Effects is { } list)
