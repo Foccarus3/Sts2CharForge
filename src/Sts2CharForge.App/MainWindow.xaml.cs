@@ -8151,8 +8151,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& fvSrc.Contains("ForgeFormulaPowerVar<T> : PowerVar<T>"), "5 个都在");
 			Check("变量名和本体一致（卡面占位符 / 升级增量 / 回读都不用改）",
 				fvSrc.Contains(": base(0m, ValueProp.Move)") && fvSrc.Contains(": base(name, 0m)"), "名字照旧");
-			Check("预览时**先**把公式写进基准值、**再**走 base（力量 / 敏捷那些加成照旧叠上去）",
-				fvSrc.Contains("BaseValue = _formula(card, target);")
+			Check("预览时**先**把公式值（+ 升级增量）写进基准值、**再**走 base（力量 / 敏捷那些加成照旧叠上去）",
+				fvSrc.Contains("BaseValue = _formula(card, target) + (card.IsUpgraded ? _upgrade : 0m);")
 				&& fvSrc.Contains("base.UpdateCardPreview(card, previewMode, target, runGlobalHooks);"), "顺序对");
 			Check("施加状态那个是泛型（变量名 = 状态类名，和 PowerVar<T> 一样）",
 				fvSrc.Contains("ForgeFormulaPowerVar<T> : PowerVar<T> where T : PowerModel"), "泛型对");
@@ -8263,6 +8263,62 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			finally
 			{
 				try { if (Directory.Exists(boxRoot)) Directory.Delete(boxRoot, true); } catch { }
+			}
+			// ===== 「升级增量」+「数值公式」：打出时必须带上增量（用户实测：「升级增量怎么没效果了」）=====
+			// 根因：打了数值公式的卡，打出时用的是**公式算出来的值**（不读 CanonicalVars 里的变量），
+			// 而本体的升级增量是 `OnUpgrade` 里 `UpgradeValueBy(N)` —— 改的是变量，两边不搭界，
+			// 于是升级前后打出来一样多、卡面也不变。
+			{
+				CharacterProfile upgProfile = ProfileFactory.Sample();
+				var upgCard = new CardSpec { Name = "升级增量公式卡", ClassName = "UiCheckFormulaUpgrade", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				upgCard.Effects.Add(new EffectSpec { Kind = "Damage", TargetSide = "Enemy", Amount = 14m, AmountFormula = "14", UpgradeAmount = 6m });
+				upgProfile.Cards.Add(upgCard);
+				string upgSrc = CSharpCodeGen.CardSource(upgProfile, upgCard, 0);
+				Check("升级增量 + 数值公式：打出时用的是「升级前后两个数」（以前是写死的字面量，升级白填）",
+					upgSrc.Contains("DamageCmd.Attack((base.IsUpgraded ? 20m : 14m))"), "对");
+				Check("升级增量 + 数值公式：现算变量也带上增量（卡面数字才和打出来的一致）",
+					upgSrc.Contains("new ForgeFormulaDamageVar(static (card, target) => (14m), 6m)"), "对");
+				Check("FormulaVars.cs 的公式变量支持升级增量（公式值 + card.IsUpgraded ? 增量 : 0）",
+					CSharpCodeGen.FormulaVarsSource(upgProfile).Contains("_formula(card, target) + (card.IsUpgraded ? _upgrade : 0m)"), "支持");
+				// 红线：**没有**升级增量的公式卡，生成文本一个字都不变（老存档输出不动）
+				var upgZero = new CardSpec { Name = "没增量公式卡", ClassName = "UiCheckFormulaNoUpgrade", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				upgZero.Effects.Add(new EffectSpec { Kind = "Damage", TargetSide = "Enemy", Amount = 7m, AmountFormula = "7" });
+				upgProfile.Cards.Add(upgZero);
+				string upgZeroSrc = CSharpCodeGen.CardSource(upgProfile, upgZero, 0);
+				Check("（红线）没有升级增量的公式卡：打出时还是原来那个字面量、变量也不带增量参数",
+					upgZeroSrc.Contains("DamageCmd.Attack((7m))")
+					&& upgZeroSrc.Contains("new ForgeFormulaDamageVar(static (card, target) => (7m))"), "照旧");
+				// 真·现算公式 + 增量：两个分支各写一次公式（只在需要的那一支求值）
+				var upgReal = new CardSpec { Name = "现算公式增量卡", ClassName = "UiCheckFormulaUpgradeReal", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				upgReal.Effects.Add(new EffectSpec { Kind = "Damage", TargetSide = "Enemy", Amount = 0m, AmountFormula = "Turn*3", UpgradeAmount = 3m });
+				upgProfile.Cards.Add(upgReal);
+				string upgRealSrc = CSharpCodeGen.CardSource(upgProfile, upgReal, 0);
+				Check("升级增量 + 真·现算公式：写成「升级后 / 升级前」两个分支（各写一次公式）",
+					upgRealSrc.Contains("base.IsUpgraded ?") && upgRealSrc.Contains("+ 3m)"), "对");
+				// 升级那张牌的回读也要原样（数值 14 / 增量 6）
+				string upgRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_formulaupg_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					upgProfile.Paths.OutputDir = upgRoot;
+					upgProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					upgProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var upgGen = ModGenerator.Generate(upgProfile);
+					Check("（准备）带「公式 + 升级增量」的存档能生成工程", upgGen.Success,
+						upgGen.Success ? upgGen.ProjectRoot : string.Join(" ｜ ", upgGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (upgGen.Success)
+					{
+						var upgRec = ProjectRecovery.FromProject(upgGen.ProjectRoot);
+						CardSpec? upgBack = upgRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckFormulaUpgrade");
+						Check("回读：公式卡的「数值 14 / 升级增量 6」原样回来（两个分支的写法回读认得）",
+							upgBack is not null && upgBack.Effects[0].Amount == 14m && upgBack.Effects[0].UpgradeAmount == 6m,
+							upgBack is null ? "(缺 " : $"Amount={upgBack.Effects[0].Amount} / UpgradeAmount={upgBack.Effects[0].UpgradeAmount}");
+						Check("回读（公式 + 升级增量）：没认出来的语句为 0", !upgRec.HasUnparsed, upgRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(upgRoot)) Directory.Delete(upgRoot, true); } catch { }
+				}
 			}
 			// 真界面：卡牌页选中「伤害」效果时看不到「数值」框，选中「抽牌」效果时又看得到
 			{

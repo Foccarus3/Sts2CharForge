@@ -673,22 +673,31 @@ public static class ProjectRecovery
                 ? new Var("DynamicVar", alias, amount, false, false, alias)
                 : new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias)));
         }
-        // 公式变量：`new ForgeFormula<种类>Var[<状态>](["名字", ]static (card, target) => (常数m))`
+        // 公式变量：`new ForgeFormula<种类>Var[<状态>](["名字", ]static (card, target) => (……), [增量m])`
         // 种类后缀和普通变量名一一对应（Damage / Block / HpLoss / Heal / Power）——
         // VarNameOf 靠它算变量键（`Damage` / `VulnerablePower`…），升级增量就是按这个键对回效果的。
-        foreach (Match m in Regex.Matches(block, @"new ForgeFormula(\w+?)Var(?:<(\w+)>)?\(([^()]*(?:\([^()]*\)[^()]*)*)\)"))
+        //
+        // ⚠ 公式里可能套很深（`(((card.Owner)?.PlayerCombatState?.TurnNumber ?? 0) * (3m))`），
+        //   想用一个「配平括号」的正则把整个参数表吃下来会失手（实测：真·现算公式那条整条漏掉，
+        //   于是回读又报「升级增量找不到对应效果」）—— 所以只在**这一行**里取值：
+        //     别名 = 第一个字符串字面量；升级增量 = 结尾那个 `, Nm)`；数值 = 纯常数公式里的 `(Nm)`。
+        foreach (Match m in Regex.Matches(block, @"new ForgeFormula(\w+?)Var(?:<(\w+)>)?\("))
         {
+            int lineEnd = block.IndexOf('\n', m.Index);
+            if (lineEnd < 0) lineEnd = block.Length;
+            string line = block.Substring(m.Index, lineEnd - m.Index);
             string suffix = m.Groups[1].Value;
             string? power = m.Groups[2].Success ? m.Groups[2].Value : null;
-            string args = m.Groups[3].Value;
-            Match aliasMatch = Regex.Match(args, @"^""(\w+)""");
+            Match aliasMatch = Regex.Match(line, @"\(""(\w+)"",");
             string? alias = aliasMatch.Success ? aliasMatch.Groups[1].Value : null;
-            // 公式里的常数（迁过来的固定值就是 `(8m)`）；真·现算公式取不到常数就记 0 ——
+            // 数值：**纯常数公式**（老存档迁过来的固定值就是这种）取 `(8m)`；真·现算公式取不到就记 0 ——
             // 数值本身由生成端写的 `// CET:AmountFormula=` 标记负责还原，这里只要「种类 + 名字 + 顺序」对。
-            Match constMatch = Regex.Match(args, @"\((-?[\d.]+)m\)");
+            Match constMatch = Regex.Match(line, @"=>\s*\((-?[\d.]+)m\)");
             decimal fxAmount = constMatch.Success
                 ? decimal.Parse(constMatch.Groups[1].Value, CultureInfo.InvariantCulture)
                 : 0m;
+            // 升级增量（生成端写在参数表最后那个 `, 6m)`）不用在这里还原 —— 它由 `OnUpgrade` 里那句
+            // `UpgradeValueBy(6m)` 负责（下面 ParseUpgrade 按变量名对回效果）。这里只要「种类 + 名字 + 顺序」对。
             found.Add((m.Index, new Var(suffix, power, fxAmount, false, false, alias)));
         }
         return found.OrderBy(x => x.At).Select(x => x.V).ToList();

@@ -2725,6 +2725,33 @@ public static class ExtraResourceEnergyCounterDiagPatch
             && e.UsesAmountFormula && FormulaVarClassOf(e.Kind) is not null));
 
     /// <summary>
+    /// 「数值公式」+「升级增量」合并成**打出时**用的表达式（用户实测：「升级增量怎么没效果了」）。
+    ///
+    /// 为什么需要它：打了数值公式的卡，打出时用的是公式算出来的那个值（不读 CanonicalVars 里那个变量），
+    /// 而升级增量在本体那边是 <c>OnUpgrade</c> 里的 <c>base.DynamicVars["X"].UpgradeValueBy(N)</c> —— 改的是变量。
+    /// 两边不搭界，于是升级前后打出来一样多。这里把增量并进表达式：
+    ///   · 纯常数公式（<c>5</c>，老存档迁过来的固定值就是这种）→ <c>(base.IsUpgraded ? 8m : 5m)</c>：
+    ///     和本体老写法一致，回读 <c>ProjectRecovery.FillExpr</c> 直接认得；
+    ///   · 真·现算公式（<c>M*2</c>）→ <c>(base.IsUpgraded ? ((M*2) + 3m) : (M*2))</c>：各写一次，只在需要的那支求值。
+    /// </summary>
+    internal static string UpgradeAwareAmount(EffectSpec e, string formula) =>
+        TryFormulaConstant(e.AmountFormula, out decimal baseValue)
+            ? $"(base.IsUpgraded ? {Lit.Dec(baseValue + e.UpgradeAmount)} : {Lit.Dec(baseValue)})"
+            : $"(base.IsUpgraded ? ({formula} + {Lit.Dec(e.UpgradeAmount)}) : {formula})";
+
+    /// <summary>公式原文是不是「纯数字」（老存档迁过来的固定值，或用户手填的常数）。</summary>
+    internal static bool TryFormulaConstant(string? formula, out decimal value)
+    {
+        value = 0m;
+        string t = (formula ?? "").Trim();
+        if (t.Length == 0) return false;
+        foreach (char ch in t)
+            if (!char.IsDigit(ch) && ch != '.' && ch != '-' && ch != '+') return false;
+        return decimal.TryParse(t, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out value);
+    }
+
+    /// <summary>
     /// 「数值公式」那几个**现算预览值**的动态变量（用到才生成）。
     ///
     /// 为什么必须自己写：卡面 <c>{Damage:diff()}</c> 显示的是 <c>PreviewValue</c>，而普通
@@ -2761,11 +2788,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line("/// <summary>「施加状态」的数值公式：变量名就是那个状态的类名（和 PowerVar&lt;T&gt; 一样）。</summary>")
          .Open("internal sealed class ForgeFormulaPowerVar<T> : PowerVar<T> where T : PowerModel")
          .Line("private readonly Func<CardModel, Creature?, decimal> _formula;")
-         .Line("public ForgeFormulaPowerVar(Func<CardModel, Creature?, decimal> formula) : base(0m) { _formula = formula; }")
-         .Line("public ForgeFormulaPowerVar(string name, Func<CardModel, Creature?, decimal> formula) : base(name, 0m) { _formula = formula; }")
+         .Line("private readonly decimal _upgrade;")
+         .Line("public ForgeFormulaPowerVar(Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(0m) { _formula = formula; _upgrade = upgrade; }")
+         .Line("public ForgeFormulaPowerVar(string name, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, 0m) { _formula = formula; _upgrade = upgrade; }")
          .Open("public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)")
          .Open("if (card.Owner is not null)")
-         .Line("BaseValue = _formula(card, target);   // 公式值当基准，下面的 base 会再叠力量 / 易伤那些加成")
+         .Line("BaseValue = _formula(card, target) + (card.IsUpgraded ? _upgrade : 0m);   // 公式值 + 升级增量，下面的 base 再叠力量 / 易伤那些加成")
          .Close()
          .Line("base.UpdateCardPreview(card, previewMode, target, runGlobalHooks);")
          .Close()
@@ -2775,14 +2803,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 每个变量子类长得一模一样（只是基类 / 构造参数不同），抽出来省得抄五遍抄错。
         void AppendFormulaVar(CodeWriter w2, string cls, string baseCls, string ctorArgs, string nameCtorArgs, string? _)
         {
-            w2.Line($"/// <summary>{baseCls} 的「公式现算」版本（卡面数字 = 公式值 + 本体那些加成）。</summary>")
+            w2.Line($"/// <summary>{baseCls} 的「公式现算」版本（卡面数字 = 公式值 + 升级增量 + 本体那些加成）。</summary>")
               .Open($"internal sealed class {cls} : {baseCls}")
               .Line("private readonly Func<CardModel, Creature?, decimal> _formula;")
-              .Line($"public {cls}(Func<CardModel, Creature?, decimal> formula) : base({ctorArgs}) {{ _formula = formula; }}")
-              .Line($"public {cls}(string name, Func<CardModel, Creature?, decimal> formula) : base(name, {nameCtorArgs}) {{ _formula = formula; }}")
+              .Line("private readonly decimal _upgrade;")
+              .Line($"public {cls}(Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base({ctorArgs}) {{ _formula = formula; _upgrade = upgrade; }}")
+              .Line($"public {cls}(string name, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, {nameCtorArgs}) {{ _formula = formula; _upgrade = upgrade; }}")
               .Open("public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)")
               .Open("if (card.Owner is not null)")
-              .Line("BaseValue = _formula(card, target);   // 公式值当基准，下面的 base 会再叠力量 / 敏捷那些加成")
+              .Line("BaseValue = _formula(card, target) + (card.IsUpgraded ? _upgrade : 0m);   // 公式值 + 升级增量，下面的 base 再叠力量 / 敏捷那些加成")
               .Close()
               .Line("base.UpdateCardPreview(card, previewMode, target, runGlobalHooks);")
               .Close()
@@ -2951,7 +2980,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 施加状态那个是泛型（变量名就是状态的类名）：ForgeFormulaPowerVar<VulnerablePower>(…)
             string fxOpen = e.Kind == "ApplyPower" ? $"{fxCls}<{e.PowerId}>" : fxCls;
-            return $"new {fxOpen}({prefix}static (card, target) => {FormulaPreviewExpr(p, e)})";
+            // 升级增量也交给变量（公式变量每次预览都会用公式覆盖 BaseValue，不把增量带上卡面就永远显示升级前的数字）。
+            // 增量为 0 时**一个字符都不加**，让没升级增量的卡保持原来的生成文本。
+            string fxUpgrade = e.UpgradeAmount != 0m ? ", " + Lit.Dec(e.UpgradeAmount) : "";
+            return $"new {fxOpen}({prefix}static (card, target) => {FormulaPreviewExpr(p, e)}{fxUpgrade})";
         }
         return e.Kind switch
         {
@@ -6137,11 +6169,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ForgeGraphGen.EmitCardFormulaPrologue 先声明好 —— 这里只管用。
         string? formula = ForgeGraphGen.CardFormulaExpr(p, e, out _);
         string amt = formula ?? AmountExpr(e, useX, varMap);
+        // ===== 升级增量（用户实测：「升级增量怎么没效果了」）=====
+        // 打了「数值公式」的卡，打出时用的是**公式算出来的那个值**（不读 CanonicalVars 里的变量），
+        // 而本体的升级增量是 `OnUpgrade` 里 `base.DynamicVars["Damage"].UpgradeValueBy(3m)` —— 改的是变量，
+        // 两边不搭界，于是升级前后打出来一样多。这里把增量直接并进「打出时」的表达式
+        // （写法沿用本体习惯的「升级前后两个数」，见 <see cref="UpgradeAwareAmount"/>）。
+        // 变量那边也同步带上增量（见 VarDeclarationCore / FormulaVarsSource），卡面数字才和打出来的一致。
+        if (formula is not null && e.UpgradeAmount != 0m) amt = UpgradeAwareAmount(e, formula);
         // 作用对象是「队友」时写一行标记：生成出来的语句和「指定敌人」**长得一模一样**
         //（都是 `cardPlay.Target`），回读分不出这两档，只能靠标记还原（见 ProjectRecovery 的 pendingTargetSide）。
         if (e.TargetSide is "Ally" or "AllAllies") w.Line($"// CET:TargetSide={e.TargetSide}");
-        // 格挡走的是另一条取数路径（BlockValueAccess），单独把公式接上去
-        string blockAmt = formula ?? BlockValueAccess(varMap, e);
+        // 格挡走的是另一条取数路径（BlockValueAccess），单独把公式接上去（升级增量同理）
+        string blockAmt = formula is not null
+            ? (e.UpgradeAmount != 0m ? UpgradeAwareAmount(e, formula) : formula)
+            : BlockValueAccess(varMap, e);
         // 「下回合生效」的**生成类**效果（用户要求：生成卡牌之类也要能下回合）：现在不生成，
         // 改成给自己挂一个延迟状态（层数 = 张数），下回合开始时由它调用同一套发射器（见 DelayedPowersSource）。
         // 标记行要写在这里 —— 回读是**按用它的那张牌**认效果的（延迟状态类里那几个标识别写重复）。
