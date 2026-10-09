@@ -2519,7 +2519,11 @@ public sealed class RelicTriggerSpec : SpecBase
     public string Display => Summary;
 }
 
-public sealed class RelicSpec : SpecBase
+/// <summary>
+/// 一只遗物。实现了 <see cref="IRelicSlotRow"/>，好让遗物页左侧列表的「一行」和**空槽行**
+/// （界面那边的占位项）用同一个模板 / 同一段自检代码读序号。
+/// </summary>
+public sealed class RelicSpec : SpecBase, IRelicSlotRow
 {
     private string _name = "新遗物";
     private string _className = "";
@@ -2825,6 +2829,10 @@ public sealed class RelicSpec : SpecBase
     /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
     [JsonIgnore]
     public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
+
+    /// <summary>界面用：真遗物行当然不是空槽（空槽行是界面那边的 <c>RelicSlotPlaceholder</c>）。</summary>
+    [JsonIgnore]
+    public bool IsPlaceholder => false;
 
     // ===== 「自动类名」的痕迹（用户要求第 2 条：自动的跟序号走、手填的不动）=====
     private int _lastAutoOrdinal;

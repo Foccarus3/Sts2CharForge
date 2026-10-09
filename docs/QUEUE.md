@@ -1,5 +1,11 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 12 批需求（用户 2026-10-XX 提，接着遗物页那条往下做）
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | 遗物页左侧序号**按「每块 5 个」预留显示**（原话：「左侧序号直接显示，可以每次多生成五个序号，比如有 3 个选项时，左侧序号显示 1~5，加第 6 个的时候，显示 6~10.」） | 列表里显示的**行数** = `5 × ceil(max(N,1)/5)`（N = 真遗物数）：3 只 → 1~5（4、5 是空槽）；5 只 → 1~5；6 只 → 1~10（7~10 空槽）；11 只 → 1~15。**序号仍是位置号 1..N 连续**，空槽只把当前这一块凑满显示。做法：列表 `ItemsSource` 改绑**界面镜像集合** `MainWindow.RelicRows`（`ObservableCollection<IRelicSlotRow>`）= 真遗物 + 末尾 `RelicSlotPlaceholder`；`IRelicSlotRow`（新，放 Core/Profile）+ `RelicSpec.IsPlaceholder => false`；空槽行模板靠 `DataTrigger IsPlaceholder` 变灰、隐藏遗物名、去掉 ToolTip。**跳过占位项**：`RelicUiSelection`（详情栏 DataContext）/ `HasRelicSelection`（详情栏与「请选择遗物」的显隐）替掉原来绑 `RelicList.SelectedItem` 的两处；`SelectedOf<T>`/`as RelicSpec` 天然过滤；`SelectAll` 显式跳过 `IsPlaceholder`；拖动改成 `RelicRowAtPoint` 给**行号**（空槽也能当落点，`MoveRelicTo(dragged, over, overRowIndex)` 把行号夹到合法范围）；`OnAddRelic` 不再用 `SelectedIndex = Count-1`。`Profile.Relics` 仍是唯一事实来源（占位项只在界面集合里，生成/存档/回读/校验都看不到）。**两个实测坑**：(a) `RelicRows` 必须是 **public** —— WPF `PropertyPath` 读不到 internal 成员，绑 internal 字段时绑定状态直接 `PathError`、`ItemsSource` 永远 null；(b) `RelicRows.Clear()` 会触发 `SelectionChanged → SyncDetail → SyncRelicRows` **重入**，两次调用各按自己那份快照铺集合 → 差一行陈旧（加第 6 只列表还是 5 行），加重入 dirty 循环 + 「挂错存档就重挂」自愈（有几处历史自检直接给 `Profile` 字段赋值，不走 setter）。**自检 8 条**：3 只 → 5 行（含 4/5 空槽、界面上真画出 5 个「N.」、选中空槽不改任何遗物）；6 只 → 10 行；删回 5 只 → 5 行；空槽行点得到但 `Relic = null` + 拖到空槽顺序真变且序号仍 1..N 连续；占位项不进 `Profile.Relics` / 生成结果逐字一致 / 真生成无「空槽」文件；空槽序号实测灰 `#FFAAAAAA`（真遗物 `#FF1F4E79`）+ 全选不含空槽 | ⏳已实现待发版（Debug + 发布版 `--uicheck` 均 **2820 PASS / 0 FAIL**；`dotnet build` 0 错误；`ProfileFactory.Sample()` 生成 112 个文件里 111 个逐文件 SHA256 一致、只有 `ExampleMod.sln` 的随机 GUID 不同） |
+
 ## 第 11 批需求（用户 2026-10-XX 提「遗物页现在有问题，先把遗物页优化了给我一版」，一条一版）
 
 | # | 需求 | 做法要点 | 状态 |

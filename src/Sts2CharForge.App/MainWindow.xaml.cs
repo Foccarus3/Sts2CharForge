@@ -3,6 +3,7 @@ using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
@@ -332,6 +333,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			_profile = value;
 			HookProfileColors();
+			// 换存档：遗物列表的「序号 + 空槽行」要改挂到新存档的 Relics 上（旧的那份要摘掉订阅），
+			// 并把镜像集合按新存档重铺一遍 —— 见 HookRelicListOrder / SyncRelicRows
+			HookRelicListOrder();
+			SyncRelicRows();
+			RelicUiSelection = null;
 			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
 			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
 			HookAnimationSpec();
@@ -2615,6 +2621,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		};
 		RelicList.SelectionChanged += delegate
 		{
+			// 「详情栏显隐」看的是列表里有没有选中一行（含空槽行），它不在 RelicUiSelection 的变化里，
+			// 得单独通知一次
+			Raise("HasRelicSelection");
 			SyncDetail();
 		};
 		PotionList.SelectionChanged += delegate
@@ -2669,8 +2678,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void SyncDetail()
 	{
+		// 遗物页：先把「序号 / 空槽行」铺一遍（换存档 / 载入后 RelicRows 要跟着新 Profile 走），
+		// 再认一遍「当前界面上选中的是哪只真遗物」（选中项可能已经被删 / 被撤回删除换了对象）
+		RefreshRelicOrdinals();
+		RefreshRelicUiSelection();
+		// 增删 / 撤回 / 换存档之后列表选中项可能自己变成 null（不是通过点击），显隐判据要重算一遍
+		Raise("HasRelicSelection");
 		CardDetail.DataContext = CardList.SelectedItem;
-		RelicDetail.DataContext = RelicList.SelectedItem;
+		RelicDetail.DataContext = RelicUiSelection;
 		PotionDetail.DataContext = PotionList.SelectedItem;
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
@@ -2688,13 +2703,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("SelectedSummonImagePreview");
 		RaisePetSummonChoices();
 		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
-		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Relics"));		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
+		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("RelicRows") { Source = this });
+		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Potions"));
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
 		SummonList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Summons"));
 		CardEffectList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Effects"));
 		// 第 10 批：遗物页的「触发时机列表」绑到当前选中遗物的 Triggers；
 		// 效果列表绑到**当前选中那条时机**的 Effects（选中项由 OnRelicTriggerSelectionChanged 换绑）。
-		if (RelicList.SelectedItem is RelicSpec selRelic)
+		if (RelicUiSelection is RelicSpec selRelic)
 		{
 			if (selRelic.Triggers.Count == 0) selRelic.Triggers.Add(new RelicTriggerSpec());
 			RelicTriggerList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Triggers") { Source = selRelic });
@@ -2729,6 +2745,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RaiseGroupsChanged();
 		RaiseCardPortrait();
 		Raise("RelicIconPreview");
+	}
+
+	/// <summary>
+	/// 认一遍「界面上当前选中的那一只真遗物」：选中项是真遗物就跟着它；选中项是空槽行时**保持不变**
+	/// （用户要的是「空槽不能被当成遗物」，不是「点一下空槽就把右边详情清空」）。
+	///
+	/// <para>⚠ 判据是 <c>is RelicSpec</c> 而不是 cast：空槽行 <c>RelicSlotPlaceholder</c> 不是 <c>RelicSpec</c>
+	/// —— 这一条就是「空槽不可能变成 RelicUiSelection / 污染 RelicSpec 相关逻辑」的保证；
+	/// 配套的 <c>SelectedOf&lt;RelicSpec&gt;</c> / 全选里的 <c>IsPlaceholder</c> 跳过也是同一个道理。</para>
+	/// </summary>
+	private void RefreshRelicUiSelection()
+	{
+		if (RelicList?.SelectedItem is RelicSpec sel && _profile.Relics.Contains(sel))
+		{
+			RelicUiSelection = sel;
+			return;
+		}
+		// 选中的不是真遗物（空槽行）或者本来是空选中：RelicUiSelection 只在「它指向的那只还在集合里」时留着，
+		// 被删掉 / 换存档就清空 —— 这样「一只都没选（SelectedIndex = -1 / 点空白处）」时右侧详情照旧收起来。
+		if (_relicUiSelection is not null && !_profile.Relics.Contains(_relicUiSelection)) RelicUiSelection = null;
 	}
 
 	/// <summary>
@@ -5293,14 +5329,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			return;
 		}
 		lb.SelectedItems.Clear();
+		int skipped = 0;
 		foreach (object item in (IEnumerable)lb.Items)
 		{
+			// 遗物页末尾那些**空槽行**（RelicSlotPlaceholder）不能被选中：它们不是遗物，
+			// 一起选中会污染「选中几只遗物 / 删除 / 全选」这些统计（真遗物集合里根本没它们）。
+			if (item is IRelicSlotRow { IsPlaceholder: true })
+			{
+				skipped++;
+				continue;
+			}
 			if (item != null)
 			{
 				lb.SelectedItems.Add(item);
 			}
 		}
-		SetStatus($"已全选 {lb.SelectedItems.Count} 个{unit}。");
+		SetStatus(skipped > 0
+			? $"已全选 {lb.SelectedItems.Count} 个{unit}（{skipped} 个空槽不算）。"
+			: $"已全选 {lb.SelectedItems.Count} 个{unit}。");
 	}
 
 	private void OnSelectAllCards(object sender, RoutedEventArgs e)
@@ -5569,6 +5615,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (ExtraResourceEffectList.SelectedItem is not null)
 		{
 			RelicList.SelectedItem = null;
+			// 两块编辑区在同一格，靠选择互斥：这里必须把「当前选中的真遗物」也清掉
+			//（详情栏现在绑的是 RelicUiSelection，光清 RelicList.SelectedItem 不够）
+			RelicUiSelection = null;
+			SyncDetail();
 			if (RelicEmptyHint is not null) RelicEmptyHint.Visibility = Visibility.Collapsed;
 		}
 		else if (RelicEmptyHint is not null)
@@ -5778,7 +5828,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		});
 		RefreshRelicOrdinals();
 		SyncDetail();
-		RelicList.SelectedIndex = _profile.Relics.Count - 1;
+		// 新加的那只在列表里一定是「最后一只真遗物」——不能再用 SelectedIndex = Count-1：
+		// 列表行数是按块凑满的（末尾还有空槽行），用对象本身更稳
+		RelicList.SelectedItem = _profile.Relics[_profile.Relics.Count - 1];
 	}
 
 	private void OnRemoveRelic(object sender, RoutedEventArgs e)
@@ -5801,9 +5853,69 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	// ==================== 遗物列表：序号 + 拖动换位置（用户要求第 2 条）====================
+	//
+	// 序号按「每块 5 个」预留显示（用户后续要求原话：「左侧序号直接显示，可以每次多生成五个序号，
+	// 比如有 3 个选项时，左侧序号显示 1~5，加第 6 个的时候，显示 6~10.」）：
+	//   列表里显示的**行数** = 5 × ceil(max(N,1) / 5)，N = 真遗物数（Profile.Relics 是唯一事实来源）。
+	//   3 只 → 1~5 行（4、5 是空槽）；5 只 → 1~5；6 只 → 1~10（7~10 是空槽）；11 只 → 1~15。
+	//   空槽行 = Reactive 的**界面占位项**（RelicSlotPlaceholder），只显示灰色序号、没有内容、
+	//   不能被当成遗物选中，但可以当拖放落点（拖到第 k 行 = 放到第 k 位，夹到合法范围）。
+	// ⚠ 空槽**只在** RelicRows 这个界面镜像集合里；Profile.Relics 里永远只有真遗物。
+
+	/// <summary>每「一块」预留多少个序号（用户要求：一次多生成五个序号）。</summary>
+	internal const int RelicSlotsPerBlock = 5;
 
 	/// <summary>
-	/// 给每只遗物重新发一遍「我在列表里排第几」（1 起算）。
+	/// 遗物页左侧列表**真正绑的那个集合**：真遗物（按 <c>Profile.Relics</c> 的顺序）+ 末尾的空槽行。
+	///
+	/// <para>为什么要镜像一层：<c>Profile.Relics</c> 是 <c>ObservableCollection&lt;RelicSpec&gt;</c>，
+	/// 塞不进占位项；而且「真遗物集合 = 唯一事实来源」这条不能破 —— 所以占位项只活在这个界面集合里，
+	/// 由 <see cref="SyncRelicRows"/> 单向从 <c>Profile.Relics</c> 铺出来（只读镜像 + 补空槽）。</para>
+	///
+	/// <para>⚠ 必须是 <c>public</c>，不能是 <c>internal</c>：WPF 的 <c>PropertyPath</c> 走反射时
+	/// **读不到 internal 成员**（实测：绑 internal 字段时绑定状态直接是 <c>PathError</c>、
+	/// <c>ItemsSource</c> 永远是 null，界面上一行都没有）。</para>
+	/// </summary>
+	public ObservableCollection<IRelicSlotRow> RelicRows { get; } = new();
+
+	/// <summary>
+	/// 界面上「当前选中的那一只真遗物」：选中项是真遗物就是它；点中空槽行时**保持上一只**
+	/// （点空槽不该把右边详情清空）。详情栏的数据上下文绑它。
+	/// </summary>
+	public RelicSpec? RelicUiSelection
+	{
+		get => _relicUiSelection;
+		private set
+		{
+			if (!ReferenceEquals(_relicUiSelection, value))
+			{
+				_relicUiSelection = value;
+				Raise("RelicUiSelection");
+			}
+		}
+	}
+
+	private RelicSpec? _relicUiSelection;
+
+	/// <summary>
+	/// 详情栏 / 「请选择遗物」提示的显隐判据：**列表里有没有选中一行**（选中的那行是空槽也算选了 ——
+	/// 空槽行照样是列表里的一行，右侧详情不该闪没）。
+	///
+	/// <para>为什么不用 <see cref="RelicUiSelection"/> 直接判空：点中空槽时它会保持上一只（有值），
+	/// 但用户按 <c>SelectedIndex = -1</c> / 点列表空白真的取消选中时，列表选中项是 null
+	/// —— 那时候右侧必须回到「请选择遗物」的空态（自检里有断言盯这条）。</para>
+	/// </summary>
+	public bool HasRelicSelection => RelicList?.SelectedItem is not null;
+
+	/// <summary>序号行数：<c>5 × ceil(max(N,1) / 5)</c>（N=0 也显示 1~5，用户要的是「直接显示序号」）。</summary>
+	internal static int RelicSlotRowCount(int relicCount)
+	{
+		int n = Math.Max(relicCount, 1);
+		return ((n + RelicSlotsPerBlock - 1) / RelicSlotsPerBlock) * RelicSlotsPerBlock;
+	}
+
+	/// <summary>
+	/// 给每只遗物重新发一遍「我在列表里排第几」（1 起算），再把界面镜像集合铺一遍。
 	///
 	/// 为什么要有它：序号 = **当前位置**，不是跟着物品走的标记（用户原话「序号不会跟随遗物移动」）
 	/// —— 所以每次增删 / 拖动 / 载入存档之后都要重算一遍，绑在界面上的 <c>OrdinalText</c> 才会跟着变。
@@ -5818,18 +5930,112 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			RelicSpec? r = _profile.Relics[i];
 			if (r is not null) r.Ordinal = i + 1;
 		}
+		SyncRelicRows();
 	}
 
-	/// <summary>只挂一次：遗物列表增删 → 重排序号（避免每条增删路径都要记得调一次）。</summary>
+	/// <summary>
+	/// 把界面镜像集合铺成「真遗物 1..N + 空槽 N+1..5×ceil(N/5)」。
+	///
+	/// <para>尽量**原地改**（只动变化的那些位）而不是清空重建：清空会把 <c>RelicList.SelectedItem</c>
+	/// 打断（拖动 / 删一只之后选中项就丢了），原地改能保住选中项。真遗物那一截按位置逐个对齐。</para>
+	/// </summary>
+	internal void SyncRelicRows()
+	{
+		if (_profile?.Relics is null) return;
+		// ⚠ 先自愈「挂错存档」：有几处代码（历史自检）是直接给 Profile 字段赋值的，不走属性 setter，
+		// 于是 CollectionChanged 还挂在**上一份存档**的 Relics 上 —— 表现是「Profile.Relics 已经是新的了，
+		// 列表里还是旧那几只」（实测踩到：加第 6 只、列表却还是 5 行）。这里发现不一致就重挂一次。
+		if (!ReferenceEquals(_relicOrderHookedOn, _profile)) HookRelicListOrder();
+		// ⚠ 重入保护（实测踩到）：RelicRows.Clear() 会让列表的选中项被 WPF 清掉 → 触发 SelectionChanged
+		// → SyncDetail → RefreshRelicOrdinals → 又回到这里。重入时两次调用会各自按**自己那份快照**
+		// 把集合铺一遍，后写的那次会把对方的结果盖掉（表现是「加了第 6 只，列表却还是 5 行」这种差一行的陈旧状态）。
+		// 做法：重入只置一个 dirty 标记，由最外层那次循环重算到稳定为止。
+		if (_inSyncRelicRows)
+		{
+			_relicRowsDirty = true;
+			return;
+		}
+		_inSyncRelicRows = true;
+		try
+		{
+			do
+			{
+				_relicRowsDirty = false;
+				SyncRelicRowsCore();
+			}
+			while (_relicRowsDirty);
+		}
+		finally
+		{
+			_inSyncRelicRows = false;
+		}
+	}
+
+	private bool _inSyncRelicRows;
+
+	private bool _relicRowsDirty;
+
+	/// <summary>
+	/// 把界面镜像集合铺成「真遗物 1..N + 空槽 N+1..5×ceil(N/5)」。
+	///
+	/// <para>尽量**原地改**（只动变化的那些位）而不是清空重建：清空会把 <c>RelicList.SelectedItem</c>
+	/// 打断（拖动 / 删一只之后选中项就丢了），原地改能保住选中项。真遗物那一截按位置逐个对齐。</para>
+	/// </summary>
+	private void SyncRelicRowsCore()
+	{
+		if (_profile?.Relics is null) return;
+		IList<RelicSpec> relics = _profile.Relics;
+		int total = RelicSlotRowCount(relics.Count);
+		// 真遗物那一截按位置对齐；对不上（长度变了 / 位置上是空槽）就整体重建
+		bool inPlace = RelicRows.Count == total;
+		if (inPlace)
+		{
+			for (int i = 0; i < relics.Count; i++)
+			{
+				if (!ReferenceEquals(RelicRows[i], relics[i])) { inPlace = false; break; }
+			}
+		}
+		if (inPlace)
+		{
+			for (int i = relics.Count; i < total; i++)
+			{
+				if (RelicRows[i] is not RelicSlotPlaceholder ph || ph.Slot != i + 1) { inPlace = false; break; }
+			}
+		}
+		if (inPlace) return;
+		// 重建前先把选中项挪开：占位行要被移走时 WPF 自己也会清 SelectedItem，
+		// 但显式清一下更稳（免得 CollectionChanged 里又绕回 SelectionChanged）
+		if (RelicList is not null && RelicList.SelectedItem is IRelicSlotRow)
+		{
+			RelicList.SelectedItem = null;
+		}
+		RelicRows.Clear();
+		for (int i = 0; i < relics.Count; i++)
+		{
+			if (relics[i] is not null) RelicRows.Add(relics[i]);
+		}
+		// 末尾补齐空槽：序号就按「行号」给，凑满当前这一块（1~5 / 1~10 / 1~15…）
+		for (int i = relics.Count; i < total; i++)
+		{
+			RelicRows.Add(new RelicSlotPlaceholder(i + 1));
+		}
+	}
+
+	/// <summary>只挂一次：遗物列表增删 → 重排序号 + 重铺空槽（避免每条增删路径都要记得调一次）。</summary>
 	private void HookRelicListOrder()
 	{
-		if (_relicOrderHooked || _profile?.Relics is null) return;
-		_relicOrderHooked = true;
-		_profile.Relics.CollectionChanged += delegate { RefreshRelicOrdinals(); };
+		if (ReferenceEquals(_relicOrderHookedOn, _profile)) return;
+		if (_relicOrderHookedOn is not null) _relicOrderHookedOn.Relics.CollectionChanged -= OnRelicCollectionChanged;
+		_relicOrderHookedOn = _profile;
+		if (_profile?.Relics is null) return;
+		_profile.Relics.CollectionChanged += OnRelicCollectionChanged;
 		RefreshRelicOrdinals();
 	}
 
-	private bool _relicOrderHooked;
+	private void OnRelicCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e) => RefreshRelicOrdinals();
+
+	/// <summary>已经挂过 <c>CollectionChanged</c> 的那份存档（换存档时先摘再重挂，避免重复订阅）。</summary>
+	private CharacterProfile? _relicOrderHookedOn;
 
 	// 拖动换位置：MouseDown 记起点 → MouseMove 超过系统阈值才开始拖 → DragOver 画插入线 → Drop 真插进去
 	private Point _relicDragStart;
@@ -5846,14 +6052,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		_relicDragItem = RelicAtPoint(e.GetPosition(RelicList));
 	}
 
-	/// <summary>鼠标位置下面是哪只遗物（用可视树往上找 ListBoxItem，比按坐标算索引可靠）。</summary>
-	private RelicSpec? RelicAtPoint(Point p)
+	/// <summary>
+	/// 鼠标位置下面是**哪一行**（用可视树往上找 ListBoxItem，再按它在列表里的位置给行号；
+	/// 比按坐标算索引可靠）。返回值里 <c>Relic</c> 为 null = 那一行是空槽（或鼠标下面是列表空白处）。
+	///
+	/// <para>为什么要给行号而不是只给遗物：空槽行也要能当**拖放落点**（拖到第 k 行 = 放到第 k 位），
+	/// 而空槽行没有 <c>RelicSpec</c> 可以拿。</para>
+	/// </summary>
+	private (int Index, RelicSpec? Relic) RelicRowAtPoint(Point p)
 	{
 		DependencyObject? hit = RelicList.InputHitTest(p) as DependencyObject;
 		while (hit is not null && hit is not ListBoxItem)
 			hit = VisualTreeHelper.GetParent(hit);
-		return (hit as ListBoxItem)?.DataContext as RelicSpec;
+		if (hit is not ListBoxItem item) return (-1, null);
+		int index = RelicList.ItemContainerGenerator.IndexFromContainer(item);
+		return (index, item.DataContext as RelicSpec);
 	}
+
+	/// <summary>鼠标位置下面是哪只真遗物（空槽 / 空白处 → null）。拖动「拿起来」那条路径用它。</summary>
+	private RelicSpec? RelicAtPoint(Point p) => RelicRowAtPoint(p).Relic;
 
 	private void OnRelicListPreviewMouseMove(object sender, MouseEventArgs e)
 	{
@@ -5880,13 +6097,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		e.Handled = true;
 	}
 
-	/// <summary>松手：把被拖的那只**移到**鼠标下面那一行的位置（插到它前面；拖到空白处 = 移到末尾）。</summary>
+	/// <summary>
+	/// 松手：把被拖的那只**移到**鼠标下面那一行的位置（插到它前面；拖到空槽行 = 放到那一行对应的位置、
+	/// 会夹到合法范围；拖到列表空白处 = 移到末尾）。
+	/// </summary>
 	private void OnRelicListDrop(object sender, DragEventArgs e)
 	{
 		if (!e.Data.GetDataPresent(typeof(RelicSpec))) return;
 		if (e.Data.GetData(typeof(RelicSpec)) is not RelicSpec dragged) return;
-		RelicSpec? over = RelicAtPoint(e.GetPosition(RelicList));
-		if (!MoveRelicTo(dragged, over))
+		(int index, RelicSpec? over) = RelicRowAtPoint(e.GetPosition(RelicList));
+		if (!MoveRelicTo(dragged, over, index))
 		{
 			SetStatus($"「{dragged.Name}」已经在这个位置了。");
 			return;
@@ -5896,17 +6116,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	/// <summary>
 	/// 拖动落点的那一步（**纯逻辑**，和鼠标 / 拖放事件无关 —— 自检直接调它）。
-	/// <paramref name="over"/> = 鼠标松手时下面那一行（null = 列表空白处 → 移到末尾）。
-	/// 语义：**插到那一行的位置**（拖谁到哪就插到哪）。返回 false = 位置没变（不用刷界面）。
+	///
+	/// <para><paramref name="over"/> = 鼠标松手时下面那一行的那只真遗物；
+	/// <paramref name="overRowIndex"/> = 那一行在列表里的行号（空槽行 / 空白处时 <paramref name="over"/> 是 null，
+	/// 这时就按行号算落点：行号 k → 插到第 k 位，超出末尾就夹到末尾）。
+	/// 语义：**插到那一行的位置**（拖谁到哪就插到哪）。返回 false = 位置没变（不用刷界面）。</para>
 	/// </summary>
-	internal bool MoveRelicTo(RelicSpec dragged, RelicSpec? over)
+	internal bool MoveRelicTo(RelicSpec dragged, RelicSpec? over, int overRowIndex = -1)
 	{
 		int from = _profile.Relics.IndexOf(dragged);
 		if (from < 0) return false;
-		int to = over is null ? _profile.Relics.Count - 1 : _profile.Relics.IndexOf(over);
-		if (to < 0) to = _profile.Relics.Count - 1;
+		int to;
+		if (over is not null)
+		{
+			to = _profile.Relics.IndexOf(over);
+		}
+		else
+		{
+			// 空槽行 / 列表空白处：按「行号 - 1」算目标位置，再夹到 [0, Count-1]
+			// （空槽都在真遗物后面，所以正常情况下会夹成「移到末尾」）
+			to = overRowIndex >= 0 ? overRowIndex : _profile.Relics.Count - 1;
+		}
+		to = Math.Clamp(to, 0, Math.Max(_profile.Relics.Count - 1, 0));
 		if (to == from) return false;
-		_profile.Relics.Move(from, to);          // 顺序真的变 → 序号 / 自动类名都跟着它走
+		_profile.Relics.Move(from, to);          // 顺序真的变 → 序号 / 空槽行数 / 自动类名都跟着它走
 		RefreshRelicOrdinals();
 		RelicList.SelectedItem = dragged;
 		SyncDetail();
@@ -7260,7 +7493,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				slugBad.Count == 0, string.Join(" ｜ ", slugRows));
 		}
 		Check("卡牌列表绑定到 Profile.Cards", CardList.ItemsSource == Profile.Cards);
-		Check("遗物列表绑定到 Profile.Relics", RelicList.ItemsSource == Profile.Relics);
+		// ⚠ V0.2.125 起：列表的 ItemsSource 变成**界面镜像集合** RelicRows
+		//（真遗物 + 末尾空槽行），真遗物集合 Profile.Relics 仍是唯一事实来源 ——
+		// 所以这里改验「镜像 = Profile.Relics 的真遗物那一截」，以及集合身份没被换掉。
+		Check("遗物列表绑定到 Profile.Relics 的界面镜像（真遗物一截 + 末尾空槽行）",
+			RelicList.ItemsSource == RelicRows
+			&& RelicRows.Count == RelicSlotRowCount(Profile.Relics.Count)
+			&& RelicRows.Take(Profile.Relics.Count).SequenceEqual<IRelicSlotRow>(Profile.Relics)
+			&& RelicRows.Skip(Profile.Relics.Count).All(r => r.IsPlaceholder),
+			$"镜像 {RelicRows.Count} 行 = 真遗物 {Profile.Relics.Count} + 空槽 {RelicRows.Count - Profile.Relics.Count}");
 		Check("药水列表绑定到 Profile.Potions", PotionList.ItemsSource == Profile.Potions);
 		Check("关键词列表绑定到 Profile.CustomKeywords", KeywordList.ItemsSource == Profile.CustomKeywords);
 		Check("美术槽位已建立（13 个上传槽位 + 描边颜色输入）", ArtSlots.Count == 13, $"{ArtSlots.Count} 个");
@@ -9711,7 +9952,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 			if (RelicList.Items.Count > 0 && RelicList.SelectedItem == null) RelicList.SelectedIndex = 0;
 			UpdateLayout();
-			var relicUi = RelicList.SelectedItem as RelicSpec;
+			var relicUi = RelicUiSelection;
 			Check("遗物页有「触发时机列表」（绑在选中遗物的 Triggers 上）",
 				relicUi != null && RelicTriggerList.ItemsSource == relicUi.Triggers, RelicTriggerList.Items.Count + " 条");
 			Check("遗物页「触发时机列表」的每一行显示的是时机摘要（Summary）",
@@ -9783,7 +10024,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Profile.Relics.Select((r, i) => r.Ordinal == i + 1).All(x => x)
 						&& Profile.Relics[a].OrdinalText == (a + 1) + "." && Profile.Relics[d].OrdinalText == (d + 1) + ".",
 						Profile.Relics[a].OrdinalText + " / … / " + Profile.Relics[d].OrdinalText);
-					// 列表行的模板里真的有一个绑 OrdinalText 的 TextBlock（不是只算在模型上）
+					// 列表行的模板里真的有一个绑 OrdinalText 的 TextBlock（不是只算在模型上）。
+					// ⚠ V0.2.125 起列表里多了空槽行，ListBox 默认虚拟化 → 容器要**先量过布局**才有；
+					// 所以这里显式 UpdateLayout + 先探一个容器的宽度（不改虚化设置，布局断言还按老口径量）。
+					UpdateLayout();
+					_ = (RelicList.ItemContainerGenerator.ContainerFromIndex(0) as FrameworkElement)?.ActualWidth;
 					List<TextBlock> ordTexts = new List<TextBlock>();
 					CollectTextBlocks(RelicList, ordTexts);
 					Check("列表行的模板里真的绑了序号（OrdinalText）",
@@ -21759,6 +22004,204 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					}
 					Profile.Relics.Remove(amtUiRelic);
 					Profile.CustomPowers.Remove(amtUiPower);
+				}
+			}
+
+			// ===== 遗物页：序号按「每块 5 个」预留显示（用户要求 2026-10-XX）=====
+			// 用户原话：「左侧序号直接显示，可以每次多生成五个序号，比如有 3 个选项时，左侧序号显示 1~5，
+			// 加第 6 个的时候，显示 6~10.」
+			// 实现口径（也和用户对齐过）：列表里显示的**序号行数** = 5 × ceil(max(N,1)/5)（N = 真遗物数）；
+			// 多出来的行是**空槽**（RelicSlotPlaceholder，只显示灰色序号，没有内容，不能被当成遗物选中，
+			// 但可以当拖放落点）；序号仍然是**位置号 1..N 连续**，不是块内 1..5 循环；
+			// 空槽只活在界面镜像集合 RelicRows 里，Profile.Relics 里永远只有真遗物。
+			{
+				IList<RelicSpec> kept = Profile.Relics.ToList();      // 这一轮的临时改动最后原样还回去
+				RelicSpec? savedSelection = RelicUiSelection;
+				SelectTabRoot("遗物");                                 // 断言要看布局，得先切到遗物页
+				// 界面上真能看到序号列：行里的 TextBlock 数 = 「序号.」形状的文字个数
+				//（列表虚拟化 → 得先量过布局才有容器；不改虚拟化设置，布局断言还按老口径量列表宽高）
+				int VisibleOrdinalTexts(int count)
+				{
+					UpdateLayout();
+					List<TextBlock> blocks = new List<TextBlock>();
+					CollectTextBlocks(RelicList, blocks);
+					return blocks.Count(t => (t.Text ?? "").EndsWith(".") && (t.Text ?? "").Length >= 2
+						&& char.IsDigit((t.Text ?? "x")[0]) && t.Text!.Length <= 3);
+				}
+				try
+				{
+					// ---- 断言 1：3 只遗物 → 显示 1~5 行，4/5 是空槽、不能被当成遗物选中 ----
+					Profile.Relics.Clear();
+					Profile.Relics.Add(new RelicSpec { Name = "槽甲", ClassName = "UiCheckSlot1", Rarity = "Common", Trigger = "CombatStart" });
+					Profile.Relics.Add(new RelicSpec { Name = "槽乙", ClassName = "UiCheckSlot2", Rarity = "Rare", Trigger = "CombatStart" });
+					Profile.Relics.Add(new RelicSpec { Name = "槽丙", ClassName = "UiCheckSlot3", Rarity = "Shop", Trigger = "CombatStart" });
+					RelicList.SelectedItem = Profile.Relics[0];
+					UpdateLayout();
+					string ord3 = string.Join(",", RelicRows.Select(r => r.OrdinalText));
+					string roster3 = string.Join(" | ", RelicRows.Select(r => r is RelicSpec rr ? "遗物:" + rr.Name + ":" + rr.Ordinal : "空槽:" + r.OrdinalText));
+					Check("（空槽 ①）3 只遗物 → 列表显示 1~5 行（4、5 是空槽）",
+						RelicRows.Count == 5 && ord3 == "1.,2.,3.,4.,5."
+						&& RelicRows.Take(3).All(r => !r.IsPlaceholder) && RelicRows.Skip(3).All(r => r.IsPlaceholder)
+						&& RelicList.Items.Count == 5,
+						$"行 {RelicRows.Count} / 序号 {ord3} / 列表 Items {RelicList.Items.Count} / 名册[{roster3}]");
+					Check("（空槽 ①）界面上真画出了 5 个序号（不是只算在集合里）",
+						VisibleOrdinalTexts(3) == 5, $"看到 {VisibleOrdinalTexts(3)} 个「N.」");
+					// 选中空槽：不能被当成遗物（SelectedItem 不是 RelicSpec）、也不能改了任何一只真遗物
+					string beforeDump = string.Join(" | ", Profile.Relics.Select(r => r.Name + ":" + r.Ordinal + ":" + r.ClassName));
+					RelicList.SelectedItem = Profile.Relics[0];            // 先明确选中「槽甲」，下面再点空槽
+					RelicSpec? beforeSel = RelicUiSelection;
+					RelicList.SelectedItem = RelicRows[3];
+					UpdateLayout();
+					Check("（空槽 ①）选中空槽行：选中项不是 RelicSpec、当前选中的真遗物没变、真遗物一个字段都没被改",
+						RelicList.SelectedItem is not RelicSpec && ReferenceEquals(RelicUiSelection, beforeSel)
+						&& string.Join(" | ", Profile.Relics.Select(r => r.Name + ":" + r.Ordinal + ":" + r.ClassName)) == beforeDump
+						&& Profile.Relics.Count == 3,
+						$"SelectedItem={RelicList.SelectedItem?.GetType().Name ?? "(null)"}（空槽行） UiSel={RelicUiSelection?.Name ?? "(null)"} 遗物 {Profile.Relics.Count} 只");
+
+					// ---- 断言 2：加到 6 只 → 显示 1~10 行，7~10 是空槽 ----
+					for (int i = 4; i <= 6; i++)
+						Profile.Relics.Add(new RelicSpec { Name = "槽" + i, ClassName = "UiCheckSlot" + i, Rarity = "Common", Trigger = "CombatStart" });
+					UpdateLayout();
+					string ord6 = string.Join(",", RelicRows.Select(r => r.OrdinalText));
+					Check("（空槽 ②）加到 6 只 → 列表显示 1~10 行（7~10 是空槽）",
+						RelicRows.Count == 10 && ord6 == string.Join(",", Enumerable.Range(1, 10).Select(i => i + "."))
+						&& RelicRows.Take(6).All(r => !r.IsPlaceholder) && RelicRows.Skip(6).All(r => r.IsPlaceholder),
+						$"行 {RelicRows.Count} / 序号 {ord6}");
+					Check("（空槽 ②）界面上真画出了 10 个序号", VisibleOrdinalTexts(6) == 10, $"看到 {VisibleOrdinalTexts(6)} 个「N.」");
+
+					// ---- 断言 3：删回 5 只 → 行数回到 5，序号 1~5 ----
+					Profile.Relics.RemoveAt(5);
+					UpdateLayout();
+					string ord5 = string.Join(",", RelicRows.Select(r => r.OrdinalText));
+					Check("（空槽 ③）删回 5 只 → 行数回到 5（序号 1~5，没有空槽）",
+						RelicRows.Count == 5 && ord5 == "1.,2.,3.,4.,5." && RelicRows.All(r => !r.IsPlaceholder)
+						&& Profile.Relics.Count == 5,
+						$"行 {RelicRows.Count} / 序号 {ord5} / 真遗物 {Profile.Relics.Count}");
+
+					// ---- 断言 4：拖一只遗物到空槽 → Profile.Relics 顺序真的变、序号仍是 1..N 连续 ----
+					Profile.Relics.RemoveAt(4);                    // 退回 4 只：1~4 真遗物 + 第 5 行空槽
+					RelicSpec draggedRelic = Profile.Relics[0];
+					RelicList.SelectedItem = draggedRelic;         // 明确把选中项放成「槽甲」，点空槽时才好验「没变」
+					UpdateLayout();
+					// 第 5 行（行号 5 → UI 索引 4）是空槽：RelicRowAtPoint 给的 Relic 必须是 null。
+					// ⚠ 鼠标位置要用**列表坐标系**：ItemContainer 左上角在列表里的位置 + 行内偏移。
+					DependencyObject? rowC = RelicList.ItemContainerGenerator.ContainerFromIndex(4) as DependencyObject;
+					(RelicSpec? rowCData, string rowCDetail) = (null, "(没有容器)");
+					if (rowC is FrameworkElement rowCFe)
+					{
+						Point offset = rowCFe.TransformToVisual(RelicList).Transform(new Point(0, 0));
+						var probes = new (double Fx, double Fy)[] { (0.5, 0.5), (0.5, 0.25), (0.5, 0.75) };
+						int nullHits = 0;
+						var got = new List<string>();
+						foreach ((double fx, double fy) in probes)
+						{
+							var at = RelicRowAtPoint(new Point(offset.X + rowCFe.ActualWidth * fx, offset.Y + rowCFe.ActualHeight * fy));
+							got.Add($"({fx:F2},{fy:F2})→行{at.Index}/{(at.Relic?.Name ?? "无遗物")}");
+							if (at.Relic is null) nullHits++;
+						}
+						rowCData = nullHits > 0 ? null : RelicRowAtPoint(new Point(offset.X + rowCFe.ActualWidth / 2, offset.Y + rowCFe.ActualHeight / 2)).Relic;
+						rowCDetail = $"容器 {rowCFe.ActualWidth:F0}x{rowCFe.ActualHeight:F0}@{offset.X:F0},{offset.Y:F0} " + string.Join(" ", got);
+					}
+					Check("（空槽 ④）空槽那一行在屏幕上点得到、而且它不给出任何遗物（Relic = null）",
+						rowC is not null && rowCData is null && RelicRows[4].IsPlaceholder,
+						rowCDetail);
+					bool slotMoved = MoveRelicTo(draggedRelic, null, 4);       // 拖到第 5 行（空槽）→ 夹到末尾
+					UpdateLayout();
+					Check("（空槽 ④）拖一只遗物到空槽：Profile.Relics 顺序真的变、序号仍是 1..N 连续",
+						slotMoved && Profile.Relics.Count == 4
+						&& ReferenceEquals(Profile.Relics[3], draggedRelic)
+						&& Profile.Relics.Select((r, i) => r.Ordinal == i + 1 && r.OrdinalText == (i + 1) + ".").All(x => x)
+						&& RelicRows.Take(4).SequenceEqual<IRelicSlotRow>(Profile.Relics)
+						&& RelicRows[4].IsPlaceholder && RelicRows.Count == 5,
+						$"拖到末尾 → " + string.Join(" → ", Profile.Relics.Select(r => r.Name)) + $" ／ 序号 {string.Join(",", RelicRows.Select(r => r.OrdinalText))}");
+
+					// ---- 断言 5：占位项不影响任何真数据 / 不影响生成结果 ----
+					var slotDemo = new RelicSpec { Name = "空槽演示", ClassName = "", Rarity = "Common", Trigger = "CombatStart" };
+					slotDemo.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+					var slotProfileA = ProfileFactory.Sample();
+					var slotProfileB = ProfileFactory.Sample();
+					slotProfileA.Relics.Clear();
+					slotProfileB.Relics.Clear();
+					slotProfileA.Relics.Add(slotDemo);
+					slotProfileB.Relics.Add(slotDemo);
+					slotProfileA.Paths.OutputDir = Path.Combine(Path.GetTempPath(), "forge_slot_a_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					slotProfileB.Paths.OutputDir = Path.Combine(Path.GetTempPath(), "forge_slot_b_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					slotProfileA.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					slotProfileB.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					slotProfileA.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					slotProfileB.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					// 载荷逐字相等：数量 1（真遗物数）与顺序，占位项一个都进不去
+					Check("（空槽 ⑤）Profile.Relics 里只有真遗物（1 只），空槽项一个都没混进去",
+						slotProfileA.Relics.Count == 1 && slotProfileB.Relics.Count == 1
+						&& ReferenceEquals(slotProfileA.Relics[0], slotDemo)
+						&& !RelicRows.OfType<RelicSpec>().Any(r => ReferenceEquals(r, slotDemo) == false && !Profile.Relics.Contains(r)),
+						$"A={slotProfileA.Relics.Count} 只 / B={slotProfileB.Relics.Count} 只");
+					// 生成端：模组入口（含所有遗物类名）逐字一致（口径和 V0.2.124 一样：只比生成结果）
+					string slotEntryA = PatchesGen.ModEntrySource(slotProfileA, null);
+					string slotEntryB = PatchesGen.ModEntrySource(slotProfileB, null);
+					Check("（空槽 ⑤）生成结果和「没有空槽」时逐字一致（模组入口源码长度 + 内容都相同）",
+						slotEntryA == slotEntryB && slotEntryA.Length > 0,
+						$"长度 {slotEntryA.Length} / {slotEntryB.Length}，逐字相同={slotEntryA == slotEntryB}");
+					// 真生成一遍：输出文件清单里不能出现任何空槽痕迹
+					var slotGen = ModGenerator.Generate(slotProfileA);
+					string slotFiles = slotGen.Success
+						? string.Join("\n", Directory.GetFiles(slotGen.ProjectRoot, "*", SearchOption.AllDirectories)
+							.Select(f => Path.GetRelativePath(slotGen.ProjectRoot, f).Replace('\\', '/'))
+							.OrderBy(x => x, StringComparer.Ordinal))
+						: "";
+					Check("（空槽 ⑤）真生成一遍：没有空槽类 / 空槽文件（也没多出第 2 只遗物）",
+						slotGen.Success && slotFiles.Length > 0
+						&& !slotFiles.Contains("RelicSlotPlaceholder") && !slotFiles.Contains("UiCheckSlot")
+						&& !slotFiles.Contains("空槽") && slotProfileA.Relics.Count == 1,
+						slotGen.Success ? $"生成 {slotFiles.Split('\n').Length} 个文件，一个「空槽」都没有" : string.Join(" / ", slotGen.Issues.Where(i => i.IsError).Take(3)));
+					try { if (Directory.Exists(slotProfileA.Paths.OutputDir)) Directory.Delete(slotProfileA.Paths.OutputDir, true); } catch { }
+					try { if (Directory.Exists(slotProfileB.Paths.OutputDir)) Directory.Delete(slotProfileB.Paths.OutputDir, true); } catch { }
+
+					// ---- 断言 6：空槽行只有灰序号（颜色实测和真遗物行不一样），而且不参与选中 ----
+					// ⚠ 列表是虚拟化的 → 只有**已经实化**的行才在可视树上：这里把实化到的序号 TextBlock
+					// 全收集起来，按「真遗物行 / 空槽行」分组比颜色（不去假设第 1 行一定实化了）。
+					UpdateLayout();
+					List<TextBlock> ordBlocks = new List<TextBlock>();
+					CollectTextBlocks(RelicList, ordBlocks);
+					var ordInfos = ordBlocks
+						.Where(t => (t.Text ?? "").Length is 2 or 3 && (t.Text ?? "").EndsWith(".") && char.IsDigit((t.Text ?? "x")[0]))
+						.Select(t => (Text: t.Text!, Color: (t.Foreground as SolidColorBrush)?.Color.ToString() ?? "(不是纯色)", Visible: t.IsVisible))
+						.ToList();
+					var realInfos = ordInfos.Where(o => Profile.Relics.Any(r => r.OrdinalText == o.Text)).ToList();
+					var slotInfos = ordInfos.Where(o => RelicRows.Any(r => r.IsPlaceholder && r.OrdinalText == o.Text)).ToList();
+					Check("（空槽 ⑥）空槽行的序号是**灰**的：颜色和真遗物行不一样、行本身可见",
+						realInfos.Count > 0 && slotInfos.Count > 0
+						&& slotInfos.All(s => s.Visible
+							&& (s.Color.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase) || s.Color.Contains("170,170,170", StringComparison.Ordinal)))
+						&& realInfos.All(r => !r.Color.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase) && !r.Color.Contains("170,170,170", StringComparison.Ordinal)),
+						$"实化序号 {string.Join(" / ", ordInfos.Select(o => o.Text + "=" + o.Color + (o.Visible ? "" : "(不可见)")))} ／ 真遗物 {realInfos.Count} 行、空槽 {slotInfos.Count} 行");
+					Check("（空槽 ⑥）空槽行的「遗物名」那一列是空的（没有内容）",
+						RelicRows[4] is RelicSlotPlaceholder ph6 && ph6.Display.Length == 0 && ph6.RowTip is null
+						&& string.IsNullOrEmpty(RelicRows[4].OrdinalText) == false,
+						$"Display='{((RelicSlotPlaceholder)RelicRows[4]).Display}' RowTip={(RelicRows[4].RowTip ?? "(null)")}");
+					// 全选也不能把空槽算进去（它比真遗物多，是最容易漏掉的一条链路）
+					RelicList.SelectedItems.Clear();
+					foreach (IRelicSlotRow row in RelicRows)
+					{
+						if (!row.IsPlaceholder) RelicList.SelectedItems.Add(row);
+					}
+					Check("（空槽 ⑥）「全选」只选中真遗物：SelectedItems 里一个空槽都没有",
+						RelicList.SelectedItems.Count == Profile.Relics.Count
+						&& RelicList.SelectedItems.OfType<RelicSlotPlaceholder>().Count() == 0
+						&& !RelicList.SelectedItems.Cast<object>().Any(o => o is IRelicSlotRow { IsPlaceholder: true }),
+						$"选中 {RelicList.SelectedItems.Count} / 真遗物 {Profile.Relics.Count} / 行数 {RelicRows.Count}");
+					RelicList.SelectedItems.Clear();
+				}
+				finally
+				{
+					Profile.Relics.Clear();
+					foreach (RelicSpec r in kept) Profile.Relics.Add(r);
+					RefreshRelicOrdinals();
+					RelicList.SelectedItem = (savedSelection is not null && Profile.Relics.Contains(savedSelection))
+						? savedSelection
+						: Profile.Relics.FirstOrDefault();
+					SyncDetail();
+					UpdateLayout();
 				}
 			}
 

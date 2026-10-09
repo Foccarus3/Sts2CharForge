@@ -1118,11 +1118,15 @@
                                     IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
                         </WrapPanel>
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
-                                   Text="最左边的数字 = 这只遗物**现在排第几位**（拖动换位置后跟着重排）。拖动列表里的一行就能换顺序；自动生成的英文类名会跟着序号走，手填的不会被改。"/>
+                                   Text="最左边的数字 = 这只遗物**现在排第几位**（拖动换位置后跟着重排）。序号每次多留 5 个：不够 5 只时后面几行是**灰色空槽**（拖遗物过去就放到那个位置）；空槽不能被选中。自动生成的英文类名会跟着序号走，手填的不会被改。"/>
                         <TextBlock DockPanel.Dock="Bottom" x:Name="RelicDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
                                    Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
+                        <!-- 用户要求：序号按「每块 5 个」预留显示 —— 行数 = 5 × ceil(max(N,1)/5)，
+                             多出来的行是**空槽**（RelicSlotPlaceholder，只显示灰色序号、没有内容）。
+                             ItemsSource 绑的是 MainWindow.RelicRows 这个**界面镜像集合**
+                             （真遗物 + 末尾空槽）；真遗物集合 Profile.Relics 仍是唯一事实来源。 -->
                         <ListBox x:Name="RelicList" SelectionMode="{Binding MultiSelectRelics, Converter={StaticResource MultiSelectMode}}"
-                                 ItemsSource="{Binding Profile.Relics}"
+                                 ItemsSource="{Binding RelicRows}"
                                  AllowDrop="True" PreviewMouseLeftButtonDown="OnRelicListPreviewMouseDown"
                                  PreviewMouseMove="OnRelicListPreviewMouseMove"
                                  DragOver="OnRelicListDragOver" Drop="OnRelicListDrop"
@@ -1130,23 +1134,33 @@
                                  HorizontalContentAlignment="Stretch">
                             <ListBox.ItemTemplate>
                                 <DataTemplate>
-                                    <Grid ToolTip="{Binding RowTip}">
+                                    <Grid x:Name="RelicRowRoot" ToolTip="{Binding RowTip}">
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="34"/>
                                             <ColumnDefinition Width="*"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                        <TextBlock x:Name="RelicRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
                                                    Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                                        <TextBlock Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
+                                        <TextBlock x:Name="RelicRowName" Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
                                                    VerticalAlignment="Center"/>
                                     </Grid>
+                                    <!-- 空槽行：只有灰色序号（遗物名那一列整块收起来）。判据是接口上的 IsPlaceholder，
+                                         真遗物 = false、空槽 = true（见 RelicSlotPlaceholder / IRelicSlotRow）。 -->
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                            <Setter TargetName="RelicRowRoot" Property="ToolTip" Value="{x:Null}"/>
+                                            <Setter TargetName="RelicRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+                                            <Setter TargetName="RelicRowOrdinal" Property="FontWeight" Value="Normal"/>
+                                            <Setter TargetName="RelicRowName" Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </DockPanel>
                     <TextBlock x:Name="RelicEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择遗物"
-                               Visibility="{Binding SelectedItem, ElementName=RelicList, Converter={StaticResource EmptyToVisibility}}"/>
+                               Visibility="{Binding HasRelicSelection, Converter={StaticResource BoolToCollapsed}}"/>
 
                     <!-- 额外资源量遗物里选中的那条效果：编辑区（和遗物详情同一格，靠选择互斥 + 代码里藏掉空提示） -->
                     <!-- 额外资源量遗物里选中的那条效果：编辑区（借遗物页右边那一格显示 ——
@@ -1163,8 +1177,11 @@
                         </StackPanel>
                     </ScrollViewer>
 
-                    <Grid x:Name="RelicDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=RelicList}"
-                          Visibility="{Binding SelectedItem, ElementName=RelicList, Converter={StaticResource NotEmptyToVisibility}}">                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/></Grid.ColumnDefinitions>
+                    <!-- ⚠ 显隐判据绑在**窗口**上（RelativeSource AncestorType=Window）：不能写裸
+                         {Binding HasRelicSelection} —— RelicDetail 自己把 DataContext 换成了选中的那只遗物，
+                         裸绑定会去找 RelicSpec.HasRelicSelection（不存在 → PathError → Visibility 停在默认值 Visible）。 -->
+                    <Grid x:Name="RelicDetail" Grid.Column="2" DataContext="{Binding RelicUiSelection}"
+                          Visibility="{Binding HasRelicSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">                        <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/></Grid.ColumnDefinitions>
                         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
                         <StackPanel>
                             <TextBlock Text="遗物属性" FontWeight="Bold" Margin="0,0,0,6" TextWrapping="Wrap"/>
