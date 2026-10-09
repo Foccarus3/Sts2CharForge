@@ -161,7 +161,7 @@ public static class PngUtil
         WriteBe(ihdr, 4, height);
         ihdr[8] = 8; ihdr[9] = 6;
 
-        using var fs = File.Create(path);
+        using var fs = FsSafe.Create(path);
         fs.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
         WriteChunk(fs, "IHDR", ihdr);
         WriteChunk(fs, "IDAT", idat);

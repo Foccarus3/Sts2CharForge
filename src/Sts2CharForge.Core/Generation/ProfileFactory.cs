@@ -18,6 +18,8 @@ public static class ProfileFactory
     {
         var p = SampleContent();
         AddVanillaBasics(p);
+        // 新建的存档一律按**新版**锻造图端口（不然刚建好 → 保存 → 再打开会被迁移一次）
+        p.ForgeGraphPortVersion = ForgeGraphGen.PortVersion;
         return p;
     }
 
@@ -146,13 +148,13 @@ public static class ProfileFactory
         if (!File.Exists(fullPath)) return;
         try
         {
-            File.Copy(fullPath, fullPath + ".bak", true);
+            FsSafe.Copy(fullPath, fullPath + ".bak", true);
             string dir = BackupFolderOf(fullPath);
             Directory.CreateDirectory(dir);
             string name = Path.GetFileNameWithoutExtension(fullPath);
             string stamp = File.GetLastWriteTime(fullPath).ToString("yyyyMMdd-HHmmss");
             string target = Path.Combine(dir, $"{name}.{stamp}.json");
-            if (!File.Exists(target)) File.Copy(fullPath, target, true);
+            if (!File.Exists(target)) FsSafe.Copy(fullPath, target, true);
             TrimBackups(dir, name, 30);
         }
         catch
@@ -179,14 +181,52 @@ public static class ProfileFactory
         profile.SaveName = Path.GetFileNameWithoutExtension(path);   // 工程目录名跟着存档文件名走
         string full = Path.GetFullPath(path);
         KeepBackup(full);
-        File.WriteAllText(full, JsonSerializer.Serialize(profile, JsonOpts), new System.Text.UTF8Encoding(false));
+        // 存档 JSON 也在用户自己的目录里，同样可能被属性 / 占用挡住（保存失败要给人话，见 FsSafe）
+        FsSafe.WriteAllText(full, JsonSerializer.Serialize(profile, JsonOpts), new System.Text.UTF8Encoding(false));
     }
 
     public static CharacterProfile Load(string path)
     {
         var p = JsonSerializer.Deserialize<CharacterProfile>(File.ReadAllText(path), JsonOpts) ?? new CharacterProfile();
         p.SaveName = Path.GetFileNameWithoutExtension(path);
+        // 老存档的锻造图要按新版【if】端口迁移一次（条件从右边的插槽挪到左边的入口）——
+        // 不做的话「是 / 否」两支会悄悄对调（端口下标变了，见 ForgeGraphGen.MigrateIfPorts）。
+        ForgeGraphGen.MigrateIfPorts(p);
+        // 老存档的状态触发时机 id 迁到现在的 id（用户要求两边菜单相同后改过三条：
+        // TurnStart → PlayerTurnStart、TurnEnd → PlayerTurnEnd、DamageTaken → DamageReceived）——
+        // 不迁的话界面上那个下拉会因为「列表里没有这个值」显示成空白。
+        foreach (var cp in p.CustomPowers)
+            foreach (var t in cp.Triggers)
+                t.Kind = Effects.PowerTriggers.Canonical(t.Kind);
+        // 用户要求（V0.2.112）：「效果那边只要保留公式、去掉数值框」——支持公式的 5 种效果从此只编辑公式。
+        // 老存档里那 5 种的**固定数值**在这里自动转成公式（例：伤害 6 → 公式 "6"），
+        // 否则界面上看不到那个数字、用户会以为配置丢了（生成结果不变：同一个数值）。
+        MigrateAmountsToFormulas(p);
         return Normalize(p);
+    }
+
+    /// <summary>
+    /// 把**卡牌**上那 5 种支持公式的效果里「只有固定数值、还没写公式」的那些转成公式
+    /// （<c>Amount</c> 原样留着，公式优先）。只动这 5 种；「= X」那几种开关不动（X 是另一套语义）。
+    ///
+    /// ⚠ 只迁**卡牌**：公式目前只做在卡牌上（遗物 / 药水 / 状态那几条链没有「打出这张牌」的上下文，
+    /// 校验器会拦住），那些效果照旧用「数值」框 —— 迁过去会让整次生成报错。
+    /// </summary>
+    private static void MigrateAmountsToFormulas(CharacterProfile p)
+    {
+        foreach (var c in p.Cards)
+        {
+            foreach (var e in c.Effects)
+            {
+                if (e is null) continue;
+                if (!EffectSpec.FormulaSupports(e.Kind)) continue;
+                if (e.AmountIsX) continue;                                     // 「数值 = X」：不是固定数值
+                if (!string.IsNullOrWhiteSpace(e.AmountFormula)) continue;     // 已经写了公式
+                if (e.Amount == 0m) continue;                                  // 0 = 本来就不生效
+                e.AmountFormula = e.Amount.ToString("0.############################",
+                    System.Globalization.CultureInfo.InvariantCulture);
+            }
+        }
     }
 
     /// <summary>

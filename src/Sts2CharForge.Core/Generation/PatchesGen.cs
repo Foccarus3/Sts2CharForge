@@ -115,6 +115,34 @@ public static class PatchesGen
          .Line($"var harmony = new HarmonyLib.Harmony({Lit.Str(n.ModId)});")
          .Line("harmony.PatchAll(System.Reflection.Assembly.GetExecutingAssembly());");
 
+        // 无色卡（用户要求）是上面那条规矩的**唯一例外**：本体的无色卡池 ColorlessCardPool 的成员表是
+        // 写死的（sealed 类里硬编码），模组只能靠 AddModelToPool 在**游戏初始化之前**登记 ——
+        // 晚了本体自己会抛「it's too late! You must add content before the game is initialized.」
+        //（本体 src/Core/Modding/ModHelper.cs）。模组入口就是初始化之前跑的，位置正好。
+        w.Line();
+        {
+            var colorless = p.AllCards.Where(c => c is not null && !c.IsVanillaCard && c.IsColorless).ToList();
+            if (colorless.Count > 0)
+            {
+                w.Line("// 无色卡（用户要求）：登记进本体的无色卡池 —— 这样它们自动用本体的无色卡框 / 能量前缀，")
+                 .Line("// 而且**不进**你角色的卡池（战斗奖励抽的是你角色的卡池）。")
+                 .Open("try")
+                 .Line("var __colorlessPool = typeof(MegaCrit.Sts2.Core.Models.CardPools.ColorlessCardPool);")
+                 .Line("var __asm = System.Reflection.Assembly.GetExecutingAssembly();");
+                foreach (var c in colorless)
+                {
+                    string cls = n.CardClassName(p, c);
+                    w.Line($"if (__asm.GetType({Lit.Str(n.Namespace + "." + cls)}) is {{ }} __t{cls})")
+                     .Line($"    MegaCrit.Sts2.Core.Modding.ModHelper.AddModelToPool(__colorlessPool, __t{cls});   // 「{c.Name}」")
+                     .Line($"else Log.Warn({Lit.Str("无色卡类找不到，跳过登记：" + cls)});");
+                }
+                w.Close()
+                 .Open("catch (Exception e)")
+                 .Line("Log.Error(\"无色卡登记失败（这几张卡不会出现在无色卡池里）：\" + e.Message);")
+                 .Close();
+            }
+        }
+
         // 逐帧动画：把每个动作的帧资源注册进生成的 FrameAnimRegistry（不勾总开关时一行都不写）
         if (animPlan is not null)
             foreach (string line in FrameAnimGen.RegistrationLines(p, animPlan)) w.Line(line);
@@ -134,6 +162,43 @@ public static class PatchesGen
              .Close()
              .Open("catch (Exception e)")
              .Line($"Log.Warn({Lit.Str("先古卡染色补丁没打上：")} + e.Message);")
+             .Close();
+        }
+
+        // 自定义状态的「覆盖血条」补丁也单独手动打（同一个原因：打在**私有**方法 RefreshForeground 上，
+        // 本体改了名字时带特性的 PatchAll 会抛异常、整个模组加载不了）。
+        if (HpBarOverlayGen.Needs(p))
+        {
+            w.Line()
+             .Line("// 自定义状态覆盖血条（见 ForgeHpBarOverlay.cs）：单独手动打，失败了只丢这一截颜色、不影响别的补丁")
+             .Open("try")
+             .Line($"var __hpOverlay = {HpBarOverlayGen.ClassName}.Target;")
+             .Line("if (__hpOverlay is not null)")
+             .Line($"    harmony.Patch(__hpOverlay, postfix: new HarmonyLib.HarmonyMethod(typeof({HpBarOverlayGen.ClassName}), nameof({HpBarOverlayGen.ClassName}.Postfix)));")
+             .Line("else")
+             .Line($"    Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：找不到 NHealthBar.RefreshForeground（本体的血条节点可能改过）")});")
+             .Close()
+             .Open("catch (Exception e)")
+             .Line($"Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：")} + e.Message);")
+             .Close();
+        }
+
+        // 「资源不够、这张牌打不出去」那句提示（本体键里写死了「辉星」）也单独手动打：
+        // 目标方法在**本体的 internal 类**里，编译期连 typeof 都写不出来（只能 AccessTools.TypeByName），
+        // 所以绝不能用带特性的 PatchAll —— 找不到时只丢这一句提示，不影响别的补丁。
+        if (CSharpCodeGen.HasExtraResourceUi(p) || CSharpCodeGen.NeedsStarCap(p))
+        {
+            w.Line()
+             .Line("// 额外资源量「不够用」那句提示换成我们自己的键（见 ExtraResourceUi.cs 的 ForgeNotEnoughMessage）：单独手动打")
+             .Open("try")
+             .Line($"var __notEnough = {n.CharClass}ForgeNotEnoughMessage.Target;")
+             .Line("if (__notEnough is not null)")
+             .Line($"    harmony.Patch(__notEnough, postfix: new HarmonyLib.HarmonyMethod(typeof({n.CharClass}ForgeNotEnoughMessage), nameof({n.CharClass}ForgeNotEnoughMessage.Postfix)));")
+             .Line("else")
+             .Line($"    Log.Warn({Lit.Str("额外资源量：找不到本体的 UnplayableReasonExtensions.GetPlayerDialogueLine，「资源不够」那句提示保持本体原文（辉星）")});")
+             .Close()
+             .Open("catch (Exception e)")
+             .Line($"Log.Warn({Lit.Str("额外资源量：「资源不够」提示补丁没打上：")} + e.Message);")
              .Close();
         }
 

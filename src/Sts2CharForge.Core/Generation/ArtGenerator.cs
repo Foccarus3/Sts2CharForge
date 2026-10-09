@@ -20,7 +20,8 @@ public static class ArtGenerator
         ("选人过场贴图",    "PNG 灰度/RGBA，2560×1200（白=显示、黑=透明）",             2560, 1200),
         ("卡面（每张卡）",  "PNG，1000×760（宽屏横版，本体铁甲卡面就是 24bit 无 alpha）", 1000, 760),
         ("遗物图标（每个）", "PNG-32 RGBA，256×256（方图）",                            256, 256),
-        ("多人手势 ×4",     "PNG-32 RGBA，422×1200（point/rock/paper/scissors）",       422, 1200),
+        ("多人手势（选择 / 剪刀 / 石头 / 布）", "PNG-32 RGBA，422×1200（本体就是四张 422×1200 的竖图，手从画面下沿伸进来）", 422, 1200),
+        ("多人手势（拿取）",       "PNG-32 RGBA，422×1200（本体没有这张：它是「布→石头」两步糊出来的，我们单独给它一张）", 422, 1200),
     ];
 
     private static IEnumerable<(string Src, string Dst, Func<ArtSpec, string?>? Upload)> AssetMap()
@@ -36,10 +37,15 @@ public static class ArtGenerator
         yield return ("images/packed/character_select/char_select_ironclad.png", "images/packed/character_select/char_select_{slug}.png", a => a.SelectIcon);
         yield return ("images/packed/character_select/char_select_ironclad_locked.png", "images/packed/character_select/char_select_{slug}_locked.png", a => a.SelectIconLocked);
         yield return ("images/packed/map/icons/map_marker_ironclad.png", "images/packed/map/icons/map_marker_{slug}.png", a => a.MapMarker);
-        yield return ("images/ui/hands/multiplayer_hand_ironclad_point.png", "images/ui/hands/multiplayer_hand_{slug}_point.png", null);
-        yield return ("images/ui/hands/multiplayer_hand_ironclad_rock.png", "images/ui/hands/multiplayer_hand_{slug}_rock.png", null);
-        yield return ("images/ui/hands/multiplayer_hand_ironclad_paper.png", "images/ui/hands/multiplayer_hand_{slug}_paper.png", null);
-        yield return ("images/ui/hands/multiplayer_hand_ironclad_scissors.png", "images/ui/hands/multiplayer_hand_{slug}_scissors.png", null);
+        // 多人联机宝箱房的四只手（本体 CharacterModel 的 ArmPointingTexture / ArmRock / ArmPaper / ArmScissors）。
+        // ⚠ 这四张是**功能必需**的资源：本体按固定路径读，缺文件那只手就没了（联机时对面也在等）。
+        //   所以它们和其它槽位一样有「占位」，但占位是否借用本体铁甲战士的手，仍然听 UseVanillaPlaceholders
+        //   那个勾（不勾 = 中性色块，联机能玩但很怪）—— 这也是「美术资源」页上必须写清楚的一句话，
+        //   校验器里另有一条提示（见 ProfileValidator 的宝箱房手势检查）。
+        yield return ("images/ui/hands/multiplayer_hand_ironclad_point.png", "images/ui/hands/multiplayer_hand_{slug}_point.png", a => a.GesturePoint);
+        yield return ("images/ui/hands/multiplayer_hand_ironclad_rock.png", "images/ui/hands/multiplayer_hand_{slug}_rock.png", a => a.GestureRock);
+        yield return ("images/ui/hands/multiplayer_hand_ironclad_paper.png", "images/ui/hands/multiplayer_hand_{slug}_paper.png", a => a.GesturePaper);
+        yield return ("images/ui/hands/multiplayer_hand_ironclad_scissors.png", "images/ui/hands/multiplayer_hand_{slug}_scissors.png", a => a.GestureScissors);
         yield return ("images/ui/transitions/ironclad_transition.png", "images/ui/transitions/{slug}_transition.png", a => a.Transition);
     }
 
@@ -66,7 +72,7 @@ public static class ArtGenerator
             {
                 string modImageDst = Path.Combine(projectRoot, n.ModId, "mod_image.png");
                 Directory.CreateDirectory(Path.GetDirectoryName(modImageDst)!);
-                File.Copy(p.Art.ModImage!, modImageDst, overwrite: true);
+                FsSafe.Copy(p.Art.ModImage!, modImageDst, overwrite: true);
                 log?.Invoke("  模组预览图：已放到 " + n.ModId + "/mod_image.png（游戏「模组」界面右侧显示）");
             }
             else
@@ -84,7 +90,7 @@ public static class ArtGenerator
             if (!string.IsNullOrWhiteSpace(userFile) && File.Exists(userFile))
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-                File.Copy(userFile, dst, overwrite: true);
+                FsSafe.Copy(userFile, dst, overwrite: true);
                 uploaded++;
                 continue;
             }
@@ -99,7 +105,7 @@ public static class ArtGenerator
                 foreach (var (from, to) in rewrite) text = text.Replace(from, to);
                 // 去掉顶层 uid，避免与本体资源 uid 冲突（文本原样进 pck）
                 text = System.Text.RegularExpressions.Regex.Replace(text, " uid=\"uid://[^\"]+\"", "");
-                File.WriteAllText(dst, text, ProjectFilesGen.Utf8NoBom);
+                FsSafe.WriteAllText(dst, text, ProjectFilesGen.Utf8NoBom);
                 copied++;
                 continue;
             }
@@ -107,7 +113,7 @@ public static class ArtGenerator
             if (p.Art.UseVanillaPlaceholders)
             {
                 if (!File.Exists(src)) { missing++; log?.Invoke($"  [警告] 本体缺少占位资源：{srcTemplate}"); continue; }
-                File.Copy(src, dst, overwrite: true);
+                FsSafe.Copy(src, dst, overwrite: true);
                 copied++;
             }
             else
@@ -130,6 +136,7 @@ public static class ArtGenerator
         WriteVanillaPowerIcons(p, projectRoot, log);
         WriteGeneratedPowerIcons(p, projectRoot, log);
         WriteStaticCharacterScenes(p, projectRoot, log);
+        WriteGrabGesture(p, projectRoot, log);
         WriteTransitionMaterial(p, projectRoot);
         WriteCardPortraits(p, projectRoot, log);
         WriteRelicIcons(p, projectRoot, log);
@@ -171,7 +178,7 @@ public static class ArtGenerator
 
             string bigDst = Path.Combine(projectRoot, "images/relics", entry + ".png");
             Directory.CreateDirectory(Path.GetDirectoryName(bigDst)!);
-            if (baseSrc is not null) File.Copy(baseSrc, bigDst, overwrite: true);
+            if (baseSrc is not null) FsSafe.Copy(baseSrc, bigDst, overwrite: true);
             else WriteNeutralPng(bigDst, 256, 256);           // 中性占位遗物图标
             var (w, h) = ReadPngSize(bigDst, 256, 256);
 
@@ -186,7 +193,7 @@ region = Rect2(0, 0, {w}, {h})
 """);
 
             string outlineDst = Path.Combine(projectRoot, "images/relics", entry + "_outline.png");
-            if (outlineSrc is not null) File.Copy(outlineSrc, outlineDst, overwrite: true);
+            if (outlineSrc is not null) FsSafe.Copy(outlineSrc, outlineDst, overwrite: true);
             else WriteNeutralPng(outlineDst, 256, 256);
             var (ow, oh) = ReadPngSize(outlineDst, w, h);
             ProjectFilesGen.WriteText(Path.Combine(projectRoot, "images/atlases/relic_outline_atlas.sprites", entry + ".tres"), $"""
@@ -237,7 +244,7 @@ region = Rect2(0, 0, {ow}, {oh})
             // 大图（本体 LargeImagePath = images/potions/large/<id>.png）
             string bigDst = Path.Combine(projectRoot, "images/potions/large", entry + ".png");
             Directory.CreateDirectory(Path.GetDirectoryName(bigDst)!);
-            if (baseSrc is not null) File.Copy(baseSrc, bigDst, overwrite: true);
+            if (baseSrc is not null) FsSafe.Copy(baseSrc, bigDst, overwrite: true);
             else WriteNeutralPng(bigDst, 128, 128);
             var (w, h) = ReadPngSize(bigDst, 128, 128);
 
@@ -254,7 +261,7 @@ region = Rect2(0, 0, {w}, {h})
 
             // 描边（选中/高亮用，可选）
             string outlineDst = Path.Combine(projectRoot, "images/potions/large", entry + "_outline.png");
-            if (outlineSrc is not null) File.Copy(outlineSrc, outlineDst, overwrite: true);
+            if (outlineSrc is not null) FsSafe.Copy(outlineSrc, outlineDst, overwrite: true);
             else WriteNeutralPng(outlineDst, w, h);
             var (ow, oh) = ReadPngSize(outlineDst, w, h);
             ProjectFilesGen.WriteText(Path.Combine(projectRoot, "images/atlases/potion_outline_atlas.sprites", entry + ".tres"), $"""
@@ -288,7 +295,7 @@ region = Rect2(0, 0, {ow}, {oh})
             string src = Path.Combine(vanillaProject, relPath.Replace('\\', Path.DirectorySeparatorChar));
             if (!File.Exists(src)) return false;
             Directory.CreateDirectory(Path.GetDirectoryName(dstPath)!);
-            File.Copy(src, dstPath, overwrite: true);
+            FsSafe.Copy(src, dstPath, overwrite: true);
             return true;
         }
         catch { return false; }
@@ -357,7 +364,7 @@ region = Rect2(0, 0, {ow}, {oh})
             if (srcRoot != dstRoot) text = text.Replace($"name=\"{srcRoot}\"", $"name=\"{dstRoot}\"");
             string dst = Path.Combine(projectRoot, dstRel.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            File.WriteAllText(dst, text, ProjectFilesGen.Utf8NoBom);
+            FsSafe.WriteAllText(dst, text, ProjectFilesGen.Utf8NoBom);
             return true;
         }
         catch (Exception ex)
@@ -407,7 +414,7 @@ region = Rect2(0, 0, {ow}, {oh})
         string? userArt = p.Art.CharacterStatic;
         if (!string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt))
         {
-            File.Copy(userArt, pngPath, overwrite: true);
+            FsSafe.Copy(userArt, pngPath, overwrite: true);
             log?.Invoke($"  静态立绘：使用上传的图片 {Path.GetFileName(userArt)}");
         }
         else if (p.Art.UseVanillaPlaceholders && TryCopyVanillaPortrait(p.Paths.VanillaProject, VanillaPortraitArt, pngPath))
@@ -574,7 +581,7 @@ offset_bottom = -324.997
             : (!string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt) ? userArt : null);
         if (bgSrc is not null)
         {
-            try { File.Copy(bgSrc, Path.Combine(projectRoot, bgRel), overwrite: true); hasBg = true; } catch { hasBg = false; }
+            try { FsSafe.Copy(bgSrc, Path.Combine(projectRoot, bgRel), overwrite: true); hasBg = true; } catch { hasBg = false; }
         }
 
         ProjectFilesGen.WriteText(Path.Combine(projectRoot, "scenes/screens/char_select", "char_select_bg_" + scene + ".tscn"),
@@ -651,7 +658,7 @@ grow_vertical = 2
             if (s is not null)
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(dstPath)!);
-                using var fs = File.Create(dstPath);
+                using var fs = FsSafe.Create(dstPath);
                 s.CopyTo(fs);
                 return true;
             }
@@ -662,7 +669,7 @@ grow_vertical = 2
         if (File.Exists(bundled))
         {
             Directory.CreateDirectory(Path.GetDirectoryName(dstPath)!);
-            File.Copy(bundled, dstPath, overwrite: true);
+            FsSafe.Copy(bundled, dstPath, overwrite: true);
             return true;
         }
         return false;
@@ -767,7 +774,7 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
             string file = Path.GetFileName(src);
             string dst = Path.Combine(dstDir, file);
             if (PngUtil.HueShiftTo(src, dst, hue)) done++;
-            else File.Copy(src, dst, overwrite: true);
+            else FsSafe.Copy(src, dst, overwrite: true);
             sceneText = sceneText.Replace($"res://images/ui/combat/energy_counters/ironclad/{file}",
                                           $"res://images/ui/combat/energy_counters/{n.CharSlug}/{file}");
         }
@@ -794,7 +801,7 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         string orbDst = Path.Combine(projectRoot, orbRel.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(orbDst)!);
         bool orbOk = PngUtil.Resize(icon, orbDst, 128, 128);
-        if (!orbOk) File.Copy(icon, orbDst, overwrite: true);
+        if (!orbOk) FsSafe.Copy(icon, orbDst, overwrite: true);
 
         string layer1 = $"res://images/ui/combat/energy_counters/{n.CharSlug}/ironclad_orb_layer_1.png";
         if (sceneText.Contains(layer1, StringComparison.Ordinal))
@@ -803,12 +810,12 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
             sceneText = HideSceneNode(sceneText, "RotationLayers");
             sceneText = HideSceneNode(sceneText, "Layer4");
             sceneText = HideSceneNode(sceneText, "Layer5");
-            File.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
+            FsSafe.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
             log?.Invoke($"  左侧能量球：球体贴图换成了你上传的能量图标（128×128，本体的另外 4 层已隐藏），粒子光效按色相 {hue:0.###} 着色");
             return;
         }
 
-        File.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
+        FsSafe.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
         log?.Invoke($"  左侧能量球：{done} 层贴图 + {vfx} 个粒子光效已按能量图标的颜色（色相 {hue:0.###}）重新着色");
     }
 
@@ -872,6 +879,24 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         return text;
     }
 
+    /// <summary>
+    /// 多人联机宝箱房「拿取」那只手在工程里的相对路径（res:// 下）。
+    ///
+    /// 本体**没有**这第 5 张图：它是「布（伸手）→ 石头（拳头攥住）」两步糊出来的
+    /// （<c>NHandImage.GrabRelic</c>，见 cs/TreasureGesture.cs 的说明）。
+    /// 所以这张图不带 `multiplayer_hand_&lt;角色&gt;_&lt;手势&gt;` 那套命名，也不会被本体自动读到 ——
+    /// 只有我们自己生成的补丁会 `GD.Load` 它。
+    /// </summary>
+    public static string GrabTextureRelPath(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        return $"images/ui/hands/multiplayer_hand_{n.CharSlug}_grab.png";
+    }
+
+    /// <summary>「拿取」那只手的 res:// 路径（没上传时返回 null = 不生成补丁、保持本体表现）。</summary>
+    public static string? GrabTextureResPath(CharacterProfile p) =>
+        string.IsNullOrWhiteSpace(p.Art.GestureGrab) ? null : "res://" + GrabTextureRelPath(p);
+
     /// <summary>额外资源量自定义图标在工程里的相对路径（res:// 下）。</summary>
     public static string ExtraResourceIconRelPath(CharacterProfile p)
     {
@@ -879,6 +904,27 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         return $"images/ui/combat/{n.CharSlug}_extra_resource_icon.png";
     }
 
+    /// <summary>
+    /// 「拿取」那只手：本体没有这个槽位，所以这张图**不进** <see cref="AssetMap"/>（也就不会有
+    /// 「占位」这一说）—— 没上传就一个字节都不写，游戏里保持本体表现（布 → 石头）。
+    /// 上传了就原样拷进 pck，由 cs/TreasureGesture.cs 那个补丁在我方角色的这一局里换上。
+    /// </summary>
+    private static void WriteGrabGesture(CharacterProfile p, string projectRoot, Action<string>? log)
+    {
+        string? src = p.Art.GestureGrab;
+        if (string.IsNullOrWhiteSpace(src)) return;
+        if (!File.Exists(src))
+        {
+            log?.Invoke($"  [警告] 宝箱房「拿取」手势文件不存在，已跳过（游戏里保持本体表现）：{src}");
+            return;
+        }
+        string dst = Path.Combine(projectRoot, GrabTextureRelPath(p).Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+        FsSafe.Copy(src, dst, overwrite: true);
+        var (w, h) = ReadPngSize(dst, 0, 0);
+        log?.Invoke($"  宝箱房「拿取」手势：已生成 {GrabTextureRelPath(p)}（{(w > 0 ? $"{w}×{h}" : "尺寸没读出来")}）"
+            + "，并只在我方角色的这一局里把「攥住」那一步换成它");
+    }
     /// <summary>额外资源量自定义图标的 res:// 路径（没上传时返回 null）。</summary>
     public static string? ExtraResourceIconResPath(CharacterProfile p) =>
         string.IsNullOrWhiteSpace(p.ExtraResource.Icon)
@@ -930,13 +976,13 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
 
         string dst = Path.Combine(projectRoot, ExtraResourceIconRelPath(p).Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-        File.Copy(src!, dst, overwrite: true);
+        FsSafe.Copy(src!, dst, overwrite: true);
 
         string inlineRel = ExtraResourceIconInlineRelPath(p);
         string inlineDst = Path.Combine(projectRoot, inlineRel.Replace('/', Path.DirectorySeparatorChar));
         Directory.CreateDirectory(Path.GetDirectoryName(inlineDst)!);
         if (!PngUtil.Resize(src!, inlineDst, 24, 24))
-            File.Copy(src!, inlineDst, overwrite: true);
+            FsSafe.Copy(src!, inlineDst, overwrite: true);
 
         WriteExtraResourceRelicFallback(p, projectRoot, src);
 
@@ -963,7 +1009,7 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         if (src is not null && File.Exists(src))
         {
             if (!PngUtil.Resize(src, relicDst, 128, 128))
-                File.Copy(src, relicDst, overwrite: true);
+                FsSafe.Copy(src, relicDst, overwrite: true);
         }
         else if (!PngUtil.Resize(relicDst, relicDst, 128, 128) && !File.Exists(relicDst))
         {
@@ -1046,7 +1092,7 @@ region = Rect2(0, 0, {rw}, {rh})
             string src = Path.Combine(p.Paths.VanillaProject, "images", "powers", vanillaIcon);
             if (File.Exists(src))
             {
-                File.Copy(src, dst, overwrite: true);
+                FsSafe.Copy(src, dst, overwrite: true);
                 copied++;
             }
             else
@@ -1074,7 +1120,7 @@ region = Rect2(0, 0, {rw}, {rh})
 
             string dst = Path.Combine(projectRoot, VanillaPowerGen.IconRelPath(p, o).Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            File.Copy(o.Icon, dst, overwrite: true);
+            FsSafe.Copy(o.Icon, dst, overwrite: true);
 
             var size = PngUtil.Decode(o.Icon);
             string hint = size is { } s && s.W != s.H ? $"，[警告] 这张图是 {s.W}×{s.H}，不是方图，建议换成方图" : "";
@@ -1090,7 +1136,7 @@ region = Rect2(0, 0, {rw}, {rh})
 
             string dst = Path.Combine(projectRoot, CustomPowerGen.IconRelPath(p, cp, i).Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            File.Copy(cp.Icon, dst, overwrite: true);
+            FsSafe.Copy(cp.Icon, dst, overwrite: true);
 
             // 还要放一份「本体自己会去找」的路径：res://images/powers/<状态>.png
             // 本体的 PowerModel.PackedIconPath = atlases/power_atlas.sprites/<entry>.tres，
@@ -1116,7 +1162,7 @@ region = Rect2(0, 0, {rw}, {rh})
         string entry = CustomPowerGen.EntryOf(p, cp, index).ToLowerInvariant();
         string dst = Path.Combine(projectRoot, "images/powers", entry + ".png");
         Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-        File.Copy(cp.Icon, dst, overwrite: true);
+        FsSafe.Copy(cp.Icon, dst, overwrite: true);
         var (w, h) = ReadPngSize(dst, 64, 64);
 
         // 图集精灵占位文件（本体用 ResourceFormatLoader 接管 .sprites/*.tres，内容按路径解析，这里只为兼容）
@@ -1285,7 +1331,7 @@ region = Rect2(0, 0, {w}, {h})
             string pagePath = Path.Combine(projectRoot, "images/atlases", $"{n.EnergyColor}_energy_page_0.png");
             Directory.CreateDirectory(Path.GetDirectoryName(pagePath)!);
             if (!PngUtil.Resize(p.Art.EnergyIcon!, pagePath, 74, 74))
-                File.Copy(p.Art.EnergyIcon!, pagePath, overwrite: true);
+                FsSafe.Copy(p.Art.EnergyIcon!, pagePath, overwrite: true);
             log?.Invoke($"  能量图标：用上传的图片缩成 74×74 存成自己的图集页 {Path.GetFileName(pagePath)}（文字内联图标另存 24×24）");
         }
         // 用本体素材占位时不写自己的页：直接引用本体的 ui_atlas_0.png（铁甲战士那一块）
@@ -1312,7 +1358,7 @@ region = Rect2({sprite.X}, {sprite.Y}, {sprite.W}, {sprite.H})
             // 上传的大图（比如 512×512）必须缩到 24×24，否则会把卡牌描述撑爆、
             // 游戏的自适应字号就把整段描述缩成蚂蚁字（用户报过「大奖」那张牌）。
             if (!PngUtil.Resize(src, dst, 24, 24))
-                File.Copy(src, dst, overwrite: true);
+                FsSafe.Copy(src, dst, overwrite: true);
         }
         else
         {
@@ -1371,19 +1417,27 @@ shader_parameter/transitionTex = ExtResource("1_trans")
             (int W, int H) size = ancient ? (606, 852) : (1000, 760);
             string cls = n.CardClassName(p, c);
             string entry = Naming.EntryOf(cls).ToLowerInvariant();
-            string pngDst = Path.Combine(projectRoot, "images/packed/card_portraits", n.PoolTitle, entry + ".png");
-            string tresDst = Path.Combine(projectRoot, "images/atlases/card_atlas.sprites", n.PoolTitle, entry + ".tres");
+            // ⚠ 卡面素材目录跟**卡所在的那个池**走（本体 CardModel.PortraitPngPath / PortraitPath 用的就是
+            // `Pool.Title.ToLowerInvariant()`）—— 而**无色卡**的模型是靠
+            // `ModHelper.AddModelToPool<ColorlessCardPool, T>()` 登记进**本体的无色卡池**的
+            //（见 PatchesGen；工具也特意没把它放进我们自己的池，所以 CardModel.Pool 只会解析到无色池），
+            // 那个池的 Title 是 `colorless`。
+            // 以前这里一律写到我们自己的池目录里 → 无色卡在游戏里按 `card_portraits/colorless/<entry>.png`
+            // 去找，找不到就是「卡面丢失」（用户报的）。
+            string poolTitle = c.IsColorless ? "colorless" : n.PoolTitle;
+            string pngDst = Path.Combine(projectRoot, "images/packed/card_portraits", poolTitle, entry + ".png");
+            string tresDst = Path.Combine(projectRoot, "images/atlases/card_atlas.sprites", poolTitle, entry + ".tres");
 
             string? userArt = p.Art.CardPortraits.TryGetValue(cls, out string? up) ? up : null;
             Directory.CreateDirectory(Path.GetDirectoryName(pngDst)!);
             string? vanillaPlaceholder = ancient && File.Exists(ancientPlaceholder) ? ancientPlaceholder : placeholder;
             if (!string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt))
             {
-                File.Copy(userArt, pngDst, overwrite: true);
+                FsSafe.Copy(userArt, pngDst, overwrite: true);
             }
             else if (p.Art.UseVanillaPlaceholders && File.Exists(vanillaPlaceholder))
             {
-                File.Copy(vanillaPlaceholder, pngDst, overwrite: true);
+                FsSafe.Copy(vanillaPlaceholder, pngDst, overwrite: true);
             }
             else
             {
@@ -1394,7 +1448,7 @@ shader_parameter/transitionTex = ExtResource("1_trans")
             ProjectFilesGen.WriteText(tresDst, $"""
 [gd_resource type="AtlasTexture" load_steps=2 format=3]
 
-[ext_resource type="Texture2D" path="res://images/packed/card_portraits/{n.PoolTitle}/{entry}.png" id="1_card"]
+[ext_resource type="Texture2D" path="res://images/packed/card_portraits/{poolTitle}/{entry}.png" id="1_card"]
 
 [resource]
 atlas = ExtResource("1_card")
@@ -1434,7 +1488,7 @@ region = Rect2(0, 0, {w}, {h})
             string pagePath = Path.Combine(projectRoot, "images/atlases", pageName);
             Directory.CreateDirectory(Path.GetDirectoryName(pagePath)!);
             if (!PngUtil.Resize(userIcon, pagePath, 74, 74))
-                File.Copy(userIcon, pagePath, overwrite: true);
+                FsSafe.Copy(userIcon, pagePath, overwrite: true);
             int w = 74, h = 74;
             textures.Add(new JsonObject
             {
@@ -1512,7 +1566,7 @@ region = Rect2(0, 0, {w}, {h})
         ihdr[9] = 6;    // color type: RGBA
         ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
 
-        using var fs = File.Create(path);
+        using var fs = FsSafe.Create(path);
         fs.Write([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
         WritePngChunk(fs, "IHDR", ihdr);
         WritePngChunk(fs, "IDAT", idat);

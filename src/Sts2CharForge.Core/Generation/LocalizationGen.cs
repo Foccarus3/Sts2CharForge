@@ -71,26 +71,314 @@ public static class LocalizationGen
             // 「从牌堆拿牌到手牌」的选牌界面提示语（生成代码里用 base.SelectionScreenPrompt 读它）
             if (NeedsSelectPrompt(c.Effects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
-            // 老存档是「整张牌一个条件」，那个条件写在最后；新存档的条件跟着各自的效果走（Describe 里处理）
-            string legacy = ConditionSuffix(c.Condition, isCard: true, p);
             // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
-            // 诅咒：效果写的不是「打出时」而是「在你的回合结束时，如果这张牌在你的手牌中」
-            // —— 照本体的行文（Decay 的中文就是「在你的回合结束时，如果这张牌在你的[gold]手牌[/gold]中, …」）
-            string cardBody = c.IsCurseCard
-                ? CurseBodyText(p, c)
-                : Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + legacy;
             // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
             string customDesc = (c.CustomDescription ?? "").Trim();
-            if (customDesc.Length > 0)
-                cardBody = c.CustomDescriptionReplaces
-                    ? customDesc
-                    : (cardBody.Length == 0 ? customDesc : cardBody + "\n" + customDesc);
+            string customUp = (c.UpgradedCustomDescription ?? "").Trim();
+            // 自动描述：普通卡 = 效果栏自动写的那段；锻造卡 = 从**节点图**写出来的（以前这种卡是空的）。
+            // 升级前 / 升级后各算一次：两段不一样（或你给升级后单独写了自定义描述）时，
+            // 用本体的 {IfUpgraded:show:升级后|没升级} 包起来，游戏里按有没有升级自动显示对应那一版。
+            string autoBase = CardAutoText(p, c, upgraded: false);
+            string autoUp = CardAutoText(p, c, upgraded: true);
+            // ⚠「升级后」那一栏**留空 = 用同一段自定义描述**（老存档只有一个框，升级前后都显示它，
+            //   不能因为「升级后没单独写」就把自定义那段换成自动描述）
+            string customUpWanted = customUp.Length > 0 ? customUp : customDesc;
+            string bodyBase = MergeAutoAndCustom(autoBase, customDesc, c.CustomDescriptionReplaces);
+            string bodyUp = MergeAutoAndCustom(autoUp, customUpWanted, c.CustomDescriptionReplaces);
+            string cardBody = string.Equals(bodyBase, bodyUp, StringComparison.Ordinal)
+                ? bodyBase
+                : IfUpgradedText(bodyUp, bodyBase);
             dict[$"{entry}.description"] = keywordText.Length == 0
                 ? cardBody
                 : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
         }
         return LocJson(dict);
+    }
+
+    /// <summary>
+    /// 这张牌**自动生成的那段描述**（升级前 / 升级后各一次调用）。
+    /// 卡牌页那两个「自动填入」按钮用的就是它，生成存档时也是同一段。
+    /// </summary>
+    public static string CardAutoText(CharacterProfile p, CardSpec c, bool upgraded)
+    {
+        if (ForgeGraphGen.UsesGraph(c))
+        {
+            var g = upgraded && c.UpgradedForgeGraph is { IsEmpty: false } up ? up : c.ForgeGraph;
+            if (g is { IsEmpty: false }) return GraphCardText(p, g);
+        }
+        // 效果列表那条路：升级前后是**同一段**（数字靠本体的 {…:diff()} 由游戏自己按升没升级显示）
+        return c.IsCurseCard
+            ? CurseBodyText(p, c)
+            : Describe(c.Effects, p, isCard: true, starCostIsX: c.StarCostIsX) + ConditionSuffix(c.Condition, isCard: true, p);
+    }
+
+    /// <summary>自动描述 + 自定义描述（勾了「替换」就只用自定义那段）。</summary>
+    private static string MergeAutoAndCustom(string auto, string custom, bool replaces)
+    {
+        if (custom.Length == 0) return auto;
+        if (replaces) return custom;
+        return auto.Length == 0 ? custom : auto + "\n" + custom;
+    }
+
+    /// <summary>
+    /// 本体那套「按有没有升级显示不同文字」的语法（<c>ShowIfUpgradedFormatter</c>）：
+    /// 第一个选项 = **升级后**，第二个 = 没升级（和本体卡牌描述里的用法一致）。
+    /// ⚠ 两个选项里的**字面量 <c>|</c>** 会把选项截断（生成出来的卡面会解析失败），所以这里换成全角 `｜`。
+    /// </summary>
+    private static string IfUpgradedText(string upgraded, string normal)
+        => "{IfUpgraded:show:" + EscapePipe(upgraded) + "|" + EscapePipe(normal) + "}";
+
+    private static string EscapePipe(string s) => s.Replace("|", "｜");
+
+    // ==================================================================================
+    //  节点图 → 卡面描述（锻造卡用；以前这种卡的 .description 是**空的**）
+    // ==================================================================================
+
+    /// <summary>
+    /// 把一张锻造卡的节点图写成卡面中文。例：
+    /// 「如果 指定单体敌人身上的虚弱 大于 3：对所有敌人造成 A+3 点伤害。否则：自己失去 5 点生命。」
+    ///
+    /// 口径和生成端一致：从【触发时机】顺出口走；【对象】/【指向对象】改「这一支打谁」；
+    /// 【if】两支分别是「是 / 否」；【条件】/【且】/【或】当成一道门（成立才继续）。
+    /// 数字一律写成**字面量或公式本身**（锻造卡不声明动态变量，用不了 {…:diff()}）。
+    /// </summary>
+    public static string GraphCardText(CharacterProfile p, ForgeGraphSpec g)
+    {
+        var trig = g.TriggerNode;
+        if (trig is null) return "";
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        string body = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, trig, 0), "ChosenEnemy", seen, 0);
+        if (body.Length == 0) return "";
+        string head = TriggerText(trig);
+        return head.Length == 0 ? body : head + "\n" + body;
+    }
+
+    /// <summary>触发时机的抬头：默认的「卡牌被打出时」不写（和效果列表那条路一样）；别的时机写出来。</summary>
+    private static string TriggerText(ForgeNodeSpec trigger)
+    {
+        string timing = trigger.Get("Timing", ForgeTimings.CardPlayed);
+        if (string.Equals(timing, ForgeTimings.CardPlayed, StringComparison.Ordinal)) return "";
+        // 认不出来的时机（手写 JSON / 老存档）**不写**抬头 —— 别把 id 原样印到卡面上
+        string zh = ForgeTimings.Find(timing)?.Display ?? "";
+        return zh.Length == 0 ? "" : zh + "：";
+    }
+
+    private static string JoinText(List<string> parts)
+    {
+        var keep = parts.Where(x => !string.IsNullOrWhiteSpace(x)).ToList();
+        return string.Join("\n", keep);
+    }
+
+    /// <summary>顺着执行链把这一支写成文字（【if】两支各自递归）。</summary>
+    private static string ChainText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec? first, string unitPick,
+        HashSet<string> seen, int depth)
+    {
+        var parts = new List<string>();
+        var cur = first;
+        string unit = unitPick;
+        int guard = 0;
+        while (cur is not null && depth < 24 && guard++ < 64 && seen.Add(cur.Id))
+        {
+            switch (cur.Kind)
+            {
+                // 【对象】/【指向对象】：改「这一支打谁」（后面的效果没自己接【对象】就按它算）
+                case "Unit":
+                case "Target":
+                    unit = cur.Get("Pick", unit);
+                    break;
+                case "Effect":
+                {
+                    string one = EffectText(p, g, cur, unit);
+                    if (one.Length > 0) parts.Add(one);
+                    break;
+                }
+                case "If":
+                {
+                    string cond = CondText(p, g, ForgeGraphGen.NodeAtIncoming(g, cur, 1));
+                    string yes = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, cur, 0), unit, seen, depth + 1);
+                    string no = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, cur, 1), unit, seen, depth + 1);
+                    parts.Add(BranchText(cond, yes, no));
+                    return JoinText(parts);
+                }
+                // 【条件】/【且】/【或】当成一道门：成立才继续（生成端写的就是 if (cond) { 后面的链 }）
+                case "Condition":
+                case "And":
+                case "Or":
+                {
+                    string cond = CondText(p, g, cur);
+                    string rest = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, cur, 0), unit, seen, depth + 1);
+                    parts.Add(BranchText(cond, rest, ""));
+                    return JoinText(parts);
+                }
+            }
+            cur = ForgeGraphGen.NodeAtOutgoing(g, cur, 0);
+        }
+        return JoinText(parts);
+    }
+
+    /// <summary>一支写成一句：两份都有就「如果…：…；否则：…。」，只有一份就不写「否则」。</summary>
+    private static string BranchText(string cond, string yes, string no)
+    {
+        // 条件没接时写成「如果（还没接条件）：…」——不加空格，读起来不像多了一个词
+        bool noCond = cond.Length == 0;
+        string c = noCond ? "如果（还没接条件）" : $"如果 {cond}";
+        string yesOne = OneLine(yes), noOne = OneLine(no);
+        if (yesOne.Length == 0 && noOne.Length == 0) return $"{c}：什么都不做。";
+        if (noOne.Length == 0) return $"{c}：{yesOne}";
+        if (yesOne.Length == 0) return $"{c}：什么都不做；否则：{noOne}";
+        // 「…伤害。；否则…」中间那个句号太碍眼，去掉（「否则」那句自己的句号保留）
+        return $"{c}：{TrimEndDot(yesOne)}；否则：{noOne}";
+    }
+
+    private static string TrimEndDot(string s) => s.EndsWith("。", StringComparison.Ordinal) ? s.Substring(0, s.Length - 1) : s;
+
+    /// <summary>分支里嵌了分支就压成一行（卡面上换行太多看着乱）。</summary>
+    private static string OneLine(string s) => s.Replace("\n", " ").Trim();
+
+    /// <summary>一块【效果】写成一句（数字走它「数值」口接的【数值】公式，没接就用模块上填的数）。</summary>
+    private static string EffectText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec node, string unitPick)
+    {
+        var (pick, summonId) = ForgeGraphGen.ResolvedPickForText(g, node, unitPick);
+        var e = EffectSpecOfNode(g, node);
+        var (side, targetPhrase, whoPhrase) = UnitPhrases(pick);
+        e.TargetSide = side;
+        if (summonId.Length > 0) e.PetSummon = summonId;
+        string amountText = AmountTextOf(g, node);
+        if (decimal.TryParse(amountText, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal parsed))
+            e.Amount = parsed;
+        return DescribeEffect(e, p, potionTarget: null, isCard: true, starCostIsX: false, varMap: null,
+            targetOverride: targetPhrase, whoOverride: whoPhrase, varOverride: amountText.Length == 0 ? "0" : amountText);
+    }
+
+    /// <summary>「打谁」那一档 → 效果描述里用的三样（TargetSide / 「对谁」/「让谁」）。</summary>
+    private static (string Side, string? Target, string? Who) UnitPhrases(string pick) => pick switch
+    {
+        "Self" or "ChosenAlly" => ("Self", null, null),
+        "ChosenEnemy" => ("Enemy", null, null),
+        "AllEnemies" => ("AllEnemies", null, null),
+        "RandomEnemy" => ("RandomEnemies", null, null),
+        "AllAllies" => ("Enemy", "对你和所有召唤物", "你和所有召唤物"),
+        "ChosenSummon" => ("Enemy", "对指定召唤物", "指定召唤物"),
+        "RandomSummon" => ("Enemy", "对随机召唤物", "随机召唤物"),
+        "AllSummons" => ("Enemy", "对全部召唤物", "全部召唤物"),
+        "AllUnits" => ("Enemy", "对所有单位", "所有单位"),
+        _ => ("Self", null, null),
+    };
+
+    /// <summary>这一块【效果】的数值文字：接了【数值】就用它的公式，没接就用模块上填的数字。</summary>
+    private static string AmountTextOf(ForgeGraphSpec g, ForgeNodeSpec node)
+    {
+        var val = ForgeGraphGen.NodeAtIncoming(g, node, 1);
+        if (val is { Kind: "Value" }) return ValueText(val);
+        return node.Get("Amount", "").Trim();
+    }
+
+    /// <summary>【数值】模块的文字：公式本身（留空就用备注，再留空写 0）。</summary>
+    private static string ValueText(ForgeNodeSpec value)
+    {
+        string f = ForgeFormula.DisplayText(value.Get("Formula", ""));
+        if (f.Length > 0) return f;
+        string label = value.Get("Label", "").Trim();
+        return label.Length > 0 ? label : "0";
+    }
+
+    /// <summary>数字写成卡面文字（3 → 「3」、3.5 → 「3.5」；整数不带小数点）。</summary>
+    private static string NumberText(double d)
+        => d.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>把图里那块【效果】的字段搬进一个 EffectSpec（数值/公式由调用方另外覆盖）。</summary>
+    private static EffectSpec EffectSpecOfNode(ForgeGraphSpec g, ForgeNodeSpec node) => new()
+    {
+        Kind = node.Get("Effect", "Damage"),
+        PowerId = node.Get("PowerId", ""),
+        SpawnCardId = node.Get("SpawnCardId", ""),
+        SpawnTo = node.Get("SpawnTo", "Hand"),
+        CardPick = node.Get("Pick", "Random"),
+        RepeatCount = Math.Max(1, (int)node.GetNumber("Hits", 1)),
+        Times = Math.Max(1, (int)node.GetNumber("Times", 1)),
+        NextTurn = node.GetFlag("NextTurn", false),
+        ChanceEnabled = (int)node.GetNumber("Chance", 100) < 100,
+        ChancePercent = (decimal)node.GetNumber("Chance", 100),
+    };
+
+    /// <summary>条件那一块写成一句中文（【条件】/【关系符】/【且】/【或】）。</summary>
+    private static string CondText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec? node)
+    {
+        if (node is null) return "";
+        switch (node.Kind)
+        {
+            case "Condition":
+            {
+                var spec = new ConditionSpec
+                {
+                    Kind = node.Get("Cond", "None"),
+                    Amount = (decimal)node.GetNumber("Amount", 1),
+                    Amount2 = (decimal)node.GetNumber("Amount2", 0),
+                    PowerId = string.IsNullOrWhiteSpace(node.Get("PowerId")) ? null : node.Get("PowerId"),
+                };
+                return CSharpCodeGen.ConditionText(spec, ResourceName(p));
+            }
+            case "Relate":
+            {
+                string op = node.Get("Op", "Gt");
+                bool needsBool = ForgeGraphCatalog.RelateNeedsBool(op);
+                string left = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 1), "");
+                if (left.Length == 0) left = "（左值没接）";
+                // 右值没接线时：比较类用模块上那个数（生成端也是 GetNumber("Amount", 3)）；
+                // 「且 / 或 / 非」比的是条件，没接就不写右边。
+                string right = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 2),
+                    needsBool ? "" : NumberText(node.GetNumber("Amount", 3)));
+                string opZh = op switch
+                {
+                    "Lt" => "小于", "Eq" => "等于", "Ge" => "大于等于", "Le" => "小于等于",
+                    "Not" => "不成立", "And" => "且", "Or" => "或", _ => "大于",
+                };
+                if (op == "Not") return $"{left} {opZh}";
+                return right.Length == 0 ? $"{left} {opZh}" : $"{left} {opZh} {right}";
+            }
+            case "And":
+            case "Or":
+            {
+                string a = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 0), "");
+                string b = RelateOperandText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 1), "");
+                string glue = node.Kind == "And" ? "且" : "或";
+                if (a.Length == 0) return b;
+                if (b.Length == 0) return a;
+                return $"{a} {glue} {b}";
+            }
+            case "If":
+                return CondText(p, g, ForgeGraphGen.NodeAtIncoming(g, node, 1));
+            default:
+                return "";
+        }
+    }
+
+    /// <summary>关系符左右两侧的文字：一块【状态】=「谁身上的某个状态层数」；【数值】= 公式；没接 = 模块上那个数。</summary>
+    private static string RelateOperandText(CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec? node, string fallback)
+    {
+        if (node is null) return fallback;
+        switch (node.Kind)
+        {
+            case "Power":
+            {
+                string who = ForgeGraphGen.PowerOwnerPhraseForText(g, node, p);
+                string power = PowerNameFor(p, node.Get("PowerId", "")).Trim();
+                return $"{who}身上的{power}层数";
+            }
+            case "Value":
+                return ValueText(node);
+            case "Energy":
+                return "当前能量";
+            case "Condition":
+            case "Relate":
+            case "And":
+            case "Or":
+            case "If":
+                return CondText(p, g, node);
+            default:
+                return fallback;
+        }
     }
 
     /// <summary>
@@ -127,7 +415,16 @@ public static class LocalizationGen
             if (NeedsSelectPrompt(r.Effects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(r.Effects);
             // 遗物自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
-            string relicBody = Describe(r.Effects, p) + ConditionSuffix(r.Condition, isCard: false, p);
+            string relicBody = Describe(r.Effects, p);
+            // 「只对哪类牌生效」（用户要求，第 9 批 ④）：筛选不是「任意」时，把「只对哪类牌」写在描述最前面 ——
+            // 不写的话玩家在游戏里只看得到效果，看不出它只对某类牌生效。
+            // 默认（任意）**一个字都不加**：老存档的遗物描述逐字不变。
+            if (r.Trigger == "CardPlayed" && !string.Equals(r.TriggerCardFilter, "Any", StringComparison.Ordinal))
+            {
+                string relicWhen = $"打出一张牌后（只对{PowerTriggers.CardFilterZh(r.TriggerCardFilter)}牌生效）：";
+                relicBody = relicBody.Length > 0 ? relicWhen + "\n" + relicBody : relicWhen;
+            }
+            relicBody += ConditionSuffix(r.Condition, isCard: false, p);
             string relicCustom = (r.CustomDescription ?? "").Trim();
             if (relicCustom.Length > 0)
                 relicBody = r.CustomDescriptionReplaces
@@ -136,6 +433,10 @@ public static class LocalizationGen
             dict[$"{entry}.description"] = relicBody;
             dict[$"{entry}.flavor"] = "由 Sts2CharForge 生成的自定义遗物。";
         }
+        // 「转化为先古卡」的预览界面顶部那行说明（本体 NSimpleCardsViewScreen 的 infoText）。
+        // 所有用到这个效果的遗物共用一条键 —— 文案是固定的，没必要每只遗物各写一份。
+        if (p.Relics.Any(r => r is not null && r.Effects.Any(e => e.Kind == "AncientTranscend")))
+            dict[CSharpCodeGen.AncientPreviewLocKey] = "这些牌被转化成了先古版本。";
         // 额外资源量的载体遗物也要有名字，否则遗物栏里会显示成缺键
         if (p.ExtraResource.Enabled)
         {
@@ -224,7 +525,7 @@ public static class LocalizationGen
     {
         if (!e.HasCardScope) return "";
         string name = EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter);
-        return EffectCatalog.IsKeywordFilter(e.SpawnFilter)
+        return (EffectCatalog.IsKeywordFilter(e.SpawnFilter) || EffectCatalog.IsCardGroupFilter(e.SpawnFilter))
             ? $"（只限「{name}」那一组牌）"
             : $"（只限{name}牌）";
     }
@@ -319,19 +620,43 @@ public static class LocalizationGen
     /// 「你当前的辉星…储君的部分卡牌可能会需要辉星才能打出」——说的完全是别的角色的资源。
     /// 本体加载本地化时会把模组的同名表并进来、覆盖同名键，所以这个文件能生效。
     /// </summary>
+    /// <summary>
+    /// 额外资源量的悬停提示（名字 + 说明）。
+    ///
+    /// ⚠ **不覆盖本体的 <c>STAR_COUNT.title</c> / <c>STAR_COUNT.description</c>**（以前是覆盖的）。
+    /// 那两个键是**全局**的：多人联机时「影响玩法的模组」必须在每个客户端都装着（本体的握手规则），
+    /// 于是同一台机器上会同时装好几个角色模组 —— 都去改同一个本体键的话，
+    /// **谁后加载谁赢**，而且两个客户端的加载顺序还可能不同（你看到「戏法」、队友看到「星尘」）。
+    /// 现在改成写我们**自己的键**，由生成的计数器补丁在「这个计数器归我方角色」时换上去
+    /// （见生成的 <c>ExtraResourceUi.Apply</c>）—— 每个角色显示自己那份，互不干扰，
+    /// 本体 / 别的角色 / 百科里的辉星文案一个字都没动。
+    ///
+    /// 为什么要写描述（用户报过「额外资源量的描述有误」）：
+    /// 只写标题时，鼠标悬停会显示**本体的**那条「你当前的辉星…储君的部分卡牌可能会需要辉星才能打出」——
+    /// 说的完全是别的角色的资源。所以名字和说明都要有一份我们自己的。
+    /// </summary>
     public static string StaticHoverTipsJson(CharacterProfile p)
     {
         var dict = new Dictionary<string, string>();
         if (!p.ExtraResource.Enabled) return LocJson(dict);
 
+        var n = Naming.From(p);
         string name = ResourceName(p);
-        dict["STAR_COUNT.title"] = name;
+        dict[$"{n.CharEntry}_EXTRA_RESOURCE.title"] = name;
 
-        // 描述：本工具自己写，提到名字、开场数量、继承规则、消耗规则（图标可选，没传就不放图标）
+        // 描述：用户填了「自定义描述」就原样用它（用户要求）；没填才用工具自动写的那段。
         // 注意用「内联小图」（24×24，见 ArtGenerator.ExtraResourceIconInlineResPath）：
         // 内联 [img] 是按原图尺寸画的，塞计数器那张大图会把整段提示文字挤到字号极小。
         string? icon = ArtGenerator.ExtraResourceIconInlineResPath(p);
         string iconPrefix = icon is null ? "" : $"[img]{icon}[/img]";
+        string? custom = (p.ExtraResource.Description ?? "").Trim();
+        if (custom.Length > 0)
+        {
+            // 用户自己写了 [img] 就不再加前缀（避免出现两个图标）
+            dict[$"{n.CharEntry}_EXTRA_RESOURCE.description"] =
+                custom.Contains("[img]", StringComparison.OrdinalIgnoreCase) ? custom : iconPrefix + custom;
+            return LocJson(dict);
+        }
         var bits = new List<string>();
         if (p.ExtraResource.Initial > 0)
             bits.Add(p.ExtraResource.CarryOver
@@ -344,7 +669,27 @@ public static class LocalizationGen
         if (spends)
             bits.Add("打出需要消耗它的牌时会扣除，数量不足时无法打出");
 
-        dict["STAR_COUNT.description"] = $"{iconPrefix}{name}：{string.Join("；", bits)}。";
+        dict[$"{n.CharEntry}_EXTRA_RESOURCE.description"] = $"{iconPrefix}{name}：{string.Join("；", bits)}。";
+        return LocJson(dict);
+    }
+
+    /// <summary>
+    /// 「资源不够、这张牌打不出去」那句提示（本体键 <c>combat_messages.NOT_ENOUGH_STARS</c> =
+    /// 「我没有足够的[red]辉星[/red]。」）——我们写**自己的键**，由生成的补丁只在玩我方角色时换上去。
+    ///
+    /// 为什么要专门写这个文件：那句话是本体全局键、里面写死了「辉星」两个字，
+    /// 换了资源名之后一付不起星费就露馅（用户实测报过）。覆盖全局键会连带影响别的角色和联机另一边，
+    /// 所以只加我们自己的键（同名文件逐键合并，见 LocManager/MergeWith）。
+    /// 名字直接写进文本里 —— 本体那句本来就没有占位符，这里也不给玩家留「填错变量」的机会。
+    /// </summary>
+    public static string CombatMessagesJson(CharacterProfile p)
+    {
+        var dict = new Dictionary<string, string>();
+        if (!p.ExtraResource.Enabled) return LocJson(dict);
+        var n = Naming.From(p);
+        string name = ResourceName(p);
+        // 和本体那句保持同一套富文本/换行（本体是「我没有\n足够的[red]辉星[/red]。」）
+        dict[$"{n.CharEntry}_EXTRA_RESOURCE.notEnough"] = $"我没有\n足够的[red]{name}[/red]。";
         return LocJson(dict);
     }
 
@@ -455,14 +800,25 @@ public static class LocalizationGen
         // 本体状态改写：键和本体 powers 表同名，本体加载 mod 本地化表时会 MergeWith 覆盖掉本体的值
         foreach (var kv in VanillaPowerGen.LocEntries(p))
             dict[kv.Key] = kv.Value;
-        // 「临时增益」的临时 Power：状态栏里显示成「临时 X」，说明写清「本回合内 +N，回合结束消失」
+        // 「临时增益」的临时 Power：状态栏里显示成「临时 X」，说明写清什么时候撤。
+        // ⚠ 两档撤法的措辞必须分开写 —— 以前这一段的文案是写死的「回合结束时消失」，
+        //    「下回合开始时才撤」那一档的悬停提示就会骗人（状态栏上写着回合结束就没了，实际还在）。
         foreach (var e in CSharpCodeGen.CollectTempPowerEffects(p))
         {
+            bool nextTurn = e.TempPowerReverse == TempPowerReverses.NextTurnStart;
+            bool negative = e.Amount < 0;
             string entry = Naming.EntryOf(CSharpCodeGen.TempPowerClassName(e, p));
             string powerName = EffectCatalog.PowerName(e.PowerId);
+            // 负数档是「临时扣层」，措辞要写「-N，到点加回来」，不能写「+{Amount}」
+            string body = negative
+                ? $"{powerName} -{-e.Amount}"
+                : $"{powerName} +{{Amount}}";
+            string tail = negative
+                ? (nextTurn ? "撑过这一回合和敌人的回合，下回合开始时加回来。" : "回合结束时加回来。")
+                : (nextTurn ? "撑过这一回合和敌人的回合，下回合开始时消失。" : "回合结束时消失。");
             dict[$"{entry}.title"] = $"临时{powerName}";
-            dict[$"{entry}.description"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
-            dict[$"{entry}.smartDescription"] = $"本回合内{powerName} +{{Amount}}，回合结束时消失。";
+            dict[$"{entry}.description"] = $"本回合内{body}，{tail}";
+            dict[$"{entry}.smartDescription"] = $"本回合内{body}，{tail}";
         }
         // 「透支能量」的负债 Power：它会挂在玩家身上（状态栏里有个图标，数量 = 下回合要少几点能量）。
         // 少了这段，游戏在 powers 表里查不到 title/description，就会把**原始键名**原样印在悬停提示上
@@ -707,23 +1063,58 @@ public static class LocalizationGen
         return $"若[gold]{who}[/gold]存活：它死去，{pay}";
     }
 
-    private static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
-        Dictionary<EffectSpec, string>? varMap = null)
+    /// <summary>
+    /// 一条效果写成卡面中文。
+    ///
+    /// <paramref name="targetOverride"/> / <paramref name="whoOverride"/> / <paramref name="varOverride"/> 是给
+    /// 「节点图 → 卡面描述」那条路用的（见 <see cref="GraphCardText"/>）：
+    ///   · 锻造卡的目标可以是「全部召唤物 / 全体单位」这种效果列表没有的档 → 直接给它整句措辞；
+    ///   · 锻造卡**不声明动态变量**，所以 {} 占位符没法用 → 数字/公式由调用方算好整串传进来。
+    /// 三个都为 null 时行为和以前**逐字一致**（效果列表那条路一个字都不改）。
+    /// </summary>
+    internal static string DescribeEffect(EffectSpec e, CharacterProfile p, string? potionTarget = null, bool isCard = false, bool starCostIsX = false,
+        Dictionary<EffectSpec, string>? varMap = null, string? targetOverride = null, string? whoOverride = null, string? varOverride = null)
     {
         // 「数值 = X」的卡牌：描述里写 X，而不是那个用不上的固定数值。
         // 变量名必须用 DisplayVarNameOf（= CanonicalVars 里真实声明的那个键）：三个「按生命值算」的
         // 伙伴攻击 / 牺牲伙伴声明的是本体的 CalculatedDamage / CalculatedBlock，直接用 VarNameOf 的
         // 内部名字会让卡面原样印出 {PetMissingHpDamage:diff()}（用户实测截图报过）。
-        string var = e.AmountIsX && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}";
+        //
+        // 「数值公式」（需求：「另加一栏『数值公式』」）：卡面上**直接写公式本身**（例：「造成 M*3 点伤害」）。
+        // 为什么不用动态变量那个 {…:diff()}：那个变量的值只是占位（打出时才现算），写它会骗人 ——
+        // 填了 M*3 却在卡面上写「造成 6 点伤害」。玩家想知道具体数字可以自己写「自定义描述」。
+        // 这里也不能带 :diff()：升级增量对公式那条不生效（公式取代了数值），带了反而显示一个假的对比值。
+        // 「数值公式」的卡面数字（用户要求：卡面要看到**算出来的数字**，不是「M/2」这种公式文本）：
+        // 生成端给公式的 5 种效果各声明了一个「现算预览值」的动态变量
+        //（见 CSharpCodeGen.FormulaVarsSource），所以这里照旧用 {…:diff()} 占位符 ——
+        // 游戏在卡面上会填上「按当前属性算出来」的数字（力量 / 敏捷那些加成也照常叠）。
+        // 以前的写法是直接印公式本身（「造成 M/2 点伤害」），玩家看不懂，用户报过。
+        string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;
+        string var = varOverride
+            ?? (e.AmountIsX && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}");
+        // 「取任意张 / 最多 N 张」（需求：「消耗任意张手牌」）：任意 = 不写数字；最多 = 前面加「最多」
+        if (e.CountIsAny) var = "任意";
+        else if (e.CountMode == "UpTo") var = "最多 " + var;
+        // 「任意」时别再补量词（不然出来是「任意 张牌」）；数字时才补
+        string amountPhrase = e.CountIsAny ? "任意张" : var + " 张";
         string when = e.NextTurn ? "下回合开始时，" : "";
         int times = Math.Max(1, e.Times);
-        string repeat = e.TimesIsX && isCard ? "重复 X 次：" : times > 1 ? $"重复 {times} 次：" : "";
+        // 「生效次数」写了公式（用户要求⑦）：卡面印公式本身（和「数值公式」同一套观感），
+        // 不然玩家看到的是一个和实际不符的固定次数。
+        string timesText = !string.IsNullOrWhiteSpace(e.TimesFormula) ? ForgeFormula.DisplayText(e.TimesFormula) : times.ToString();
+        string repeat = e.TimesIsX && isCard ? "重复 X 次：" : (times > 1 || !string.IsNullOrWhiteSpace(e.TimesFormula)) ? $"重复 {timesText} 次：" : "";
+        // 「命中次数 / 对群数」同理：写了公式就印公式
+        string repeatText = !string.IsNullOrWhiteSpace(e.RepeatFormula)
+            ? ForgeFormula.DisplayText(e.RepeatFormula)
+            : Math.Max(1, e.RepeatCount).ToString();
         // 药水：统一用「药水作用目标」的措辞（和实际执行一致）
-        string target = potionTarget ?? e.TargetSide switch
+        string target = targetOverride ?? potionTarget ?? e.TargetSide switch
         {
             "Enemy" => "对指定敌人",
+            "Ally" => "对指定队友",
             "AllEnemies" => "对所有敌人",
-            "RandomEnemies" => e.RepeatIsX && isCard ? "对随机敌人 X 次" : $"对随机敌人 {Math.Max(1, e.RepeatCount)} 次",
+            "AllAllies" => "对所有队友",
+            "RandomEnemies" => e.RepeatIsX && isCard ? "对随机敌人 X 次" : $"对随机敌人 {repeatText} 次",
             _ => "对自己",
         };
 
@@ -731,19 +1122,21 @@ public static class LocalizationGen
         string hitSuffix = e.TargetSide == "RandomEnemies"
             ? ""
             : e.RepeatIsX && isCard ? " X 次"
-            : e.RepeatCount > 1 ? $" {e.RepeatCount} 次"
+            : (e.RepeatCount > 1 || !string.IsNullOrWhiteSpace(e.RepeatFormula)) ? $" {repeatText} 次"
             : "";
 
         // 能打敌人的效果（格挡 / 回复生命 / 失去生命 / 最大生命）：作用对象不是自己时要写清「给谁」
-        string who = potionTarget is not null
+        string who = whoOverride ?? (potionTarget is not null
             ? potionTarget.TrimStart('对')                      // 「对所有敌人」→「所有敌人」
             : e.TargetSide switch
             {
                 "Enemy" => "指定敌人",
+                "Ally" => "指定队友",
                 "AllEnemies" => "所有敌人",
-                "RandomEnemies" => e.RepeatIsX && isCard ? "随机敌人 X 次" : $"随机 {Math.Max(1, e.RepeatCount)} 个敌人",
+                "AllAllies" => "所有队友",
+                "RandomEnemies" => e.RepeatIsX && isCard ? "随机敌人 X 次" : $"随机 {repeatText} 个敌人",
                 _ => "",
-            };
+            });
         string forWho = who.Length == 0 ? "" : $"让{who}";
 
         string text = e.Kind switch
@@ -752,7 +1145,7 @@ public static class LocalizationGen
             "Damage" => e.TargetSide == "Self" ? $"受到 {var} 点伤害。" : $"{repeat}{when}{target}造成 {var} 点伤害{hitSuffix}。",
             // 格挡 / 回复生命 / 失去生命 / 最大生命：自己以外要写清对象（能给敌人加格挡 / 回血了）
             // 负数 = 失去格挡（生成的是 CreatureCmd.LoseBlock；本体 GainBlock 对非正数什么都不做）
-            "Block" => e.Amount < 0 && var != "X"
+            "Block" => e.Amount < 0 && var != "X" && formulaText is null
                 ? (who.Length == 0
                     ? $"{repeat}{when}失去 {-e.Amount} 点格挡。"
                     : $"{repeat}{when}{forWho}失去 {-e.Amount} 点格挡。")
@@ -769,7 +1162,7 @@ public static class LocalizationGen
             "Energy" => e.Amount < 0 && var != "X"
                 ? $"{repeat}{when}失去 {-e.Amount} 点能量。"
                 : $"{repeat}{when}获得 {var} 点能量。",
-            "Heal" => e.Amount < 0 && var != "X"
+            "Heal" => e.Amount < 0 && var != "X" && formulaText is null
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点生命。" : $"{forWho}失去 {-e.Amount} 点生命。")
                 : (who.Length == 0 ? $"{repeat}回复 {var} 点生命。" : $"{repeat}{forWho}回复 {var} 点生命。"),
             "HpLoss" => who.Length == 0 ? $"失去 {var} 点生命。" : $"{forWho}失去 {var} 点生命。",
@@ -780,7 +1173,8 @@ public static class LocalizationGen
             "Gold" => e.Amount < 0
                 ? $"失去 {-e.Amount} 枚金币。"
                 : $"获得 {var} 枚金币。",
-            // 额外资源量：正数获得用 {Stars:diff()} —— 卡面会在升级后自动显示升级值（用户报过升级后仍显示原值）；
+            // 增加额外资源量上限值：数值 = 抬多少（卡面用 {ResourceCap:diff()}，升级后会自动显示升级值）
+            "RaiseResourceCap" => $"{ResourceName(p)}上限 +{(e.AmountIsX && isCard ? "X" : "{ResourceCap:diff()}")}。",
             // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣；
             // 「下回合生效」（正数）走本体 StarNextTurnPower，描述里要写清是下回合开始时发
             "ExtraResource" => starCostIsX && e.Amount < 0 && isCard
@@ -791,14 +1185,19 @@ public static class LocalizationGen
                     ? (isCard ? $"需要 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。" : $"失去 {-e.Amount * Math.Max(1, e.Times)} 点{ResourceName(p)}。")
                     : $"{repeat}{when}获得 {var} 点{ResourceName(p)}。",
             "EndTurn" => "结束你的回合。",
-            "ExtraTurn" => "本回合结束后，额外获得一个回合。",
+            // 将此牌放回手牌（值 = 1 时才生效；值 0 的那条会被 IsInertZero 整条丢掉，卡面上一个字都不写）
+            "ReturnSelfToHand" => "打出后，将此牌放回手牌。",
+            // 抽到这张牌时它自己本场战斗的费用 -N（值 0 = 不生效，由 IsInertZero 丢掉）
+            "CheapenSelfOnDraw" => $"抽到时：这张牌本场战斗的费用 -{Math.Max(1, (int)Math.Round(e.Amount, MidpointRounding.AwayFromZero))}。",            "ExtraTurn" => "本回合结束后，额外获得一个回合。",
             // 生成卡牌：三种取卡方式（指定卡 / 按范围随机 N 张 / 多选1）分别有各自的说法。
             // 多选1 的「数值」是**候选张数**，生成出来永远只有 1 张，所以这里不能写「生成 3 张」。
-            "GenerateCard" => e.IsSpawnRandom && e.SpawnChoice > 1m
+            "GenerateCard" => e.IsSpawnRandom && e.SpawnChosen
+                ? $"从「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」中自己挑一张生成，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
+                : e.IsSpawnRandom && e.SpawnChoice > 1m
                 ? $"从 {Math.Max(2, (int)e.SpawnChoice)} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」中选一张生成，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
                 : e.IsSpawnRandom
-                ? $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
-                : $"生成 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
+                ? $"生成 {amountPhrase}「{EffectCatalog.SpawnFilterZhFor(p, e.SpawnFilter)}」，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。"
+                : $"生成 {amountPhrase}{CardNameOf(p, e.SpawnCardId)}，放入{EffectCatalog.SpawnTargetZh(e.SpawnToPile)}。",
             // 获得药水（需求 ⑨）：指定档写清是哪一瓶（药水名从「目标药水」目录里取中文名），
             // 随机档写「随机一瓶药水」。句尾**必须**写明药水栏满时的行为（用户要求：不要静默）——
             // 本体 TryToProcure 在栏满时返回 success=false，我们什么都不做。
@@ -810,17 +1209,20 @@ public static class LocalizationGen
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
             // 范围界定（需求 ③）：范围非空时在句尾补一句「（只限攻击牌）」（空则不加，描述与旧版一致）
             "ExhaustCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌{CardScopeNote(p, e)}。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌{CardScopeNote(p, e)}。",
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {amountPhrase}手牌{CardScopeNote(p, e)}。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 丢弃卡牌：丢进弃牌堆（不是消耗，洗牌后会回来）。丢哪一摞写在描述里：
             // 手牌 = 「丢弃 N 张手牌」；抽牌堆 = 「从抽牌堆里丢弃 N 张牌」。
-            "DiscardCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌{CardScopeNote(p, e)}。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌{CardScopeNote(p, e)}。",
+            // 数值 0 = 这张牌自己（用户要求）：写「丢弃这张牌自己」，不写张数（这一档没有数字）。
+            "DiscardCard" => CSharpCodeGen.AmountZeroIsSelf(e)
+                ? "丢弃这张牌自己。"
+                : e.SelectPile == "Hand"
+                    ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {amountPhrase}手牌{CardScopeNote(p, e)}。"
+                    : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 升级卡牌：从哪一摞选、自己选还是随机（本体「武装」那种）
             "UpgradeCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {var} 张手牌（升级不了的牌不会出现在选择里）{CardScopeNote(p, e)}。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {var} 张牌{CardScopeNote(p, e)}。",
+                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {amountPhrase}手牌（升级不了的牌不会出现在选择里）{CardScopeNote(p, e)}。"
+                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
             // 范围界定作用于「看的那几张」：只把符合范围的牌列进选择里
             "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）{CardScopeNote(p, e)}。",
@@ -835,14 +1237,18 @@ public static class LocalizationGen
             "CopyCard" => (e.SelectPile == "Hand"
                     ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
                     : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
-                + (Math.Max(1, e.Copies) == 1 ? $"（每张复制一份到手牌）{CardScopeNote(p, e)}。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）{CardScopeNote(p, e)}。"),
+                + (!string.IsNullOrWhiteSpace(e.CopiesFormula)
+                    ? $"（每张复制 {ForgeFormula.DisplayText(e.CopiesFormula)} 份到手牌）{CardScopeNote(p, e)}。"
+                    : Math.Max(1, e.Copies) == 1 ? $"（每张复制一份到手牌）{CardScopeNote(p, e)}。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）{CardScopeNote(p, e)}。"),
             // 重放卡牌：本体 CardModel.BaseReplayCount（重放 1 = 打出去时连着打 2 次）
             "ReplayCard" => (e.SelectPile == "Hand"
                     ? $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的 {var} 张手牌"
                     : $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌")
-                + (Math.Max(1, e.ReplayTimes) == 1
-                    ? $"本场战斗内额外打出一次{CardScopeNote(p, e)}。"
-                    : $"本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次{CardScopeNote(p, e)}。"),
+                + (!string.IsNullOrWhiteSpace(e.ReplayFormula)
+                    ? $"本场战斗内额外打出 {ForgeFormula.DisplayText(e.ReplayFormula)} 次{CardScopeNote(p, e)}。"
+                    : Math.Max(1, e.ReplayTimes) == 1
+                        ? $"本场战斗内额外打出一次{CardScopeNote(p, e)}。"
+                        : $"本场战斗内额外打出 {Math.Max(1, e.ReplayTimes)} 次{CardScopeNote(p, e)}。"),
             // 回合结束时自动打出：0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去。
             // 这里**写数字字面量**（不用 {Cards:diff()}）：这一条效果不声明动态变量
             // （数值 0 有特殊含义，不能当成「0 = 不生效」），写成占位符的话游戏里替换不出来。
@@ -855,13 +1261,17 @@ public static class LocalizationGen
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
             "TransformCard" => (e.SelectPile == "Hand"
-                    ? $"{EffectCatalog.CardPickZh(e.CardPick)}将 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张手牌变化为"
-                    : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为")
+                    ? $"{EffectCatalog.CardPickZh(e.CardPick)}将 {amountPhrase}手牌变化为"
+                    : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {amountPhrase}牌变化为")
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
             // 本体「搜寻 / 全息影像 / 挖掘」那种：从牌堆里挑牌拿到手牌
-            "TakeFromDraw" => $"从抽牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
-            "TakeFromDiscard" => $"从弃牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
-            "TakeFromExhaust" => $"从消耗牌堆里选 {(e.AmountIsX && isCard ? "X" : ((int)e.Amount).ToString())} 张牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromDraw" => $"从抽牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromDiscard" => $"从弃牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromExhaust" => $"从消耗牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            // 放置卡牌（V0.2.116）：数值 0 = 这张牌自己；≥ 1 = 从某一摞（含牌顶）挑 N 张放到「放到哪一摞」
+            "PlaceCard" => (e.Amount <= 0m && !e.AmountIsX
+                    ? $"把这张牌放到{e.PlaceToZh}。"
+                    : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}拿 {amountPhrase}牌放到{e.PlaceToZh}{CardScopeNote(p, e)}。"),
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
             // 负数 = 扣除层数（生成的是 PowerCmd.ModifyAmount(-N)：本体 Apply 对负数会新建一个负层数的状态）
             // 暴露 / 清除状态（没有动态变量，数值直接写死）
@@ -879,16 +1289,24 @@ public static class LocalizationGen
                     ? $"{repeat}{when}让自己身上 {PowerNameFor(p, e.PowerId).Trim()} 的层数变为 {Math.Clamp((int)e.Amount, 2, 5)} 倍。"
                     : $"{repeat}{when}{target}身上 {PowerNameFor(p, e.PowerId).Trim()} 的层数变为 {Math.Clamp((int)e.Amount, 2, 5)} 倍。"),            "ApplyPower" => CSharpCodeGen.IsSlowPercentEffect(e)
                 ? $"{repeat}{when}{target}施加{PowerNameFor(p, e.PowerId)}（受到伤害 +{e.SlowPercentEffective}%）。"
-                : (e.Amount < 0 && var != "X"
+                : (e.Amount < 0 && var != "X" && formulaText is null
                     ? (e.TargetSide == "Self"
                         ? $"{repeat}{when}失去 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}。"
                         : $"{repeat}{when}{target}扣除 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}。")
                     : $"{repeat}{when}{target}施加 {var} 层{PowerNameFor(p, e.PowerId)}。"),
-            // 临时增益：本回合 +X 层，回合结束时撤掉（生成的是 <角色>ForgeTemp<状态> Power）
-            // 给自己的写「获得」，给敌人的写「施加」（同一句话套在敌人身上会很别扭）
-            "TempPower" => e.TargetSide == "Self"
-                ? $"{repeat}{when}本回合内获得 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。"
-                : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}（回合结束时消失）。",
+            // 临时增益：两档撤法各写一句（生成的是 <角色>ForgeTemp<状态>[NextTurn] Power）
+            // 「获得 / 失去」按数值正负走；「自己 / 敌人」的措辞分开（同一句话套在敌人身上会很别扭）。
+            // ⚠ 负数档要写「失去 5 层」而不是「获得 -5 层」（卡面上印负号很难看）。
+            "TempPower" => (e.Amount < 0
+                    ? (e.TargetSide == "Self"
+                        ? $"{repeat}{when}本回合内失去 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}"
+                        : $"{repeat}{when}{target}本回合内失去 {-e.Amount} 层{PowerNameFor(p, e.PowerId)}")
+                    : (e.TargetSide == "Self"
+                        ? $"{repeat}{when}本回合内获得 {var} 层{PowerNameFor(p, e.PowerId)}"
+                        : $"{repeat}{when}{target}本回合内施加 {var} 层{PowerNameFor(p, e.PowerId)}"))
+                + (e.TempPowerReverse == TempPowerReverses.NextTurnStart
+                    ? (e.Amount < 0 ? "（下回合开始时加回来）。" : "（下回合开始时消失）。")
+                    : (e.Amount < 0 ? "（回合结束时加回来）。" : "（回合结束时消失）。")),
             // 给予卡牌关键词：数值 = 选几张牌（0 = 这张牌自己）
             "GiveKeyword" => GiveKeywordText(p, e, repeat, when),
             // 强化指定卡牌（像本体「精准」对「小刀」）：本场战斗内，你打出的**那一张卡**伤害 / 格挡 +N

@@ -186,7 +186,30 @@ public static class ProjectRecovery
                 p.Potions.Add(ParsePotion(file, p, loc, nameToPowerId, result));
 
         // ---- 额外资源量 ----
-        ParseExtraResource(projectDir, cs, p, loc, result);
+        ParseExtraResource(projectDir, cs, p, loc, result, nameToPowerId);
+
+        // ---- 多人联机宝箱房（自定义「拿取」手势 / 催促文本）----
+        ParseTreasureGesture(projectDir, cs, p, result);
+
+        // ---- 无色卡（用户要求）：登记的痕迹在 cs/ModEntry.cs 里 ----
+        // 工程里看不出「这张卡属于哪个池」（卡类本身不声明池，成员表在池类里），
+        // 但无色卡必须靠 ModHelper.AddModelToPool 登记，生成时写的是
+        // `ModHelper.AddModelToPool(__colorlessPool, __t<卡类名>)` —— 按它认回来。
+        {
+            string entryFile = Path.Combine(cs, "ModEntry.cs");
+            if (File.Exists(entryFile))
+            {
+                var colorless = new List<string>();
+                foreach (Match m in Regex.Matches(File.ReadAllText(entryFile, Encoding.UTF8), @"AddModelToPool\(__colorlessPool,\s*__t(\w+)\)"))
+                    colorless.Add(m.Groups[1].Value);
+                if (colorless.Count > 0)
+                {
+                    foreach (var card in p.AllCards)
+                        if (card is not null && colorless.Contains(card.ClassName, StringComparer.Ordinal)) card.IsColorless = true;
+                    result.Notes.Add($"无色卡：{colorless.Count} 张（进本体无色卡池）");
+                }
+            }
+        }
 
         // ---- 初始卡组里的**本体卡**（打击 ×5 / 防御 ×5）----
         // 生成的代码里它们是 ModelDb.Card<StrikeIronclad>()，没有对应的 cs/Cards/*.cs，
@@ -214,6 +237,9 @@ public static class ProjectRecovery
         // ---- 顺序：以「池子」里的顺序为准（= 存档里的顺序）----
         ReorderByPool(p, projectDir, cs, result);
 
+        // ---- 自定义参数（需求：数值公式要靠它们）----
+        ParseCustomParams(cs, p, template, result);
+
         // ---- 先古之民对话 ----
         ParseAncients(cs, p, loc, result);
 
@@ -230,6 +256,109 @@ public static class ProjectRecovery
             + (p.Cards.Any(c => c.IsVanillaCard) ? $" + 本体卡引用 {p.Cards.Count(c => c.IsVanillaCard)} 条" : "")
             + $"、遗物 {p.Relics.Count} 个、药水 {p.Potions.Count} 个、自定义状态 {p.CustomPowers.Count} 个");
         return result;
+    }
+
+    /// <summary>
+    /// 「自定义参数 / 组」页那些参数的恢复。
+    ///
+    /// 为什么要这一段：卡牌的「数值公式」和锻造页的【数值】模块都靠参数（<c>=M*3</c>）。
+    /// 参数丢了的后果不是「少了个设置」，而是回读出来的公式全部报「不是一个参数」、
+    /// 整个存档生成不过去 —— 所以这一段必须和公式一起做。
+    ///
+    /// 认法：生成出来的代码里，每个**用到的**参数都有一行
+    /// <c>decimal __pM = __fgSelf?.MaxHp ?? 0;   // M= 自己的最大生命</c>
+    /// （见 <see cref="ForgeGraphGen.EmitCardFormulaPrologue"/> 以及每个执行点的序幕），
+    /// 取值来源完整地编码在那个表达式里，所以能原样认回来。
+    ///
+    /// 认不回来的两样（都不影响生成，只是界面上少一点信息）：
+    ///   · 「备注」那一栏是纯给用户自己看的（不参与生成，代码里没有它的位置）；
+    ///   · 「全部友方」和「自己」生成的是**同一个**表达式 <c>__fgSelf</c>，只能按默认的「自己」认回来。
+    /// </summary>
+    private static void ParseCustomParams(string cs, CharacterProfile p, CharacterProfile? template, RecoveryResult result)
+    {
+        var found = new List<ParamSpec>();
+        foreach (string file in Directory.GetFiles(cs, "*.cs", SearchOption.AllDirectories))
+        {
+            string text = File.ReadAllText(file, Encoding.UTF8);
+            foreach (Match m in Regex.Matches(text, @"decimal\s+__p([A-Z])\s*=\s*([^;]+);"))
+            {
+                string letter = m.Groups[1].Value;
+                if (found.Any(x => string.Equals(x.Name, letter, StringComparison.Ordinal))) continue;
+                var spec = ParamFromExpr(letter, m.Groups[2].Value.Trim());
+                if (spec is not null) found.Add(spec);
+            }
+        }
+        // 一个都没找到：不要把模板里的那份清掉（用户可能只是还没写公式 / 没画图）
+        if (found.Count == 0) return;
+        // 旧存档里同名字母的那几项**借过来**：备注 / 给予能量 / 给予额外资源量这三样代码里没有
+        //（备注是纯给自己看的；那两个「给予量」目前是纯配置项），丢了对用户来说就是白丢。
+        var carried = new Dictionary<string, ParamSpec>(StringComparer.Ordinal);
+        if (template is not null)
+            foreach (var old in template.CustomParams)
+                if (old is not null) carried[ParamNames.Normalize(old.Name)] = old;
+        var ordered = found.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
+        p.CustomParams.Clear();
+        foreach (var s in ordered)
+        {
+            if (carried.TryGetValue(s.Name, out ParamSpec? old))
+            {
+                s.Note = old.Note;
+                s.EnergyGrant = old.EnergyGrant;
+                s.ResourceGrant = old.ResourceGrant;
+            }
+            p.CustomParams.Add(s);
+        }
+        result.Notes.Add($"自定义参数 {ordered.Count} 个："
+            + string.Join(" / ", ordered.Select(x => x.Name + "=" + x.Summary))
+            + "（备注 / 给予量这几栏代码里没有，用旧存档当模板恢复时才带得过来）");
+    }
+
+    /// <summary>把一行 <c>decimal __pM = &lt;表达式&gt;;</c> 里的表达式还原成一条参数配置。</summary>
+    private static ParamSpec? ParamFromExpr(string letter, string expr)
+    {
+        var spec = new ParamSpec { Name = letter };
+        Match power = Regex.Match(expr, @"ForgeFormulaRuntime\.PowerAmount\((.*?),\s*""(.*?)""\)");
+        if (power.Success)
+        {
+            spec.Source = ParamSources.Power;
+            spec.PowerId = power.Groups[2].Value;
+            spec.Target = ParamTargetOf(power.Groups[1].Value);
+            return spec;
+        }
+        if (expr.Contains("?.CurrentHp", StringComparison.Ordinal)) spec.Source = ParamSources.CurrentHp;
+        else if (expr.Contains("?.MaxHp", StringComparison.Ordinal)) spec.Source = ParamSources.MaxHp;
+        else if (expr.Contains("?.Gold", StringComparison.Ordinal)) spec.Source = ParamSources.Gold;
+        else if (expr.Contains("MaxEnergy", StringComparison.Ordinal)) spec.Source = ParamSources.MaxEnergy;
+        else if (expr.Contains("?.Energy", StringComparison.Ordinal)) spec.Source = ParamSources.Energy;
+        else if (FormulaBuiltins.All.FirstOrDefault(b =>
+                     string.Equals(b.Expr("__fgPlayer", "__fgSelf"), expr.Trim(), StringComparison.Ordinal)) is { } live)
+        {
+            // 用户要求：参数页也能选那些「实时读数」（回合数 / 丢弃·消耗·生成·复制张数 / 资源量 / 状态数…）——
+            // 它们的表达式就是内置量那张表里的原文，对得上就认回来（不用另加标记）。
+            spec.Source = live.Id;
+            spec.Target = ParamTargets.Self;   // 都是「自己」的读数
+            return spec;
+        }
+        else if (decimal.TryParse(expr.TrimEnd('m', 'M'), System.Globalization.NumberStyles.Float,
+                     System.Globalization.CultureInfo.InvariantCulture, out decimal v))
+        {
+            spec.Source = ParamSources.Value;
+            spec.Value = v;
+            return spec;   // 固定数值没有「从谁身上取」这一说
+        }
+        else return null;   // 认不出来的写法：不乱猜，宁可少一条（生成时会报「不是一个参数」让用户补）
+        spec.Target = ParamTargetOf(expr);
+        return spec;
+    }
+
+    /// <summary>取值表达式里的「从谁身上取」（生成端见 <see cref="ForgeFormula.TargetExpr"/>）。</summary>
+    private static string ParamTargetOf(string expr)
+    {
+        if (expr.Contains("ForgeFormulaRuntime.RandomEnemy", StringComparison.Ordinal)) return ParamTargets.RandomEnemy;
+        if (expr.Contains("ForgeFormulaRuntime.FirstEnemy", StringComparison.Ordinal)) return ParamTargets.AllEnemies;
+        if (expr.Contains("ForgeFormulaRuntime.FirstSummon", StringComparison.Ordinal)) return ParamTargets.Summon;
+        if (expr.Contains("__fgTarget", StringComparison.Ordinal)) return ParamTargets.ChosenEnemy;
+        return ParamTargets.Self;
     }
 
     /// <summary>
@@ -290,7 +419,7 @@ public static class ProjectRecovery
             {
                 Directory.CreateDirectory(dir);
                 string dst = Path.Combine(dir, Path.GetFileName(src));
-                File.Copy(src, dst, true);
+                FsSafe.Copy(src, dst, true);
                 copied++;
                 return dst;
             }
@@ -307,6 +436,12 @@ public static class ProjectRecovery
         p.Art.EnergyIcon = Move(p.Art.EnergyIcon);
         p.Art.Transition = Move(p.Art.Transition);
         p.Art.ModImage = Move(p.Art.ModImage);
+        // 多人联机宝箱房的手势（四张本体手势 + 我们自己那张「拿取」）
+        p.Art.GesturePoint = Move(p.Art.GesturePoint);
+        p.Art.GestureScissors = Move(p.Art.GestureScissors);
+        p.Art.GestureRock = Move(p.Art.GestureRock);
+        p.Art.GesturePaper = Move(p.Art.GesturePaper);
+        p.Art.GestureGrab = Move(p.Art.GestureGrab);
         foreach (var key in p.Art.CardPortraits.Keys.ToList()) p.Art.CardPortraits[key] = Move(p.Art.CardPortraits[key]) ?? "";
         foreach (var ov in p.VanillaPowerOverrides) ov.Icon = Move(ov.Icon);
         foreach (var cp in p.CustomPowers) cp.Icon = Move(cp.Icon);
@@ -385,6 +520,9 @@ public static class ProjectRecovery
             card.CustomDescription = cdText;
             card.CustomDescriptionReplaces = cdReplace;
         }
+        // 「升级后的自定义描述」：另一行 CET:UpgradedCustomDescription=（生成出来是 {IfUpgraded:show:…|…}，
+        // 从描述表里拆不回来，所以也走标记）
+        card.UpgradedCustomDescription = ParseUpgradedCustomDescription(text);
 
         // 费用可能是负数（诅咒固定 -1），所以数字部分要允许前导 -
         var ctor = Regex.Match(text, @": base\((-?\d+), CardType\.(\w+), CardRarity\.(\w+), TargetType\.(\w+)\)");
@@ -424,6 +562,23 @@ public static class ProjectRecovery
                 string hookBody = BodyOf(text, CSharpCodeGen.CardTimingMethodName(opt.Id) + "(");
                 if (hookBody.Length == 0) continue;
                 body += "\n" + hookBody + "\n";
+            }
+            // 「卡自己的钩子」那两类效果（「将此牌放回手牌」→ AfterCardPlayedLate、
+            // 「抽到这张牌时它本场战斗费用 -N」→ AfterCardDrawn）：实现写在钩子里
+            //（打完牌之后才能搬 / 抽到时才知道），但它们的识别行只有标记那一条 ——
+            // 所以这里**只把标记行**拼进解析流（CET:Effect=ReturnSelfToHand / CheapenSelfOnDraw），
+            // 实现语句整段丢掉。
+            // 为什么不做成「拼整个方法体 + 跳过名单」：那个名单得逐行列出钩子里的实现语句，
+            // 而条件 / 概率那层守卫的文本是任意表达式，列不全（漏一行就会多回读一条 / 报「没认出来」）。
+            foreach (string cardHook in new[] { "AfterCardPlayedLate", "AfterCardDrawn" })
+            {
+                string cardHookBody = BodyOf(text, cardHook + "(");
+                if (cardHookBody.Length == 0) continue;
+                var cardHookMarkers = cardHookBody.Split('\n')
+                    .Select(l => l.Trim())
+                    .Where(l => l.Contains("CET:Effect=ReturnSelfToHand", StringComparison.Ordinal)
+                             || l.Contains("CET:Effect=CheapenSelfOnDraw", StringComparison.Ordinal));
+                body += "\n" + string.Join("\n", cardHookMarkers) + "\n";
             }
         }
         ParseEffects(card.Effects, body, vars, nameToPowerId,
@@ -487,7 +642,6 @@ public static class ProjectRecovery
 
     private static List<Var> ParseVars(string text)
     {
-        var list = new List<Var>();
         string block = BlockAfter(text, "CanonicalVars =>");
         // **一次按声明顺序扫完** —— 顺序必须和生成代码里一致：升级增量是按「变量在 CanonicalVars 里
         // 的第几个」反查效果的，顺序错了增量就配到别的效果上（自检测出来过）。
@@ -496,19 +650,48 @@ public static class ProjectRecovery
         //     牺牲伙伴的收益），也可能不带名字。
         // 以前 DynamicVar 是**先单独扫一遍**、其余再扫一遍，等于把 DynamicVar 全排到最前面 ——
         // 一张牌上同时有「伤害」和「强化指定卡牌」时，两边的升级增量会互换。
+        // 两种声明都要收进**同一个列表**、而且必须保持生成代码里的先后顺序：
+        //   ① 普通变量：new DamageVar(3m, ValueProp.Move) / new PowerVar<VulnerablePower>(2m) …
+        //   ② 「数值公式」的现算变量（V0.2.112 起卡牌的固定数值会被迁成公式，声明变成
+        //      `new ForgeFormulaDamageVar(static (card, target) => (8m))` /
+        //      `new ForgeFormulaPowerVar<VulnerablePower>(static (card, target) => (1m))`）。
+        //
+        // ②以前**完全没被认出来**（下面这个正则要求 `(` 后面紧跟数字字面量，公式那支是 `static …`）→
+        // 变量表里整条缺失，后果有两层（第 9 批验证时实测）：
+        //   · OnUpgrade 的升级增量对不上效果 → 回读报「升级增量找不到对应效果（变量 Damage）」，用户以为配置丢了；
+        //   · 这张牌**后面**那几个变量在表里的次序全部前移 → 按顺序配的数值会串到别的效果上。
+        // 所以这里单独扫一遍公式变量，按出现位置和普通变量合并（顺序 = 声明顺序，红线）。
+        var found = new List<(int At, Var V)>();
         foreach (Match m in Regex.Matches(block, @"new (\w+)Var(?:<(\w+)>)?\((?:""(\w+)"",\s*)?(-?[\d.]+)m?"))
         {
             string kind = m.Groups[1].Value;
             string? power = m.Groups[2].Success ? m.Groups[2].Value : null;
             string? alias = m.Groups[3].Success ? m.Groups[3].Value : null;
             decimal amount = decimal.Parse(m.Groups[4].Value, CultureInfo.InvariantCulture);
-            if (kind == "Dynamic")
+            found.Add((m.Index, kind == "Dynamic"
                 // 带名字的普通 DynamicVar：变量键（名字）放在 PowerId 里，Name 也一起给上（和 VarNameOf 的约定一致）
-                list.Add(new Var("DynamicVar", alias, amount, false, false, alias));
-            else
-                list.Add(new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias));
+                ? new Var("DynamicVar", alias, amount, false, false, alias)
+                : new Var(kind, power, amount, kind == "Cards", kind == "Energy", alias)));
         }
-        return list;
+        // 公式变量：`new ForgeFormula<种类>Var[<状态>](["名字", ]static (card, target) => (常数m))`
+        // 种类后缀和普通变量名一一对应（Damage / Block / HpLoss / Heal / Power）——
+        // VarNameOf 靠它算变量键（`Damage` / `VulnerablePower`…），升级增量就是按这个键对回效果的。
+        foreach (Match m in Regex.Matches(block, @"new ForgeFormula(\w+?)Var(?:<(\w+)>)?\(([^()]*(?:\([^()]*\)[^()]*)*)\)"))
+        {
+            string suffix = m.Groups[1].Value;
+            string? power = m.Groups[2].Success ? m.Groups[2].Value : null;
+            string args = m.Groups[3].Value;
+            Match aliasMatch = Regex.Match(args, @"^""(\w+)""");
+            string? alias = aliasMatch.Success ? aliasMatch.Groups[1].Value : null;
+            // 公式里的常数（迁过来的固定值就是 `(8m)`）；真·现算公式取不到常数就记 0 ——
+            // 数值本身由生成端写的 `// CET:AmountFormula=` 标记负责还原，这里只要「种类 + 名字 + 顺序」对。
+            Match constMatch = Regex.Match(args, @"\((-?[\d.]+)m\)");
+            decimal fxAmount = constMatch.Success
+                ? decimal.Parse(constMatch.Groups[1].Value, CultureInfo.InvariantCulture)
+                : 0m;
+            found.Add((m.Index, new Var(suffix, power, fxAmount, false, false, alias)));
+        }
+        return found.OrderBy(x => x.At).Select(x => x.V).ToList();
     }
 
     /// <summary>生成代码里的一层块（循环 / 条件）。</summary>
@@ -555,6 +738,21 @@ public static class ProjectRecovery
         // 只留第一份并把 PetSummon 设成 "*" —— 这样「生成 → 回读」才是一条进、一条出。
         string? pendingPetAllGroup = null;
         var allPetGroups = new HashSet<string>(StringComparer.Ordinal);
+
+        // 「数值公式」（需求：「另加一栏『数值公式』」）：生成时在那条效果前面单独写一行
+        // `// CET:AmountFormula=<公式>`，这里先记下来、由紧跟着那条效果的 Done 认领。
+        // 为什么要标记：公式在生成的代码里已经变成算完的表达式（`(__pM * (3m))`），
+        // 从表达式**反推不回**用户写的原文（也认不出用了哪些参数）。
+        string? pendingFormula = null;
+        // 次数类公式（用户要求⑦）：生成时写一行 `// CET:CountFormulas=Times=<公式>|Repeat=<公式>|…`，
+        // 同样由紧跟着那条效果的 Done 认领（键=公式，用 | 分隔）。
+        var pendingCountFormulas = new Dictionary<string, string>(StringComparer.Ordinal);
+        // 条件数值的公式（用户要求⑦）：`// CET:CondFull=Kind=…|Amount=…|…|AmountFormula=…`，
+        // 整条条件都在这行里（守卫那一行已经变成算完的表达式，反推不回来）。
+        ConditionSpec? pendingCondFull = null;
+        // 作用对象是「队友」的效果：生成出来的语句和「指定敌人」一模一样（都是 cardPlay.Target），
+        // 反推不出这一档，所以生成时写一行 `// CET:TargetSide=Ally|AllAllies`，由紧跟着那条效果认领。
+        string? pendingTargetSide = null;
 
         // 「给予卡牌关键词」：生成时写一行 `// CET:GiveKeyword=<本体枚举名 或 custom:键> CET:GiveKeywordTemp=0/1`。
         // 关键词和「是不是临时」只能靠这行标记还原；数值 / 选牌方式 / 哪一摞牌从紧跟着的那几行代码里读，
@@ -604,6 +802,32 @@ public static class ProjectRecovery
         {
             e.Condition = CondTop()
                 ?? (timingCond is null ? new ConditionSpec() : new ConditionSpec { Kind = "CardTiming", Timing = timingCond });
+            // 「数值公式」：紧跟在标记后面的那条效果认领它（见上面的 pendingFormula）。
+            // 必须在别的分支之前认领 —— Done 后面有 early return（全部召唤物的同组第 2..N 份），
+            // 那条路径上也不能把这个待领的标记漏给下一条效果。
+            if (pendingFormula is not null)
+            {
+                e.AmountFormula = pendingFormula;
+                pendingFormula = null;
+            }
+            // 次数类公式（用户要求⑦）：同一行标记带着全部键，一起认领
+            if (pendingCountFormulas.Count > 0)
+            {
+                foreach (var kv in pendingCountFormulas) e.SetCountFormulaFromRecovery(kv.Key, kv.Value);
+                pendingCountFormulas.Clear();
+            }
+            // 条件数值的公式（用户要求⑦）：整条条件从标记里重建（守卫表达式反推不回来）
+            if (pendingCondFull is not null)
+            {
+                e.Condition = pendingCondFull;
+                pendingCondFull = null;
+            }
+            // 「作用对象 = 队友」的标记（Ally / AllAllies）：同样由紧跟着那条效果认领。
+            if (pendingTargetSide is not null)
+            {
+                e.TargetSide = pendingTargetSide;
+                pendingTargetSide = null;
+            }
             // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上。
             // 「范围界定」（需求 ③：消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / 回合结束自动打出 /
             // 从三摞牌拿牌 / 预见）用的是同一份标记，所以这里把「选牌类效果」也认下来；
@@ -621,6 +845,8 @@ public static class ProjectRecovery
                 e.SpawnUpgradedThisTurn = pendingSpawn.SpawnUpgradedThisTurn;
                 // 需求 ⑦：生成 / 变化出来的卡带上的关键词（原样还原用户选的那个引用）
                 e.SpawnKeyword = pendingSpawn.SpawnKeyword;
+                // 「从范围里自己挑一张」（用户要求）
+                if (pendingSpawn.SpawnChosen) e.SpawnChosen = true;
                 pendingSpawn = null;
                 pendingSpawnKind = null;
             }
@@ -769,6 +995,29 @@ public static class ProjectRecovery
                 // 「全部召唤物」的组号（生成器在每一份展开代码前都写一遍）
                 string? allGrp = Match(line, @"CET:PetAll=(\w+)");
                 if (allGrp is not null) pendingPetAllGroup = allGrp;
+                // 「数值公式」（需求：「另加一栏『数值公式』」）：公式里有空格 / 运算符，
+                // 所以抓到**行尾**（标记固定独占一行，后面不会再有别的内容）。
+                string? formulaRaw = Match(line, @"CET:AmountFormula=(.*)$");
+                if (formulaRaw is not null)
+                    pendingFormula = CSharpCodeGen.UnescapeMarker(formulaRaw.Trim());
+                // 次数类公式（用户要求⑦）：`CET:CountFormulas=Times=<公式>|Repeat=<公式>|…`
+                string? countRaw = Match(line, @"CET:CountFormulas=(.*)$");
+                if (countRaw is not null)
+                {
+                    pendingCountFormulas.Clear();
+                    foreach (string piece in CSharpCodeGen.UnescapeMarker(countRaw.Trim()).Split('|'))
+                    {
+                        int eq = piece.IndexOf('=');
+                        if (eq <= 0) continue;
+                        string key = piece[..eq].Trim(), value = piece[(eq + 1)..].Trim();
+                        if (EffectSpec.CountFormulaKeys.Contains(key, StringComparer.Ordinal) && value.Length > 0)
+                            pendingCountFormulas[key] = value;
+                    }
+                }
+                // 条件数值的公式（用户要求⑦）：整条条件都在这一行里
+                string? condRaw = Match(line, @"CET:CondFull=(.*)$");
+                if (condRaw is not null)
+                    pendingCondFull = ConditionFromMarker(CSharpCodeGen.UnescapeMarker(condRaw.Trim()));
                 // 「强化指定卡牌」的标记：目标卡 + 强化什么（数值看后面的 Boost 变量）
                 string? boostRaw = Match(line, @"CET:BoostCard=(\S+)");
                 if (boostRaw is not null) pendingBoostMarker = line;
@@ -789,7 +1038,7 @@ public static class ProjectRecovery
                     if (handSel is not null || pileSel is not null)
                     {
                         gk.CardPick = "Chosen";
-                        gk.SelectPile = pileSel switch { "Draw" => "Draw", "Discard" => "Discard", _ => "Hand" };
+                        gk.SelectPile = pileSel switch { "Draw" => "Draw", "Discard" => "Discard", "Exhaust" => "Exhaust", "Top" => "Top", _ => "Hand" };
                         string? cnt = Match(peek, @"CardSelectorPrefs\([^,]+,\s*(\w+)\)");
                         if (cnt is not null)
                         {
@@ -804,7 +1053,10 @@ public static class ProjectRecovery
                         {
                             "Draw" => "Draw",
                             "Discard" => "Discard",
-                            _ => "Hand",
+                            "Exhaust" => "Exhaust",
+                            // 「牌顶」那一档生成的取法是「抽牌堆 .FirstOrDefault()」（没有 NextItem）
+                            _ => peek.Contains("PileType.Draw.GetPile", StringComparison.Ordinal)
+                                 && peek.Contains("FirstOrDefault()", StringComparison.Ordinal) ? "Top" : "Hand",
                         };
                         if (randLoop == "x") gk.AmountIsX = true;
                         else if (int.TryParse(randLoop, out int gkN)) gk.Amount = gkN;
@@ -829,8 +1081,12 @@ public static class ProjectRecovery
                         SelectPile = Match(line, @"CET:Pile=(\w+)") ?? "Hand",
                         AmountIsStack = line.Contains("CET:Stack=1", StringComparison.Ordinal),
                         AmountIsX = line.Contains("CET:X=1", StringComparison.Ordinal),
+                        // 「下回合生效」的生成类效果：标记行上多带了 CET:NextTurn=1（生成类专用）
+                        NextTurn = line.Contains("CET:NextTurn=1", StringComparison.Ordinal),
                         Copies = Math.Max(1, (int)Dec(line, @"CET:Copies=(-?[\d.]+)", 1)),
                         ReplayTimes = Math.Max(1, (int)Dec(line, @"CET:Replay=(-?[\d.]+)", 1)),
+                        // 「放置卡牌」放到哪一摞（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 / 牌顶）
+                        PlaceTo = Match(line, @"CET:PlaceTo=(\w+)") ?? "Hand",
                     };
                     if (sc.Kind == "Outbreak") sc.TargetSide = "AllEnemies";
                     if (sc.Kind == "TimesUp") sc.TargetSide = "Enemy";
@@ -870,6 +1126,13 @@ public static class ProjectRecovery
                     skipSelfContainedBody = true;
                     selfContainedKind = sc.Kind;
                 }
+                // 「作用对象 = 队友」的标记行（只有 Ally / AllAllies 会写）：先存着，等紧跟着那条效果认领
+                string? tsRaw = Match(line, @"CET:TargetSide=(\w+)");
+                if (tsRaw is not null)
+                {
+                    pendingTargetSide = tsRaw;
+                    continue;
+                }
                 // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：
                 // 标记那一行先存成一份「只填了这几个字段」的效果，等真正那条效果出现时再配上（见 ApplySpawnOpts）。
                 string? spawnPick = Match(line, @"CET:SpawnPick=(\w+)");
@@ -891,6 +1154,8 @@ public static class ProjectRecovery
                         SpawnUpgradedThisTurn = line.Contains("CET:SpawnUpTurn=1", StringComparison.Ordinal),
                         // 需求 ⑦：「生成 / 变化出来的卡带上关键词」。空 = 没配（默认档的标记行里没有这一项）
                         SpawnKeyword = Match(line, @"CET:SpawnKeyword=(\S+)") ?? "",
+                        // 「从范围里自己挑一张」（用户要求）：只在勾了的时候才在标记行里
+                        SpawnChosen = line.Contains("CET:Chosen=1", StringComparison.Ordinal),
                     };
                 }
                 continue;
@@ -1004,6 +1269,12 @@ public static class ProjectRecovery
                     || line.Contains("__clone", StringComparison.Ordinal)
                     || line.Contains("__copyIdx", StringComparison.Ordinal)
                     || line.Contains("__copyPickIdx", StringComparison.Ordinal)
+                    // 「放置卡牌」那一段的实现（自己选 / 随机 / 牌顶拿 + Add 到目标那一摞）：
+                    // 效果本身已经由标记行 CET:Effect=PlaceCard 收尾了，这里整段跳过。
+                    || line.Contains("__place", StringComparison.Ordinal)
+                    // 数值 0 = 这张牌自己那一支：`await CardPileCmd.Add(this, PileType.X, CardPilePosition.Y);`
+                    || (line.StartsWith("await CardPileCmd.Add(this, PileType.", StringComparison.Ordinal)
+                        && line.Contains("CardPilePosition.", StringComparison.Ordinal))
                     // 「卡牌奖励」（非战斗胜利后那种）的实现行：识别行是 CreateForReward 那一行
                     // （所以 __rewardCards / __rewardOptions 那两行**不能**放进这个跳过名单）。
                     || line.Contains("__pickedReward", StringComparison.Ordinal)
@@ -1024,6 +1295,13 @@ public static class ProjectRecovery
                     || line.Contains("__clrP", StringComparison.Ordinal)
                     || line.Contains("CreatureCmd.LoseBlock(", StringComparison.Ordinal)
                     || line.Contains("ForgeTurnEndPlayPower", StringComparison.Ordinal)
+                    // 「丢弃卡牌（数值 0 = 这张牌自己）」：整个实现就是一句 CardCmd.Discard(choiceContext, this)
+                    || (selfContainedKind == "DiscardCard" && line.Contains("CardCmd.Discard(choiceContext, this)", StringComparison.Ordinal))
+                    // 「下回合生效」的生成类：实现是「挂一个 ForgeDelayedXxx 延迟状态」那一句（效果本身已经由
+                    // CET:Effect= 标记行收尾），注释行也一起跳过
+                    || (line.Contains("PowerCmd.Apply<", StringComparison.Ordinal)
+                        && line.Contains("ForgeDelayed", StringComparison.Ordinal))
+                    || line.StartsWith("// 下回合生效：", StringComparison.Ordinal)
                     // 「禁止获得格挡」的正数分支：只有一句 PowerCmd.Apply<NoBlockPower>，没有 __negPower 那种记号
                     //（不按标记里的种类认下来，它会被再当成一条「施加状态」—— 探针实测多回读出一条）
                     || (selfContainedKind == "ForbidBlock" && line.Contains("NoBlockPower", StringComparison.Ordinal))
@@ -1075,6 +1353,9 @@ public static class ProjectRecovery
                 // 「多选1」生成的辅助行：候选列表那行**是**识别行（下面那条 GetDistinctForCombat），
                 // 所以这里只跳「判断候选数 / 弹选牌界面 / 拿到选中的那张」这几种固定写法。
                 || line.StartsWith("if (__candidates.Count", StringComparison.Ordinal)
+                // 「从范围里自己挑一张」那一段（变量名用 __chosenCand，和「多选1」那套 __candidates 分开，
+                // 免得这条跳过规则影响「多选1」的回读）
+                || line.Contains("__chosenCand", StringComparison.Ordinal)
                 || line.StartsWith("CardModel? __picked = ", StringComparison.Ordinal)
                 || line.StartsWith("if (__picked is not null)", StringComparison.Ordinal)
                 || line.Contains("__picked", StringComparison.Ordinal)
@@ -1632,16 +1913,62 @@ public static class ProjectRecovery
                 else if (power == "EnergyNextTurnPower" || power.Contains("ForgeDelayedEnergy", StringComparison.Ordinal)) { e.Kind = "Energy"; e.NextTurn = true; }
                 // 额外资源量 + 下回合生效：本体 StarNextTurnPower（回合开始时 GainStars 再自毁）
                 else if (power == "StarNextTurnPower") { e.Kind = "ExtraResource"; e.NextTurn = true; }
-                else if (power.Contains("ForgeDelayed", StringComparison.Ordinal)) { e.NextTurn = true; }
+                // 生成类的「下回合生效」（V0.2.88）：延迟状态类名是 <角色>ForgeDelayed<Gen|TransGlobal|AddGlobal|
+                // RemoveGlobal|UpGlobal><卡类名>（见 Naming.DelayedPowerSuffix）——
+                // 必须**排在上面那条通用的 ForgeDelayed 之前**，否则会被当成「下回合施加状态」、
+                // PowerId 里留下 "GenShiv" 这种垃圾（回读再生成会报「增益 / 减益未选择有效的 Power」）。
+                // 卡/范围/张数/放进哪一摞 由紧在前面的 CET:SpawnPick= 标记行提供（pendingSpawn 会在 Done 里配上）。
+                else if (DelayedSpawnStem(power, out string dKind, out string dTail))
+                {
+                    e.Kind = dKind;
+                    e.NextTurn = true;
+                    // 目标卡：类名尾巴就是那张卡的类名（标记行里没有卡名）。随机档的尾巴是 Rnd<范围>，
+                    // 那种情况范围已经在 CET:SpawnFilter= 里了，这里不覆盖。
+                    if (dTail.Length > 0 && !dTail.StartsWith("Rnd", StringComparison.Ordinal)) e.SpawnCardId = dTail;
+                }
+                // 生成类的延迟效果：张数（= 延迟状态的层数）在这句 Apply 的第三个实参上 ——
+                // 有 Cards 变量的（生成卡牌）走变量，没变量的（全局那几种）是字面量。
+                if (e.NextTurn && CSharpCodeGen.IsDelayedSpawnKind(e.Kind))
+                {
+                    if (line.Contains("base.DynamicVars.Cards.BaseValue", StringComparison.Ordinal))
+                        FillAmount(e, NextVar(vars, ref varIdx, "Cards"), nameToPowerId);
+                    else
+                    {
+                        string? lit = Match(line, @"Creature, (-?[\d.]+)m,");
+                        if (lit is not null && decimal.TryParse(lit, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal nv))
+                            e.Amount = nv;
+                    }
+                    ApplyLoop(e, frames);
+                    Done(e);
+                    continue;
+                }
+                else if (power.Contains("ForgeDelayed", StringComparison.Ordinal))
+                {
+                    e.NextTurn = true;
+                    // 类名 = <角色类名>ForgeDelayed<状态类名>（见 Naming.DelayedPowerSuffix）——
+                    // 必须把前缀剥掉，不然 PowerId 会留在「SevenForgeDelayedWeakPower」这种**类名**上，
+                    // 回读出来的存档再生成时报「增益 / 减益未选择有效的 Power」、整个存档生成不过去
+                    //（「回读 → 再生成」的回归里踩到：ProfileFactory.Sample 的诅咒牌就是「下回合生效的虚弱」）。
+                    int at = power.IndexOf("ForgeDelayed", StringComparison.Ordinal);
+                    string real = power.Substring(at + "ForgeDelayed".Length);
+                    if (real.Length > 0) e.PowerId = real;
+                }
                 // 临时增益：打的是我们生成的临时 Power（<角色>ForgeTemp<状态>）——
                 // 从类名里把真正的状态名抠回来（前缀 ForgeTemp，后缀 Power），从而认回「临时增益」这一条。
                 else if (power.Contains("ForgeTemp", StringComparison.Ordinal))
                 {
-                    string? real = TempPowerTargetOf(power);
+                    string? real = TempPowerTargetOf(power, out bool tempNextTurn, out bool tempNegative);
                     if (real is not null)
                     {
                         e.Kind = "TempPower";
                         e.PowerId = real;
+                        // 类名带了 NextTurn 尾巴 = 「下回合开始时才撤」那一档（生成时就是这么区分的）
+                        if (tempNextTurn) e.TempPowerReverse = TempPowerReverses.NextTurnStart;
+                        // 类名带了 Abs 尾巴 = 负数档（临时减益：先扣层、到点加回来）。
+                        // ⚠ 回读时**必须把数值填成负数**，否则再生成一遍就会变成「加层」——
+                        // 数值本身没写进工程（PowerVar 的初始值在别处、这里只想认回语义），
+                        // 所以按类名给一个 -1 打底、真值由下面那段从 CanonicalVars 里读。
+                        if (tempNegative) e.Amount = -Math.Abs(e.Amount == 0m ? 1m : e.Amount);
                     }
                     else
                         result.Unparsed.Add($"{where}: 临时增益的状态没认出来（{power}）");
@@ -1775,7 +2102,7 @@ public static class ProjectRecovery
                 {
                     Kind = globalTransform ? "TransformCardGlobal" : "TransformCard",
                     CardPick = chosenTransform ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" or "Top" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? target = Match(line, @"CreateCard<(\w+)>");
@@ -1800,7 +2127,7 @@ public static class ProjectRecovery
                 {
                     Kind = "ExhaustCard",
                     CardPick = "Chosen",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" or "Top" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 // 张数在**上一行**（var toExhaust = … ExhaustSelectionPrompt, N）——
@@ -1824,7 +2151,7 @@ public static class ProjectRecovery
                 {
                     Kind = "ExhaustCard",
                     CardPick = chosenExhaust ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" or "Top" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenExhaust ? Match(body, @"ExhaustSelectionPrompt, (\d+)") : null;
@@ -1844,7 +2171,7 @@ public static class ProjectRecovery
                 {
                     Kind = "DiscardCard",
                     CardPick = chosenDiscard ? "Chosen" : "Random",
-                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" ? pendingSelectPile : "Hand",
+                    SelectPile = pendingSelectPile is "Draw" or "Discard" or "Exhaust" or "Top" ? pendingSelectPile : "Hand",
                 };
                 pendingSelectPile = null;
                 string? count = chosenDiscard ? Match(body, @"DiscardSelectionPrompt, (\d+)") : null;
@@ -2059,6 +2386,23 @@ public static class ProjectRecovery
             if (ctx == EffectCtx.Power && line.StartsWith("await PowerCmd.Remove(this);", StringComparison.Ordinal))
                 continue;
 
+            // 锻造节点图：OnPlay 末尾那一句「调用节点图」的转发，还有节点图那一整段（都写在同一张牌/遗物/药水里）
+            // 都不是用户配的「效果」—— 回读认不出来会平白多一行「没认出来」，让用户以为配置丢了。
+            // 注意：这一阶段节点图本身**不从工程回读**（配置里那份还在存档里），所以这里只是跳过。
+            if (line.StartsWith("await ForgeGraphOnPlay(", StringComparison.Ordinal)) continue;
+            // 「升级前 / 升级后」两张布的分派（OnPlay 开头那两行），也不是用户配的效果
+            if (line.Contains("ForgeGraphOnPlayUpgraded(", StringComparison.Ordinal)
+                || line.Contains("ForgeGraphOnPlay(choiceContext", StringComparison.Ordinal)) continue;
+            // 自定义状态的「每回合衰减」（EmitDecay 写的那段；配置从类开头的注释里读回来了）
+            if (line.Contains("PowerCmd.ModifyAmount(choiceContext, this, -", StringComparison.Ordinal)) continue;
+            if (line.Contains("锻造节点图") || line.Contains("fg:", StringComparison.Ordinal)) continue;
+            if (line.StartsWith("decimal __fg", StringComparison.Ordinal) || line.StartsWith("decimal __p", StringComparison.Ordinal)
+                || line.StartsWith("decimal __X", StringComparison.Ordinal) || line.StartsWith("decimal __Y", StringComparison.Ordinal)
+                || line.StartsWith("Player __fgPlayer", StringComparison.Ordinal) || line.StartsWith("Creature __fgSelf", StringComparison.Ordinal)
+                || line.StartsWith("Creature? __fgTarget", StringComparison.Ordinal) || line.StartsWith("Creature __fgWatch", StringComparison.Ordinal)
+                || line.StartsWith("if (__fg", StringComparison.Ordinal) || line.StartsWith("__fgUses", StringComparison.Ordinal))
+                continue;
+
             // 认不出来的语句 → 记下来让用户核对（不静默丢）
             if (line.Contains("await ") || line.Contains("PlayerCmd.") || line.Contains("CardCmd.") || line.Contains("CreatureCmd.")
                 || line.Contains("AddExtraReward(") || line.Contains("RunState.CreateCard("))
@@ -2147,17 +2491,51 @@ public static class ProjectRecovery
     }
 
     /// <summary>
-    /// 从生成的临时 Power 类名（<c>&lt;角色&gt;ForgeTemp&lt;状态&gt;</c>）里把真正的状态名抠回来。
+    /// 从生成的临时 Power 类名（<c>&lt;角色&gt;ForgeTemp&lt;状态&gt;[Abs][NextTurn]</c>）里把真正的状态名抠回来。
     /// 生成时后缀就是那个状态的类名（例：SparkleForgeTempStrengthPower → StrengthPower），
     /// 所以「ForgeTemp」之后那一段就是 <see cref="EffectSpec.PowerId"/>。
+    ///
+    /// ⚠ 尾巴要**从后往前**剥：先 <c>NextTurn</c>（下回合开始时才撤）、再 <c>Abs</c>（数值是负数 = 临时减益）——
+    /// 顺序反了会把状态名抠成 <c>StrengthPowerNextTurn</c>（那样就认不回本体状态了）。
     /// </summary>
-    private static string? TempPowerTargetOf(string className)
+    private static string? TempPowerTargetOf(string className, out bool nextTurn, out bool negative)
     {
+        nextTurn = false;
+        negative = false;
         const string marker = "ForgeTemp";
         int at = className.IndexOf(marker, StringComparison.Ordinal);
         if (at < 0) return null;
         string raw = className[(at + marker.Length)..].Trim();
+        if (raw.EndsWith("NextTurn", StringComparison.Ordinal))
+        {
+            nextTurn = true;
+            raw = raw[..^"NextTurn".Length];
+        }
+        if (raw.EndsWith("Abs", StringComparison.Ordinal))
+        {
+            negative = true;
+            raw = raw[..^"Abs".Length];
+        }
         return raw.Length == 0 ? null : raw;
+    }
+
+    private static string? TempPowerTargetOf(string className) => TempPowerTargetOf(className, out _, out _);
+
+    /// <summary>
+    /// 自检用：从临时 Power 的类名认出「哪一档撤法」（带 <c>NextTurn</c> 尾巴 = 下回合开始时才撤）。
+    /// public 是因为自检在 App 那个程序集里（<c>internal</c> 的成员跨程序集看不见）。
+    /// </summary>
+    public static string TempPowerReverseForCheck(string className)
+    {
+        TempPowerTargetOf(className, out bool nextTurn, out _);
+        return nextTurn ? TempPowerReverses.NextTurnStart : TempPowerReverses.TurnEnd;
+    }
+
+    /// <summary>自检用：从临时 Power 的类名认出「是不是负数档」（带 <c>Abs</c> 尾巴 = 临时减益）。</summary>
+    public static bool TempPowerIsNegativeForCheck(string className)
+    {
+        TempPowerTargetOf(className, out _, out bool negative);
+        return negative;
     }
 
     /// <summary>
@@ -2316,7 +2694,11 @@ public static class ProjectRecovery
         // 「全部召唤物」+「按生命值算收益」：生成侧走内联计算，**不声明**动态变量
         // （见 CSharpCodeGen.IsAllPetsInlineCalc / HasNoDynamicVar）—— 这里必须一起排除，
         // 否则 CanonicalVars 的变量和「有变量的效果」会错位一格，升级增量会加到别的效果上。
-        CSharpCodeGen.IsAllPetsInlineCalc(e) ? false : e.Kind switch
+        CSharpCodeGen.IsAllPetsInlineCalc(e) ? false
+        // 「数值 0 = 这张牌自己」（丢弃卡牌）：那一档**没有张数变量**（生成侧 HasNoDynamicVar 也认它），
+        // 这里必须一起排除，否则 CanonicalVars 的变量和「有变量的效果」会错位一格。
+        : CSharpCodeGen.AmountZeroIsSelf(e) ? false
+        : e.Kind switch
     {
         "Damage" or "Block" or "Draw" or "Energy" => e.AmountIsStack == false && !e.AmountIsX,
         // 升级卡牌 / 预见：都用本体的 CardsVar（键 = Cards）
@@ -2405,11 +2787,58 @@ public static class ProjectRecovery
         }
     }
 
+    /// <summary>
+    /// 从 <c>CET:CondFull=…</c> 标记（见 <see cref="CSharpCodeGen.ConditionMarker"/>）重建一条条件。
+    /// 用在「条件的数值写了公式」时：那时守卫已经变成一整句算完的表达式，反推不回种类与公式。
+    /// </summary>
+    private static ConditionSpec? ConditionFromMarker(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (string piece in raw.Split('|'))
+        {
+            int eq = piece.IndexOf('=');
+            if (eq <= 0) continue;
+            map[piece[..eq].Trim()] = piece[(eq + 1)..].Trim();
+        }
+        if (!map.TryGetValue("Kind", out string? kind) || kind.Length == 0) return null;
+        string S(string key) => map.TryGetValue(key, out string? v) ? v : "";
+        decimal D(string key) => decimal.TryParse(S(key), NumberStyles.Float, CultureInfo.InvariantCulture, out decimal v) ? v : 0m;
+        var cond = new ConditionSpec
+        {
+            Kind = kind,
+            Amount = D("Amount"),
+            Amount2 = D("Amount2"),
+            PowerId = S("Power"),
+            Target = S("Target").Length == 0 ? "Self" : S("Target"),
+            WhenUnmet = S("WhenUnmet").Length == 0 ? "Unplayable" : S("WhenUnmet"),
+        };
+        if (S("Timing").Length > 0) cond.Timing = S("Timing");
+        if (S("AmountFormula").Length > 0) cond.AmountFormula = S("AmountFormula");
+        if (S("Amount2Formula").Length > 0) cond.Amount2Formula = S("Amount2Formula");
+        return cond;
+    }
+
     /// <summary>卡牌条件：从「// 条件：…」注释 + IsPlayable 反推。</summary>
     private static void ParseCardCondition(CardSpec card, string text, Dictionary<string, string> nameToPowerId,
         RecoveryResult result, string where)
     {
+        // 「条件的数值写了公式」（用户要求⑦）时生成端会写 `// CET:CardCondFull=…`（整张牌这一条）：
+        // 那时 IsPlayable / 描金边里是一整句算完的表达式，反推不回条件 —— 直接按标记重建，也不报「没认出来」。
+        // ⚠ 效果自己那条条件用的是 `CET:CondFull=…`（在 OnPlay 里，由那条效果认领）——
+        // 这里**只认**整张牌专用的那个标记，不然「某条效果的条件」会被认成「整张牌的条件」。
+        if (Match(text, @"CET:CardCondFull=([^\r\n]*)") is { } fullRaw && ConditionFromMarker(CSharpCodeGen.UnescapeMarker(fullRaw.Trim())) is { } fromMarker)
+        {
+            fromMarker.WhenUnmet = text.Contains("IsPlayable =>") ? "Unplayable" : "NoEffect";
+            card.Condition = fromMarker;
+            return;
+        }
         string? comment = Match(text, @"// 条件：(.+)");
+        // 连「// 条件：…」注释都没有 = 这张牌**没有**「整张牌的条件」（生成端只要写了就会留下这行注释，
+        // 两条分支都写）。这时 IsPlayable 里剩下的只可能是**某条效果**自己的条件（它们各有
+        // `CET:CondFull=` 标记、又各自认领）——不能拿它当「整张牌的条件」，
+        // 也不用为它报「条件没认出来」（那是效果的条件，不是整张牌的条件丢了）。
+        if (comment is null) return;
         // 「需要已召唤伙伴」的守卫（`<X>Cmd.Get(base.Owner) != null`）是**生成器自动加的**，不是用户配的条件：
         // 先把它从 IsPlayable / 描金边的表达式里摘掉，否则会被当成「条件没认出来」记进 Unparsed
         //（用户看到「有生成代码没认出来」会以为配置丢了），也会混进条件表达式里解析不出来。
@@ -2523,6 +2952,10 @@ public static class ProjectRecovery
         if (power.Success) return new ConditionSpec { Kind = "HasPowerAtLeast", PowerId = power.Groups[1].Value, Amount = Num(power.Groups[2].Value) };
         power = Regex.Match(e, @"GetPowerAmount<(\w+)>\(\) < ([\d.]+)");
         if (power.Success) return new ConditionSpec { Kind = "HasPowerAtLeast", PowerId = power.Groups[1].Value, Amount = -Num(power.Groups[2].Value) };
+        // 「层数刚好达到 N 层」（用户要求）：生成的是
+        //   power is XPower && power.Amount >= N && power.Amount - amount < N
+        var reached = Regex.Match(e, @"power is (\w+) && power\.Amount >= ([\d.]+) && power\.Amount - amount < [\d.]+");
+        if (reached.Success) return new ConditionSpec { Kind = "PowerJustReached", PowerId = reached.Groups[1].Value, Amount = Num(reached.Groups[2].Value) };
         var cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) <= ([\d.]+)");
         if (cards.Success) return new ConditionSpec { Kind = "HandAtMost", Amount = Num(cards.Groups[1].Value) };
         cards = Regex.Match(e, @"CardPile\.GetCards\(base\.Owner, PileType\.Hand\)\.Count\(\) > ([\d.]+)");
@@ -2579,8 +3012,50 @@ public static class ProjectRecovery
             ClassName = cls,
             Name = loc.Get($"{entry}.title", cls),
             Rarity = Match(text, @"=>\s*RelicRarity\.(\w+)") ?? "Common",
-            Trigger = TriggerOfHook(RelicHookOf(text)),
-        };
+            // 触发时机：先按钩子签名认；认不出来（例如「战斗结束时」和「每场战斗只触发一次」的清理钩子
+            // 都是 AfterCombatEnd）时退回生成器写在类里的那句 `// 触发时机：<显示名>` 注释。
+        // 触发时机：先按钩子签名认；认不出来时退回生成器写在类里的那句 `// 触发时机：<显示名>` 注释
+        // （含糊的钩子见 RelicTriggerOfHook）。**老工程**里写的是改名前的显示名，所以这里连老名字一起认。
+        Trigger = RelicTriggerOfHook(RelicHookOf(text)) is { Length: > 0 } byHook
+            ? byHook
+            : RelicTriggerOfDisplay(text),
+    };
+        // 「某个状态层数到达 N 层时」（用户要求）：盯哪个状态 / 到达多少层从标记里认
+        // （守卫语句以后改写法就会丢配置，所以生成端单独写了一行标记）。
+        // 「只对哪类牌生效」（用户要求，第 9 批 ④：遗物侧和状态侧同一套候选）：
+        //   · 新档（诅咒 / 状态 / 关键词组 / 组）按生成端写的那行 `// CET:CardFilter=<id>` 还原
+        //     （判据是展开出来的，从代码反推不回来）；
+        //   · 老四档（攻击 / 技能 / 能力）生成的是守卫式判据 `if (cardPlay.Card.Type != CardType.Attack) return;`，
+        //     直接从这句反推（和状态侧 ProjectRecovery.SplitCardPlayedBody 同一个口径）。
+        if (Match(text, @"// CET:CardFilter=(\S+)") is { } relicCardFilter && relicCardFilter.Length > 0)
+            relic.TriggerCardFilter = relicCardFilter;
+        else if (Match(text, @"cardPlay\.Card\.Type != CardType\.(\w+)") is { } relicFilterType)
+            relic.TriggerCardFilter = relicFilterType;
+        if (Match(text, @"CET:PowerWatch=(\w*) CET:PowerReach=([\d.]+)") is { } watch && watch.Length > 0)
+            relic.TriggerPowerId = watch;
+        // 「某个状态被移除时」只写盯哪个状态（没有「到达 N 层」那一半）——
+        // ⚠ 这里**不能**写 `$` 收尾：Match 用的是不带 Multiline 的 Regex，`$` 只认整个文本的末尾。
+        else if (Match(text, @"CET:PowerWatch=(\w+)") is { } watchOnly)
+            relic.TriggerPowerId = watchOnly;
+        if (Match(text, @"CET:PowerWatch=\w* CET:PowerReach=([\d.]+)") is { } reach
+            && decimal.TryParse(reach, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal reachV))
+            relic.TriggerAmount = reachV;
+        // 「花掉 N 点」的数值（用户要求）：按生成端那句注释还原（N + 范围）
+        if (Match(text, @"数值：每累计花掉 ([\d.]+) 点触发一次（范围：(本回合|本场战斗)）") is { } relicSpend
+            && decimal.TryParse(relicSpend, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal relicSpendV))
+        {
+            relic.TriggerAmount = relicSpendV;
+            relic.TriggerScope = text.Contains("范围：本场战斗", StringComparison.Ordinal) ? "Combat" : "Turn";
+        }
+        // 触发时机上的数值（每个 N 次 / 数值 ≥ N / 每 N 点）：生成端统一写了
+        // `// CET:TriggerAmount=3m CET:TriggerScope=Turn` —— 按标记还原（最稳，守卫改写法也不丢）
+        if (Match(text, @"CET:TriggerAmount=([\d.]+)m(?: CET:TriggerScope=(\w+))?") is { } relicAmt
+            && decimal.TryParse(relicAmt, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal relicAmtV))
+        {
+            relic.TriggerAmount = relicAmtV;
+            string? scope = Match(text, @"CET:TriggerAmount=[\d.]+m CET:TriggerScope=(\w+)");
+            if (scope is not null) relic.TriggerScope = scope;
+        }
         var vars = ParseVars(text);
         ParseEffects(relic.Effects, BodyOfHook(text), vars, nameToPowerId, EffectCtx.Relic, result, cls, result.PetClassNames);
         // 遗物自定义描述（和卡牌同一套标记：本地化表里是拼好的，认不出来）
@@ -2632,6 +3107,16 @@ public static class ProjectRecovery
         return m.Success
             ? (CSharpCodeGen.UnescapeMarker(m.Groups[2].Value.TrimEnd()), m.Groups[1].Value == "1")
             : null;
+    }
+
+    /// <summary>
+    /// 认「升级后的自定义描述」标记：<c>// CET:UpgradedCustomDescription=&lt;换行转义过的文本&gt;</c>。
+    /// 没有标记返回空串（老工程 / 没填过 → 升级后和上面那段一样）。
+    /// </summary>
+    private static string ParseUpgradedCustomDescription(string text)
+    {
+        var m = Regex.Match(text, @"CET:UpgradedCustomDescription=(.*)$", RegexOptions.Multiline);
+        return m.Success ? CSharpCodeGen.UnescapeMarker(m.Groups[1].Value.TrimEnd()) : "";
     }
 
     /// <summary>
@@ -2837,44 +3322,125 @@ public static class ProjectRecovery
             Enabled = true,
         };
         var vars = ParseVars(text);
-        // 每个钩子方法 = 一条触发时机
-        foreach (Match m in Regex.Matches(text, @"public override async Task (\w+)\(([^)]*)\)\s*\{"))
+        // 每个钩子方法 = 一条触发时机。
+        // ⚠ 「某个状态被移除时」不是 override（本体没有那个全局钩子，是工具补丁调过来的，见
+        //   CSharpCodeGen.PowerRemovalSource）—— 所以这里连**不带 override** 的 async Task 方法一起收，
+        //   认不出来的名字由 TriggerOfHook 返回空、跳过（不会误认）。
+        foreach (Match m in Regex.Matches(text, @"public (?:override )?async Task (\w+)\(([^)]*)\)\s*\{"))
         {
             string hook = m.Groups[1].Value;
             string kind = TriggerOfHook(hook);
             if (kind.Length == 0) continue;
-            // 自定义状态用的触发时机 id 和遗物不一样（PowerTriggers 那一套）
-            kind = kind switch
-            {
-                "PlayerTurnStart" => "TurnStart",
-                "TurnEnd" => "TurnEnd",
-                "CombatStart" => "CombatStart",
-                _ => kind,
-            };
+            // 自定义状态用的触发时机 id 现在和遗物**同一套**（用户要求两边菜单相同）。
+            // 几个特别的：
+            //   · AfterCombatEnd 既是「战斗胜利后」也是「战斗结束时（房间结算之前）」→ 看类里那句注释；
+            //   · AfterPowerAmountChanged 既是「层数变化后」也是「到达 N 层时」→ 看有没有跨过 N 的判据。
+            if (hook == "AfterCombatEnd" && text.Contains("触发时机：战斗结束时（房间结算之前）", StringComparison.Ordinal))
+                kind = "CombatEnd";
+            if (hook == "AfterPowerAmountChanged"
+                && text.Contains("power.Amount - amount <", StringComparison.Ordinal))
+                kind = "PowerReached";
             if (PowerTriggers.Find(kind) is null) continue;
-            if (kind == "TurnEnd" && power.Triggers.Any(t => t.Kind == "TurnEnd")) continue;
+            if (kind == "PlayerTurnEnd" && power.Triggers.Any(t => t.Kind == "PlayerTurnEnd")) continue;
             var trigger = new PowerTriggerSpec { Kind = kind };
             if (kind == "CardPlayed" && text.Contains("cardPlay.Card.Type == CardType."))
             {
                 string? filter = Match(text, @"cardPlay\.Card\.Type == CardType\.(\w+)");
                 if (filter is not null) trigger.CardFilter = filter;
             }
-            // 「某个状态层数变化后」盯的是哪个状态（生成时是 if (power is StrengthPower)）
-            if (kind == "PowerChanged")
+            // 「只对哪类牌生效」新加的那几档（诅咒 / 状态 / 关键词组 / 组，V0.2.118）靠标记行还原 ——
+            // 它们的判据是「这一组有哪些牌」展开出来的 ModelId 比较，从代码反推不回来。
+            if (kind == "CardPlayed" && Match(text, @"// CET:CardFilter=([^\r\n]+)") is { } cfRaw)
+                trigger.CardFilter = cfRaw.Trim();
+            // 「某个状态层数变化后 / 到达 N 层时 / 被移除时」盯的是哪个状态
+            //（生成时是 if (power is StrengthPower)）+ 到达 N 层的 N
+            if (kind is "PowerChanged" or "PowerReached" or "PowerRemoved")
             {
-                string? watched = Match(text, @"if \(power is (\w+)\)");
+                string? watched = Match(text, @"if \(power is not (\w+)\)")
+                    ?? Match(text, @"\(power is (\w+)\)")
+                    ?? Match(text, @"if \(power is (\w+)\)");
                 if (watched is not null) trigger.PowerId = watched;
                 if (text.Contains("HittableEnemies.Contains(power.Owner)")) trigger.PowerTarget = "AnyEnemy";
+                string? reach = Match(text, @"power\.Amount >= ([\d.]+)m && power\.Amount - amount <");
+                if (reach is not null && decimal.TryParse(reach, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal rv))
+                    trigger.TriggerAmount = rv;
             }
             string body = MethodBody(text, hook);
+            // 「要和其他时机同时成立」（V0.2.117）：生成时在那条时机的实现里写了
+            // `// CET:RequireAll=1 CET:AndScope=Turn` —— 按它还原（重置范围挂在整只状态上）。
+            if (body.Contains("CET:RequireAll=1", StringComparison.Ordinal))
+            {
+                trigger.RequireAllTriggers = true;
+                string? andScope = Match(body, @"CET:AndScope=(\w+)");
+                if (andScope is not null) power.AndScope = andScope;
+            }
+            // 触发时机上的数值（每个 N 次 / 数值 ≥ N / 每 N 点）：按生成端那行标记还原
+            if (Match(body, @"CET:TriggerAmount=([\d.]+)m(?: CET:TriggerScope=(\w+))?") is { } amtV
+                && decimal.TryParse(amtV, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal amtD))
+            {
+                trigger.TriggerAmount = amtD;
+                string? scopeV = Match(body, @"CET:TriggerAmount=[\d.]+m CET:TriggerScope=(\w+)");
+                if (scopeV is not null) trigger.TriggerScope = scopeV;
+            }
+            // 「花掉 N 点」的数值（用户要求）：生成端在那一段前面写了
+            // 「// 数值：每累计花掉 N 点触发一次（范围：本回合 / 本场战斗）」——按它还原
+            if (Match(text, @"数值：每累计花掉 ([\d.]+) 点触发一次（范围：(本回合|本场战斗)）") is { } spendN
+                && decimal.TryParse(spendN, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal spendV))
+            {
+                trigger.TriggerAmount = spendV;
+                trigger.TriggerScope = text.Contains("范围：本场战斗", StringComparison.Ordinal) ? "Combat" : "Turn";
+            }
             ParseEffects(trigger.Effects, body, vars, new Dictionary<string, string>(StringComparer.Ordinal), EffectCtx.Power, result, cls);
+            // 「打出一张牌后」一个方法里可能有好几条（**不同筛选各一条**，V0.2.118 起筛选档还更多了）——
+            // 这时按「筛选判据」把方法体切开、每段各自成一条触发时机；不切的话回读只认第一条，
+            // 后面几条会**悄悄丢掉**（用户最烦这种「配置不见了」）。
+            var cpSegments = kind == "CardPlayed" ? SplitCardPlayedBody(body) : new List<(string Filter, string Body)>();
+            if (cpSegments.Count > 0)
+            {
+                power.Triggers.Remove(trigger);   // 上面那条只当「模板」用（挂着公共字段），下面按段重建
+                foreach (var (segFilter, segBody) in cpSegments)
+                {
+                    var segTrigger = new PowerTriggerSpec
+                    {
+                        Kind = "CardPlayed",
+                        CardFilter = segFilter,
+                        TriggerAmount = trigger.TriggerAmount,
+                        TriggerScope = trigger.TriggerScope,
+                    };
+                    if (segBody.Contains("CET:RequireAll=1", StringComparison.Ordinal))
+                        segTrigger.RequireAllTriggers = true;
+                    ParseEffects(segTrigger.Effects, segBody, vars, new Dictionary<string, string>(StringComparer.Ordinal), EffectCtx.Power, result, cls);
+                    // 方法开头那几行（`if (cardPlay.Player != …) return;` 之类）不是一条时机 ——
+                    // 它们会被切进「任意牌」那一段，但一条效果都没有，丢掉（否则会多出一条空时机）。
+                    if (segTrigger.Effects.Count == 0 && segFilter == "Any") continue;
+                    power.Triggers.Add(segTrigger);
+                }
+                continue;
+            }
             power.Triggers.Add(trigger);
         }
-        if (text.Contains("PowerCmd.Remove(this)")) power.RemoveAtTurnEnd = true;
-        string? decay = Match(text, @"SetAmount\(base\.Amount - (\d+)\)");
+        // 「回合结束就移除自己」：生成端在那行后面写了注释「// 临时状态：回合结束就没了」，按它认最准。
+        // ⚠ 衰减那段里也有一句 `await PowerCmd.Remove(this);`（`if (base.Amount <= N) { Remove }`），
+        //   光看有没有这句话会把「每回合减 1 层」误认成「挂了就回合结束移除」—— 那是两回事。
+        bool hasDecayCode = text.Contains("每回合减", StringComparison.Ordinal)
+            || text.Contains("SetAmount(base.Amount -", StringComparison.Ordinal);
+        if (text.Contains("临时状态：回合结束就没了", StringComparison.Ordinal)
+            || (!hasDecayCode && text.Contains("PowerCmd.Remove(this)", StringComparison.Ordinal)))
+            power.RemoveAtTurnEnd = true;
+        // 每回合衰减：生成端写的是「// 每回合减 N 层…」+ PowerCmd.ModifyAmount(choiceContext, this, -N m, …)
+        // ⚠ 以前这里认的是老写法 SetAmount(base.Amount - N)，改成 ModifyAmount 之后就对不上了
+        //   （回读会悄悄丢掉「每回合衰减」，还在界面上留一条「没认出来」）—— 两种都认。
+        string? decay = Match(text, @"//\s*每回合减\s*(\d+)\s*层") ?? Match(text, @"SetAmount\(base\.Amount - (\d+)\)");
         if (decay is not null) power.DecayPerTurn = int.Parse(decay, CultureInfo.InvariantCulture);
         string? color = Match(text, @"""AmountColor""\s*=\s*""([0-9A-Fa-f]{6})""");
         if (color is not null) power.AmountColor = color;
+        // 「覆盖血条」那条的颜色 / 从哪端开始：生成端在类开头单独写一行
+        // // CET:HpBarColor=RRGGBB CET:HpBarSide=Left（它是运行时的补丁文件里用的，
+        // 跟本类没有别的字符串联系，不写标记就反推不出来）。旧工程没有 Side 那一项 → 按默认「从右边」。
+        string? barColor = Match(text, @"CET:HpBarColor=([0-9A-Fa-f]{6})");
+        if (barColor is not null) power.HpBarColor = barColor;
+        if (text.Contains("CET:HpBarSide=Left", StringComparison.Ordinal))
+            power.HpBarSide = HpBarSides.Left;
         if (power.Triggers.Count == 0 && !power.RemoveAtTurnEnd && power.DecayPerTurn == 0)
             result.Notes.Add($"自定义状态「{power.Name}」没配触发时机（工程里就是这么生成的）");
         return power;
@@ -2882,7 +3448,8 @@ public static class ProjectRecovery
 
     // ==================== 额外资源量 / 本体状态改写 / 先古之民 ====================
 
-    private static void ParseExtraResource(string projectDir, string cs, CharacterProfile p, LocTables loc, RecoveryResult result)
+    private static void ParseExtraResource(string projectDir, string cs, CharacterProfile p, LocTables loc, RecoveryResult result,
+        Dictionary<string, string> nameToPowerId)
     {
         string file = Path.Combine(cs, "ExtraResource.cs");
         if (!File.Exists(file)) { p.ExtraResource.Enabled = false; return; }
@@ -2890,6 +3457,12 @@ public static class ProjectRecovery
         p.ExtraResource.Enabled = true;
         p.ExtraResource.Initial = Int(text, @"InitialAmount = (\d+)", 0);
         p.ExtraResource.CarryOver = text.Contains("CarryOver = true");
+        // 用户在「遗物」页给这只隐藏起始遗物加的效果：生成时挂在它的 BeforeSideTurnStart（带 choiceContext）上。
+        p.ExtraResource.Effects.Clear();
+        string extraBody = BodyOf(text, "BeforeSideTurnStart(");
+        if (extraBody.Length > 0)
+            ParseEffects(p.ExtraResource.Effects, extraBody, ParseVars(text), nameToPowerId, EffectCtx.Relic, result,
+                Path.GetFileNameWithoutExtension(file), result.PetClassNames);
         string ui = Path.Combine(cs, "ExtraResourceUi.cs");
         if (File.Exists(ui))
         {
@@ -2907,6 +3480,43 @@ public static class ProjectRecovery
         result.Notes.Add($"额外资源量：名字「{p.ExtraResource.Name}」开场 {p.ExtraResource.Initial} 点"
             + (p.ExtraResource.CarryOver ? "（跨战斗继承）" : "（每场重置）")
             + (string.IsNullOrWhiteSpace(p.ExtraResource.Icon) ? "" : "，图标已找回"));
+    }
+
+    /// <summary>
+    /// 多人联机宝箱房：自定义「拿取」手势 + 自定义催促文本。
+    ///
+    /// 这两项都在生成的 <c>cs/TreasureGesture.cs</c> 里，但**反推不出来**：
+    /// 「拿取」那张图在工程里叫 <c>..._grab.png</c>（本体没有这张图，只有我们写的补丁会用），
+    /// 催促文本更是一个写死在常量里的字符串。所以生成时在那份文件开头写了一行标记
+    /// （<c>// CET:TreasureGrab=... CET:TreasureFightText=...</c>），这里按标记还原。
+    ///
+    /// 四张本体手势（选择 / 剪刀 / 石头 / 布）**不在这里还原**：那四个文件在工程里永远存在
+    /// （没上传时是占位图），反推不出用户当年传的是哪张 —— 和其它美术槽位一样，
+    /// 只有配置里还指着的那份会被 <see cref="CopyAssets"/> 搬到存档旁边。
+    /// </summary>
+    private static void ParseTreasureGesture(string projectDir, string cs, CharacterProfile p, RecoveryResult result)
+    {
+        p.Art.TreasureFightText = "";
+        p.Art.GestureGrab = null;
+        string file = Path.Combine(cs, "TreasureGesture.cs");
+        if (!File.Exists(file)) return;
+        string text = File.ReadAllText(file, Encoding.UTF8);
+
+        string? fight = Match(text, @"CET:TreasureFightText=([^\r\n]*)");
+        if (fight is not null) p.Art.TreasureFightText = CSharpCodeGen.UnescapeMarker(fight.Trim());
+
+        // 标记里写的是 res:// 路径，这里只取 res:// 后面那段（工程内的相对路径）
+        string? grab = Match(text, @"CET:TreasureGrab=res://(\S*)");
+        if (!string.IsNullOrEmpty(grab))
+        {
+            string src = Path.Combine(projectDir, grab.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(src)) p.Art.GestureGrab = src;
+        }
+
+        var bits = new List<string>();
+        if (p.Art.GestureGrab is not null) bits.Add("「拿取」手势已找回");
+        if (p.Art.TreasureFightText.Length > 0) bits.Add($"催促文本「{p.Art.TreasureFightText}」");
+        result.Notes.Add("联机宝箱房：" + (bits.Count > 0 ? string.Join(" / ", bits) : "只生成了补丁，没有可还原的配置"));
     }
 
     private static void ParseVanillaOverrides(string projectDir, string cs, CharacterProfile p, LocTables loc, RecoveryResult result)
@@ -3125,11 +3735,17 @@ public static class ProjectRecovery
         return text[(open + 1)..];
     }
 
-    private static string MethodBody(string text, string hook) => BodyOf(text, "public override async Task " + hook + "(");
+    private static string MethodBody(string text, string hook)
+    {
+        // 本体钩子是 override；「某个状态被移除时」不是（那是工具补丁调过来的方法，见
+        // CSharpCodeGen.PowerRemovalSource）→ 两种写法都认。
+        string body = BodyOf(text, "public override async Task " + hook + "(");
+        return body.Length > 0 ? body : BodyOf(text, "public async Task " + hook + "(");
+    }
 
     private static string BodyOfHook(string text)
     {
-        foreach (Match m in Regex.Matches(text, @"public override async Task (\w+)\("))
+        foreach (Match m in Regex.Matches(text, @"public (?:override )?async Task (\w+)\("))
         {
             string body = MethodBody(text, m.Groups[1].Value);
             if (body.Length > 0) return body;
@@ -3137,9 +3753,112 @@ public static class ProjectRecovery
         return "";
     }
 
-    private static string RelicHookOf(string text) =>
-        // 「每场战斗只触发一次」的遗物会多写一个 AfterCombatEnd（用来清标记），它不是触发时机，别认成 CombatVictory
+    /// <summary>
+    /// 「下回合生成」那几种延迟状态的类名 →（效果种类, 卡类名尾巴）。
+    ///
+    /// 类名形如 <c>&lt;角色&gt;ForgeDelayedGenShiv</c> / <c>&lt;角色&gt;ForgeDelayedAddGlobalShiv</c>
+    /// （见 <see cref="Naming.DelayedPowerSuffix"/>）：**卡类名只能从这段尾巴还原** ——
+    /// 卡这边那句 <c>PowerCmd.Apply&lt;…&gt;</c> 上没有卡名（卡名在延迟状态类的**方法体**里，
+    /// 而方法体在 cs/DelayedPowers.cs，回读不解析那个文件）。
+    /// </summary>
+    private static bool DelayedSpawnStem(string power, out string kind, out string tail)
+    {
+        (string Stem, string Kind)[] map =
+        [
+            // 长前缀排前面（"ForgeDelayedGen" 是别人的前缀，不能先匹配）
+            ("ForgeDelayedTransGlobal", "TransformCardGlobal"),
+            ("ForgeDelayedAddGlobal", "AddCardGlobal"),
+            ("ForgeDelayedRemoveGlobal", "RemoveCardGlobal"),
+            ("ForgeDelayedUpGlobal", "UpgradeCardGlobal"),
+            ("ForgeDelayedCopy", "CopyCard"),
+            ("ForgeDelayedTrans", "TransformCard"),
+            ("ForgeDelayedGen", "GenerateCard"),
+        ];
+        foreach (var (stem, k) in map)
+        {
+            int at = power.IndexOf(stem, StringComparison.Ordinal);
+            if (at < 0) continue;
+            kind = k;
+            tail = power[(at + stem.Length)..];
+            return true;
+        }
+        kind = "";
+        tail = "";
+        return false;
+    }
+
+    private static string RelicHookOf(string text) =>        // 「每场战斗只触发一次」的遗物会多写一个 AfterCombatEnd（用来清标记），它不是触发时机，别认成 CombatVictory
         Match(text, @"public override async Task (?!AfterCombatEnd)(\w+)\(") ?? "";
+
+    /// <summary>
+    /// 遗物触发时机的「显示名 → id」兜底（钩子含糊时用）。
+    ///
+    /// 用户要求把遗物 / 状态的触发时机合并成同一套之后，有几条的**显示名改过**
+    ///（例：遗物以前的「受到伤害时（每一下）」= 现在和状态一致的「自己受到伤害后（每一下）」）——
+    /// 老工程里写的是老名字，所以这里把老名字也认下来（不然老工程回读会丢掉触发时机）。
+    /// </summary>
+    private static string RelicTriggerOfDisplay(string text)
+    {
+        var alias = new (string Display, string Id)[]
+        {
+            ("受到伤害时（每一下）", "DamageReceived"),
+            ("造成伤害时（每一下）", "DamageDealt"),
+            ("每回合开始时", "PlayerTurnStart"),
+            ("每回合结束时", "PlayerTurnEnd"),
+            ("战斗胜利时", "CombatVictory"),
+            ("每消耗一个能量", "EnergySpent"),
+            ("每消耗一个额外资源量", "StarsSpent"),
+            ("受到攻击后（连击只算一次）", "Attacked"),
+            ("某个状态层数变化时（升或降都触发）", "PowerChanged"),
+        };
+        foreach (var (display, id) in alias)
+            if (text.Contains("// 触发时机：" + display, StringComparison.Ordinal)) return id;
+        return EffectCatalog.RelicTriggers
+            .FirstOrDefault(t => text.Contains("// 触发时机：" + t.Display, StringComparison.Ordinal))?.Id ?? "";
+    }
+
+    /// <summary>
+    /// 遗物的触发时机 = 钩子签名 → 时机 id。
+    ///
+    /// 为什么不能照 <see cref="TriggerOfHook"/> 那样一一对应：合并触发时机之后，**同一个钩子**在遗物这边
+    /// 对应多条时机（例：<c>BeforeSideTurnEnd</c> 既是「每回合结束时」也是「敌人回合结束时」；
+    /// <c>AfterDamageReceived</c> 既是「受到伤害时（每一下）」也是「敌人受到伤害后」；
+    /// <c>AfterPowerAmountChanged</c> 既是「到达 N 层时」也是「层数变化时」）—— 光看钩子分不出来。
+    /// 所以这里**只在唯一确定时**给出 id，含糊的一律返回空 → 落到生成器写在类里的那句
+    /// `// 触发时机：<显示名>` 注释兜底（见 <see cref="ParseRelic"/>）。
+    /// </summary>
+    private static string RelicTriggerOfHook(string hook)
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["AfterObtained"] = "Obtained",
+            ["BeforeSideTurnStart"] = "CombatStart",
+            ["AfterPlayerTurnStart"] = "PlayerTurnStart",
+            ["AfterCombatVictory"] = "CombatVictory",
+            ["AfterCombatEnd"] = "CombatEnd",
+            ["AfterAttack"] = "Attacked",
+            ["AfterGoldGained"] = "GoldGained",
+            ["AfterShuffle"] = "Shuffle",
+            ["AfterEnergySpent"] = "EnergySpent",
+            ["AfterStarsSpent"] = "StarsSpent",
+            ["AfterCardGeneratedForCombat"] = "CardGenerated",
+            ["AfterCardPlayed"] = "CardPlayed",
+            ["AfterCardExhausted"] = "CardExhausted",
+            ["AfterCardDrawn"] = "CardDrawn",
+            ["AfterCardDiscarded"] = "CardDiscarded",
+            ["AfterDeath"] = "EnemyDeath",
+            ["AfterSideTurnStart"] = "EnemyTurnStart",
+            ["AfterCurrentHpChanged"] = "HpLost",
+            // 含糊的（同一个钩子对应多条遗物时机）**故意不列**：
+            //   AfterDamageReceived（受到伤害时（每一下） / 敌人受到伤害后）
+            //   AfterDamageGiven（造成伤害时（每一下） / 敌人造成伤害后）
+            //   AfterBlockGained（自己获得格挡后 / 敌人获得格挡后）
+            //   BeforeSideTurnEnd（每回合结束时 / 敌人回合结束时）
+            //   AfterPowerAmountChanged（到达 N 层时 / 层数变化时）
+            // 这些靠类里那句 `// 触发时机：<显示名>` 注释兜底。
+        };
+        return map.TryGetValue(hook, out string? id) ? id : "";
+    }
 
     private static string TriggerOfHook(string hook) => hook switch
     {
@@ -3163,12 +3882,17 @@ public static class ProjectRecovery
         "AfterCardExhausted" => "CardExhausted",
         "AfterCardDrawn" => "CardDrawn",
         "AfterCardDiscarded" => "CardDiscarded",
+        // 「某个状态被移除时」：本体没有那个钩子，生成的是工具补丁调过来的方法（名字固定，见
+        // CSharpCodeGen.PowerRemovedMethod）。
+        "OnForgePowerRemovedAsync" => "PowerRemoved",
         "AfterDamageGiven" => "DamageDealt",
         "AfterBlockGained" => "BlockGained",
         "AfterDeath" => "EnemyDeath",
         "BeforeCombatStart" => "CombatStart",
         "AfterEnergySpent" => "EnergySpent",
         "AfterStarsSpent" => "StarsSpent",
+        // 生成卡牌时（用户要求新增）：本体 AfterCardGeneratedForCombat
+        "AfterCardGeneratedForCombat" => "CardGenerated",
         "AfterPowerAmountChanged" => "PowerChanged",
         _ => "",
     };
@@ -3198,11 +3922,57 @@ public static class ProjectRecovery
     ///                或 <c>NextItem(PileType.X…)</c>（随机抓）
     /// 认不出来返回 null（调用处保留上一次的值 / 退回手牌）。
     /// </summary>
-    private static string? PileFromSelectCode(string line)
+    /// <summary>
+    /// 把「打出一张牌后」那个方法体按**筛选判据**切成几段（每段 = 一条触发时机）。
+    ///
+    /// 为什么要切：同一个方法里可以有好几条「打出一张牌后」（攻击一条 / 技能一条，或者按组筛的各一条），
+    /// 以前回读只认第一条、后面几条**悄悄丢掉**（用户最烦这种「配置不见了」）。段首是这两行之一：
+    ///   · 老写法：<c>if (cardPlay.Card.Type == CardType.Attack) {</c>
+    ///   · 新写法（诅咒 / 状态 / 关键词组 / 组）：<c>// CET:CardFilter=Curse</c> + 紧跟着那句 <c>if (…)</c>
+    /// 第一段判据之前那些行（没有筛选、直接跑的效果）归到 <c>Any</c> 那一段。
+    /// 只有一段时返回空列表 = 走原来的单条路径（老工程回读行为完全不变）。
+    /// </summary>
+    private static List<(string Filter, string Body)> SplitCardPlayedBody(string body)
     {
+        var starts = new List<(int Index, string Filter)>();
+        string[] lines = body.Replace("\r\n", "\n").Split('\n');
+        int at = 0;
+        string? pendingMarker = null;
+        foreach (string raw in lines)
+        {
+            string line = raw.Trim();
+            string? marker = Match(line, @"^// CET:CardFilter=(\S+)$");
+            if (marker is not null) { pendingMarker = marker; at += raw.Length + 1; continue; }
+            if (line.StartsWith("if (cardPlay.Card.", StringComparison.Ordinal))
+            {
+                string? ty = Match(line, @"cardPlay\.Card\.Type == CardType\.(\w+)");
+                starts.Add((at, pendingMarker ?? ty ?? "Any"));
+                pendingMarker = null;
+            }
+            at += raw.Length + 1;
+        }
+        if (starts.Count == 0) return new List<(string, string)>();
+        var segments = new List<(string Filter, string Body)>();
+        if (body[..starts[0].Index].Split('\n').Any(l => l.Trim().Length > 0 && !l.Trim().StartsWith("//", StringComparison.Ordinal)))
+            segments.Add(("Any", body[..starts[0].Index]));
+        for (int i = 0; i < starts.Count; i++)
+        {
+            int end = i + 1 < starts.Count ? starts[i + 1].Index : body.Length;
+            segments.Add((starts[i].Filter, body[starts[i].Index..end]));
+        }
+        return segments.Count > 1 ? segments : new List<(string, string)>();
+    }
+
+    private static string? PileFromSelectCode(string line)    {
         string? pile = Match(line, @"FromCombatPile\(choiceContext, PileType\.(\w+)")
             ?? Match(line, @"NextItem\(PileType\.(\w+)");
         if (pile is not null) return pile switch { "Draw" => "Draw", "Discard" => "Discard", "Exhaust" => "Exhaust", "Deck" => "Deck", _ => "Hand" };
+        // 「牌顶」（V0.2.115）那一档生成的是「抽牌堆 .FirstOrDefault()」—— 既没有 FromCombatPile 也没有 NextItem，
+        // 不看这一条就会被当成默认的「手牌」（回读会丢配置）。两个特征必须**在同一行**上才算数
+        //（FirstOrDefault() 到处都是，只有和 PileType.Draw.GetPile 同行才是我们的牌顶取法）。
+        if (line.Contains("PileType.Draw.GetPile", StringComparison.Ordinal)
+            && (line.Contains("FirstOrDefault()", StringComparison.Ordinal) || line.Contains(".Take(", StringComparison.Ordinal)))
+            return "Top";
         if (line.Contains("CardSelectCmd.FromHand", StringComparison.Ordinal)) return "Hand";
         return null;
     }

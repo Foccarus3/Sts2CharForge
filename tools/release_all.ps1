@@ -62,7 +62,9 @@ param(
     # 全部步骤都不再问「继续吗」
     [switch]$Yes,
     # 结束后顺手提交并推送仓库
-    [switch]$Commit
+    [switch]$Commit,
+    # 跳过「源码快照 + 编码体检」（默认每次都做 —— 这是防止「文件被写坏又发现不了」的那道闸）
+    [switch]$SkipBackup
 )
 
 $ErrorActionPreference = "Stop"
@@ -186,6 +188,7 @@ $plan += "步骤         : " + $(if ($SkipBuild) { "跳过发布程序" } else {
                               $(if ($SkipUpdate) { " / 跳过更新包" } else { " / 打更新包" }) +
                               $(if ($NoRelease) { " / 不发 GitHub" } else { " / 发 GitHub Release" })
 $plan += "旧包清理     : 打完删掉其它版本的整合包 / 更新包 / 生成器包"
+$plan += "源码备份     : " + $(if ($SkipBackup) { "跳过（-SkipBackup）" } else { "快照到 _备份\源码 + 编码体检（命中非法 UTF-8 / U+FFFD / PUA 就中止）" })
 Write-Host ""
 $plan | ForEach-Object { Write-Host ("  " + $_) }
 if (-not $Yes) {
@@ -193,6 +196,21 @@ if (-not $Yes) {
     $ans = Read-Host "继续吗？(y/N)"
     if ($ans -notmatch '^[Yy]') { Write-Host "已取消。"; exit 0 }
 }
+
+# ---------- 3.5) 源码快照 + 编码体检（**在改动任何东西之前**先留一份干净的）----------
+# 为什么放在最前面：从这一步往后脚本就会改 csproj、重发布「程序文件」——
+# 万一源码已经被哪个工具写坏了（2026-10-08 那次：MainWindow.xaml.cs 被按错代码页重写、
+# 变成一坨乱码还丢了字节，而当时 HEAD 还停在 V0.2.51、手边一个干净副本都没有），
+# 至少还有一份干净快照可退。体检命中就直接中止发布（确实要跳过就加 -SkipBackup）。
+if (-not $SkipBackup) {
+    Step "源码快照 + 编码体检"
+    $bk = Join-Path $PSScriptRoot "backup_src.ps1"
+    if (-not (Test-Path $bk)) { Fail "缺少脚本：$bk" }
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $bk
+    if ($LASTEXITCODE -ne 0) {
+        Fail "编码体检没通过（源码里有非法 UTF-8 / U+FFFD / PUA 字符）—— 先修好再发布；确实要跳过就加 -SkipBackup"
+    }
+} else { Step "源码快照 + 编码体检"; Info "已跳过（-SkipBackup）" }
 
 # ---------- 4) 写版本号 ----------
 if ($target -ne $current) {
@@ -215,6 +233,23 @@ if (-not (Test-Path $exe)) { Fail "找不到发布出来的程序：$exe" }
 $exeVer = (Get-Item $exe).VersionInfo.ProductVersion
 Info ("程序版本：" + $exeVer)
 if ($exeVer -ne $target) { Fail "程序版本（$exeVer）和版本号（$target）对不上，发布中止" }
+
+# ---------- 5.5) 清掉「来自网络」标记（MOTW）----------
+# 为什么要有这一步：从浏览器下载的 zip 解压出来的文件各带一份「来自网络」标记（NTFS 的
+# Zone.Identifier 备用数据流）；未签名的 exe 一旦带了这个标记，双击 / `start` / `Start-Process`
+# （走 ShellExecute）时 Windows 就会弹「打开文件 - 安全警告：无法验证发布者。你确定要运行此软件吗？」。
+# 发布产物本身不该带这种东西 —— 而且这个标记**会跟着文件走**：某台机器上 NuGet 缓存 / 模板文件
+# 带了标记的话，`Copy-Item` 会把它一起复制进「程序文件」，于是用户每次双击都要被问一次
+#（实测踩过：自检用 Start-Process 起发布出来的 exe 时被这个框卡住）。
+Step "清掉发布目录里的「来自网络」标记"
+$unblocked = 0
+foreach ($f in @(Get-ChildItem -Path $App -Recurse -File -ErrorAction SilentlyContinue)) {
+    if (Get-Item -LiteralPath $f.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue) {
+        Unblock-File -LiteralPath $f.FullName -ErrorAction SilentlyContinue
+        $unblocked++
+    }
+}
+Info "清掉 $unblocked 个文件上的标记（0 = 本来就没有，正常）"
 
 # ---------- 6) 两个包 ----------
 $bundleZip = Join-Path $OutDir ("Sts2CharForge_整合包_" + $target + ".zip")

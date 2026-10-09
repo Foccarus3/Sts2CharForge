@@ -38,10 +38,45 @@ public partial class App : Application
 
         base.OnStartup(e);
 
+        // 观感截图模式：把「锻造」页整个窗口渲染成 PNG（用来肉眼确认布局）
+        if (e.Args.Any(a => a.Equals("--forgeshot", StringComparison.OrdinalIgnoreCase)))
+        {
+            string outPng = Path.Combine(AppContext.BaseDirectory, "forgeshot.png");
+            try
+            {
+                var w = new MainWindow();
+                w.ShotForgePage(outPng);
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "forgeshot_error.txt"), ex.ToString(), new UTF8Encoding(false));
+                Shutdown(1);
+            }
+            return;
+        }
+
+        // 观感截图模式：把「锻造」页的积木视图渲染成 PNG 存下来（给用户看观感用的，不参与生成）
+        if (e.Args.Any(a => a.Equals("--blockshot", StringComparison.OrdinalIgnoreCase)))
+        {
+            string outPng = Path.Combine(AppContext.BaseDirectory, "blockshot.png");
+            try
+            {
+                var w = new MainWindow();
+                w.ShotBlocks(outPng);
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "blockshot_error.txt"), ex.ToString(), new UTF8Encoding(false));
+                Shutdown(1);
+            }
+            return;
+        }
+
         // 自检模式：不开界面（会短暂建一个窗口跑断言），把结果写到文件，便于无人值守验证
         if (e.Args.Any(a => a.Equals("--uicheck", StringComparison.OrdinalIgnoreCase)))
-        {
-            string outFile = Path.Combine(AppContext.BaseDirectory, "uicheck_result.txt");
+        {            string outFile = Path.Combine(AppContext.BaseDirectory, "uicheck_result.txt");
             try
             {
                 var w = new MainWindow();

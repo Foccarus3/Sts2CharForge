@@ -76,11 +76,20 @@ public static class ModGenerator
         // 会引用已经不存在的类 → 编译直接失败。清干净重新写，保证「生成出来的 = 当前配置」。
         if (Directory.Exists(root) && LooksLikeGeneratedProject(root))
         {
-            try { Directory.Delete(root, true); Log("  已清掉上一次生成的工程（避免旧文件残留导致编译失败）"); }
-            catch (Exception ex) { Log("  [警告] 清理旧工程失败（继续生成，可能会有旧文件残留）：" + ex.Message); }
+            try { FsSafe.DeleteTree(root); Log("  已清掉上一次生成的工程（避免旧文件残留导致编译失败）"); }
+            catch (Exception ex)
+            {
+                // 旧工程里只要有一个带「只读 / 隐藏」属性的文件，整棵目录就删不掉（异常消息里出现的
+                // 偏偏只有那个文件的文件名，用户看不出来是什么原因）。FsSafe 已经先递归清过一遍属性了，
+                // 这里不再往上抛：接着写的时候 FsSafe 会逐个文件再处理，真写不进去才报带「怎么办」的错。
+                Log("  [警告] 清理旧工程失败（继续生成，可能会有旧文件残留）：" + ex.Message);
+            }
         }
         Directory.CreateDirectory(root);
         Log($"生成工程目录：{root}");
+
+        // 目标目录到底能不能写：先探一次，省得写了半个工程才在某个 png 上炸出 Access denied
+        if (FsSafe.ProbeWritable(root) is string notWritable) Log("  [警告] " + notWritable);
 
         ProjectFilesGen.WriteText(Path.Combine(root, "project.godot"), ProjectFilesGen.ProjectGodot(n));
         ProjectFilesGen.WriteText(Path.Combine(root, n.ModId + ".csproj"), ProjectFilesGen.Csproj(n));
@@ -118,6 +127,22 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, n.PotionPoolClass + ".cs"), CSharpCodeGen.PotionPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile, animPlan));
         ProjectFilesGen.WriteText(Path.Combine(cs, "Patches.cs"), PatchesGen.PatchesSource(profile));
+        // 锻造节点图的运行时辅助：**只有真的用了节点图才写**（空图 = 一个文件都不多，默认档逐字不变）。
+        // 「数值公式」用的是同一个运行时辅助类（公式求值器是共用的），所以卡牌上写了公式也要写这个文件。
+        if (ForgeGraphGen.AnyGraphs(profile) || ForgeGraphGen.AnyCardFormula(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.RuntimeFile + ".cs"), ForgeGraphGen.RuntimeSource(profile));
+            // 「当遗物被点击时」要一个 Harmony 补丁（只有真的用了那条时机才写）
+            string clickPatch = ForgeGraphGen.RelicClickPatchSource(profile);
+            if (clickPatch.Length > 0)
+                ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.RelicClickPatchFile + ".cs"), clickPatch);
+        }
+        // 牌堆实时张数的动态变量：只有真的有卡勾了「卡面显示牌堆张数」才写（不勾 = 一个文件都不多）
+        if (ForgeGraphGen.NeedsPileCountVars(profile))
+            ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.PileCountFile + ".cs"), ForgeGraphGen.PileCountSource(profile));
+        // 自定义状态的「覆盖血条」：只有真的配了颜色才写（不配 = 一个文件都不多，也不打那个补丁）
+        if (HpBarOverlayGen.Needs(profile))
+            ProjectFilesGen.WriteText(Path.Combine(cs, HpBarOverlayGen.File + ".cs"), HpBarOverlayGen.Source(profile));
         // 逐帧动画的游戏侧两个文件：只有勾了总开关而且待机有素材时才写
         if (animPlan is not null)
         {
@@ -131,7 +156,7 @@ public static class ModGenerator
             foreach (string f in new[] { FrameAnimGen.RuntimeFile, FrameAnimGen.PatchesFile })
             {
                 string stale = Path.Combine(cs, f + ".cs");
-                if (File.Exists(stale)) { try { File.Delete(stale); Log("  已删掉上一次生成的 " + f + ".cs（总开关关掉了）"); } catch { } }
+                if (File.Exists(stale)) { try { FsSafe.DeleteFile(stale); Log("  已删掉上一次生成的 " + f + ".cs（总开关关掉了）"); } catch { } }
             }
         }
 
@@ -229,6 +254,34 @@ public static class ModGenerator
             Log("  已生成「仅本回合升级」用的临时升级 Power（生成 / 变化出来的卡回合结束降回来）");
         }
 
+        // 「敌人死亡计数」（用户要求：每 N 个敌人死亡触发一次）——本体历史里没有死亡记录，用到才生成那个小运行时
+        if (CSharpCodeGen.UsesEnemyDeathCounter(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "CombatCounters.cs"), CSharpCodeGen.CombatCountersSource(profile));
+            Log("  已生成敌人死亡计数器（本体战斗历史里没有死亡记录，只能自己数）");
+        }
+
+        // 「获得的能量（本回合 / 本场战斗）」——本体没有这个读数（只有当前能量），用到才生成那个小运行时 + 补丁
+        if (CSharpCodeGen.UsesEnergyGainTracker(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "EnergyGainTracker.cs"), CSharpCodeGen.EnergyGainTrackerSource(profile));
+            Log("  已生成「获得的能量」记录器 + PlayerCombatState.GainEnergy 补丁（本体没有这个读数）");
+        }
+
+        // 「某个状态被移除时」——本体没有全局的「状态被移除」钩子，用到才生成那个补丁 + 转发
+        if (CSharpCodeGen.UsesPowerRemovedTrigger(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "PowerRemoval.cs"), CSharpCodeGen.PowerRemovalSource(profile));
+            Log("  已生成「某个状态被移除时」的通知补丁（本体没有全局的「状态被移除」钩子）");
+        }
+
+        // 「数值公式」的卡面现算变量（用户要求：卡面要看到算出来的数字，不是「M/2」这种公式文本）
+        if (CSharpCodeGen.UsesFormulaVars(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "FormulaVars.cs"), CSharpCodeGen.FormulaVarsSource(profile));
+            Log("  已生成「数值公式」的动态变量（卡面显示公式算出来的数字）");
+        }
+
         if (CSharpCodeGen.UsesShuffleCondition(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ShuffleTracker.cs"), CSharpCodeGen.ShuffleTrackerSource(profile));
@@ -239,6 +292,13 @@ public static class ModGenerator
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResource.cs"), CSharpCodeGen.ExtraResourceSource(profile));
             Log($"  已生成额外资源量（初始 {profile.ExtraResource.Initial}，{(profile.ExtraResource.CarryOver ? "跨战斗继承" : "每场战斗重置")}）");
+        }
+
+        // 「在游戏中隐藏那只额外资源量载体遗物」（用户要求）：勾了才生成这个补丁
+        if (CSharpCodeGen.UsesHiddenCarrierRelic(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "HideCarrierRelic.cs"), CSharpCodeGen.HideCarrierRelicSource(profile));
+            Log("  已生成「隐藏额外资源量载体遗物」的补丁（不进遗物栏，功能照常）");
         }
 
         // ===== 召唤物（本体的通用宠物 API，不需要 Harmony 补丁）=====
@@ -290,6 +350,18 @@ public static class ModGenerator
             Log("  已生成死亡文本补丁（" + string.Join(" + ", bits) + "）");
         }
 
+        // 多人联机宝箱房：自定义「拿取」手势 / 自定义催促文本（两项都是可选的，只在填了的时候生成）
+        if (TreasureGestureGen.HasAny(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "TreasureGesture.cs"), TreasureGestureGen.Source(profile));
+            var gestureBits = new List<string>();
+            if (TreasureGestureGen.NeedsGrab(profile)) gestureBits.Add("自定义「拿取」手势");
+            if (TreasureGestureGen.NeedsFightText(profile))
+                gestureBits.Add($"自定义催促文本「{(profile.Art.TreasureFightText ?? "").Trim()}」");
+            Log("  已生成联机宝箱房补丁（" + string.Join(" + ", gestureBits)
+                + "，只在我方角色的这一局里生效，本体的本地化键不动）");
+        }
+
         if (AncientPatchGen.HasRelicReplacements(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "AncientRelicReplace.cs"), AncientPatchGen.RelicReplacementSource(profile));
@@ -298,11 +370,28 @@ public static class ModGenerator
                 + string.Join("、", withReplace.Select(a => a.AncientId)) + "）");
         }
 
-        if (CSharpCodeGen.HasExtraResourceUi(profile))
+        // 额外资源量：外观补丁（配了名字 / 图标才需要）——上限那套单独判，见下面
+        bool starCap = CSharpCodeGen.NeedsStarCap(profile);
+        if (CSharpCodeGen.HasExtraResourceUi(profile) || starCap)
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResourceUi.cs"), CSharpCodeGen.ExtraResourceUiSource(profile));
-            Log($"  已生成额外资源量外观补丁（名字「{LocalizationGen.ResourceName(profile)}」"
-                + (ArtGenerator.ExtraResourceIconResPath(profile) is null ? "，图标沿用本体" : "，图标用你上传的图") + "）");
+            if (CSharpCodeGen.HasExtraResourceUi(profile))
+                Log($"  已生成额外资源量外观补丁（名字「{LocalizationGen.ResourceName(profile)}」"
+                    + (ArtGenerator.ExtraResourceIconResPath(profile) is null ? "，图标沿用本体" : "，图标用你上传的图") + "）");
+            else
+                Log("  已生成额外资源量配置（没填名字 / 没传图标，只用于「数量上限」）");
+        }
+
+        // 数量上限：夹数量的 Harmony 前缀 + 承载「上限加成」的隐藏状态
+        if (starCap)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "StarCapPatch.cs"), CSharpCodeGen.StarCapPatchSource(profile));
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Powers", CSharpCodeGen.StarCapPowerClass(profile) + ".cs"),
+                CSharpCodeGen.StarCapPowerSource(profile));
+            int cap = Math.Max(0, profile.ExtraResource.Max);
+            Log(cap > 0
+                ? $"  已生成额外资源量数量上限（上限 {cap}；「增加额外资源量上限值」那个效果可以把上限再抬高）"
+                : "  已生成额外资源量数量上限机制（基础上限 = 不限，只靠「增加额外资源量上限值」那个效果抬）");
         }
 
         var delayed = CSharpCodeGen.CollectDelayedEffects(profile).ToList();
@@ -426,10 +515,18 @@ public static class ModGenerator
             || tempPowers.Count > 0 || CSharpCodeGen.UsesEnergyDebt(profile) || CSharpCodeGen.UsesExtraTurn(profile);
         if (needPowersLoc)
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "powers.json"), LocalizationGen.PowersJson(profile));
-        // 自定义名字：覆盖本体的「辉星」悬停提示（本体加载时会把模组的同名表并进来覆盖）
+        // 额外资源量的名字 / 悬停提示：写进**我们自己的键**（`<角色>_EXTRA_RESOURCE.title/.description`），
+        // 由生成的计数器补丁在「这个计数器归我方角色」时换上去（见 ExtraResourceUi.ApplyHoverTip）。
+        // ⚠ 以前这里写的是本体的 STAR_COUNT.title / .description —— 那两个键是全局的，多个角色模组共存时
+        //   互相覆盖（联机时两个人看到的资源名可能不一样，见 LocalizationGen.StaticHoverTipsJson 的说明）。
         string hoverTips = LocalizationGen.StaticHoverTipsJson(profile);
-        if (hoverTips.Contains("STAR_COUNT", StringComparison.Ordinal))
+        if (hoverTips.Contains("_EXTRA_RESOURCE", StringComparison.Ordinal))
             ProjectFilesGen.WriteText(Path.Combine(locRoot, "static_hover_tips.json"), hoverTips);
+        // 「资源不够、这张牌打不出去」那句系统提示：本体键里写死了「辉星」，我们写自己的键 +
+        // 生成一个只在玩我方角色时替换它的补丁（见 CSharpCodeGen 的 ForgeNotEnoughMessage）。
+        if (profile.ExtraResource.Enabled)
+            ProjectFilesGen.WriteText(Path.Combine(locRoot, "combat_messages.json"),
+                LocalizationGen.CombatMessagesJson(profile));
         // 自定义关键词 / 本体关键词改名 / 内置的「临时保留·临时奇巧」：都写进本体的 card_keywords 表（逐键合并）。
         // 有其中任何一样就必须写这个文件 —— 不生成的话，改的名字 / 卡面那行字在游戏里根本不生效。
         bool needKeywordsLoc = VanillaKeywordGen.HasAny(profile);
@@ -563,6 +660,9 @@ powershell -ExecutionPolicy Bypass -File build.ps1 -Install "{p.Paths.InstallDir
 - 能量图标：`images/atlases/ui_atlas.sprites/card/energy_{n.EnergyColor}.tres` + tpsheet 条目
 - 卡面：`images/packed/card_portraits/{n.PoolTitle}/<卡牌ID小写>.png`（普通卡 / 诅咒建议 1000×760 横图；
   **先古卡建议 606×852 竖图** —— 本体先古卡的卡面框是竖的，素材也都是 606×852）
+- ⚠ **无色卡**的卡面在 `images/packed/card_portraits/colorless/<卡牌ID小写>.png`：
+  它的模型登记进的是**本体的无色卡池**（`ColorlessCardPool.Title = "colorless"`），
+  而本体就是按「卡所在池的 Title」去找卡面的（`CardModel.PortraitPngPath`）
 
 ## 构建环境
 - 解包工程：`{p.Paths.VanillaProject}`

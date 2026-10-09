@@ -178,6 +178,11 @@ public static partial class AnimFramesGen
         {
             // 计划不成立就一行文件都不写：宁可什么都没有，也不要写出半套动画
             // （半套的后果是游戏里动画能播但帧数不对，比完全没有更难查）
+            // 顺手给「解不开」那一行补上 GifFrames 记下的**具体原因**（哪个块 / 属于哪种坏法），
+            // 不然用户只看到一句「解不开」，不知道该改什么。只在最后一行加，不动上面的判断逻辑。
+            if (plan.Notes.Count > 0
+                && plan.Notes[plan.Notes.Count - 1].Contains("解不开", StringComparison.Ordinal))
+                plan.Notes[plan.Notes.Count - 1] += GifFrames.LastErrorSuffix();
             foreach (var n in plan.Notes) log?.Invoke("  " + n);
             return plan;
         }
@@ -219,7 +224,7 @@ public static partial class AnimFramesGen
 
             // SpriteFrames 不是「按源文件路径缓存」的资源；同名 .import 是 Godot 给 PNG 用的，
             // 留在 .tres 旁边会变成「同名资源的导入设置」，所以主动删掉。
-            try { File.Delete(tresPath + ".import"); } catch { /* 没权限/不存在都无所谓 */ }
+            try { FsSafe.DeleteFile(tresPath + ".import"); } catch { /* 没权限/不存在都无所谓 */ }
 
             WriteManifest(dir, naming.CharSlug, anim, plan);
 

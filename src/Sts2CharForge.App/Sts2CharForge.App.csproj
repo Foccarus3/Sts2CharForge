@@ -19,8 +19,22 @@
       节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …）；
       **只有用户明确说「发布」时才一次性跳到 V0.2.0**（tools\release_all.ps1 -Version V0.2.0）。
     -->
-    <InformationalVersion>V0.2.51</InformationalVersion>
+    <InformationalVersion>V0.2.120</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <!--
+      CET（Intel 硬件强制堆栈保护）必须显式关掉，否则在【没打全补丁的 Windows】上双击就闪退：
+        · .NET 9 起 apphost / singlefilehost 默认带 /CETCOMPAT，这个标志写在 exe 的 PE 头里
+          （IMAGEDEBUG type20 的 ExDllCharacteristics = 0x0001，本项目的 exe 实测就是 1）。
+        · 旧 Windows 缺 CET 修复（Win10 22H2 从 KB5044273 起，ntdll >= 10.0.19041.5007），
+          CLR 启动瞬间断言失败并 fail-fast —— 用户看到的就是「点启动器闪一下就没反应」。
+          事件查看器 → 应用程序 → Application Error 1000：错误模块 KERNELBASE.dll、异常代码 0xc0000602；
+          并且【不会】生成 crash_log.txt（托管代码还没跑起来，Dispatcher 那个兜底接不到）。
+          踩过：用户机器 KERNELBASE 10.0.19041.1949，远旧于 CET 修复。
+        · 依据 dotnet/runtime#110920、#114671 与
+          https://learn.microsoft.com/dotnet/core/compatibility/interop/9.0/cet-support
+        · 代价：少一层硬件级 ROP 防护（对单机工具无所谓），换来老 Windows 上双击就能开。
+    -->
+    <CETCompat>false</CETCompat>
   </PropertyGroup>
 
   <ItemGroup>

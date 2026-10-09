@@ -8,7 +8,9 @@ libs/
 addons/
 
 # 生成出来的模组工程 / 打包产物（里面含本体派生资源）
-build/
+# 注意：这里必须是「仓库根目录的 build/」，不能写成裸的 build/ —— Windows 下忽略规则不分大小写，
+# 裸 build/ 会把 src/Sts2CharForge.Core/Build/ 整个吞掉（ModBuilder.cs 一直没进过仓库，2026-xx 发现）。
+/build/
 *.pck
 *.dll
 *.pdb

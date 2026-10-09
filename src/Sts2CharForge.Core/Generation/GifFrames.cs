@@ -44,32 +44,48 @@ public static partial class GifFrames
 
     public static Result? Decode(byte[] bytes) => DecodeCore(bytes, null);
 
+    /// <summary>
+    /// 最近一次 <see cref="Decode(string)"/> / <see cref="Decode(byte[])"/> 解不开的**原因**
+    /// （成功时是 null）。用户要求「失败时带上原因，别只返回 null」—— 界面上那条
+    /// 「[错误] 待机动图解不开」后面会接上这句，省得只能看到一句「解不开」。
+    /// </summary>
+    public static string? LastError { get; private set; }
+
     /// <summary>带跟踪日志的解码（诊断「为什么这张 GIF 解不开」用；正常生成走 <see cref="Decode(byte[])"/>）。</summary>
     public static Result? DecodeWithTrace(byte[] bytes, Action<string> log) => DecodeCore(bytes, log);
 
+    /// <summary>把「解不开的原因」拼成一句给用户看的话（没有原因就返回空串）。</summary>
+    public static string LastErrorSuffix() => string.IsNullOrEmpty(LastError) ? "" : "（原因：" + LastError + "）";
+
+    private static Result? Fail(string why)
+    {
+        LastError = why;
+        return null;
+    }
+
     private static Result? DecodeCore(byte[] b, Action<string>? log)
     {
+        LastError = null;
         if (log != null)
             log($"DecodeCore 进入：{b.Length} 字节，头={(b.Length < 3 ? "??" : "" + (char)b[0] + (char)b[1] + (char)b[2])}");
 
-        if (b.Length < 14) return null;                              // 头 + 逻辑屏幕描述符都不够，别往下读了
-        if (b[0] != (byte)'G' || b[1] != (byte)'I' || b[2] != (byte)'F') return null;
+        if (b.Length < 14) return Fail($"文件太短（{b.Length} 字节 < 14），连文件头都不完整");
+        if (b[0] != (byte)'G' || b[1] != (byte)'I' || b[2] != (byte)'F')
+            return Fail($"文件头不是 GIF（开头是 0x{b[0]:X2}{b[1]:X2}{b[2]:X2}）—— 是不是把别的格式改了扩展名？");
 
         int p = 6;
         int w = ReadU16(b, ref p);
         int h = ReadU16(b, ref p);
         // 8192 是「明显不是给人看的素材」的上限：解码一次要 4×W×H 字节，不限住会把内存吃光
-        if (w <= 0 || h <= 0 || w > 8192 || h > 8192) return null;
+        if (w <= 0 || h <= 0 || w > 8192 || h > 8192)
+            return Fail($"画布尺寸不合法或太大：{w}x{h}（只支持 1~8192）");
 
         byte packed = b[p++];
         p += 2;   // 背景色索引 + 像素宽高比（见文件头说明）
         byte[]? gct = null;
         if ((packed & 0x80) != 0)
-        {
-            int n = (1 << ((packed & 7) + 1)) & 31;   // &31 是防「非法 GIF 写 8」时移位过头
-            gct = ReadPalette(b, ref p, n);
-        }
-        if (gct == null) return null;                 // 没有全局色表就没法解（局部色表救不了首帧之前）
+            gct = ReadPalette(b, ref p, PaletteEntryCount(packed, out _));
+        if (gct == null) return Fail("没有全局色表（GIF 允许，但本工具不支持只有局部色表的图）");
 
         if (log != null)
             log($"头解析完：{w}x{h} packed=0x{packed:X2} 调色板={gct.Length / 3}色 p={p}");
@@ -139,14 +155,9 @@ public static partial class GifFrames
             bool local = (fpacked & 0x80) != 0;
             bool interlaced = (fpacked & 0x40) != 0;
             if (local)
-            {
-                int n = (1 << ((fpacked & 7) + 1)) & 31;
-                palette = ReadPalette(b, ref p, n);
-            }
+                palette = ReadPalette(b, ref p, PaletteEntryCount(fpacked, out _));
             else
-            {
                 palette = gct;                        // 本帧没带局部色表 → 回到全局色表
-            }
 
             if (palette == null) break;
             if (fw <= 0 || fh <= 0) break;
@@ -160,7 +171,11 @@ public static partial class GifFrames
             byte[]? idx = ReadImageData(b, ref p, minCode, fw * fh, out int compressedLen);
             if (log != null)
                 log($"  图像 left={left} top={top} {fw}x{fh} 局部色板={local} 隔行={interlaced} LZW最小码长={minCode} 压缩数据={compressedLen}字节 解出={(idx == null ? -1 : idx.Length)}像素（期望{fw * fh}）");
-            if (idx == null) break;
+            if (idx == null)
+            {
+                LastError = "某一帧的像素数据解不出来（LZW 压缩流坏了 / 被截断）";
+                break;
+            }
 
             if (interlaced) idx = Deinterlace(idx, fw, fh);
 
@@ -216,8 +231,24 @@ public static partial class GifFrames
             delay = 100;
         }
 
-        if (frames.Count == 0) return null;
+        if (frames.Count == 0)
+            return Fail("一个图像块都没读到（结构坏了 / 文件被截断 —— 这类文件用图片查看器往往也打不开）");
         return new Result(w, h, frames);
+    }
+
+    /// <summary>
+    /// 「打包字段」里的色表尺寸 → 色表项数。GIF 规定项数 = <c>2^(N+1)</c>，N 是低 3 位（0..7）。
+    ///
+    /// 注意：这里**绝不能**写 <c>(1 &lt;&lt; (N+1)) &amp; 31</c> —— N = 7（满 256 色，也就是最常见的情况）
+    /// 时算出来是 <c>256 &amp; 31 = 0</c>，色表一项都不读、后面整条链全部错位。
+    /// 用户实测报过：「真实的 GIF 一律解不开」，根因就是这一句（现网 5/6 个 GIF 挂在这里）。
+    /// 非法 GIF 写 N = 8 时要夹到 7（规范只允许 0..7），夹的是 N 而不是移位结果。
+    /// </summary>
+    private static int PaletteEntryCount(byte packed, out int n)
+    {
+        n = packed & 7;
+        if (n > 7) n = 7;
+        return 1 << (n + 1);
     }
 
     /// <summary>小端 16 位；读不到就返回 0 并把指针顶到末尾（坏文件不让它越界）。</summary>
@@ -359,7 +390,11 @@ public static partial class GifFrames
             if (outLen >= outBuf.Length) break;  // 已经攒够像素了，不必再读
         }
 
-        if (outLen < outBuf.Length) Array.Resize(ref outBuf, outLen);
+        // **一定要补足到期望像素数**：截断 / 有问题的压缩流会解出比 fw×fh 少的像素，
+        // 而调用方是按 fw×fh 逐像素盖到画布上的 —— 少一个字节就是 IndexOutOfRangeException，
+        // 整张图当作「解不开」（用户实测报过：一张真实 GIF 只解出 1033 / 60000 像素，
+        // 结果被上面的 catch 吞成「[错误] 解不开」）。补 0 = 缺的那部分当透明黑，不崩。
+        if (outBuf.Length != expected) Array.Resize(ref outBuf, expected);
         return outBuf;
 
         void ResetDict()

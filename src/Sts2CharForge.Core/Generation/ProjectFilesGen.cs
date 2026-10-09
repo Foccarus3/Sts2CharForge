@@ -224,7 +224,7 @@ finally { Pop-Location }
         foreach (string dll in new[] { "sts2.dll", "0Harmony.dll" })
         {
             string src = Path.Combine(p.Paths.GameDataDir, dll);
-            if (File.Exists(src)) { File.Copy(src, Path.Combine(libs, dll), overwrite: true); log?.Invoke($"  libs/{dll}"); }
+            if (File.Exists(src)) { FsSafe.Copy(src, Path.Combine(libs, dll), overwrite: true); log?.Invoke($"  libs/{dll}"); }
             else log?.Invoke($"  [警告] 找不到 {src}");
         }
 
@@ -282,7 +282,7 @@ finally { Pop-Location }
         {
             string dst = Path.Combine(destination, Path.GetRelativePath(source, file));
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
-            File.Copy(file, dst, overwrite: true);
+            FsSafe.Copy(file, dst, overwrite: true);
         }
     }
 
@@ -300,6 +300,7 @@ finally { Pop-Location }
         }
 
         bool needBom = path.EndsWith(".ps1", StringComparison.OrdinalIgnoreCase);
-        File.WriteAllText(path, content, needBom ? Utf8Bom : Utf8NoBom);
+        // 覆盖写：目标文件可能是上一次生成留下的（带只读 / 隐藏属性时 WriteAllText 会被拒），交给 FsSafe 处理
+        FsSafe.WriteAllText(path, content, needBom ? Utf8Bom : Utf8NoBom);
     }
 }

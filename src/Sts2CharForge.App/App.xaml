@@ -52,7 +52,10 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
 
-        <!-- 效果编辑面板的公共部分 -->
+        <!-- 效果编辑面板的公共部分。
+             注意：「效果种类」那一行**不在这里**（见 EffectKindPicker）——
+             「自定义状态」的触发器只能放「不需要卡牌上下文」的种类，那一处要用收窄过的候选表，
+             而卡牌 / 遗物 / 药水照旧用全量。 -->
         <DataTemplate x:Key="EffectCommon">
             <Grid>
                 <Grid.ColumnDefinitions>
@@ -64,28 +67,59 @@
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
+                <!-- 效果种类（全量）：卡牌 / 遗物 / 药水用这一份。
+                     宠物类效果也在这里面 —— 12 个宠物效果都能直接选，选到宠物效果时
+                     下面那个「召唤物（哪一只）」下拉会出现。 -->
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
-                <!-- 「效果种类」下拉：全量 Kinds（宠物类效果也在这里面 —— 12 个宠物效果都能直接选，
-                     选到宠物效果时下面那个「召唤物（哪一只）」下拉会出现）。
-                     以前这里走 PickKinds 样式 + EffectScope.Pet 附加属性，会让「召唤物卡牌」页
-                     收窄成只列宠物类效果；那一页已删除，收窄机制一并不再有。 -->
                 <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"
                           DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
 
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="数值" Style="{StaticResource Label}"/>
-                <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                <!-- 「数值」+「数值公式」：用户要求（V0.2.112）「效果那边只要保留公式就行，去掉数值框」——
+                     支持公式的 5 种（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）只留「数值公式」那一栏，
+                     公式留空 = 0（不显示也不执行）；老存档里那 5 种的固定数值打开存档时**自动转成公式**，
+                     所以不会丢配置。其余种类没有公式可用（数值必须在生成时定下来），「数值」框照旧显示。 -->
+                <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
+                    <Grid Visibility="{Binding ShowAmountBox, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="数值" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                    </Grid>
+                    <!-- 数值公式（需求原文：「另加一栏『数值公式』」）：
+                         留空 = 0（这条效果不显示也不执行）；写了 = 打出这张牌那一刻现算，卡面显示算出来的数字。
+                         只对「伤害 / 格挡 / 失去生命 / 回复生命 / 施加增益减益」这 5 种出现 ——
+                         其余种类的数值必须在生成时就定下来（抽几张 / 生成几张要提前分配变量和选牌上限）。 -->
+                    <Grid Margin="0,4,0,0" Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="数值（公式）" Style="{StaticResource Label}" MinWidth="96"
+                                   ToolTip="写出「打出这张牌那一刻才算」的数字。留空 = 0（这条效果不显示也不执行）。"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                 Text="{Binding AmountFormula, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="例：M*3（M 是「自定义参数 / 组」页里定义的参数）、max(1, N/2)、X（当前能量）。&#10;内置实时只读量（不用定义，直接写）：Turn 回合数 / HandCount·DrawCount·DiscardCount·ExhaustCount 各摞张数 / DiscardedThisTurn·ThisCombat 丢弃张数 / ExhaustedThisTurn·ThisCombat 消耗张数 / GeneratedThisTurn·ThisCombat 生成张数（含复制）/ EnergySpentThisTurn·ThisCombat 花掉的能量 / StarsGainedThisTurn·ThisCombat 获得的额外资源量 / EnergyGainedThisTurn·ThisCombat 获得的能量 / PowersOnMe 身上状态数。&#10;支持 + - * / ( ) 和 min / max / floor / ceil / round / abs，最前面可以写一个 =。&#10;留空 = 0（这条效果不显示也不执行）。"/>
+                    </Grid>
+                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}"
+                               Text="{Binding AmountFormulaHint}"/>
+                </StackPanel>
 
                 <TextBlock Grid.Row="2" Grid.Column="0" Text="作用对象（本条效果对谁生效）" Style="{StaticResource Label}"/>
                 <ComboBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding TargetSides, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding TargetSide}"/>
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"/>
-                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowRepeatCountInput, Converter={StaticResource BoolToVis}}"
+                           ToolTip="只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到这个数字；其它种类会自动收起这一栏（填了不生效）。"/>
+                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowRepeatCountInput, Converter={StaticResource BoolToVis}}"/>
 
                 <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"/>
                 <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"/>
@@ -113,36 +147,56 @@
                     </local:SearchComboBox.ItemTemplate>
                 </local:SearchComboBox>
 
-                <TextBlock Grid.Row="7" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"/>
-                <ComboBox Grid.Row="7" Grid.Column="1" Style="{StaticResource Pick}"
+                <TextBlock Grid.Row="11" Grid.Column="0" Text="临时增益什么时候撤" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding IsTempPower, Converter={StaticResource BoolToVis}}"
+                           ToolTip="只管「临时增益（本回合 +X）」这一种效果。"/>
+                <ComboBox Grid.Row="11" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding IsTempPower, Converter={StaticResource BoolToVis}}"
+                          ItemsSource="{Binding TempPowerReverseChoices}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                          SelectedValue="{Binding TempPowerReverse}"
+                          ToolTip="默认「本回合结束时撤掉」；选「下回合开始时才撤掉」= 撑过这一回合和敌人的回合（例：获得临时 5 点力量 → 下回合开始时失去 5 点力量）。"/>
+                <TextBlock Grid.Row="12" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <ComboBox Grid.Row="12" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding SpawnTargets, RelativeSource={RelativeSource AncestorType=Window}}"
                           DisplayMemberPath="Display" SelectedValuePath="Id"
                           SelectedValue="{Binding SpawnTo}"/>
 
-                <TextBlock Grid.Row="8" Grid.Column="0" Text="选牌方式（消耗 / 变化 / 丢弃用）" Style="{StaticResource Label}" MinWidth="96"/>
-                <ComboBox Grid.Row="8" Grid.Column="1" Style="{StaticResource Pick}"
+                <TextBlock Grid.Row="13" Grid.Column="0" Text="选牌方式（消耗 / 变化 / 丢弃用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <ComboBox Grid.Row="13" Grid.Column="1" Style="{StaticResource Pick}"
                           ItemsSource="{Binding CardPickModes, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding CardPick}"/>
 
                 <!-- 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种）。
                      「丢弃卡牌」只有手牌 / 抽牌堆（候选由 EffectSpec.SelectPileChoices 按效果种类给），
                      所以标题也绑到 SelectPileLabel 上（那一条的措辞是「从哪里丢弃」）。 -->
-                <TextBlock Grid.Row="10" Grid.Column="0" Style="{StaticResource Label}" MinWidth="96"
+                <TextBlock Grid.Row="14" Grid.Column="0" Style="{StaticResource Label}" MinWidth="96"
                            Text="{Binding SelectPileLabel}"
                            Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"/>
-                <ComboBox Grid.Row="10" Grid.Column="1" Style="{StaticResource Pick}"
+                <ComboBox Grid.Row="14" Grid.Column="1" Style="{StaticResource Pick}"
                           Visibility="{Binding UsesSelectPile, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding SelectPileChoices}"
                           DisplayMemberPath="Display" SelectedValuePath="Id"
                           SelectedValue="{Binding SelectPile}"
-                          ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）；「丢弃卡牌」只能选手牌 / 抽牌堆，走 CardCmd.Discard 丢进弃牌堆。"/>
+                          ToolTip="手牌 = 本体默认；抽牌堆 / 弃牌堆 / 消耗牌堆走本体的 FromCombatPile（「充能 / 净化」选抽牌堆，「全息影像 / 头槌 / 挖掘」选弃牌堆）；「牌顶」= 抽牌堆最上面那张（不用挑、也不随机）；「丢弃卡牌」只能选手牌 / 抽牌堆 / 牌顶，走 CardCmd.Discard 丢进弃牌堆。"/>
+
+                <!-- 「放到哪一摞」（放置卡牌专用，V0.2.116）：手牌 / 抽牌堆（底）/ 弃牌堆 / 消耗牌堆 / 牌顶
+                     数值 0 = 把这张牌自己放到这里；数值 ≥ 1 = 把从「从哪里选牌」挑出来的那几张放到这里。 -->
+                <TextBlock Grid.Row="16" Grid.Column="0" Text="放到哪一摞" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding UsesPlaceTo, Converter={StaticResource BoolToVis}}"/>
+                <ComboBox Grid.Row="16" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding UsesPlaceTo, Converter={StaticResource BoolToVis}}"
+                          ItemsSource="{Binding PlaceToChoices}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                          SelectedValue="{Binding PlaceTo}"
+                          ToolTip="数值 0 = 把**这张牌自己**放到这里；数值 ≥ 1 = 把从「从哪里选牌」挑出来的那几张放到这里。&#10;「牌顶」= 抽牌堆最上面（本体 CardPilePosition.Top），「抽牌堆」那一档是本体默认的牌堆底。"/>
 
                 <!-- 「召唤物」下拉：只在「召唤伙伴 / 伙伴攻击」这两种效果上出现（别的效果没有「哪一只」这回事）。
                      候选由 MainWindow.PetSummonsCard / PetSummonsPlain 给（只列**已启用**的召唤物），
                      SelectedValue 存的是 summon 的稳定标识（宠物类名），显示的是它的中文名。 -->
-                <TextBlock Grid.Row="11" Grid.Column="0" Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"
+                <TextBlock Grid.Row="15" Grid.Column="0" Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"
                            Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}"/>
-                <ComboBox Grid.Row="11" Grid.Column="1" Style="{StaticResource Pick}"
+                <ComboBox Grid.Row="15" Grid.Column="1" Style="{StaticResource Pick}"
                           Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding PetSummonsCard, RelativeSource={RelativeSource AncestorType=Window}}"
                           DisplayMemberPath="Display" SelectedValuePath="Id"
@@ -153,6 +207,19 @@
                      为什么不各占一格 Grid 行：条件显隐时行高会在 0 和实际高度之间跳，
                      和相邻的 auto 行很容易挤在一起（用户报过「是否临时关键词与其他选项重叠」）。 -->
                 <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
+                    <!-- 「取几张」：恰好 N / 最多 N（可以少选）/ 任意张（需求：「消耗任意张手牌」）。
+                         只对选牌类效果出现（消耗 / 丢弃 / 升级 / 从三摞拿牌）。 -->
+                    <Grid Visibility="{Binding UsesCountMode, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="取几张" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding CountModeChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                  SelectedValue="{Binding CountMode}"
+                                  ToolTip="恰好 N 张（默认）= 必须选满；最多 N 张 = 可以少选（本体「净化」那种，界面上会出现确认键）；任意张 = 想选几张都行（卡面不写数字）。"/>
+                    </Grid>
                     <!-- 「给予卡牌关键词」专用：紧跟「选牌方式」，因为数值 / 选牌方式 / 哪一摞牌都是给它的。
                          候选 = 本体那 7 个关键词 + 存档里的自定义关键词（KeywordChoices）。 -->
                     <Grid Visibility="{Binding IsGiveKeyword, Converter={StaticResource BoolToVis}}">
@@ -221,6 +288,13 @@
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding SpawnFilter}"
                                   ToolTip="「自己选」和「随机」两条路都按这里限：攻击 / 技能 / 能力按牌的类型筛；诅咒 / 状态按稀有度筛（你自己的诅咒 / 状态牌也算）；下面「自定义关键词：…」那些 = 把某个自定义关键词当成一套**卡的组**，只对带这个关键词的牌动手（和「生成 / 变化卡牌」的范围限定是同一份选项）。选「不限」= 和以前完全一样。范围里一张牌都没有时，这条效果什么都不做（不会弹空选牌界面）。"/>
                     </Grid>
+                    <!-- 「从范围里自己挑一张」（用户要求：范围组里的卡不能自己选、只能随机）：
+                         勾上之后候选 = 这一组范围里的全部卡（不随机抽），只对「按范围随机」这一档显示。 -->
+                    <CheckBox Margin="0,2,0,0" Style="{StaticResource Check}"
+                              Content="从范围里自己挑一张（候选 = 这一组里的全部卡，不再随机抽）"
+                              IsChecked="{Binding SpawnChosen}"
+                              Visibility="{Binding ShowSpawnChosen, Converter={StaticResource BoolToVis}}"
+                              ToolTip="不勾 = 按范围随机抽（「多选1」填了就是先随机抽几张候选再挑）；勾上 = 选牌界面直接列出这一组范围里的所有卡（最多 60 张），你想拿哪张拿哪张。"/>
                     <!-- 「多选1」（用户要求）：候选张数 > 1 时，先随机抽这么多张候选、玩家挑 1 张生成。
                          默认 1 = 直接生成（原来的行为）。只对「生成卡牌 + 按范围随机」出现。 -->
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
@@ -342,7 +416,10 @@
                                   ToolTip="对那些牌做什么：丢弃（CardCmd.Discard，进弃牌堆、洗牌后会回来，奇巧这类钩子照常触发）/ 消耗掉（CardCmd.Exhaust，本场战斗不再回来）/ 升级（CardCmd.Upgrade，战斗里的升级只影响本场战斗）。"/>
                     </Grid>
 
-                    <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 增益减益）" Style="{StaticResource Check}" IsChecked="{Binding NextTurn}"/>
+                    <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 额外资源量 / 增益减益）" Style="{StaticResource Check}"
+                              IsChecked="{Binding NextTurn}"
+                              Visibility="{Binding ShowNextTurn, Converter={StaticResource BoolToVis}}"
+                              ToolTip="只有这五种真的有延迟分支（格挡 / 抽牌 / 能量 / 额外资源量 / 施加扣除状态）：本体的下回合状态或工具生成的延迟状态。别的种类勾不上（这一行不显示）——「生成 / 变化 / 复制卡牌的 下回合生成」还在做。"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
@@ -449,6 +526,12 @@
                                  Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
                                  Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="填负数 = 判断反过来（例：生命值低于 -20 → 高于 20%；至少 -2 层 → 少于 2 层）。"/>
+                        <!-- 条件数值的公式（用户要求⑦：所有能填数值的地方都能写公式）：
+                             只长在**卡牌**这个模板上（公式求值要卡牌那条链的两个局部变量）。 -->
+                        <TextBox Width="160" Margin="4,0,0,0" Style="{StaticResource Field}"
+                                 Visibility="{Binding Condition.ShowAmountFormula, Converter={StaticResource BoolToVis}}"
+                                 Text="{Binding Condition.AmountFormula, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="数值 N 的公式（留空 = 用左边那个固定数字）。写法与「数值公式」一样：参数 M / N…、X / Y、内置只读量 Turn / HandCount / DiscardedThisTurn / PowersOnMe…。写了公式时「填负数 = 反向」不生效（要反向请把负号写进公式）。"/>
                         <!-- 生命区间：第二个数值（M%）。任一填负数 = 判断成「区间外」（用户要求） -->
                         <TextBlock Margin="8,0,0,0" VerticalAlignment="Center"
                                    Text="~ 数值 M（%）" Style="{StaticResource Label}"
@@ -457,7 +540,15 @@
                                  Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
                                  Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="生命区间的上界（%）。任意一个数值填负数 = 判断成「区间外」。"/>
+                        <TextBox Width="160" Margin="4,0,0,0" Style="{StaticResource Field}"
+                                 Visibility="{Binding Condition.ShowAmount2Formula, Converter={StaticResource BoolToVis}}"
+                                 Text="{Binding Condition.Amount2Formula, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="数值 M（区间上界）的公式（留空 = 用左边那个固定数字）。写法和数值 N 的公式一样。"/>
                     </WrapPanel>
+                    <TextBlock Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3" Margin="0,4,0,0" TextWrapping="Wrap"
+                               Foreground="#888" FontSize="11"
+                               Visibility="{Binding Condition.ShowAmountFormula, Converter={StaticResource BoolToVis}}"
+                               Text="{Binding Condition.ConditionFormulaHint}"/>
                     <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
                     <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
@@ -557,6 +648,63 @@
             </GroupBox>
         </DataTemplate>
 
+        <!-- 自定义状态（能力）的触发器用：和上面那块一样，只是候选表是「状态里能用的条件」
+             （PowerEffectConditions = ForPower；里面有「某状态层数刚好达到 N 层」这种只有
+              「某个状态层数变化后」那条钩子才成立的条目）。 -->
+        <DataTemplate x:Key="EffectConditionPower">
+            <GroupBox Header="条件选项（只对上面这一条效果生效）" Margin="0,8,0,0">
+                <Grid Margin="4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="200"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
+                    <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding PowerEffectConditions, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Kind}"/>
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
+                    <WrapPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center">
+                        <TextBox Width="70" Style="{StaticResource Field}"
+                                 Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
+                                 Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="「拥有某状态至少 N 层」填负数 = 少于 N 层。「刚好达到 N 层」不支持负数。"/>
+                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center"
+                                   Text="~ 数值 M（%）" Style="{StaticResource Label}"
+                                   Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"/>
+                        <TextBox Width="70" Margin="4,0,0,0" Style="{StaticResource Field}"
+                                 Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
+                                 Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"/>
+                    </WrapPanel>
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="状态" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
+                    <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
+                             Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
+                             ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                             SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
+                             SearchPath="Display">
+                        <local:SearchComboBox.ItemTemplate>
+                            <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                        </local:SearchComboBox.ItemTemplate>
+                    </local:SearchComboBox>
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                              Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
+                              ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding Condition.Target}"/>
+                    <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,4,0,0" TextWrapping="Wrap"
+                               Foreground="#888" FontSize="11"
+                               Text="不满足时只有这一条效果不生效。「某状态层数刚好达到 N 层」只能挂在触发时机「某个状态层数变化后」上（校验器会拦住别的时机）。"/>
+                </Grid>
+            </GroupBox>
+        </DataTemplate>
+
         <!-- 卡牌用：带「升级增量」+「升级后费用」+ X 费用卡牌的「= X」开关 -->
         <DataTemplate x:Key="EffectEditorCard">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
@@ -592,7 +740,54 @@
                               Content="命中次数 / 对群数 = X"
                               IsChecked="{Binding RepeatIsX}"
                               ToolTip="本体铁甲战士「旋风斩」、储君「天际钻头」那种：命中 X 次 / 随机打 X 个敌人。"/>
+                    <!-- 次数类公式（用户要求⑦：所有能填数值的地方都能写公式，次数类优先）。
+                         只做在卡牌上，所以这一块长在「卡牌专用」的模板里（遗物 / 药水 / 状态看不到）。 -->
+                    <GroupBox Header="次数公式（留空 = 用上面那个固定次数）" Margin="0,6,0,0">
+                        <StackPanel>
+                            <Grid Visibility="{Binding ShowTimesFormulaBox, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="生效次数" Style="{StaticResource Label}" MinWidth="96"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                         Text="{Binding TimesFormula, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="整条效果重复几遍。例：Turn（这一场第几回合）、HandCount（手牌张数）、DiscardedThisTurn*2。算出来会夹到 1~20。"/>
+                            </Grid>
+                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowRepeatFormulaBox, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="命中次数 / 对群数" Style="{StaticResource Label}" MinWidth="96"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                         Text="{Binding RepeatFormula, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="多段攻击的段数 / 随机挑几个敌人。算出来会夹到 1~20。"/>
+                            </Grid>
+                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowCopiesFormulaBox, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="复制的份数" Style="{StaticResource Label}" MinWidth="96"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                         Text="{Binding CopiesFormula, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="每张复制几份。算出来会夹到 1~20。"/>
+                            </Grid>
+                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowReplayFormulaBox, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="重放次数" Style="{StaticResource Label}" MinWidth="96"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                         Text="{Binding ReplayFormula, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="每张额外打出几次。算出来会夹到 1~20。"/>
+                            </Grid>
+                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowChanceFormulaBox, Converter={StaticResource BoolToVis}}">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="概率（%）" Style="{StaticResource Label}" MinWidth="96"/>
+                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                         Text="{Binding ChanceFormula, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="这条效果生效的百分比（0~100），现算。⚠ 写了公式的这条会**自己独立判一次**，不再和同组其它「概率生效」的效果共用一次掷骰。"/>
+                            </Grid>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,4,0,0"
+                                       Text="{Binding CountFormulaHint}"/>
+                        </StackPanel>
+                    </GroupBox>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <!-- 公式的「可用量」清单（只在卡牌这个模板里显示：公式目前只做在卡牌上）。
+                         模板本体在 MainWindow.xaml 的窗口资源里（App.xaml 里写 Click 会解析成 App 的方法）。 -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource FormulaBuiltinList}"
+                                    Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}"/>
                     <!-- 条件选项：每条效果各自一份（以前是整张牌一个条件，现在改成跟着效果走） -->
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionCard}"/>
                 </StackPanel>
@@ -604,6 +799,12 @@
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <!-- 「转化为先古卡」的配对表（只在遗物上、只在选了那个效果种类时出现）。
+                         模板本体放在 MainWindow.xaml 的窗口资源里（AncientPairingEditor）——
+                         App.xaml 里的模板里写 Click 会被解析成 App 的方法（CS1061），放窗口里才绑得到。 -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientPairingEditor}"/>
+                    <!-- 「转化为先古遗物」的两栏（只在遗物上、只在选了那个效果种类时出现） -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientRelicSwapEditor}"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
                     <!-- 「召唤物」下拉（遗物版）：候选和卡牌版一样，只是走独立模板方便自检区分 -->
                     <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
@@ -622,6 +823,22 @@
         <DataTemplate x:Key="EffectEditorPower">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
                 <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
+                        <!-- 【自定义状态专用】候选表是收窄过的 PowerKinds：状态触发器的钩子里没有手牌 /
+                             选牌界面这些卡牌上下文，所以只能放「不需要卡牌上下文」的种类。
+                             以前这里是全量候选，用户能选到状态里不支持的种类、选完才被校验器拦下来
+                             （用户实测报过：「追忆（增益）玩家回合开始时 → 从弃牌堆拿 1 张」被拦住）。 -->
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding PowerKinds, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
+                    </Grid>
+                    <TextBlock Margin="6,0,0,2" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Text="这里只列「状态里能用」的种类（状态钩子里没有手牌 / 选牌界面）。要选别的种类，请把它放到卡牌 / 遗物 / 药水上。"/>
                     <CheckBox Margin="6,0,0,0" Style="{StaticResource Check}"
                               Content="数值 = 本状态的层数"
                               IsChecked="{Binding AmountIsStack}"
@@ -637,7 +854,7 @@
                     <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
                                Text="注意：层数本身不会让效果多跑几遍 —— 想让层数决定强度就勾「数值 = 层数」，想让层数决定次数就勾「生效次数 = 层数」。"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPower}"/>
                 </StackPanel>
             </ScrollViewer>
         </DataTemplate>

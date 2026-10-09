@@ -223,10 +223,17 @@ public static class PetGen
     /// <summary>
     /// 这个配置有没有任何「伙伴攻击」效果（有就说明要用扩展方法 FromPetAttacker，
     /// 也就必须生成 <c>cs/PetAttackExtensions.cs</c> —— 否则生成的卡牌会引用一个不存在的扩展方法，CS1061）。
-    /// 只看卡牌（含诅咒 / 先古卡）：遗物上的「伙伴攻击」本来就生成不了（没有玩家选中的目标，生成时会被忽略）。
+    ///
+    /// 两个来源都要看：
+    ///   · 卡牌（含诅咒 / 先古卡）—— 遗物上的「伙伴攻击」本来就生成不了（没有玩家选中的目标，生成时会被忽略）；
+    ///   · **自定义状态触发器**里「牺牲伙伴 + 收益 = 造成伤害」（V0.2.69 新增）：那一条也走
+    ///     <c>.FromPetAttacker(...)</c>。以前这里只看卡牌 —— 漏掉状态那条路会让
+    ///     cs/PetAttackExtensions.cs 不生成，状态源码里引用扩展方法 → CS1061（整个模组编译不过）。
     /// </summary>
     public static bool UsesAttackExtension(CharacterProfile p) =>
-        IsActive(p) && p.AllCards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)));
+        IsActive(p) && (p.AllCards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)))
+            || p.CustomPowers.Any(cp => cp.Triggers.Any(t => t.Effects.Any(e =>
+                e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage"))));
 
     /// <summary>
     /// 哪些效果是「由宠物发起攻击」（都会生成 <c>.FromPetAttacker(...)</c>）。
@@ -263,7 +270,7 @@ public static class PetGen
             string entryLower = d.Entry.ToLowerInvariant();
             string dstPng = Path.Combine(projectRoot, ImageRelPath(d).Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(dstPng)!);
-            File.Copy(d.Spec.Image!, dstPng, overwrite: true);
+            FsSafe.Copy(d.Spec.Image!, dstPng, overwrite: true);
 
             // 和「静态立绘」同样的处理：图太高就等比缩到 ~220px，并让底边落在 y = 0（战斗中的地面线）。
             // 不做的话，一张上千像素的图会有一大半画到地面线以下（看起来就是「宠物不见了」）。

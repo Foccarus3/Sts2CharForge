@@ -80,8 +80,92 @@ public sealed record SpawnTargetOption(string Id, string Display);
 /// <summary>「生成 / 变化卡牌」的范围限定的一个选项（Id = 空 / Attack / Skill / Power / Curse / Status）。</summary>
 public sealed record SpawnFilterOption(string Id, string Display, string Zh);
 
+/// <summary>
+/// 「取几张」的一档（需求：「消耗任意张手牌」）。
+/// Id 空串 = 恰好 N 张（默认，老存档的行为）；UpTo = 最多 N 张；Any = 任意张。
+/// </summary>
+public sealed record CountModeOption(string Id, string Display);
+
+/// <summary>「取几张」的三档（选牌类效果用；见 <see cref="CountModeOption"/>）。</summary>
+public static class CountModes
+{
+    /// <summary>恰好 N 张（默认；空 Id 是为了让老存档的字段缺失也落回这一档）。</summary>
+    public const string Exact = "";
+
+    /// <summary>最多 N 张（可以少选；本体「净化 Purity」那种）。</summary>
+    public const string UpTo = "UpTo";
+
+    /// <summary>任意张（上限给一个很大的数，卡面不写数字）。</summary>
+    public const string Any = "Any";
+
+    /// <summary>本体那种「没写就是全选」用的超大上限（本体自己写的就是这个数）。</summary>
+    public const int AnyMax = 999999999;
+
+    public static IReadOnlyList<CountModeOption> All { get; } = new[]
+    {
+        new CountModeOption(Exact, "恰好 N 张（默认）"),
+        new CountModeOption(UpTo, "最多 N 张（可以少选，本体「净化」那种）"),
+        new CountModeOption(Any, "任意张（不写数字，想选几张都行）"),
+    };
+
+    public static string Zh(string? id) =>
+        All.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display ?? All[0].Display;
+}
+
 /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
 public sealed record SpawnPickOption(string Id, string Display);
+
+/// <summary>
+/// 「临时增益」什么时候把这次加的层数撤掉（<see cref="EffectSpec.TempPowerReverse"/>）。
+/// </summary>
+public static class TempPowerReverses
+{
+    /// <summary>这一回合结束时撤（默认；本体 FlexPotion 的 TemporaryStrengthPower 就是这套）。</summary>
+    public const string TurnEnd = "";
+
+    /// <summary>撑过这一回合和敌人的回合，**下回合开始时**才撤（用户要求：「获得临时 5 点力量 → 下回合失去 5 点力量」）。</summary>
+    public const string NextTurnStart = "NextTurn";
+
+    public static IReadOnlyList<CountModeOption> All { get; } = new[]
+    {
+        new CountModeOption(TurnEnd, "本回合结束时撤掉（默认：只这一回合有效）"),
+        new CountModeOption(NextTurnStart, "下回合开始时才撤掉（这一回合 + 敌人的回合都保留）"),
+    };
+
+    public static string Zh(string? id) =>
+        id == NextTurnStart ? "下回合开始时才撤掉" : "本回合结束时撤掉";
+}
+
+/// <summary>
+/// 「自定义状态覆盖血条」从哪一端开始盖（<see cref="Profile.CustomPowerSpec.HpBarSide"/>）。
+///
+/// 需求原文：「可以选择是从血条左边开始覆盖还是右边开始覆盖」。
+/// 两档都对应本体自己的画法，所以观感和本体一致：
+///   · 右边（默认）= 本体「中毒」那一截：从**当前血量的右端**往左盖，红条右端跟着往左退
+///     （读作「这些血是要掉的」）；
+///   · 左边 = 本体「灾厄」那一截的位置：从**血条最左端**往右盖，红条左端跟着往右退
+///     （读作「最左边这一段被标记了」）。
+/// 同一条状态只盖一边；同一边有几条就依次往里堆（互不重叠），中间剩下的是红条。
+/// </summary>
+public static class HpBarSides
+{
+    /// <summary>从右边开始（默认，和本体中毒一样）。</summary>
+    public const string Right = "";
+
+    /// <summary>从左边开始（和本体灾厄占的那一端一样）。</summary>
+    public const string Left = "Left";
+
+    public static IReadOnlyList<CountModeOption> All { get; } = new[]
+    {
+        new CountModeOption(Right, "从右边开始（像中毒：红条从右边让位）"),
+        new CountModeOption(Left, "从左边开始（红条从左边让位）"),
+    };
+
+    public static string Normalize(string? v) =>
+        string.Equals(v, Left, StringComparison.Ordinal) ? Left : Right;
+
+    public static string Zh(string? v) => Normalize(v) == Left ? "从左边开始" : "从右边开始";
+}
 
 /// <summary>
 /// 「目标药水」下拉里的一项（需求 ⑨）。
@@ -244,6 +328,19 @@ public static class EffectCatalog
     public static bool IsCustomPower(string? powerId) =>
         powerId is not null && CustomPowers.ContainsKey(powerId.Trim());
 
+    /// <summary>
+    /// 这个状态本体允不允许**负层数**（<c>AllowNegative =&gt; true</c>）。
+    ///
+    /// 为什么生成端要知道：本体「尖啸 PiercingWail」扣敌人力量走的是
+    /// <c>PowerCmd.Apply&lt;StrengthPower&gt;(目标, -6)</c> —— 因为 <c>StrengthPower.AllowNegative =&gt; true</c>，
+    /// 目标身上本来 0 层也能扣成 **-6 层**。别的状态（虚弱 / 易伤…）层数不能为负，
+    /// 只能从「目标身上已有的层数」里扣（<c>GetPower</c> + <c>ModifyAmount(-N)</c>）。
+    /// 本体的名单是扫源码得来的（<c>override bool AllowNegative =&gt; true</c>）：
+    /// 力量 / 敏捷 / 专注 / 尖啸 Shriek / 萎缩 Shrink —— 就这 5 个。
+    /// </summary>
+    public static bool AllowsNegativeLayers(string? powerId) => (powerId ?? "").Trim() is
+        "StrengthPower" or "DexterityPower" or "FocusPower" or "ShriekPower" or "ShrinkPower";
+
     /// <summary>自定义状态的显示名（不是自定义状态就返回 null）。</summary>
     public static string? CustomPowerName(string? powerId) =>
         powerId is not null && CustomPowers.TryGetValue(powerId.Trim(), out string? v) ? v : null;
@@ -305,52 +402,102 @@ public static class EffectCatalog
     public static bool TryLoadPowersFromGameDll(string? vanillaProjectDir, string? gameDataDir, out string detail)
     {
         detail = "";
-        if (!string.IsNullOrWhiteSpace(vanillaProjectDir) && Directory.Exists(Path.Combine(vanillaProjectDir, "src/Core/Models/Powers")))
-            return false;                                   // 解包工程可用时优先用它（有中文名）
+        // 解包工程**真的可用**时才优先用它（有中文名）。
+        // 注意：不能只判「目录存在」——用户反馈过：整合包里那个 sts2 工程的
+        // src\Core\Models\Powers\*.cs 是 268 个 **1 字节的空壳文件**（只留了文件名），
+        // 只判目录的话这里直接 return false，连 sts2.dll 都不读了 →
+        // 效果库整个为空 → 校验器拦死生成（连不含动画的角色都生成不出来）。
+        if (LooksLikeUsableVanillaSources(vanillaProjectDir, "src/Core/Models/Powers")) return false;
         try
         {
             string dll = string.IsNullOrWhiteSpace(gameDataDir) ? "" : Path.Combine(gameDataDir, "sts2.dll");
             if (dll.Length == 0 || !File.Exists(dll)) return false;
 
-            var asm = System.Reflection.Assembly.LoadFrom(dll);
-            Type? basePower = asm.GetType("MegaCrit.Sts2.Core.Models.PowerModel");
-            if (basePower is null) return false;
+            // **元数据读取**（不加载程序集）：Assembly.GetTypes() 在这种「依赖不全」的程序集上
+            // 会抛 ReflectionTypeLoadException，.NET 9 上甚至直接把栈打爆（StackOverflowException 抓不住）。
+            var types = Sts2Metadata.Powers(dll);
+            if (types.Count == 0) return false;
 
             // 中文名：从玩家自己游戏本体的 pck 里读（工具不内嵌游戏文本）
             var zh = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/powers.json");
             RememberZhPowerLoc(zh);
 
             var list = new List<PowerEntry>();
-            foreach (var type in asm.GetTypes())
+            foreach (var type in types)
             {
-                if (type.IsAbstract || !basePower.IsAssignableFrom(type)) continue;
                 string cls = type.Name;
-                if (cls.StartsWith("Mock", StringComparison.Ordinal)) continue;
-                string kind = "Buff";
-                try
-                {
-                    // PowerModel 的 Type 通常是常量返回，未初始化实例也能读
-                    object inst = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(type);
-                    object? v = type.GetProperty("Type")?.GetValue(inst);
-                    if (v is not null && v.ToString() == "Debuff") kind = "Debuff";
-                }
-                catch { /* 读不到就当增益 */ }
+                string kind = GuessPowerKind(cls);
                 string slug = Slugify(cls);
                 string name = ZhName(zh, slug, cls);
                 list.Add(new PowerEntry(cls, slug, kind, "Counter", name, cls));
             }
             if (list.Count == 0) return false;
             Powers = list.OrderBy(p => p.Type, StringComparer.Ordinal).ThenBy(p => p.Zh, StringComparer.Ordinal).ToList();
-            detail = $"从游戏 sts2.dll 反射读取（{Powers.Count} 项）" + (zh is not null
+            detail = $"从游戏 sts2.dll 读取（元数据，{Powers.Count} 项）" + (zh is not null
                 ? "，中文名取自游戏本体的 localization/zhs/powers.json"
                 : "，只有英文类名（" + (string.IsNullOrEmpty(GamePckReader.LastError) ? "没读到游戏 pck" : "读 pck 失败原因：" + GamePckReader.LastError) + "；可在「路径」指定解包工程目录后点「重新扫描效果库」）");
             return true;
         }
         catch (Exception ex)
         {
-            detail = "（从 sts2.dll 反射失败：" + ex.Message + "）";
+            detail = "（从 sts2.dll 读取失败：" + ex.Message + "）";
             return false;
         }
+    }
+
+    /// <summary>
+    /// 猜一个状态是增益还是减益（元数据读不到「PowerModel.Type 返回什么」这个**运行时**结果）。
+    ///
+    /// 依据两处：① 工具内置的效果库里那条同名声明的分类（244 条本体常用状态，覆盖绝大多数）；
+    /// ② 名字后缀的常识性兜底（Weak / Vulnerable / Frail / Poison / Doom… 都是减益）。
+    /// 猜错了只影响下拉里显示成「＋」还是「－」和分类排序，不影响生成的代码（那个按类名走）。
+    /// </summary>
+    private static string GuessPowerKind(string cls)
+    {
+        var known = Powers.FirstOrDefault(p => string.Equals(p.Id, cls, StringComparison.Ordinal));
+        if (known is not null) return known.Type;
+        foreach (string debuff in DebuffNameHints)
+            if (cls.Contains(debuff, StringComparison.OrdinalIgnoreCase)) return "Debuff";
+        return "Buff";
+    }
+
+    /// <summary>名字里带这些词的按减益算（只是猜分类，见 <see cref="GuessPowerKind"/>）。</summary>
+    private static readonly string[] DebuffNameHints =
+    {
+        "Weak", "Vulnerable", "Frail", "Poison", "Doom", "Constrict", "Slow", "Shrink",
+        "Confus", "NoDraw", "NoBlock", "NoHeal", "Burn", "Decay", "Doubt", "Shame", "BadLuck",
+        "Entangle", "Hex", "Mark", "Strangle", "Wound", "Bleed", "Curse", "Chill", "Debuff",
+    };
+
+    /// <summary>
+    /// 这个解包工程目录里的源码**是不是空壳**（只有文件名、没有内容）。
+    ///
+    /// 为什么需要：用户反馈过 —— 整合包里那个 sts2 工程，`src\Core\Models\Powers\*.cs` 是
+    /// **268 个 1 字节的文件**（min = max = 1 字节），`Cards` 那边也有 1192 个。
+    /// 只看「目录在不在」会把这种目录当成可用工程，于是放弃读 `sts2.dll`，
+    /// 接着正则解析空文件全部落空 → 效果库为空 → 校验器把生成整个拦死。
+    ///
+    /// 判据：抽样最多 40 个 `*.cs`，**全都不超过 2 字节**才算空壳（有一个有内容就不算）。
+    /// 任何异常（没权限 / 目录不存在）都返回 true = 「当它不可用」，这样会老老实实去读 dll。
+    /// </summary>
+    public static bool LooksLikeUsableVanillaSources(string? vanillaProjectDir, string relativeDir)
+    {
+        if (string.IsNullOrWhiteSpace(vanillaProjectDir)) return false;
+        try
+        {
+            string dir = Path.Combine(vanillaProjectDir, relativeDir.Replace('/', Path.DirectorySeparatorChar));
+            if (!Directory.Exists(dir)) return false;
+            string[] files = Directory.GetFiles(dir, "*.cs");
+            if (files.Length == 0) return false;              // 一个源文件都没有：不算可用
+            int n = 0;
+            foreach (string f in files)
+            {
+                if (n++ >= 40) break;
+                if (new FileInfo(f).Length > 2) return true;  // 有真内容 → 可用
+            }
+            return false;                                     // 抽到的全是空壳 → 不可用
+        }
+        catch { return false; }
     }
 
     /// <summary>从本地化表里取 &lt;SLUG&gt;.title，取不到就用兜底值。</summary>
@@ -420,7 +567,7 @@ public static class EffectCatalog
         catch { LoadPotionsFromGameDll(gameDataDir); }
     }
 
-    /// <summary>没有解包工程时的兜底：从游戏 sts2.dll 反射 PotionModel 子类（中文名从游戏 pck 里读）。</summary>
+    /// <summary>没有解包工程时的兜底：从游戏 sts2.dll 读 PotionModel 子类（元数据，不加载程序集；中文名从游戏 pck 里读）。</summary>
     private static void LoadPotionsFromGameDll(string? gameDataDir)
     {
         if (Potions.Count > 0 || string.IsNullOrWhiteSpace(gameDataDir)) return;
@@ -429,16 +576,11 @@ public static class EffectCatalog
             string dll = Path.Combine(gameDataDir, "sts2.dll");
             if (!File.Exists(dll)) return;
             var zh = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/potions.json");
-            var asm = System.Reflection.Assembly.LoadFrom(dll);
-            Type? basePotion = asm.GetType("MegaCrit.Sts2.Core.Models.PotionModel");
-            if (basePotion is null) return;
 
             var list = new List<PotionEntry>();
-            foreach (var type in asm.GetTypes())
+            foreach (var type in Sts2Metadata.Potions(dll))
             {
-                if (type.IsAbstract || !basePotion.IsAssignableFrom(type)) continue;
                 string cls = type.Name;
-                if (cls.StartsWith("Mock", StringComparison.Ordinal)) continue;
                 list.Add(new PotionEntry(cls, ZhName(zh, Slugify(cls), cls)));
             }
             if (list.Count > 0)
@@ -466,12 +608,15 @@ public static class EffectCatalog
                 list.Add(new PowerEntry(cls, slug, "Card", "Counter", zhName, cls));
             }
             Cards = list.OrderBy(c => c.Id, StringComparer.Ordinal).ToList();
+            // 空壳工程（用户反馈过：整合包里 src\Core\Models\Cards 是 1192 个 1 字节文件）
+            // 会让上面一个都匹配不到 → 退回从 sts2.dll 反射，别让「目标卡」下拉整个空着。
+            if (Cards.Count == 0) LoadCardsFromGameDll(gameDataDir);
         }
         catch { LoadCardsFromGameDll(gameDataDir); }
     }
 
     /// <summary>
-    /// 卡牌目录兜底：换台机器没有解包工程时，从游戏 sts2.dll 反射 CardModel 子类，
+    /// 卡牌目录兜底：换台机器没有解包工程时，从游戏 sts2.dll 读 CardModel 子类（**元数据**，不加载程序集），
     /// 中文名从游戏本体 pck 的 localization/zhs/cards.json 读（工具不内嵌游戏文本）。
     /// 这样「生成卡牌 / 变化卡牌」的目标卡下拉照样有中文名可选。
     /// </summary>
@@ -483,16 +628,11 @@ public static class EffectCatalog
             string dll = Path.Combine(gameDataDir, "sts2.dll");
             if (!File.Exists(dll)) return;
             var zh = GamePckReader.ReadLocalization(gameDataDir, "localization/zhs/cards.json");
-            var asm = System.Reflection.Assembly.LoadFrom(dll);
-            Type? baseCard = asm.GetType("MegaCrit.Sts2.Core.Models.CardModel");
-            if (baseCard is null) return;
 
             var list = new List<PowerEntry>();
-            foreach (var type in asm.GetTypes())
+            foreach (var type in Sts2Metadata.Cards(dll))
             {
-                if (type.IsAbstract || !baseCard.IsAssignableFrom(type)) continue;
                 string cls = type.Name;
-                if (cls.StartsWith("Mock", StringComparison.Ordinal)) continue;
                 string slug = Slugify(cls);
                 string name = ZhName(zh, slug, cls);
                 list.Add(new PowerEntry(cls, slug, "Card", "Counter", name, cls));
@@ -537,6 +677,16 @@ public static class EffectCatalog
         if (TryLoadFromVanillaProject(vanillaProjectDir, out string detail))
         {
             CatalogStatus = $"已从本机解包工程读取（{Powers.Count} 项）" + detail;
+            return;
+        }
+
+        // 第二道保险：解包工程读了个空（目录在、文件却是空壳 / 正则一条都没匹配上）时，
+        // **再试一次读 sts2.dll**（上面那次因为「目录看着可用」直接 return 了）。
+        // 宁可只有英文类名，也别让效果库整个为空 —— 空的效果库会把生成整个拦死，
+        // 用户连一个不含动画的角色都生成不出来（用户实测报过）。
+        if (Powers.Count == 0 && TryLoadPowersFromGameDll(null, gameDataDir, out string retryDetail))
+        {
+            CatalogStatus = retryDetail + "（解包工程目录在，但里面是空壳源码，已改从 sts2.dll 读）";
             return;
         }
 
@@ -724,7 +874,42 @@ public static class EffectCatalog
     // 它在 AfterCardDrawn 里把那张牌的 EnergyCost 用 SetThisCombat 减 1（X 费 / 不能打出的牌不动），
     // 每回合掉 1 层、掉光就消失（层数 = 还能持续几个回合）。
     // 负数 = 反向扣掉层数（复用 ApplyPowerLine，和「禁止获得格挡」同一套）。
-    new EffectKindOption("CheapenDraw", "抽到就减费（N 回合内每次抽到的牌费用 -1；负数 = 扣层数）", "回合", -5, 5, false, false),
+    // 注意这条的语义（用户问过「怎么是别的牌减费」）：它给**自己**挂一个持续 N 回合的状态，
+    // 这期间**每抽到一张牌，那张牌**本场战斗费用 -1 —— 不是「这张牌自己」减费。
+    // 想要「抽到这张牌时、这张牌自己费用 -1」请用另一条：CheapenSelfOnDraw（卡自己的 AfterCardDrawn）。
+    new EffectKindOption("CheapenDraw", "抽到就减费：挂 N 回合状态，这期间每抽到一张牌、那张牌费用 -1（负数 = 扣层数）", "回合", -5, 5, false, false),
+    // 减少**这张牌自己**本回合所需的费用（用户要求：参考本体「子弹时间」那种「本回合费用变 0」）。
+    // 实现 = 本体 CardModel.SetToFreeThisTurn()：EnergyCost.SetThisTurnOrUntilPlayed(0) + SetStarCostThisTurn(0)，
+    // 也就是「本回合内费用变 0、打出后恢复」，能量费与额外资源量费一起管。
+    // 数值这一栏没有意义（固定就是「变 0」），所以范围锁 0~0，界面上的数值框填什么都一样。
+    new EffectKindOption("CheapenSelf", "本回合这张牌自己费用变 0", "费", 0, 0, false, false),
+    // 将此牌放回手牌（用户要求）：**纯开关型**效果 ——
+    //   数值 0 = 这一条不生效（卡面不写、代码也不生成，见 CSharpCodeGen.IsInertZero 对这个种类的特判）；
+    //   数值 1 = 打出这张牌之后，把它从弃牌堆拿回手牌。
+    // 本体没有这个效果，但写法是现成的：本体「回响 MakeItSo / 回力镖 Bolas」就是覆写卡自己的钩子
+    //   然后 `await CardPileCmd.Add(this, PileType.Hand);`。
+    // **不能在 OnPlay 里搬**：OnPlay 跑完本体才把打出的牌放进弃牌堆，那一步会把我们搬的结果覆盖掉 ——
+    // 所以生成的是 AfterCardPlayedLate 钩子（本体 MakeItSo 用的就是它，那时牌已经在弃牌堆里了）。
+    new EffectKindOption("ReturnSelfToHand", "将此牌放回手牌（值为 1 时生效）", "—", 0, 1, false, false),
+    // 抽到这张牌时它自己本场战斗的费用 -N（用户要求：「我想做抽到这张牌后，本场战斗内这张牌的费用-1，
+    // 怎么做，现在的有回合数限制」—— 现有的「抽到就减费」是给自己挂一个 N 回合的状态、对所有抽到的牌生效）。
+    // 本体现成的做法就是**卡自己覆写 AfterCardDrawn**：本体卡「王者一击 KinglyKick」原文
+    //   `if (card != this) return Task.CompletedTask; base.EnergyCost.AddThisCombat(-1); return Task.CompletedTask;`
+    // —— 所以这里照抄它（AddThisCombat 自己会夹住，不会变成负数费用），数值 = 每次抽到减多少（可叠加）。
+    new EffectKindOption("CheapenSelfOnDraw", "抽到这张牌时它本场战斗的费用 -N（可叠加；0 = 不生效）", "点", 0, 9, false, false),
+    // 增加额外资源量上限值（用户要求）：上限 = 额外资源量页填的「数量上限」+ 这个效果的数值。
+    // 作用对象固定是自己（上限是玩家自己的资源上限，写给别人没有意义）。
+    new EffectKindOption("RaiseResourceCap", "增加额外资源量上限值（上限 = 页面上填的上限 + 这个数值）", "点", -99, 999, false, false),
+    // 转化为先古卡（用户要求）：照本体「古老牙齿 ArchaicTooth」的语义 —— 在**牌组**里按组找牌，
+    // 原地换成先古卡（批量 CardCmd.Transform），升级 / 附魔继承。
+    // 「一组卡变成不同的先古卡」靠效果自己的**配对表**（EffectSpec.AncientRows）：
+    // 每行左边选一个「组」，右边勾几张先古卡，行内按勾选顺序不重复地各发一张；池子用完就不换。
+    // 数值这一栏没用（换几张由配对表和池子大小决定），所以范围锁 0~0。
+    new EffectKindOption("AncientTranscend", "转化为先古卡（按「组」把牌组里的牌换成先古卡，各不相同）", "张", 0, 0, false, false),
+    // 转化为先古遗物（用户要求：「先古遗物的替换遗物」）：照本体「欧洛巴斯之触 TouchOfOrobas」——
+    // 拾起时把身上的**一个遗物**原地换成另一个（RelicCmd.Replace，位置不变）。
+    // 源遗物按「范围限定」筛（不限 / 只换初始遗物 / 按遗物类名），换成的那个写在「目标遗物」栏。
+    new EffectKindOption("AncientRelicSwap", "转化为先古遗物（把身上的一个遗物换成另一个，位置不变）", "个", 0, 0, false, false),
     // 禁止生命回复（用户要求的新效果）：给目标挂上本模组自己生成的状态，N 回合内该目标**回复量为 0**。
     // 本体没有任何「治疗量修改」的钩子（全库只有营地的 ModifyRestSiteHealAmount），
     // 所以配一条 Harmony 前缀把 CreatureCmd.Heal 的 ref amount 改成 0（**不跳过**原方法 ——
@@ -738,7 +923,9 @@ public static class EffectCatalog
         // 临时增益：本回合内 +X 层，回合结束时把这次加的 X 层撤掉（本体 FlexPotion 的
         // TemporaryStrengthPower 就是这套 —— 生成的 <角色>ForgeTemp<状态> 也是照它写的）。
         // 数值 = 层数（不按回合计时），作用对象沿用「施加增益/减益」那一套（自己 / 指定敌人 / 全体敌人）。
-        new EffectKindOption("TempPower", "临时增益（本回合 +X，回合结束消失）", "层", 0, 99, false, true),
+        // 数值可以填负数 = 让目标先**失去** N 层、到点还原（用户要的「让敌人失去 5 点临时力量」）。
+        // 所以范围是 -99 ~ 99，不是 0 ~ 99。
+        new EffectKindOption("TempPower", "临时增益 / 临时减益（本回合 ±X，到点还原）", "层", -99, 99, false, true),
         new EffectKindOption("EndTurn",   "结束回合",       "—", 0, 0, false, false),
         new EffectKindOption("ExtraTurn", "额外获得一回合", "—", 0, 0, false, false),
         new EffectKindOption("GenerateCard",  "生成卡牌", "张", 0, 10, false, false),
@@ -752,7 +939,10 @@ public static class EffectCatalog
         // 走本体的 CardCmd.Discard（内部 CardPileCmd.Add(card, 弃牌堆) + 派发 AfterCardDiscarded 钩子），
         // 所以「奇巧」这类跟弃牌有关的东西照常触发。可丢的牌堆只有手牌 / 抽牌堆：
         // 弃牌堆里的牌本来就在那儿，丢它没有意义（界面上那一行也只给这两项）。
-        new EffectKindOption("DiscardCard",   "丢弃卡牌", "张", 0, 9,  false, false),
+        // 丢弃卡牌：数值 = 丢几张（1~9），「选牌方式」= 自己选 / 随机，「从哪里丢弃」= 手牌 / 抽牌堆。
+        // **数值 0 = 这张牌自己**（用户要求：以前 0 只是「不生效」，但你想要「丢弃自己」这一档）——
+        // 那一档生成的是 `await CardCmd.Discard(choiceContext, this);`（没有张数、也不挑牌）。
+        new EffectKindOption("DiscardCard",   "丢弃卡牌（数值 0 = 丢弃这张牌自己）", "张", 0, 9,  false, false),
         new EffectKindOption("TransformCard", "变化卡牌", "张", 0, 9,  false, false),
         // 升级卡牌：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级（本体「武装 Armaments」的升级部分 + 自选牌堆）。
         // 生成的是 CardCmd.Upgrade（本体自己也是这么升级卡牌的：Apotheosis / Armaments / Whetstone）。
@@ -794,6 +984,13 @@ public static class EffectCatalog
         // 消耗牌堆和另外两摞一样是**战斗牌堆**（PileType.IsCombatPile() 认 Exhaust），
         // 所以走同一个本体 API：CardSelectCmd.FromCombatPile(PileType.Exhaust.GetPile(...)) + CardPileCmd.Add(…, Hand)。
         new EffectKindOption("TakeFromExhaust", "从消耗牌堆拿牌到手牌（自己选）", "张", 0, 5, false, false),
+        // 放置卡牌（用户要求的新效果）：
+        //   · 数值 0 = 把**这张牌自己**放到下面「放到哪一摞」选的那一摞
+        //     （本体「放回手牌 / 置顶」那类写法：`await CardPileCmd.Add(this, PileType.X, position)`）；
+        //   · 数值 ≥ 1 = 从「从哪里选牌」那一摞（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 / 牌顶）挑 N 张，
+        //     再放到「放到哪一摞」（含牌顶 = 抽牌堆最上面）。
+        // 走的是本体同一个 API：CardPileCmd.Add(card, PileType.X, CardPilePosition.Top/Bottom)。
+        new EffectKindOption("PlaceCard", "放置卡牌（数值 0 = 这张牌自己）", "张", 0, 9, false, false),
         // ===== 单体/群体「成吨」的两种特殊牌（用户点名的本体效果）=====
         // 毒性爆发（本体 Outbreak，静默猎手稀有技能）：给**所有敌人**上 N 层中毒，然后立刻把中毒触发一次。
         // 走的是本体 PowerCmd.Apply<PoisonPower> + PoisonPower.Trigger()（那一下伤害 dealer 是 null，
@@ -931,6 +1128,10 @@ public static class EffectCatalog
         new PileChoiceOption("Draw", "抽牌堆（本体「充能 / 净化」那种）"),
         new PileChoiceOption("Discard", "弃牌堆（本体「全息影像 / 头槌 / 挖掘」那种）"),
         new PileChoiceOption("Exhaust", "消耗牌堆（本场战斗已经被消耗掉的牌）"),
+        // 用户要求：「选牌 / 取牌方式」里加一个「牌顶」——抽牌堆**最上面那张**，直接拿走，
+        // 不问玩家也不随机（取 N 张就从上往下依次拿）。本体抽牌堆的 Cards 是「顶在前」，
+        // 和「预见 Scry」看的「抽牌堆顶」是同一个口径。
+        new PileChoiceOption("Top", "牌顶（抽牌堆最上面那张，不用挑、也不随机）"),
     };
 
     public static string SelectPileZh(string? v) => v switch
@@ -938,6 +1139,30 @@ public static class EffectCatalog
         "Draw" => "抽牌堆",
         "Discard" => "弃牌堆",
         "Exhaust" => "消耗牌堆",
+        "Top" => "牌顶",
+        _ => "手牌",
+    };
+
+    /// <summary>
+    /// 「放置卡牌」放到哪一摞（用户要求：抽牌堆 / 弃牌堆 / 手牌 / 消耗牌堆 / 牌顶）。
+    /// 「牌顶」= 抽牌堆**最上面**那张的位置（本体 <c>CardPilePosition.Top</c>），
+    /// 「抽牌堆」那一档就是本体的默认位置（牌堆**底**）。
+    /// </summary>
+    public static IReadOnlyList<PileChoiceOption> PlacePiles { get; } = new[]
+    {
+        new PileChoiceOption("Hand", "手牌"),
+        new PileChoiceOption("Draw", "抽牌堆（牌堆底）"),
+        new PileChoiceOption("Discard", "弃牌堆"),
+        new PileChoiceOption("Exhaust", "消耗牌堆"),
+        new PileChoiceOption("Top", "牌顶（抽牌堆最上面）"),
+    };
+
+    public static string PlacePileZh(string? v) => v switch
+    {
+        "Draw" => "抽牌堆",
+        "Discard" => "弃牌堆",
+        "Exhaust" => "消耗牌堆",
+        "Top" => "牌顶",
         _ => "手牌",
     };
 
@@ -991,6 +1216,45 @@ public static class EffectCatalog
     public static bool IsKeywordFilter(string? v) =>
         v is not null && v.StartsWith(KeywordFilterPrefix, StringComparison.Ordinal);
 
+    // ==================== 「组」（「自定义参数 / 组」页）也当成一套可复用的卡组 ====================
+    // 和上面「自定义关键词当组用」完全同构，只是分组依据换成 CardSpec.GroupIds。
+    // 需求原文：「在卡牌属性名称右侧可以勾选进入组，当选择范围时可以选择组」——
+    // 所以范围限定 / 范围界定 / 刮削条件那三处下拉里，每个组都会多出一条「组：XXX」。
+    /// <summary>范围限定里「组」那一类选项的 Id 前缀。</summary>
+    public const string GroupFilterPrefix = "Group:";
+
+    /// <summary>这个范围限定的值是不是「按组分组」。</summary>
+    public static bool IsCardGroupFilter(string? v) =>
+        v is not null && v.StartsWith(GroupFilterPrefix, StringComparison.Ordinal);
+
+    /// <summary>「Group:XXX」里的组内部标识（不是组过滤就返回 null）。</summary>
+    public static string? CardGroupFilterId(string? v) =>
+        IsCardGroupFilter(v) ? v![GroupFilterPrefix.Length..].Trim() : null;
+
+    /// <summary>组名（配置里查不到就用内部标识本身，绝不返回空）。</summary>
+    public static string CardGroupFilterName(CharacterProfile? p, string? v)
+    {
+        string? id = CardGroupFilterId(v);
+        if (string.IsNullOrWhiteSpace(id)) return "组";
+        var g = p?.CardGroups?.FirstOrDefault(x => x is not null && string.Equals(x.Id, id, StringComparison.Ordinal));
+        if (g is null || string.IsNullOrWhiteSpace(g.Name)) return id;
+        return g.Name.Trim();
+    }
+
+    /// <summary>「按组分组」时这一组里到底有哪些牌（和 <see cref="KeywordGroupCards"/> 同构）。</summary>
+    public static List<CardSpec> CardGroupCards(CharacterProfile? p, string? filterId)
+    {
+        var list = new List<CardSpec>();
+        string? id = CardGroupFilterId(filterId);
+        if (p is null || string.IsNullOrWhiteSpace(id)) return list;
+        foreach (var c in p.AllCards)
+        {
+            if (c is null || c.IsVanillaCard) continue;
+            if (c.GroupIdList.Contains(id, StringComparer.Ordinal)) list.Add(c);
+        }
+        return list;
+    }
+
     /// <summary>「Keyword:XXX」里的关键词标识（不是关键词过滤就返回 null）。</summary>
     public static string? KeywordFilterKey(string? v) =>
         IsKeywordFilter(v) ? v![KeywordFilterPrefix.Length..].Trim() : null;
@@ -1017,19 +1281,84 @@ public static class EffectCatalog
             list.Add(new SpawnFilterOption(KeywordFilterPrefix + key,
                 $"自定义关键词：{name}（带这个关键词的那一组牌）", name));
         }
+        // 每个「组」也各一条（需求：当选择范围时可以选择组）
+        if (p.CardGroups is not null)
+        {
+            foreach (var g in p.CardGroups)
+            {
+                if (g is null || string.IsNullOrWhiteSpace(g.Id)) continue;
+                string name = string.IsNullOrWhiteSpace(g.Name) ? g.Id : g.Name.Trim();
+                list.Add(new SpawnFilterOption(GroupFilterPrefix + g.Id, $"组：{name}", name));
+            }
+        }
         return list;
+    }
+
+    /// <summary>
+    /// 「转化为先古卡」的**源组**候选：只要「组」那一套（自定义关键词 + 自定义组），
+    /// 不要内置的「攻击 / 技能 / 能力 / 诅咒 / 状态」（需求原话：「来源只用组就行」）。
+    ///
+    /// 和 <see cref="SpawnFiltersFor"/> 共用同一份登记表，所以「自定义参数 / 组」页里改了组名 /
+    /// 加了关键词，这里跟着变，不用再维护第二份选项。
+    /// </summary>
+    public static IReadOnlyList<SpawnFilterOption> GroupOnlyFiltersFor(CharacterProfile? p) =>
+        SpawnFiltersFor(p)
+            .Where(f => IsCardGroupFilter(f.Id) || IsKeywordFilter(f.Id))
+            .ToList();
+
+    // ==================== 「转化为先古遗物」的源遗物筛选 ====================
+    // 遗物没有「组」这种概念（组是卡的分类），所以这一档用**遗物自己的分类**：
+    //   · 不限（身上任何一个遗物，从前往后取第一个）
+    //   · 只要是初始遗物（= 本体欧洛巴斯之触的判据：p.Relics.FirstOrDefault(r => r.Rarity == Starter)）
+    //   · 指定某一类本体遗物（按类名精确匹配）
+    /// <summary>「转化为先古遗物」里「只要初始遗物」这一档的 Id。</summary>
+    public const string RelicFilterStarter = "Starter";
+
+    /// <summary>「转化为先古遗物」里「指定某一类本体遗物」那一档的 Id 前缀。</summary>
+    public const string RelicFilterPrefix = "Relic:";
+
+    /// <summary>这个筛选值是不是「指定某一类遗物」。</summary>
+    public static bool IsSpecificRelicFilter(string? v) =>
+        v is not null && v.StartsWith(RelicFilterPrefix, StringComparison.Ordinal);
+
+    /// <summary>「Relic:XXX」里的遗物类名（不是就返回 null）。</summary>
+    public static string? RelicFilterClass(string? v) =>
+        IsSpecificRelicFilter(v) ? v![RelicFilterPrefix.Length..].Trim() : null;
+
+    /// <summary>源遗物那一档的全部候选（不限 + 初始遗物 + 本体每一只遗物）。</summary>
+    public static IReadOnlyList<SpawnFilterOption> RelicSwapFilters()
+    {
+        var list = new List<SpawnFilterOption>
+        {
+            new("", "不限（身上第一个遗物）", "不限"),
+            new(RelicFilterStarter, "只换初始遗物（本体欧洛巴斯之触的判据）", "初始遗物"),
+        };
+        foreach (var (id, name) in AncientCatalog.VanillaRelics)
+            list.Add(new SpawnFilterOption(RelicFilterPrefix + id, $"只换「{name}」（{id}）", name));
+        return list;
+    }
+
+    /// <summary>源遗物那一档的中文说明（生成前提示 / 卡面描述用）。</summary>
+    public static string RelicSwapFilterZh(string? v)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return "不限";
+        if (string.Equals(v, RelicFilterStarter, StringComparison.Ordinal)) return "初始遗物";
+        string? cls = RelicFilterClass(v);
+        if (cls is not null) return AncientCatalog.VanillaRelicName(cls) ?? cls;
+        return v.Trim();
     }
 
     public static string SpawnFilterZh(string? v)
     {
         if (IsKeywordFilter(v)) return KeywordFilterName(v);
+        if (IsCardGroupFilter(v)) return CardGroupFilterName(null, v);
         foreach (var f in SpawnFilters)
             if (string.Equals(f.Id, v ?? "", StringComparison.Ordinal)) return f.Zh;
         return "不限";
     }
 
     /// <summary>
-    /// 范围限定的中文名（**手上有配置时用这个**）：自定义关键词优先按 profile 里的名字查，
+    /// 范围限定的中文名（**手上有配置时用这个**）：自定义关键词 / 组优先按 profile 里的名字查，
     /// 查不到才退回登记表 —— 生成 / 卡面描述那几条路都是拿着 profile 的，
     /// 不能依赖「界面刚才刷新过登记表」这个前提（不然描述里会写成英文标识）。
     /// </summary>
@@ -1042,6 +1371,7 @@ public static class EffectCatalog
                 if (string.Equals(k, key ?? "", StringComparison.OrdinalIgnoreCase))
                     return string.IsNullOrWhiteSpace(spec.Name) ? k : spec.Name.Trim();
         }
+        if (IsCardGroupFilter(v)) return CardGroupFilterName(p, v);
         return SpawnFilterZh(v);
     }
 
@@ -1125,8 +1455,9 @@ public static class EffectCatalog
         string id = (v ?? "").Trim();
         if (id.Length == 0) return true;                                  // 空 = 不限（手改 JSON 的兜底）
         if (id is ScrapeCondNonZeroCost or ScrapeCondAny) return true;
-        // 自定义关键词那一组：关键词是不是真的存在于配置里由「空组」那条检查负责，这里只认前缀
+        // 自定义关键词 / 组那一组：这两样是不是真的存在于配置里由「空组」那条检查负责，这里只认前缀
         if (IsKeywordFilter(id)) return true;
+        if (IsCardGroupFilter(id)) return true;
         return id is "Attack" or "Skill" or "Power" or "Curse" or "Status";
     }
 
@@ -1224,6 +1555,15 @@ public static class EffectCatalog
         new ConditionOption("ExtraResourceAtLeast", "拥有额外资源量至少 N 点", true, true, true, false,
             "额外资源量就是「角色」页里那个自定义资源（界面上那个计数器）。只有你自己才有，所以不用选指向对象。"
             + "填负数 = 反向（拥有的额外资源量**少于** N 点）。", true, false, false, "拥有的额外资源量少于 N 点", true),
+        // 「层数刚好达到 N 层」（用户要求：拥有某状态至少 N 层 / 达到 N 层）：
+        // 「至少 N 层」是一条**随时可查**的条件（上面 HasPowerAtLeast）；这一条是**这一刻刚好跨过 N**——
+        // 只有「某个状态层数变化后」那条触发时机上才有意义（那条钩子同时知道「变成多少」和「这次变了多少」），
+        // 所以它只给自定义状态用，而且校验器会拦住别的触发时机。
+        new ConditionOption("PowerJustReached", "某状态层数刚好达到 N 层（这次变化跨过了 N）", false, false, true, true,
+            "只在触发时机「某个状态层数变化后」上有意义：判断「这次变化之前还不到 N 层、变化之后到了 N 层或更多」"
+            + "（本体 AfterPowerAmountChanged 给的 power.Amount 是新的、amount 是这一次的增量）。"
+            + "想判「只要现在有 N 层就生效」请用上面的「拥有某状态至少 N 层」。",
+            ForPower: true),
         new ConditionOption("NoHurtThisTurn", "本回合还没受到过未格挡伤害", true, true, false, false,
             "本体「Spite」的做法：查本回合是否吃到过没被格挡的伤害。", true),
         // 斩杀（用户要求）：本体先古卡 / 稀有卡里那句「[gold]斩杀[/gold]时，…」。
@@ -1280,6 +1620,9 @@ public static class EffectCatalog
         new CardTimingOption("Discarded", "被丢弃"),
         new CardTimingOption("Transformed", "被变化"),
         new CardTimingOption("GivenKeyword", "被给予自定义关键词"),
+        // 用户要求：再加一个「失去生命时」（这张牌在你手上时你掉血 → 触发）。
+        // 挂的钩子是 AbstractModel.AfterCurrentHpChanged(creature, delta)，delta < 0 就是掉了血。
+        new CardTimingOption("HpLost", "失去生命时"),
     };
 
     /// <summary>存档里 Timing 字段的默认值（= 下拉第一项「被消耗」，也是老存档缺这一项时的退路）。</summary>
@@ -1399,13 +1742,19 @@ public static class EffectCatalog
     ///   ⑤ 「卡牌时机」的子时机（<paramref name="timing"/>）—— 这一类的文案整句由子时机决定。
     /// </summary>
     public static string ConditionZh(string kind, decimal amount, decimal amount2, string? powerId,
-        string targetZh, string? resourceName = null, string? timing = null)
+        string targetZh, string? resourceName = null, string? timing = null,
+        string? amountFormula = null, string? amount2Formula = null)
     {
         var opt = FindCondition(kind);
         if (opt is null || string.Equals(opt.Id, "None", StringComparison.Ordinal)) return "";
         // 卡牌时机：整句都按子时机写（「当这张牌被消耗时」），没有数值 / 状态 / 指向对象要替换
         if (opt.NeedsTiming) return CardTimingPhrase(timing);
-        bool inverted = amount < 0 || (opt.NeedsAmount2 && amount2 < 0);
+        // 「条件数值写了公式」（用户要求⑦）：文案里就把公式印出来（和「数值公式」同一套观感），
+        // 不然界面上写着「手牌数不少于 3 张」，实际判的却是 Turn。
+        string f1 = Generation.ForgeFormula.DisplayText(amountFormula);
+        string f2 = Generation.ForgeFormula.DisplayText(amount2Formula);
+        bool hasF1 = f1.Length > 0, hasF2 = f2.Length > 0;
+        bool inverted = !hasF1 && (amount < 0 || (opt.NeedsAmount2 && amount2 < 0));
         string text = inverted && opt.InvertedDisplay is not null ? opt.InvertedDisplay : opt.Display;
         string Abs(decimal v) => Math.Abs(v).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
         if (opt.NeedsAmount2)
@@ -1413,12 +1762,12 @@ public static class EffectCatalog
             // 生命区间：两个数值都按绝对值写（谁填了负数只是表示「区间外」，数值本身还是那个正数），顺序写反了自动排好
             decimal lo = Math.Abs(amount), hi = Math.Abs(amount2);
             if (lo > hi) (lo, hi) = (hi, lo);
-            text = text.Replace("N", lo.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))
-                       .Replace("M", hi.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+            text = text.Replace("N", hasF1 ? f1 : lo.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))
+                       .Replace("M", hasF2 ? f2 : hi.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
         }
         else if (opt.NeedsAmount)
         {
-            text = text.Replace("N", Abs(amount));
+            text = text.Replace("N", hasF1 ? f1 : Abs(amount));
         }
         if (opt.NeedsPower) text = text.Replace("某状态", PowerName(powerId, "某状态"));
         if (opt.NeedsTarget && !string.IsNullOrWhiteSpace(targetZh) && targetZh != "自己")
@@ -1429,18 +1778,56 @@ public static class EffectCatalog
         return text;
     }
 
-    public static IReadOnlyList<string> CardTypes { get; } = new[] { "Attack", "Skill", "Power" };
+    /// <summary>
+    /// 卡牌类型（本体 CardType 枚举里能用的那些）。
+    /// 「状态」是照本体「粘液 Slimed」加的那一档：<c>base(1, CardType.Status, CardRarity.Status, TargetType.None)</c>。
+    /// </summary>
+    public static IReadOnlyList<string> CardTypes { get; } = new[] { "Attack", "Skill", "Power", "Status", "Curse", "Quest" };
     /// <summary>
     /// 卡牌稀有度。除了本体那三档奖励稀有度（含 Basic），还有：
     ///   · Curse —— 诅咒（「诅咒 / 先古卡」页里的第一个列表；费用固定 -1、不能被打出、效果走 OnTurnEndInHand）
     ///   · Ancient —— 先古卡（同一个页面的第二个列表；不进战斗奖励，由先古遗物 / 你自己的效果给）
-    /// 本体的 <c>CardFactory</c> 只会在 Common / Uncommon / Rare 里抽奖励，所以把这两种放进卡池也不会
-    /// 让它们跑进普通奖励（诅咒连稀有度都抽不到，先古卡是被显式排除的）。
+    ///   · Status —— 状态牌（照本体「粘液 Slimed」加的那一档：类型 Status、稀有度 Status、不能升级）
+    /// 本体的 <c>CardFactory</c> 只会在 Common / Uncommon / Rare 里抽奖励，所以把这几种放进卡池也不会
+    /// 让它们跑进普通奖励（诅咒 / 状态连稀有度都抽不到，先古卡是被显式排除的）。
     /// </summary>
-    public static IReadOnlyList<string> CardRarities { get; } = new[] { "Basic", "Common", "Uncommon", "Rare", "Ancient", "Curse" };
-    public static IReadOnlyList<string> RelicRarities { get; } = new[] { "Starter", "Common", "Uncommon", "Rare", "Shop" };
+    public static IReadOnlyList<string> CardRarities { get; } = new[] { "Basic", "Common", "Uncommon", "Rare", "Ancient", "Status", "Curse" };
+    /// <summary>
+    /// 这个效果种类**真的**支持「下回合生效」吗（单一判据：界面显隐 + 校验器都读它）。
+    ///
+    /// 为什么不直接用 <see cref="EffectKindOption.SupportsNextTurn"/>：那一栏以前给 8 个种类也写了 true
+    ///（透支能量 / 翻倍状态层数 / 暴露 / 清除指定状态 / 清除全部减益 / 禁止获得格挡 / 禁止回复生命 / 伙伴攻击），
+    /// 但**生成端根本没有对应的延迟分支** —— 勾了等于没勾（静默失效，用户报过「勾了没反应」）。
+    /// 对着 `CSharpCodeGen` 里所有 `e.NextTurn` 分支核对过（卡牌 / 遗物 / 药水 / 自定义状态四条链），
+    /// 真正实现的只有下面这五种：
+    ///   格挡 → 本体 `BlockNextTurnPower`；抽牌 → 本体 `DrawCardsNextTurnPower`；
+    ///   能量 → 本体 `EnergyNextTurnPower`（负数走工具生成的欠费状态）；额外资源量 → 本体 `StarNextTurnPower`；
+    ///   施加 / 扣除状态 → 工具生成的 `&lt;角色&gt;ForgeDelayed&lt;状态&gt;` 延迟状态。
+    /// 生成 / 变化 / 复制卡牌那几种想要「下回合生成」需要再做一个延迟状态（在队列里，还没做）。
+    /// </summary>
+    public static bool HonorsNextTurn(string? kind) =>
+        kind is "Block" or "Draw" or "Energy" or "ExtraResource" or "ApplyPower"
+        // 生成类（V0.2.88 起，V0.2.90 补齐变化 / 复制）：延迟状态里调用同一套发射器
+        //（`EmitGenerateCard` / `EmitCopyCard` / `EmitTransformCard` / `EmitGlobalCardEffect`）。
+        or "GenerateCard" or "CopyCard" or "TransformCard"
+        or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal";
+
+    // 遗物稀有度。Ancient = 本体「先古遗物」那一档（`RelicRarity.Ancient`）：本体的先古遗物
+    //（ArchaicTooth / Astrolabe / BlackStar…）全是这一档，而且**不是**从普通奖励 / 商店里抽出来的，
+    // 是先古之民给的 —— 所以选它时界面会提示「想让它在奖励池里出现请换 Common/Uncommon/Rare/Shop」。
+    public static IReadOnlyList<string> RelicRarities { get; } = new[] { "Starter", "Common", "Uncommon", "Rare", "Shop", "Ancient" };
     public static IReadOnlyList<string> PotionRarities { get; } = new[] { "Common", "Uncommon", "Rare" };
-    public static IReadOnlyList<string> TargetSides { get; } = new[] { "Self", "Enemy", "AllEnemies", "RandomEnemies" };
+    /// <summary>
+    /// 效果的「作用对象」候选。
+    ///
+    /// 「指定队友 / 全部队友」（用户要求）用的是本体现成的目标档：
+    /// <c>TargetType.AnyAlly</c>（任意队友、**不含自己**）+ <c>AllAllies</c>（全部队友），
+    /// 本体卡「BelieveInYou」是前者、「BladeSymphony」是后者。
+    /// ⚠ 本体注释写得很清楚：**多人时才会弹目标选择，单人你看不到这一档**；
+    /// 而且 `CardModel.cs:1742` —— 场上活着的玩家单位 ≤ 1 时 `AnyAlly` 的牌**直接打不出去**。
+    /// </summary>
+    public static IReadOnlyList<string> TargetSides { get; } =
+        new[] { "Self", "Enemy", "Ally", "AllEnemies", "AllAllies", "RandomEnemies" };
     public static IReadOnlyList<string> PotionUsages { get; } = new[] { "CombatOnly", "AnyTime" };
     public static IReadOnlyList<string> PotionTargets { get; } = new[] { "Self", "AnyEnemy", "AllEnemies" };
 
@@ -1452,16 +1839,64 @@ public static class EffectCatalog
         // （本体的 BlockingPlayerChoiceContext 注释里点名的第一个场景就是 "Relic AfterObtained callbacks"）。
         new TriggerOption("Obtained",       "获得时",       "AfterObtained()"),
         new TriggerOption("CombatStart",    "战斗开始时",   "BeforeSideTurnStart(choiceContext, side, participants, combatState)"),
-        new TriggerOption("PlayerTurnStart","每回合开始时", "AfterPlayerTurnStart(choiceContext, player)"),
-        new TriggerOption("PlayerTurnEnd",  "每回合结束时", "AfterSideTurnEnd(choiceContext, side, participants)"),
-        new TriggerOption("CombatVictory",  "战斗胜利时",   "AfterCombatVictory(room)"),
+        new TriggerOption("PlayerTurnStart","玩家回合开始时", "AfterPlayerTurnStart(choiceContext, player)"),
+        new TriggerOption("PlayerTurnEnd",  "玩家回合结束时", "AfterSideTurnEnd(choiceContext, side, participants)"),
+        new TriggerOption("CombatVictory",  "战斗胜利后",   "AfterCombatVictory(room)"),
+        // 战斗结束时（用户要求）：本体 AfterCombatEnd —— 它跑在**房间结算之前**
+        //（CombatManager.EndCombatInternal 里的顺序是：Hook.AfterCombatEnd → room.OnCombatEnded()
+        //  → Hook.AfterCombatVictory → 发奖励 / 存档），所以「必须在结算前做完」的事挂这一条。
+        // ⚠ 和「战斗胜利时」一样**只在打赢那条路上触发**：打输走的是 ProcessPendingLoss
+        //（本体在那里只发 CombatEnded 事件、不调任何模型钩子），所以失败时这两条都不会跑。
+        new TriggerOption("CombatEnd",      "战斗结束时（房间结算之前）", "AfterCombatEnd(room)"),
         // 受到伤害时 = 本体 AfterDamageReceived：**每一下伤害都触发一次**（14 个本体遗物用的是它）。
         // 本体的敌人攻击很多是「1 点 × N 下」的连击，所以一次「5 点伤害」的攻击会触发 5 次。
-        new TriggerOption("DamageReceived", "受到伤害时（每一下）",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
+        new TriggerOption("DamageReceived", "自己受到伤害后（每一下）", "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
         // 受到攻击后 = 本体 AfterAttack：AbstractModel 的注释写明了 multi-attack 时它在**所有命中结束后只跑一次**，
         // 而且它同样带 choiceContext（AttackContext / AttackCommand 都把它传下去了）。
-        new TriggerOption("Attacked",       "受到攻击后（连击只算一次）", "AfterAttack(choiceContext, command)"),
+        new TriggerOption("Attacked",       "自己受到攻击后（连击只算一次）", "AfterAttack(choiceContext, command)"),
         new TriggerOption("GoldGained",     "获得金币时",   "AfterGoldGained(player)"),
+        // ===== 用户要求新增的五条（都对着本体 AbstractModel 的钩子签名核过）=====
+        // 造成伤害时（每一下）= 本体 AfterDamageGiven：**每一下命中都触发**（本体的多段攻击 = 多次）。
+        // 和「受到伤害时（每一下）」是同一对钩子（`DamageReceived`）；想「一次攻击只算一次」用 AfterAttack
+        //（本体「手里剑 / 苦无 / 折扇」那三只攻击遗物用的就是它）。
+        new TriggerOption("DamageDealt",    "自己造成伤害后", "AfterDamageGiven(choiceContext, dealer, result, props, target, cardSource)"),
+        // 每消耗一个能量 = 本体 AfterEnergySpent(CardModel card, int amount)：
+        // 钩子**没有 choiceContext**（生成端按本体 Hook.cs 的做法自己造一个 HookPlayerChoiceContext，
+        // 见 CSharpCodeGen.BootstrapInCombat）；amount 是「这一张牌一共花的」能量 → 按点数各触发一次。
+        new TriggerOption("EnergySpent",    "花掉能量后",   "AfterEnergySpent(card, amount)"),
+        // 每消耗一个额外资源量 = 本体 AfterStarsSpent(int amount, Player spender)：同样没有 choiceContext、
+        // 同样按点数各触发一次（和本体储君那几条「花资源量」的状态一致）。
+        new TriggerOption("StarsSpent",     "花掉额外资源量后", "AfterStarsSpent(amount, spender)"),
+        // 生成卡牌时 = 本体 AfterCardGeneratedForCombat(CardModel card, Player? creator)：
+        // **玩家自己生成**的牌才算（敌人塞给你的状态牌不算 —— 本体注释就是这么写的），每生成一张触发一次。
+        new TriggerOption("CardGenerated",  "生成卡牌时",       "AfterCardGeneratedForCombat(card, creator)"),
+        // 某个状态层数到达 N 层时（用户要求）：本体 AfterPowerAmountChanged
+        // `(choiceContext, power, amount, applier, cardSource)` —— 任何单位的状态层数一变就会调，
+        // 所以生成端要自己判「是自己身上的」「是盯的那个状态」「这一次跨过了 N 层」三件事
+        //（见 CSharpCodeGen.RelicSource 里那条分支）。这两个参数（盯哪个状态 / 到达多少层）
+        // 存在 RelicSpec.TriggerPowerId / TriggerAmount 上，界面只在选了这个时机时显示。
+        new TriggerOption("PowerReached",   "某个状态层数到达 N 层时", "AfterPowerAmountChanged(choiceContext, power, amount, applier, cardSource)"),
+        // ===== 用户要求「遗物 / 状态 / 卡牌的触发时机合并成同一套」：把状态那边已经有、遗物缺的那些补齐 =====
+        // （同一个概念两边用同一个显示名和同一个 id；生成端各自按「遗物 / 状态」的归属判据写守卫。
+        //   带 choiceContext 的照旧直接用，没带的由生成端自己造一个 —— 见 CSharpCodeGen.BootstrapInCombat。）
+        new TriggerOption("CardPlayed",     "打出一张牌后",     "AfterCardPlayed(choiceContext, cardPlay)"),
+        new TriggerOption("CardExhausted",  "消耗一张牌后",     "AfterCardExhausted(choiceContext, card, causedByEthereal)"),
+        new TriggerOption("CardDrawn",      "抽一张牌后",       "AfterCardDrawn(choiceContext, card, fromHandDraw)"),
+        new TriggerOption("CardDiscarded",  "弃掉一张牌后",     "AfterCardDiscarded(choiceContext, card)"),
+        new TriggerOption("HpLost",         "自己失去生命时（每一下）", "AfterCurrentHpChanged(creature, delta)"),
+        new TriggerOption("BlockGained",    "自己获得格挡后",   "AfterBlockGained(creature, amount, props, cardSource)"),
+        new TriggerOption("EnemyDeath",     "一个敌人死亡后",   "AfterDeath(choiceContext, creature, wasRemovalPrevented, deathAnimLength)"),
+        new TriggerOption("EnemyTurnStart", "敌人回合开始时",   "AfterSideTurnStart(side, participants, combatState)"),
+        new TriggerOption("EnemyTurnEnd",   "敌人回合结束时",   "BeforeSideTurnEnd(choiceContext, side, participants)"),
+        new TriggerOption("EnemyDamaged",   "敌人受到伤害后",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),
+        new TriggerOption("EnemyDealtDamage","敌人造成伤害后",  "AfterDamageGiven(choiceContext, dealer, result, props, target, cardSource)"),
+        new TriggerOption("EnemyBlockGained","敌人获得格挡后",  "AfterBlockGained(creature, amount, props, cardSource)"),
+        new TriggerOption("PowerChanged",   "某个状态层数变化后", "AfterPowerAmountChanged(choiceContext, power, amount, applier, cardSource)"),
+        // 「移除某状态时」（用户要求）：本体**没有**任何「状态被移除」的全局钩子 ——
+        // `PowerModel.AfterRemoved(Creature oldOwner)` 是**那个状态自己**的实例钩子，遗物 / 别的状态都收不到，
+        // 而且「被效果直接清除」（`PowerCmd.Remove`）根本不走层数变化那条路。
+        // 所以这条由工具自己打补丁：`PowerModel.RemoveInternal()` 是本体所有移除的唯一出口（见 PowerRemovalSource）。
+        new TriggerOption("PowerRemoved",   "某个状态被移除时", "工具补丁：PowerModel.RemoveInternal（本体没有全局的「状态被移除」钩子）"),
         // 抽牌堆打乱洗牌时（用户要求：本体先古遗物「大～抱抱 BiiigHug」就是这条 ——
         // `public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)`
         // 里判 `shuffler == base.Owner`）。本体只在**战斗中途洗牌**时触发：

@@ -397,7 +397,7 @@ public static class NameStabilizer
             string? dir = Path.GetDirectoryName(path);
             if (!string.IsNullOrWhiteSpace(dir)) Directory.CreateDirectory(dir);   // 输出目录可能还没建（第一次构建）
             // 中文不转义（\uXXXX）：这份表是给「下次构建修引用」用的，出了问题用户也可能要打开看一眼
-            File.WriteAllText(path, JsonSerializer.Serialize(map, new JsonSerializerOptions
+            FsSafe.WriteAllText(path, JsonSerializer.Serialize(map, new JsonSerializerOptions
             {
                 WriteIndented = true,
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,

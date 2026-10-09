@@ -49,7 +49,9 @@ public static class Lit
         foreach (char c in text)
             if (char.IsLetterOrDigit(c) && c < 128) sb.Append(c);
         string s = sb.ToString();
-        if (s.Length == 0) s = fallback;
+        // ⚠ 空的时候要**直接返回 fallback**：以前写成 `s = fallback` 之后再取 `s[0]`，
+        // 调用方传 fallback: ""（例：延迟状态类名里「没有目标卡」那种）时会 IndexOutOfRange 崩掉。
+        if (s.Length == 0) return fallback;
         if (char.IsDigit(s[0])) s = "C" + s;
         return s;
     }
