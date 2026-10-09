@@ -34,6 +34,14 @@ public static class ModGenerator
         // **必须在校验之前**：用户报的那些「引用的召唤物 / 卡牌找不到」是**错误级**的校验项，
         // 先修好引用，校验才不会把这些已经能自动修好的问题当成拦路虎。
         var n = Naming.From(profile);
+        // 遗物的「自动类名跟着序号走」（用户要求，第 11 批 ②）：先把「没填类名」的和
+        // 「写着本工具以前自动生成的那个名字」的遗物，按它**现在的位置**重新编号；
+        // 用户手填的类名一个字符都不动（判据见 Naming.RenumberRelicClassNames / IsAutoRelicClassName）。
+        // ⚠ 必须排在 NameStabilizer 的 Freeze 之前 —— 那一步会把「留空的类名」永久写实，
+        // 先写实了就轮不到「按新序号重编」了。这一步是幂等的：编号正好对上的不会被动。
+        int relicRenumbered = n.RenumberRelicClassNames(profile.Relics);
+        if (relicRenumbered > 0)
+            Log($"  遗物英文类名已按当前顺序重新编号（自动名 / 没填类名的 {relicRenumbered} 只；手填的没动）");
         if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
             profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
         string root = ProjectRootOf(profile);

@@ -434,6 +434,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public IReadOnlyList<string> RelicRarities => EffectCatalog.RelicRarities;
 
+	/// <summary>
+	/// 遗物稀有度下拉的界面选项（用户要求第 3 条：英文改中文 —— 初始 / 常见 / 罕见 / 稀有 / 先古 / 商店）。
+	/// 显示中文、存的值还是 <see cref="EffectCatalog.RelicRarities"/> 里那串英文 id
+	/// （生成端写的是本体的 RelicRarity 枚举，校验器也按英文判）。
+	/// </summary>
+	public IReadOnlyList<RarityOption> RelicRarityOptions => EffectCatalog.RelicRarityOptions;
+
 	public IReadOnlyList<string> PotionRarities => EffectCatalog.PotionRarities;
 
 	public IReadOnlyList<string> PotionUsages => EffectCatalog.PotionUsages;
@@ -2595,6 +2602,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ReloadCatalog();
 		RefreshAll();
 		RefreshProfiles();
+		// 遗物列表的「序号」（用户要求第 2 条）：载入存档后先算一遍，
+		// 并挂上 CollectionChanged —— 之后任何增删（撤回删除 / 导入 / 自检造数据）都会自动重排
+		HookRelicListOrder();
 		CardList.SelectionChanged += delegate
 		{
 			SyncDetail();
@@ -5546,7 +5556,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		get
 		{
 			var n = Naming.From(Profile);
-			return $"{n.ExtraResourceRelicClass}　｜　RelicRarity.Starter　｜　自动生成，不在下面的遗物列表里";
+			return $"{n.ExtraResourceRelicClass}　｜　稀有度「{EffectCatalog.RelicRarityZh("Starter")}」（RelicRarity.Starter）　｜　自动生成，不在遗物页那张列表里";
 		}
 	}
 
@@ -5766,6 +5776,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Rarity = "Common",
 			Trigger = "CombatStart"
 		});
+		RefreshRelicOrdinals();
 		SyncDetail();
 		RelicList.SelectedIndex = _profile.Relics.Count - 1;
 	}
@@ -5786,6 +5797,188 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				RelicList.SelectedItem = picked[0];
 			});
 			SetStatus($"已删除 {value} 个遗物（可点「撤回删除」恢复）");
+		}
+	}
+
+	// ==================== 遗物列表：序号 + 拖动换位置（用户要求第 2 条）====================
+
+	/// <summary>
+	/// 给每只遗物重新发一遍「我在列表里排第几」（1 起算）。
+	///
+	/// 为什么要有它：序号 = **当前位置**，不是跟着物品走的标记（用户原话「序号不会跟随遗物移动」）
+	/// —— 所以每次增删 / 拖动 / 载入存档之后都要重算一遍，绑在界面上的 <c>OrdinalText</c> 才会跟着变。
+	/// 这里顺带把 <c>Profile.Relics</c> 的 <c>CollectionChanged</c> 也挂上（见 <see cref="HookRelicListOrder"/>），
+	/// 由它来兜住「代码里直接 Add / Remove」的那些路径（撤回删除、导入存档、自检造数据）。
+	/// </summary>
+	internal void RefreshRelicOrdinals()
+	{
+		if (_profile?.Relics is null) return;
+		for (int i = 0; i < _profile.Relics.Count; i++)
+		{
+			RelicSpec? r = _profile.Relics[i];
+			if (r is not null) r.Ordinal = i + 1;
+		}
+	}
+
+	/// <summary>只挂一次：遗物列表增删 → 重排序号（避免每条增删路径都要记得调一次）。</summary>
+	private void HookRelicListOrder()
+	{
+		if (_relicOrderHooked || _profile?.Relics is null) return;
+		_relicOrderHooked = true;
+		_profile.Relics.CollectionChanged += delegate { RefreshRelicOrdinals(); };
+		RefreshRelicOrdinals();
+	}
+
+	private bool _relicOrderHooked;
+
+	// 拖动换位置：MouseDown 记起点 → MouseMove 超过系统阈值才开始拖 → DragOver 画插入线 → Drop 真插进去
+	private Point _relicDragStart;
+	private RelicSpec? _relicDragItem;
+
+	/// <summary>
+	/// 拖动换位置（用户要求：拖谁到哪就插到哪，<c>RelicList</c> 里的顺序真的变）。
+	/// 只在按住某一行的文字往下 / 往上拖超过系统拖动阈值时才起拖 ——
+	/// 不然「点一下选中一行」会被当成拖动（列表就点不动了）。
+	/// </summary>
+	private void OnRelicListPreviewMouseDown(object sender, MouseButtonEventArgs e)
+	{
+		_relicDragStart = e.GetPosition(RelicList);
+		_relicDragItem = RelicAtPoint(e.GetPosition(RelicList));
+	}
+
+	/// <summary>鼠标位置下面是哪只遗物（用可视树往上找 ListBoxItem，比按坐标算索引可靠）。</summary>
+	private RelicSpec? RelicAtPoint(Point p)
+	{
+		DependencyObject? hit = RelicList.InputHitTest(p) as DependencyObject;
+		while (hit is not null && hit is not ListBoxItem)
+			hit = VisualTreeHelper.GetParent(hit);
+		return (hit as ListBoxItem)?.DataContext as RelicSpec;
+	}
+
+	private void OnRelicListPreviewMouseMove(object sender, MouseEventArgs e)
+	{
+		if (e.LeftButton != MouseButtonState.Pressed || _relicDragItem is null) return;
+		Point now = e.GetPosition(RelicList);
+		if (Math.Abs(now.X - _relicDragStart.X) < SystemParameters.MinimumHorizontalDragDistance
+			&& Math.Abs(now.Y - _relicDragStart.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+		RelicSpec dragged = _relicDragItem;
+		_relicDragItem = null;
+		try
+		{
+			DragDrop.DoDragDrop(RelicList, new DataObject(typeof(RelicSpec), dragged), DragDropEffects.Move);
+		}
+		catch (Exception ex)
+		{
+			// 拖放起不来不该把界面搞崩（极端情况：鼠标已经松开 / 另一个拖放正在进行）
+			SetStatus("拖动遗物失败：" + ex.Message);
+		}
+	}
+
+	private void OnRelicListDragOver(object sender, DragEventArgs e)
+	{
+		e.Effects = e.Data.GetDataPresent(typeof(RelicSpec)) ? DragDropEffects.Move : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	/// <summary>松手：把被拖的那只**移到**鼠标下面那一行的位置（插到它前面；拖到空白处 = 移到末尾）。</summary>
+	private void OnRelicListDrop(object sender, DragEventArgs e)
+	{
+		if (!e.Data.GetDataPresent(typeof(RelicSpec))) return;
+		if (e.Data.GetData(typeof(RelicSpec)) is not RelicSpec dragged) return;
+		RelicSpec? over = RelicAtPoint(e.GetPosition(RelicList));
+		if (!MoveRelicTo(dragged, over))
+		{
+			SetStatus($"「{dragged.Name}」已经在这个位置了。");
+			return;
+		}
+		SetStatus($"已把遗物「{dragged.Name}」拖到第 {Profile.Relics.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+	}
+
+	/// <summary>
+	/// 拖动落点的那一步（**纯逻辑**，和鼠标 / 拖放事件无关 —— 自检直接调它）。
+	/// <paramref name="over"/> = 鼠标松手时下面那一行（null = 列表空白处 → 移到末尾）。
+	/// 语义：**插到那一行的位置**（拖谁到哪就插到哪）。返回 false = 位置没变（不用刷界面）。
+	/// </summary>
+	internal bool MoveRelicTo(RelicSpec dragged, RelicSpec? over)
+	{
+		int from = _profile.Relics.IndexOf(dragged);
+		if (from < 0) return false;
+		int to = over is null ? _profile.Relics.Count - 1 : _profile.Relics.IndexOf(over);
+		if (to < 0) to = _profile.Relics.Count - 1;
+		if (to == from) return false;
+		_profile.Relics.Move(from, to);          // 顺序真的变 → 序号 / 自动类名都跟着它走
+		RefreshRelicOrdinals();
+		RelicList.SelectedItem = dragged;
+		SyncDetail();
+		return true;
+	}
+
+	/// <summary>自检用：效果列表里最高的那一行有多宽（V0.2.124 那个 bug 里它是 8260、视口只有 414）。</summary>
+	internal double RelicEffectListActualMaxItemWidth()
+	{
+		double max = 0;
+		for (int i = 0; i < RelicEffectList.Items.Count; i++)
+		{
+			if (RelicEffectList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+				max = Math.Max(max, fe.ActualWidth);
+		}
+		return max;
+	}
+
+	/// <summary>
+	/// 自检用：这棵子树里有没有「跑出 <paramref name="panel"/> 之外」的可见控件。
+	/// 只比**不包含任何子元素**的那些（叶子 / 无孩子容器）—— 父容器天然包着孩子，拿它们比会全是误报。
+	/// 容差 <paramref name="tol"/> 像素用来吃掉边框 / 内边距。
+	/// </summary>
+	internal static List<FrameworkElement> VisibleElementsOutside(DependencyObject panel, double tol)
+	{
+		var result = new List<FrameworkElement>();
+		if (panel is not FrameworkElement root || !root.IsVisible) return result;
+		Rect bounds = new Rect(0, 0, root.ActualWidth, root.ActualHeight);
+		var all = new List<FrameworkElement>();
+		CollectFrameworkElements(panel, all);
+		foreach (FrameworkElement fe in all)
+		{
+			if (!fe.IsVisible || fe.ActualWidth <= 0 || fe.ActualHeight <= 0) continue;
+			if (VisualTreeHelper.GetChildrenCount(fe) > 0) continue;   // 只看叶子，父容器天然重叠
+			Point p;
+			try { p = fe.TransformToAncestor(root).Transform(new Point(0, 0)); } catch { continue; }
+			Rect r = new Rect(p.X, p.Y, fe.ActualWidth, fe.ActualHeight);
+			// 自检用：这棵子树里有没有「明显跑出 <paramref name="panel"/> 右侧」的可见控件。
+			// 只比**不包含任何子元素**的那些（叶子 / 无孩子容器）—— 父容器天然包着孩子，拿它们比会全是误报。
+			// 判据用**相对容差**（默认 25%）：排版里「一段不换行的文字比格子宽几十像素」是正常现象，
+			// 而 V0.2.124 那个 bug 是宽出 7800 多像素（19 倍），一定抓得住。
+			if (r.Right - bounds.Right > Math.Max(tol, bounds.Width * 0.25)) result.Add(fe);
+		}
+		return result;
+	}
+
+	/// <summary>自检用：可见、但实际尺寸小到没法用的控件（把「看得见」和「真的能用」分开验）。</summary>
+	internal static List<FrameworkElement> VisibleZeroSizedControls(DependencyObject panel, double minPixels)
+	{
+		var result = new List<FrameworkElement>();
+		var all = new List<FrameworkElement>();
+		CollectFrameworkElements(panel, all);
+		foreach (FrameworkElement fe in all)
+		{
+			if (!fe.IsVisible) continue;
+			// 只挑「本该有尺寸」的那些：输入控件 / 列表 / 按钮
+			if (fe is not (Control or ListBoxItem)) continue;
+			if (fe.ActualWidth >= minPixels && fe.ActualHeight >= minPixels) continue;
+			if (fe.ActualWidth <= 0.01 && fe.ActualHeight <= 0.01) result.Add(fe);
+		}
+		return result;
+	}
+
+	/// <summary>自检用：把一棵子树里所有 FrameworkElement 收进来。</summary>
+	private static void CollectFrameworkElements(DependencyObject root, List<FrameworkElement> into)
+	{
+		int n = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < n; i++)
+		{
+			DependencyObject child = VisualTreeHelper.GetChild(root, i);
+			if (child is FrameworkElement fe) into.Add(fe);
+			CollectFrameworkElements(child, into);
 		}
 	}
 
@@ -7142,16 +7335,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				return pr;
 			}
 		}
-		// 遗物页那块「额外资源量遗物」（那只隐藏起始遗物）的界面：列表绑到 ExtraResource.Effects。"
-		// 显隐跟着「启用额外资源量」走（用户要求：放到遗物页里、可以在其中加效果）。"
+		// 「额外资源量遗物」（那只隐藏起始遗物）的界面：列表绑到 ExtraResource.Effects。"
+		// ⚠ 第 11 批 ①（用户要求「遗物页去除左上角关于额外资源量的内容」）：这一整块**搬到
+		// 「额外资源量/状态」页底部**了 —— 所以这里也要切到那一页去验（以前切的是遗物页）。
 		{
 			bool wasEnabled = Profile.ExtraResource.Enabled;
 			Profile.ExtraResource.Enabled = true;
 			Raise("ExtraResourceRelicVisible");
-			Check("遗物页的「额外资源量遗物」块在启用时显示（选中它的效果时会把遗物列表的选择清掉）",
+			Check("「额外资源量遗物」块在启用时显示（选中它的效果时会把遗物列表的选择清掉）",
 				ExtraResourceRelicVisible, "启用时可见");
-			var erList = (ListBox?)FindName("ExtraResourceEffectList");
-			Check("「额外资源量遗物」的效果列表绑到 Profile.ExtraResource.Effects（生成端就在那只遗物上跑）",
+			SelectTabRoot("额外资源量/状态");
+			UpdateLayout();
+			var erList = (ExtraResourceEffectList as ListBox);
+			Check("遗物页左上角不再有「额外资源量」的内容（那块搬到额外资源量页了）",
+				!TextsIn(SelectTabRoot("遗物")).Any(t => t.Contains("额外资源量遗物")), "遗物页已经没有它");
+			Check("「额外资源量遗物」的效果列表在额外资源量页里、绑到 Profile.ExtraResource.Effects（生成端就在那只遗物上跑）",
 				erList?.ItemsSource == Profile.ExtraResource.Effects, erList is null ? "(没找到列表 " : "绑定对");
 			Profile.ExtraResource.Enabled = false;
 			Raise("ExtraResourceRelicVisible");
@@ -8473,21 +8671,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				hideSrc.Contains($"return relic is not {Naming.From(erProfile).ExtraResourceRelicClass};"), "只挡它");
 			Check("说明里写清「发放资源量 / 跨战斗继承照常、存档也兼容」",
 				erProfile.ExtraResource.HideInGameHint.Contains("照常") && erProfile.ExtraResource.HideInGameHint.Contains("遗物栏"), erProfile.ExtraResource.HideInGameHint);
-			// 真界面：遗物页那块里能看到它的身件 + 那个勾选框，勾上真的改到配置"
+			// 真界面：「额外资源量/状态」页底下那块里能看到它的身份 + 那个勾选框，勾上真的改到配置"
 			{
 				bool erWasEnabled = Profile.ExtraResource.Enabled;
 				bool erWasHidden = Profile.ExtraResource.HideInGame;
 				Profile.ExtraResource.Enabled = true;
-				MainTabs.SelectedItem = MainTabs.Items.OfType<TabItem>().FirstOrDefault(x => (x.Header as string) == "遗物");
+				MainTabs.SelectedItem = MainTabs.Items.OfType<TabItem>().FirstOrDefault(x => (x.Header as string) == "额外资源量/状态");
 				UpdateLayout();
-				Check("遗物页那块「额外资源量遗物」看得到它是什么（类名 + 稀有度 + 说明它不在下面的列表里）",
+				Check("额外资源量页底部那块「额外资源量遗物」看得到它是什么（类名 + 稀有度 + 说明它不在遗物页那张列表里）",
 					ExtraResourceRelicVisible && ExtraResourceRelicSummary.Contains("ExtraResourceRelic")
-					&& ExtraResourceRelicSummary.Contains("Starter") && ExtraResourceRelicSummary.Contains("不在下面的遗物列表里"),
+					&& ExtraResourceRelicSummary.Contains("初始") && ExtraResourceRelicSummary.Contains("不在遗物页那张列表里"),
 					ExtraResourceRelicSummary);
 				List<CheckBox> erBoxes = new List<CheckBox>();
 				CollectCheckBoxes(ExtraResourceEffectList.Parent ?? (DependencyObject)this, erBoxes);
 				CheckBox? hideBox = erBoxes.FirstOrDefault(x => (x.Content as string) == "在游戏中隐藏（不显示在遗物栏里）");
-				Check("遗物页有「在游戏中隐藏（不显示在遗物栏里）」这个勾选框", hideBox is not null,
+				Check("额外资源量页有「在游戏中隐藏（不显示在遗物栏里）」这个勾选框（用户第 11 批 ① 的后半句）", hideBox is not null,
 					hideBox is null ? $"找到 {erBoxes.Count} 个勾选框" : "在");
 				if (hideBox is not null)
 				{
@@ -9560,6 +9758,188 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				RelicTriggerList.SelectedItem = lastRelic.Triggers[1];
 				OnRemoveRelicTrigger(this, new RoutedEventArgs());
 				Check("「删除触发时机」删掉后只剩 1 条", lastRelic.Triggers.Count == 1, lastRelic.Triggers.Count + " 条");
+			}
+			// ===== 第 11 批（用户要求）：序号 / 拖动换位置 / 自动类名跟序号走 =====
+			// ⚠ 做法：**往列表末尾追加** 4 只临时的，不去动原来的那些（清空再重建会把
+			// RelicList / RelicTriggerList / RelicEffectList 的选中项全打断，后面一大段自检就没对象了）。
+			{
+				var testRelics = new List<RelicSpec>
+				{
+					new RelicSpec { Name = "排序甲", ClassName = "SevenRelic1", Rarity = "Common", Trigger = "CombatStart" },
+					new RelicSpec { Name = "排序乙", ClassName = "MyCharm", Rarity = "Rare", Trigger = "CombatStart" },
+					new RelicSpec { Name = "排序丙", ClassName = "", Rarity = "Uncommon", Trigger = "CombatStart" },
+					new RelicSpec { Name = "排序丁", ClassName = "HunterCharm", Rarity = "Shop", Trigger = "CombatStart" },
+				};
+				foreach (RelicSpec r in testRelics) Profile.Relics.Add(r);
+				try
+				{
+					RelicList.SelectedIndex = 0;
+					UpdateLayout();
+					RefreshRelicOrdinals();
+					int baseCount = Profile.Relics.Count - testRelics.Count;
+					int a = baseCount, b = baseCount + 1, c = baseCount + 2, d = baseCount + 3;
+
+					Check("遗物列表每一行最左边显示序号（1..N，跟着位置算）",
+						Profile.Relics.Select((r, i) => r.Ordinal == i + 1).All(x => x)
+						&& Profile.Relics[a].OrdinalText == (a + 1) + "." && Profile.Relics[d].OrdinalText == (d + 1) + ".",
+						Profile.Relics[a].OrdinalText + " / … / " + Profile.Relics[d].OrdinalText);
+					// 列表行的模板里真的有一个绑 OrdinalText 的 TextBlock（不是只算在模型上）
+					List<TextBlock> ordTexts = new List<TextBlock>();
+					CollectTextBlocks(RelicList, ordTexts);
+					Check("列表行的模板里真的绑了序号（OrdinalText）",
+						ordTexts.Any(t => BindingOperations.GetBinding(t, TextBlock.TextProperty)?.Path?.Path == "OrdinalText"),
+						ordTexts.Count + " 个 TextBlock");
+
+					// 拖动：把「排序甲」拖到「排序丙」那一行上（= 插到第 3 位）
+					bool relicMoved = MoveRelicTo(testRelics[0], testRelics[2]);
+					UpdateLayout();
+					Check("拖动换位置：RelicList.Items 的顺序真的变了（拖第 1 只到第 3 只那一行 = 插到第 3 位）",
+						relicMoved
+						&& Profile.Relics[c].Name == "排序甲" && Profile.Relics[a].Name == "排序乙" && Profile.Relics[b].Name == "排序丙",
+						string.Join(" → ", Profile.Relics.Skip(baseCount).Select(r => r.Name)));
+					Check("拖动之后序号仍然是从 1 开始的连续 N（序号跟着位置变，不是跟着遗物走）",
+						Profile.Relics.Select((r, i) => r.Ordinal == i + 1 && r.OrdinalText == (i + 1) + ".").All(x => x),
+						string.Join(" / ", Profile.Relics.Select(r => r.Name + "=" + r.OrdinalText)));
+					Check("「排序甲」的序号从 1 变成了 3（跟着位置走，不是跟着物品走）",
+						Profile.Relics[c].Name == "排序甲" && Profile.Relics[c].Ordinal == c + 1,
+						Profile.Relics[c].Name + "=" + Profile.Relics[c].Ordinal);
+
+					// 自动类名跟序号走 / 手填的不动（生成端那一步：Naming.RenumberRelicClassNames）
+					var n2 = Naming.From(Profile);
+					// ⚠ 期望值按**实际位置**算（baseCount 是这只存档里原有的遗物数，测试遗物接在它们后面）：
+					// 写死「SevenRelic3」只在「列表里没有别的遗物」时才对。
+					string autoA = "SevenRelic" + (c + 1);   // 排序甲被拖到第 c+1 位（旧名字 SevenRelic1 是自动名 → 跟过来）
+					int renum = n2.RenumberRelicClassNames(Profile.Relics);
+					Check($"重新生成时：旧自动类名「SevenRelic1」跟到新位置（第 {c + 1} 位 → {autoA}）",
+						Profile.Relics[c].ClassName == autoA, Profile.Relics[c].ClassName);
+					Check($"重新生成时：没填类名的**类名保持留空**、只记下「这个位置对应第 {b + 1} 号自动名」"
+						+ "（留空才不会把「工具生成的」和「用户手打的」混在一起）",
+						Profile.Relics[b].ClassName == "" && Profile.Relics[b].LastAutoOrdinal == b + 1
+						&& n2.RelicClassName(Profile.Relics[b], b) == "SevenRelic" + (b + 1),
+						$"ClassName='{Profile.Relics[b].ClassName}' 自动名={n2.RelicClassName(Profile.Relics[b], b)}");
+					Check("重新生成时：**手填的**类名一个字都不动（MyCharm / HunterCharm —— 认不出是自动名的都当手填）",
+						Profile.Relics[a].ClassName == "MyCharm" && Profile.Relics[d].ClassName == "HunterCharm",
+						Profile.Relics[a].ClassName + " / " + Profile.Relics[d].ClassName);
+					string[] afterFirstPass = Profile.Relics.Select(r => r.ClassName).ToArray();
+					int[] autoAfterFirstPass = Profile.Relics.Select(r => r.LastAutoOrdinal).ToArray();
+					int renum2 = n2.RenumberRelicClassNames(Profile.Relics);
+					Check("重新编号是幂等的（再跑一遍类名和自动名序号都不改）",
+						renum2 == 0 && Profile.Relics.Select(r => r.ClassName).SequenceEqual(afterFirstPass)
+						&& Profile.Relics.Select(r => r.LastAutoOrdinal).SequenceEqual(autoAfterFirstPass),
+						$"第二次改了 {renum2} 个");
+					Check("认得出「自动生成的类名」形状：SevenRelic1 是、MyCharm / StelleRelic1 / SevenRelic1x / SevenRelic0 都不是",
+						n2.IsAutoRelicClassName("SevenRelic1") && n2.IsAutoRelicClassName("SevenRelic12")
+						&& !n2.IsAutoRelicClassName("MyCharm") && !n2.IsAutoRelicClassName("StelleRelic1")
+						&& !n2.IsAutoRelicClassName("SevenRelic1x") && !n2.IsAutoRelicClassName("SevenRelic0")
+						&& !n2.IsAutoRelicClassName("") && !n2.IsAutoRelicClassName(null),
+						"判据对（共动了 " + renum + " 只）");
+					// 用户要求原话：「如果没有填写英文类名，自动清除之前自动生成的英文类名，然后按照左侧序列号生成」
+					// —— 这里直接照原话验一遍：把排序丁的类名改成**它自己原来位置的自动名**，
+					// 再把它拖到第 1 位，重新编号后它必须换成正序号那个名字。
+					Profile.Relics[d].ClassName = "SevenRelic" + (d + 1);
+					Profile.Relics.Move(d, 0);
+					RefreshRelicOrdinals();
+					int renum3 = n2.RenumberRelicClassNames(Profile.Relics);
+					Check("照用户原话：没填类名的（旧自动名）拖到第 1 位 → 旧自动名被清掉、按序列号重新生成（SevenRelic1）",
+						Profile.Relics[0].Name == "排序丁" && Profile.Relics[0].ClassName == "SevenRelic1" && renum3 > 0,
+						Profile.Relics[0].Name + " → " + Profile.Relics[0].ClassName);
+					Check("界面上能看出这只遗物的类名是自动还是手填（ClassNameIsAuto / ClassNameHint）",
+						Profile.Relics[a].ClassNameIsAuto == false && Profile.Relics[a].ClassNameHint.Contains("手填")
+						&& Profile.Relics[c].ClassNameIsAuto && Profile.Relics[c].ClassNameHint.Contains("自动"),
+						Profile.Relics[a].Name + "=" + (Profile.Relics[a].ClassNameIsAuto ? "自动" : "手填")
+						+ " / " + Profile.Relics[c].Name + "=" + (Profile.Relics[c].ClassNameIsAuto ? "自动" : "手填"));
+				}
+				finally
+				{
+					foreach (RelicSpec r in testRelics) Profile.Relics.Remove(r);
+					RelicList.SelectedIndex = 0;
+					UpdateLayout();
+					RefreshRelicOrdinals();
+					if (RelicTriggerList.Items.Count > 0) RelicTriggerList.SelectedIndex = 0;
+					if (RelicEffectList.Items.Count > 0) RelicEffectList.SelectedIndex = 0;
+					UpdateLayout();
+				}
+			}
+			// ===== 第 11 批（用户要求）：稀有度中文 / 中间底下有触发时机列表+自定义描述 / 右侧效果栏 + 右下角条件 =====
+			{
+				RelicSpec? cur = RelicList.SelectedItem as RelicSpec ?? Profile.Relics.FirstOrDefault();
+				Check("稀有度下拉显示中文（初始 / 常见 / 罕见 / 稀有 / 先古 / 商店），存的值还是英文 id",
+					EffectCatalog.RelicRarityOptions.Count == 6
+					&& EffectCatalog.RelicRarityOptions.Select(o => o.Display).SequenceEqual(new[] { "初始", "常见", "罕见", "稀有", "先古", "商店" })
+					&& EffectCatalog.RelicRarityOptions.Select(o => o.Id).SequenceEqual(new[] { "Starter", "Common", "Uncommon", "Rare", "Ancient", "Shop" }),
+					string.Join(" / ", EffectCatalog.RelicRarityOptions.Select(o => o.Id + "=" + o.Display)));
+				Check("稀有度下拉真的绑到 RelicRarityOptions（DisplayMemberPath=Display / SelectedValuePath=Id）",
+					RelicRarityCombo is not null && ReferenceEquals(RelicRarityCombo.ItemsSource, RelicRarityOptions)
+					&& RelicRarityCombo.DisplayMemberPath == "Display" && RelicRarityCombo.SelectedValuePath == "Id"
+					&& BindingOperations.GetBinding(RelicRarityCombo, Selector.SelectedValueProperty)?.Path?.Path == "Rarity",
+					RelicRarityCombo is null ? "(没找到下拉)" : "绑定对");
+				Check("列表里显示的稀有度也是中文（第 1 只 = 初始）",
+					cur is not null && cur.Display.Contains(EffectCatalog.RelicRarityZh(cur.Rarity)),
+					cur?.Display ?? "(没选中)");
+
+				// 中间部分底下：触发时机列表 + 自定义描述两栏（用户要求「在中间部分底下增加…在下方增加自定义描述」）
+				List<TextBox> midBoxes = new List<TextBox>();
+				CollectTextBoxes(RelicDetail, midBoxes);
+				List<string> midPaths = midBoxes.Select(t => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path ?? "").ToList();
+				List<CheckBox> midChecks = new List<CheckBox>();
+				CollectCheckBoxes(RelicDetail, midChecks);
+				List<string> midCheckPaths = midChecks.Select(c => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path ?? "").ToList();
+				Check("中间部分底下有自定义描述那一栏（绑 CustomDescription）", midPaths.Contains("CustomDescription"), string.Join(" / ", midPaths.Where(p => p.Length > 0)));
+				Check("自定义描述的第二栏「替换掉自动生成的描述」也在（绑 CustomDescriptionReplaces）",
+					midCheckPaths.Contains("CustomDescriptionReplaces"), string.Join(" / ", midCheckPaths));
+				Check("整只遗物的「条件选项」也还在中间这部分（绑 Condition.Kind）",
+					midPaths.Contains("Condition.Amount2") && RelicConditionBox is not null && RelicConditionBox.IsVisible,
+					RelicConditionBox is null ? "(没找到)" : "在");
+
+				// 右侧 = 效果栏：当前选中那条时机的效果 + 添加/删除效果 + 右下角的「单条效果的条件」
+				Check("右侧效果栏在（效果列表 + 添加效果 / 删除效果按钮）",
+					RelicEffectList.IsVisible && RelicEffectList.Items.Count > 0
+					&& TextsIn(RelicDetail).Contains("添加效果") && TextsIn(RelicDetail).Contains("删除效果"),
+					RelicEffectList.Items.Count + " 条效果");
+				List<ComboBox> condCombos = new List<ComboBox>();
+				CollectCombos(RelicEffectConditionBox, condCombos);
+				Check("右下角能选「单条效果的触发条件」（RelicEffectConditionBox 里的条件下拉绑 EffectSpec.Condition.Kind）",
+					RelicEffectConditionBox is not null && RelicEffectConditionBox.IsVisible
+					&& condCombos.Any(c => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Kind"),
+					condCombos.Count + " 个下拉 / 可见=" + (RelicEffectConditionBox?.IsVisible ?? false));
+			}
+			// ===== 布局体检（本轮修的那个 bug：效果编辑器的行被排成 8260px 宽）=====
+			{
+				SelectTabRoot("遗物");
+				if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+				if (RelicTriggerList.Items.Count > 0) RelicTriggerList.SelectedIndex = 0;
+				if (RelicEffectList.Items.Count > 0) RelicEffectList.SelectedIndex = 0;
+				UpdateLayout();
+				double maxItemW = RelicEffectListActualMaxItemWidth();
+				Check("效果编辑器不再被排成超宽（行宽 <= 列表宽 + 2px；以前是 8260px）",
+					RelicEffectList.Items.Count == 0 || maxItemW <= RelicEffectList.ActualWidth + 2.0,
+					maxItemW.ToString("F0") + " <= " + RelicEffectList.ActualWidth.ToString("F0"));
+				Check("遗物页关键面板都没有 0 尺寸（列表 / 触发时机列表 / 效果栏 / 效果条件 / 自定义描述）",
+					RelicList.ActualWidth > 10 && RelicList.ActualHeight > 10
+					&& RelicTriggerList.ActualWidth > 10 && RelicTriggerList.ActualHeight > 10
+					&& RelicEffectList.ActualWidth > 10 && RelicEffectList.ActualHeight > 10
+					&& RelicEffectConditionBox.ActualWidth > 10 && RelicEffectConditionBox.ActualHeight > 10
+					&& RelicCustomDesc.ActualWidth > 10 && RelicCustomDesc.ActualHeight > 10,
+					$"列表 {RelicList.ActualWidth:F0}x{RelicList.ActualHeight:F0}，时机 {RelicTriggerList.ActualWidth:F0}x{RelicTriggerList.ActualHeight:F0}，"
+					+ $"效果 {RelicEffectList.ActualWidth:F0}x{RelicEffectList.ActualHeight:F0}，条件 {RelicEffectConditionBox.ActualWidth:F0}x{RelicEffectConditionBox.ActualHeight:F0}，"
+					+ $"自定义描述 {RelicCustomDesc.ActualWidth:F0}x{RelicCustomDesc.ActualHeight:F0}");
+				double winW = ActualWidth;
+				List<FrameworkElement> outOfPanel = VisibleElementsOutside(RelicDetail, 4.0);
+				Check("遗物页没有控件横向跑出窗口 / 互相压住",
+					outOfPanel.Count == 0 && RelicDetail.ActualWidth <= winW + 1.0,
+					outOfPanel.Count == 0
+						? $"详情宽 {RelicDetail.ActualWidth:F0} <= 窗口 {winW:F0}"
+						: string.Join(" · ", outOfPanel.Take(4).Select(x =>
+						{
+							Point pp = default;
+							try { pp = x.TransformToAncestor(RelicDetail).Transform(new Point(0, 0)); } catch { }
+							return x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0")
+								+ " @" + pp.X.ToString("F0") + "," + pp.Y.ToString("F0");
+						})));
+				List<FrameworkElement> zeroSized = VisibleZeroSizedControls(RelicDetail, 24.0);
+				Check("遗物页没有「看得见却量成 0 尺寸」的控件",
+					zeroSized.Count == 0,
+					zeroSized.Count == 0 ? "没有" : string.Join(" · ", zeroSized.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0"))));
 			}
 			List<ComboBox> relicPropCombos = new List<ComboBox>();
 			CollectCombos(RelicDetail, relicPropCombos);

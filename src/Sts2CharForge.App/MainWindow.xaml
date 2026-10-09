@@ -453,6 +453,39 @@
 
                         <TextBlock Margin="0,20,0,0" TextWrapping="Wrap" Foreground="#666"
                                    Text="在「卡牌 / 遗物 / 药水」的效果里可以选「获得额外资源量」：正数 = 获得，负数 = 花费。卡牌上的花费会写成这张牌的额外资源量费用——当前数量不够时，本体自带的判定会让这张牌直接打不出去（卡面费用数字显示成红色）。"/>
+
+                        <!-- ===== 额外资源量那只**隐藏的起始遗物**（用户要求：这一页要能看到它、能加效果、
+                                     能勾「在游戏中隐藏」）=====
+                             用户第 11 批 ① 的原话是「遗物页去除左上角关于额外资源量的内容」+「增加选择是否隐藏
+                             额外资源量遗物的选项」——那一整块于是从**遗物页左上角搬到了这里**（它本来就属于
+                             「额外资源量」这一页）。它不在遗物页那张列表里（那张表只列你自己配的遗物）。 -->
+                        <GroupBox Margin="0,22,0,0" Header="额外资源量遗物（自动生成的隐藏起始遗物）"
+                                  Visibility="{Binding ExtraResourceRelicVisible, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                            <DockPanel>
+                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
+                                           Text="这只遗物是勾了上面「启用额外资源量」之后自动生成的（稀有度「初始」、不占遗物栏的玩法位置）：它负责每场战斗开始时发放资源量、以及记录跨战斗继承。下面这些效果会挂在这只遗物的「战斗开始时」上。它不在「遗物」页那张遗物列表里（那张表只列你自己配的遗物）。"/>
+                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,2" Foreground="#444" FontSize="11"
+                                           Text="{Binding ExtraResourceRelicSummary, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                <CheckBox DockPanel.Dock="Top" Margin="0,0,0,2"
+                                          Content="在游戏中隐藏（不显示在遗物栏里）"
+                                          IsChecked="{Binding HideInGame}"
+                                          ToolTip="这只遗物只是载体（开场发资源量 / 记跨战斗继承），不是藏品。&#10;勾上 = 生成一个补丁，把 NRelicInventory.Add 里的这一只跳过（不进遗物栏）；&#10;发放资源量、跨战斗继承这些功能一个字都不变（存档也兼容）。"/>
+                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"
+                                           Text="{Binding HideInGameHint}"/>
+                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                    <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
+                                    <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
+                                    <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
+                                            IsEnabled="{Binding CanUndoCard, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            ToolTip="{Binding UndoCardHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                </WrapPanel>
+                                <ListBox x:Name="ExtraResourceEffectList" Height="150"
+                                         ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
+                                         SelectionChanged="OnExtraResourceEffectSelectionChanged"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。选中一条，右边就是它的参数。"/>
+                            </DockPanel>
+                        </GroupBox>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -1069,36 +1102,9 @@
                         <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
                     </Grid.ColumnDefinitions>
                     <DockPanel Grid.Column="0">
-                        <!-- 额外资源量那只**隐藏的起始遗物**（用户要求：放到遗物页里、可以在其中加效果）。
-                             它本来就在生成端存在（<角色>ExtraResourceRelic：开场发资源量 / 记跨战斗继承），
-                             这里把它的效果列表摆出来，编辑区复用右边那块效果编辑器。 -->
-                        <GroupBox DockPanel.Dock="Top" Margin="0,0,0,8"
-                                  Header="额外资源量遗物（自动生成的隐藏起始遗物）"
-                                  Visibility="{Binding ExtraResourceRelicVisible, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
-                            <DockPanel>
-                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
-                                           Text="这只遗物是「额外资源量」页勾了启用之后自动生成的（稀有度 Starter、不占遗物栏的玩法位置）：它负责每场战斗开始时发放资源量、以及记录跨战斗继承。下面这些效果会挂在这只遗物的「战斗开始时」上。它**不在下面那张遗物列表里**（那张表只列你自己配的遗物）。"/>
-                                <!-- 那只载体遗物的身份 + 「在游戏中隐藏」（用户要求：遗物页要能看到它、并且能勾选在游戏里隐不隐藏） -->
-                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,2" Foreground="#444" FontSize="11"
-                                           Text="{Binding ExtraResourceRelicSummary, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                                <CheckBox DockPanel.Dock="Top" Margin="0,0,0,2"
-                                          Content="在游戏中隐藏（不显示在遗物栏里）"
-                                          IsChecked="{Binding Profile.ExtraResource.HideInGame, RelativeSource={RelativeSource AncestorType=Window}}"
-                                          ToolTip="这只遗物只是载体（开场发资源量 / 记跨战斗继承），不是藏品。&#10;勾上 = 生成一个补丁，把 NRelicInventory.Add 里的这一只跳过（不进遗物栏）；&#10;发放资源量、跨战斗继承这些功能一个字都不变（存档也兼容）。"/>
-                                <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"
-                                           Text="{Binding Profile.ExtraResource.HideInGameHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
-                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
-                                    <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
-                                    <Button Content="删除效果" Padding="8,4" Click="OnRemoveEffect" Tag="{Binding ElementName=ExtraResourceEffectList}"/>
-                                    <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoCard"
-                                            IsEnabled="{Binding CanUndoCard}" ToolTip="{Binding UndoCardHint}"/>
-                                </WrapPanel>
-                                <ListBox x:Name="ExtraResourceEffectList" Height="110" DataContext="{Binding Profile.ExtraResource, RelativeSource={RelativeSource AncestorType=Window}}"
-                                         ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
-                                         SelectionChanged="OnExtraResourceEffectSelectionChanged"
-                                         ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。选中一条，右边就是它的参数。"/>
-                            </DockPanel>
-                        </GroupBox>
+                        <!-- 用户要求（第 11 批 ①②）：「遗物页去除左上角关于额外资源量的内容」——
+                             那块「额外资源量遗物（自动生成的隐藏起始遗物）」已经整块搬到
+                             「额外资源量/状态」页底部了（那里才是它该在的地方；这个页面只剩纯遗物列表）。 -->
                         <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                             <Button Content="添加遗物" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelic"/>
                             <Button Content="删除" Padding="8,4" Click="OnRemoveRelic"/>
@@ -1111,14 +1117,42 @@
                             <Button Content="撤回删除" Padding="8,4" Margin="6,0,0,0" Click="OnUndoRelic"
                                     IsEnabled="{Binding CanUndoRelic}" ToolTip="{Binding UndoRelicHint}"/>
                         </WrapPanel>
-                        <ListBox x:Name="RelicList" SelectionMode="{Binding MultiSelectRelics, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Profile.Relics}" DisplayMemberPath="Display"/>
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
+                                   Text="最左边的数字 = 这只遗物**现在排第几位**（拖动换位置后跟着重排）。拖动列表里的一行就能换顺序；自动生成的英文类名会跟着序号走，手填的不会被改。"/>
+                        <TextBlock DockPanel.Dock="Bottom" x:Name="RelicDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
+                                   Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
+                        <ListBox x:Name="RelicList" SelectionMode="{Binding MultiSelectRelics, Converter={StaticResource MultiSelectMode}}"
+                                 ItemsSource="{Binding Profile.Relics}"
+                                 AllowDrop="True" PreviewMouseLeftButtonDown="OnRelicListPreviewMouseDown"
+                                 PreviewMouseMove="OnRelicListPreviewMouseMove"
+                                 DragOver="OnRelicListDragOver" Drop="OnRelicListDrop"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 HorizontalContentAlignment="Stretch">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid ToolTip="{Binding RowTip}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="34"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                                   Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                        <TextBlock Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </DockPanel>
                     <TextBlock x:Name="RelicEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择遗物"
                                Visibility="{Binding SelectedItem, ElementName=RelicList, Converter={StaticResource EmptyToVisibility}}"/>
 
                     <!-- 额外资源量遗物里选中的那条效果：编辑区（和遗物详情同一格，靠选择互斥 + 代码里藏掉空提示） -->
-                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto"
+                    <!-- 额外资源量遗物里选中的那条效果：编辑区（借遗物页右边那一格显示 ——
+                         遗物列表没选中任何遗物时才出现，靠的是两个 Visibility 互斥）。
+                         那块列表本身现在长在「额外资源量/状态」页（用户要求：遗物页左上角不再有额外资源量的内容）。 -->
+                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                                   DataContext="{Binding SelectedItem, ElementName=ExtraResourceEffectList}"
                                   Visibility="{Binding SelectedItem, ElementName=ExtraResourceEffectList, Converter={StaticResource NotEmptyToVisibility}}">
                         <StackPanel>
@@ -1138,14 +1172,13 @@
                             <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock Text="英文类名（留空 = 自动生成 &lt;角色类名&gt;Relic&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                             <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
+                            <TextBlock TextWrapping="Wrap" Margin="6,0,0,2" Foreground="#888" FontSize="11" Text="{Binding ClassNameHint}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
-                            <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding RelicRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
-                            <!-- 第 10 批（用户要求）：「触发时机」不在这里单选了 —— 移到右边新加的
-                                 「触发时机列表」里（每条时机各自配自己的触发时机 / 盯哪个状态 / 数值 /
-                                 只对哪类牌生效 / 效果），还能勾「要和其他时机同时成立」。
-                                 两处都能改会看起来像 bug，所以属性区只留名称 / 类名 / 稀有度 / 图标 / 两个勾选。 -->
-                            <TextBlock TextWrapping="Wrap" Margin="6,8,0,0" Foreground="#888" FontSize="11"
-                                       Text="触发时机（可以有**好几条**，每条各自配效果）在右边那栏「触发时机列表」里改；想让几条时机都成立才触发，就在那儿勾「要和其他时机同时成立」。"/>
+                            <!-- 稀有度英文改中文（用户要求第 3 条）：界面显示中文（初始/常见/罕见/稀有/先古/商店），
+                                 存进存档的还是英文 id（RelicRarityOptions 一项 = Id + Display；生成端写的是本体 RelicRarity 枚举）。 -->
+                            <ComboBox x:Name="RelicRarityCombo" Style="{StaticResource Pick}"
+                                      ItemsSource="{Binding RelicRarityOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                             <CheckBox Content="作为初始遗物" Style="{StaticResource Check}" IsChecked="{Binding IsStartingRelic}"/>
                             <CheckBox Content="加入遗物池（宝箱/精英/商店）" Style="{StaticResource Check}" IsChecked="{Binding InRelicPool}"/>
                             <Button Content="上传遗物图标…（建议 256×256 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickRelicIcon"/>
@@ -1153,9 +1186,165 @@
                                 <Image Source="{Binding RelicIconPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
                             </Border>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,8,0,0"
-                                       Text="提示：本体的遗物都靠「稀有度 + 触发时机 + 效果」组成；初始遗物请把稀有度设为 Starter，并勾选「作为初始遗物」。"/>
+                                       Text="提示：本体的遗物都靠「稀有度 + 触发时机 + 效果」组成；初始遗物请把稀有度设为「初始」，并勾选「作为初始遗物」。"/>
+
+                            <!-- ========== 触发时机列表（第 10 批 ①；第 11 批 ④ 从右栏顶上搬到中间部分底下）==========
+                                 一只遗物可以挂**好几条**触发时机，每条各自配自己的效果；
+                                 勾「要和其他时机同时成立」= 那几条都在同一个窗口里成立过才触发。 -->
+                            <TextBlock Text="触发时机列表（可以加好几条，每条各自配效果）" FontWeight="Bold" Margin="0,12,0,4" TextWrapping="Wrap"/>
+                            <ListBox x:Name="RelicTriggerList" MinHeight="110" MaxHeight="150"
+                                     SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
+                                     ItemsSource="{Binding Triggers}" DisplayMemberPath="Summary"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                     SelectionChanged="OnRelicTriggerSelectionChanged"/>
+                            <WrapPanel Margin="0,6,0,0">
+                                <Button Content="添加触发时机" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelicTrigger"/>
+                                <Button Content="删除触发时机" Padding="8,4" Click="OnRemoveRelicTrigger"/>
+                            </WrapPanel>
+                            <TextBlock Margin="0,4,0,0" Foreground="#888" FontSize="11" TextWrapping="Wrap"
+                                       Text="例：「每回合开始时 → 获得格挡」+「打出一张牌后 → 造成伤害」两条可以同时挂着。想让几条都成立才触发，就在下面那条时机的编辑器里勾「要和其他时机同时成立」。"/>
+                            <Border BorderBrush="#DDD" BorderThickness="1" Padding="8" Margin="0,6,0,0"
+                                    DataContext="{Binding SelectedItem, ElementName=RelicTriggerList}">
+                                <StackPanel>
+                                    <TextBlock Text="选中的这条触发时机（它的效果在右边那栏编）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                    <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
+                                    <ComboBox Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Kind}"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                               Text="{Binding Hint}"/>
+                                    <!-- 「只对哪类牌生效」（第 9 批 ④：遗物侧和状态侧同步）：只在「打出一张牌后」显示 -->
+                                    <StackPanel Visibility="{Binding ShowCardFilterField, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="只对哪类牌生效" Style="{StaticResource Label}"/>
+                                        <ComboBox Style="{StaticResource Pick}"
+                                                  ItemsSource="{Binding CardFilterOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                  SelectedValue="{Binding CardFilter}"
+                                                  ToolTip="任意 / 攻击 / 技能 / 能力 / 诅咒 / 状态，以及你自己配的「自定义关键词」与「组」那一组牌（和状态页同一份候选）。&#10;只有「打出一张牌后」用得到。"/>
+                                    </StackPanel>
+                                    <!-- 「某个状态层数到达 N 层 / 变化 / 被移除」：盯哪个状态 -->
+                                    <StackPanel Visibility="{Binding ShowPowerFields, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="盯哪个状态（留空 = 任意状态）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                        <local:SearchComboBox SearchPath="Display"
+                                                              ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                              SelectedValuePath="Id" SelectedValue="{Binding PowerId, Mode=TwoWay}"
+                                                              ToolTip="只盯自己身上这个状态；留空 = 任何状态都算。直接打字搜索。">
+                                            <local:SearchComboBox.ItemTemplate>
+                                                <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                            </local:SearchComboBox.ItemTemplate>
+                                        </local:SearchComboBox>
+                                    </StackPanel>
+                                    <!-- 触发时机上的数值（按时机换含义：每 N 次 / 每 N 点 / 数值 ≥ N / 到达 N 层） -->
+                                    <StackPanel Visibility="{Binding ShowAmountField, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding AmountLabel}" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                        <TextBox Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
+                                        <StackPanel Visibility="{Binding ShowScopeField, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="统计范围" Style="{StaticResource Label}"/>
+                                            <ComboBox Style="{StaticResource Pick}"
+                                                      ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Scope}"
+                                                      ToolTip="本回合 = 每个回合重新计数；本场战斗 = 整场战斗累计（换战斗重新算）。"/>
+                                        </StackPanel>
+                                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                                   Text="{Binding SpendHint}"/>
+                                    </StackPanel>
+                                    <!-- 「要和其他时机同时成立」（和「自定义状态」页同一套语义） -->
+                                    <CheckBox Margin="0,8,0,0" Content="要和其他时机同时成立（都成立才触发）"
+                                              IsChecked="{Binding RequireAllTriggers}"
+                                              ToolTip="勾上 = 这条时机要和**同一只遗物上别的也勾了它的时机**都在同一个窗口里成立过，才会触发（最后凑齐的那条跑它自己的效果）。&#10;⚠ 只有 1 条勾了 = 凑不齐，那条设置不生效（生成前的检查会给提示）。"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
+                                               Text="「全部或者单个满足时才生效」：只勾 1 条 = 它自己满足就触发；勾 2 条以上 = 这几条都凑齐了才触发。"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
+                                                Visibility="{Binding ShowAndScope, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="重置范围" VerticalAlignment="Center"/>
+                                        <ComboBox Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"
+                                                  ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                  SelectedValue="{Binding AndScope}"
+                                                  ToolTip="本回合 = 每个回合重新凑一次（默认）；本场战斗 = 整场战斗里凑齐一次就够。"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 遗物自定义描述（用户要求：遗物也能自己写描述）；「填入参数」列出可用的 {变量} -->
+                            <GroupBox Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,10,0,0">
+                                <StackPanel Margin="4">
+                                    <TextBox x:Name="RelicCustomDesc" Style="{StaticResource Field}" MinHeight="56" AcceptsReturn="True" TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="可以写风味文字，也可以写本体占位符：{Damage} 显示当前数值、{Damage:diff()} 显示升级后的值（遗物不可升级，一般用 {Damage} 就行）。"/>
+                                    <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                        <Button Content="填入参数…" Padding="8,4" Click="OnInsertParam" Tag="{Binding ElementName=RelicCustomDesc}"
+                                                ToolTip="列出这只遗物里能用的数值占位符，点一下插到光标处。"/>
+                                        <CheckBox Margin="10,0,0,0" Style="{StaticResource Check}" Content="替换掉自动生成的描述（不勾 = 追加在后面）"
+                                                  IsChecked="{Binding CustomDescriptionReplaces}"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </GroupBox>
+
+                            <!-- 条件选项：整只遗物的触发条件（不满足时整个遗物不触发）；
+                                 每条效果自己的条件在**右边效果栏底下**那一块。 -->
+                            <GroupBox x:Name="RelicConditionBox" Header="条件选项（整只遗物：不满足时不触发）" Margin="0,10,0,0">
+                                <Grid Margin="4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/><ColumnDefinition Width="160"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
+                                    <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding RelicConditions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                                              SelectedValue="{Binding Condition.Kind}"/>
+
+                                    <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
+                                               Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
+                                    <!-- 数值 N + 生命区间的第二个数值 M：放进会自动换行的面板里，
+                                         面板窄的时候也不会互相压住 / 跑到可视区外面
+                                         （遗物这只以前只有 N，选了「生命值在 N%~M% 之间」根本没地方填 M） -->
+                                    <WrapPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center">
+                                        <TextBox Width="70" Style="{StaticResource Field}"
+                                                 Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
+                                                 Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="填负数 = 判断反过来（例：生命值低于 -20 → 高于 20%；至少 -2 层 → 少于 2 层）。"/>
+                                        <TextBlock Margin="8,0,0,0" VerticalAlignment="Center"
+                                                   Text="~ 数值 M（%）" Style="{StaticResource Label}"
+                                                   Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"/>
+                                        <TextBox Width="70" Margin="4,0,0,0" Style="{StaticResource Field}"
+                                                 Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
+                                                 Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="生命区间的上界（%）。任意一个数值填负数 = 判断成「区间外」。"/>
+                                    </WrapPanel>
+                                    <TextBlock Grid.Row="1" Grid.Column="2" Text="状态（增益 / 减益）" Style="{StaticResource Label}"
+                                               Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
+                                    <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
+                                             Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
+                                             ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
+                                             SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
+                                             SearchPath="Display">
+                                        <local:SearchComboBox.ItemTemplate>
+                                            <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                                        </local:SearchComboBox.ItemTemplate>
+                                    </local:SearchComboBox>
+                                    <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
+                                               Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
+                                    <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
+                                              Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
+                                              ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                                              SelectedValue="{Binding Condition.Target}"/>
+                                </Grid>
+                            </GroupBox>
                         </StackPanel>
                         </ScrollViewer>
+                        <!-- ============ 右侧 = 效果栏（用户要求第 5 条）============
+                             上：**当前选中那条触发时机**的效果列表（每条效果的行内编辑器 = EffectEditorPlain）
+                             下：单条效果自己的「条件」（EffectEditorPlain 里的 EffectConditionPlain —— 用户要求的
+                                 「右下角能选单条效果的触发条件」就是这一块；以前它跟在大列表行里、被 160px 高的
+                                 视口切掉，滚不到也点不着，所以这里给它一个独立的、看得见的位置）
+                             最底：添加效果 / 删除效果 / 撤回删除 -->
                         <DockPanel Grid.Column="2">
                             <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
                                 <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect" Tag="{Binding ElementName=RelicEffectList}"/>
@@ -1165,172 +1354,30 @@
                             </WrapPanel>
                             <Grid>
                                 <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="160"/><RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="8"/><RowDefinition Height="*"/>
+                                    <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
                                     <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
-
-                                <!-- ========== 触发时机列表（第 10 批，用户要求）==========
-                                     一只遗物可以挂**好几条**触发时机，每条各自配自己的效果；
-                                     勾「要和其他时机同时成立」= 那几条都在同一个窗口里成立过才触发。 -->
-                                <TextBlock Grid.Row="0" Text="触发时机列表（可以加好几条，每条各自配效果）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                                <Grid Grid.Row="1">
-                                    <Grid.RowDefinitions><RowDefinition Height="110"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-                                    <ListBox x:Name="RelicTriggerList" Grid.Row="0"
-                                             SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
-                                             ItemsSource="{Binding Triggers}" DisplayMemberPath="Summary"
-                                             SelectionChanged="OnRelicTriggerSelectionChanged"/>
-                                    <WrapPanel Grid.Row="1" Margin="0,6,0,0">
-                                        <Button Content="添加触发时机" Padding="8,4" Margin="0,0,6,0" Click="OnAddRelicTrigger"/>
-                                        <Button Content="删除触发时机" Padding="8,4" Click="OnRemoveRelicTrigger"/>
-                                        <TextBlock VerticalAlignment="Center" Margin="8,0,0,0" Foreground="#888" TextWrapping="Wrap"
-                                                   Text="例：「每回合开始时 → 获得格挡」+「打出一张牌后 → 造成伤害」两条可以同时挂着"/>
-                                    </WrapPanel>
-                                </Grid>
-
+                                <TextBlock Grid.Row="0" Text="效果栏：当前选中那一条触发时机的效果" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
                                 <!-- 遗物效果列表：绑的是**当前选中的那条时机**的效果
                                      （见 MainWindow.xaml.cs 的 OnRelicTriggerSelectionChanged）。
-                                     每条效果直接在列表里编辑（第 10 批改成 ItemTemplate ——
-                                     原来「列表 + 下面单独一个 ContentControl」那套要用
-                                     RelicEffectList.DataContext 才能绑上，而那个 DataContext 是遗物、
-                                     不是那条时机；效果一进列表就没法编辑了）。 -->
-                                <ListBox x:Name="RelicEffectList" Grid.Row="2"
+                                     每条效果直接在列表里编辑（第 10 批改成 ItemTemplate）。
+                                     ⚠ ScrollViewer.HorizontalScrollBarVisibility="Disabled" 是修「效果编辑器被排成 8260px 宽」那个 bug 的关键：
+                                     ListBox 默认允许横向滚动 → 虚拟化面板按**无限宽度**量每一行 →
+                                     行里那个 ScrollViewer 就把内容排成它的自然宽度（实测 8260px！）→
+                                     弹出一条横向滚动条、每行高达 507px 而视口只有 160px，
+                                     效果编辑器和「条件」全被切掉、点不着。禁掉横向滚动，行宽才会被夹回列表宽度。 -->
+                                <ListBox x:Name="RelicEffectList" Grid.Row="1"
                                          SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          ItemsSource="{Binding SelectedItem.Effects, ElementName=RelicTriggerList}"
                                          DisplayMemberPath="{x:Null}"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         HorizontalContentAlignment="Stretch"
                                          ItemTemplate="{StaticResource EffectEditorPlain}"/>
-                                <Border Grid.Row="4" BorderBrush="#DDD" BorderThickness="1" Padding="8"
-                                        DataContext="{Binding SelectedItem, ElementName=RelicTriggerList}">
-                                    <StackPanel>
-                                        <TextBlock Text="选中的这条触发时机" FontWeight="Bold"/>
-                                        <TextBlock Text="触发时机" Style="{StaticResource Label}"/>
-                                        <ComboBox Style="{StaticResource Pick}"
-                                                  ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                  DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Kind}"/>
-                                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
-                                                   Text="{Binding Hint}"/>
-                                        <!-- 「只对哪类牌生效」（第 9 批 ④：遗物侧和状态侧同步）：只在「打出一张牌后」显示 -->
-                                        <StackPanel Visibility="{Binding ShowCardFilterField, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="只对哪类牌生效" Style="{StaticResource Label}"/>
-                                            <ComboBox Style="{StaticResource Pick}"
-                                                      ItemsSource="{Binding CardFilterOptions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
-                                                      SelectedValue="{Binding CardFilter}"
-                                                      ToolTip="任意 / 攻击 / 技能 / 能力 / 诅咒 / 状态，以及你自己配的「自定义关键词」与「组」那一组牌（和状态页同一份候选）。&#10;只有「打出一张牌后」用得到。"/>
-                                        </StackPanel>
-                                        <!-- 「某个状态层数到达 N 层 / 变化 / 被移除」：盯哪个状态 -->
-                                        <StackPanel Visibility="{Binding ShowPowerFields, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="盯哪个状态（留空 = 任意状态）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                            <local:SearchComboBox SearchPath="Display"
-                                                                  ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                                  SelectedValuePath="Id" SelectedValue="{Binding PowerId, Mode=TwoWay}"
-                                                                  ToolTip="只盯自己身上这个状态；留空 = 任何状态都算。直接打字搜索。">
-                                                <local:SearchComboBox.ItemTemplate>
-                                                    <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
-                                                </local:SearchComboBox.ItemTemplate>
-                                            </local:SearchComboBox>
-                                        </StackPanel>
-                                        <!-- 触发时机上的数值（按时机换含义：每 N 次 / 每 N 点 / 数值 ≥ N / 到达 N 层） -->
-                                        <StackPanel Visibility="{Binding ShowAmountField, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="{Binding AmountLabel}" Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                            <TextBox Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
-                                            <StackPanel Visibility="{Binding ShowScopeField, Converter={StaticResource BoolToVis}}">
-                                                <TextBlock Text="统计范围" Style="{StaticResource Label}"/>
-                                                <ComboBox Style="{StaticResource Pick}"
-                                                          ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Scope}"
-                                                          ToolTip="本回合 = 每个回合重新计数；本场战斗 = 整场战斗累计（换战斗重新算）。"/>
-                                            </StackPanel>
-                                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,2,0,0"
-                                                       Text="{Binding SpendHint}"/>
-                                        </StackPanel>
-                                        <!-- 「要和其他时机同时成立」（和「自定义状态」页同一套语义） -->
-                                        <CheckBox Margin="0,8,0,0" Content="要和其他时机同时成立（都成立才触发）"
-                                                  IsChecked="{Binding RequireAllTriggers}"
-                                                  ToolTip="勾上 = 这条时机要和**同一只遗物上别的也勾了它的时机**都在同一个窗口里成立过，才会触发（最后凑齐的那条跑它自己的效果）。&#10;⚠ 只有 1 条勾了 = 凑不齐，那条设置不生效（生成前的检查会给提示）。"/>
-                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0"
-                                                    Visibility="{Binding ShowAndScope, Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Text="重置范围" VerticalAlignment="Center"/>
-                                            <ComboBox Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"
-                                                      ItemsSource="{Binding TriggerScopes, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
-                                                      SelectedValue="{Binding AndScope}"
-                                                      ToolTip="本回合 = 每个回合重新凑一次（默认）；本场战斗 = 整场战斗里凑齐一次就够。"/>
-                                        </StackPanel>
-                                    </StackPanel>
+                                <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
+                                <Border Grid.Row="3" x:Name="RelicEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
+                                        DataContext="{Binding SelectedItem, ElementName=RelicEffectList}">
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
                                 </Border>
-
-                                <!-- 条件选项：整只遗物的触发条件（不满足时整个遗物不触发）；每条效果自己的条件在效果栏里 -->
-                                <GroupBox x:Name="RelicConditionBox" Grid.Row="3" Header="条件选项（整只遗物：不满足时不触发）" Margin="0,8,0,0">
-                                    <Grid Margin="4">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
-                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="160"/>
-                                        </Grid.ColumnDefinitions>
-                                        <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                                        </Grid.RowDefinitions>
-                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
-                                        <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
-                                                  ItemsSource="{Binding RelicConditions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                                  SelectedValue="{Binding Condition.Kind}"/>
-
-                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
-                                                   Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
-                                        <!-- 数值 N + 生命区间的第二个数值 M：放进会自动换行的面板里，
-                                             面板窄的时候也不会互相压住 / 跑到可视区外面
-                                             （遗物这只以前只有 N，选了「生命值在 N%~M% 之间」根本没地方填 M） -->
-                                        <WrapPanel Grid.Row="1" Grid.Column="1" VerticalAlignment="Center">
-                                            <TextBox Width="70" Style="{StaticResource Field}"
-                                                     Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"
-                                                     Text="{Binding Condition.Amount, UpdateSourceTrigger=PropertyChanged}"
-                                                     ToolTip="填负数 = 判断反过来（例：生命值低于 -20 → 高于 20%；至少 -2 层 → 少于 2 层）。"/>
-                                            <TextBlock Margin="8,0,0,0" VerticalAlignment="Center"
-                                                       Text="~ 数值 M（%）" Style="{StaticResource Label}"
-                                                       Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"/>
-                                            <TextBox Width="70" Margin="4,0,0,0" Style="{StaticResource Field}"
-                                                     Visibility="{Binding Condition.NeedsAmount2, Converter={StaticResource BoolToVis}}"
-                                                     Text="{Binding Condition.Amount2, UpdateSourceTrigger=PropertyChanged}"
-                                                     ToolTip="生命区间的上界（%）。任意一个数值填负数 = 判断成「区间外」。"/>
-                                        </WrapPanel>
-                                        <TextBlock Grid.Row="1" Grid.Column="2" Text="状态（增益 / 减益）" Style="{StaticResource Label}"
-                                                   Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"/>
-                                        <local:SearchComboBox Grid.Row="1" Grid.Column="3" Margin="4,0,0,0"
-                                                 Visibility="{Binding Condition.NeedsPower, Converter={StaticResource BoolToVis}}"
-                                                 ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                 SelectedValuePath="Id" SelectedValue="{Binding Condition.PowerId, Mode=TwoWay}"
-                                                 SearchPath="Display">
-                                            <local:SearchComboBox.ItemTemplate>
-                                                <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
-                                            </local:SearchComboBox.ItemTemplate>
-                                        </local:SearchComboBox>
-                                        <TextBlock Grid.Row="2" Grid.Column="2" Text="指向对象" Style="{StaticResource Label}"
-                                                   Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"/>
-                                        <ComboBox Grid.Row="2" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
-                                                  Visibility="{Binding Condition.NeedsTarget, Converter={StaticResource BoolToVis}}"
-                                                  ItemsSource="{Binding ConditionTargets, RelativeSource={RelativeSource AncestorType=Window}}"
-                                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                                  SelectedValue="{Binding Condition.Target}"/>
-                                    </Grid>
-                                </GroupBox>
-
-                                <!-- 遗物自定义描述（用户要求：遗物也能自己写描述）；「填入参数」列出可用的 {变量} -->
-                                <GroupBox Grid.Row="4" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
-                                    <StackPanel Margin="4">
-                                        <TextBox x:Name="RelicCustomDesc" Style="{StaticResource Field}" MinHeight="56" AcceptsReturn="True" TextWrapping="Wrap"
-                                                 VerticalScrollBarVisibility="Auto"
-                                                 Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
-                                                 ToolTip="可以写风味文字，也可以写本体占位符：{Damage} 显示当前数值、{Damage:diff()} 显示升级后的值（遗物不可升级，一般用 {Damage} 就行）。"/>
-                                        <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
-                                            <Button Content="填入参数…" Padding="8,4" Click="OnInsertParam" Tag="{Binding ElementName=RelicCustomDesc}"
-                                                    ToolTip="列出这只遗物里能用的数值占位符，点一下插到光标处。"/>
-                                            <CheckBox Margin="10,0,0,0" Style="{StaticResource Check}" Content="替换掉自动生成的描述（不勾 = 追加在后面）"
-                                                      IsChecked="{Binding CustomDescriptionReplaces}"/>
-                                        </StackPanel>
-                                    </StackPanel>
-                                </GroupBox>
                             </Grid>
                         </DockPanel>
                     </Grid>

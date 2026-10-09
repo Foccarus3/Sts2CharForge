@@ -2528,10 +2528,36 @@ public sealed class RelicSpec : SpecBase
     private bool _inRelicPool = true;
 
     public string Name { get => _name; set => Set(ref _name, value); }
-    public string ClassName { get => _className; set => Set(ref _className, value); }
-    /// <summary>Starter / Common / Uncommon / Rare / Shop</summary>
+
+    /// <summary>英文类名。留空 = 由工具按位置自动生成（见 Naming.RelicClassName）。</summary>
+    public string ClassName
+    {
+        get => _className;
+        set
+        {
+            if (!Set(ref _className, value)) return;
+            // 「英文类名」那一栏下面的小字（自动 / 手填）跟着变
+            Raise(nameof(ClassNameIsAuto));
+            Raise(nameof(ClassNameHint));
+        }
+    }
+    /// <summary>Starter / Common / Uncommon / Rare / Shop / Ancient（存的是英文 id，界面显示中文）</summary>
     public string Rarity { get => _rarity; set => Set(ref _rarity, value); }
     public bool IsStartingRelic { get => _isStartingRelic; set => Set(ref _isStartingRelic, value); }
+
+    // ===== 左侧列表的序号（用户要求：每个遗物项最左侧显示序号，自上而下 1、2、3…）=====
+    private int _ordinal;
+
+    /// <summary>
+    /// 这只遗物在 <c>Profile.Relics</c> 里的**当前位置**（1 起算），只给界面显示用。
+    ///
+    /// ⚠ 它**不写进存档**（<see cref="JsonIgnoreAttribute"/>）：序号是「当前的排序位置」，
+    /// 不是跟着物品走的标记 —— 拖动换位置 / 删掉中间一只之后，由
+    /// <c>Naming.RenumberRelicClassNames</c>（生成前）和界面自己的刷新重新发一遍。
+    /// 写进存档的话，老存档里会多出一个字段（红线：老存档逐字节不变）。
+    /// </summary>
+    [JsonIgnore]
+    public int Ordinal { get => _ordinal; set => Set(ref _ordinal, value); }
 
     // ===== 触发时机列表（用户要求：遗物页底下也能加多条时机，每条各自配效果）=====
     private ObservableCollection<RelicTriggerSpec> _triggers = new();
@@ -2796,9 +2822,60 @@ public sealed class RelicSpec : SpecBase
     [JsonIgnore]
     public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
+    /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
+    [JsonIgnore]
+    public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
+
+    // ===== 「自动类名」的痕迹（用户要求第 2 条：自动的跟序号走、手填的不动）=====
+    private int _lastAutoOrdinal;
+
+    /// <summary>
+    /// 上一次生成时，这只遗物的「自动类名」是第几号（对应 <c>&lt;角色类名&gt;Relic&lt;它&gt;</c>）。
+    ///
+    /// ⚠ 为什么要有它：英文类名留空时，**类名本身要保持空白**（一写实就再也分不出
+    /// 「工具生成的」和「用户手打的」—— 见 <c>Naming.RenumberRelicClassNames</c> 的注释）。
+    /// 但界面上「英文类名」那一栏总得让用户看到「不填会用哪个名字」，所以单独把**序号**记在这里，
+    /// 由 <see cref="AutoClassNameHint"/> 拼出完整名字。不写进存档（老存档一个字节都不变）。
+    /// </summary>
+    [JsonIgnore]
+    public int LastAutoOrdinal { get => _lastAutoOrdinal; set => Set(ref _lastAutoOrdinal, value); }
+
+    /// <summary>界面用：不填类名时，这只遗物会用哪个自动名（还没生成过就按当前序号推）。</summary>
+    [JsonIgnore]
+    public string AutoClassNameHint
+    {
+        get
+        {
+            int n = _lastAutoOrdinal >= 1 ? _lastAutoOrdinal : _ordinal;
+            return "<角色类名>Relic" + (n >= 1 ? n : 1);
+        }
+    }
+
+    /// <summary>
+    /// 界面用：这只遗物的英文类名现在是不是「自动生成的那一个」
+    /// （判据 = <see cref="Generation.Naming.IsAutoRelicClassNameFor"/>，按名字形状认；
+    /// 认不出的都当手填）。
+    /// 「英文类名」那一栏下面的小字用它说明「重新生成时会跟着序号走 / 不会被改」。
+    /// </summary>
+    [JsonIgnore]
+    public bool ClassNameIsAuto =>
+        !Generation.Naming.IsValidIdentifier(_className)
+        || Generation.Naming.IsAutoRelicClassNameFor(null, _className);
+
+    /// <summary>界面用：「英文类名」那一栏下面那行小字。</summary>
+    [JsonIgnore]
+    public string ClassNameHint => ClassNameIsAuto
+        ? "留空 = 自动。现在对应 " + AutoClassNameHint + "（重新生成 / 构建时按左边列表的序号重算，拖动换位置就跟着变）。"
+        : "现在这个名字是**你手填的**：重新生成 / 构建都不会改它（想让它跟着序号走就把这一栏清空）。";
+
+    /// <summary>界面用：左侧列表那一行的提示（序号 + 类名是自动还是手填）。</summary>
+    [JsonIgnore]
+    public string RowTip => "第 " + (_ordinal >= 1 ? _ordinal : 0) + " 位 ｜ "
+        + (ClassNameIsAuto ? "英文类名自动（跟序号走）" : "英文类名手填（不会自动改）") + " ｜ 可以拖动这一行换位置";
+
     [JsonIgnore]
     public string Display =>
-        $"{(IsForged ? "*" : "")}{Name}  ｜ {Rarity} ｜ {Trigger}{(IsStartingRelic ? " ｜ 初始遗物" : "")}{(InRelicPool ? "" : " ｜ 不入池")}"
+        $"{(IsForged ? "*" : "")}{Name}  ｜ {EffectCatalog.RelicRarityZh(Rarity)} ｜ {Trigger}{(IsStartingRelic ? " ｜ 初始遗物" : "")}{(InRelicPool ? "" : " ｜ 不入池")}"
         + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort)
         // 「只对哪类牌生效」（第 9 批 ④）：选了筛选就在列表里也写出来（和状态页那条时机的写法一致）
         + (ShowTriggerCardFilterField && !string.Equals(First.CardFilter, "Any", StringComparison.Ordinal)

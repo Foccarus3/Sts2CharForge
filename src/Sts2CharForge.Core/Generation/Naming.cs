@@ -258,6 +258,99 @@ public sealed record Naming(
     public string RelicClassName(RelicSpec r, int index) =>
         IsValidIdentifier(r.ClassName) ? r.ClassName.Trim() : CharClass + "Relic" + (index + 1).ToString();
 
+    /// <summary>
+    /// 这个名字是不是「本工具自动生成过的遗物类名」：<c>&lt;角色类名&gt;Relic&lt;数字&gt;</c>（1 起算）。
+    ///
+    /// 为什么需要它（用户要求第 2 条）：重新生成 / 构建的时候，**没填英文类名**的遗物要先清掉
+    /// 以前自动生成的那个类名，再按它**现在的序号**重新生成 —— 这样拖动换位置后自动类名会跟着走。
+    /// 但**用户手填的类名绝不能被清掉**，所以必须能把两者区分开。
+    ///
+    /// ⚠ 为什么不加一个 `ClassNameAuto` 开关存进存档：那会给每一只遗物都多写一个字段，
+    /// 老存档读进来这个开关是「未设置」，分不出「老版本的自动名」和「老版本手填的名字」；
+    /// 而它的默认值不管取哪一边都会猜错一半。这里改成**按名字形状认**：
+    /// 只有「整串正好是 角色类名 + Relic + 数字」才算自动名（`SevenCharm` / `StelleRelic1x` /
+    /// 别的角色前缀都不算），命中面窄、可预测，老存档一个字节都不用改。
+    /// </summary>
+    public bool IsAutoRelicClassName(string? className) => IsAutoRelicClassNameFor(CharClass, className);
+
+    /// <summary>
+    /// 同上，但可以**不依赖一份配好的 <see cref="Naming"/>**（给界面 / 模型用：
+    /// <see cref="Sts2CharForge.Core.Profile.RelicSpec"/> 自己不知道角色类名，只想知道
+    /// 「这串名字长得像不像自动编号」，所以把角色类名留空 = 只按**形状**判断
+    /// —— 任意一串「英文标识 + Relic + 数字」都算）。
+    /// </summary>
+    public static bool IsAutoRelicClassNameFor(string? charClass, string? className)
+    {
+        if (string.IsNullOrWhiteSpace(className)) return false;
+        string s = className.Trim();
+        int at = s.LastIndexOf("Relic", StringComparison.Ordinal);
+        if (at < 0) return false;
+        string prefix = s.Substring(0, at + "Relic".Length);
+        string digits = s.Substring(at + "Relic".Length);
+        // 前缀必须是「角色类名」本身（给了 charClass 时）或一个合法英文标识
+        if (!string.IsNullOrWhiteSpace(charClass))
+        {
+            if (!string.Equals(prefix, charClass!.Trim() + "Relic", StringComparison.Ordinal)) return false;
+        }
+        else if (!IsValidIdentifier(prefix)) return false;
+        if (digits.Length == 0) return false;
+        for (int i = 0; i < digits.Length; i++)
+            if (digits[i] < '0' || digits[i] > '9') return false;
+        // 编号得是合法正整数：`...Relic0` 不是自动生成出来的（人手打的）
+        return int.TryParse(digits, out int n) && n >= 1;
+    }
+
+    /// <summary>
+    /// 生成前的「自动类名重新编号」（用户要求）：从左到右遍历遗物列表，
+    /// <list type="bullet">
+    /// <item>没填英文类名的 → 记下它**当前序号**对应的自动名（<see cref="RelicSpec.LastAutoOrdinal"/>，
+    ///       类名本身**留空** —— 生成端 / 校验器读 <see cref="RelicClassName"/> 时自己会拼出来）；</item>
+    /// <item>写着本工具以前自动生成的那个名字的（<see cref="IsAutoRelicClassName"/>）→ 改成**当前序号**对应的名字
+    ///       （拖到哪就跟着哪）；</item>
+    /// <item>用户手填的（认不出是自动名的）→ 一个字都不动。</item>
+    /// </list>
+    ///
+    /// ⚠ 为什么「没填」的**不写实**：一写实就再也分不出「这串名字是工具生成的」还是「用户手打的」——
+    /// 用户手打一个正好长得像自动编号的名字时，下一次生成会被当成自动名改写；
+    /// 留空 + 单独记序号，两边都不会误判（生成端读 <see cref="RelicClassName"/> 时自己会拼出来）。
+    ///
+    /// ⚠ 为什么自动名也要「跟着拖」：这正是用户要的（「重新生成的时候…按照左侧序列号生成对应的英文类名」）。
+    ///
+    /// 返回「按新序号重算了几只」。
+    /// </summary>
+    public int RenumberRelicClassNames(IEnumerable<RelicSpec> relics)
+    {
+        int renumbered = 0;
+        int index = 0;
+        foreach (var r in relics)
+        {
+            if (r is null) { index++; continue; }
+            string want = CharClass + "Relic" + (index + 1).ToString();
+            if (IsValidIdentifier(r.ClassName))
+            {
+                // 有类名：只有「认得出是自动名」的才跟着序号走（手填的原样保留）；
+                // 自动名本来就正好等于当前序号那个名字的，就不用动（幂等：反复生成结果一样）
+                if (IsAutoRelicClassName(r.ClassName) && !string.Equals(r.ClassName!.Trim(), want, StringComparison.Ordinal))
+                {
+                    r.ClassName = want;
+                    r.LastAutoOrdinal = index + 1;
+                    renumbered++;
+                }
+            }
+            else
+            {
+                // 没填类名：只记「这个位置对应的自动名是第几号」，类名留空（生成端会自己拼）
+                if (r.LastAutoOrdinal != index + 1)
+                {
+                    r.LastAutoOrdinal = index + 1;
+                    renumbered++;
+                }
+            }
+            index++;
+        }
+        return renumbered;
+    }
+
     public string PotionClassName(PotionSpec s, int index) =>
         IsValidIdentifier(s.ClassName) ? s.ClassName.Trim() : CharClass + "Potion" + (index + 1).ToString();
 

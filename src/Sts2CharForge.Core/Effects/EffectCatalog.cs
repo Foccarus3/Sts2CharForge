@@ -81,6 +81,15 @@ public sealed record SpawnTargetOption(string Id, string Display);
 public sealed record SpawnFilterOption(string Id, string Display, string Zh);
 
 /// <summary>
+/// 遗物稀有度下拉的一项：<c>Id</c> = 存进存档的英文档位（Starter / Common / …），
+/// <c>Display</c> = 界面上显示的中文（初始 / 常见 / …）。
+/// 为什么要拆成两项（用户要求第 3 条）：下拉原来直接绑 <see cref="EffectCatalog.RelicRarities"/>
+/// 那一串英文字符串，界面上全是英文；而**存的值必须还是英文 id** ——
+/// 生成端写的是 <c>RelicRarity.Common</c> 这种本体枚举，校验器也按英文判。
+/// </summary>
+public sealed record RarityOption(string Id, string Display);
+
+/// <summary>
 /// 「取几张」的一档（需求：「消耗任意张手牌」）。
 /// Id 空串 = 恰好 N 张（默认，老存档的行为）；UpTo = 最多 N 张；Any = 任意张。
 /// </summary>
@@ -1816,6 +1825,28 @@ public static class EffectCatalog
     //（ArchaicTooth / Astrolabe / BlackStar…）全是这一档，而且**不是**从普通奖励 / 商店里抽出来的，
     // 是先古之民给的 —— 所以选它时界面会提示「想让它在奖励池里出现请换 Common/Uncommon/Rare/Shop」。
     public static IReadOnlyList<string> RelicRarities { get; } = new[] { "Starter", "Common", "Uncommon", "Rare", "Shop", "Ancient" };
+
+    /// <summary>
+    /// 遗物稀有度下拉的**界面选项**（用户要求第 3 条：英文改中文 —— 初始 / 常见 / 罕见 / 稀有 / 先古 / 商店）。
+    /// <c>Id</c> 还是 <see cref="RelicRarities"/> 里那串英文（存档 / 生成端一个字符都不变），
+    /// 只有 <c>Display</c> 是中文；界面用 <c>DisplayMemberPath="Display"</c> +
+    /// <c>SelectedValuePath="Id"</c> 绑 <c>RelicSpec.Rarity</c>。
+    /// </summary>
+    public static IReadOnlyList<RarityOption> RelicRarityOptions { get; } = new[]
+    {
+        new RarityOption("Starter",  "初始"),
+        new RarityOption("Common",   "常见"),
+        new RarityOption("Uncommon", "罕见"),
+        new RarityOption("Rare",     "稀有"),
+        new RarityOption("Ancient",  "先古"),
+        new RarityOption("Shop",     "商店"),
+    };
+
+    /// <summary>遗物稀有度的中文显示名（列表 / 提示里显示用；认不出来的原样返回）。</summary>
+    public static string RelicRarityZh(string? id) =>
+        RelicRarityOptions.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display
+        ?? (string.IsNullOrWhiteSpace(id) ? "常见" : id!.Trim());
+
     public static IReadOnlyList<string> PotionRarities { get; } = new[] { "Common", "Uncommon", "Rare" };
     /// <summary>
     /// 效果的「作用对象」候选。

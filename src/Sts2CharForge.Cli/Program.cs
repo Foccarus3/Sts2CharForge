@@ -11,7 +11,7 @@ using Sts2CharForge.Core.Profile;
 //   forge --profile profile.json --build --install "D:\...\mods"
 //   forge --profile profile.json --out "D:\out"     指定输出目录
 
-string? profilePath = null, outDir = null, installDir = null, recoverDir = null;
+string? profilePath = null, outDir = null, installDir = null, recoverDir = null, sampleGenDir = null;
 bool doBuild = false, demo = false, check = false, detect = false;
 
 for (int i = 0; i < args.Length; i++)
@@ -22,6 +22,7 @@ for (int i = 0; i < args.Length; i++)
         case "--out": outDir = Next(args, ref i); break;
         case "--install": installDir = Next(args, ref i); break;
         case "--recover": recoverDir = Next(args, ref i); break;
+        case "--samplegen": sampleGenDir = Next(args, ref i); break;
         case "--build": doBuild = true; break;
         case "--demo": demo = true; break;
         case "--check": check = true; break;
@@ -32,6 +33,40 @@ for (int i = 0; i < args.Length; i++)
             if (args[i].EndsWith(".json", StringComparison.OrdinalIgnoreCase) && profilePath is null) profilePath = args[i];
             break;
     }
+}
+
+// --samplegen <dir>：用 ProfileFactory.Sample() 生成一遍，并把每个输出文件的 SHA256 打出来。
+// 给「改动前后生成结果逐字节一致」这条红线做回归对照用（本机解包工程从保存过的存档里取）。
+if (sampleGenDir is not null)
+{
+    CharacterProfile sample = ProfileFactory.Sample();
+    // 用「解包工程」的搜索（和界面上的路径页同一套：PathAutoDetect）：找到哪个用哪个。
+    // 刻意不读用户存档（回归对照不该依赖别人的配置）。
+    if (string.IsNullOrWhiteSpace(sample.Paths.VanillaProject))
+        sample.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? "";
+    if (string.IsNullOrWhiteSpace(sample.Paths.VanillaProject))
+        sample.Paths.VanillaProject = PathAutoDetect.FindVanillaProject() ?? "";
+    string? sampleGame = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(sampleGame)) sampleGame = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(sampleGame) && string.IsNullOrWhiteSpace(sample.Paths.GameDataDir))
+        sample.Paths.GameDataDir = Path.Combine(sampleGame, "data_sts2_windows_x86_64");
+    sample.Paths.OutputDir = sampleGenDir;
+    EffectCatalog.Initialize(sample.Paths.VanillaProject, sample.Paths.GameDataDir);
+    var sampleResult = ModGenerator.Generate(sample, m => { });
+    if (!sampleResult.Success)
+    {
+        Console.WriteLine("[X] 示例配置生成失败：");
+        foreach (var issue in sampleResult.Issues.Where(x => x.IsError)) Console.WriteLine("    " + issue);
+        return 1;
+    }
+    foreach (string file in Directory.GetFiles(sampleResult.ProjectRoot, "*", SearchOption.AllDirectories)
+                 .OrderBy(x => x, StringComparer.Ordinal))
+    {
+        byte[] bytes = File.ReadAllBytes(file);
+        Console.WriteLine(Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)).ToLowerInvariant()
+            + "  " + Path.GetRelativePath(sampleResult.ProjectRoot, file).Replace('\\', '/'));
+    }
+    return 0;
 }
 
 // --recover：从生成出来的工程反推回配置存档（存档被误覆盖时的救命功能）
@@ -149,6 +184,7 @@ Sts2CharForge 命令行
   forge --profile profile.json --build             生成 + 编译 + 导出 PCK
   forge --profile profile.json --build --install "D:\...\mods"
   forge --profile profile.json --out "D:\out"      指定输出目录
+  forge --samplegen "D:\out"                        把示例配置生成一遍并打出每个文件的 SHA256（改生成端时的回归对照）
   forge --recover "D:\...\生成的工程目录"           从工程反推回配置存档（存档被误覆盖时的救命功能）
   forge --recover "工程目录" --out "恢复.json"      指定恢复出来的存档路径
   forge --recover "工程目录" --profile 旧.json      用旧存档补「环境路径」这类反推不出来的字段
