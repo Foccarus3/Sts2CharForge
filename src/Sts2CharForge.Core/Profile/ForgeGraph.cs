@@ -23,6 +23,7 @@ public sealed class ForgeNodeSpec : SpecBase
     private double _x = 320;
     private double _y = 160;
     private Dictionary<string, string> _fields = new(StringComparer.Ordinal);
+    private EffectSpec? _effectSpec;
 
     /// <summary>模块在布上的稳定标识（连线记的是它；拖动、改名都不影响）。</summary>
     public string Id
@@ -113,6 +114,42 @@ public sealed class ForgeNodeSpec : SpecBase
     }
 
     public void SetFlag(string key, bool value) => SetField(key, value ? "1" : "0");
+
+    /// <summary>
+    /// 【效果】模块自己的编辑器模型 —— 就是「卡牌 / 遗物 / 药水 / 自定义状态」四处共用的
+    /// <see cref="Profile.EffectSpec"/>（用户拍板 Q1=A：锻造【效果】模块**直接复用**卡牌那套编辑器）。
+    ///
+    /// 和 <see cref="Fields"/> 的关系（老存档安全的关键，见 <c>Generation.ForgeEffectBridge</c>）：
+    ///   · 老存档里**只有** <see cref="Fields"/>（`Effect` / `Amount` / `Times` / `Hits` / `Chance`…），
+    ///     打开存档时按老字段**幂等**迁出一个 EffectSpec（<c>FromLegacy=true</c>）；
+    ///   · `FromLegacy=true` 时生成端**照旧只读 Fields** —— 老存档生成出来的代码 / 卡面文案逐字不变；
+    ///   · 用户在新编辑器里改了任何一格 → 桥把 spec 回写成 Fields（`FromLegacy=false`），
+    ///     此后 spec 是唯一事实来源，生成端照旧读 Fields（所以生成器那一边几乎不用改）。
+    /// ⚠ **不能加 [JsonIgnore]**（照 V0.2.126 处理 `RelicTriggerSpec.Effects` 的先例）：
+    ///   加了的话新存档里的编辑器内容读不回来。
+    /// </summary>
+    public EffectSpec? EffectSpec
+    {
+        get => _effectSpec;
+        set
+        {
+            if (Set(ref _effectSpec, value)) { Raise(nameof(Title)); Raise(nameof(Display)); }
+        }
+    }
+
+    private bool _fromLegacy;
+
+    /// <summary>
+    /// 这一份 <see cref="EffectSpec"/> 是不是**从老字段迁出来的**（还没有被新编辑器改过）。
+    /// true = 生成端只认 <see cref="Fields"/>（老存档逐字不变）；false = 用 spec 回写 Fields 之后再生成。
+    /// </summary>
+    public bool EffectFromLegacy { get => _fromLegacy; set => Set(ref _fromLegacy, value); }
+
+    /// <summary>桥上「变更通知已经挂上了」的标记（不写进存档；防止 Rebuild 时重复订阅）。</summary>
+    [JsonIgnore] internal bool EffectBridgeBound { get; set; }
+
+    /// <summary>界面上「标题栏跟着效果种类刷新」的订阅标记（不写进存档；防止 Rebuild 时重复订阅）。</summary>
+    [JsonIgnore] public bool EffectTitleBound { get; set; }
 
     /// <summary>这个模块的种类定义（认不出来返回 null，界面会当成"未知模块"画一个红框）。</summary>
     [JsonIgnore] public ForgeNodeKind? KindDef => ForgeGraphCatalog.Find(_kind);

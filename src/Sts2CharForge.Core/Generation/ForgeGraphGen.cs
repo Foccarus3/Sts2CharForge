@@ -1493,6 +1493,10 @@ public sealed class ForgePileCountVar : DynamicVar
         var direct = IncomingNode(g, effect, 2);
         if (direct is { Kind: "Unit" or "Target" })
             return (direct.Get("Pick", "Self"), direct.Get("SummonId", ""));
+        // V0.2.129：没接线、而用户在新编辑器里**改过「作用对象」**那一栏 → 文案按那一档写
+        //（和生成端 ResolveEffectUnit 是同一套优先级，否则会出现「代码打全体、卡面写指定敌人」）。
+        if (effect.EffectSpec is { TargetSideCustom: true } spec)
+            return (TargetSideToPick(spec.TargetSide), "");
         // 没用【对象】直接接在效果上：顺着执行链往上找最近的一个【对象】/【指向对象】
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var cur = effect;
@@ -1506,6 +1510,21 @@ public sealed class ForgePileCountVar : DynamicVar
         }
         return (fallbackPick, "");
     }
+
+    /// <summary>
+    /// 「作用对象」那一栏（<see cref="EffectSpec.TargetSide"/>）→【对象】模块那套 Pick 值
+    /// （文案里要用同一份中文名，见 <see cref="ForgeGraphCatalog.UnitZh"/>）。
+    /// 和 <see cref="TargetSideUnit"/> 一一对应（那边是生成代码、这里是文案）。
+    /// </summary>
+    public static string TargetSideToPick(string? targetSide) => targetSide switch
+    {
+        "Self" => "Self",
+        "Ally" => "ChosenAlly",
+        "AllAllies" => "AllAllies",
+        "AllEnemies" => "AllEnemies",
+        "RandomEnemies" => "RandomEnemy",
+        _ => "ChosenEnemy",          // Enemy（默认）= 打出这张牌时选中的那个目标
+    };
 
     /// <summary>【状态】模块盯的是谁（文案里要写成「指定敌人身上的虚弱层数」）。</summary>
     public static string PowerOwnerPhraseForText(ForgeGraphSpec g, ForgeNodeSpec power, CharacterProfile p)
@@ -1691,10 +1710,53 @@ public sealed class ForgePileCountVar : DynamicVar
     private static string? UnitExpr(ForgeGraphSpec g, ForgeNodeSpec node, int depth = 0) =>
         ResolveUnit(g, node, null, depth).Single;
 
-    /// <summary>【效果】模块 → 本体 API 调用。</summary>
+    /// <summary>
+    /// 【效果】模块「打谁」的解析（V0.2.129 起多了一档，优先级从高到低）：
+    ///   ① 显式接在【效果】左边「指向对象」口上的【对象】/【指向对象】模块 —— **最高**（老图就是这样）；
+    ///   ② 新编辑器里「作用对象」那一栏**被用户改过**（<see cref="EffectSpec.TargetSideCustom"/>）
+    ///      → 按那一栏算（和【对象】模块的同一套档位：自己 / 指定队友 / 全体友方 / 指定敌人 /
+    ///      全体敌人 / 随机敌人）；
+    ///   ③ 老规矩：这条链上最近一个【指向对象】声明的目标（<c>st.CurrentUnit</c>）。
+    /// ⚠ 老存档走的是 ①/③，和 V0.2.128 逐字同一条路（TargetSideCustom 在迁移时一律置 false）。
+    /// </summary>
+    private static UnitRef ResolveEffectUnit(ForgeGraphSpec g, ForgeNodeSpec node, GenState st)
+    {
+        var wired = IncomingNode(g, node, 2);
+        if (wired is not null) return ResolveUnit(g, wired, st.CurrentUnit);
+        var spec = node.EffectSpec;
+        if (spec is not null && spec.TargetSideCustom) return TargetSideUnit(spec);
+        // ⚠ 链上没有【指向对象】时 st.CurrentUnit 可能是 null —— 这正是 ResolveUnit 里
+        //   `fallback ?? UnitRef.Target` 兜的那一档，这里必须跟着兜（以前是走 ResolveUnit 兜的）。
+        return st.CurrentUnit ?? UnitRef.Target;
+    }
+
+    /// <summary>「作用对象」这一栏（<see cref="EffectSpec.TargetSide"/>）→ 打谁（和 <see cref="ResolveUnit"/> 的档位一一对应）。</summary>
+    private static UnitRef TargetSideUnit(EffectSpec e)
+    {
+        bool dup = e.AllowDuplicates;
+        return e.TargetSide switch
+        {
+            "Self" => UnitRef.Self,
+            // 「指定队友」：锻造图里和【对象】的「指定队友」同一档（那一档也是自己 —— 见 ResolveUnit）
+            "Ally" => UnitRef.Self,
+            "AllAllies" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)"),
+            "AllEnemies" => new UnitRef("ForgeFormulaRuntime.FirstEnemy(__fgPlayer)", "ForgeFormulaRuntime.EnemyList(__fgPlayer)", PerFoe: false),
+            "RandomEnemies" => new UnitRef("ForgeFormulaRuntime.RandomEnemy(__fgPlayer, allowDuplicates: " + (dup ? "true" : "false") + ")",
+                                          "ForgeFormulaRuntime.EnemyList(__fgPlayer)"),
+            // Enemy（默认）/ 认不出来 = 打出这张牌时选中的那个目标（老图的默认档）
+            _ => UnitRef.Target,
+        };
+    }
+
+    /// <summary>
+    /// 【效果】模块 → 本体 API 调用。
+    /// </summary>
     private static void EmitEffect(StringBuilder sb, CharacterProfile p, ForgeGraphSpec g, ForgeNodeSpec node,
         EmitCtx ctx, GenState st, string indent)
     {
+        // V0.2.129：【效果】模块和卡牌共用一套 EffectSpec 编辑器 —— 「用新编辑器改过」的模块
+        // 先把 spec 回写成老字段（老模块不动），下面照旧全部读老字段，生成文本对老存档逐字不变。
+        ForgeEffectBridge.SyncGraph(g);
         string kind = node.Get("Effect", "Damage");
         var def = EffectCatalog.FindKind(kind);
         sb.AppendLine();
@@ -1718,7 +1780,9 @@ public sealed class ForgePileCountVar : DynamicVar
         // 指向对象：「指向对象」入口（下标 2）接的对象模块；
         // 没接就用**这条链上最近一个【指向对象】声明的那一只**（用户要求：那是「这张牌选中谁」），
         // 链上没有【指向对象】（老图）才退回老规矩「打出时选中的目标」。
-        var unit = ResolveUnit(g, IncomingNode(g, node, 2), st.CurrentUnit);
+        // V0.2.129：新编辑器里把卡牌那栏「作用对象」也摆出来了 —— 只有用户**真的动过它**
+        // （TargetSideCustom）才让这一栏接管；老存档没动过 = 老规矩，生成文本一个字符都不变。
+        var unit = ResolveEffectUnit(g, node, st);
         string single = unit.Single ?? "__fgTarget";
         string foes = unit.Foes;
         // 「战斗状态」在这三个类上写法不一样（本体：CombatState 是 CardModel 上的属性）：
@@ -2100,6 +2164,65 @@ public sealed class ForgePileCountVar : DynamicVar
         { "ApplyPower", "TempPower", "DoublePower", "ClearPowerOne", "PetApplyPower" };
 
     /// <summary>
+    /// 【效果】模块上「编辑器里能填、但节点图这一版**不生成**」的栏位（返回中文说明，空 = 都支持）。
+    ///
+    /// 为什么需要它（V0.2.129，用户拍板 Q1=A）：【效果】模块现在和「卡牌」页是**同一套编辑器**
+    /// （同一份 <see cref="EffectSpec"/>、同一份 `EffectCommon` 模板）—— 卡牌页有的栏位它都有。
+    /// 但节点图的发射器只覆盖其中一部分（见 <see cref="SupportedEffectKinds"/> 与 <c>EmitEffect</c>
+    /// 里每个栏位到底被谁读）。**不许静默**：填了这些栏位就报错，说清「不生效 + 怎么改」。
+    ///
+    /// 这份清单**只对「节点图支持的种类」跑**（不支持的种类第一条错误已经拦住了，不必再刷一屏）。
+    /// </summary>
+    public static List<(string Level, string Message)> UnsupportedEffectSettings(ForgeGraphSpec? g, ForgeNodeSpec node)
+    {
+        var list = new List<(string, string)>();
+        var e = ForgeEffectBridge.Ensure(node);
+        void Add(string what, string how) => list.Add(("错误", $"「{what}」在锻造节点图里不生效 —— {how}"));
+        // 「警告」档：这一栏**老存档里就可能有**（V0.2.128 的【效果】模块对**所有**种类都摆着
+        // 「下回合生效」那个勾选框，勾了也只是生成一行注释）。报错的话老存档会突然生成不出来 ——
+        // 所以这一档只**警告**（配置检查里看得见、不挡住生成），别的一律报错。
+        void Warn(string what, string how) => list.Add(("警告", $"「{what}」在锻造节点图里不生效 —— {how}"));
+
+        if (e.UpgradeAmount != 0m)
+            Add("升级增量", "节点图没有「升级增量」这个概念；要给升级改数值请在【数值】模块里写公式。");
+        if (e.AmountIsX || e.TimesIsX || e.RepeatIsX)
+            Add("数值 / 生效次数 / 命中次数 = X", "节点图里的 X / Y 是【能量】模块送出来的：把它的出口接到【效果】左边的「数值」口，"
+                + "再在【数值】模块里写 X / Y。");
+        if (e.AmountIsStack || e.TimesIsStack || e.RepeatIsStack)
+            Add("「= 本状态层数」那几个开关", "那是「自定义状态」触发器的开关；节点图里用【状态】模块 + 【数值】模块取值。");
+        if (e.Condition is not null && !e.Condition.IsNone)
+            Add("条件选项", "节点图里用【条件】模块 + 【if】/【且】/【或】/【关系符】表达（【效果】模块自己不带条件）。");
+        if (e.SlowPercent > 0m)
+            Add("直接把「缓慢」设成 N%", "节点图只按层数施加状态（要用那一档请到「卡牌 / 遗物 / 药水」页的效果列表里配）。");
+        if (e.IsSpawnRandom || e.HasSpawnChoice || e.SpawnChosen)
+            Add("取卡方式 = 按范围随机 / 范围限定 / 多选1 / 从范围里自己挑一张",
+                "节点图的「生成卡牌 / 变化卡牌」只能生成（变化成）「目标卡」那一栏指定的那张卡。");
+        if (e.SpawnUpgraded || e.SpawnFree || e.SpawnFreeThisTurn || e.SpawnUpgradedThisTurn)
+            Add("生成 / 变化出来的卡的附加处理（直接升级 / 免费 / 仅本回合免费 / 仅本回合升级）",
+                "节点图把生成出来的卡按原样放进牌堆。");
+        if (e.HasSpawnKeyword)
+            Add("生成 / 变化出来的卡：加上关键词", "节点图不支持给生成出来的卡挂关键词。");
+        if (e.ShowCopies && e.Copies != 1)
+            Add("复制的份数", "节点图的「复制卡牌」每张复制 1 份（「数值」= 选几张牌）。");
+        if (e.UsesCountMode && e.CountMode.Length > 0)
+            Add("取几张（最多 N / 任意张）", "节点图按「恰好 N 张」选牌。");
+        if (e.UsesSelectPile && !string.Equals(e.SelectPile, "Hand", StringComparison.OrdinalIgnoreCase))
+            Add("从哪里选牌", "节点图的选牌类效果**只从手牌里挑**（要从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌请到「卡牌」页的效果列表里配）。");
+        if (e.IsPetEffect && !string.IsNullOrWhiteSpace(e.PetSummon))
+            Add("召唤物（哪一只）", "节点图里由【对象】模块决定哪一只召唤物（选「指定召唤物」+ 填召唤物名称）。");
+        if (e.NextTurn && !string.Equals(e.Kind, "Block", StringComparison.Ordinal)
+            && !string.Equals(e.Kind, "Draw", StringComparison.Ordinal)
+            && !string.Equals(e.Kind, "ApplyPower", StringComparison.Ordinal))
+            Warn("下回合生效", "节点图这一版只有「获得格挡 / 抽牌 / 施加增益减益」有延迟分支（别的种类会被当成立即生效生成）。");
+        // 「作用对象」这一栏是支持的（TargetSideCustom），但**显式接线的【对象】优先**：
+        // 用户可能在两边都设了，说清谁说了算（只是提示，不挡住生成）。
+        if (e.TargetSideCustom && g is not null && IncomingNode(g, node, 2) is not null)
+            list.Add(("提示", "「作用对象」这一栏被【效果】左边那个「指向对象」口上接的【对象】模块盖住了 —— "
+                + "生成时以接线为准（要按「作用对象」走就把那条线删掉）。"));
+        return list;
+    }
+
+    /// <summary>
     /// 图里的问题（给校验器用）：<c>(级别, 说明)</c>，级别 = 错误 / 警告 / 提示。
     /// <paramref name="scope"/> = Card / Potion / Relic。
     /// </summary>
@@ -2108,6 +2231,9 @@ public sealed class ForgePileCountVar : DynamicVar
     {
         var list = new List<(string, string)>();
         if (g is null || g.IsEmpty) return list;
+        // V0.2.129：【效果】模块和卡牌共用一套编辑器 —— 「新编辑器改过」的模块先把 spec 回写成老字段，
+        // 下面全部按老字段校验（老模块原样不动）。界面 / CLI 都走这里，所以两边看到的问题一致。
+        ForgeEffectBridge.SyncGraph(g);
         var trigger = g.TriggerNode;
         if (trigger is null)
         {
@@ -2264,8 +2390,9 @@ public sealed class ForgePileCountVar : DynamicVar
             if (!SupportedEffectKinds.Contains(kind))
             {
                 list.Add(("错误", $"【效果】选的「{display}」**节点图里还没接上**（选了不会做任何事，只在生成的代码里留一行注释）。"
-                    + "请把它放到「卡牌 / 遗物 / 药水」页的「效果」列表里（那边支持全部种类），"
-                    + $"或者把节点图里这一块换成能用的种类。节点图现在支持：{string.Join(" / ", SupportedEffectKinds.OrderBy(x => x, StringComparer.Ordinal).Select(k => EffectCatalog.FindKind(k).Display))}。"));
+                    + "请把这一块换成节点图支持的种类，或者把这一项从锻造页移出去（不勾「锻造」之后）"
+                    + "再到「卡牌 / 药水 / 遗物」页的「效果」列表里配 —— 那边支持全部 65 种。"
+                    + $"节点图现在支持：{string.Join(" / ", SupportedEffectKinds.OrderBy(x => x, StringComparer.Ordinal).Select(k => EffectCatalog.FindKind(k).Display))}。"));
                 continue;
             }
             // ② 必填的东西没填（状态 / 目标卡）：也是「一行代码都不生成」，但原因完全不同
@@ -2273,6 +2400,10 @@ public sealed class ForgePileCountVar : DynamicVar
                 list.Add(("错误", $"【效果】「{display}」还没选「状态」（模块上的「状态」那一栏）—— 没选的话这一块不会生成任何代码。"));
             if (kind == "GenerateCard" && string.IsNullOrWhiteSpace(n.Get("SpawnCardId")))
                 list.Add(("错误", $"【效果】「{display}」还没选「目标卡」（模块上的「目标卡」那一栏）—— 没选的话这一块不会生成任何代码。"));
+            // ③ V0.2.129：编辑器合并之后，卡牌页有的栏位【效果】模块上都有 ——
+            //    但节点图的发射器只覆盖其中一部分。**填了不生效的栏位一律报错**（不许静默生成一半）。
+            foreach (var (level, msg) in UnsupportedEffectSettings(g, n))
+                list.Add((level, $"【效果】「{display}」的{msg}"));
         }
         // 连线指向的模块必须还在（删模块之后残留的线）
         foreach (var l in g.Links)        {

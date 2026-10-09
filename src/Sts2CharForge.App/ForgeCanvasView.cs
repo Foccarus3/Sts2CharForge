@@ -32,11 +32,17 @@ public sealed class ForgeCanvasView : Grid
 {
     // 画布坐标里的尺寸常量（模块宽度 / 标题栏高度 / 端口一行多高）
     private const double NodeWidth = ForgeGraphCatalog.NodeWidth;
+    /// <summary>【效果】模块的宽度（V0.2.129：它现在装的是「卡牌」页那套效果编辑器，210 放不下）。</summary>
+    private const double EffectNodeWidth = 470;
     private const double HeaderHeight = ForgeGraphCatalog.HeaderHeight;
     private const double PortRowHeight = ForgeGraphCatalog.PortRowHeight;
     private const double TopPad = 8;
     private const double MinCanvasW = 1400;
     private const double MinCanvasH = 900;
+
+    /// <summary>一个模块在布上的宽度（只有【效果】模块更宽，见 <see cref="EffectNodeWidth"/>）。</summary>
+    private static double WidthOf(ForgeNodeSpec? node) =>
+        node is not null && string.Equals(node.Kind, "Effect", StringComparison.Ordinal) ? EffectNodeWidth : NodeWidth;
 
     private readonly Canvas _root = new();
     private readonly Canvas _wireLayer = new();
@@ -51,6 +57,8 @@ public sealed class ForgeCanvasView : Grid
 
     private readonly Dictionary<string, FrameworkElement> _nodeViews = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Point> _portPos = new(StringComparer.Ordinal);
+    /// <summary>每个模块标题栏上那个 TextBlock（【效果】模块改了效果种类之后要就地刷新标题，不重建整块布）。</summary>
+    private readonly Dictionary<string, TextBlock> _nodeTitles = new(StringComparer.Ordinal);
 
     private ForgeGraphSpec? _graph;
     private string _scope = "Card";
@@ -264,7 +272,8 @@ public sealed class ForgeCanvasView : Grid
         formulaHint.Text = "数值栏也能填公式 / 参数（和【数值】模块同一套）：X = 当前所有能量，Y = 当前所有额外资源量，"
              + "一个字母的自定义参数（在「自定义参数 / 组」页定义），以及内置只读量 —— "
              + string.Join("、", FormulaBuiltins.All.Select(b => b.Id))
-             + "。点数值框右边的「…」可以直接插入。"
+             + "。点数值框右边的「…」可以直接插入（【效果】模块里的「数值 / 生效次数 / 命中次数 / 概率」"
+             + "在框里直接写就行 —— 那一块和「卡牌」页的效果编辑器是同一套）。"
              + "（费用那两栏【能量】只收生成期就算得出来的数：本体声明卡牌费用要编译期常量。）";
         formulaHint.ToolTip = ForgeNumbers.FormulaHint + "\n\n内置只读量：\n" + FormulaBuiltins.HintList;
         SetRow(formulaHint, 1);
@@ -438,6 +447,7 @@ public sealed class ForgeCanvasView : Grid
         RefreshKindPick();
         _nodeViews.Clear();
         _portPos.Clear();
+        _nodeTitles.Clear();
         _root.Children.Clear();
         _root.Children.Add(_wireLayer);      // 连线画在模块**下面**（但连线自己能吃到右键）
         _root.Children.Add(_overlay);
@@ -484,7 +494,7 @@ public sealed class ForgeCanvasView : Grid
 
         var border = new Border
         {
-            Width = NodeWidth,
+            Width = WidthOf(node),
             Background = new SolidColorBrush(Color.FromRgb(0xF7, 0xF7, 0xF7)),
             BorderBrush = new SolidColorBrush(unknown ? Color.FromRgb(0xB0, 0x00, 0x20) : (Color)ColorConverter.ConvertFromString(accent)),
             BorderThickness = new Thickness(2),
@@ -532,6 +542,7 @@ public sealed class ForgeCanvasView : Grid
             FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
         });
+        _nodeTitles[node.Id] = (TextBlock)headerRow.Children[headerRow.Children.Count - 1];
         header.Child = headerRow;
         // 只留一个 MouseLeftButtonDown：里面会先选中、再开始拖动（两个处理器里前一个把 e.Handled 置了，
         // 后一个根本不会跑，等于「选中」概率性失效）。标题栏上那个「×」自己把事件吞掉，不会触发拖动。
@@ -587,10 +598,42 @@ public sealed class ForgeCanvasView : Grid
 
         if (kind is not null)
         {
-            foreach (var field in kind.Fields)
+            // 【效果】模块（V0.2.129，用户拍板 Q1=A）：**不再**一栏一栏搭数据驱动的字段，
+            // 整块换成「卡牌」页那套效果编辑器（同一份 EffectSpec、同一份 EffectCommon 模板）——
+            // 效果种类底下出现的可填写项两边因此完全一致（见 App.xaml 的 EffectEditorForge）。
+            if (string.Equals(kind.Id, "Effect", StringComparison.Ordinal))
             {
-                var ui = BuildField(node, kind, field);
-                if (ui is not null) stack.Children.Add(ui);
+                var spec = ForgeEffectBridge.Ensure(node);
+                // ⚠ 顺序要紧：界面标记（IsForgeChain 那几个显隐）必须在 Bind **之前**设好 ——
+                //   挂上通知之后任何一次 set 都会把 spec 回写进老字段（那是「用户改过」才该发生的事）。
+                spec.IsForgeChain = true;
+                ForgeEffectBridge.Bind(node);
+                var host = new ContentControl
+                {
+                    Content = spec,
+                    ContentTemplate = Application.Current?.TryFindResource("EffectEditorForge") as DataTemplate,
+                    Margin = new Thickness(4, 2, 4, 4),
+                };
+                stack.Children.Add(host);
+                // 效果种类一改，标题栏那句「效果：造成伤害」要跟着变（标题栏是 TextBlock，不会自己刷新）。
+                // ⚠ 每块布每次 Rebuild 都会走到这里，所以订阅必须**只挂一次**（靠模块上的标记），
+                //   否则同一个 spec 会被挂上 N 个处理器（改一格就刷 N 次，还会一直攒着）。
+                if (!node.EffectTitleBound)
+                {
+                    node.EffectTitleBound = true;
+                    spec.PropertyChanged += (_, _) =>
+                    {
+                        if (_nodeTitles.TryGetValue(node.Id, out var t)) t.Text = node.Title;
+                    };
+                }
+            }
+            else
+            {
+                foreach (var field in kind.Fields)
+                {
+                    var ui = BuildField(node, kind, field);
+                    if (ui is not null) stack.Children.Add(ui);
+                }
             }
         }
         else
@@ -920,13 +963,42 @@ public sealed class ForgeCanvasView : Grid
         return field is not null && BuildField(trigger, kind!, field) is not null;
     }
 
-    /// <summary>自检用：【效果】的某一栏在当前选的效果种类下会不会显示（需求：只有对应种类才出现）。</summary>
+    /// <summary>
+    /// 自检用：【效果】模块上某一栏会不会显示。
+    ///
+    /// V0.2.129（需求 3 / 用户拍板 Q1=A）之后判据换了：这个模块装的是「卡牌」页那套效果编辑器，
+    /// 一栏显不显示**就是那条效果自己的 EffectSpec 说了算**（<c>ShowForgeValueRows</c> 那几个属性）——
+    /// 和「卡牌 / 遗物 / 药水 / 自定义状态」四处绑的是同一份属性，所以两边必然一致，不会各写一套。
+    /// </summary>
     public bool EffectFieldVisibleForCheck(ForgeNodeSpec effect, string effectKind, string fieldKey)
     {
-        effect.SetField("Effect", effectKind);
-        var kind = ForgeGraphCatalog.Find("Effect");
-        var field = kind?.Fields.FirstOrDefault(f => f.Key == fieldKey);
-        return field is not null && BuildField(effect, kind!, field) is not null;
+        var spec = ForgeEffectBridge.Ensure(effect);
+        spec.IsForgeChain = true;            // 锻造【效果】模块里那一份（数值那几栏换成能写公式的文本框）
+        spec.Kind = effectKind;
+        return fieldKey switch
+        {
+            "Effect" => true,                                   // 效果种类那一行（模板里永远在）
+            "Amount" => spec.ShowForgeValueRows,                // 锻造链：能写公式的「数值」框
+            "AmountFormula" => spec.ShowAmountFormulaNormal,    // 卡牌那种独立「数值（公式）」框（锻造链不摆）
+            "Times" => spec.ShowForgeTimesBox,
+            "Hits" => spec.ShowForgeRepeatBox,
+            "Chance" => spec.ShowChanceRowForge,
+            "TargetSide" => true,                               // 「作用对象」这一栏现在也在（改过才接管目标）
+            "PowerId" or "SpawnCardId" or "SpawnTo" or "CardPick" => true,
+            "PotionPick" => spec.UsesPotionOptions,
+            "PotionId" => spec.ShowPotionPicker,
+            "SpawnPick" or "RangeFilter" or "SpawnUpgraded" => spec.UsesSpawnOptions,
+            "SelectPile" => spec.UsesSelectPile,
+            "CountMode" => spec.UsesCountMode,
+            "Copies" => spec.ShowCopies,
+            "PlaceTo" => spec.UsesPlaceTo,
+            "GivenKeyword" => spec.IsGiveKeyword,
+            "BoostStat" => spec.IsBoostCard,
+            "ScrapeCond" or "ScrapeOp" => spec.ShowScrapeOptions,
+            "NextTurn" => spec.ShowNextTurn,
+            "TempPowerReverse" => spec.IsTempPower,
+            _ => false,
+        };
     }
 
     /// <summary>「召唤物」下拉的候选（来自当前配置里那些启用的召唤物；Id = 生成用的英文类名）。</summary>
@@ -1207,6 +1279,19 @@ public sealed class ForgeCanvasView : Grid
     /// <summary>布上已经画出来的模块个数（自检用：和 Graph.Nodes.Count 对不上就说明画还没重建）。</summary>
     public int DrawnNodeCount => _nodeViews.Count;
 
+    /// <summary>
+    /// 自检用：【效果】模块里那个「卡牌那套效果编辑器」的宿主（V0.2.129）。
+    /// 返回 null = 这个模块里没装编辑器（不是【效果】模块 / 还没重建）。
+    /// </summary>
+    public System.Windows.Controls.ContentControl? EffectEditorHostForCheck(ForgeNodeSpec node)
+    {
+        var view = NodeView(node);
+        if (view?.Child is not Panel panel) return null;
+        foreach (var child in panel.Children)
+            if (child is System.Windows.Controls.ContentControl cc && cc.Content is EffectSpec) return cc;
+        return null;
+    }
+
     /// <summary>画布上模块的 Id 清单（自检排错用）。</summary>
     public string DrawnNodeIds => string.Join(",", _nodeViews.Keys.Select(k => k.Length >= 6 ? k.Substring(0, 6) : k));
 
@@ -1332,7 +1417,7 @@ public sealed class ForgeCanvasView : Grid
     public void ZoomToFit()
     {
         if (_graph is null || _graph.Nodes.Count == 0) return;
-        double contentW = _graph.Nodes.Max(n => n.X + NodeWidth + 160);
+        double contentW = _graph.Nodes.Max(n => n.X + WidthOf(n) + 160);
         double contentH = _graph.Nodes.Max(n =>
             n.Y + HeaderHeight + TopPad
             + Math.Max(n.KindDef?.Inputs.Count ?? 0, n.KindDef?.Outputs.Count ?? 0) * (PortRowHeight + 2)
@@ -1488,7 +1573,7 @@ public sealed class ForgeCanvasView : Grid
             double nh = HeaderHeight + TopPad
                         + Math.Max(node.KindDef?.Inputs.Count ?? 0, node.KindDef?.Outputs.Count ?? 0) * (PortRowHeight + 2)
                         + (node.KindDef?.Fields.Count ?? 0) * 46 + 20;
-            bool hit = node.X < x + w && node.X + NodeWidth > x && ny < y + h && ny + nh > y;
+            bool hit = node.X < x + w && node.X + WidthOf(node) > x && ny < y + h && ny + nh > y;
             if (hit && !_selectedNodes.Contains(node)) _selectedNodes.Add(node);
         }
         UpdateSelectionVisual();
@@ -1846,7 +1931,7 @@ public sealed class ForgeCanvasView : Grid
                     _portPos[Key(node.Id, r, PortStoredAsOutput(ip, false))] = new Point(node.X, cy);
                 // 右边那一列（出口；【if】的「条件」口也画在这儿 —— 它在最上面，先判断它）
                 if (kind.OutputPort(r) is { } op)
-                    _portPos[Key(node.Id, r, PortStoredAsOutput(op, true))] = new Point(node.X + NodeWidth, cy);
+                    _portPos[Key(node.Id, r, PortStoredAsOutput(op, true))] = new Point(node.X + WidthOf(node), cy);
             }
         }
     }
@@ -1931,7 +2016,7 @@ public sealed class ForgeCanvasView : Grid
         foreach (var n in _graph.Nodes)
         {
             if (n is null) continue;
-            w = Math.Max(w, n.X + NodeWidth + 260);
+            w = Math.Max(w, n.X + WidthOf(n) + 260);
             double body = HeaderHeight + TopPad + Math.Max(n.KindDef?.Inputs.Count ?? 0, n.KindDef?.Outputs.Count ?? 0) * (PortRowHeight + 2)
                           + (n.KindDef?.Fields.Count ?? 0) * 46 + 40;
             h = Math.Max(h, n.Y + body + 120);

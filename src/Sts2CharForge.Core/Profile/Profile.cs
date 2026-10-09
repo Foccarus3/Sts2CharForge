@@ -498,6 +498,187 @@ public sealed class EffectSpec : SpecBase
         set { if (_isCardChain == value) return; _isCardChain = value; Raise(nameof(ShowAmountBox)); }
     }
 
+    // ==================================================================================
+    //  锻造【效果】模块（V0.2.129）：和「卡牌」页共用同一套 EffectSpec 编辑器
+    // ==================================================================================
+    //
+    // 用户拍板（《已拍板决定.md》Q1=A）：锻造【效果】模块**直接复用**卡牌那套 EffectSpec 编辑器，
+    // 不再维护 `ForgeNodeField` 那套平行实现。于是：
+    //   · 【效果】模块上的设置 = 一个 EffectSpec（见 ForgeNodeSpec.EffectSpec）；
+    //   · 界面就是卡牌那份模板（`EffectCommon`），**出现的可填写项自然和卡牌页一致**；
+    //   · 生成端仍然读那块模块的**老字段**（`Fields`）——由 `ForgeEffectBridge` 在两边之间搭桥：
+    //     老存档（只有 Fields）→ 按老字段生成，**一个字节都不变**；
+    //     用新编辑器改过的（有 EffectSpec）→ 把 spec 回写成 Fields 再生成。
+    //
+    // 下面这几项就是这条桥要用的：
+    //   · IsForgeChain：这条效果**现在显示在锻造【效果】模块里**（由界面设置，不写进存档）——
+    //     只有它才会让「数值 / 生效次数 / 命中次数 / 概率」换成**能填公式的文本框**；
+    //     卡牌 / 遗物 / 药水 / 自定义状态四处一个字都不变（见 App.xaml 里那几行的 Visibility）。
+    //   · ForgeAmountText：锻造图里「数值」那一栏的**原文**（锻造图**所有**种类都能写公式；
+    //     卡牌那 5 种走 AmountFormula，其余种类没地方放公式，所以单独存一份原文）。
+    //   · TargetSideCustom：「作用对象」这一栏被用户在锻造页上**改过**（老存档是 false =
+    //     照老规矩由【对象】模块 / 这张牌选中的目标决定，生成文本逐字不变）。
+    // ==================================================================================
+
+    private bool _isForgeChain;
+
+    /// <summary>这条效果是不是正在**锻造【效果】模块**里显示（由界面设置；不写进存档）。</summary>
+    [JsonIgnore]
+    public bool IsForgeChain
+    {
+        get => _isForgeChain;
+        set
+        {
+            if (_isForgeChain == value) return;
+            _isForgeChain = value;
+            Raise(nameof(ShowForgeValueRows));
+            Raise(nameof(ShowCardValueRows));
+            Raise(nameof(ShowAmountBoxNormal));
+            Raise(nameof(ShowAmountFormulaNormal));
+            Raise(nameof(ShowFixedTimesBox));
+            Raise(nameof(ShowForgeTimesBox));
+            Raise(nameof(ShowFixedRepeatBox));
+            Raise(nameof(ShowForgeRepeatBox));
+            Raise(nameof(ShowChanceRowNormal));
+            Raise(nameof(ShowChanceRowForge));
+        }
+    }
+
+    /// <summary>锻造链上「数值 / 生效次数 / 命中次数 / 概率」换成能填公式的文本框（见 App.xaml）。</summary>
+    [JsonIgnore] public bool ShowForgeValueRows => IsForgeChain;
+    /// <summary>卡牌 / 遗物 / 药水 / 自定义状态四处照旧（这一条恒为 !IsForgeChain，外观与绑定都不变）。</summary>
+    [JsonIgnore] public bool ShowCardValueRows => !IsForgeChain;
+    /// <summary>「数值」那个**固定数值框**（卡牌链上那 5 种会收起来；锻造链一律不显示它，用下面的文本框）。</summary>
+    [JsonIgnore] public bool ShowAmountBoxNormal => ShowAmountBox && !IsForgeChain;
+    /// <summary>「数值（公式）」那一栏（锻造链不显示：锻造那个「数值」文本框本身就能写公式）。</summary>
+    [JsonIgnore] public bool ShowAmountFormulaNormal => ShowAmountFormula && !IsForgeChain;
+    /// <summary>固定「生效次数」框（int）。</summary>
+    [JsonIgnore] public bool ShowFixedTimesBox => !IsForgeChain;
+    /// <summary>锻造链的「生效次数」文本框（能写公式 / 参数）。</summary>
+    [JsonIgnore] public bool ShowForgeTimesBox => IsForgeChain;
+    /// <summary>固定「对群数 / 命中次数」框（int，按种类收起）。</summary>
+    [JsonIgnore] public bool ShowFixedRepeatBox => ShowRepeatCountInput && !IsForgeChain;
+    /// <summary>锻造链的「命中次数」文本框（能写公式 / 参数；锻造图里一直摆着，因为本体好几处会读它）。</summary>
+    [JsonIgnore] public bool ShowForgeRepeatBox => IsForgeChain;
+    /// <summary>「概率生效」勾选框 + 百分比那两件（锻造链不显示：锻造那个「概率」文本框自带公式）。</summary>
+    [JsonIgnore] public bool ShowChanceRowNormal => !IsForgeChain;
+    /// <summary>锻造链的「概率生效（%）」文本框（100 = 必定，能写公式）。</summary>
+    [JsonIgnore] public bool ShowChanceRowForge => IsForgeChain;
+
+    private string _forgeAmountText = "";
+
+    /// <summary>
+    /// 锻造【效果】模块「数值」那一栏的**原文**（空 = 用 <see cref="Amount" /> / <see cref="AmountFormula"/>）。
+    ///
+    /// 为什么单独一格：锻造图的数字框**所有种类**都能写公式（V0.2.128 需求 1，用户拍板 Q2=A），
+    /// 而卡牌那份只对「伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态」5 种认 <see cref="AmountFormula"/>
+    ///（<see cref="UsesAmountFormula"/> 是卡牌链的判据，不能放宽 —— 那会动到卡牌生成）。
+    /// 所以锻造链的原文存在这里，回写老字段时**一字不改**（老存档填的是 `6` 还是 `min(2,X)` 都原样落回去）。
+    /// </summary>
+    public string ForgeAmountText
+    {
+        get => _forgeAmountText;
+        set
+        {
+            string next = value ?? "";
+            if (!Set(ref _forgeAmountText, next)) return;
+            // 顺带把 Amount / AmountFormula 也对齐（列表里的 Display / 卡面文案读它们；生成端只认 ForgeAmountText）
+            string s = FormulaText(next);
+            if (s.Length == 0) return;
+            if (decimal.TryParse(s, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out decimal v)) { Amount = v; AmountFormula = ""; }
+            else if (FormulaSupports(Kind)) AmountFormula = next;
+        }
+    }
+
+    /// <summary>锻造链「数值」栏的显示文字（没填过原文就退回固定数值 / 卡牌那套公式）。</summary>
+    [JsonIgnore]
+    public string ForgeAmountTextShown => _forgeAmountText.Length > 0
+        ? _forgeAmountText
+        : UsesAmountFormula ? AmountFormulaText : Amount.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>锻造链「生效次数」文本框的文字（写了公式就是公式本身）。</summary>
+    [JsonIgnore]
+    public string ForgeTimesText
+    {
+        get => FormulaText(TimesFormula) is { Length: > 0 } f ? f : Times.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        set => ApplyForgeCountText(value, TimesFormula, Times, v => Times = v, f => TimesFormula = f);
+    }
+
+    /// <summary>锻造链「命中次数」文本框的文字（= 卡牌那边的「对群数 / 命中次数」）。</summary>
+    [JsonIgnore]
+    public string ForgeHitsText
+    {
+        get => FormulaText(RepeatFormula) is { Length: > 0 } f ? f : RepeatCount.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        set => ApplyForgeCountText(value, RepeatFormula, RepeatCount, v => RepeatCount = v, f => RepeatFormula = f);
+    }
+
+    /// <summary>锻造链「概率生效（%）」文本框的文字（100 = 必定；写了公式就现算）。</summary>
+    [JsonIgnore]
+    public string ForgeChanceText
+    {
+        get => FormulaText(ChanceFormula) is { Length: > 0 } f ? f
+            : (!ChanceEnabled ? "100" : ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture));
+        set
+        {
+            string text = FormulaText(value ?? "");
+            if (decimal.TryParse(text, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out decimal v))
+            {
+                ChanceFormula = "";
+                ChancePercent = v;
+                ChanceEnabled = v != 100m;
+            }
+            else
+            {
+                ChanceFormula = text;
+                ChanceEnabled = true;
+            }
+            Raise(nameof(ForgeChanceText));
+        }
+    }
+
+    /// <summary>锻造链数字框的公共写法：填得进一个数就写固定值、否则当成公式原文（两条路的生成语义一致）。</summary>
+    private void ApplyForgeCountText(string? text, string oldFormula, int oldValue, Action<int> setValue, Action<string> setFormula)
+    {
+        string s = FormulaText(text ?? "");
+        if (decimal.TryParse(s, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out decimal v))
+        {
+            setFormula("");
+            setValue(Math.Max(1, (int)Math.Round(v)));
+        }
+        else
+        {
+            setValue(oldValue);
+            setFormula(s);
+        }
+        Raise(nameof(ForgeTimesText));
+        Raise(nameof(ForgeHitsText));
+        Raise(nameof(Display));
+    }
+
+    private bool _targetSideCustom;
+
+    /// <summary>
+    /// 「作用对象」这一栏**被用户在锻造页上改过**（老存档 = false）。
+    ///
+    /// 为什么需要这个标记：锻造图里「这条效果打谁」本来是由【对象】模块（接到【效果】左边的
+    /// 「指向对象」口）决定的，链上没有就按老规矩用「这张牌选中的目标」。新编辑器把卡牌那栏
+    /// 「作用对象」也摆出来了 —— 只有用户**真的动过它**，才让这一栏接管目标（老存档的生成文本
+    /// 因此逐字不变）。没动过 = 照老路走（见 ForgeGraphGen.EmitEffect）。
+    /// </summary>
+    public bool TargetSideCustom { get => _targetSideCustom; set => Set(ref _targetSideCustom, value); }
+
+    /// <summary>锻造【效果】模块里那几栏的说明（界面提示用）。</summary>
+    [JsonIgnore]
+    public string ForgeEffectHint =>
+        "这一块和「卡牌」页的效果编辑器是**同一套**（同一份模板、同一份数据）：效果种类底下出现的可填写项完全一致。"
+        + "差别只有三处，都是锻造图自己的规矩：①「数值 / 生效次数 / 命中次数 / 概率」可以直接写公式或参数"
+        + "（X = 当前能量，Y = 当前额外资源量，内置只读量见下面「可用量」）；"
+        + "②「作用对象」默认由【对象】模块决定（接到【效果】左边那个「指向对象」口），你在这里改过之后以这里为准；"
+        + "③【效果】模块上没接的种类 / 栏位会在「配置检查」里被**报错拦住**（不会静默生成一半）。";
+
     /// <summary>「数值公式」那一栏底下的说明文字。</summary>
     [JsonIgnore]
     public string AmountFormulaHint

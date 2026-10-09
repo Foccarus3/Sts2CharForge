@@ -84,18 +84,31 @@
                      公式留空 = 0（不显示也不执行）；老存档里那 5 种的固定数值打开存档时**自动转成公式**，
                      所以不会丢配置。其余种类没有公式可用（数值必须在生成时定下来），「数值」框照旧显示。 -->
                 <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2">
-                    <Grid Visibility="{Binding ShowAmountBox, Converter={StaticResource BoolToVis}}">
+                    <Grid Visibility="{Binding ShowAmountBoxNormal, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="数值" Style="{StaticResource Label}"/>
                         <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Amount, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
+                    <!-- 锻造【效果】模块（V0.2.129）：同一栏，但**框里能直接写公式 / 参数** ——
+                         这是 V0.2.128 给锻造数字框加的能力（用户拍板 Q2=A），合并编辑器之后必须保住。
+                         只有锻造链（IsForgeChain）看得到它；卡牌 / 遗物 / 药水 / 自定义状态四处一个字都不变。 -->
+                    <Grid Visibility="{Binding ShowForgeValueRows, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="数值" Style="{StaticResource Label}"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                 Text="{Binding ForgeAmountText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="这一栏和「卡牌」页那个「数值」是同一件事；锻造图里**所有**效果种类都能直接写公式或参数：&#10;X = 当前所有能量，Y = 当前额外资源量，一个字母的自定义参数（「自定义参数 / 组」页里定义），以及内置只读量（Turn / HandCount / DiscardedThisTurn…，清单见模块下面那个「可用量」小框）。&#10;支持 + - * / ( ) 和 min / max / floor / ceil / round / abs；填纯数字和以前一模一样。"/>
+                    </Grid>
                     <!-- 数值公式（需求原文：「另加一栏『数值公式』」）：
                          留空 = 0（这条效果不显示也不执行）；写了 = 打出这张牌那一刻现算，卡面显示算出来的数字。
                          只对「伤害 / 格挡 / 失去生命 / 回复生命 / 施加增益减益」这 5 种出现 ——
-                         其余种类的数值必须在生成时就定下来（抽几张 / 生成几张要提前分配变量和选牌上限）。 -->
-                    <Grid Margin="0,4,0,0" Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}">
+                         其余种类的数值必须在生成时就定下来（抽几张 / 生成几张要提前分配变量和选牌上限）。
+                         锻造链不显示它（上面那个「数值」框本身就能写公式）。 -->
+                    <Grid Margin="0,4,0,0" Visibility="{Binding ShowAmountFormulaNormal, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
@@ -106,7 +119,7 @@
                                  ToolTip="例：M*3（M 是「自定义参数 / 组」页里定义的参数）、max(1, N/2)、X（当前能量）。&#10;内置实时只读量（不用定义，直接写）：Turn 回合数 / HandCount·DrawCount·DiscardCount·ExhaustCount 各摞张数 / DiscardedThisTurn·ThisCombat 丢弃张数 / ExhaustedThisTurn·ThisCombat 消耗张数 / GeneratedThisTurn·ThisCombat 生成张数（含复制）/ EnergySpentThisTurn·ThisCombat 花掉的能量 / StarsGainedThisTurn·ThisCombat 获得的额外资源量 / EnergyGainedThisTurn·ThisCombat 获得的能量 / PowersOnMe 身上状态数。&#10;支持 + - * / ( ) 和 min / max / floor / ceil / round / abs，最前面可以写一个 =。&#10;留空 = 0（这条效果不显示也不执行）。"/>
                     </Grid>
                     <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
-                               Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}"
+                               Visibility="{Binding ShowAmountFormulaNormal, Converter={StaticResource BoolToVis}}"
                                Text="{Binding AmountFormulaHint}"/>
                 </StackPanel>
 
@@ -116,13 +129,29 @@
                           SelectedItem="{Binding TargetSide}"/>
 
                 <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
-                           Visibility="{Binding ShowRepeatCountInput, Converter={StaticResource BoolToVis}}"
+                           Visibility="{Binding ShowFixedRepeatBox, Converter={StaticResource BoolToVis}}"
                            ToolTip="只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到这个数字；其它种类会自动收起这一栏（填了不生效）。"/>
                 <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"
-                         Visibility="{Binding ShowRepeatCountInput, Converter={StaticResource BoolToVis}}"/>
+                         Visibility="{Binding ShowFixedRepeatBox, Converter={StaticResource BoolToVis}}"/>
+                <!-- 锻造【效果】模块的「命中次数」：同一栏，框里能写公式（锻造图里一直摆着 —— 本体好几处会读它） -->
+                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowForgeRepeatBox, Converter={StaticResource BoolToVis}}"
+                           ToolTip="多段攻击的段数 / 随机挑几个敌人。锻造图里可以直接写公式或参数（X / Y / 内置只读量）。"/>
+                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}"
+                         Text="{Binding ForgeHitsText, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowForgeRepeatBox, Converter={StaticResource BoolToVis}}"/>
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"/>
-                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"/>
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
+                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
+                <!-- 锻造【效果】模块的「生效次数」：同一栏，框里能写公式（用户要求⑦ / V0.2.128 的能力） -->
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowForgeTimesBox, Converter={StaticResource BoolToVis}}"
+                           ToolTip="整条效果重复几遍。锻造图里可以直接写公式或参数（X / Y / 内置只读量）。"/>
+                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}"
+                         Text="{Binding ForgeTimesText, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowForgeTimesBox, Converter={StaticResource BoolToVis}}"/>
 
                 <TextBlock Grid.Row="5" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"/>
                 <local:SearchComboBox Grid.Row="5" Grid.Column="1"
@@ -422,7 +451,8 @@
                               ToolTip="只有这五种真的有延迟分支（格挡 / 抽牌 / 能量 / 额外资源量 / 施加扣除状态）：本体的下回合状态或工具生成的延迟状态。别的种类勾不上（这一行不显示）——「生成 / 变化 / 复制卡牌的 下回合生成」还在做。"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->
-                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowChanceRowNormal, Converter={StaticResource BoolToVis}}">
                         <CheckBox Content="概率生效" Style="{StaticResource Check}" IsChecked="{Binding ChanceEnabled}"
                                   ToolTip="勾上以后，这条效果只有下面这个百分比的机会会真的执行；没掷中的话只跳过这一条，同一张牌 / 遗物 / 状态里的其它效果照常执行。"/>
                         <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
@@ -431,6 +461,17 @@
                         <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="%"/>
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
                                    Text="（1~100，只对「这一条效果」生效，其它效果不受影响）"/>
+                    </StackPanel>
+                    <!-- 锻造【效果】模块的「概率生效」：锻造图的概率就是**一个百分比**（100 = 必定），
+                         所以这里合成一栏，并且框里能直接写公式（V0.2.128 的能力；卡牌那套勾选框 + 区间语义不适用于节点图）。 -->
+                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                Visibility="{Binding ShowChanceRowForge, Converter={StaticResource BoolToVis}}">
+                        <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">概率生效（%）</TextBlock>
+                        <TextBox Width="70" Style="{StaticResource Field}"
+                                 Text="{Binding ForgeChanceText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="这条效果生效的百分比：100 = 必定，填 50 = 一半机会。锻造图里可以直接写公式或参数（X / Y / 内置只读量）。&#10;⚠ 锻造图的概率是**这一条各自判一次**（不像卡牌那边同一张牌的几条概率效果共用一次掷骰）。"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   Text="（100 = 必定；只对「这一条效果」生效）"/>
                     </StackPanel>
                     <!-- 本体「缓慢」专用：它的显示/生效数字不是层数（= 内部 SlowAmount×10，每打出一张牌 +10%），
                          所以「施加 30 层缓慢」看不到 30。这里填 30 = 敌人当场受到伤害 +30%。 -->
@@ -876,6 +917,32 @@
                     </Grid>
                     <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
                                Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
+                </StackPanel>
+            </ScrollViewer>
+        </DataTemplate>
+
+        <!-- 锻造【效果】模块专用（V0.2.129 = 《锻造优化.md》第 3 条 / 用户拍板 Q1=A）：
+             和「卡牌」页的效果编辑器**就是同一套** —— 同一个 EffectSpec、同一份 EffectCommon 模板，
+             所以「每一条效果的选择出现的可填写项」两边**完全一致**（效果种类底下按种类出现的那一整套：
+             数值 / 数值公式 / 作用对象 / 命中次数 / 生效次数 / 增益减益 / 目标卡 / 生成到 / 取牌方式 /
+             从哪里选牌 / 取几张 / 范围界定 / 多选1 / 附加处理 / 目标药水 / 复制的份数 / 刮削 / 下回合生效 /
+             概率 / 缓慢 / 牺牲伙伴…）。
+             这一层只做两件事：
+               ① 上面那句说明（锻造图自己的三条规矩：数值那几栏直接写公式、【对象】模块决定目标、
+                  没接的种类 / 栏位会被校验器报错拦住）；
+               ② 摆一份「可用量」清单（公式里能写哪些量）。
+             卡牌那份模板里的「升级增量 / 升级后费用 / 次数公式 / 条件选项」**不摆**：
+             节点图里它们没有落点（升级由两张布决定、次数在「生效/命中次数」框里写、条件用【条件】模块），
+             摆出来只会让用户白填 —— 真从别的途径填了，校验器会报错说清（ForgeGraphGen.UnsupportedEffectSettings）。 -->
+        <DataTemplate x:Key="EffectEditorForge">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel>
+                    <TextBlock Margin="2,0,2,4" TextWrapping="Wrap" Foreground="#0A7" FontSize="11"
+                               Text="{Binding ForgeEffectHint}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <!-- 公式的「可用量」清单（和卡牌那份同一个模板，见 MainWindow.xaml 的窗口资源） -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource FormulaBuiltinList}"
+                                    Visibility="{Binding ShowForgeValueRows, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </ScrollViewer>
         </DataTemplate>

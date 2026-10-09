@@ -15,6 +15,12 @@ public static class ModGenerator
 
         // 状态改名的「显示名」表：卡面/遗物/药水文字渲染都要用它（必须在校验和生成之前设好）
         EffectCatalog.SetPowerRenames(profile.VanillaPowerOverrides);
+
+        // 锻造【效果】模块（V0.2.129）：老存档（只有老字段）先幂等迁出 EffectSpec；
+        // 「用新编辑器改过」的那些再把 spec 回写成老字段 —— 生成端 / 卡面文案 / 图标收集读的都是老字段。
+        // 老存档（EffectFromLegacy = true）**不会被回写**，生成结果逐字不变。
+        ForgeEffectBridge.Normalize(profile);
+        foreach (var fg in ForgeEffectBridge.GraphsOf(profile)) ForgeEffectBridge.SyncGraph(fg);
         // 自定义状态登记：卡牌/遗物/药水的「施加增益/减益」要能引用它们
         // 注意：这里必须和 UI（MainWindow 的 SetCustomPowers）一样，只登记**启用**的状态。
         // 否则「停用/删除过的状态」也会被当成「存在」，校验器就放过了引用它的卡牌，

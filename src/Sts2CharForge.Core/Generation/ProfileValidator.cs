@@ -17,6 +17,11 @@ public static class ProfileValidator
         var issues = new List<ValidationIssue>();
         var n = Naming.From(p);
 
+        // 锻造【效果】模块：老字段 → EffectSpec 幂等迁移；「新编辑器改过」的再回写成老字段。
+        // 校验器读的是老字段（和生成端同一份），所以必须先同步，否则会「界面填了、校验还说没填」。
+        ForgeEffectBridge.Normalize(p);
+        foreach (var fg in ForgeEffectBridge.GraphsOf(p)) ForgeEffectBridge.SyncGraph(fg);
+
         if (!Naming.IsValidIdentifier(p.ModId))
             issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）。"));
 

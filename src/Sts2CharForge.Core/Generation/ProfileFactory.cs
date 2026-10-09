@@ -339,6 +339,11 @@ public static class ProfileFactory
         // 勾过「要和其他时机同时成立」的自动切到「全部满足才触发」。见 NormalizeRelicEffects。
         NormalizeRelicEffects(p);
 
+        // 锻造【效果】模块（V0.2.129，用户拍板 Q1=A）：模块上的老字段（ForgeNodeField 那一串）
+        // → 幂等迁出一份共用的 EffectSpec（新编辑器读它）。**不回写老字段**，
+        // 生成端照旧只读老字段 —— 老存档的生成结果 / 卡面文案逐字不变（见 ForgeEffectBridge）。
+        ForgeEffectBridge.Normalize(p);
+
         foreach (var card in p.Cards)
         {
             if (card.Condition is null || card.Condition.IsNone) continue;

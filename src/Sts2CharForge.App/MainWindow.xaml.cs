@@ -14867,21 +14867,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							!ForgeGraphGen.Issues(fCard.ForgeGraph, Profile, "Card").Any(x => x.Level == "错误"),
 							string.Join(" / ", ForgeGraphGen.Issues(fCard.ForgeGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
 						// ⑤ 界面：数字框旁边有「…」插入按钮 + 填错描红 + 运行时公式标蓝
-						ForgeCanvas.Graph = fCard.ForgeGraph;
-						UpdateLayout();
-						var uiEff = fCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect");
-						var uiNum = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						//   ⚠ V0.2.129 起【效果】模块整块换成了**和卡牌共用**的 EffectSpec 编辑器
+						//     （那 4 栏是模板里的文本框，不再走数据驱动的 Number 字段）——
+						//     所以这一套（「…」按钮 / 描红 / 标蓝）改用照旧走数据驱动字段的【能量】费用栏来验，
+						//     锻造【效果】模块自己的界面在下一条（V0.2.129）里单独验。
+						var uiEnergy = new ForgeNodeSpec { Kind = "Energy" };
+						uiEnergy.SetField("EnergyCost", "X");
+						var uiNum = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
 						Check("界面：数字框旁边有「…」插入参数 / 可用量的按钮", uiNum.HasInsert, $"HasInsert={uiNum.HasInsert}");
 						Check("界面：填了运行时公式的框标蓝 + ToolTip 里写出它变成什么表达式",
 							uiNum.Runtime && uiNum.Tip.Contains("运行时才算"), uiNum.Tip.Replace("\n", " "));
-						uiEff.SetField("Amount", "2+");
-						var uiBad = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						uiEnergy.SetField("EnergyCost", "2+");
+						var uiBad = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
 						Check("界面：填错的框当场描红 + ToolTip 里写出原因（不再静默变默认值）",
 							uiBad.Invalid && uiBad.Tip.Contains("❌"), uiBad.Tip.Replace("\n", " "));
-						uiEff.SetField("Amount", "6");
-						var uiPlain = ForgeCanvas.NumberFieldUiForCheck(uiEff, "Amount");
+						uiEnergy.SetField("EnergyCost", "6");
+						var uiPlain = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
 						Check("界面：纯数字的框不标色（默认档观感和以前一样）",
 							!uiPlain.Invalid && !uiPlain.Runtime, $"Invalid={uiPlain.Invalid} Runtime={uiPlain.Runtime}");
+						Check("界面：【能量】费用栏的 ToolTip 写清了「这一栏只收生成期算得出来的数」（不能写运行时公式）",
+							uiPlain.Tip.Contains("生成期就算得出来"), uiPlain.Tip.Replace("\n", " "));
 						Check("界面：「可用量」清单写清了这些位置能用什么（X / Y / 内置只读量名字都在）",
 							ForgeCanvas.FormulaHintTextForCheck.Contains("X = 当前所有能量")
 							&& ForgeCanvas.FormulaHintTextForCheck.Contains("HandCount")
@@ -14890,6 +14895,131 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						// 还原临时加的参数（后面的自检项按原样那份配置跑）
 						Profile.CustomParams.Clear();
 						foreach (var sp in savedParams) Profile.CustomParams.Add(sp);
+						ForgeCanvas.Graph = forged.ForgeGraph;
+						UpdateLayout();
+					}
+					// ===== V0.2.129（需求 3 / 用户拍板 Q1=A）：锻造【效果】模块 = 卡牌那套 EffectSpec 编辑器 =====
+					{
+						// （对照）非锻造链（卡牌 / 遗物 / 药水 / 自定义状态）那四处的显隐判据一个字都没变
+						static bool PlainChainRowsUnchanged()
+						{
+							foreach (var k in new[] { "Damage", "Block", "ApplyPower", "GenerateCard", "GainPotion", "ExhaustCard", "TempPower" })
+							{
+								var s = new EffectSpec { Kind = k };
+								if (s.IsForgeChain || s.ShowForgeValueRows || s.ShowForgeTimesBox || s.ShowForgeRepeatBox || s.ShowChanceRowForge)
+									return false;
+								if (s.ShowAmountBoxNormal != s.ShowAmountBox) return false;
+								if (s.ShowAmountFormulaNormal != s.ShowAmountFormula) return false;
+								if (!s.ShowFixedTimesBox) return false;
+								if (s.ShowFixedRepeatBox != s.ShowRepeatCountInput) return false;
+								if (!s.ShowChanceRowNormal) return false;
+							}
+							return true;
+						}
+						// 老形状（只有 ForgeNodeField 那一串老字段）→ 打开存档时幂等迁移出 EffectSpec
+						var mgCard = new CardSpec { Name = "自检效果合并卡", ClassName = "UiCheckEffectMerge", CardType = "Attack", Rarity = "Common", IsForged = true, InCardPool = true };
+						var mgGraph = new ForgeGraphSpec();
+						var mgTrig = new ForgeNodeSpec { Kind = "Trigger" };
+						mgTrig.SetField("Timing", ForgeTimings.CardPlayed);
+						var mgEff = new ForgeNodeSpec { Kind = "Effect" };
+						mgEff.SetField("Effect", "Damage");
+						mgEff.SetField("Amount", "6");
+						mgEff.SetField("Hits", "2");
+						mgEff.SetField("Chance", "50");
+						mgGraph.Nodes.AddRange(new[] { mgTrig, mgEff });
+						mgGraph.Links.Add(new ForgeLinkSpec { From = mgTrig.Id, To = mgEff.Id, FromPort = 0, ToPort = 0 });
+						mgCard.ForgeGraph = mgGraph;
+
+						Check("迁移：老形状的【效果】模块打开存档时迁出了 EffectSpec（还没被编辑器改过 → FromLegacy）",
+							ForgeEffectBridge.Ensure(mgEff) is not null && mgEff.EffectFromLegacy,
+							$"spec={mgEff.EffectSpec is not null} FromLegacy={mgEff.EffectFromLegacy}");
+						Check("迁移：老字段一个键都没动（Amount / Hits / Chance 还是原文）",
+							mgEff.Get("Amount") == "6" && mgEff.Get("Hits") == "2" && mgEff.Get("Chance") == "50",
+							$"{mgEff.Get("Amount")} / {mgEff.Get("Hits")} / {mgEff.Get("Chance")}");
+						var specJsonA = System.Text.Json.JsonSerializer.Serialize(mgEff.EffectSpec, ProfileFactory.JsonOpts);
+						int fieldsBefore = mgEff.Fields.Count;
+						ForgeEffectBridge.NormalizeGraph(mgGraph);      // 第二次跑（模拟「再打开一次存档」）
+						ForgeEffectBridge.SyncGraph(mgGraph);           // 生成前那一遍
+						Check("迁移**幂等**：再跑一遍（加载 + 生成前同步）spec 与老字段都没变",
+							System.Text.Json.JsonSerializer.Serialize(mgEff.EffectSpec, ProfileFactory.JsonOpts) == specJsonA
+							&& mgEff.Fields.Count == fieldsBefore, $"{fieldsBefore} 个键");
+						Check("（红线）没被编辑器改过的老模块，生成端**不回写**老字段（FromLegacy 仍是 true）",
+							mgEff.EffectFromLegacy, $"FromLegacy={mgEff.EffectFromLegacy}");
+
+						// 界面：整块换成卡牌那套模板（同一个 EffectSpec / 同一个 EffectEditorForge）
+						ForgeCanvas.Graph = mgGraph;
+						UpdateLayout();
+						var host = ForgeCanvas.EffectEditorHostForCheck(mgEff);
+						Check("界面：【效果】模块里装的是「卡牌」页那套效果编辑器（宿主 = ContentControl + 同一个 EffectSpec）",
+							host is not null && ReferenceEquals(host.Content, mgEff.EffectSpec),
+							host is null ? "没找到宿主" : $"Content={(host.Content is EffectSpec ? "EffectSpec" : host.Content?.GetType().Name)}");
+						Check("界面：这一份 spec 标成锻造链 → 数值 / 生效次数 / 命中次数 / 概率换成**能写公式**的框",
+							mgEff.EffectSpec!.IsForgeChain && mgEff.EffectSpec.ShowForgeValueRows && mgEff.EffectSpec.ShowForgeTimesBox
+							&& mgEff.EffectSpec.ShowForgeRepeatBox && mgEff.EffectSpec.ShowChanceRowForge,
+							$"IsForgeChain={mgEff.EffectSpec.IsForgeChain}");
+						Check("界面：（对照）卡牌 / 遗物 / 药水 / 自定义状态四处一个字都没变：非锻造链时那一套控件照旧",
+							PlainChainRowsUnchanged(), "ShowForge* 全关 / 原来是哪套还是哪套");
+						var mgVisible = VisibleTextsIn(ForgeCanvas);
+						Check("界面：真画出来了那几栏（数值 / 生效次数 / 命中次数 / 概率生效（%） + 可用量清单）",
+							mgVisible.Any(t => t == "数值") && mgVisible.Any(t => t.Contains("生效次数"))
+							&& mgVisible.Any(t => t.Contains("命中次数")) && mgVisible.Any(t => t.Contains("概率生效（%）"))
+							&& mgVisible.Any(t => t.Contains("可用量")),
+							string.Join(" / ", mgVisible.Where(t => t.Contains("数值") || t.Contains("次数") || t.Contains("概率")).Take(5)));
+						Check("界面：卡牌那种独立的「数值（公式）」框在锻造链上**不重复摆**（那个「数值」框本身就能写公式）",
+							!mgVisible.Any(t => t == "数值（公式）"), string.Join(" / ", mgVisible.Where(t => t.Contains("数值")).Take(3)));
+						// 真渲染：换效果种类 → 按种类出现的那几栏真的跟着出现 / 收起（判据 = 卡牌页同一份）
+						mgEff.EffectSpec!.Kind = "GenerateCard";
+						UpdateLayout();
+						var mgGenVisible = VisibleTextsIn(ForgeCanvas);
+						Check("界面（真渲染）：选「生成卡牌」→ 取卡方式 / 范围界定那些栏真的出现在布上（和卡牌页一致）",
+							mgGenVisible.Any(t => t.Contains("取卡方式")), string.Join(" / ", mgGenVisible.Where(t => t.Contains("取卡方式")).Take(2)));
+						mgEff.EffectSpec!.Kind = "Damage";
+						UpdateLayout();
+						var mgDmgVisible = VisibleTextsIn(ForgeCanvas);
+						Check("界面（真渲染）：（对照）选「造成伤害」→ 取卡方式 / 目标药水那些栏不出现",
+							!mgDmgVisible.Any(t => t.Contains("取卡方式")) && !mgDmgVisible.Any(t => t.Contains("目标药水")),
+							string.Join(" / ", mgDmgVisible.Where(t => t.Contains("取卡方式") || t.Contains("目标药水")).Take(2)));
+
+						// 编辑 → 回写老字段 → 生成（五处配套里的「生成」）
+						var mgSpec = mgEff.EffectSpec!;
+						mgSpec.Kind = "ApplyPower";
+						mgSpec.PowerId = "VulnerablePower";
+						mgSpec.ForgeAmountText = "X";
+						mgSpec.ForgeTimesText = "3";
+						Check("编辑后回写老字段：Effect / PowerId / Amount / Times（老字段是生成端唯一读的地方）",
+							mgEff.Get("Effect") == "ApplyPower" && mgEff.Get("PowerId") == "VulnerablePower"
+							&& mgEff.Get("Amount") == "X" && mgEff.Get("Times") == "3" && !mgEff.EffectFromLegacy,
+							$"{mgEff.Get("Effect")} / {mgEff.Get("PowerId")} / {mgEff.Get("Amount")} / {mgEff.Get("Times")}");
+						string mgSrc = CSharpCodeGen.CardSource(Profile, mgCard, 0);
+						Check("生成端：编辑器里改的东西真的进了生成代码（VulnerablePower + 运行时公式 __X）",
+							mgSrc.Contains("VulnerablePower") && mgSrc.Contains("= __X;"), "VulnerablePower + __X");
+						Check("校验器：改完之后的图没有错误级问题",
+							!ForgeGraphGen.Issues(mgGraph, Profile, "Card").Any(x => x.Level == "错误"),
+							string.Join(" / ", ForgeGraphGen.Issues(mgGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
+
+						// 校验器：编辑器里能填、但节点图这一版不生成的栏位**报错拦住**（不许静默）
+						mgSpec.Kind = "GenerateCard";
+						mgSpec.SpawnCardId = "UiCheckEffectMerge";
+						mgSpec.SpawnPick = "Random";
+						mgSpec.SpawnFilter = "Attack";
+						var gateIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Card");
+						Check("校验器：生成卡牌选了「按范围随机 / 范围限定」→ 报错说清节点图不生效（不许静默）",
+							gateIssues.Any(x => x.Level == "错误" && x.Message.Contains("不生效") && x.Message.Contains("按范围随机")),
+							string.Join(" / ", gateIssues.Where(x => x.Level == "错误").Select(x => x.Message).Take(1)));
+						mgSpec.SpawnPick = "Fixed"; mgSpec.SpawnFilter = "";
+						mgSpec.NextTurn = true;
+						gateIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Card");
+						Check("校验器：「生成卡牌 + 下回合生效」→ **警告**说清只有格挡 / 抽牌 / 施加状态有延迟分支（老存档里勾过它，所以不报错挡住生成）",
+							gateIssues.Any(x => x.Level == "警告" && x.Message.Contains("下回合生效")),
+							string.Join(" / ", gateIssues.Where(x => x.Message.Contains("下回合生效")).Select(x => x.Level + ":" + x.Message).Take(1)));
+						mgSpec.NextTurn = false;
+						mgSpec.Kind = "PlaceCard";
+						gateIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Card");
+						Check("校验器：选到节点图没接的种类（放置卡牌）→ 报错拦住并说清怎么办",
+							gateIssues.Any(x => x.Level == "错误" && x.Message.Contains("还没接上") && x.Message.Contains("效果」列表")),
+							string.Join(" / ", gateIssues.Where(x => x.Level == "错误").Select(x => x.Message).Take(1)));
+						// 收尾：这张自检卡不进后面的用例
+						Profile.Cards.Remove(mgCard);
 						ForgeCanvas.Graph = forged.ForgeGraph;
 						UpdateLayout();
 					}
@@ -15592,26 +15722,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								gRand4.Contains("foreach (Creature __fgFoe") && gRand4.Contains(".WithHitCount(4)"), "逐个动手");
 						}
 
-						// 【效果】：只有选了对应效果种类，才出现那些只有它用得上的栏（需求）
-						{							var gate = new ForgeNodeSpec { Kind = "Effect" };
+						// 【效果】（V0.2.129）：现在和「卡牌」页**同一份判据**（同一条 EffectSpec 的 Show* 属性）——
+						// 所以「每一条效果的选择出现的可填写项」两边一致：按种类 / 作用对象出现的那一整套都跟着走。
+						{
+							var gate = new ForgeNodeSpec { Kind = "Effect" };
+							var gateTrig = new ForgeNodeSpec { Kind = "Trigger" };
+							gateTrig.SetField("Timing", ForgeTimings.CardPlayed);
+							var gateGraph = new ForgeGraphSpec { Nodes = { gateTrig, gate } };
+							gateGraph.Links.Add(new ForgeLinkSpec { From = gateTrig.Id, To = gate.Id, FromPort = 0, ToPort = 0 });
 							var gates = new (string Kind, string Field, bool Want)[]
 							{
-								("Damage", "PotionId", false),
-								("Damage", "SpawnCardId", false),
-								("Damage", "Pick", false),
-								("GainPotion", "PotionId", true),
-								("GainPotion", "PotionPick", true),
-								("GenerateCard", "SpawnCardId", true),
-								("GenerateCard", "SpawnTo", true),
-								("ExhaustCard", "Pick", true),
-								("Damage", "Amount", true),
+								// 效果种类那一行永远在；「数值」在锻造链上换成能写公式的那个框（卡牌那种独立公式框不摆）
 								("Damage", "Effect", true),
+								("Damage", "Amount", true),
+								("Damage", "AmountFormula", false),
+								("Damage", "Times", true),
+								("Damage", "Hits", true),
+								("Damage", "Chance", true),
+								("Damage", "TargetSide", true),
+								// 按种类出现的那几栏（判据与卡牌页同一份）
+								("Damage", "SpawnPick", false),
+								("GenerateCard", "SpawnPick", true),
+								("GenerateCard", "RangeFilter", true),
+								("GenerateCard", "SpawnTo", true),
+								("GainPotion", "PotionPick", true),
+								("GainPotion", "PotionId", true),
+								("Damage", "PotionId", false),
+								("ExhaustCard", "SelectPile", true),
+								("ExhaustCard", "CountMode", true),
+								("Damage", "SelectPile", false),
+								("CopyCard", "Copies", true),
+								("Damage", "Copies", false),
+								("TempPower", "TempPowerReverse", true),
+								("Damage", "TempPowerReverse", false),
+								("Block", "NextTurn", true),
+								("Damage", "NextTurn", false),
+								("PlaceCard", "PlaceTo", true),
+								// 卡牌那种独立「数值（公式）」框：锻造链一律不摆（上面那个「数值」框就能写公式）
+								("Block", "AmountFormula", false),
 							};
 							var wrongGates = gates
 								.Where(x => ForgeCanvas.EffectFieldVisibleForCheck(gate, x.Kind, x.Field) != x.Want)
 								.Select(x => $"{x.Kind}.{x.Field} 应{(x.Want ? "显示" : "隐藏")}")
 								.ToList();
-							Check("效果种类底下只有对应的栏才显示（药水栏只在「获得药水」、目标卡只在「生成卡牌」、取牌方式只在消耗/丢弃/升级/变化/复制）",
+							Check("【效果】模块的栏位显隐 = 卡牌页同一份判据（按效果种类 / 作用对象出现的那一套都跟着走）",
 								wrongGates.Count == 0,
 								wrongGates.Count == 0 ? "都对" : string.Join(" / ", wrongGates));
 						}
