@@ -1,0 +1,55 @@
+<Window x:Class="Sts2CharForge.App.HighlightPickerDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="升级后要高亮的字段" Width="700" Height="500"
+        Icon="waku.ico"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize" ShowInTaskbar="False">
+    <Grid Margin="14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0">
+            <TextBlock x:Name="WhoText" FontSize="16" FontWeight="Bold" TextWrapping="Wrap" Text="升级后要高亮的字段"/>
+            <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" Foreground="#555"
+                       Text="勾上的字段会写成 {Damage:diff()}：升级后按「升级前 → 升级后」的差异变绿。没勾的字段写成 {Damage}，保持普通颜色。这里只改「升级后的自定义描述」那个框里的文字 —— 一个都不勾 = 什么都没做。"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" x:Name="NoPlaceholderHint" Margin="0,8,0,0" Padding="8,6"
+                Background="#FFF6DA" BorderBrush="#E0C060" BorderThickness="1" Visibility="Collapsed">
+            <TextBlock TextWrapping="Wrap" Foreground="#7A5A00"
+                       Text="这段里没有可高亮的字段：一个 {} 占位符都没有（你现在写的是直接的数字 / 中文）。请先点上面的「填入参数…」把数字换成占位符（例：造成 {Damage:diff()} 点伤害），再回来勾。下面这些字段这段文字里都没用到 —— 勾它们不会自动加字。"/>
+        </Border>
+
+        <ListBox x:Name="FieldList" Grid.Row="2" Margin="0,10,0,0" HorizontalContentAlignment="Stretch"
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 CheckBox.Checked="OnRowChecked" CheckBox.Unchecked="OnRowChecked">
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <Grid Margin="2,4">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox Grid.Column="0" VerticalAlignment="Center" IsEnabled="{Binding CanChange}"
+                                  IsChecked="{Binding IsChecked, Mode=TwoWay}" Content="{Binding Display}"/>
+                        <TextBlock Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                                   TextWrapping="Wrap" FontSize="11" Foreground="#777" Text="{Binding Status}"/>
+                    </Grid>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+
+        <TextBlock x:Name="SummaryText" Grid.Row="3" Margin="0,10,0,0" TextWrapping="Wrap" Foreground="#0A7"/>
+
+        <StackPanel Grid.Row="4" Orientation="Horizontal" Margin="0,12,0,0">
+            <Button Content="确定" Padding="16,6" FontWeight="Bold" Click="OnOk"/>
+            <Button Content="全部不勾（保持原样）" Padding="12,6" Margin="8,0,0,0" Click="OnClearAll"/>
+            <Button Content="取消" Padding="12,6" Margin="8,0,0,0" Click="OnCancel"/>
+        </StackPanel>
+    </Grid>
+</Window>

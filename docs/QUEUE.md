@@ -1,5 +1,53 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 22 批需求（未发版：**升级后自定义描述的逐字段高亮**，用户原话「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」）
+
+> **只做了第 1 档（零风险的界面 + 文本改写）；第 2 档（高亮选择进存档）刻意没做**，见文末「没做 / 待用户定夺」。
+> 设计依据：`_tmp\升级描述高亮控制_方案.md`（只读调研产物）。机制 = 本体现成的
+> `{X:diff()}`（`HighlightDifferencesFormatter`，键名 `diff` 在真 `sts2.dll` 字符串里坐实；
+> 真本体 `SlayTheSpire2.pck` 里有真实卡面写法 `Füge {Damage:diff()} Schaden zu.`）。
+> 落点 = 卡牌页「升级后的自定义描述」输入框**底下**的新按钮「高亮字段…」，照抄旁边「填入参数…」那套
+> （`Tag` 绑那个 `TextBox`）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **「升级后的自定义描述」底下加「高亮字段…」按钮，点开多选要「高亮」的字段** | **界面**：`MainWindow.xaml` 在「升级后的自定义描述」那一栏的按钮行下面加一行（`Button x:Name="PickUpgradedHighlightsButton"` + 一行实时汇总 `CardUpgradedHighlightSummary`，绑窗口级属性，`RefreshCardHighlightSummary()` 在 `SyncDetail` 与 `TextChanged` 两处刷新）。**弹窗**：新文件 `HighlightPickerDialog.xaml(.cs)`（照 `StartupProfileDialog` 那套独立 `Window`）：框顶一句话说明 + 可滚动的 `CheckBox` 列表 + 底部「确定 / 全部不勾（保持原样）/ 取消」+ 实时汇总。**候选** = `CSharpCodeGen.ParamHints(card.Effects, isCard:true)`（这张牌**每一条效果各自声明过**的动态变量，第二列是那条效果的中文名）——**粒度不是「数值 / 关键词 / 文字」那种粗分类**（粗分类映射不到任何可写语法）。**初值从正文反推**（正文里已经是 `{X:diff()}` 的预先勾上，绝不「没勾就把用户写好的高亮去掉」）；正文里**没用到**的字段那一行是灰的（勾它不会加字）。 | ✅ |
+| ② | **确认时只做精确文本替换**：`{X}` ↔ `{X:diff()}` | 新文件 `Core\Generation\HighlightDiffText.cs`：一个正则 `\{(?<key>[A-Za-z_][A-Za-z0-9_]*)(?<diff>:diff\(\))?\}` 负责扫描/改写（`Scan` / `Apply` / `HighlightedKeys` / `UsedKeys` / `KeyOfToken` / `StripDiff`）。**不主动加字、不新增占位符**；已是目标写法的一个字符都不动 → **幂等**（连点两次结果一样）；只认「变量名字符」的键，`{IfUpgraded:show:A\|B}` 这类本体格式化器原样留着。**生成端 0 行改动**：`{X:diff()}` 就是用户正文的一部分，`CET:UpgradedCustomDescription=` 原样带回 → 回读天然幂等，**不加任何新 `CET:` 标记**、不动 `LocalizationGen.CardsJson`。 | ✅ |
+| ③ | **这段里一个 `{}` 占位符都没有时必须明确提示**（用户现场：纯中文 + 直接写死的数字） | 弹窗里显示一条黄底提示条，原文：「这段里没有可高亮的字段：一个 {} 占位符都没有（你现在写的是直接的数字 / 中文）。请先点上面的「填入参数…」把数字换成占位符（例：造成 {Damage:diff()} 点伤害），再回来勾。下面这些字段这段文字里都没用到 —— 勾它们不会自动加字。」；按钮那行的实时汇总与 `SetStatus` 同时给同一句指路（不用点开就知道）。 | ✅ |
+| ④ | **校验器：填了 `:diff()` 但那个变量在这份配置里不存在（效果删了）→ 报出来并说清是哪张牌** | `ProfileValidator.ValidateRichText` 里新增 `ValidateHighlightVars`：① 正文里 `{X:diff()}` 的 X 不在「这张牌真的声明过的变量」里 → **错误**（点名卡牌 + 说清「本体取不到值会把 `{X:diff()}` 原样印在卡面上」）；普通 `{X}` 写错 → **警告**（可能是用户手写的本体自己的键，口径放宽一档）。判定集合用新增的 `CSharpCodeGen.DeclaredVarKeysOf`（**含重名别名 `Cards2`**；`ParamHints` 每种变量只列一条、不含别名，拿它比对会把合法的 `{Cards2:diff()}` 误报）；② 「升级后的自定义描述」里写了 `:diff()` 却整段一个 `{}` 都没有 → 警告。 | ✅ |
+| ⑤ | **文档** | `README.md`（描述富文本那节 + 「卡牌：自动填入 / 升级后的自定义描述」那节）、`tools\使用说明.template.txt`（「遗物 / 药水想自己写描述」后面新增一条 + BBCode 那节一句话）。 | ✅ |
+
+> **红线实测数字（第 22 批）**
+> - ① **默认档逐字节不变**：`--samplegen` 112 个文件**只有 `ExampleMod.sln` 的随机 GUID 不同**（其余 111 个逐文件 SHA256 一致，**0 个只差行尾** —— 因为两版都在 t3 工作区里跑，没有 `core.autocrlf` 噪声）；
+>   两份真实存档对拍（**同一版代码**的改动前产物当基线，`--out` 生成到 `_tmp\v02135_base_*` / `_tmp\v02135_after_*`）：
+>   `DarkVinci.json` **124 个文件只有 `.sln` 不同**、`SparkleMod.json` **303 个文件只有 `.sln` 不同**（内容 0 处差异）。
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**（361 个警告，与改动前逐条同数）。
+> - ③ `--uicheck`：Debug **3156 PASS / 0 FAIL**（基线 3134/0，**新增 22 条**）、发布版
+>   （`dotnet publish src\Sts2CharForge.App -c Release -r win-x64 --self-contained true -o D:\ds\s\_tmp\v02135_pub`
+>   → `Unblock-File` → 先删旧 `uicheck_result.txt` → `[System.Diagnostics.Process]::Start(UseShellExecute=$false,
+>   TEMP=TMP=D:\ds\s\_tmp\apppub_tmp, DOTNET_DISABLE_GUI_ERRORS=1)` + `WaitForExit()`；**没有用 `Start-Process`**）
+>   **3156 PASS / 0 FAIL**。
+> - ④ **探针**（`_tmp\v02135_probe.json` = 真实存档 `DarkVinci.json` + `DarkVinciSpark` 的自定义描述写成
+>   `对指定敌人造成 {Damage:diff()} 点伤害。`）：CLI `--build --install` → 真 `dotnet build` **0 错误**、
+>   Godot 导入 / 导出 PCK / 安装全 OK；`--recover` → 报 **1 条「没认出来」**
+>   （`DarkVinciDyeing: 升级增量找不到对应效果（变量 Cards2）`，**这是源存档 `DarkVinci.json` 既有的回读缺口**：
+>   用 HEAD 的 `git worktree` 对同一批产物跑基线 → **同一条、一字不差**，与本版无关；`{Damage:diff()}` 的往返 **0 条**）；
+>   恢复出的 `UpgradedCustomDescription` **原样带回** `对指定敌人造成 {Damage:diff()} 点伤害，并施加 3 层间色：紫。`；
+>   生成产物 `cards.json` 里 `{Damage:diff()}` / `{Cards2:diff()}` / `{Mix:diff()}` 全部原样保留。**幂等证据**：
+>   把恢复出的存档（顺手清掉那个既有缺口的空组引用）**分别用 HEAD 的 `git worktree` 与本版**各生成一遍到同一路径，
+>   123 个文件里 **122 个逐字节一致**，唯一差异是 `DarkVinci.sln` 的随机 GUID（行尾差异归一化后统计，见下）。
+>   ⚠ 探针的 `--install` 目录被 CLI 判成「不是游戏的 mods 目录」并**自动改成了真实游戏 mods 目录**，
+>   所以 `DarkVinci.dll/pck/json` 被写进了 `D:\download\steam\...\Slay the Spire 2\mods`（探针内容 = 真实存档 + 一处描述改写）——
+>   发版前用户重启游戏前请确认那份安装要不要还原（`--uicheck` / `--samplegen` **不碰**那个目录）。
+> - ⑤ **生成端确实 0 行改动**（`LocalizationGen` / `CSharpCodeGen` 的写出路径一字未动；`CSharpCodeGen` 只新增了一个**只被校验器调用**的 `DeclaredVarKeysOf`）→ 所以「默认档逐字节不变」不是靠开关保证的，而是**这条路径根本没被碰过**。
+> - **行尾约定**：本轮改过的 4 个既有文件（`MainWindow.xaml` / `MainWindow.xaml.cs` / `ProfileValidator.cs` / `CSharpCodeGen.cs`）逐个统计过 —— **全是 CRLF、裸 LF = 0、无 BOM**；新增 3 个文件也归一化成 **CRLF、无 BOM**；`README.md` 与 `docs\QUEUE.md` 本来就是 **LF**、`tools\使用说明.template.txt` 是 **CRLF + 无 BOM**（复核过字节）。
+
+> **没做 / 待用户定夺（第 2 档）**
+> - **把「高亮选择」存进存档**（`CardSpec.UpgradedHighlightVars` + `[JsonIgnore]` 或新 `CET:` 标记）：本版**刻意没做** —— 界面勾选状态可以从正文里的 `\{(\w+):diff\(\)\}` **反推**，加字段/标记只会带来「字段与正文不一致」的二义性，且与本版「零存档面改动」的取舍冲突。要不要做请用户定夺。
+> - `:inverseDiff()` 语义探针、`:diff()` 有没有参数 —— **未实测**（方案第 5 节 R3/R4），本版界面**一个都不写**。
+> - 「一键把升级后那段里的数字换成占位符」这类批量改写 —— 方案里的第 2 档，**没做**。
+> - 用 Harmony 补丁去关本体的整段高亮 —— 方案判定「大且高风险」，**明确不做**。
+
 ## 第 21 批需求（V0.2.134：**锻造节点图能从工程恢复**，用户 2026-10-10 拍板「要」）
 
 > 拍板依据：`docs\需求\已拍板决定.md` **第五节第 ② 条**（用户选「要做这一版」）。
@@ -349,6 +397,10 @@
 > ⑤ 五处配套（生成 + 回读 + 卡面/文案 + 校验器 + 界面）+ 文档（README / tools/使用说明.template.txt / docs/RELEASE_NOTES_V<新版本>.md）；
 > ⑥ 打包：`powershell -NoProfile -ExecutionPolicy Bypass -File D:\ds\s\t3\tools\release_all.ps1 -Bump patch -NoRelease -Yes`；
 > ⑦ 禁区：`AnimFramesGen.cs` / `GifFrames.cs` / `AnimTypes.cs` / `FrameAnimGen.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape` 的逻辑不要动；子代理不许 git add/commit。
+> ⑧ **用户数据禁区（2026-10-10 用户明确要求：「以后不需要处理我的存档」）**：
+>    · **一个字都不许改**用户存档目录 `D:\ds\s\4\自定义角色存档\`（`*.json` / `*.json.bak` / `_备份\` / 工程目录）—— 只允许**只读**（`--profile <用户存档>` 生成到 `_tmp` 下的输出目录是允许的，**不要**用 `--out` 指回用户目录）；
+>    · **一个字都不许写**用户的游戏安装目录（例如 `d:\download\steam\steamapps\common\Slay the Spire 2\mods`、`C:\Program Files (x86)\Steam\...`）；
+>    · **探针/验证一律只用 `--build`，不要用 `--install`** —— CLI 在目标不像 mods 目录时会**自动改写成真实游戏 mods 目录**（V0.2.135 那轮真发生过：探针版 `DarkVinci.*` 被装进用户游戏目录，用户原版随后消失）。要让生成物落盘就用 `--out`。
 > 探针目录约定：`D:\ds\s\t3\_tmp\<name>`，csproj 要带 `<Compile Remove="out/**">`；uicheck 运行方式：
 > `TEMP=TMP=D:\ds\s\_tmp\apppub_tmp <AppBase>\Sts2CharForge.exe --uicheck`，结果读 `<AppBase>\uicheck_result.txt`（UTF8）。
 > ⚠ 自动化里**不要**用 `Start-Process` / `start` 起发布出来的 exe：未签名 exe 走 ShellExecute 会被

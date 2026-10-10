@@ -3057,6 +3057,7 @@ public static class ProfileValidator
             if (c is null) continue;
             Check($"卡牌「{c.Name}」的自定义描述", c.CustomDescription);
             Check($"卡牌「{c.Name}」升级后的自定义描述", c.UpgradedCustomDescription);
+            ValidateHighlightVars(issues, c);
             // 「升级后的自定义描述」填了，但这张牌**升不了级**（诅咒固定 MaxUpgradeLevel = 0）→ 那段永远不会显示
             if (c.HasUpgradedCustomDescription && c.IsCurseCard)
                 issues.Add(new("警告", $"诅咒「{c.Name}」填了「升级后的自定义描述」—— 诅咒**不能升级**"
@@ -3088,5 +3089,70 @@ public static class ProfileValidator
             Check($"本体状态「{o.PowerId}」的新名字/新描述", (o.Name ?? "") + "\n" + (o.Description ?? ""));
         foreach (var s in p.Summons)
             Check($"召唤物「{s.Name}」的名字", s.Name);
+    }
+
+    /// <summary>
+    /// **升级差异高亮**（<c>{X:diff()}</c>）的体检 —— 用户要求：「填了 :diff() 但那个变量在当前配置里不存在
+    /// （比如效果删了）→ 给提示或错误并说清是哪张牌；不许静默」。
+    ///
+    /// 为什么必须拦：本体的占位符是**按动态变量的名字取**的（<c>DynamicVars["Damage"]</c>），
+    /// 取不到就把 <c>{Damage:diff()}</c> **原样印在卡面上**（见 <see cref="CSharpCodeGen.DisplayVarNameOf"/>
+    /// 那段注释里用户实测的截图）。这件事只有进了游戏才看得见，所以生成前必须报出来。
+    ///
+    /// 两条判据：
+    /// 1. 正文里写的 <c>{X}</c> / <c>{X:diff()}</c>，X 不在「这张牌真的声明过的变量」里：
+    ///    <c>:diff()</c> 那种 = **错误**（用户就是按高亮按钮写出来的，必然是本版这个功能踩的坑）；
+    ///    普通 <c>{X}</c> 那种 = **警告**（也可能是用户手写的本体自己的键，口径放宽一档，别把人拦死）。
+    /// 2. 「升级后的自定义描述」里勾了高亮（<c>{X:diff()}</c>）但**整段一个 {} 占位符都没有**：
+    ///    提示去点「填入参数…」（用户现场就是纯中文 + 直接写死的数字，这条提示是最要紧的一句界面文案）。
+    /// </summary>
+    private static void ValidateHighlightVars(List<ValidationIssue> issues, CardSpec c)
+    {
+        // 这张牌**真的声明过**的动态变量（含重名别名 Cards2；口径见 CSharpCodeGen.DeclaredVarKeysOf）
+        var declared = CSharpCodeGen.DeclaredVarKeysOf(c.Effects);
+
+        // 两段用户文本里的占位符都要查（自定义描述也可能写 {Damage:diff()}）
+        var undeclaredDiff = new List<string>();
+        var undeclaredPlain = new List<string>();
+        var seenDiff = new HashSet<string>(StringComparer.Ordinal);
+        var seenPlain = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (who, text) in new[]
+                 {
+                     ("自定义描述", c.CustomDescription),
+                     ("升级后的自定义描述", c.UpgradedCustomDescription),
+                 })
+        {
+            foreach (var ph in HighlightDiffText.Scan(text))
+            {
+                if (declared.Contains(ph.Key)) continue;
+                if (ph.HasDiff)
+                {
+                    if (seenDiff.Add(who + "\u0000" + ph.Key)) undeclaredDiff.Add($"{who}里的 `{HighlightDiffText.DiffToken(ph.Key)}`");
+                }
+                else if (seenPlain.Add(who + "\u0000" + ph.Key))
+                {
+                    undeclaredPlain.Add($"{who}里的 `{HighlightDiffText.PlainToken(ph.Key)}`");
+                }
+            }
+        }
+        if (undeclaredDiff.Count > 0)
+            issues.Add(new("错误", $"卡牌「{c.Name}」的描述里用了这张牌**没有声明过**的变量："
+                + string.Join("、", undeclaredDiff)
+                + "。本体的卡面是**按变量名取值**的，取不到就把 `{名字:diff()}` 原样印在卡面上 —— "
+                + "多半是那条效果后来被删了 / 换了种类。请用「填入参数…」重新插一次（那个菜单只列真的声明过的变量），"
+                + "或者把这几处占位符改回普通文字。"));
+        if (undeclaredPlain.Count > 0)
+            issues.Add(new("警告", $"卡牌「{c.Name}」的描述里用了这张牌**没有声明过**的变量："
+                + string.Join("、", undeclaredPlain)
+                + "。生成出来游戏里取不到值，会原样印出 `{{名字}}`（本体自己的占位符就无妨）。"
+                + "要用数值请用「填入参数…」重新插一次。"));
+
+        // 「勾了高亮但这整段里一个占位符都没有」 —— 用户现场就是这种（纯中文 + 写死的数字），必须明说
+        string up = c.UpgradedCustomDescription ?? "";
+        if (up.Contains(":diff()", StringComparison.Ordinal) && HighlightDiffText.Scan(up).Count == 0)
+            issues.Add(new("警告", $"卡牌「{c.Name}」的「升级后的自定义描述」里写了 `:diff()`，"
+                + "但这段文字里**一个 `{}` 占位符都没有**（写的是直接的数字 / 中文）—— 高亮不会生效。"
+                + "要让数值按升级差异变绿，请点这一栏底下的「填入参数…」把数字换成占位符"
+                + "（例：造成 `{Damage:diff()}` 点伤害），再用「高亮字段…」逐字段挑。"));
     }
 }

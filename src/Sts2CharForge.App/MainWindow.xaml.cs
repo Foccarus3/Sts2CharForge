@@ -586,6 +586,77 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		box.Focus();
 	}
 
+	// ===== 升级差异高亮（用户要求：「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」）=====
+	// 机制：本体的 `{X:diff()}`（HighlightDifferencesFormatter，键名 diff）+「升级前 → 升级后」的字面量差异高亮。
+	// 界面只负责把**用户已经写在这段文字里**的 {X} 改成 {X:diff()}（或反过来）——
+	// 所以「一个都不勾」= 一个字节都不变（老存档 / 默认档零影响），也不加任何 CET: 标记
+	// （高亮就写在正文里，`CET:UpgradedCustomDescription=` 原样带回 → 回读天然幂等）。
+
+	/// <summary>
+	/// 「高亮字段…」按钮底下那行实时汇总（这段文字里现在有几个字段走了 <c>:diff()</c>）。
+	/// 每次选中别的卡 / 改了正文 / 点了按钮都重算一遍（见 <see cref="RefreshCardHighlightSummary"/>）。
+	/// </summary>
+	public string CardUpgradedHighlightSummary { get; private set; } = "";
+
+	/// <summary>
+	/// 重算 <see cref="CardUpgradedHighlightSummary"/>（当前这张卡的「升级后的自定义描述」里
+	/// 哪些字段是高亮的）。正文里一个 <c>{}</c> 占位符都没有时给一句**明确**的指路 ——
+	/// 用户现场就是纯中文 + 写死的数字，那种情况高亮开关改不动任何东西。
+	/// </summary>
+	private void RefreshCardHighlightSummary()
+	{
+		var card = ActivePortraitCard();
+		string text = card?.UpgradedCustomDescription ?? "";
+		int count = HighlightDiffText.HighlightedKeys(text).Count;
+		CardUpgradedHighlightSummary = text.Trim().Length == 0
+			? "（这一段还空着：填了才有字段可以高亮）"
+			: count > 0
+				? $"已高亮 {count} 个字段（升级后按差异变绿，写成 {{X:diff()}}）"
+				: HighlightDiffText.Scan(text).Count == 0
+					? "这段里没有 {} 占位符 → 高亮用不上：请先点「填入参数…」把数字换成占位符（例：{{Damage:diff()}}）"
+					: "还没有字段走高亮（想挑就点「高亮字段…」）";
+		Raise("CardUpgradedHighlightSummary");
+	}
+
+	/// <summary>「升级后的自定义描述」正文变了 → 底下那行「已高亮 N 个字段」跟着变。</summary>
+	private void OnUpgradedCustomDescChanged(object sender, TextChangedEventArgs e) => RefreshCardHighlightSummary();
+
+	/// <summary>
+	/// 「高亮字段…」：列出这张牌各效果真的声明过的数值变量（<see cref="CSharpCodeGen.ParamHints"/>，
+	/// 带那条效果的中文名），让用户逐字段勾「升级后按差异变绿」，点确定后**只做精确文本替换**：
+	/// 正文里已有的 <c>{X}</c> ↔ <c>{X:diff()}</c>，不主动加字、不新增占位符，已是目标写法的不重复包。
+	/// </summary>
+	private void OnPickUpgradedHighlights(object sender, RoutedEventArgs e)
+	{
+		if (sender is not Button btn || btn.Tag is not TextBox box) return;
+		var card = ActivePortraitCard();
+		if (card is null) { SetStatus("先在左边选一张卡」"); return; }
+		string before = box.Text ?? "";
+		if (before.Trim().Length == 0)
+		{
+			SetStatus("这一栏还空着 —— 先写一段「升级后的自定义描述」（留空的话升级后就显示上面那段，没有单独的高亮可挑）。");
+			return;
+		}
+		// 候选 = 这张牌各效果**真的声明过**的变量（和「填入参数…」同一份来源，所以列出来的键一定写得对）
+		var hints = CSharpCodeGen.ParamHints(card.Effects, isCard: true);
+		var dlg = new HighlightPickerDialog(card.Name ?? "", before, hints) { Owner = this };
+		if (dlg.ShowDialog() != true) return;
+		if (!string.Equals(dlg.ResultText, before, StringComparison.Ordinal))
+		{
+			// 走 TextBox 赋值（绑定是 UpdateSourceTrigger=PropertyChanged，会同步回 CardSpec）
+			box.Text = dlg.ResultText;
+		}
+		if (dlg.ChangedCount == 0)
+			SetStatus(HighlightDiffText.Scan(before).Count == 0
+				? "这段里没有可高亮的字段，请先点「填入参数…」把数字换成占位符（例：造成 {Damage:diff()} 点伤害），再用「高亮字段…」挑。"
+				: "按这次的勾选，文字没有需要改的地方（本来就是这个写法）。");
+		else
+			SetStatus($"已按勾选改写 {dlg.ChangedCount} 处占位符（只动 {{…}} 本身，别的一个字都没改）："
+				+ string.Join("、", dlg.PerKey.OrderBy(kv => kv.Key, StringComparer.Ordinal)
+					.Select(kv => $"{HighlightDiffText.DiffToken(kv.Key)}×{kv.Value}")));
+		RefreshCardHighlightSummary();
+	}
+
 	/// <summary>「生成 / 变化卡牌」的两档：指定卡 / 按范围随机。</summary>
 	public IReadOnlyList<SpawnPickOption> SpawnPicks => EffectCatalog.SpawnPicks;
 
@@ -2849,6 +2920,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("SelectedCardUpgradeCost");
 		Raise("UpgradeCostHint");
 		Raise("UpgradeKeywordRows");
+		// 「高亮字段…」底下那行汇总跟着当前选中的卡走（V0.2.135）
+		RefreshCardHighlightSummary();
 		// 召唤物：图片预览 + 效果编辑器「召唤物（哪一只）」下拉的候选（只列已启用的）
 		Raise("SelectedSummonImagePreview");
 		RaisePetSummonChoices();
@@ -27158,6 +27231,133 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				foreach (string d in new[] { fgRoot, noGraphRoot, recRoot134 })
 					try { if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
 			}
+		}
+		// ===== V0.2.135：升级差异高亮（升级后的自定义描述底下的「高亮字段…」多选按钮）=====
+		// 用户要求：「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」。
+		// 这里覆盖整条闭环：按钮真的长在界面上并绑对那个 TextBox → 候选只列**真的声明过**的变量 →
+		// 勾上写成 {X:diff()} / 取消还原成 {X} → **幂等**（连点两次一样）→ 没有占位符时给明确指路 →
+		// 变量不存在时校验器报出来（不许静默）。默认档（一个都不勾）不动一个字节，由红线 ① 的逐字节对拍保证。
+		{
+			Check("卡牌页有「高亮字段…」按钮，且 Tag 绑的是「升级后的自定义描述」那个框",
+				PickUpgradedHighlightsButton is not null
+				&& PickUpgradedHighlightsButton.Content as string == "高亮字段…"
+				&& ReferenceEquals(PickUpgradedHighlightsButton.Tag, CardUpgradedCustomDesc)
+				&& BindingOperations.GetBinding(CardUpgradedCustomDesc, TextBox.TextProperty)?.Path?.Path == "UpgradedCustomDescription",
+				$"按钮「{PickUpgradedHighlightsButton?.Content}」/ Tag={(ReferenceEquals(PickUpgradedHighlightsButton?.Tag, CardUpgradedCustomDesc) ? "CardUpgradedCustomDesc" : "绑错了！")}");
+
+			// 候选列表：只列这张牌**真的声明过**的变量（照 CSharpCodeGen.ParamHints 那套），带中文效果名
+			var hlCard = new CardSpec { Name = "高亮自检卡", ClassName = "UiHighlightCard", CardType = "Attack", Rarity = "Common", Cost = 1 };
+			hlCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+			hlCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
+			var hlHints = CSharpCodeGen.ParamHints(hlCard.Effects, isCard: true);
+			Check("「高亮字段…」的候选 = 这张牌各效果真的声明过的变量（带中文效果名，形如 {Damage:diff()}）",
+				hlHints.Any(x => x.Token == "{Damage:diff()}") && hlHints.Any(x => x.Token == "{Block:diff()}"),
+				string.Join("、", hlHints.Select(x => x.Token + "（" + x.Desc + "）")));
+			Check("候选粒度 = 每一条效果各自声明的变量（没有变量的效果不出现在列表里）",
+				CSharpCodeGen.ParamHints(new[] { new EffectSpec { Kind = "Stun" } }, isCard: true).Count == 0, "没有可高亮的字段");
+
+			// 弹窗本体：真的 new 一个、改勾选、走一遍确定（自检不能只测复制的逻辑）
+			hlCard.UpgradedCustomDescription = "造成 {Damage} 点伤害，获得 {Block} 点格挡。";
+			var hlDlg = new HighlightPickerDialog(hlCard.Name, hlCard.UpgradedCustomDescription, hlHints);
+			Check("弹窗列出两个候选，右边写明「这段里现在是普通写法」",
+				hlDlg.Rows.Count == 2 && hlDlg.Rows.All(r => r.CanChange)
+				&& hlDlg.Rows.First(r => r.Key == "Damage").Status.Contains("{Damage}", StringComparison.Ordinal),
+				string.Join(" | ", hlDlg.Rows.Select(r => r.Display + "：" + r.Status)));
+			Check("初值从正文反推：文字里是 {Damage}（没带 :diff()）→ 弹窗里**不勾**（不会把用户写好的东西改掉）",
+				hlDlg.CheckedKeys.Count == 0, hlDlg.CheckedKeys.Count == 0 ? "一个都没勾" : string.Join("、", hlDlg.CheckedKeys));
+			hlDlg.SetCheckedForTest("Damage", true);
+			hlDlg.ApplyForTest();
+			Check("勾上 Damage → 正文里出现 {Damage:diff()}（Block 原样不动）",
+				hlDlg.ResultText.Contains("{Damage:diff()}", StringComparison.Ordinal)
+				&& hlDlg.ResultText.Contains("{Block}", StringComparison.Ordinal)
+				&& !hlDlg.ResultText.Contains("{Block:diff()}", StringComparison.Ordinal)
+				&& hlDlg.ChangedCount == 1,
+				hlDlg.ResultText + $"　（改了 {hlDlg.ChangedCount} 处）");
+
+			// 幂等：把结果再喂回弹窗、再勾一次同样的东西 → 逐字不变
+			var hlDlg2 = new HighlightPickerDialog(hlCard.Name, hlDlg.ResultText, hlHints);
+			Check("再打开一次：已经是 {Damage:diff()} → 弹窗**预先勾上**（初始状态从正文反推）",
+				hlDlg2.CheckedKeys.Count == 1 && hlDlg2.CheckedKeys[0] == "Damage", string.Join("、", hlDlg2.CheckedKeys));
+			hlDlg2.ApplyForTest();
+			Check("幂等：连点两次「确定」结果逐字一致（不会变成 {{Damage:diff():diff()}}）",
+				string.Equals(hlDlg2.ResultText, hlDlg.ResultText, StringComparison.Ordinal) && hlDlg2.ChangedCount == 0,
+				$"改了 {hlDlg2.ChangedCount} 处 / {hlDlg2.ResultText}");
+
+			// 取消勾 → 还原成普通写法
+			var hlDlg3 = new HighlightPickerDialog(hlCard.Name, hlDlg.ResultText, hlHints);
+			hlDlg3.SetCheckedForTest("Damage", false);
+			hlDlg3.ApplyForTest();
+			Check("取消勾选 → {Damage:diff()} 还原成 {Damage}（一个字不多不少）",
+				string.Equals(hlDlg3.ResultText, hlCard.UpgradedCustomDescription, StringComparison.Ordinal),
+				hlDlg3.ResultText);
+			var hlDlg4 = new HighlightPickerDialog(hlCard.Name, hlDlg3.ResultText, hlHints);
+			Check("再取消一次 → 什么都不改（还原也幂等）",
+				!hlDlg4.CheckedKeys.Contains("Damage") && hlDlg4.Rows.First(r => r.Key == "Damage").CanChange, "本来就没勾");
+
+			// 文本里根本没出现的字段：勾选框是灰的（勾它**不会**替你加字）
+			var hlDlg5 = new HighlightPickerDialog(hlCard.Name, "造成 {Damage} 点伤害。", hlHints);
+			Check("正文里没用到的字段（{Block}）→ 那一行是灰的，说明写清「勾它不会替你加字」",
+				!hlDlg5.Rows.First(r => r.Key == "Block").CanChange
+				&& hlDlg5.Rows.First(r => r.Key == "Block").Status.Contains("不会**替你加字", StringComparison.Ordinal),
+				hlDlg5.Rows.First(r => r.Key == "Block").Status);
+			hlDlg5.SetCheckedForTest("Block", true);
+			hlDlg5.ApplyForTest();
+			Check("勾一个正文里没有的字段 → 正文一个字都不变（绝不主动加占位符）",
+				string.Equals(hlDlg5.ResultText, "造成 {Damage} 点伤害。", StringComparison.Ordinal) && hlDlg5.ChangedCount == 0,
+				hlDlg5.ResultText);
+
+			// 用户现场那种情况：纯中文 + 直接写的数字（一个 {} 都没有）
+			Check("没有占位符时的提示：弹窗里有那句『这段里没有可高亮的字段，请先点「填入参数…」把数字换成占位符』",
+				new HighlightPickerDialog(hlCard.Name, "对指定敌人造成 4 点伤害。", hlHints).NoPlaceholderHint.Visibility == Visibility.Visible,
+				"提示条显示");
+			Check("没有占位符时按钮那行也给同一句指路（不用点开就知道）",
+				HighlightDiffText.Scan("对指定敌人造成 4 点伤害。").Count == 0, "一个占位符都没有");
+			Check("这张牌一个带数值的效果都没有 → 弹窗说清「先加一条带数值的效果」",
+				new HighlightPickerDialog(hlCard.Name, "随便写点什么。", Array.Empty<(string, string)>()).Rows.Count == 0, "候选为空");
+
+			// 纯文本改写（不碰任何与所选变量无关的字符）+ 幂等
+			var hlText = "造成 {Damage} 点伤害（{Damage} 会显示升级值），获得 {Block} 点格挡。";
+			var hlOnce = HighlightDiffText.Apply(hlText, new[] { "Damage" });
+			var hlTwice = HighlightDiffText.Apply(hlOnce.Text, new[] { "Damage" });
+			Check("精确替换：只把 {Damage} 变成 {Damage:diff()}，两处都改、{Block} 与中文一字不动（共 2 处）",
+				hlOnce.Changed == 2 && hlOnce.Text.Contains("{Damage:diff()}", StringComparison.Ordinal)
+				&& hlOnce.Text.Contains("{Block}", StringComparison.Ordinal) && !hlOnce.Text.Contains("{Block:diff()}", StringComparison.Ordinal),
+				hlOnce.Text);
+			Check("纯文本改写幂等：同一份文本改写两次逐字一致（第二次 0 处）",
+				string.Equals(hlTwice.Text, hlOnce.Text, StringComparison.Ordinal) && hlTwice.Changed == 0, hlOnce.Text);
+			Check("本体自己的格式化器（{IfUpgraded:show:A|B}）原样留着，不会被当成变量包上 :diff()",
+				HighlightDiffText.UsedKeys("{IfUpgraded:show:A|B}").Count == 0
+				&& string.Equals(HighlightDiffText.Apply("前 {IfUpgraded:show:A|B} 后", new[] { "IfUpgraded" }).Text,
+					"前 {IfUpgraded:show:A|B} 后", StringComparison.Ordinal), "没误认");
+
+			// 校验器：填了 :diff() 但那个变量在这份配置里不存在（效果被删了）→ 报出来并说清是哪张牌
+			CharacterProfile hlProf = ProfileFactory.Sample();
+			var hlBad = new CardSpec { Name = "高亮校验卡", ClassName = "UiHighlightValidate", CardType = "Attack", Rarity = "Common", Cost = 1 };
+			hlBad.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 3m, TargetSide = "Self" });
+			hlBad.UpgradedCustomDescription = "失去 {Value:diff()} 点生命。";
+			hlProf.Cards.Add(hlBad);
+			var hlIssues = ProfileValidator.Validate(hlProf);
+			Check("校验器：{Value:diff()} 这张牌没声明过 → **错误**，且文案里点名是哪张牌",
+				hlIssues.Any(i => i.IsError && i.Message.Contains("高亮校验卡", StringComparison.Ordinal)
+					&& i.Message.Contains("没有声明过", StringComparison.Ordinal)
+					&& i.Message.Contains("{Value:diff()}", StringComparison.Ordinal)),
+				hlIssues.FirstOrDefault(i => i.IsError && i.Message.Contains("高亮校验卡", StringComparison.Ordinal))?.Message ?? "(没报错！)");
+			Check("校验器：这张牌真的声明过的变量（{HpLoss:diff()}）不误报",
+				!hlIssues.Any(i => i.IsError && i.Message.Contains("{HpLoss:diff()}", StringComparison.Ordinal)), "没误报");
+			// 校验器：写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」
+			// （用户现场就是这种：纯中文 + 直接写死的数字）
+			CharacterProfile hlNoPhProf = ProfileFactory.Sample();
+			var hlNoPh = new CardSpec { Name = "高亮无占位卡", ClassName = "UiHighlightNoPh", CardType = "Attack", Rarity = "Common", Cost = 1 };
+			hlNoPh.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+			hlNoPh.UpgradedCustomDescription = "对指定敌人造成 4 点伤害。";
+			hlNoPhProf.Cards.Add(hlNoPh);
+			Check("（对照）没写 :diff() 的纯数字描述不会报警告（老存档零噪音）",
+				!ProfileValidator.Validate(hlNoPhProf).Any(i => i.Message.Contains("高亮不会生效", StringComparison.Ordinal)), "没噪音");
+			hlNoPh.UpgradedCustomDescription = "对指定敌人造成 4 点伤害（Damage:diff() 是空写的）。";
+			Check("校验器：写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」",
+				ProfileValidator.Validate(hlNoPhProf).Any(i => i.Level == "警告" && i.Message.Contains("高亮不会生效", StringComparison.Ordinal)
+					&& i.Message.Contains("填入参数", StringComparison.Ordinal)),
+				ProfileValidator.Validate(hlNoPhProf).FirstOrDefault(i => i.Message.Contains("高亮不会生效", StringComparison.Ordinal))?.Message ?? "(没报错！)");
 		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），

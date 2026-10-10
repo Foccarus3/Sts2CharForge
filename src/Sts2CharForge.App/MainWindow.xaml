@@ -824,6 +824,7 @@
                             <TextBox x:Name="CardUpgradedCustomDesc" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="50" AcceptsReturn="True" TextWrapping="Wrap"
                                      VerticalScrollBarVisibility="Auto" IsEnabled="{Binding ValueEditable}"
                                      Text="{Binding UpgradedCustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                     TextChanged="OnUpgradedCustomDescChanged"
                                      ToolTip="这张牌**升级之后**卡面上显示的文字。留空 = 和上面那段一样（老存档就是留空）。锻造卡的「升级前 / 升级后」两块布干的事不一样时用它：生成出来是 {IfUpgraded:show:升级后那段|没升级那段}，游戏里按有没有升级自动显示对应那一版。"/>
                             <StackPanel Orientation="Horizontal" Margin="6,2,0,0">
                                 <Button Content="填入参数…" Padding="8,4" IsEnabled="{Binding ValueEditable}"
@@ -832,6 +833,16 @@
                                 <Button Content="自动填入（升级后）" Padding="8,4" Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}"
                                         Click="OnAutoFillCardUpgradedDesc" Tag="{Binding ElementName=CardUpgradedCustomDesc}"
                                         ToolTip="把**升级后**那张布 / 那套效果自动写出来的描述填进来（锻造卡：升级后那张节点图的文案；普通卡：和上面那段一样，一般用不着填）。"/>
+                            </StackPanel>
+                            <!-- 升级差异高亮（用户要求：「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」）：
+                                 点开是多选列表，把这段文字里**已经写好的** {X} 按勾选改成 {X:diff()}（本体的差异高亮写法，
+                                 升级后按「升级前 → 升级后」的字面量差异变绿）。一个都不勾 = 一个字节都不改 —— 所以老存档零影响。 -->
+                            <StackPanel Orientation="Horizontal" Margin="6,4,0,0">
+                                <Button x:Name="PickUpgradedHighlightsButton" Content="高亮字段…" Padding="8,4" IsEnabled="{Binding ValueEditable}"
+                                        Click="OnPickUpgradedHighlights" Tag="{Binding ElementName=CardUpgradedCustomDesc}"
+                                        ToolTip="挑这段文字里哪些数值字段要**升级后按差异变绿**：勾上写成 {Damage:diff()}，没勾写成 {Damage}。只改这段文字里已经有的 {…} 占位符，不给你加字；文本里没有占位符时会明确提示你先点「填入参数…」。"/>
+                                <TextBlock Margin="8,0,0,0" VerticalAlignment="Center" FontSize="11" Foreground="#666" TextWrapping="Wrap"
+                                           Text="{Binding CardUpgradedHighlightSummary, RelativeSource={RelativeSource AncestorType=Window}}"/>
                             </StackPanel>
                         </StackPanel>
                         </ScrollViewer>

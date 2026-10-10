@@ -2239,6 +2239,33 @@ public static class ExtraResourceEnergyCounterDiagPatch
     //   （本体运行时替换不了它们，卡面上就按字面显示）—— 这是用户明确要求的取舍，见 QUEUE 第 17 批。
 
     /// <summary>
+    /// 一张牌**真的声明过**的全部动态变量键（含重名别名 <c>Cards2</c> —— 本体要求同种变量各自起名，
+    /// 见 <see cref="VarNamesOf"/>）。校验器拿它比对卡面描述里的 <c>{X}</c> / <c>{X:diff()}</c>：
+    /// 键不在这里 = 本体取不到值 = 卡面上原样印出 <c>{X:diff()}</c>（用户实测报过）。
+    ///
+    /// 为什么不能直接用 <see cref="ParamHints"/>：那是「填入参数…」菜单的候选，**每种变量只列一条**
+    /// （<c>seen.Add(key)</c> 去了重），也不包含别名那一份 —— 拿它比对会把合法的
+    /// <c>{Cards2:diff()}</c>（同一种效果出现两次时第二个的别名）误报成「没声明过」。
+    ///
+    /// 这里刻意取**超集**（把每条效果按它的显示名 + 内部名都收进来）：宁可漏报，不能误报把正常存档拦死。
+    /// </summary>
+    public static HashSet<string> DeclaredVarKeysOf(IEnumerable<EffectSpec> effects)
+    {
+        var all = effects as IList<EffectSpec> ?? effects.ToList();
+        var map = VarNamesOf(all);
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in all)
+        {
+            if (HasNoDynamicVar(e)) continue;
+            string display = DisplayVarNameOf(e, map);
+            if (display.Length > 0) keys.Add(display);
+            string inner = VarNameOf(e, map);
+            if (inner.Length > 0) keys.Add(inner);
+        }
+        return keys;
+    }
+
+    /// <summary>
     /// 这个模型的动态变量「基础名」清单（用来校验有没有同种变量出现多次）。
     /// 本体 DynamicVarSet 用变量名当键，重名会直接抛异常 → 整场战斗的回合循环死掉
     /// （表现：抽不了牌、结束不了回合 —— 用户实测踩过）。生成时会自动给第二个起别名。
