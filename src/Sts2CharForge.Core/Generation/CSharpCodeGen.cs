@@ -6142,6 +6142,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
         isCard && IsUpgradeOnlyZero(e) ? "if (base.IsUpgraded)" : null;
 
     /// <summary>
+    /// V0.2.141：「数值公式 + 升级增量」算出来**升级后正好是 0**（升级增量把常数公式抵平了）
+    /// —— 升级过的那张牌打出去不会有任何效果。
+    ///
+    /// <para><b>为什么要有这条判据</b>：用户实测报「在生成器填负值的力量不生效」，查下来是两个原因叠在一起 ——
+    /// ① 回读把同一个升级增量算了两遍（<c>-2</c> 的卡回读成 <c>UpgradeAmount=2</c>，
+    /// 再生成出来升级后就是 <c>0</c> 层）；② 就算增量是对的（用户手填 <c>升级增量 2</c> 配公式 <c>-2</c>），
+    /// 升级后那一档也确实是 0 层、而**界面上一个字都不说**。①已在 <c>ProjectRecovery</c> 修掉；
+    /// ②在这里变成看得见的警告（见 <c>ProfileValidator</c>）。</para>
+    ///
+    /// <para>判据分两支，覆盖两处配置面：① 写了**纯常数公式**（那 5 种效果）→ 常数 + 增量 == 0；
+    /// ② 没写公式、用**固定数值**（遗物 / 药水 / 状态，以及卡牌上不支持公式的种类）→ 数值 + 增量 == 0
+    /// —— 后者是「老存档里残留的升级增量」那一档，同一个道理、同一句话提醒。</para>
+    ///
+    /// <para>⚠ 结果为零本身**不是错误**：老存档 / 用户自己就想这么配都得能继续生成，所以它只出「警告」。</para>
+    /// </summary>
+    internal static bool UpgradeCancelsToZero(CharacterProfile? p, EffectSpec e) =>
+        e.UpgradeAmount != 0m
+        && (ForgeNumbers.TryEffectFormulaConst(p, e, out decimal formulaValue) ? formulaValue : e.Amount) + e.UpgradeAmount == 0m;
+
+    /// <summary>
+    /// 效果列表那一行（<c>EffectSpec.Display</c>）要写的「升级后最终值」：纯常数公式 + 非零升级增量时给出
+    /// 「升级后的档位是多少」（<c>UpgradeAmount</c>），其它情形返回 null（不写这个尾巴）。
+    ///
+    /// <para>为什么只对**常数公式**写：公式占位值（<c>Amount</c>）对「那 5 种」效果只是个占位，
+    /// 真正打出去的是公式；给真·现算公式写「升级后 X」会写一个假数字（打出时才现算），
+    /// 所以那些照旧只写「升级 +N」。判据和生成端 / 校验器同一份（<c>TryEffectFormulaConst</c>）。</para>
+    /// </summary>
+    public static decimal? ConstantFormulaUpgradeValue(CharacterProfile? p, EffectSpec e)
+    {
+        if (e.UpgradeAmount == 0m) return null;
+        return ForgeNumbers.TryEffectFormulaConst(p, e, out decimal formulaValue) ? formulaValue + e.UpgradeAmount : null;
+    }
+
+    /// <summary>
     /// 这个种类**天生**就不声明动态变量（数值直接写在代码里）。
     /// 额外资源量 ≤ 0、召唤伙伴 0 层、数值 = X、全部召唤物内联计算这四种是**看数值**才决定的，
     /// 所以放在 <see cref="HasNoDynamicVar"/> 里 —— 两件事分开写（混在一起时踩过坑，见那边的注释）。

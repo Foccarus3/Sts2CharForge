@@ -2051,6 +2051,34 @@ public static class ProfileValidator
             if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsXEffective)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值 = X 且填了负数：X 要到打出时才知道正负，"
                     + "所以这条会按「获得 X」生成（负数被忽略）。"));
+            // ===== V0.2.141：「升级增量把数值抵成了 0」→ **警告**（不是错误）=====
+            //
+            // 用户实测报的 BUG：「在生成器填负值的力量不生效」。查下来是两件事叠在一起：
+            //   ① 回读把**同一个**升级增量算了两遍（生成端写了三处：变量构造第二参 / 打出时三元式 /
+            //      OnUpgrade 的 UpgradeValueBy —— 回读时前两处已经算出增量，第三处又 += 一遍），
+            //      「力量 -2」的卡回读成 UpgradeAmount=2 → 再生成出来升级后正好是 0 层；
+            //   ② 就算增量是对的（用户自己填「升级增量 2」配公式 -2），升级后那一档确实是 0 层，
+            //      而**界面上一个字都不说** —— 用户只会看到「填了负值，升级后打出去什么都没发生」。
+            // ①已在 ProjectRecovery 修掉（同一个增量不再累加两次）；②在这里变成看得见的一条警告。
+            //
+            // 级别为什么是**警告**而不是错误：这**不是**生成不出来的配置（老存档 / 用户就想这么配都得能继续生成），
+            // 而且「升级后为 0」有时正是用户想要的（先把这条效果占个位）。所以只提醒、不拦。
+            //
+            // 判据只看**纯常数公式**那一支（真·现算公式在生成期折不出常数，升级后是不是 0 要打出时才知道）。
+            // 非卡牌链（遗物 / 药水 / 状态 / 锻造）上「数值 + 升级增量 == 0」走同一个判据（那些用固定 Amount，
+            // 折不出常数公式 → 落到 else 那一支）。判据本体在 CSharpCodeGen.UpgradeCancelsToZero，
+            // 和界面摘要行 / 生成端共用同一份折叠，不另写一套。
+            if (e.Amount != 0m && CSharpCodeGen.UpgradeCancelsToZero(p, e))
+            {
+                bool hasFormula = Generation.ForgeNumbers.TryEffectFormulaConst(p, e, out decimal constValue);
+                decimal baseValue = hasFormula ? constValue : e.Amount;
+                string unit = EffectUnitZh(e.Kind);
+                string shown = hasFormula ? $"数值公式里的 {baseValue:0.##}" : $"数值 {baseValue:0.##}";
+                issues.Add(new("警告", $"{owner} 的「{kind.Display}」：升级增量 {(e.UpgradeAmount > 0 ? "+" : "")}{e.UpgradeAmount:0.##} "
+                    + $"把{shown} 抵成了 **0**：**升级后的这张牌打出去不会有任何效果**"
+                    + $"（没升级的那张才是 {baseValue:0.##}{unit}）。想让升级后照样有 {-baseValue:0.##}，"
+                    + "请把「升级增量」清成 0；想让升级后更强，请把「升级增量」改成正数方向。"));
+            }
             // 负数 = 反向（扣除层数 / 失去格挡）：生成时会改走 PowerCmd.ModifyAmount(-N) / CreatureCmd.LoseBlock。
             // 两个组合它做不到，直接拦住并在提示里说清：
             // 翻倍状态层数：只做在卡牌上（要「选中的目标」），而且必须选是哪个状态
@@ -2653,6 +2681,20 @@ public static class ProfileValidator
             }
         }
     }
+
+    /// <summary>
+    /// 这条效果的数值带什么单位（V0.2.141「升级后为 0」那条警告用）。
+    ///
+    /// <para>为什么要它：警告的原文要写成「没升级的那张才是 -2 **层**」这种能直接读懂的句子。
+    /// 只给**真的按层数算**的种类写「层」（施加状态 / 临时增益 / 翻倍层数 / 清除层数）；
+    /// 其它种类（伤害 / 格挡 / 抽牌…）不硬编单位（写了「-2 点伤害」这种要额外一套映射，容易漂掉，
+    /// 而那句话的主语已经由「{owner} 的「{kind.Display}」」交代清楚了）。</para>
+    /// </summary>
+    private static string EffectUnitZh(string kind) => kind switch
+    {
+        "ApplyPower" or "TempPower" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearDebuffs" => " 层",
+        _ => "",
+    };
 
     /// <summary>
     /// 锻造节点图（那块布）的校验：把 <see cref="ForgeGraphGen.Issues"/> 逐条转成校验结果。

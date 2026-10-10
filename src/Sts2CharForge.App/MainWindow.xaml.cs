@@ -26175,6 +26175,192 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& !negPowSrc.Contains("__negPower", StringComparison.Ordinal), "对");
 			}
 
+			// ===== V0.2.141：回读不能把「数值公式 + 升级增量」的增量**算重一倍** =====
+			//
+			// 用户实测报的 BUG：「在生成器填负值的力量不生效」。真因（主代理已 100% 复现）：
+			// 生成端对「数值公式 + 升级增量」的 5 种效果把**同一个增量写三遍** ——
+			//   ① 变量构造第二个参数 `new ForgeFormulaPowerVar<StrengthPower>(static (card, target) => (1m), 1m)`
+			//   ② 打出时那个三元式 `(base.IsUpgraded ? 2m : 1m)`
+			//   ③ `OnUpgrade` 里的 `base.DynamicVars["StrengthPower"].UpgradeValueBy(1m)`
+			// 回读时 ①② 已经由 FillExpr 算出增量（1），③ 是**同一个数** —— 以前无条件 `+=`，
+			// 于是「力量 +1 / 升级增量 1」回读成 UpgradeAmount=2，再生成出来就是 `? 3m : 1m`；
+			// 用户把公式改成 -2 之后，升级过的那张打出去是 `-2 + 2 = 0` 层 = 完全没效果。
+			{
+				CharacterProfile upg141 = ProfileFactory.Sample();
+
+				// ① 最小产物（照抄用户那张真卡的 L9 / L29 / L35 三行形态）：公式 "1" + 升级增量 1。
+				//    ⚠ 必须同时给 AmountFormula：生成端只有「写了数值公式」那条路才会把升级增量并进打出时的表达式
+				//    （见 CSharpCodeGen.EmitCardEffectOnce：`if (formula is not null && e.UpgradeAmount != 0m)`）——
+				//    只给固定数值时生成的是 `base.DynamicVars["X"].BaseValue`，那形态跟本 BUG 无关。
+				//    用户那张真卡的 AmountFormula 也是 "1"（打开存档时 MigrateAmountsToFormulas 迁出来的）。
+				CardSpec ternaryCard = new CardSpec { Name = "自检三元式增量", ClassName = "UiCheckUpgTernary", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				ternaryCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 1m, AmountFormula = "1", UpgradeAmount = 1m, TargetSide = "Self" });
+				upg141.Cards.Add(ternaryCard);
+				string ternarySrc = CSharpCodeGen.CardSource(upg141, ternaryCard, 0);
+				Check("V0.2.141：（准备）生成端确实是**三处**写法（变量构造第二参 `, 1m)` + 打出时三元式 + OnUpgrade 的 UpgradeValueBy）"
+					+ "—— 回读就是在这三处上把增量算了两遍",
+					ternarySrc.Contains("? 2m : 1m", StringComparison.Ordinal)
+					&& ternarySrc.Contains("UpgradeValueBy(1m)", StringComparison.Ordinal), "对");
+				string t141Root = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02141_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					upg141.Paths.OutputDir = t141Root;
+					upg141.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					upg141.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var t141Gen = ModGenerator.Generate(upg141);
+					Check("V0.2.141：（准备）「数值公式 + 升级增量」的存档能生成工程", t141Gen.Success,
+						t141Gen.Success ? t141Gen.ProjectRoot : string.Join(" ｜ ", t141Gen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (t141Gen.Success)
+					{
+						var t141Rec = ProjectRecovery.FromProject(t141Gen.ProjectRoot);
+						CardSpec? t141Back = t141Rec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckUpgTernary");
+						// ★ 修好之前这里读出来是 2（1 由三元式 + 1 由 UpgradeValueBy）→ 这条**必须**能 FAIL 在修之前
+						Check("V0.2.141：回读不重复累加 —— 三元式给的增量与 UpgradeValueBy 相等时**跳过**（UpgradeAmount == 1，不是 2）",
+							t141Back is not null && t141Back.Effects.Count == 1 && t141Back.Effects[0].UpgradeAmount == 1m,
+							t141Back is null ? "(没回读到这张卡)"
+								: $"UpgradeAmount={t141Back.Effects[0].UpgradeAmount}（期望 1）");
+						Check("V0.2.141：（回读）这次回读没有「没认出来」的语句", !t141Rec.HasUnparsed, t141Rec.Unparsed.FirstOrDefault() ?? "0 条");
+
+						// 拿回读结果**再生成**：必须回到 `? 2m : 1m`，而且**不许出现 3m**（那正是 BUG 的产物）
+						t141Rec.Profile.Paths.OutputDir = Path.Combine(t141Root, "again");
+						t141Rec.Profile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+						t141Rec.Profile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+						var t141Gen2 = ModGenerator.Generate(t141Rec.Profile);
+						string t141Again = t141Gen2.Success
+							? File.ReadAllText(Path.Combine(t141Gen2.ProjectRoot, "cs", "Cards", "UiCheckUpgTernary.cs"))
+							: "";
+						Check("V0.2.141：拿回读结果再生成 → 还是 `? 2m : 1m`，而且**不出现** `3m`（增量没有被算重一倍）",
+							t141Gen2.Success
+							&& t141Again.Contains("? 2m : 1m", StringComparison.Ordinal)
+							&& !t141Again.Contains("3m", StringComparison.Ordinal),
+							t141Gen2.Success ? (t141Again.Contains("3m", StringComparison.Ordinal) ? "出现了 3m（增量算重了）" : "对") : "(第二次生成失败)");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(t141Root)) Directory.Delete(t141Root, true); } catch { }
+				}
+
+				// ② 老写法（非公式那条路）不许被改坏：没有三元式，只有 UpgradeAmount → 照旧累加
+				CardSpec upgAlone = new CardSpec { Name = "自检只有增量", ClassName = "UiCheckUpgOnly", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				upgAlone.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+				string aloneSrc = CSharpCodeGen.CardSource(upg141, upgAlone, 0);
+				Check("V0.2.141：（准备）老写法（只有「升级增量」、没有数值公式）生成的是 `new DamageVar(6m, …)` + `UpgradeValueBy(3m)`，没有三元式",
+					aloneSrc.Contains("new DamageVar(6m", StringComparison.Ordinal) && aloneSrc.Contains("UpgradeValueBy(3m)", StringComparison.Ordinal)
+					&& !aloneSrc.Contains("IsUpgraded", StringComparison.Ordinal), "对");
+				string aloneRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02141a_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					var aloneProfile = ProfileFactory.Sample();
+					aloneProfile.Cards.Add(upgAlone);
+					aloneProfile.Paths.OutputDir = aloneRoot;
+					aloneProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					aloneProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var aloneGen = ModGenerator.Generate(aloneProfile);
+					Check("V0.2.141：（准备）老写法的存档能生成工程", aloneGen.Success,
+						aloneGen.Success ? aloneGen.ProjectRoot : string.Join(" ｜ ", aloneGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (aloneGen.Success)
+					{
+						var aloneRec = ProjectRecovery.FromProject(aloneGen.ProjectRoot);
+						CardSpec? aloneBack = aloneRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckUpgOnly");
+						Check("V0.2.141：老写法（非公式）**没被改坏** —— `new DamageVar(6)` + `UpgradeValueBy(3m)` 回读 UpgradeAmount == 3",
+							aloneBack is not null && aloneBack.Effects.Count == 1 && aloneBack.Effects[0].UpgradeAmount == 3m,
+							aloneBack is null ? "(没回读到这张卡)" : $"UpgradeAmount={aloneBack.Effects[0].UpgradeAmount}（期望 3）");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(aloneRoot)) Directory.Delete(aloneRoot, true); } catch { }
+				}
+
+				// ③ 真·现算公式（走不到 FillExpr 的三元式分支）：靠 UpgradeValueBy 得到 3，而且公式原文必须原样回来
+				CardSpec realFx = new CardSpec { Name = "自检现算公式增量", ClassName = "UiCheckUpgReal141", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				realFx.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, AmountFormula = "M*2", UpgradeAmount = 3m, TargetSide = "Enemy" });
+				var realFxProfile = ProfileFactory.Sample();
+				realFxProfile.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.Power, Target = ParamTargets.Self, PowerId = "VulnerablePower" });
+				string realFxSrc = CSharpCodeGen.CardSource(realFxProfile, realFx, 0);
+				Check("V0.2.141：（准备）真·现算公式（M*2）+ 升级增量 3 生成的是「升级后 / 升级前各写一次公式」，**不是**三常数三元式",
+					realFxSrc.Contains("base.IsUpgraded ?", StringComparison.Ordinal)
+					&& realFxSrc.Contains("* (2m)", StringComparison.Ordinal)
+					&& realFxSrc.Contains("+ 3m)", StringComparison.Ordinal)
+					&& !Regex.IsMatch(realFxSrc, @"base\.IsUpgraded \? [\d.]+m : [\d.]+m"), "对");
+				string realRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02141r_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					realFxProfile.Cards.Add(realFx);
+					realFxProfile.Paths.OutputDir = realRoot;
+					realFxProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					realFxProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var realGen = ModGenerator.Generate(realFxProfile);
+					Check("V0.2.141：（准备）真·现算公式 + 升级增量的存档能生成工程", realGen.Success,
+						realGen.Success ? realGen.ProjectRoot : string.Join(" ｜ ", realGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (realGen.Success)
+					{
+						var realRec = ProjectRecovery.FromProject(realGen.ProjectRoot);
+						CardSpec? realBack = realRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckUpgReal141");
+						Check("V0.2.141：真·现算公式没被改坏 —— 回读 UpgradeAmount == 3（不是 6）",
+							realBack is not null && realBack.Effects.Count == 1 && realBack.Effects[0].UpgradeAmount == 3m,
+							realBack is null ? "(没回读到这张卡)" : $"UpgradeAmount={realBack.Effects[0].UpgradeAmount}（期望 3）");
+						Check("V0.2.141：真·现算公式的**原文**原样回来（`M*2`，不是变回一个常数）",
+							realBack is not null && realBack.Effects.Count == 1
+							&& EffectSpec.FormulaText(realBack.Effects[0].AmountFormula) == "M*2",
+							realBack is null ? "(没回读到这张卡)" : $"公式=「{realBack.Effects[0].AmountFormula}」（期望 M*2）");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(realRoot)) Directory.Delete(realRoot, true); } catch { }
+				}
+
+				// ④ 「升级增量把数值抵成 0」→ **警告**（不是错误）；增量为 0 时**不报**。
+				//    这条正是用户看不到任何提示、才以为「负值不生效」的那个坑。
+				var negUpgProfile = ProfileFactory.Sample();
+				CardSpec negUpgCard = new CardSpec { Name = "自检升级抵成零", ClassName = "UiCheckUpgZero141", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				negUpgCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, AmountFormula = "-2", UpgradeAmount = 2m, TargetSide = "Self" });
+				negUpgProfile.Cards.Add(negUpgCard);
+				var negUpgIssues = ProfileValidator.Validate(negUpgProfile);
+				string negUpgWarnText = string.Join(" ｜ ", negUpgIssues.Where((ValidationIssue i) => i.Message.Contains("抵成了")).Select((ValidationIssue i) => i.Level + ": " + i.Message));
+				Check("V0.2.141：公式 -2 + 升级增量 2 → 有那条「升级后打出去不会有任何效果」的警告，而且**严重度是警告**（不是错误 —— 绝不能拦住老存档生成）",
+					negUpgIssues.Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("升级增量") && i.Message.Contains("抵成了") && i.Message.Contains("不会有任何效果")),
+					negUpgWarnText.Length > 0 ? negUpgWarnText : "(没报)");
+				Check("V0.2.141：（数一数）负数不会被写成「-2抵成了」这种粘在一起的话（公式和固定数值两条路都要留空格）",
+					negUpgWarnText.Contains("把数值公式里的 -2 抵成了", StringComparison.Ordinal),
+					negUpgWarnText.Length > 0 ? negUpgWarnText.Substring(0, Math.Min(70, negUpgWarnText.Length)) : "(没报)");
+				Check("V0.2.141：「升级后为 0」那条**不得**新增任何「错误」",
+					!negUpgIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("抵成了")),
+					string.Join(" ｜ ", negUpgIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
+				var negStrProfile = ProfileFactory.Sample();
+				CardSpec negStrCard = new CardSpec { Name = "自检升级零对照", ClassName = "UiCheckUpgZeroNo141", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				negStrCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, AmountFormula = "-2", UpgradeAmount = 0m, TargetSide = "Self" });
+				negStrProfile.Cards.Add(negStrCard);
+				Check("V0.2.141：（对照）同样填 -2 但升级增量是 0 → **没有**那条警告（升级前后都是 -2，一切正常）",
+					!ProfileValidator.Validate(negStrProfile).Any((ValidationIssue i) => i.Message.Contains("抵成了")), "没报");
+
+				// ④-b 非卡牌链（老存档里遗物效果残留升级增量）：那些没有「数值公式」，用固定 Amount —— 同一个判据的另一支
+				var fixedAmtProfile = ProfileFactory.Sample();
+				fixedAmtProfile.Relics.Clear();
+				var fixedAmtRelic = new RelicSpec { Name = "自检抵零遗物", ClassName = "UiCheckUpgZeroRelic141", Rarity = "Common", Trigger = "PlayerTurnStart" };
+				fixedAmtRelic.Effects.Add(new EffectSpec { Kind = "Damage", Amount = -2m, UpgradeAmount = 2m, TargetSide = "Enemy" });
+				fixedAmtProfile.Relics.Add(fixedAmtRelic);
+				string fixedAmtWarnText2 = string.Join(" ｜ ", ProfileValidator.Validate(fixedAmtProfile)
+					.Where((ValidationIssue i) => i.Message.Contains("抵成了")).Select((ValidationIssue i) => i.Level + ": " + i.Message));
+				Check("V0.2.141：非卡牌链（遗物里残留「数值 -2 + 升级增量 2」）也走同一个判据 —— 同样是**警告**，不是错误",
+					fixedAmtWarnText2.Contains("警告") && ProfileValidator.Validate(fixedAmtProfile).All((ValidationIssue i) => !(i.IsError && i.Message.Contains("抵成了")))
+					&& fixedAmtWarnText2.Contains("把数值 -2 抵成了", StringComparison.Ordinal),
+					fixedAmtWarnText2.Length > 0 ? fixedAmtWarnText2 : "(没报)");
+
+				// ⑤ 效果列表摘要行要把「升级后最终值」写出来（用户不用点开逐条看也能发现「升级后 = 0」）
+				EffectSpec negSummary = new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, AmountFormula = "-2", UpgradeAmount = 2m, TargetSide = "Self" };
+				Check("V0.2.141：效果列表摘要行里能看见「（升级后 0）」—— 一眼就能看出升级后这条没效果",
+					negSummary.Display.Contains("（升级后 0）", StringComparison.Ordinal), negSummary.Display);
+				EffectSpec posSummary = new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = 1m, AmountFormula = "1", UpgradeAmount = 1m, TargetSide = "Self" };
+				Check("V0.2.141：常数公式 + 增量不为零时摘要行写升级后的最终值（公式 1 + 增量 1 → 「（升级后 2）」）",
+					posSummary.Display.Contains("（升级后 2）", StringComparison.Ordinal), posSummary.Display);
+				EffectSpec fxSummary = new EffectSpec { Kind = "Damage", Amount = 0m, AmountFormula = "M*2", UpgradeAmount = 3m, TargetSide = "Enemy" };
+				Check("V0.2.141：（对照）真·现算公式**不写**「升级后 X」（折不出常数，写个假数字不如不写），照旧只显示公式本身",
+					!fxSummary.Display.Contains("升级后", StringComparison.Ordinal) && fxSummary.Display.Contains("M*2", StringComparison.Ordinal), fxSummary.Display);
+			}
+
 			// ⑤ 本轮新增：「自己失去生命时」= 本体 AfterCurrentHpChanged 里 delta < 0 的那一半。
 			//    它比「受到伤害后」更宽（那条只认伤害管线），而且这个钩子本体不给 choiceContext。
 			Check("自定义状态的触发时机里有「自己失去生命时」，走本体的 AfterCurrentHpChanged",

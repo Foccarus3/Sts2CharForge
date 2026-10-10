@@ -419,6 +419,24 @@ public sealed class EffectSpec : SpecBase
     /// <summary>升级后增量（只有卡牌用得到，遗物/药水不能升级）</summary>
     public decimal UpgradeAmount { get => _upgradeAmount; set => Set(ref _upgradeAmount, value); }
 
+    /// <summary>
+    /// **回读专用**：这条效果的「升级增量」是刚从打出时那个三元式
+    /// <c>(base.IsUpgraded ? A : B)</c> 算出来的（<c>UpgradeAmount = A - B</c>，见
+    /// <c>ProjectRecovery.FillExpr</c>）。
+    ///
+    /// <para><b>为什么需要它</b>（用户实测报的 BUG：「在生成器填负值的力量不生效」）：生成端对
+    /// 「数值公式 + 升级增量」的效果会把**同一个增量写三遍** —— 变量构造第二个参数、打出时那个三元式、
+    /// <c>OnUpgrade</c> 里的 <c>UpgradeValueBy(N)</c>。回读时前两处已经算出增量了，第三处是同一个数，
+    /// 以前又 <c>+=</c> 加了一遍 → 增量算重一倍（1 变 2），再生成出来就是
+    /// <c>(base.IsUpgraded ? 3m : 1m)</c>；升级增量正好把负数抵成 0 时（<c>-2 + 2 = 0</c>）
+    /// 那张升级过的牌打出去就完全没效果。</para>
+    ///
+    /// <para>⚠ 它**只在一次回读过程里有意义**、且 <c>[JsonIgnore]</c>：不写进存档、不参与「生成 → 回读」
+    /// 的比对（写了会让同一份配置多出一个字段，逐字节对拍就不是「逐字不变」了）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool UpgradeFromTernary { get; set; }
+
     // ==================== 数值公式（需求原文：「另加一栏『数值公式』」） ====================
     //
     // 想解决的事：数值栏只能填一个死的数字，而用户想要的是「打出这张牌那一刻现算」——
@@ -1906,9 +1924,23 @@ public sealed class EffectSpec : SpecBase
     /// <summary>
     /// 遗物 / 药水列表用的显示文本：它们不能升级，所以不显示「（升级 +N）」这种括号
     /// （老存档里可能残留升级增量，这里也不显示出来）。
+    ///
+    /// <para>V0.2.141：「数值公式 + 升级增量」现在写的是 <c>（升级后 N）</c> —— 两种尾巴一起剥掉，
+    /// 否则遗物 / 药水列表会莫名其妙多出一段「升级后」。剥不掉就原样返回（和以前一样，不乱删字符）。</para>
     /// </summary>
     [JsonIgnore]
-    public string DisplayPlain => UpgradeAmount == 0 ? Display : Display.Replace($"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）", "");
+    public string DisplayPlain
+    {
+        get
+        {
+            string s = Display;
+            if (UpgradeAmount == 0) return s;
+            s = s.Replace($"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）", "");
+            return Generation.CSharpCodeGen.ConstantFormulaUpgradeValue(null, this) is { } after
+                ? s.Replace($"（升级后 {after:0.##}）", "")
+                : s;
+        }
+    }
 
     /// <summary>
     /// 新增的那批宠物效果在界面列表里的中文名（不是这批就返回 null，走原来的 Kind 回退）。
@@ -2043,7 +2075,18 @@ public sealed class EffectSpec : SpecBase
                     : $" {(AmountIsXEffective ? "X" : Amount.ToString("0.##"))}";
             // 写了公式时不再显示「（升级 +N）」：公式取代了数值，升级增量对这条不生效
             //（校验器也会给一条提示说清这件事）。
-            return $"{when}{kind}{amountPart}{(UpgradeAmount != 0 && !AmountIsXEffective && !UsesAmountFormula ? $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）" : "")}"
+            //
+            // ⚠ V0.2.141：**纯常数**公式是例外 —— 生成端对它写的是
+            // `(base.IsUpgraded ? 常数+增量 : 常数)`，也就是「升级增量**确实**会改打出时的数值」。
+            // 这里把**升级后的最终值**写出来（用户实测报的「在生成器填负值的力量不生效」：
+            // 增量 2 把公式 -2 抵成了 0，升级过的那张打出去完全没效果，而列表里当时一个字都不说）。
+            // 真·现算公式（`M*2`）折不出常数 → 返回 null，照旧只显示公式本身（写个假数字不如不写）。
+            string upgradePart = UpgradeAmount != 0 && !AmountIsXEffective
+                ? Generation.CSharpCodeGen.ConstantFormulaUpgradeValue(null, this) is { } afterUpgrade
+                    ? $"（升级后 {afterUpgrade:0.##}）"
+                    : UsesAmountFormula ? "" : $"（升级 {(UpgradeAmount > 0 ? "+" : "")}{UpgradeAmount}）"
+                : "";
+            return $"{when}{kind}{amountPart}{upgradePart}"
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + (UsesAnyCountFormula ? CountFormulaListText : "")
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"

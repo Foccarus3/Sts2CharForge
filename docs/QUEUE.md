@@ -1,5 +1,50 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 27 批需求（V0.2.141：**修「回读把『数值公式 + 升级增量』的增量算重一倍」**，用户实测报的 BUG「在生成器填负值的力量不生效」；**未发版**）
+
+> 派活 HEAD = `65960db 发版 V0.2.140`；`--uicheck` 基线 = **3277 PASS / 0 FAIL**（Debug；本批改动前实测，3277 + 新增 20 条 = 3297）。
+> 任务书：`_tmp\待发任务书_V0.2.141_回读升级增量算重.md`。**本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**
+> （连 `status` 都只读跑；改动前的基线用**已完成产物副本** `_tmp\v02141_主代理\rec\proj` 对拍，**没用 `git stash` / `worktree`**）。
+> 红线⑧ 照旧：不读 / 不复制 / 不使用用户存档；不写、也不盘点用户游戏安装目录；一切验证只用 `ProfileFactory.Sample()` +
+> `_tmp` 自造探针（探针只用 `--build`，**绝不 `--install`**）。**「断言必须能 FAIL 在修好之前」这条用「临时把核心修复改回旧写法、重编 Core、跑一遍自检」实测过**（见下表 ① 的验收数字）。
+
+> **用户原话（2026-10-10）**：「在生成器填负值的力量不生效。」
+> 主代理已 100% 复现（不是猜）：用户存档里唯一用「力量」的牌是**闪耀登场 `SparkleCardEntrance`**
+> （力量 +1 / 升级增量 1 / 作用于自己）；它「从工程恢复存档」回来后**升级增量被算成了 2**。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **回读时同一个升级增量不能加两次**（核心 BUG） | **真因（在回读端，生成端一直是对的）**：`ProjectRecovery.FillExpr` 认打出时的三元式 `(base.IsUpgraded ? A : B)` → `Amount=B` / `UpgradeAmount=A-B`（对），而 `ParseUpgrade` 又认 `OnUpgrade` 里的 `base.DynamicVars["X"].UpgradeValueBy(N)` → **无条件 `e.UpgradeAmount += delta`**。生成端对「数值公式 + 升级增量」的 5 种效果（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）把**同一个增量写三处**（变量构造第二参 / 打出时三元式 / `OnUpgrade`），于是 1+1=2 → 再生成出来 `? 3m : 1m`；公式改成 `-2` 之后升级过的牌 = `-2+2 = 0` 层 = 打出去什么都不发生。<br>**修**：`EffectSpec` 新增 `[JsonIgnore] UpgradeFromTernary`（**只在一次回读里有意义、不写进存档、不参与逐字节对拍**），`FillExpr` 命中三元式时置 true；`ParseUpgrade` 遇到带标记的效果：两边**相等**（生成端就是这么写的）→ **跳过**（保留三元式那个值）；两边**不等**（老产物 / 手改过的工程）→ **以 `UpgradeValueBy` 为准覆盖**（`e.UpgradeAmount = delta`）—— **绝不 `+=`**。判据是**标记**，不用「值是不是 0」猜。<br>**不许改坏的两条**：非公式路（`new DamageVar(6)` + `UpgradeValueBy(3m)`，无三元式）照旧累加到 3；真·现算公式（`(base.IsUpgraded ? ((M*2)+3m) : (M*2))`，走不到 `FillExpr` 的三元式分支）照旧靠 `UpgradeValueBy(3m)` 得到 3。<br>**验证（真产物）**：`--recover _tmp\v02141_主代理\rec\proj` → `ApplyPower/StrengthPower` 的 `UpgradeAmount` 从 **2 → 1**（同卡 `StarsVar(3)+UpgradeValueBy(1m)` 照旧 1）；再生成 → `? 2m : 1m`、`UpgradeValueBy(1m)`，与回读前的原文**逐字一致**。 | ✅ 待发 |
+| ② | **把这个坑变成看得见的警告**（校验器，**不得**新增任何错误） | 判据 `CSharpCodeGen.UpgradeCancelsToZero`：**纯常数公式**时「常数 + 升级增量 == 0」（= 升级后那一档是 0）；非卡牌链（遗物 / 药水 / 状态）上「数值 + 升级增量 == 0」（那些用固定 `Amount`，折不出公式 → 落在同一个判据的另一支）同理。判据与生成端**共用** `ForgeNumbers.TryEffectFormulaConst`（新加的公开小助手 = `ResolveText` + `Place.PrologueVars` 折常数，和 `CSharpCodeGen.IsNegativeFormulaAmount` 同一口径），**不另写一套「看着像数字」的正则** —— 否则会出现「界面说升级后 0、生成端却走了运行时公式那一支」。<br>文案说三件事：谁抵掉了谁 / 后果 / 怎么改 ——「升级增量 +2 把数值公式里的 -2 抵成了 **0** —— **升级后的这张牌打出去不会有任何效果**（没升级的那张才是 -2 层）。想让升级后照样有 2 层，请把「升级增量」清成 0；想让升级后更强，请把「升级增量」改成正数方向。」**级别 = 警告**（不是错误：老存档 / 用户就想这么配都得能继续生成，也避免给老存档冒出一堆新错误）。<br>「真·现算公式」折不出常数 → **不报**（升级后是不是 0 要打出时才知道，不乱猜）。<br>没有另加「ApplyPower 填负数且状态不允许负层数」那条（V0.2.139 已有），按要求只保证它在**效果列表摘要行**上也看得见（见 ③）。 | ✅ 待发 |
+| ③ | **界面：效果列表摘要行写出「升级后最终值」** | `EffectSpec.Display`：常数公式 + 非零增量时把**升级后的最终值**写在括号里 —— `增益/减益 StrengthPower 数值公式 -2（升级后 0） → 自己`（用户在**列表里**就能看见，不用点开逐条看）；非公式那条路照旧写「（升级 +N）」（老文本一字不变）；真·现算公式折不出常数 → **不写**这个尾巴（写个假数字不如不写），照旧 `伤害 数值公式 M*2 → 单体敌人`。<br>`DisplayPlain`（遗物 / 药水列表用）跟着剥掉 `（升级后 N）`，否则那两页会莫名多出一段「升级后」；剥不掉就原样返回（不乱删字符）。 | ✅ 待发 |
+
+> **① 的验收数字（真产物副本 + 自造探针）**
+> - **修之前**：`--recover _tmp\v02141_主代理\rec\proj` → `Amount=1 / Formula='1' / **UpgradeAmount=2**`（错）；
+>   再生成 `--profile` → `(base.IsUpgraded ? **3m** : 1m)`。
+> - **修之后**：`UpgradeAmount=**1**`；再生成 → `(base.IsUpgraded ? **2m** : 1m)`、`UpgradeValueBy(1m)`，
+>   与 `rec\proj\cs\Cards\SparkleCardEntrance.cs` **逐行一致**。
+> - **「断言必须能 FAIL 在修好之前」实测**：把 `ParseUpgrade` 那一支临时改回旧写法 `if (e is not null) e.UpgradeAmount += delta;`、
+>   只重编 `Sts2CharForge.Core`、把那份 Core dll 拷进一份**应用产物副本**（`_tmp\v02141probe_tmp\negdump`）再跑 `--uicheck`
+>   → **3293 PASS / 2 FAIL**，两条正是核心断言：
+>   `回读不重复累加 … → UpgradeAmount=2（期望 1）`、`拿回读结果再生成 → … → 出现了 3m（增量算重了）`；
+>   改回来即 **3297 PASS / 0 FAIL**。（临时改动**已还原** —— `git status` 里只有本批该改的 9 个文件。）
+>
+> **红线实测数字（本批）**
+> - ① `--samplegen` 改动前后逐文件对拍（行尾归一化后逐字节比）：**113 个文件里 112 个逐字节一致**，
+>   唯一差异 = `ExampleMod.sln` 的**随机 GUID**（两边文件集合也完全相同）。生成端**一个字节都没动**。
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**（371 警告，与本批前同数）。
+> - ③ `--uicheck`：Debug **3297 PASS / 0 FAIL**；发布版（`dotnet publish -c Release -r win-x64 --self-contained true`
+>   出的**全新** exe，时间戳 20:41:03 **晚于**全部改动源码的最新时间 20:37:10）**3297 PASS / 0 FAIL**。
+> - ④ 探针真 `--build`（`Paths` 原样照抄 `_tmp\v02140\probe_cardslot_6.json`，只改 `OutputDir` + Godot / dotnet）：
+>   `dotnet build` **0 错误**（"已成功生成。0 个错误"）+ 导出 **`CardSlotProbe6.pck` 44304 字节**；
+>   对该工程 `--recover` → **0 条「没认出来」**（输出里连那一段都没有）。
+> - ⑤ 端到端（真产物）：`--recover _tmp\v02141_主代理\rec\proj` → `SparkleCardEntrance` 的
+>   `ApplyPower/StrengthPower` 变成 `Amount=1 / Formula='1' / UpgradeAmount=**1**`；
+>   用回读结果再生成 → `cs\Cards\SparkleCardEntrance.cs` 与回读前那份**逐字节一致**（CRLF 归一后 true），
+>   三行形态：`new ForgeFormulaPowerVar<StrengthPower>(static (card, target) => (1m), 1m)` /
+>   `(base.IsUpgraded ? **2m** : 1m)` / `UpgradeValueBy(1m)`。
+
+
 ## 第 26 批需求（V0.2.140：**卡牌左侧序号改成和遗物页一样 —— 每 5 个一块 + 空槽直接显示灰色序号**，用户对 V0.2.130 那次的更正；**未发版**）
 
 > 派活 HEAD = `f906f2c 发版 V0.2.139`；`--uicheck` 基线 = **3241 PASS / 0 FAIL**（Debug 与发布版都是）。

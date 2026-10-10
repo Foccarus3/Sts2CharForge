@@ -130,6 +130,29 @@ public static class ForgeNumbers
     }
 
     /// <summary>
+    /// 这条效果的「数值公式」在**生成期**能不能折成一个常数？折出来是多少？
+    ///
+    /// <para><b>为什么需要它</b>（V0.2.141）：生成端 <c>CSharpCodeGen.UpgradeAwareAmount</c> 分两条路 ——
+    /// 纯常数公式写成 <c>(base.IsUpgraded ? 常数+增量 : 常数)</c>，真·现算公式写成
+    /// <c>(base.IsUpgraded ? (公式 + 增量) : 公式)</c>。「升级增量正好把公式抵成 0」（升级后打出去
+    /// 没有任何效果）只可能发生在**纯常数**那一条路上，所以校验器 / 界面显隐都按这个折值判断 ——
+    /// 生成端用的是同一套解析（<see cref="ResolveText"/> + <c>Place.PrologueVars</c>，和
+    /// <c>CSharpCodeGen.IsNegativeFormulaAmount</c> 同一个口径），不另写一套「看着像数字」的正则，
+    /// 免得界面说「升级后 0」而生成端走了运行时公式那一支。</para>
+    ///
+    /// <para>折不出来（公式里有 X / 参数 / 内置只读量、解析失败、没写公式）→ <c>false</c>（不乱猜）。</para>
+    /// </summary>
+    public static bool TryEffectFormulaConst(CharacterProfile? p, EffectSpec e, out decimal value)
+    {
+        value = 0m;
+        if (!e.UsesAmountFormula) return false;
+        var r = ResolveText(p, e.AmountFormulaText, 0, Place.PrologueVars);
+        if (!r.Constant) return false;
+        value = r.Value;
+        return true;
+    }
+
+    /// <summary>
     /// 卡牌**费用栏**（费用 / 额外资源量费用 / 升级后费用）的解析结果。
     ///
     /// 为什么单独一个类型：这三个栏位要的是**编译期常量**（本体 <c>base(cost, …)</c> /

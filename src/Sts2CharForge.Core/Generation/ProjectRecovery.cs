@@ -2901,6 +2901,9 @@ public static class ProjectRecovery
         {
             e.Amount = decimal.Parse(up.Groups[2].Value, CultureInfo.InvariantCulture);
             e.UpgradeAmount = decimal.Parse(up.Groups[1].Value, CultureInfo.InvariantCulture) - e.Amount;
+            // 记下「这一条的增量是从三元式拿到的」：`OnUpgrade` 里那句 `UpgradeValueBy(N)` 是**同一个数**，
+            // ParseUpgrade 绝不能再加一遍（用户实测的「负值力量不生效」就是这个重复累加，见那里的注释）。
+            e.UpgradeFromTernary = true;
             return;
         }
         if (expr == "x") { e.AmountIsX = true; return; }
@@ -2925,8 +2928,23 @@ public static class ProjectRecovery
             decimal delta = decimal.Parse(m.Groups[3].Value, CultureInfo.InvariantCulture);
             // 变量名 → 效果（按 CanonicalVars 里的顺序对应效果顺序）
             var e = EffectByVarName(card, vars, name);
-            if (e is not null) e.UpgradeAmount += delta;
-            else result.Unparsed.Add($"{where}: 升级增量找不到对应效果（变量 {name}）");
+            if (e is null) { result.Unparsed.Add($"{where}: 升级增量找不到对应效果（变量 {name}）"); continue; }
+            // ⚠ 同一个增量**只能算一次**（用户实测报的 BUG：「在生成器填负值的力量不生效」）。
+            //
+            // 生成端对「数值公式 + 升级增量」的 5 种效果（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）
+            // 把**同一个增量写三遍**：① 变量构造第二个参数、② 打出时那个三元式
+            // `(base.IsUpgraded ? A : B)`、③ 这里的 `UpgradeValueBy(N)`。
+            // ①② 已经由 FillExpr 算出增量了（`A - B`），③ 是同一个数 —— 以前这里无条件 `+=`，
+            // 于是 1 变 2（`? 3m : 1m`）：升级增量把负数抵成 0 时（-2 + 2 = 0）那张升级过的牌就完全没效果。
+            //
+            // 规则（照任务书）：
+            //   · 增量是三元式给的、两边**相等**（生成端就是这么写的）→ **跳过**，保留三元式那个值；
+            //   · 增量是三元式给的、两边**不等**（老产物 / 手改过的工程）→ 以 `UpgradeValueBy` 为准**覆盖**
+            //     （它是本体真正生效的那一份：`OnUpgrade` 改的是变量，打出时读的也是那个变量）；
+            //   · 没有三元式（「非公式」那条路：`new DamageVar(6)` + `UpgradeValueBy(3m)`）→ 照旧累加到 3。
+            // 判据是**标记**（`UpgradeFromTernary`），绝不用「值是不是 0」来猜。
+            if (e.UpgradeFromTernary) e.UpgradeAmount = delta;
+            else e.UpgradeAmount += delta;
         }
         string? costDelta = Match(body, @"EnergyCost\.UpgradeBy\((-?\d+)\)");
         if (costDelta is not null) card.UpgradeCost = card.Cost + int.Parse(costDelta, CultureInfo.InvariantCulture);
