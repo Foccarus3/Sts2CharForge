@@ -97,6 +97,11 @@ public static class ProfileValidator
         // 没启用召唤物的话那个类根本不存在 → dotnet 直接报 CS0103，而用户看不懂。
         ValidateSummon(issues, p);
 
+        // 「在游戏中隐藏那只额外资源量载体遗物」：隐藏是**纯视觉**的（后缀补丁，原方法照跑），
+        // 必须保住「遗物栏节点列表长度 = Player.Relics 长度」这条不变量 —— 一破就是越界卡死
+        //（V0.2.113~V0.2.137 的真实事故）。这里把它的前提条件钉死（见方法注释）。
+        ValidateHideCarrierRelic(issues, p, n);
+
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
             issues.Add(new("错误", "效果库为空：增益/减益列表读不到。请到「路径」页指定你本机的「本体工程目录」"
@@ -1464,6 +1469,37 @@ public static class ProfileValidator
         if (c.IsCurseCard) return false;
         if (c.IsStatusCard && !c.InfinitelyUpgradable) return false;
         return true;
+    }
+
+    /// <summary>
+    /// 「在游戏中隐藏那只额外资源量载体遗物」（<c>ExtraResource.HideInGame</c>）的校验。
+    ///
+    /// <para>
+    /// 这一条**不是**可选的润色 —— V0.2.113~V0.2.137 的隐藏是给 <c>NRelicInventory.Add</c> 打的
+    /// **前缀补丁**（遇到载体遗物就 <c>return false</c> 跳过原方法），于是遗物栏的节点列表
+    /// <c>_relicNodes</c> 比模型 <c>Player.Relics</c> 少一项；之后再获得任何遗物时，
+    /// 本体 <c>OnRelicObtained</c> 按模型算出来的 <c>index</c> 插进这个短列表就**越界**
+    /// （<c>List.Insert</c> 抛 ArgumentOutOfRangeException，异步任务死掉 → 玩家眼里就是卡死）。
+    /// </para>
+    ///
+    /// <para>
+    /// V0.2.138 起生成端改成**后缀补丁 + 纯视觉隐藏**（原方法照跑、跑完只设
+    /// <c>Visible = false</c>），列表长度与顺序永远和模型一致。这里只拦一件事：
+    /// 隐藏的**前提** —— 必须启用额外资源量，否则那个类根本不存在、补丁编译不过。
+    /// （隐藏之后「遗物还在角色身上、只是节点不可见」这句说明写在界面文案里，不在这里刷提示。）
+    /// </para>
+    /// </summary>
+    private static void ValidateHideCarrierRelic(List<ValidationIssue> issues, CharacterProfile p, Naming n)
+    {
+        if (!p.ExtraResource.HideInGame) return;
+
+        // 前提：隐藏补丁里引用的 <角色>ExtraResourceRelic 只有「启用额外资源量」才生成。
+        // 不禁用这个勾，而是报错说清怎么修（不拦的话生成出来的补丁会引用不存在的类 → CS0246）。
+        if (!p.ExtraResource.Enabled)
+            issues.Add(new("错误", "勾了「在游戏中隐藏（不显示在遗物栏里）」，但「额外资源量 / 状态」页没勾"
+                + "「启用额外资源量」—— 那只载体遗物（" + n.ExtraResourceRelicClass + "）根本不会生成，"
+                + "隐藏它的那个补丁就编译不过（CS0246：找不到类型）。要么勾上「启用额外资源量」，"
+                + "要么把这个勾去掉。"));
     }
 
     private static void ValidateSummon(List<ValidationIssue> issues, CharacterProfile p)

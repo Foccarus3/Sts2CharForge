@@ -122,6 +122,68 @@
 >   `git diff --numstat` 无「整文件重写」的行尾噪声。两个源文件删除（`HighlightPickerDialog.xaml(.cs)`）用
 >   `git rm` 时索引被暂存过，已用 `git reset HEAD <那两条路径>` 把索引退回 HEAD（**没有提交、没有别的 git 写操作**）。
 
+## 第 25 批需求（V0.2.138：**修「额外资源量遗物·在游戏中隐藏」导致游戏卡死**，用户真游戏日志定位）
+
+> 派活 HEAD = `d657ba9 发版 V0.2.137`（工作区干净、无游离 worktree）；`--uicheck` 基线 = **3223 PASS / 0 FAIL**（Debug 与发布版都是）。
+> 任务书：`_tmp\待发任务书_V0.2.138_修隐藏遗物卡死.md`。**本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**。
+> 红线⑧：**不读 / 不复制 / 不使用用户存档**（`D:\ds\s\4\自定义角色存档\`）、**不写也不盘点用户游戏安装目录**、
+> 探针**只用 `--build`**（不给 `--install`）。禁区（动画四个 `.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape`）一个字没碰。
+
+> **用户真游戏日志（根因，别重新论证）**
+> ```
+> System.ArgumentOutOfRangeException: Index must be within the bounds of the List. (Parameter 'index')
+>    at System.Collections.Generic.List`1.Insert(Int32 index, T item)
+>    at ...NRelicInventory.Add_Patch2(NRelicInventory this, RelicModel relic, Boolean startsShown, Int32 index)
+>    at ...NRelicInventory.OnRelicObtained(RelicModel relic)
+>    at ...Player.AddRelicInternal_Patch1(Player this, RelicModel relic, Int32 index, Boolean silent)
+>    at ...RelicCmd.Obtain(...) → 先古事件的「选遗物」
+> ```
+> **根因**：`CSharpCodeGen.HideCarrierRelicSource()`（V0.2.113 起）给 `NRelicInventory.Add` 打的是**前缀补丁**，
+> 遇到载体遗物就 `return false` **跳过原方法** → 遗物栏的节点列表 `_relicNodes` 比 `Player.Relics` **少一项** →
+> 之后再获得任何遗物时，本体 `OnRelicObtained` 用 `Player.Relics.IndexOf(relic)` 算出来的 `index`
+> 插进这个短列表就**越界**（`List.Insert` 抛异常）→ 异步任务死掉 = 玩家眼里**卡死**。
+> 从 V0.2.113 潜伏到 V0.2.137（老探针只验「生成 + 编译」，验不出运行期越界）。
+
+### 查证结论（决定走哪条路，附证据）
+
+| 问题 | 结论 | 证据（`_tmp\v02138_mlc` 的 MetadataLoadContext 探针 + `_tmp\v02138_il` 的 IL 反汇编，读的都是 `_tmp` 里的 `sts2.dll` 副本） |
+|---|---|---|
+| `RelicModel` 上有没有「别在遗物栏显示我」的**可覆写虚属性**？ | **没有** | `RelicModel` 全部 `virtual`/`abstract` 成员里跟显示有关的只有 `Rarity` / `IconBaseName` / `PackedIconPath` / `BigIconPath` / `ShowCounter` / `ShouldFlashOnPlayer` / `IsAllowed*` / `IsStackable` 等；**没有** `ShouldShow*` / `Hidden` / `Visible` 这一类。`grep ShouldShow` 命中的全是 `MonsterModel.ShouldShowInCompendium` / `CardModel.ShouldShowInCardLibrary` / 地图 / 光标这些**别的**东西 |
+| `NRelicInventory` 上有没有 `IsHidden` / `_isHidden` / `startsShown` 这种隐藏入口？ | **没有** | `NRelicInventory` 的字段只有 `_player` / `_relicNodes` / `_originalPos` / `_curTween` / `_debugHideTween` / `_isDebugHidden`（那个是开发者快捷键藏顶栏用的）。`IsHidden` / `_isHidden` 全库唯一命中是 `CrystalSphereEvent.CrystalSphereCell`（和遗物栏无关） |
+| 那 `Add` 到底干了什么？ | **必须原样跑** | `NRelicInventory.Add(RelicModel relic, bool startsShown, int index)`（private，void）：`Create(relic)` → `set_Inventory` → `index < 0 ? _relicNodes.Add(holder) : _relicNodes.Insert(index, holder)` → `AddChildSafely` + `MoveChildSafely` → 按 `startsShown` 决定要不要把 icon 的 `Modulate.a` 先置 0 → `UpdateNavigation()` → 接 3 个信号 → 发 `RelicsChanged`。**列表长度/顺序就是在这里和模型对齐的** |
+| 两条入口都走 `Add` 吗？ | **都走** | `Initialize(runState)`：`foreach (relic in _player.Relics) Add(relic, true, -1)`；`OnRelicObtained(relic)`：`Add(relic, false, _player.Relics.IndexOf(relic))`。`Remove(relic)` 也只有 `OnRelicRemoved` 一个调用方 → **只要 `Add` 不被跳过，`_relicNodes` 与 `Player.Relics` 永远同长同序** |
+| 隐藏会不会打断「新获得动画」状态机？ | **不会** | `Add` 之后本体自己会调 `AnimateRelic(relic, null, null)`（`LocalContext.IsMine` → `_relicNodes.First(按 Relic.Model 找)` → `NodeUtil.RunSafely(holder.PlayNewlyAcquiredAnimation(...))`）。那个动画只 tween **icon 的 `Modulate.a` / `Position` / `Scale`**，**不碰 `Visible`**，而且 `First(...)` 是按 `Relic.Model` 引用找节点 —— 节点还在列表里就一定能找到 |
+| 隐藏节点会不会踩到别的 UI 逻辑？ | **不会** | 遗物栏唯一的「索引敏感」代码是 `UpdateNavigation()`（按 `RelicNodes[i]` 设 focus 邻居）和 `_Ready` 的 `TryGrabFocus(RelicNodes[0])`；`NodeUtil.TryGrabFocus` 自己 `IsVisibleInTree()` 判过可见性（不可见就走 `CallDeferred`，不 `GrabFocus`）。「遗物收藏册」画面走的是另一套 `NRelicCollectionCategory.LoadRelicNodes`，和 `_relicNodes` 无关 |
+
+**→ 选定的路：后缀（postfix）+ 纯视觉隐藏**（不覆写虚属性 —— 本体没有；也不判「不安全」—— 查证下来是安全的）。
+`NRelicInventory.Add` 的原方法**一个字都不改地照跑**，跑完才把刚建出来的那个节点 `Visible = false`。
+**「新获得动画」不单独挡**：见下面第 ③ 条（第一版多挂过一个 `AnimateRelic` 后缀，是空操作 + 注释与事实相反，**已删**）。
+**兜底没用到**（原任务书第 5 条那条「不生成补丁 + 界面警告 + 校验器报错」的分支**不适用**，所以界面文案没说「不支持」）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **绝不再跳过 `NRelicInventory.Add` 的原方法** | `HideCarrierRelicSource()` 重写成 `[HarmonyPatch(typeof(NRelicInventory), "Add")]` + `[HarmonyPostfix] Postfix(NRelicInventory __instance, RelicModel __0)`：`__0` 只当**只读判据**，`index` / `startsShown` 一律不碰。反查节点用本体的同一口径（`nodes[i].Relic.Model` 引用相等，和 `Remove` / `AnimateRelic` 的 `First(...)` 一致），从后往前找、找到就 `Visible = false; return;` | ✅待发 |
+| ② | **隐藏只做视觉**：遗物照旧挂在角色身上 | 生成的补丁里**只有**一句 `nodes[i].Visible = false;`；不 `Remove`、不动 `_relicNodes`、不动 Godot 树、不动模型。`Player.Relics` 一个字节不变 → 发放 / 跨战斗继承 / 存档兼容全不变 | ✅待发 |
+| ③ | **新获得动画不要为它播放** | **不需要额外补丁，已把第一版多挂的那条删掉。** 理由：`AnimateRelic` 上的**后缀**里 `return` 只是从它**自己**的 Postfix 返回（原方法早跑完了），**拦不住动画、也不改任何状态 = 空操作**；要真拦住只能用前缀 skip，而那是**多余**的 —— 那个动画只 tween 节点里 **icon 的 `Modulate.a` / `Position` / `Scale`**（IL 逐条核过 `PlayNewlyAcquiredAnimation` 的状态机），**不碰 `Visible`**；父节点已经 `Visible = false` ⇒ 整棵子树都不渲染，动画自己在不可见节点上跑完、**没有任何可见效果**。所以最终 `cs/HideCarrierRelic.cs` 里**只有 `Add` 那一个补丁类**，自检新增一条护栏钉死「补丁类数 == 1 且源码里不出现 `AnimateRelic`」 | ✅待发 |
+| ④ | **校验器**：勾了隐藏要能挡住「生成了也编译不过」的配置 | 新增 `ProfileValidator.ValidateHideCarrierRelic`：勾了隐藏但**没启用额外资源量** → **报错**（补丁引用的 `<角色>ExtraResourceRelic` 类不存在 → CS0246），并说清怎么修。**不**加噪音提示（隐藏的边界写在界面文案里） | ✅待发 |
+| ⑤ | **界面文案与实际一致** | `Profile.HideInGameHint` + `MainWindow.xaml` 那个勾选框的 `ToolTip` + `README.md` + `tools\使用说明.template.txt` 全部改成「**后缀补丁 / 纯视觉隐藏 / 列表长度与模型一致 / 只有一个补丁类**」，并把 V0.2.113~V0.2.137 那条**前缀补丁 = 卡死**的来龙去脉写明（不再出现「跳过 Add」的误导说法） | ✅待发 |
+| ⑥ | **自检钉住新补丁源码形状** | `--uicheck` 里那条旧断言（要求含 `[HarmonyLib.HarmonyPrefix]` + `return relic is not …`）换成：必须含 `[HarmonyPostfix]`；**不许**出现 `[HarmonyPrefix]` / `return false;` / `return relic is not`；必须含 `nodes[i].Visible = false;` + `ReferenceEquals(relicNode.Model, __0)` + `RelicNodes`；只认那一只载体遗物；**补丁类数 == 1 且不出现 `AnimateRelic`**（防止第二个空操作补丁被写回来）；注释必须说明「动画不用管」的依据；文案钉「遗物照旧挂在角色身上 / 存档兼容」；校验器那条错误必须报出来 | ✅待发 |
+
+### 红线实测（本轮）
+
+> - ① **没勾隐藏的默认档逐字节不变**：`--samplegen` 改动前后逐文件 SHA256 对比 —— **112 个文件 / 112 行 SHA256，111 个逐文件 SHA256 一致**，唯一差异 = `ExampleMod.sln` 的随机 GUID（磁盘上两边都 113 个文件、集合完全相同）。
+>   另做了一次「同一份探针存档（Probe137，ExtraResource 启用）**只切 HideInGame**」的对拍：**唯一差异 = 多/少 `cs/HideCarrierRelic.cs` + `.sln` 的随机 GUID，其余 529 个文件逐字节一致**（其余多出来的 `.uid` / `.import` 是 hideON 那次跑了 Godot 导入导出产生的，不是生成端差异）。
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**（365 个警告，比 V0.2.137 的 361 个多 4 个 —— 全是既有源码的空引用告警，本轮没引入新的）。
+> - ③ `--uicheck`：Debug **3229 PASS / 0 FAIL**、发布版 **3229 PASS / 0 FAIL**（基线 3223 / 0，净 +6）。
+>   ⚠ 自检踩过**两次「查注释」的假红**，都改成「**先按行剥掉注释、只查可执行部分**」（`hideCode`）：
+>   ① 回归钉用 `hideSrc.Contains("return false")`（**不带分号**）去查，而生成出来的注释里正大光明写着「绝不能改成前缀补丁 return false 跳过原方法」→ 把自己写的说明文字误判成违规；
+>   ② 删掉第二个补丁后，若直接查 `Contains("AnimateRelic")`，会被 `Add` 补丁里那句「和本体自己的 Remove / AnimateRelic 一样按 Relic.Model 找」的注释再次判红。
+>   两版复跑都 0 FAIL。
+>   **主代理复核后删掉了第二个补丁**（`ForgeHideCarrierRelicAnimPatch`）：挂在 `AnimateRelic` 上的**后缀**里 `return` 只结束它自己（原方法早跑完了），**拦不住动画也不改状态 = 空操作**，注释还与事实相反。现在文件里**只有 `Add` 一个补丁类**；自检那条断言改成「**可执行部分里补丁类数 == 1 且不出现 `AnimateRelic`**」+ 一条「注释里说明动画不用管的依据（只 tween icon、不碰 Visible）」。这就是 3228 → 3229 的来源（-1 条旧断言，+2 条新断言）。
+> - ④ **探针真编译**（只用 `--build`，CLI 打出「没给 --install：… **不会安装**到任何地方」、日志里没有「安装到」那一步）：`_tmp\v02138_hide\` 自造「启用额外资源量 + 勾隐藏」的存档 → 生成出 `cs/HideCarrierRelic.cs` → 真 `dotnet build` **0 错误**（27 个警告，都是既有生成代码的空引用告警）、Godot 导入 / 导出 PCK DONE、构建成功。生成出来的补丁全文贴在实现报告里。
+>   顺手验了 `--recover`：从工程反推回存档认得「游戏里隐藏载体遗物」那条（输出行「…始终显示计数器、游戏里隐藏载体遗物…」）；用恢复出来的存档再生成一遍，`cs/HideCarrierRelic.cs` **SHA256 完全相同**（`6E906A63…F00127`）。
+> - 行尾约定：本轮改动的既有文件逐个统计 —— `.cs` / `.xaml` / `tools\使用说明.template.txt` 全 **CRLF、裸 LF = 0、无 BOM**；`README.md` / `docs\QUEUE.md` 本来就是 **LF**。
+
 ## 第 23 批需求（V0.2.136：**升级后获得 / 失去自定义关键词**，《卡牌页优化.md》第 2 条 ④）
 
 > 需求原文：「**升级后的关键字底下增加对自定义关键词的处理**」。
@@ -620,6 +682,17 @@
 > 别再用「只本地提交、忘了 commit」那种做法（V0.2.52~V0.2.120 那 68 个版本就是这么攒起来、最后一次性补的）。
 
 ## 已知未修（V0.2.120 记录，待定）
+
+**~~「额外资源量遗物·在游戏中隐藏」会让游戏卡死~~**（V0.2.113 引入，潜伏到 V0.2.137；**✅V0.2.138 已修**，见「第 25 批需求」）：
+V0.2.113 起给 `NRelicInventory.Add` 打的隐藏补丁是**前缀补丁**（遇到载体遗物就 `return false` 跳过原方法），
+于是遗物栏的节点列表 `_relicNodes` 比 `Player.Relics` **少一项**；之后再获得任何遗物时，本体
+`OnRelicObtained` 用 `Player.Relics.IndexOf(relic)` 算出来的 `index` 往这个短列表里 `Insert` 就**越界**
+（`ArgumentOutOfRangeException`，异步任务死掉 = 玩家眼里**卡死**，用户真游戏日志命中的是「先古事件选遗物」）。
+为什么老探针没抓到：以前的探针只验「生成 + 编译」，而这种越界只在**运行期**、且要「勾了隐藏 + 之后真的再拿到一个遗物」才触发。
+V0.2.138 的修法：**后缀补丁 + 纯视觉隐藏**（`Add` 原方法一个字不改地照跑，跑完才 `Visible = false`）；
+文件里**只有这一个补丁类**（实现中途多挂的那个 `AnimateRelic` 后缀是空操作 —— 后缀里的 `return` 只结束它自己、
+原方法早跑完了 —— 已在同一版里删掉）；并由「生成端源码形状自检 + 校验器 + 真编译」三处一起钉住
+「**绝不跳过 `Add` 的原方法**」这条不变量。
 
 **用户报「命中次数填 `2+A`，游戏里只实现 A 次」—— 代码侧没查出问题，等现场信息（V0.2.121 记录）**：
 - 已核过：那张牌（`SparkleCard45`，伤害 5 / 命中次数 `2+A`）生成的是

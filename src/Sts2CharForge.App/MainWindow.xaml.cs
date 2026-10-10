@@ -9832,13 +9832,51 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			erProfile.ExtraResource.HideInGame = true;
 			Check("勾了「在游戏中隐藏」→ 判定为要生成补丁", CSharpCodeGen.UsesHiddenCarrierRelic(erProfile), "要生成");
 			string hideSrc = CSharpCodeGen.HideCarrierRelicSource(erProfile);
+			// 剥掉注释后的**可执行部分**：护栏查它，免得生成出来的说明文字里提到某个写法就把自己判红
+			//（V0.2.138 第一遍自检就是这么红的：注释里写着「绝不能改成前缀补丁 return false 跳过原方法」）。
+			// 生成出来的代码里没有字符串字面量含 `//`，所以按行截断就够了。
+			string hideCode = string.Join("\n", hideSrc.Split('\n')
+				.Select(l => { int c = l.IndexOf("//", StringComparison.Ordinal); return c >= 0 ? l.Substring(0, c) : l; }));
 			Check("补丁打在遗物栏那个 NRelicInventory.Add 上（本体没有「隐藏某个遗物」的接口：遗物栏是遍历 Player.Relics 逐个建的）",
-				hideSrc.Contains("typeof(MegaCrit.Sts2.Core.Nodes.Relics.NRelicInventory), \"Add\"")
-				&& hideSrc.Contains("[HarmonyLib.HarmonyPrefix]"), "打对了");
-			Check("只挡那一只载体遗物（返回 false = 这个遗物不进遗物栏；别的遗物照常）",
-				hideSrc.Contains($"return relic is not {Naming.From(erProfile).ExtraResourceRelicClass};"), "只挡它");
+				hideSrc.Contains("typeof(NRelicInventory), \"Add\"")
+				&& hideSrc.Contains("[HarmonyPostfix]"), "打对了");
+			// ===== V0.2.138 那条卡死的回归钉（红线：绝不能再「跳过 NRelicInventory.Add 的原方法」）=====
+			Check("（V0.2.138 回归）补丁**不许**是前缀补丁 —— 前缀 return false 跳过原方法会让遗物栏节点列表比 Player.Relics 少一项，之后再获得遗物时 Insert 越界卡死",
+				!hideCode.Contains("[HarmonyPrefix]") && !hideCode.Contains("return false;") && !hideCode.Contains("return relic is not"),
+				hideCode.Contains("[HarmonyPrefix]") ? "还在用前缀补丁！" : "是后缀，原方法照跑");
+			Check("（V0.2.138 回归）后缀里只对**刚建出来的那个节点**设 Visible = false（纯视觉隐藏），不动 index / startsShown / 列表",
+				hideCode.Contains("nodes[i].Visible = false;")
+				&& hideCode.Contains("ReferenceEquals(relicNode.Model, __0)")
+				&& hideCode.Contains("IReadOnlyList<NRelicInventoryHolder> nodes = __instance.RelicNodes;"),
+				"只藏节点");
+			Check("（V0.2.138 回归）只认那一只载体遗物（别的遗物原样放行）",
+				hideCode.Contains($"if (__0 is not {Naming.From(erProfile).ExtraResourceRelicClass}) return;"), "只挡它");
+			// 可执行部分里**只许有一个补丁类**（挂在 Add 上的那个），而且**不许**再挂 AnimateRelic。
+			// V0.2.138 实现中途曾经多挂过一个 AnimateRelic 后缀当「跳过新获得动画」—— 后缀里的 return
+			// 只结束它自己（原方法早跑完了），是**空操作**，已删掉；这条护栏防止它再被写回来。
+			// 为什么不用前缀去 skip：没必要 —— 动画只 tween 节点里 icon 的透明度/位置/缩放、不碰 Visible，
+			// 父节点已经不可见 ⇒ 整棵子树都不渲染，动画自己在不可见节点上跑完、没有可见效果。
+			Check("（V0.2.138 回归）补丁的可执行部分里**只有**一个补丁类（挂在 Add 上），没有第二个多余补丁",
+				hideCode.Split("internal static class").Length - 1 == 1
+				&& !hideCode.Contains("AnimateRelic"),
+				"补丁类数=" + (hideCode.Split("internal static class").Length - 1));
+			Check("（V0.2.138 回归）注释里说明了「新获得动画不用管」的依据（只 tween icon、不碰 Visible）",
+				hideSrc.Contains("不碰 Visible") && hideSrc.Contains("整棵子树都不渲染"), "写清了");
+			Check("补丁源码里写清了「遗物照旧挂在角色身上 / 发放 / 继承 / 存档都不变」",
+				hideSrc.Contains("遗物本身照旧挂在角色身上") && hideSrc.Contains("存档兼容"), "写清了");
 			Check("说明里写清「发放资源量 / 跨战斗继承照常、存档也兼容」",
-				erProfile.ExtraResource.HideInGameHint.Contains("照常") && erProfile.ExtraResource.HideInGameHint.Contains("遗物栏"), erProfile.ExtraResource.HideInGameHint);
+				erProfile.ExtraResource.HideInGameHint.Contains("照常") && erProfile.ExtraResource.HideInGameHint.Contains("遗物栏")
+				&& erProfile.ExtraResource.HideInGameHint.Contains("不显示"), erProfile.ExtraResource.HideInGameHint);
+			// 校验器：勾了隐藏但没启用额外资源量 → 必须报错拦住（否则生成的补丁 CS0246 编译不过）
+			{
+				bool erWasEnabled2 = erProfile.ExtraResource.Enabled;
+				erProfile.ExtraResource.Enabled = false;
+				var hideIssues = ProfileValidator.Validate(erProfile);
+				Check("校验器：勾了隐藏但没启用额外资源量 → 报「错误」拦住（提示会 CS0246 编译不过）",
+					hideIssues.Any(x => x.IsError && x.Message.Contains("在游戏中隐藏") && x.Message.Contains("CS0246")),
+					string.Join(" / ", hideIssues.Where(x => x.IsError).Select(x => x.Message).Take(2)));
+				erProfile.ExtraResource.Enabled = erWasEnabled2;
+			}
 			// 真界面：「额外资源量」页底下那块里能看到它的身份 + 那个勾选框，勾上真的改到配置"
 			{
 				bool erWasEnabled = Profile.ExtraResource.Enabled;

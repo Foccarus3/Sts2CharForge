@@ -520,7 +520,7 @@
                                 <CheckBox DockPanel.Dock="Top" Margin="0,0,0,2"
                                           Content="在游戏中隐藏（不显示在遗物栏里）"
                                           IsChecked="{Binding HideInGame}"
-                                          ToolTip="这只遗物只是载体（开场发资源量 / 记跨战斗继承），不是藏品。&#10;勾上 = 生成一个补丁，把 NRelicInventory.Add 里的这一只跳过（不进遗物栏）；&#10;发放资源量、跨战斗继承这些功能一个字都不变（存档也兼容）。"/>
+                                          ToolTip="这只遗物只是载体（开场发资源量 / 记跨战斗继承），不是藏品。&#10;勾上 = 生成一个补丁：遗物栏照常把它建出来（节点列表长度/顺序和 Player.Relics 一致），&#10;只是把它那个节点设成不可见 —— 纯视觉隐藏；&#10;发放资源量、跨战斗继承这些功能一个字都不变（存档也兼容）。"/>
                                 <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"
                                            Text="{Binding HideInGameHint}"/>
                                 <TextBlock TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,2,0,0"
