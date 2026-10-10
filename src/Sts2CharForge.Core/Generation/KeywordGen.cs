@@ -138,6 +138,67 @@ public static class KeywordGen
         return string.Join("\n", lines);
     }
 
+    // ==================== 升级后获得 / 失去的自定义关键词（V0.2.136）====================
+    //
+    // 机制事实（预研已核实，别再重新论证）：本体的 CardKeyword 是**封闭枚举**，模组加不了新值 ——
+    // 自定义关键词本来就是「卡面那行 [gold]名字[/gold]。 + 生成的 ExtraHoverTips 覆写 + card_keywords
+    // 本地化键」三块拼起来的**显示等价物**，游戏侧没有任何按它判定的逻辑。
+    // 所以「升级后获得 / 失去」只改**显示**两处：
+    //   · 描述那行用本体的 {IfUpgraded:show:升级后|没升级} 包起来（见 BuildCardText）；
+    //   · ExtraHoverTips 按 base.IsUpgraded 条件加/不加那条（见 CSharpCodeGen.CustomKeywordTipsConditional）。
+    // 对比：本体关键词走 OnUpgrade() 里的 AddKeyword/RemoveKeyword，会真的改卡牌状态。
+
+    /// <summary>
+    /// 一组引用 → 当前配置下的**规范本地化键**（去掉空值 / 重复，认键也认中文名）。
+    /// 界面勾选、生成标记、回读三处共用同一套规范化，回读出来的东西才和界面写的逐字一样。
+    /// </summary>
+    public static List<string> NormalizeReferences(CharacterProfile p, IEnumerable<string>? references)
+    {
+        var list = new List<string>();
+        if (references is null) return list;
+        foreach (var r in references)
+        {
+            string text = (r ?? "").Trim();
+            if (text.Length == 0) continue;
+            // 对不上的引用保留用户写的那份（生成端会跳过它，校验器会报错 —— 不许静默丢掉用户的输入）
+            string key = Find(p, text)?.Key ?? text;
+            if (!list.Contains(key, StringComparer.OrdinalIgnoreCase)) list.Add(key);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 这张牌的卡面描述要用的两段关键词文字（升级前 / 升级后各一段）。
+    ///
+    /// <para>普通自定义关键词（<see cref="CustomKeywordList"/>）升级前后都显示；
+    /// 「升级后获得的」只在升级后那段、「升级后失去的」只在没升级那段。</para>
+    ///
+    /// <para>两边算出来**完全相同**时（没填这两栏就是这种情况）调用方直接按老路径走 ——
+    /// 生成出来的 <c>cards.json</c> 一个字符都不变（红线①）。</para>
+    /// </summary>
+    public static (string Base, string Upgraded) CardTextBoth(CharacterProfile p, CardSpec c)
+    {
+        var now = c?.CustomKeywordList ?? new List<string>();
+        var add = c?.UpgradeAddedCustomKeywords ?? new List<string>();
+        var del = c?.UpgradeRemovedCustomKeywords ?? new List<string>();
+        // 顺序 = 普通关键词（升级前后都在）→ 升级后获得的 → 升级后失去的（各自去重、保持用户填的顺序）
+        string baseText = CardTextFor(p, Dedup(now.Concat(del)));
+        string upText = CardTextFor(p, Dedup(now.Concat(add)));
+        return (baseText, upText);
+    }
+
+    private static List<string> Dedup(IEnumerable<string> items)
+    {
+        var list = new List<string>();
+        foreach (string x in items)
+        {
+            string t = (x ?? "").Trim();
+            if (t.Length == 0) continue;
+            if (!list.Contains(t, StringComparer.OrdinalIgnoreCase)) list.Add(t);
+        }
+        return list;
+    }
+
     // ==================== 内置关键词：临时保留 / 临时奇巧 ====================
     //
     // 为什么是「关键词」而不是本体 CardKeyword：本体的 CardKeyword 是**封闭枚举**（模组加不了新值），
@@ -181,13 +242,13 @@ public static class KeywordGen
         if (all.Count == 0 || p.Cards is null) return;
         foreach (var card in p.Cards)
         {
-            if (card?.KeywordIds is null || card.KeywordIds.Count == 0) continue;
+            if (card is null) continue;
             var fixedList = new List<string>();
-            foreach (string raw in card.KeywordIds)
+            foreach (string raw in card.KeywordIds ?? new List<string>())
             {
                 string text = (raw ?? "").Trim();
                 if (text.Length == 0) continue;
-                var hit = Find(p, text);
+                var hit = FindIn(all, text);
                 if (hit is null)
                 {
                     var m = System.Text.RegularExpressions.Regex.Match(text, @"^KEYWORD_(\d+)$",
@@ -198,8 +259,50 @@ public static class KeywordGen
                 string key = hit?.Key ?? text;
                 if (!fixedList.Contains(key, StringComparer.OrdinalIgnoreCase)) fixedList.Add(key);
             }
-            if (!fixedList.SequenceEqual(card.KeywordIds, StringComparer.OrdinalIgnoreCase))
+            if (!fixedList.SequenceEqual(card.KeywordIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase))
                 card.KeywordIds = fixedList;
+            // V0.2.136「升级后获得 / 失去的自定义关键词」同理**在循环外**（独立于「普通关键词引用」）：
+            // 老引用也要跟着改过的英文标识走，否则用户改了标识之后这两栏就变成
+            // 「引用了不存在的关键词」（校验器会报错）。没填时进出一模一样（列表保持空、不产生任何存档变化）。
+            card.UpgradeAddedCustomKeywords = NormalizeLike(card.UpgradeAddedCustomKeywords, all);
+            card.UpgradeRemovedCustomKeywords = NormalizeLike(card.UpgradeRemovedCustomKeywords, all);
         }
+    }
+
+    /// <summary>把一组引用按「当前配置的键」规整（键 / 中文名 / KEYWORD_N 三种写法都认）。</summary>
+    private static List<string> NormalizeLike(List<string>? references, List<(CustomKeywordSpec Spec, string Key)> all)
+    {
+        var list = new List<string>();
+        if (references is null) return list;
+        foreach (string raw in references)
+        {
+            string text = (raw ?? "").Trim();
+            if (text.Length == 0) continue;
+            var hit = FindIn(all, text);
+            if (hit is null)
+            {
+                var m = System.Text.RegularExpressions.Regex.Match(text, @"^KEYWORD_(\d+)$",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                if (m.Success && int.TryParse(m.Groups[1].Value, out int idx) && idx >= 1 && idx <= all.Count)
+                    hit = all[idx - 1];
+            }
+            string key = hit?.Key ?? text;
+            if (!list.Contains(key, StringComparer.OrdinalIgnoreCase)) list.Add(key);
+        }
+        return list;
+    }
+
+    /// <summary>在已取好的关键词表里按引用找（键 / 规范化标识 / 中文名都认，大小写不敏感）。</summary>
+    private static (CustomKeywordSpec Spec, string Key)? FindIn(
+        List<(CustomKeywordSpec Spec, string Key)> all, string want)
+    {
+        foreach (var item in all)
+        {
+            if (string.Equals(item.Key, want, StringComparison.OrdinalIgnoreCase)) return item;
+            if (string.Equals(NormalizeKeyText(item.Spec.Key), NormalizeKeyText(want), StringComparison.OrdinalIgnoreCase)
+                && NormalizeKeyText(want).Length > 0) return item;
+            if (string.Equals((item.Spec.Name ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase)) return item;
+        }
+        return null;
     }
 }

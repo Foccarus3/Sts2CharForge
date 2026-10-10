@@ -16,11 +16,11 @@
                 <TextBlock Text="卡牌名称" Style="{StaticResource Label}"/>
                 <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
                 <TextBlock Text="类型" Style="{StaticResource Label}"/>
-                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}"
-                          SelectedItem="{Binding CardType}"/>
+                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardTypeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding CardType}"/>
                 <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
-                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}"
-                          SelectedItem="{Binding Rarity}"/>
+                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardRarityOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                 <TextBlock Text="英文类名（留空 = 自动生成）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                 <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                 <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsChecked="{Binding InCardPool}"/>
@@ -673,9 +673,11 @@
                             <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                             <TextBlock TextWrapping="Wrap" Margin="6,0,0,2" Foreground="#888" FontSize="11" Text="{Binding ClassNameHint}"/>
                             <TextBlock Text="类型" Style="{StaticResource Label}"/>
-                            <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"/>
+                            <ComboBox x:Name="CardTypeCombo" Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardTypeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding CardType}"/>
                             <TextBlock Text="稀有度" Style="{StaticResource Label}"/>
-                            <ComboBox Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardRarities, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding Rarity}"/>
+                            <ComboBox x:Name="CardRarityCombo" Style="{StaticResource Pick}" IsEnabled="{Binding ValueEditable}" ItemsSource="{Binding CardRarityOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                      DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                             <!-- 费用 / 额外资源量费用 / 升级后费用 / 升级后额外资源量费用（需求《卡牌页优化.md》中间②）
                                  —— 原来的三个勾选框（X 费用 / 额外资源量费用为 X / 升级后 X+1）已经并进这几个框：
                                  框里写 X / Y / X+1 就是那三个勾选框的老语义（老字段一个都没删，老存档生成文本不变）。
@@ -780,6 +782,43 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                            <!-- V0.2.136（需求《卡牌页优化.md》第 2 条 ④「升级后的关键字底下增加对自定义关键词的处理」）：
+                                 自定义关键词的「不变 / 升级后获得 / 升级后失去」两栏。留空 = 不变（老存档就是空）。
+                                 ⚠ 界面上必须写明「只影响显示」—— 否则用户会以为机制变了（本体关键词走 AddKeyword
+                                 会真的改卡牌状态；自定义关键词是封闭枚举之外的显示等价物，游戏侧没有按它判定的逻辑）。 -->
+                            <TextBlock Text="自定义关键词：不变 ／ 升级后获得 ／ 升级后失去" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0" TextWrapping="Wrap"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#B60" FontSize="11" Margin="6,0,6,2"
+                                       Text="⚠ 这两栏**只影响显示**，不是机制变化：自定义关键词本来就不是本体的 CardKeyword 枚举（枚举是封闭的、模组加不了新值），它只有三块 —— 卡面描述里那行 [gold]名字[/gold]。、鼠标悬停的说明、card_keywords 本地化键。游戏侧没有任何「按自定义关键词判定」的逻辑，所以「升级后获得 / 失去」改的只是升级前后卡面上显不显示这个词、悬停有没有说明。（对比：上面「升级后的关键字」是本体关键词，走 AddKeyword/RemoveKeyword 会真的改卡牌状态。）"/>
+                            <TextBlock Text="升级后获得（留空 = 不变）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,6,0,0"/>
+                            <TextBlock Text="还没定义任何关键词：先到「自定义关键词」页添加。" Style="{StaticResource Label}" Foreground="#999" Margin="6,2,0,0"
+                                       Visibility="{Binding NoCustomKeywords, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
+                            <ItemsControl Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}"
+                                          ItemsSource="{Binding UpgradeAddedKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="{Binding Name}"
+                                                  ToolTip="{Binding KeyHint}" IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Text="升级后失去（留空 = 不变）" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,6,0,0"/>
+                            <ItemsControl Margin="6,0,0,0" IsEnabled="{Binding ValueEditable}"
+                                          ItemsSource="{Binding UpgradeRemovedKeywordRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="{Binding Name}"
+                                                  ToolTip="{Binding KeyHint}" IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="{Binding UpgradeCustomKeywordHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
                             <Button Content="{Binding CardPortraitUploadHint, RelativeSource={RelativeSource AncestorType=Window}}" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" IsEnabled="{Binding ValueEditable}" Click="OnPickCardPortrait"/>
                             <!-- 预览：按**游戏里的显示区域**画一块黑底（普通卡 1000×760 横图；先古卡是竖的 606×852，
                                  而且本体那块是「直接拉满」→ 预览也按拉满画，比例不对就能直接看到变形）。 -->
@@ -1891,7 +1930,8 @@
                                 <TextBlock Text="英文类名（留空 = 自动编号 &lt;角色类名&gt;Card&lt;序号&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Text="类型" Style="{StaticResource Label}"/>
-                                <ComboBox Style="{StaticResource Pick}" ItemsSource="{Binding CardTypes, RelativeSource={RelativeSource AncestorType=Window}}" SelectedItem="{Binding CardType}"
+                                <ComboBox x:Name="CurseCardTypeCombo" Style="{StaticResource Pick}" ItemsSource="{Binding CardTypeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding CardType}"
                                           ToolTip="本体那些状态牌（伤口 / 灼伤 / 眩晕 / 粘液）的类型都是 Status；先古卡和普通卡一样是 攻击 / 技能 / 能力。"/>
                                 <TextBlock Text="费用" Style="{StaticResource Label}"/>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>

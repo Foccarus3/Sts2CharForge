@@ -441,9 +441,28 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public IReadOnlyList<string> Genders { get; } = new string[3] { "Neutral", "Feminine", "Masculine" };
 
 
+	/// <summary>
+	/// 卡牌类型 / 稀有度的**英文 id 表**（V0.2.136 起界面**不再直接绑这两个**：
+	/// 三处下拉都改绑 <see cref="CardTypeOptions"/> / <see cref="CardRarityOptions"/> 的中文选项表）。
+	/// 留着是给自检对照用（「选项表的 Id 必须与这两张英文表逐项相同」），以及调试时取原始档位。
+	/// </summary>
 	public IReadOnlyList<string> CardTypes => EffectCatalog.CardTypes;
 
 	public IReadOnlyList<string> CardRarities => EffectCatalog.CardRarities;
+
+	/// <summary>
+	/// 卡牌**类型**下拉的界面选项（用户要求《卡牌页优化.md》第 2 条 ①「将类型和稀有度的英文替换成中文」）。
+	/// 显示中文（攻击 / 技能 / 能力 / 状态 / 诅咒 / 任务，照抄游戏本体 <c>CARD_TYPE.*</c>）、
+	/// 存的值还是 <see cref="EffectCatalog.CardTypes"/> 里那串英文 id
+	/// （生成端写的是本体 <c>CardType</c> 枚举名，校验器 / 回读也按英文判 —— **存档面零变化**）。
+	/// </summary>
+	public IReadOnlyList<RarityOption> CardTypeOptions => EffectCatalog.CardTypeOptions;
+
+	/// <summary>
+	/// 卡牌**稀有度**下拉的界面选项（同上）。显示中文（基础 / 普通 / 罕见 / 稀有 / 先古 / 状态 / 诅咒，
+	/// 照抄游戏本体 <c>CARD_RARITY.*</c>）、存的值还是 <see cref="EffectCatalog.CardRarities"/> 里那串英文 id。
+	/// </summary>
+	public IReadOnlyList<RarityOption> CardRarityOptions => EffectCatalog.CardRarityOptions;
 
 	public IReadOnlyList<string> RelicRarities => EffectCatalog.RelicRarities;
 
@@ -1432,6 +1451,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	private static string Trim120(string s) => s.Length <= 120 ? s : s.Substring(0, 120) + "…";
+
+	/// <summary>
+	/// 自检用：从一份本地化 JSON 里按「<c>"键": "值"</c>」整行抠出值（保留里面的 <c>\n</c> 转义原文）。
+	/// 直接抓字符串而不是反序列化：自检要看的就是**逐字节的生成文本**，反序列化会把转义还原掉，
+	/// 反而看不出「升级后那段 / 没升级那段」在文本里是怎么排的。
+	/// </summary>
+	private static string LineValue(string json, string prefix)
+	{
+		int at = json.IndexOf(prefix, StringComparison.Ordinal);
+		if (at < 0) return "";
+		int from = at + prefix.Length;
+		int to = json.IndexOf('"', from);
+		return to < 0 ? "" : json.Substring(from, to - from);
+	}
 
 	/// <summary>自检用：整目录复制（造好的工程要改一个文件做「标记坏了」的探针）。</summary>
 	private static void CopyFolder(string from, string to)
@@ -2630,6 +2663,55 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	/// <summary>
+	/// V0.2.136（需求《卡牌页优化.md》②④「升级后的关键字底下增加对自定义关键词的处理」）：
+	/// 「升级后获得」那一栏的勾选行（当前选中的卡 × 全部自定义关键词）。勾上 = 升级后才在卡面上显示这个词。
+	/// </summary>
+	public IReadOnlyList<UpgradeCustomKeywordRow> UpgradeAddedKeywordRows => UpgradeKeywordRowsOf(added: true);
+
+	/// <summary>同上，「升级后失去」那一栏（勾上 = 没升级时显示、升级后不显示）。</summary>
+	public IReadOnlyList<UpgradeCustomKeywordRow> UpgradeRemovedKeywordRows => UpgradeKeywordRowsOf(added: false);
+
+	private IReadOnlyList<UpgradeCustomKeywordRow> UpgradeKeywordRowsOf(bool added)
+	{
+		if (ActiveCardForDetail() is not { } card) return Array.Empty<UpgradeCustomKeywordRow>();
+		return KeywordGen.All(_profile).Select(k => new UpgradeCustomKeywordRow(card, k.Spec, k.Key, added)).ToList();
+	}
+
+	/// <summary>
+	/// 「升级后获得 / 失去自定义关键词」那两栏底下那行小结（V0.2.136）。
+	/// 三条口径：① 一个关键词都没定义 → 指路去「自定义关键词」页；② 这张牌升不了级（诅咒 / 状态牌）
+	/// → 说清那两栏永远不会生效；③ 填了 → 说清升级后卡面上会多显示 / 不显示哪些词。
+	/// </summary>
+	public string UpgradeCustomKeywordHint
+	{
+		get
+		{
+			if (_profile.CustomKeywords.Count == 0)
+				return "还没定义任何关键词：先到「自定义关键词」页添加，这里才会出现可勾的词。";
+			if (ActiveCardForDetail() is not { } card) return "";
+			var add = KeywordGen.NormalizeReferences(_profile, card.UpgradeAddedCustomKeywords);
+			var del = KeywordGen.NormalizeReferences(_profile, card.UpgradeRemovedCustomKeywords);
+			string body = "";
+			if (add.Count > 0 || del.Count > 0)
+			{
+				var parts = new List<string>();
+				if (add.Count > 0) parts.Add("升级后卡面上会出现 " + string.Join("、", add));
+				if (del.Count > 0) parts.Add("升级后卡面上不再显示 " + string.Join("、", del));
+				body = string.Join("；", parts) + "（悬停说明同步变，只影响显示）。";
+			}
+			if (!UpgradeCustomKeywordsPossible(card))
+				return (body.Length == 0 ? "" : body + " ")
+					+ (card.IsCurseCard ? "⚠ 这张是诅咒，固定升不了级（本体所有诅咒 MaxUpgradeLevel = 0），所以这两栏永远不会生效。"
+						: "⚠ 状态牌固定升不了级（MaxUpgradeLevel = 0），所以这两栏永远不会生效（勾了「可被无限升级」才例外）。");
+			return body;
+		}
+	}
+
+	/// <summary>这张牌游戏里到底能不能升级（判据与生成端写 MaxUpgradeLevel 的两处一致）。</summary>
+	private static bool UpgradeCustomKeywordsPossible(CardSpec card) =>
+		!card.IsCurseCard && (!card.IsStatusCard || card.InfinitelyUpgradable);
+
+	/// <summary>
 	/// 「给予卡牌关键词」那个下拉的候选：本体那 7 个关键词 + 存档里已有的自定义关键词。
 	/// 自定义关键词的 Id 用它的**键**（生成时写进代码的就是这个键），Display 里带上中文名方便找。
 	/// </summary>
@@ -2910,6 +2992,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		PotionDetail.DataContext = PotionUiSelection;
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
 		Raise("CustomKeywordRows");
+		// V0.2.136：「自定义关键词 · 升级后获得 / 失去」两栏 + 底下那行小结
+		Raise("UpgradeAddedKeywordRows");
+		Raise("UpgradeRemovedKeywordRows");
+		Raise("UpgradeCustomKeywordHint");
 		Raise("KeywordChoices");
 		// 需求 ⑦：「生成出来的卡加上关键词」的下拉与自定义关键词注册联动（同源的那一份候选）
 		Raise("SpawnKeywordChoices");
@@ -4496,6 +4582,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RefreshCustomKeywordRegistry();
 		HookCardCount();
 		Raise("UpgradeKeywordRows");
+		// V0.2.136：换了存档 / 载入了 → 这两栏的候选也要跟着新配置重建
+		Raise("UpgradeAddedKeywordRows");
+		Raise("UpgradeRemovedKeywordRows");
+		Raise("UpgradeCustomKeywordHint");
 		// 换存档 / 载入之后：「自定义参数 / 组」与「锻造」两页也要跟着重建
 		HookParamsAndGroups();
 		RaiseParamsChanged();
@@ -13599,9 +13689,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		List<ComboBox> vanillaCombos = new List<ComboBox>();
 		CollectCombos(CardDetail, vanillaCombos);
 		Check("选中本体卡时：类型 / 稀有度下拉变灰（数值由本体决定）",
-			vanillaCombos.Any((ComboBox c) => BindingOperations.GetBinding(c, Selector.SelectedItemProperty)?.Path?.Path == "CardType" && !c.IsEnabled)
-			&& vanillaCombos.Any((ComboBox c) => BindingOperations.GetBinding(c, Selector.SelectedItemProperty)?.Path?.Path == "Rarity" && !c.IsEnabled),
-			string.Join(" / ", vanillaCombos.Select((ComboBox c) => $"{BindingOperations.GetBinding(c, Selector.SelectedItemProperty)?.Path?.Path}={c.IsEnabled}")));
+			vanillaCombos.Any((ComboBox c) => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "CardType" && !c.IsEnabled)
+			&& vanillaCombos.Any((ComboBox c) => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Rarity" && !c.IsEnabled),
+			string.Join(" / ", vanillaCombos.Select((ComboBox c) => $"{BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path}={c.IsEnabled}")));
 		List<TextBox> vanillaBoxes = new List<TextBox>();
 		CollectTextBoxes(CardDetail, vanillaBoxes);
 		Check("选中本体卡时：「初始份数」仍然可以改",
@@ -27359,6 +27449,346 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& i.Message.Contains("填入参数", StringComparison.Ordinal)),
 				ProfileValidator.Validate(hlNoPhProf).FirstOrDefault(i => i.Message.Contains("高亮不会生效", StringComparison.Ordinal))?.Message ?? "(没报错！)");
 		}
+		// ===== V0.2.136：升级后获得 / 失去**自定义关键词**（需求《卡牌页优化.md》②④）=====
+		// 机制事实（预研已核实）：本体 CardKeyword 是封闭枚举、模组加不了新值，自定义关键词本来就是
+		// 「卡面那行 [gold]名字[/gold]。+ ExtraHoverTips 覆写 + card_keywords 本地化键」拼出来的**显示等价物**，
+		// 游戏侧没有任何按它判定的逻辑 —— 所以这两栏**只影响显示**。自检把整条闭环钉住：
+		//   描述那行用 {IfUpgraded:show:升级后|没升级} 包（顺序不能反）→ ExtraHoverTips 按 base.IsUpgraded 条件加
+		//   → 回读标记 → 校验器（引用不存在=错误 / 升不了级的牌=提示）→ **没填那两栏的老形状逐字节不变**。
+		{
+			string ukwRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02136_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			string ukwBase = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02136b_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				// ⚠ 这一段刻意**不用 ProfileFactory.Sample()** 当主体：示例存档里有几张卡踩到「从工程恢复」的老口径
+				// （`ApplyPower` 的升级增量会被回读端多算一次、延迟状态的作用对象、先古对话行数…，V0.2.133 及以前
+				// 就这样，与本版无关）—— 掺进来会让「恢复后再生成逐字节一致」这条断言变成在测**那些老问题**，
+				// 而不是测本版。所以起点是一份**干净的、只含本版关心的东西**的配置（和 V0.2.134 那段同一个取舍）：
+				//   · 一张「升级后获得 + 失去 + 一直在」的卡；两张对照卡（凑够卡池 3 张）；
+				//   · 一张诅咒（升不了级的那条提示 + 标记照写）。
+				var vp136 = new CharacterProfile
+				{
+					ModId = "UiCheckKw136", ModDisplayName = "自检角色136", CharacterClass = "UiCheckKw136",
+					DisplayName = "自检角色136", StartingHp = 80, StartingGold = 99,
+				};
+				vp136.CustomKeywords.Clear();
+				vp136.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命定", Description = "自检用·命定" });
+				vp136.CustomKeywords.Add(new CustomKeywordSpec { Key = "ECHO", Name = "回声", Description = "自检用·回声" });
+				vp136.CustomKeywords.Add(new CustomKeywordSpec { Key = "VOID", Name = "虚空", Description = "自检用·虚空" });
+
+				// ① 获得 + 失去 + 一直在（三栏都填：验顺序与两段分叉）；再带一条**数值也升级**的效果，
+				//    这样「升级增量回读」那条老路也被覆盖到（老形状的老问题不会混进来）
+				var ukwAdd = new CardSpec { Name = "升获自检卡", ClassName = "UiCheckKwAdd", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				ukwAdd.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 2m, UpgradeAmount = 1m, TargetSide = "Self" });
+				ukwAdd.KeywordIds = new List<string> { "ECHO" };
+				ukwAdd.UpgradeAddedCustomKeywords = new List<string> { "FATE" };
+				ukwAdd.UpgradeRemovedCustomKeywords = new List<string> { "VOID" };
+				vp136.Cards.Add(ukwAdd);
+				// ② 两栏一个都没填（老形状：走老路径，产物必须逐字节不变）+ ③ 凑够卡池 3 张
+				// 用 EffectSpec.Amount=5 / UpgradeAmount=3（不给 UpgradedCustomDescription）：
+				// 卡面文案按 {Block:diff()} 出，升级前后**只有关键词那行**不一样 —— 这样这条断言测的就是本版的关键词分叉。
+				var ukwPlain = new CardSpec { Name = "升获自检对照卡", ClassName = "UiCheckKwPlain", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				ukwPlain.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, UpgradeAmount = 3m, TargetSide = "Self" });
+				vp136.Cards.Add(ukwPlain);
+				var ukwFiller = new CardSpec { Name = "升获自检填充卡", ClassName = "UiCheckKwFiller", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				ukwFiller.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 0m, TargetSide = "Enemy" });
+				vp136.Cards.Add(ukwFiller);
+				// ④ 诅咒：升不了级（校验器要提示，且**照样要写标记** —— 不写会让回读把关键词搬错栏）
+				var ukwCurse = new CardSpec { Name = "升获自检诅咒", ClassName = "UiCheckKwCurse", CardType = "Curse", Rarity = "Curse", Cost = -1, InCardPool = false };
+				ukwCurse.UpgradeAddedCustomKeywords = new List<string> { "ECHO" };
+				vp136.Curses.Add(ukwCurse);
+
+				vp136.Paths.OutputDir = ukwRoot;
+				vp136.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				vp136.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				// 先落盘再读回来：真实用户手上的存档就是「存过、再打开」的（ProfileFactory.Load 会跑 Normalize）
+				string ukwStart = Path.Combine(ukwRoot, "UiCheckKw136start.json");
+				Directory.CreateDirectory(ukwRoot);
+				ProfileFactory.Save(vp136, ukwStart);
+				CharacterProfile ukwRun = ProfileFactory.Load(ukwStart);
+				ukwRun.Paths.OutputDir = ukwRoot;
+				ukwRun.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				ukwRun.Paths.GameDataDir = Profile.Paths.GameDataDir;
+
+				var ukwGen = ModGenerator.Generate(ukwRun);
+				Check("（准备）带「升级后获得 / 失去自定义关键词」的存档能生成工程", ukwGen.Success,
+					ukwGen.Success ? ukwGen.ProjectRoot : string.Join(" ｜ ", ukwGen.Issues.Where(x => x.IsError).Select(x => x.Message)));
+				if (ukwGen.Success)
+				{
+					string cardsJson = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "UiCheckKw136", "localization", "zhs", "cards.json"));
+					string descAdd = LineValue(cardsJson, "\"UI_CHECK_KW_ADD.description\": \"");
+					Check("生成端：描述里两段都用本体的 {IfUpgraded:show:…|…} 包起来（只有一个词在两段之间变也要包）",
+						descAdd.StartsWith("{IfUpgraded:show:", StringComparison.Ordinal), descAdd);
+					Check("生成端：**顺序不能反** —— `show:` 后面第一段是「升级后」：普通词 + 升级后获得的都在里面",
+						descAdd.Contains("show:[gold]回声[/gold]。\\n[gold]命定[/gold]。", StringComparison.Ordinal),
+						descAdd);
+					Check("生成端：`|` 后面那段是「没升级」：普通词 + 升级后失去的都在里面",
+						descAdd.Contains("|[gold]回声[/gold]。\\n[gold]虚空[/gold]。", StringComparison.Ordinal), descAdd);
+					Check("生成端：升级后**获得的**那一行只出现在「升级后」那段（没升级那段里不许有）",
+						descAdd.IndexOf("[gold]命定[/gold]。", StringComparison.Ordinal)
+							< descAdd.IndexOf('|'), "命定在 | 之前");
+					Check("生成端：升级后**失去的**那一行只出现在「没升级」那段",
+						descAdd.IndexOf("[gold]虚空[/gold]。", StringComparison.Ordinal)
+							> descAdd.IndexOf('|'), "虚空在 | 之后");
+					string descPlain = LineValue(cardsJson, "\"UI_CHECK_KW_PLAIN.description\": \"");
+					Check("生成端：**没填那两栏的卡**描述里一个 {IfUpgraded 都没有（老形状逐字节不变的口径）",
+						!descPlain.Contains("{IfUpgraded", StringComparison.Ordinal), descPlain);
+					string descFiller = LineValue(cardsJson, "\"UI_CHECK_KW_FILLER.description\": \"");
+					Check("（对照）数值靠 {…:diff()} 自己变的卡描述本来就不一样：没有关键词分叉时**不**多包一层 {IfUpgraded}",
+						!descFiller.Contains("{IfUpgraded", StringComparison.Ordinal) && descFiller.Contains("{Damage:diff()}", StringComparison.Ordinal),
+						descFiller);
+
+					string addSrc = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "cs", "Cards", "UiCheckKwAdd.cs"));
+					Check("生成端：标记只写非空的那一栏、两个标记**各自一行**（同一行会被贪婪匹配吃串）",
+						addSrc.Contains("// CET:UpgradeKeywordAdd=FATE", StringComparison.Ordinal)
+						&& addSrc.Contains("// CET:UpgradeKeywordRemove=VOID", StringComparison.Ordinal),
+						"两行都在");
+					Check("生成端：ExtraHoverTips 按 base.IsUpgraded 条件加/不加那条（升级后才有的关键词只出现在升级后）",
+						addSrc.Contains("..(base.IsUpgraded ? new MegaCrit.Sts2.Core.HoverTips.IHoverTip[]", StringComparison.Ordinal)
+						&& addSrc.Contains("base.IsUpgraded ? new MegaCrit.Sts2.Core.HoverTips.IHoverTip[]", StringComparison.Ordinal),
+						"条件展开写了");
+					Check("生成端：条件里既包含**升级后获得的**也包含**一直在的**（升级后两者都该显示）",
+						addSrc.Contains("\"FATE.title\"", StringComparison.Ordinal)
+						&& addSrc.Contains("\"ECHO.title\"", StringComparison.Ordinal), "FATE + ECHO 都在");
+					string plainSrc = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "cs", "Cards", "UiCheckKwPlain.cs"));
+					Check("生成端：没填这两栏的卡**一个字节都没变** —— ExtraHoverTips 还是老写法（`=> [ … ]`，没有条件展开）",
+						!plainSrc.Contains("base.IsUpgraded ? new MegaCrit.Sts2.Core.HoverTips.IHoverTip[]", StringComparison.Ordinal)
+						&& !plainSrc.Contains("CET:UpgradeKeyword", StringComparison.Ordinal), "老路径");
+					string curseSrc = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "cs", "Cards", "UiCheckKwCurse.cs"));
+					Check("生成端：升不了级的牌（诅咒）也照写标记（不写会让回读把关键词搬到普通那一栏）",
+						curseSrc.Contains("// CET:UpgradeKeywordAdd=ECHO", StringComparison.Ordinal), "诅咒里也有标记");
+
+					// ---- 回读：标记 → 两栏；ExtraHoverTips 那两条不算「一直都有」----
+					RecoveryResult ukwRec = ProjectRecovery.FromProject(ukwGen.ProjectRoot);
+					CardSpec? r1 = ukwRec.Profile.Cards.FirstOrDefault(x => x.ClassName == "UiCheckKwAdd");
+					Check("回读：升级后获得 / 失去两栏逐项还原",
+						r1 is not null
+						&& r1.UpgradeAddedCustomKeywords.SequenceEqual(new[] { "FATE" })
+						&& r1.UpgradeRemovedCustomKeywords.SequenceEqual(new[] { "VOID" }),
+						r1 is null ? "(缺卡)" : $"+[{string.Join(",", r1.UpgradeAddedCustomKeywords)}] -[{string.Join(",", r1.UpgradeRemovedCustomKeywords)}]");
+					Check("回读：**一直都有**的那个词没被那两栏的标记带跑（KeywordIds 里只剩 ECHO）",
+						r1 is not null && r1.KeywordIds.SequenceEqual(new[] { "ECHO" }),
+						r1 is null ? "(缺卡)" : string.Join(",", r1.KeywordIds));
+					CardSpec? r2 = ukwRec.Profile.Cards.FirstOrDefault(x => x.ClassName == "UiCheckKwPlain");
+					Check("回读：没填这两栏的卡，两栏保持空",
+						r2 is not null && r2.UpgradeAddedCustomKeywords.Count == 0 && r2.UpgradeRemovedCustomKeywords.Count == 0, "两栏都空");
+					Check("回读：回读端没多出「没认出来」的语句", !ukwRec.HasUnparsed, ukwRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+
+					// ---- 恢复出来的存档再生成一次：逐字节不变（证明两栏是幂等的、不会越生成越多）----
+					string recPath136 = Path.Combine(ukwRoot, "UiCheckKw136rec.json");
+					ProfileFactory.Save(ukwRec.Profile, recPath136);
+					CharacterProfile ukwRe = ProfileFactory.Load(recPath136);
+					ukwRe.Paths.OutputDir = ukwRoot;
+					ukwRe.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					ukwRe.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var ukwGen2 = ModGenerator.Generate(ukwRe);
+					Check("（准备）用恢复出来的存档再生成一次", ukwGen2.Success,
+						ukwGen2.Success ? "成功" : string.Join(" ｜ ", ukwGen2.Issues.Where(x => x.IsError).Select(x => x.Message)));
+					if (ukwGen2.Success)
+					{
+						var ukwMiss = new List<string>();
+						int ukwSame = 0;
+						foreach (string g1 in Directory.GetFiles(ukwGen.ProjectRoot, "*", SearchOption.AllDirectories))
+						{
+							string rel = Path.GetRelativePath(ukwGen.ProjectRoot, g1);
+							string g2 = Path.Combine(ukwGen2.ProjectRoot, rel);
+							if (!File.Exists(g2)) { ukwMiss.Add("第二次没有 " + rel); continue; }
+							if (System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(g1))
+								.AsSpan().SequenceEqual(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(g2)))) ukwSame++;
+							else if (!rel.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+								ukwMiss.Add("内容不同 " + rel + FirstLineDiff(g1, g2));
+						}
+						Check("「生成 → 从工程恢复 → 再生成」除了 .sln 的随机 GUID **逐字节一致**（两栏是幂等的）",
+							ukwMiss.Count == 0, ukwMiss.Count == 0 ? $"逐字节一致 {ukwSame} 个文件" : string.Join("；", ukwMiss.Take(4)));
+					}
+				}
+
+				// ---- 老形状对拍：一份**没有那两栏**的存档，改动前后生成结果必须逐字节一致 ----
+				// 自检里没法跑「改动前的版本」，所以这里钉住等价口径：那两栏为空 ⇒ 生成端走的就是老路径
+				//（描述不包 {IfUpgraded}、ExtraHoverTips 还是表达式体、一个 CET:UpgradeKeyword 都不写）。
+				CharacterProfile old136 = ProfileFactory.Sample();
+				old136.ModId = "UiCheckKw136b";
+				old136.ModDisplayName = "自检角色136b";
+				old136.CharacterClass = "UiCheckKw136b";
+				old136.DisplayName = "自检角色136b";
+				old136.CustomKeywords.Clear();
+				old136.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命定", Description = "自检用·命定" });
+				foreach (var oc in old136.Cards) oc.KeywordIds = new List<string> { "FATE" };
+				old136.Paths.OutputDir = ukwBase;
+				old136.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				old136.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var oldGen = ModGenerator.Generate(old136);
+				Check("（准备）只勾了普通自定义关键词、没填那两栏的存档能生成工程", oldGen.Success,
+					oldGen.Success ? "成功" : string.Join(" ｜ ", oldGen.Issues.Where(x => x.IsError).Select(x => x.Message)));
+				if (oldGen.Success)
+				{
+					string oldCards = File.ReadAllText(Path.Combine(oldGen.ProjectRoot, "UiCheckKw136b", "localization", "zhs", "cards.json"));
+					Check("老形状：描述里没有 {IfUpgraded（关键词行照旧拼在最前面）",
+						!oldCards.Contains("{IfUpgraded", StringComparison.Ordinal) && oldCards.Contains("[gold]命定[/gold]。", StringComparison.Ordinal), "老样子");
+					string oldCard = Path.Combine(oldGen.ProjectRoot, "cs", "Cards", "SevenCrush.cs");
+					string oldSrc = File.Exists(oldCard) ? File.ReadAllText(oldCard) : "";
+					Check("老形状：一个 CET:UpgradeKeyword 标记都不写（老存档产物一个字符都不多）",
+						oldSrc.Length > 0 && !oldSrc.Contains("CET:UpgradeKeyword", StringComparison.Ordinal), "没标记");
+					Check("老形状：ExtraHoverTips 还是老写法（表达式体，没有 base.IsUpgraded 条件展开）",
+						oldSrc.Contains("ExtraHoverTips =>", StringComparison.Ordinal)
+						&& !oldSrc.Contains("base.IsUpgraded ? new MegaCrit.Sts2.Core.HoverTips.IHoverTip[]", StringComparison.Ordinal), "老写法");
+				}
+
+				// ---- 校验器：引用不存在的自定义关键词 → **错误**（生成端也会拦住）----
+				CharacterProfile bad136 = ProfileFactory.Sample();
+				bad136.CustomKeywords.Clear();
+				bad136.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命定", Description = "自检用" });
+				var badCard = new CardSpec { Name = "升获校验卡", ClassName = "UiCheckKwBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				badCard.UpgradeAddedCustomKeywords = new List<string> { "NO_SUCH_KEY" };
+				bad136.Cards.Add(badCard);
+				var badIssues = ProfileValidator.Validate(bad136);
+				Check("校验器：升级后获得引用了不存在的自定义关键词 → **错误**，点名卡牌与那一栏",
+					badIssues.Any(i => i.IsError && i.Message.Contains("升获校验卡", StringComparison.Ordinal)
+						&& i.Message.Contains("NO_SUCH_KEY", StringComparison.Ordinal)
+						&& i.Message.Contains("升级后获得", StringComparison.Ordinal)),
+					badIssues.FirstOrDefault(i => i.IsError && i.Message.Contains("NO_SUCH_KEY", StringComparison.Ordinal))?.Message ?? "(没报错！)");
+				// ---- 校验器：诅咒（升不了级）填了这两栏 → 提示 ----
+				CharacterProfile curse136 = ProfileFactory.Sample();
+				curse136.CustomKeywords.Clear();
+				curse136.CustomKeywords.Add(new CustomKeywordSpec { Key = "FATE", Name = "命定", Description = "自检用" });
+				var curseCard136 = new CardSpec { Name = "升获校验诅咒", ClassName = "UiCheckKwCurseV", CardType = "Curse", Rarity = "Curse", Cost = -1, InCardPool = false };
+				curseCard136.UpgradeAddedCustomKeywords = new List<string> { "FATE" };
+				curse136.Curses.Add(curseCard136);
+				var curseIssues136 = ProfileValidator.Validate(curse136);
+				Check("校验器：诅咒（升不了级）填了这两栏 → 提示（照既有诅咒那条的写法），并说清只影响显示",
+					curseIssues136.Any(i => i.Level == "警告" && i.Message.Contains("升获校验诅咒", StringComparison.Ordinal)
+						&& i.Message.Contains("升不了级", StringComparison.Ordinal)
+						&& i.Message.Contains("只影响显示", StringComparison.Ordinal)),
+					curseIssues136.FirstOrDefault(i => i.Level == "警告" && i.Message.Contains("升不了级", StringComparison.Ordinal))?.Message ?? "(没提示！)");
+				// ---- 界面：两栏的勾选行 + 那行小结 ----
+				Check("界面：卡牌页有「升级后获得 / 升级后失去」两栏的勾选行（当前选中的卡 × 全部关键词）",
+					typeof(MainWindow).GetProperty("UpgradeAddedKeywordRows") is not null
+					&& typeof(MainWindow).GetProperty("UpgradeRemovedKeywordRows") is not null
+					&& typeof(MainWindow).GetProperty("UpgradeCustomKeywordHint") is not null, "三个窗口级属性都在");
+				Check("界面：「只影响显示」这句话确实写在界面上（用户不会以为机制变了）",
+					TextsIn(SelectTabRoot("卡牌")).Any(t => t.Contains("只影响显示", StringComparison.Ordinal)),
+					"界面文案里有");
+				Check("界面：那两栏的标题也写在卡牌页上（「升级后获得（留空 = 不变）」/「升级后失去（留空 = 不变）」）",
+					TextsIn(SelectTabRoot("卡牌")).Any(t => t.Contains("升级后获得（留空 = 不变）", StringComparison.Ordinal))
+					&& TextsIn(SelectTabRoot("卡牌")).Any(t => t.Contains("升级后失去（留空 = 不变）", StringComparison.Ordinal)),
+					"两个标题都在");
+			}
+			catch (Exception ex)
+			{
+				Check("V0.2.136 升级后自定义关键词自检整段跑通", ok: false, ex.Message);
+			}
+		}
+		// ===== V0.2.136：卡牌页「类型 / 稀有度」英文 → 中文（需求《卡牌页优化.md》第 2 条 ①）=====
+		// 用户原话：「**将类型和稀有度的英文替换成中文**」。
+		// 做法照抄遗物 / 药水页那一套（`RelicRarityOptions` / `PotionRarityOptions`）：
+		// **Id 保持英文**（存档 / 生成端 / 校验器 / 回读全按英文 id 判 → 存档面零变化）、
+		// **Display 是中文**（照抄游戏本体 `localization\zhs\gameplay_ui.json` 的 CARD_TYPE.* / CARD_RARITY.*）。
+		{
+			Check("卡牌类型下拉的选项：中文照抄游戏本体 CARD_TYPE.*（攻击 / 技能 / 能力 / 状态 / 诅咒 / 任务），Id 还是英文",
+				EffectCatalog.CardTypeOptions.Select(o => o.Id).SequenceEqual(EffectCatalog.CardTypes)
+				&& EffectCatalog.CardTypeOptions.Select(o => o.Display).SequenceEqual(new[] { "攻击", "技能", "能力", "状态", "诅咒", "任务" }),
+				string.Join(" / ", EffectCatalog.CardTypeOptions.Select(o => o.Id + "=" + o.Display)));
+			Check("卡牌稀有度下拉的选项：中文照抄游戏本体 CARD_RARITY.*（基础 / 普通 / 罕见 / 稀有 / 先古 / 状态 / 诅咒），档位与老表一模一样",
+				EffectCatalog.CardRarityOptions.Select(o => o.Id).SequenceEqual(EffectCatalog.CardRarities)
+				&& EffectCatalog.CardRarityOptions.Select(o => o.Display)
+					.SequenceEqual(new[] { "基础", "普通", "罕见", "稀有", "先古", "状态", "诅咒" }),
+				string.Join(" / ", EffectCatalog.CardRarityOptions.Select(o => o.Id + "=" + o.Display)));
+			Check("（对照）遗物 / 药水页的稀有度中文没被改动（两页是**不同枚举**，措辞本来就不一样）",
+				EffectCatalog.RelicRarityOptions.Select(o => o.Display).SequenceEqual(new[] { "初始", "常见", "罕见", "稀有", "先古", "商店" })
+				&& EffectCatalog.PotionRarityOptions.Select(o => o.Display).SequenceEqual(new[] { "常见", "罕见", "稀有" }),
+				"遗物 6 档 / 药水 3 档照旧");
+			Check("中文显示名映射：CardTypeZh / CardRarityZh 认得每一档，认不出来的原样返回（不吞、不静默变默认）",
+				EffectCatalog.CardTypeZh("Attack") == "攻击" && EffectCatalog.CardRarityZh("Uncommon") == "罕见"
+				&& EffectCatalog.CardTypeZh("SomethingElse") == "SomethingElse"
+				&& EffectCatalog.CardRarityZh("SomethingElse") == "SomethingElse", "映射对");
+			// 中间那一栏的两个下拉（自检里已经选中了一张卡）
+			Check("中间栏：类型下拉绑到 CardTypeOptions（DisplayMemberPath=Display / SelectedValuePath=Id / SelectedValue=CardType）",
+				CardTypeCombo is not null && ReferenceEquals(CardTypeCombo.ItemsSource, CardTypeOptions)
+				&& CardTypeCombo.DisplayMemberPath == "Display" && CardTypeCombo.SelectedValuePath == "Id"
+				&& BindingOperations.GetBinding(CardTypeCombo, Selector.SelectedValueProperty)?.Path?.Path == "CardType",
+				CardTypeCombo is null ? "(没找到下拉)" : "绑定对");
+			Check("中间栏：稀有度下拉绑到 CardRarityOptions（同上）",
+				CardRarityCombo is not null && ReferenceEquals(CardRarityCombo.ItemsSource, CardRarityOptions)
+				&& CardRarityCombo.DisplayMemberPath == "Display" && CardRarityCombo.SelectedValuePath == "Id"
+				&& BindingOperations.GetBinding(CardRarityCombo, Selector.SelectedValueProperty)?.Path?.Path == "Rarity",
+				CardRarityCombo is null ? "(没找到下拉)" : "绑定对");
+			// 「诅咒 / 先古卡」页那一栏（同一份模板的三处下拉之一）
+			Check("诅咒 / 先古卡页：类型下拉也换成中文选项表（Display / SelectedValuePath 都对）",
+				CurseCardTypeCombo is not null && ReferenceEquals(CurseCardTypeCombo.ItemsSource, CardTypeOptions)
+				&& CurseCardTypeCombo.DisplayMemberPath == "Display" && CurseCardTypeCombo.SelectedValuePath == "Id",
+				CurseCardTypeCombo is null ? "(没找到下拉)" : "绑定对");
+			// 下拉里**显示**的确实是中文（读的是选项表的 Display，不是英文 id）
+			Check("下拉里显示的是中文（逐项核 Display，没有一个纯英文 id 混进去）",
+				CardTypeCombo is not null && CardTypeCombo.Items.Cast<RarityOption>()
+					.All(o => o.Display.Length > 0 && !o.Display.All(ch => ch < 128))
+				&& CardRarityCombo is not null && CardRarityCombo.Items.Cast<RarityOption>()
+					.All(o => o.Display.Length > 0 && !o.Display.All(ch => ch < 128)),
+				string.Join(" / ", (CardTypeCombo?.Items ?? CardTypeCombo!.Items).Cast<RarityOption>().Select(o => o.Display)));
+
+			// ---- 选中之后**存进模型的还是英文 Id**（不能把存档写成中文）----
+			CardSpec? uiCard = ActiveCardForDetail();
+			Check("（准备）自检里选着一张卡（下拉绑的就是它）", uiCard is not null, uiCard?.Name ?? "(没选中)");
+			if (uiCard is not null && CardTypeCombo is not null && CardRarityCombo is not null)
+			{
+				string keepType = uiCard.CardType, keepRarity = uiCard.Rarity;
+				try
+				{
+					// 用 SelectedValue（= Id）选中，模拟用户在下拉里点「能力 / 稀有」——
+					// 存进模型的必须还是 "Power" / "Rare" 这两个英文 id
+					CardTypeCombo.SelectedValue = "Power";
+					Check("选中「能力」之后 CardSpec.CardType 还是英文 `Power`（不是「能力」）",
+						uiCard.CardType == "Power", uiCard.CardType);
+					CardRarityCombo.SelectedValue = "Uncommon";
+					Check("选中「罕见」之后 CardSpec.Rarity 还是英文 `Uncommon`（不是「罕见」）",
+						uiCard.Rarity == "Uncommon", uiCard.Rarity);
+					// 反过来：模型里是英文 id 时，下拉能按 SelectedValuePath 认出来（回来时不会变成空）
+					uiCard.CardType = "Skill"; uiCard.Rarity = "Rare";
+					UpdateLayout();
+					Check("模型里写英文 id → 下拉按 SelectedValuePath 认出来（选中值 = 那个 id，回到界面不会变空）",
+						Equals(CardTypeCombo.SelectedValue, "Skill") && Equals(CardRarityCombo.SelectedValue, "Rare"),
+						$"类型={CardTypeCombo.SelectedValue} 稀有度={CardRarityCombo.SelectedValue}");
+					// 模拟「用户在下拉里点了中文那一项」：把 SelectedItem 设成选项对象（和鼠标点选等价）
+					CardTypeCombo.SelectedItem = CardTypeCombo.Items.Cast<RarityOption>().First(o => o.Display == "攻击");
+					CardRarityCombo.SelectedItem = CardRarityCombo.Items.Cast<RarityOption>().First(o => o.Display == "先古");
+					UpdateLayout();
+					Check("点「攻击」/「先古」这两项之后，模型里写的还是英文 id（`Attack` / `Ancient`）—— 界面中文、存档英文",
+						uiCard.CardType == "Attack" && uiCard.Rarity == "Ancient",
+						$"{uiCard.CardType} / {uiCard.Rarity}");
+				}
+				finally
+				{
+					uiCard.CardType = keepType;
+					uiCard.Rarity = keepRarity;
+					UpdateLayout();
+				}
+			}
+			// 卡牌列表那一行（Display）里显示的也必须是中文
+			Check("卡牌列表那一行显示的是中文类型 / 稀有度（Display 原文里是「能力 / 罕见」，没有英文 id）",
+				DisplayIsChinese());
+			// 生成端读的仍然是英文 id（这两句话钉住「界面换中文 = 只换显示」）
+			Check("生成端不受影响：CardSource 里写的还是本体枚举名 `CardType.Power` / `CardRarity.Uncommon`",
+				CSharpCodeGen.CardSource(Profile, new CardSpec { Name = "自检中文档位卡", ClassName = "UiCheckZhTier", CardType = "Power", Rarity = "Uncommon", Cost = 1 }, 0)
+					.Contains("CardType.Power", StringComparison.Ordinal)
+				&& CSharpCodeGen.CardSource(Profile, new CardSpec { Name = "自检中文档位卡", ClassName = "UiCheckZhTier", CardType = "Power", Rarity = "Uncommon", Cost = 1 }, 0)
+					.Contains("CardRarity.Uncommon", StringComparison.Ordinal),
+				"英文枚举名照旧");
+			// 校验器 / 回读也按英文判（把中文写进模型会被拦下来）
+			CharacterProfile zhProf = ProfileFactory.Sample();
+			var zhBad = new CardSpec { Name = "中文档位卡", ClassName = "UiCheckZhBad", CardType = "能力", Rarity = "稀有", Cost = 1, InCardPool = true };
+			zhProf.Cards.Add(zhBad);
+			Check("校验器：模型里被写成中文档位 → **报错**（说明只能存英文 id，界面换中文没动校验口径）",
+				ProfileValidator.Validate(zhProf).Any(i => i.IsError && i.Message.Contains("中文档位卡", StringComparison.Ordinal)
+					&& (i.Message.Contains("类型非法", StringComparison.Ordinal) || i.Message.Contains("稀有度非法", StringComparison.Ordinal))),
+				ProfileValidator.Validate(zhProf).FirstOrDefault(i => i.IsError && i.Message.Contains("中文档位卡", StringComparison.Ordinal))?.Message ?? "(没报错！)");
+			// 本地函数：Display 里中文
+			bool DisplayIsChinese()
+			{
+				var probe = new CardSpec { Name = "自检显示卡", ClassName = "UiCheckZhShow", CardType = "Power", Rarity = "Uncommon", Cost = 1, InCardPool = true };
+				string text = probe.Display;
+				return text.Contains("能力", StringComparison.Ordinal) && text.Contains("罕见", StringComparison.Ordinal)
+					&& !text.Contains("Uncommon", StringComparison.Ordinal) && !text.Contains("/ Power", StringComparison.Ordinal);
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
@@ -28018,6 +28448,71 @@ public sealed class CustomKeywordRow : INotifyPropertyChanged
 					|| string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
 			}
 			_card.KeywordIds = list;
+			Raise(nameof(IsChecked));
+		}
+	}
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// V0.2.136：「自定义关键词 · 升级后获得 / 升级后失去」两栏里的一行（一张卡 × 一条关键词 × 方向）。
+/// 勾选写进这张卡的 UpgradeAddedCustomKeywords / UpgradeRemovedCustomKeywords（存本地化键）。
+///
+/// <para>⚠ 这两栏**只影响显示**：自定义关键词是本体封闭枚举之外的显示等价物
+///（卡面那行 <c>[gold]名字[/gold]。</c> + <c>ExtraHoverTips</c> + <c>card_keywords</c> 本地化键），
+/// 游戏侧没有任何按它判定的逻辑 —— 所以这里勾的不是「机制」，是「升级后卡面上显不显示这个词」。</para>
+/// </summary>
+public sealed class UpgradeCustomKeywordRow : INotifyPropertyChanged
+{
+	private readonly CardSpec _card;
+
+	private readonly CustomKeywordSpec _spec;
+
+	private readonly string _key;
+
+	private readonly bool _added;
+
+	public UpgradeCustomKeywordRow(CardSpec card, CustomKeywordSpec spec, string key, bool added)
+	{
+		_card = card;
+		_spec = spec;
+		_key = key;
+		_added = added;
+	}
+
+	public string Name => string.IsNullOrWhiteSpace(_spec.Name) ? _key : _spec.Name.Trim();
+
+	public string KeyHint => _key;
+
+	/// <summary>这一栏当前勾的引用列表（本地化键）。</summary>
+	private List<string> Current =>
+		new(_added ? _card.UpgradeAddedCustomKeywords : _card.UpgradeRemovedCustomKeywords);
+
+	public bool IsChecked
+	{
+		get => Current.Any(x =>
+			string.Equals(x, _key, StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(x, (_spec.Name ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+		set
+		{
+			var list = Current;
+			string name = (_spec.Name ?? "").Trim();
+			if (value)
+			{
+				// 统一存「本地化键」，和生成代码里的 LocString 键 / CET 标记保持一致
+				list.RemoveAll(x => string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+				if (!list.Any(x => string.Equals(x, _key, StringComparison.OrdinalIgnoreCase))) list.Add(_key);
+			}
+			else
+			{
+				list.RemoveAll(x => string.Equals(x, _key, StringComparison.OrdinalIgnoreCase)
+					|| string.Equals(x, name, StringComparison.OrdinalIgnoreCase));
+			}
+			if (_added) _card.UpgradeAddedCustomKeywords = list;
+			else _card.UpgradeRemovedCustomKeywords = list;
 			Raise(nameof(IsChecked));
 		}
 	}

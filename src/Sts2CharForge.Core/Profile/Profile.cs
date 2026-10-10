@@ -2371,6 +2371,68 @@ public sealed class CardSpec : SpecBase
     public CardSpec() => _upgradeKeywords.PropertyChanged += OnUpgradeKeywordsChanged;
 
     private void OnUpgradeKeywordsChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e) => Raise(nameof(Display));
+
+    private List<string> _upgradeAddedCustomKeywords = new();
+
+    /// <summary>
+    /// **升级后获得**的自定义关键词（存 <see cref="CustomKeywordSpec.Key"/>，大小写不敏感；空列表 = 不变，老存档就是空）。
+    ///
+    /// <para>⚠ **只影响显示**：本体的 <c>CardKeyword</c> 是**封闭枚举**（模组加不了新值），所以自定义关键词
+    /// 本来就是「卡面那行 <c>[gold]名字[/gold]。</c> + <c>ExtraHoverTips</c> 覆写 + <c>card_keywords</c> 本地化键」
+    /// 三块加起来的一个显示等价物 —— 游戏侧**没有任何按自定义关键词判定的逻辑**。
+    /// 因此「升级后获得」= 升级后才在卡面上显示这个词、悬停才有说明，**不是**机制层面的变化
+    ///（对比：本体关键词走 <c>AddKeyword(CardKeyword.X)</c> 会真的改卡牌状态，别的按关键词判定的逻辑看得见）。</para>
+    ///
+    /// <para>生成出来是：描述里那行用本体的 <c>{IfUpgraded:show:升级后那段|没升级那段}</c> 包起来，
+    /// <c>ExtraHoverTips</c> 按 <c>base.IsUpgraded</c> 条件加/不加那条提示。</para>
+    /// </summary>
+    public List<string> UpgradeAddedCustomKeywords
+    {
+        get => _upgradeAddedCustomKeywords;
+        set => SetCustomKeywordRefs(ref _upgradeAddedCustomKeywords, value, nameof(UpgradeAddedCustomKeywords));
+    }
+
+    private List<string> _upgradeRemovedCustomKeywords = new();
+
+    /// <summary>
+    /// **升级后失去**的自定义关键词（语义同 <see cref="UpgradeAddedCustomKeywords"/>，方向相反：
+    /// 没升级时显示、升级后不显示）。
+    /// </summary>
+    public List<string> UpgradeRemovedCustomKeywords
+    {
+        get => _upgradeRemovedCustomKeywords;
+        set => SetCustomKeywordRefs(ref _upgradeRemovedCustomKeywords, value, nameof(UpgradeRemovedCustomKeywords));
+    }
+
+    private void SetCustomKeywordRefs(ref List<string> field, List<string>? value, string name)
+    {
+        if (!Set(ref field, value ?? new List<string>())) return;
+        Raise(name);
+        Raise(nameof(UpgradeCustomKeywordsAny));
+        Raise(nameof(UpgradeCustomKeywordsDisplay));
+        Raise(nameof(Display));
+    }
+
+    /// <summary>升级后自定义关键词有没有填（列表右侧那行小结 / 校验器用）。</summary>
+    [JsonIgnore]
+    public bool UpgradeCustomKeywordsAny =>
+        _upgradeAddedCustomKeywords.Count > 0 || _upgradeRemovedCustomKeywords.Count > 0;
+
+    /// <summary>列表里显示的短说明，例如「升级后：获得 命定、失去 回声」（没填就返回空串）。</summary>
+    [JsonIgnore]
+    public string UpgradeCustomKeywordsDisplay
+    {
+        get
+        {
+            if (!UpgradeCustomKeywordsAny) return "";
+            var parts = new List<string>();
+            if (_upgradeAddedCustomKeywords.Count > 0)
+                parts.Add("获得 " + string.Join("、", _upgradeAddedCustomKeywords));
+            if (_upgradeRemovedCustomKeywords.Count > 0)
+                parts.Add("失去 " + string.Join("、", _upgradeRemovedCustomKeywords));
+            return "升级后（自定义关键词）：" + string.Join("；", parts);
+        }
+    }
     public bool InStartingDeck { get => _inStartingDeck; set => Set(ref _inStartingDeck, value); }
     public int StartingCopies { get => _startingCopies; set => Set(ref _startingCopies, value); }
     public bool InCardPool { get => _inCardPool; set => Set(ref _inCardPool, value); }
@@ -2679,6 +2741,14 @@ public sealed class CardSpec : SpecBase
     /// </summary>
     public ConditionSpec Condition { get; set; } = new();
 
+    /// <summary>
+    /// 卡牌列表里显示的整行文本。
+    ///
+    /// <para>类型 / 稀有度用**中文**（用户要求《卡牌页优化.md》第 2 条 ①「将类型和稀有度的英文替换成中文」）：
+    /// 走 <see cref="EffectCatalog.CardTypeZh"/> / <see cref="EffectCatalog.CardRarityZh"/>，
+    /// 中文照抄游戏本体的 <c>CARD_TYPE.*</c> / <c>CARD_RARITY.*</c>。
+    /// 存进存档的 <see cref="CardType"/> / <see cref="Rarity"/> 还是英文 id —— 生成端读的也是英文 id。</para>
+    /// </summary>
     [JsonIgnore]
     public string Display => IsVanillaCard
         // 本体卡：只有类名和初始张数是有意义的，别把费用/稀有度那些默认值显示出来误导人
@@ -2686,9 +2756,10 @@ public sealed class CardSpec : SpecBase
         // 锻造卡名字前面带一个「*」（需求：生成一项前缀带有「*」的卡牌）
         // 费用：锻造卡那两栏在「卡牌」页是藏起来的（费用归布上【能量】模块管）—— 列表里就按布上那个数显示，
         // 免得用户看到「0 费」却打进游戏才发现其实要花 1 点（用户报的坑）。
-        : $"{(IsForged ? "*" : "")}{Name}  ｜ {CardType} / {Rarity} / {(CostIsXEffective ? "X" : (IsForged ? Generation.ForgeGraphGen.EnergyCostOf(ForgeGraph) : Cost).ToString())} 费{StarCostSuffix}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
+        : $"{(IsForged ? "*" : "")}{Name}  ｜ {EffectCatalog.CardTypeZh(CardType)} / {EffectCatalog.CardRarityZh(Rarity)} / {(CostIsXEffective ? "X" : (IsForged ? Generation.ForgeGraphGen.EnergyCostOf(ForgeGraph) : Cost).ToString())} 费{StarCostSuffix}{(InStartingDeck ? " ｜ 初始牌" : "")}{(InCardPool ? "" : " ｜ 不入池")}"
           + (KeywordList.Count > 0 ? " ｜ " + string.Join("·", KeywordList) : "")
           + (UpgradeKeywords.Any ? " ｜ " + UpgradeKeywords.Display : "")
+          + (UpgradeCustomKeywordsAny ? " ｜ " + UpgradeCustomKeywordsDisplay : "")
           + (Condition.IsNone ? "" : "  ｜ 条件：" + Condition.DisplayShort);
 
     /// <summary>

@@ -53,7 +53,8 @@ public static class ProfileValidator
             if (string.IsNullOrWhiteSpace(spec.Description))
                 issues.Add(new("警告", $"{who} 没写说明：鼠标悬停在用到它的卡上会弹出一个空面板。"));
         }
-        // 自定义关键词的引用检查：普通卡 + 诅咒 + 先古卡都要查（三栏都可能勾关键词）
+        // 自定义关键词的引用检查：普通卡 + 诅咒 + 先古卡都要查（三栏都可能勾关键词）。
+        // V0.2.136 起还查「升级后获得 / 失去」两栏（引用不存在 → 错误；同一条同时获得又失去 → 警告）。
         foreach (var card in p.AllCards)
         {
             if (card is null) continue;
@@ -61,6 +62,25 @@ public static class ProfileValidator
                 if (KeywordGen.Find(p, r) is null)
                     issues.Add(new("错误", $"卡牌「{card.Name}」引用了不存在的自定义关键词：{r}"
                         + "（可能已经被删掉了，去「卡牌」页取消勾选，或到「自定义关键词」页把它加回来）。"));
+            // V0.2.136「升级后获得 / 失去的自定义关键词」：引用不存在的关键词同样是**错误**
+            // （生成端会跳过它 —— 卡面上什么都没有，用户会以为设置没生效，不许静默）。
+            foreach (var (who, refs) in new[]
+                     {
+                         ("升级后获得", card.UpgradeAddedCustomKeywords),
+                         ("升级后失去", card.UpgradeRemovedCustomKeywords),
+                     })
+            {
+                foreach (string r in refs ?? new List<string>())
+                    if (KeywordGen.Find(p, r) is null)
+                        issues.Add(new("错误", $"卡牌「{card.Name}」的「自定义关键词 · {who}」引用了不存在的自定义关键词：{r}"
+                            + "（可能已经被删掉了，去「卡牌」页把这一栏改掉，或到「自定义关键词」页把它加回来）。"));
+            }
+            // 同一张牌既「升级后获得」又「升级后失去」同一条关键词 → 自相矛盾（生成出来两段都不显示它）
+            foreach (string r in card.UpgradeAddedCustomKeywords ?? new List<string>())
+                if ((card.UpgradeRemovedCustomKeywords ?? new List<string>())
+                    .Any(x => string.Equals(x, r, StringComparison.OrdinalIgnoreCase)))
+                    issues.Add(new("警告", $"卡牌「{card.Name}」把同一条自定义关键词「{r}」同时填进了「升级后获得」和"
+                        + "「升级后失去」—— 两栏互相抵消，实际效果是升级前后都不显示它。"));
         }
 
         // 本体关键词改名：id 必须是那 7 个之一、名字不能带富文本标记、不能和别的本体关键词撞名
@@ -1430,6 +1450,20 @@ public static class ProfileValidator
     /// 这一档**不需要**任何 Harmony 补丁：走的是本体的通用宠物 API（PlayerCmd.AddPet&lt;T&gt;），
     /// 所以这里校验的都是「游戏里能不能正常显示 / 能不能编过」的东西，不是补丁条件。
     /// </summary>
+    /// <summary>
+    /// 这张牌游戏里到底能不能升级（V0.2.136）。
+    ///
+    /// <para>判据和生成端 <c>CSharpCodeGen.CardSourceCore</c> 里写 <c>MaxUpgradeLevel</c> 的那两处**一一对应**：
+    /// 诅咒固定 0；状态牌固定 0（除非勾了「可被无限升级」—— 生成端那条 <c>int.MaxValue</c> 优先）。</para>
+    /// </summary>
+    private static bool CardIsUpgradable(CardSpec c)
+    {
+        if (c is null) return false;
+        if (c.IsCurseCard) return false;
+        if (c.IsStatusCard && !c.InfinitelyUpgradable) return false;
+        return true;
+    }
+
     private static void ValidateSummon(List<ValidationIssue> issues, CharacterProfile p)
     {
         var enabled = PetGen.Enabled(p);
@@ -3062,6 +3096,16 @@ public static class ProfileValidator
             if (c.HasUpgradedCustomDescription && c.IsCurseCard)
                 issues.Add(new("警告", $"诅咒「{c.Name}」填了「升级后的自定义描述」—— 诅咒**不能升级**"
                     + "（本体所有诅咒都是 MaxUpgradeLevel = 0），所以那段文字游戏里永远不会显示。"));
+            // V0.2.136 同理：「自定义关键词 · 升级后获得 / 失去」填了但这张牌升不了级 → 那一栏永远不会生效
+            // （照上面诅咒那条的写法）。状态牌（MaxUpgradeLevel = 0）也走这一条。
+            if (c.UpgradeCustomKeywordsAny && !CardIsUpgradable(c))
+                issues.Add(new("警告", $"「{c.Name}」填了「自定义关键词 · 升级后获得 / 失去」—— 这张牌**升不了级**"
+                    + (c.IsCurseCard
+                        ? "（诅咒固定 MaxUpgradeLevel = 0）"
+                        : "（状态牌固定 MaxUpgradeLevel = 0）")
+                    + "，所以这两栏游戏里永远不会生效（卡面描述与悬停说明都不会变）。"
+                    + "另外提醒一句：自定义关键词本来就**只影响显示**（卡面那行 + 悬停说明），"
+                    + "本体是封闭枚举、没有任何按它判定的逻辑，所以这两栏也不会带来机制层面的变化。"));
             // 升级前 / 升级后两段不一样时，生成出来是 `{IfUpgraded:show:升级后|没升级}`；
             // 而本体那套是按**字面量 |** 切分选项的 —— 描述里自己写一个 | 会把那句话截断（卡面直接读不出来）。
             // 生成端会把 | 换成全角 ｜（能显示、不影响阅读），这里提醒一声，免得你以为是自己写错了。

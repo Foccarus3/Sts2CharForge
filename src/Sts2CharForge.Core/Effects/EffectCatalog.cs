@@ -1816,6 +1816,60 @@ public static class EffectCatalog
     /// 让它们跑进普通奖励（诅咒 / 状态连稀有度都抽不到，先古卡是被显式排除的）。
     /// </summary>
     public static IReadOnlyList<string> CardRarities { get; } = new[] { "Basic", "Common", "Uncommon", "Rare", "Ancient", "Status", "Curse" };
+
+    /// <summary>
+    /// 卡牌**类型**下拉的界面选项（用户要求《卡牌页优化.md》第 2 条 ①「**将类型和稀有度的英文替换成中文**」）。
+    ///
+    /// <para><c>Id</c> 还是 <see cref="CardTypes"/> 里那串英文（存档 / 生成端一个字符都不变 ——
+    /// 生成代码写的是 <c>CardType.Attack</c> 这种枚举名，只有界面显示换成中文）；
+    /// 界面用 <c>DisplayMemberPath="Display"</c> + <c>SelectedValuePath="Id"</c> 绑 <c>CardSpec.CardType</c>
+    ///（和遗物页 / 药水页 <see cref="RelicRarityOptions"/> 那套写法完全一致）。</para>
+    ///
+    /// <para>中文**照抄游戏本体**（<c>localization\zhs\gameplay_ui.json</c> 的 <c>CARD_TYPE.*</c>，
+    /// 与本体 <c>CardTypeExtensions.ToLocString()</c> 一一对应）：
+    /// 攻击 / 技能 / 能力 / 状态 / 诅咒 / 任务。档位与 <see cref="CardTypes"/> 完全一样（**没有加档**）。</para>
+    /// </summary>
+    public static IReadOnlyList<RarityOption> CardTypeOptions { get; } = new[]
+    {
+        new RarityOption("Attack",  "攻击"),
+        new RarityOption("Skill",   "技能"),
+        new RarityOption("Power",   "能力"),
+        new RarityOption("Status",  "状态"),
+        new RarityOption("Curse",   "诅咒"),
+        new RarityOption("Quest",   "任务"),
+    };
+
+    /// <summary>
+    /// 卡牌**稀有度**下拉的界面选项（同上，需求①）。
+    ///
+    /// <para>中文**照抄游戏本体**（<c>localization\zhs\gameplay_ui.json</c> 的 <c>CARD_RARITY.*</c>，
+    /// 与本体 <c>CardRarityExtensions.ToLocString()</c> 一一对应）：基础 / 普通 / 罕见 / 稀有 / 先古 / 状态 / 诅咒。
+    /// 档位与 <see cref="CardRarities"/> 完全一样（**没有加档**）。</para>
+    ///
+    /// <para>⚠ 与遗物 / 药水页的中文**故意不同**（那两页：常见 / 罕见 / 稀有；遗物还有「初始」）：
+    /// 卡片这一页按本体的 <c>CARD_RARITY.*</c> 走，两处看的是**不同枚举**（<c>CardRarity</c> vs
+    /// <c>RelicRarity</c> / <c>PotionRarity</c>），所以不强行统一（报告里已标出这一处措辞差异）。</para>
+    /// </summary>
+    public static IReadOnlyList<RarityOption> CardRarityOptions { get; } = new[]
+    {
+        new RarityOption("Basic",    "基础"),
+        new RarityOption("Common",   "普通"),
+        new RarityOption("Uncommon", "罕见"),
+        new RarityOption("Rare",     "稀有"),
+        new RarityOption("Ancient",  "先古"),
+        new RarityOption("Status",   "状态"),
+        new RarityOption("Curse",    "诅咒"),
+    };
+
+    /// <summary>卡牌类型的中文显示名（列表摘要 / 提示里显示用；认不出来的原样返回）。</summary>
+    public static string CardTypeZh(string? id) =>
+        CardTypeOptions.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display
+        ?? (string.IsNullOrWhiteSpace(id) ? "技能" : id!.Trim());
+
+    /// <summary>卡牌稀有度的中文显示名（列表摘要用；认不出来的原样返回）。</summary>
+    public static string CardRarityZh(string? id) =>
+        CardRarityOptions.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display
+        ?? (string.IsNullOrWhiteSpace(id) ? "普通" : id!.Trim());
     /// <summary>
     /// 这些效果种类「物理上做不了」延迟 —— 它们的语义**本身就绑死在打出这一瞬间**，
     /// 没有「下回合再做」这回事。界面上因此不给它们显示「下回合生效」勾选框

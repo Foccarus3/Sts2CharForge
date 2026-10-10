@@ -1,5 +1,82 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 23 批需求（V0.2.136：**升级后获得 / 失去自定义关键词**，《卡牌页优化.md》第 2 条 ④）
+
+> 需求原文：「**升级后的关键字底下增加对自定义关键词的处理**」。
+> 预研：`D:\ds\s\_tmp\升级后关键字与自定义关键词_预研.md`（含已核实机制与落点，按实际代码复核过）。
+> **本轮实测确认的机制事实（别再重新论证）**：自定义关键词**不是**本体 `CardKeyword` 枚举
+>（枚举封闭、模组加不了值），它只有三块 —— 卡面描述里那行 `[gold]名字[/gold]。`、生成的
+> `ExtraHoverTips` 覆写、`card_keywords` 本地化键。**游戏侧没有任何按自定义关键词判定的逻辑**，
+> 所以这两栏**只影响显示**；这一点**界面上必须写明**（否则用户会以为机制变了）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **「升级后的关键字」底下加「自定义关键词：不变 / 升级后获得 / 升级后失去」两栏** | **模型**：`CardSpec.UpgradeAddedCustomKeywords` / `UpgradeRemovedCustomKeywords`（`List<string>`，默认空列表；老字段一个都没动）+ `UpgradeCustomKeywordsAny` / `UpgradeCustomKeywordsDisplay`（列表右侧小结）。**生成端**：`LocalizationGen.CardsJson` 里关键词那两段走新增的 `KeywordGen.CardTextBoth`（没填那两栏 ⇒ 两段逐字节相同 ⇒ **走的还是老路径**），不一样时把「关键词行 + 正文」整段用 `IfUpgradedText(升级后, 没升级)` 包起来（⚠ 顺序固定「升级后\|没升级」；描述里自己写的字面量 `\|` 由既有的 `EscapePipe` 换全角）；`CSharpCodeGen.HoverTipsOverride` 新增 `upgradedKeywordTips` 参数，**只在真填了**时把表达式体改成条件版本 `..(base.IsUpgraded ? new IHoverTip[] { … } : Array.Empty<IHoverTip>()),`（写 `yield return` 那种会 CS1513 —— 生成端要自己数大括号、而它嵌在类里，实测踩过）。**回读**：卡牌 / 诅咒两条源码路径都写 `// CET:UpgradeKeywordAdd=` / `// CET:UpgradeKeywordRemove=`（**只在真填了才写**、空的那一栏不写；**两个标记各自一行** —— 同一行上「空值 + 下一个标记」会被贪婪匹配整段吃进值里，实测 `Add= CET:UpgradeKeywordRemove=VOID` 恢复成了 `FATE CET:UpgradeKeywordRemove=VOID`），`ProjectRecovery.ParseCard` 认这两行，并把这两个键从 `ExtraHoverTips` 扫出来的 `KeywordIds` 里摘掉（不然「升级后获得的」会被当成一直都有）。**升不了级的牌（诅咒 / 状态牌）也照写标记** —— 不写会让往返把关键词搬进普通那一栏（实测踩过）。**校验器**：那两栏引用不存在的自定义关键词 → **错误**（点名卡牌 + 哪一栏）；同一个词同时进「获得」「失去」→ 警告；填了但 `MaxUpgradeLevel = 0`（诅咒 / 状态牌）→ 提示「永远不会生效」并说清只影响显示。**界面**：`UpgradeAddedKeywordRows` / `UpgradeRemovedKeywordRows`（新增 `UpgradeCustomKeywordRow`，和既有的 `CustomKeywordRow` 同一套勾选写法）+ `UpgradeCustomKeywordHint`（没定义关键词 → 指路；升不了级 → 警示；填了 → 说清升级后会多显示 / 不显示哪些词）；两栏底下那句橙色说明写清「**只影响显示**」。**文案**：`README.md` 新增「升级后获得 / 失去自定义关键词」一节 + 「升级后的关键字」那节补一句；`tools\使用说明.template.txt` 新增一条（并把「暂不支持」那句改掉） | ✅V0.2.136 |
+| ② | **卡牌「类型 / 稀有度」英文 → 中文**（《卡牌页优化.md》第 2 条 ①，用户原话「**将类型和稀有度的英文替换成中文**」） | **中文照抄游戏本体**（`localization\zhs\gameplay_ui.json` 的 `CARD_TYPE.*` / `CARD_RARITY.*`，与本体 `CardTypeExtensions.ToLocString()` / `CardRarityExtensions.ToLocString()` 一一对应）：类型 = 攻击 / 技能 / 能力 / 状态 / 诅咒 / 任务（本体 `CardType` 枚举：Attack / Skill / Power / Status / Curse / Quest），稀有度 = **基础** / **普通** / 罕见 / 稀有 / 先古 / 状态 / 诅咒（本体 `CardRarity` 枚举：Basic / Common / Uncommon / Rare / Ancient / Status / Curse；⚠ 与任务书草稿里的「初始 / 常见」**故意不同** —— 以游戏为准，任务书那套措辞其实是遗物页的）。**档位一个都没加、一个都没减**（本体 `CardRarity` 还有 `Event` / `Token`，那是本体内部档、工具从来没给过 —— 与药水页同样的取舍；`None` 是空档）。**做法照抄遗物 / 药水页**：`EffectCatalog.CardTypeOptions` / `CardRarityOptions`（新 `RarityOption(Id, Display)`：`Id` = 英文 id、`Display` = 中文）+ `CardTypeZh` / `CardRarityZh`（列表摘要用）。**界面**：三处下拉（锻造卡那一栏 `MainWindow.xaml:19/22`、中间栏 `x:Name="CardTypeCombo"/"CardRarityCombo"`、诅咒 / 先古 / 状态页 `x:Name="CurseCardTypeCombo"`）全部改成 `ItemsSource=CardTypeOptions/CardRarityOptions` + `DisplayMemberPath="Display"` + `SelectedValuePath="Id"` + `SelectedValue="{Binding CardType/Rarity}"`；**卡牌列表那一行也换中文**（`CardSpec.Display` 里改成 `CardTypeZh(CardType) / CardRarityZh(Rarity)`，和 `RelicSpec.Display` / `PotionSpec.Display` 同一套写法）。**生成端 0 行改动**：生成代码写的一直是本体枚举名 `CardType.Power` / `CardRarity.Uncommon`，读的也是 `CardSpec.CardType` / `Rarity` 这两个**英文 id 字段**（新增的中文映射只被 `CardSpec.Display` 与界面用到，`Generation\*.cs` 一处都没引用）。**校验器 / 回读零改动**：两边本来就按英文 id 判 / 认（把中文写进模型仍会报「类型非法 / 稀有度非法」，自检有断言钉住）。**文案**：`README.md` 新增「卡牌「类型 / 稀有度」显示中文」一节 + 「致死性」那个例子改写成「类型选能力、稀有度选罕见」；`tools\使用说明.template.txt`「卡牌与效果」开头新增一条 + 同上那个例子同步 | ✅V0.2.136 |
+
+> **⚠ 第 ② 项里一处「以游戏为准」的措辞差异（请用户过一眼）**
+> 任务书草稿给的中文是「**初始** / **常见** / 罕见 / 稀有 / 先古 / 状态 / 诅咒」，而**游戏本体自己的词**是
+> 「**基础**（`CARD_RARITY.BASIC`）/ **普通**（`CARD_RARITY.COMMON`）/ 罕见（`CARD_RARITY.UNCOMMON`）/
+> 稀有（`CARD_RARITY.RARE`）/ 先古 / 状态 / 诅咒」。同页的**遗物 / 药水**用的是「初始 / 常见 / 罕见 / 稀有」
+> （那是本体 `RelicRarity` / `PotionRarity` 的档，**另一个枚举**）。本版按任务书「**以游戏为准**」的指示取了
+> **游戏本体的卡牌稀有度词**（基础 / 普通），并在文档里写明「与遗物 / 药水页措辞故意不同」。
+> 若用户希望三页用同一套词（常见 / 初始），改 `EffectCatalog.CardRarityOptions` 里两个 Display 即可（一行）。
+
+> **红线实测数字（V0.2.136，①②两项合并后各跑一遍）**
+> - ① **默认档逐字节不变**：`--samplegen` 112 个文件 **111 个逐文件 SHA256 一致**（唯一差异 = `ExampleMod.sln` 的随机 GUID）；
+>   两份**真实存档**（`DarkVinci.json` 150568 字节 / `SparkleMod.json` 314299 字节，
+>   先复制到 `_tmp\v02136\` 再当 `--profile` 输入 —— **绝不直接拿用户存档跑**（生成端会在存档旁边刷 `<存档名>.forge_classmap.json`））
+>   用 `git worktree`（HEAD `b87a284`，两轮改动过的 **9 个源文件**按 t3 工作区各自的行尾风格归一化后覆盖）与本版各生成一遍：
+>   `DarkVinci` **125 个文件 / 124 个逐字节一致**、`SparkleMod` **304 个文件 / 303 个逐字节一致**（各只差 `.sln` 的随机 GUID）。
+>   **行尾噪声怎么排除**：`robocopy t3\src → _tmp\v02136\ref\src`（继承 t3 当前行尾约定，两版同源）
+>   + 只把那 9 个改过的文件用 `cmd /c "git show HEAD:<path> > tmp"`（**字节级**，避免 PowerShell 管道按错误代码页解码）
+>   取回、再按每个文件在 t3 里的行尾（`KeywordGen.cs` 与 `EffectCatalog.cs` 是 **LF**、其余 7 个是 **CRLF**）归一化后覆盖；
+>   两版都在 t3 工作区里跑 ⇒ 没有 `core.autocrlf` 噪声。
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**（361 个警告，与改动前同数）。
+> - ③ `--uicheck`：Debug **3200 PASS / 0 FAIL**（基线 3156/0，**新增 44 条**）、发布版
+>   （`dotnet publish src\Sts2CharForge.App\Sts2CharForge.App.csproj -c Release -r win-x64 --self-contained true -o D:\ds\s\_tmp\v02136_pub`
+>   → `Unblock-File` → 先删旧 `uicheck_result.txt` → `[System.Diagnostics.Process]::Start(UseShellExecute=$false,
+>   TEMP=TMP=D:\ds\s\_tmp\apppub_tmp, DOTNET_DISABLE_GUI_ERRORS=1)` + `WaitForExit()`；**没有用 `Start-Process`**）
+>   **3200 PASS / 0 FAIL**。
+>   第 ① 项新增 28 条：描述两段分叉与 `show:` 后的顺序 / 获得与失去各自只出现在该出现的那段 /
+>   ExtraHoverTips 的条件展开（含「一直在的 + 升级后获得的」都在条件里）/ 没填那两栏的卡**老写法一字不改** /
+>   两个标记各自一行 / 诅咒也写标记 / 回读两栏逐项还原 + `KeywordIds` 没被带跑 / 「生成→恢复→再生成」逐字节 /
+>   老形状（只勾普通关键词）没有 `{IfUpgraded}`、没有标记、ExtraHoverTips 还是老写法 /
+>   校验器「不存在 → 错误」「诅咒升不了级 → 提示（且写明只影响显示）」/ 界面三属性 + 「只影响显示」文案在页面上。
+>   第 ② 项新增 16 条：两张选项表的 Id（**必须与老英文表逐项相同**）与 Display（必须等于游戏本体的词）/
+>   `CardTypeZh` / `CardRarityZh` 映射与「认不出来原样返回」/ 三处下拉的 `DisplayMemberPath=Display` +
+>   `SelectedValuePath=Id` + `SelectedValue` 绑 `CardType`/`Rarity` / 下拉里显示的全是中文 /
+>   **点「攻击」/「先古」之后模型里写的还是 `Attack` / `Ancient`** / 模型写英文 id 时下拉认得出来 /
+>   卡牌列表 `Display` 是中文、没有英文 id / 生成端仍写 `CardType.Power` / `CardRarity.Uncommon` /
+>   校验器把「模型里写中文档位」报成错误（口径没变）/ 遗物与药水页那两张表没被改动。**外加 1 条老断言改写**
+>   （「选中本体卡时类型 / 稀有度下拉变灰」原本读 `SelectedItem`，绑定换成 `SelectedValue` 后跟着改）。
+> - ④ **探针**（第 ① 项那轮跑的，仍在 `_tmp\v02136\`）`probe136.json`（示例存档 + 3 条自定义关键词 + 5 张牌覆盖四种组合：
+>   获得+失去+一直在 / 只获得 / 只失去 / 中文名当引用 / 诅咒）：
+>   CLI `--profile … --out … **--build**`（**只用 `--build`、不用 `--install`**）→ 真 `dotnet build`
+>   **0 错误**（8 个既有可空警告）、Godot 导入 / 导出 PCK **DONE**；`--recover` → **0 条「没认出来」**、
+>   两栏逐项还原（`+[FATE] -[VOID]` / `+[FATE]` / `+[FATE,ECHO]` / `-[]` / 诅咒 `+[ECHO]`），
+>   中文名引用被规范化成键（`命定 → FATE`，与「界面勾选 → 存档 → 生成 → 回读」同一套）。
+>   **幂等**：恢复出的存档再生成 → **109 个文件只有 `.sln` 不同**；再回读一遍两栏不变，再生成 **119/120 逐字节一致**（同样只差 `.sln`）。
+>   ⚠ 探针只写 `_tmp\v02136\probe_mods` 与产物目录，**没碰**用户的游戏 mods 目录（实测那个目录里今天没有新文件）。
+>   **第 ② 项没有单独跑探针**：它一行生成端代码都没动（见 ⑤），上面「两份真实存档 + `--samplegen` 逐字节对拍」已经覆盖；
+>   新增那 16 条自检里有一条直接断言「生成端仍写 `CardType.Power` / `CardRarity.Uncommon`」。
+> - ⑤ **五处配套**：第 ① 项 = 模型 / 生成（描述 + `ExtraHoverTips`）/ 回读 / 校验器 / 界面 + 文档；
+>   **第 ② 项 = 界面 + 文案（生成端 / 回读 / 校验器零改动 —— 它们本来就按英文 id 判）**。
+>   文档：`README.md`、`tools\使用说明.template.txt`、本文件。
+> - **行尾约定（本轮改过的 9 个源文件）**：逐个统计过 —— `KeywordGen.cs` 与 `EffectCatalog.cs` 本来就是 **LF**
+>   （`git cat-file` 核过 HEAD 也是 LF），其余 7 个（`MainWindow.xaml` / `MainWindow.xaml.cs` / `CSharpCodeGen.cs` /
+>   `LocalizationGen.cs` / `ProfileValidator.cs` / `ProjectRecovery.cs` / `Profile.cs`）**全 CRLF、裸 LF = 0、无 BOM**；
+>   `README.md` 与 `docs\QUEUE.md` 本来就是 **LF**、`tools\使用说明.template.txt` 是 **CRLF + 无 BOM**（复核过字节）。
+
+> **已知边界 / 留给用户定**
+> - 「升级后获得 / 失去」**只影响显示**（卡面那行 + 悬停说明）。这是本体机制决定的（封闭枚举），
+>   不是本版的取舍 —— 界面上已经写明。
+> - 同一个词**同时**填进「获得」和「失去」时两栏互相抵消（升级前后都不显示它）：校验器给警告；
+>   回读靠标记（那两栏都在标记里），所以往返不会把它搬到「一直都有」那一栏，但**用户原意（它本来一直有）回不来** ——
+>   这种自相矛盾的配置本来就是错的，想要「一直都有」请只用普通那一栏勾。
+> - 回读仍然**不能**从工程反推出「这张牌原来还有哪些词是一直都有的」之外的信息（老口径靠 `ExtraHoverTips`
+>   里那句 `LocString("card_keywords", …)` 反查）——本轮只是把「升级后获得 / 失去」那部分**摘干净**了。
+
 ## 第 22 批需求（未发版：**升级后自定义描述的逐字段高亮**，用户原话「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」）
 
 > **只做了第 1 档（零风险的界面 + 文本改写）；第 2 档（高亮选择进存档）刻意没做**，见文末「没做 / 待用户定夺」。
@@ -401,6 +478,7 @@
 >    · **一个字都不许改**用户存档目录 `D:\ds\s\4\自定义角色存档\`（`*.json` / `*.json.bak` / `_备份\` / 工程目录）—— 只允许**只读**（`--profile <用户存档>` 生成到 `_tmp` 下的输出目录是允许的，**不要**用 `--out` 指回用户目录）；
 >    · **一个字都不许写**用户的游戏安装目录（例如 `d:\download\steam\steamapps\common\Slay the Spire 2\mods`、`C:\Program Files (x86)\Steam\...`）；
 >    · **探针/验证一律只用 `--build`，不要用 `--install`** —— CLI 在目标不像 mods 目录时会**自动改写成真实游戏 mods 目录**（V0.2.135 那轮真发生过：探针版 `DarkVinci.*` 被装进用户游戏目录，用户原版随后消失）。要让生成物落盘就用 `--out`。
+>    · **不要直接拿用户存档当 `--profile` 输入**：生成端会在存档**旁边**刷新 `<存档名>.forge_classmap.json`（`NameStabilizer` 的固有副作用）→ 先把存档**复制到 `_tmp`** 再跑，产物 `--out` 也指到 `_tmp`。
 > 探针目录约定：`D:\ds\s\t3\_tmp\<name>`，csproj 要带 `<Compile Remove="out/**">`；uicheck 运行方式：
 > `TEMP=TMP=D:\ds\s\_tmp\apppub_tmp <AppBase>\Sts2CharForge.exe --uicheck`，结果读 `<AppBase>\uicheck_result.txt`（UTF8）。
 > ⚠ 自动化里**不要**用 `Start-Process` / `start` 起发布出来的 exe：未签名 exe 走 ShellExecute 会被

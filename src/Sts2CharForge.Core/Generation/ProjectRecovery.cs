@@ -680,7 +680,16 @@ public static class ProjectRecovery
             .Where(x => !KeywordGen.IsReservedKey(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+        // V0.2.136「升级后获得 / 失去的自定义关键词」：那一行标记里存的键是**升级后那两栏专有**的，
+        // 而上面那句 ExtraHoverTips 扫描出来的是「升级前 + 升级后」的并集（条件分支里两条都在）——
+        // 所以要把标记里出现的键从 KeywordIds 里摘出去，否则「升级后获得的」会被当成一开始就有的。
+        var upKwAdd = MarkerList(text, "UpgradeKeywordAdd");
+        var upKwDel = MarkerList(text, "UpgradeKeywordRemove");
+        foreach (string k in upKwAdd.Concat(upKwDel))
+            keywordRefs.RemoveAll(x => string.Equals(x, k, StringComparison.OrdinalIgnoreCase));
         if (keywordRefs.Count > 0) card.KeywordIds = keywordRefs;
+        if (upKwAdd.Count > 0) card.UpgradeAddedCustomKeywords = upKwAdd;
+        if (upKwDel.Count > 0) card.UpgradeRemovedCustomKeywords = upKwDel;
 
         string starCost = Match(text, @"CanonicalStarCost => (\d+)");
         int baseStar = starCost is null ? 0 : int.Parse(starCost, CultureInfo.InvariantCulture);
@@ -4504,6 +4513,28 @@ public static class ProjectRecovery
     {
         var m = Regex.Match(text, pattern);
         return m.Success ? m.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// 读一行 <c>// CET:</c> 标记里的「键列表」（生成端用 <c>|</c> 分隔、<c>\n</c> 转义，见
+    /// <see cref="CSharpCodeGen.EscapeMarker"/>）。
+    /// V0.2.136 用于 <c>CET:UpgradeKeywordAdd</c> / <c>CET:UpgradeKeywordRemove</c>（升级后获得 / 失去的自定义关键词）。
+    /// 没有这行标记（老工程）→ 返回空列表、**不报错**（那两栏保持空，和以前逐字一样）。
+    ///
+    /// ⚠ 值的边界写得刻意保守（<c>[^\r\n]*?</c> 后面跟「下一个 <c>CET:</c> 或行尾」）：
+    /// 两个标记常常长在同一行上（<c>// CET:UpgradeKeywordAdd=FATE CET:UpgradeKeywordRemove=VOID</c>），
+    /// 而 Add 为空时就是 <c>Add= CET:UpgradeKeywordRemove=VOID</c> —— 贪婪匹配会把后面那个标记整段吃进值里
+    /// （实测：恢复出来的「升级后获得」变成了「FATE CET:UpgradeKeywordRemove=VOID」）。
+    /// </summary>
+    private static List<string> MarkerList(string text, string name)
+    {
+        string? raw = Match(text, @"CET:" + Regex.Escape(name) + @"=(.*?)(?=\s+CET:|[\r\n]|$)");
+        if (raw is null) return new List<string>();
+        return CSharpCodeGen.UnescapeMarker(raw.Trim())
+            .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static int Int(string text, string pattern, int fallback)

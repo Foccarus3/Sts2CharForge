@@ -82,7 +82,12 @@ public static class LocalizationGen
             if (NeedsSelectPrompt(c.Effects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
             // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
-            string keywordText = KeywordGen.CardTextFor(p, c.CustomKeywordList);
+            // V0.2.136：「升级后获得 / 失去的自定义关键词」让这两段可以**不一样** ——
+            // 获得 = 升级后那段才有那一行，失去 = 没升级那段才有（见 KeywordGen.CardTextBoth）。
+            // ⚠ 没填那两栏时两段逐字节相同，下面走的还是**老路径**（keywordText + 老分支），产物一个字符都不变。
+            var (keywordBase, keywordUp) = KeywordGen.CardTextBoth(p, c);
+            string keywordText = keywordBase;
+            bool keywordDiffers = !string.Equals(keywordBase, keywordUp, StringComparison.Ordinal);
             // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
             string customDesc = (c.CustomDescription ?? "").Trim();
             string customUp = (c.UpgradedCustomDescription ?? "").Trim();
@@ -96,12 +101,30 @@ public static class LocalizationGen
             string customUpWanted = customUp.Length > 0 ? customUp : customDesc;
             string bodyBase = MergeAutoAndCustom(autoBase, customDesc, c.CustomDescriptionReplaces);
             string bodyUp = MergeAutoAndCustom(autoUp, customUpWanted, c.CustomDescriptionReplaces);
+            // 正文那段（不含关键词行）：升级前后一样就直接用，不一样才包 {IfUpgraded}
             string cardBody = string.Equals(bodyBase, bodyUp, StringComparison.Ordinal)
                 ? bodyBase
                 : IfUpgradedText(bodyUp, bodyBase);
-            dict[$"{entry}.description"] = keywordText.Length == 0
-                ? cardBody
-                : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
+            if (keywordDiffers)
+            {
+                // 关键词那行也要按升级前后分叉 → 整段（关键词 + 正文）一起包进 {IfUpgraded:show:升级后|没升级}。
+                // 顺序固定 = 关键词行在前、正文在后（和上面老路径的拼接顺序一致）。
+                string fullBase = keywordBase.Length == 0
+                    ? bodyBase
+                    : (bodyBase.Length == 0 ? keywordBase : keywordBase + "\n" + bodyBase);
+                string fullUp = keywordUp.Length == 0
+                    ? bodyUp
+                    : (bodyUp.Length == 0 ? keywordUp : keywordUp + "\n" + bodyUp);
+                dict[$"{entry}.description"] = string.Equals(fullBase, fullUp, StringComparison.Ordinal)
+                    ? fullBase
+                    : IfUpgradedText(fullUp, fullBase);
+            }
+            else
+            {
+                dict[$"{entry}.description"] = keywordText.Length == 0
+                    ? cardBody
+                    : (cardBody.Length == 0 ? keywordText : keywordText + "\n" + cardBody);
+            }
         }
         return LocJson(dict);
     }
