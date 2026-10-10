@@ -1,5 +1,47 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 20 批需求（V0.2.133：「下回合生效」适配全部效果，用户拍板 Q4=B 的下半段）
+
+> 需求原文：`docs\需求\卡牌页优化.md` 右侧④：「其下为是否下回合生效，**这个很重要，让这个适配所有的效果**」。
+> **用户拍板**：`docs\需求\已拍板决定.md` **Q4=B**（一次做齐）+ **第四节**（那 8 种「从此生效」）。
+> 预研：`D:\ds\s\_tmp\下回合生效_补齐清单（预研）.md`（那是 V0.2.132 之前的状态，按实际代码复核过）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **「下回合生效」补齐到全部效果**（`HonorsNextTurn` 12 → 65 里可做的 57 种） | **判据只有一份**：`EffectKindOption` 的 `SupportsNextTurn` 那一栏**删掉构造参数**、改成算出来的属性 `=> EffectCatalog.HonorsNextTurn(Kind)`（同一个类里，引用本类型是合法的静态上下文）—— 两者**不可能再漂**（历史上就是那一栏手写 true、生成端没分支 → 用户报的「勾了没反应」）。`HonorsNextTurn = 不是 NextTurnMeaningless(kind) 且在 EffectKinds 里`。**做不了的 8 种**（`NextTurnMeaningless`）：`CheapenSelf`（本回合这张牌自己费用变 0）/ `CheapenSelfOnDraw` / `ReturnSelfToHand` / `CheapenDraw` / `EndTurn` / `ExtraTurn` / `ScrapeDraw` / `TurnEndPlay` —— 语义绑死在打出那一瞬间，界面上**不显示**勾选框、校验器报错说清。**生成端**：新增**通用延迟分支** `CSharpCodeGen.IsDelayedEffectKind`（= HonorsNextTurn 且不是本体四种 / 生成类七种 / ApplyPower）+ `EmitDelayedPowerApply`（打出时只挂 `<角色>ForgeDelayed<种类><状态/关键词><作用对象>` 延迟状态，带一行 `CET:Effect=… CET:NextTurn=1` 回读标记）+ `EmitDelayedEffectBody`（延迟状态类的方法体 = 把**同一套发射器** `EmitCardEffectOnce` 发射一遍再替换上下文表达式）+ `DelayedVarMap`/`LiteralAmountOf`（延迟状态里没有 `base.DynamicVars`，数值一律折成常量）。`EmitCardEffectOnce` 里那一大段 `switch` 原样抽成 `EmitCardEffectSwitch`（**一个字都没改**，只是让延迟那条路也能跑同一套）。**四条链**（卡牌 / 遗物 / 药水 / 自定义状态）都接上。**界面/校验器**：勾选框自动跟着 `SupportsNextTurn` 走；校验器措辞改成「语义绑死在打出那一瞬间」并列出那 8 种；**顺手删掉**「生成类只支持做在卡牌上」那条错误（四条链都接了） | ✅V0.2.133 |
+| ② | **那 8 种「从此生效」**（用户已定：老存档里勾过的开始真的延迟生效） | 透支能量 / 翻倍状态层数 / 暴露 / 清除指定状态 / 清除全部减益 / 禁止获得格挡 / 禁止回复生命 / 伙伴攻击 —— 这 8 种走**通用延迟分支**（`IsDelayedEffectKind` 为 true），老存档里 `NextTurn=true` 的从「校验器报错、根本生成不出来」变成「真的生成延迟分支」。**其余 52 种**在 V0.2.132 及以前界面上根本没有勾选框 ⇒ 老存档里必然 `NextTurn=false` ⇒ 生成输出不变 | ✅V0.2.133 |
+
+> **红线实测数字（V0.2.133）**
+> - `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**；
+> - `--uicheck`：Debug **3115 PASS / 0 FAIL**（基线 3040/0，**新增 75 条**）、
+>   发布版（`dotnet publish -c Release -r win-x64 --self-contained true` → `Unblock-File`
+>   → `[System.Diagnostics.Process]::Start(UseShellExecute=$false)` + `WaitForExit`，跑前先删旧结果文件）
+>   **3115 PASS / 0 FAIL**（新增断言：判据逐条对齐 / 那 8 种支持且显示 /
+>   每一种支持的种类都真的生成延迟状态类 / 语义上做不了的那几种报错 / 四条链都接上 / 没勾走老路径）；
+> - **默认档逐字不变**：`--samplegen` 112 个文件 **80 个逐字节一致 + 31 个只差行尾**、内容 0 处差异
+>   （唯一内容差异 = `ExampleMod.sln` 的随机 GUID）。行尾噪声来源：基线在 `git worktree`（HEAD）里跑，
+>   检出的源码是 **CRLF**（`core.autocrlf=true`），而 t3 工作区的 `.cs` 是 **LF** ——
+>   `Lit.Str(...)` 把内嵌字符串的行尾一路带进产物；**CRLF→LF 归一化后 0 处内容差异**；
+> - **老存档对拍**（`_tmp\v02133\legacy8_off.json` = 那 8 种 + 其余代表种类，**全部 `NextTurn=false`**）：
+>   105 个文件 **81 个逐字节一致 + 23 个只差行尾 + 1 个 `.sln` 随机 GUID**，内容 0 处差异；
+> - **探针** `D:\ds\s\_tmp\v02133`：**59 张卡（覆盖 57 种延迟种类 + 老 12 种）＋ 遗物 / 药水链**
+>   → CLI `--build --install` **真 `dotnet build` 0 错误** → `--recover` **0 条「没认出来」**；
+>   字段逐项还原 59 条里 **52 条逐字段一致**，剩 7 条是**既有**回读缺口（见下）；
+> - **幂等**：同一份存档连跑两次 379 个文件 **378 个逐字节一致**（只差 `.sln`）；
+> - **行尾约定**：本轮改过的文件里 `EffectCatalog.cs` 是 **LF**、其余（`CSharpCodeGen.cs` /
+>   `Naming.cs` / `ProfileValidator.cs` / `ProjectRecovery.cs` / `MainWindow.xaml.cs` /
+>   `使用说明.template.txt`）是 **CRLF**，逐个统计核对过、无混合行尾、无 BOM 变化。
+
+> **已知边界 / 留给用户定**：① 延迟状态里没有「这张牌」，所以延迟执行的数值一律取**生成期折好的常量**
+> （`Amount + UpgradeAmount`；「数值 = X」在延迟里退成基础数值）；② 「打到打出时选中的那个目标」靠
+> `PowerCmd.Apply` 的 target 参数带走，延迟时用 `base.Target` 取回，**目标不在了就退成第一个可打的敌人**；
+> ③ **遗物 / 药水 / 自定义状态链上的「生成类」七种**还没有延迟分支（那七种需要「这张牌」），
+> 只接上了通用延迟分支的 45 种；④ 回读仍有 7 处**既有**缺口（不是本轮引入）：
+> `Block/Draw/Energy/ExtraResource + NextTurn` 那几个本体现成状态没写回读标记（`Amount` / `PowerId` 还原不全）、
+> `ApplyPower + NextTurn` 的 `TargetSide` 退成「自己」、`PetSacrifice` 的延迟 `PowerId` 缺尾；
+> ⑤ 那 8 种现在真的会改老存档输出（用户已明确接受，发版说明要点名）。
+
+
 ## 第 19 批需求（用户 2026-10-XX 提，按《卡牌页优化.md》**右侧④**里的作用对象扩档 + 概率独立 + 卡牌链 UI 重排）
 
 > 需求原文：`docs\需求\卡牌页优化.md` 右侧④。**用户拍板**：`docs\需求\已拍板决定.md` **Q4=B**（一次做齐）——

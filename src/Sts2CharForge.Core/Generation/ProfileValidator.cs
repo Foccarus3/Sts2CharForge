@@ -2080,18 +2080,19 @@ public static class ProfileValidator
                             + "生成时会忽略它、按本体的做法施加 1 层（真正生效的是上面那个百分比）。"));
                 }
             }
-            // 「下回合生效」：只有真正实现了延迟分支的几种才放行（见 EffectCatalog.HonorsNextTurn）——
+            // 「下回合生效」：只有真正实现了延迟分支的种类才放行（见 EffectCatalog.HonorsNextTurn）——
             // 以前判的是 EffectKindOption.SupportsNextTurn，那一栏对 8 个**没实现**的种类也写着 true，
             // 于是勾了等于没勾（静默失效）。
+            // ⚠ V0.2.133 起 HonorsNextTurn = 「除 EffectCatalog.NextTurnMeaningless 之外的每一种」，
+            //   而 EffectKindOption.SupportsNextTurn **就是** HonorsNextTurn（同一份判据）——
+            //   界面上勾不到的种类，这里也就不会再报（不会有「勾了没反应」）。
             if (e.NextTurn && !EffectCatalog.HonorsNextTurn(e.Kind))
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」不支持「下回合生效」（勾了不会生效，生成端没有延迟分支）—— "
-                    + "目前真正支持的是：获得格挡 / 抽牌 / 获得能量 / 获得额外资源量 / 施加或扣除状态 / "
-                    + "生成卡牌 / 复制卡牌 / 变化卡牌 / 获得·变化·删除·升级牌组里的牌（全局）。"));
-            // 生成类的「下回合生效」目前只做在**卡牌**上：延迟状态里只有 base.Owner.Player 那一套上下文，
-            // 遗物 / 药水 / 自定义状态那三条链还没接（别静默按「立刻生成」处理）。
-            else if (e.NextTurn && CSharpCodeGen.IsDelayedSpawnKind(e.Kind) && ctx is "Relic" or "Potion" or "Power")
-                issues.Add(new("错误", $"{owner} 的「{kind.Display}」勾了「下回合生效」：生成类的延迟状态目前只支持做在**卡牌**上"
-                    + "（遗物 / 药水 / 自定义状态那三条链还没接），请去掉这个勾，或把这条效果挪到卡牌上。"));
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」不支持「下回合生效」—— "
+                    + "这一条效果的语义**绑死在打出的那一瞬间**（比如「本回合这张牌自己费用变 0」「把这张牌放回手牌」"
+                    + "「结束回合」「额外获得一回合」「刮削」「回合结束时自动打出」「抽到就减费」），"
+                    + "没有「下回合再做」这回事，所以界面上也不给这一栏显示勾选框。请去掉这个勾。"));
+            // 生成类的「下回合生效」以前只做在**卡牌**上；V0.2.133 起遗物 / 药水 / 自定义状态
+            // 三条链也都接上了通用延迟分支（见 CSharpCodeGen.IsDelayedEffectKind），所以这里不再拦。
             // 额外资源量 + 下回合生效：正数走本体的 StarNextTurnPower；「需要 N 点」（负数）是卡牌费用，跟下回合无关
             if (e.Kind == "ExtraResource" && e.NextTurn)
             {

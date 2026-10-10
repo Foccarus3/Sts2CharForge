@@ -6331,8 +6331,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     private static void EmitCardEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
-        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null, bool captureFatal = false)
+        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null, bool captureFatal = false,
+        bool inDelayedBody = false, IReadOnlyDictionary<string, string>? literalAmounts = null)
     {
+        // 「延迟状态」里没有卡牌的动态变量（CanonicalVars）也没有序号公式上下文 ——
+        // 数值一律用生成期折好的字面量（键 = 变量名，见 DelayedVarMap）。
+        if (inDelayedBody)
+        {
+            string lit = LiteralAmountOf(e, literalAmounts);
+            EmitCardEffectSwitch(w, p, e, lit, useX: false, petVar: petVar, petDef: petDef,
+                effectComment: effectComment, petLookup: petLookup, blockAmtOverride: lit);
+            return;
+        }
         // 「数值公式」（需求：「另加一栏『数值公式』」）：写了公式就用公式算出来的那个值，
         // 动态变量（CanonicalVars 里那个）只是占位、没人再去读它。
         // 求值用的局部变量（__pM / __X / __Y…）由 OnPlay（或卡牌时机钩子）开头的
@@ -6353,10 +6363,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 生成文本一个字节不变。
         if (e.TargetSide is "Ally" or "AllAllies" or "AllUnits")
             w.Line($"// CET:TargetSide={e.TargetSide}" + (e.AllAlliesExcludePets ? " CET:AllyNoPets=1" : ""));
-        // 格挡走的是另一条取数路径（BlockValueAccess），单独把公式接上去（升级增量同理）
-        string blockAmt = formula is not null
-            ? (e.UpgradeAmount != 0m ? UpgradeAwareAmount(e, formula) : formula)
-            : BlockValueAccess(varMap, e);
+        // 「下回合生效」的**新支持种类**（V0.2.133）：现在只挂延迟状态，下回合开始时由它
+        // 跑同一套发射器（见 EmitDelayedEffectBody / DelayedPowersSource）。
+        // ⚠ 这一段在老存档上**永远不会**走到「多生成」：这些种类在 V0.2.132 及以前界面上
+        //    根本没有「下回合生效」勾选框（SupportsNextTurn=false），所以老存档里它们必然 NextTurn=false。
+        // ⚠ inDelayedBody = true 时**不能**再走这里 —— 那是在延迟状态类里「重放」这条效果，
+        //    再挂一次延迟状态就成了无限套娃（实测：生成出来的类里挂它自己）。
+        if (!inDelayedBody && UsesDelayedEffectBranch(e))
+        {
+            EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
+            return;
+        }
         // 「下回合生效」的**生成类**效果（用户要求：生成卡牌之类也要能下回合）：现在不生成，
         // 改成给自己挂一个延迟状态（层数 = 张数），下回合开始时由它调用同一套发射器（见 DelayedPowersSource）。
         // 标记行要写在这里 —— 回读是**按用它的那张牌**认效果的（延迟状态类里那几个标识别写重复）。
@@ -6379,6 +6396,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 会直接 return（状态根本不会挂上），所以必须给 1。
         if (IsSlowPercentEffect(e)) amt = "1m";
+        // 格挡走的是另一条取数路径（BlockValueAccess），单独把公式接上去（升级增量同理）
+        string blockAmt = formula is not null
+            ? (e.UpgradeAmount != 0m ? UpgradeAwareAmount(e, formula) : formula)
+            : BlockValueAccess(varMap, e);
+        EmitCardEffectSwitch(w, p, e, amt, useX, varMap, petVar, petDef, effectComment, petLookup, captureFatal, blockAmt);
+    }
+
+    /// <summary>
+    /// 一条效果「到底做什么」的那一大段 <c>switch</c>（V0.2.133 从 <see cref="EmitCardEffectOnce"/>
+    /// 里原样搬出来的，一个字都没改 —— 搬出来只是为了让**延迟状态**那条路也能跑同一套发射器）。
+    /// </summary>
+    private static void EmitCardEffectSwitch(CodeWriter w, CharacterProfile p, EffectSpec e, string amt, bool useX = false,
+        Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
+        string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null, bool captureFatal = false,
+        string? blockAmtOverride = null)
+    {
+        // ⚠ 延迟状态那条路传进来的 blockAmt 是**已经折好的字面量**（那里没有 base.DynamicVars）。
+        string blockAmt = blockAmtOverride ?? BlockValueAccess(varMap, e);
         switch (e.Kind)
         {
             case "EndTurn":
@@ -6594,7 +6629,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
                         c => $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡");
                 else if (e.NextTurn)
+                {
                     w.Line($"await PowerCmd.Apply<BlockNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
+                }
                 else if (useX && e.AmountIsXEffective)
                     // 格挡 = X：BlockVar 那条重载只能吃固定值，X 要走 decimal 重载
                     EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
@@ -7392,6 +7429,205 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static string DelayedPowerClassName(EffectSpec e, CharacterProfile? owner = null) =>
         owner is null ? Naming.AmbientDelayedPowerClass(e) : Naming.From(owner).DelayedPowerClass(e);
 
+    /// <summary>
+    /// 打出「下回合生效」的那条效果时，挂延迟状态那一句。
+    ///
+    /// <paramref name="ownerExpr"/> = 挂给谁（卡牌 / 遗物 / 药水链是 <c>base.Owner.Creature</c>，
+    /// 自定义状态链是 <c>base.Owner</c>）；<paramref name="playerExpr"/> = 玩家（<c>base.Owner</c> 或
+    /// <c>base.Owner.Player</c>）。
+    ///
+    /// 层数（<c>Amount</c>）就是这条效果的「数值」（张数 / 层数 / 点数的**字面量** —— 延迟状态下
+    /// 没有卡牌的动态变量，所以一律在生成期折成常量，和生成类那套一致）。
+    /// 挂的时候把「打谁」当 target 一起交给它：延迟状态在下回合用 <c>base.Target</c> 取回那个目标
+    ///（目标已经不在了就退成第一个可打的敌人，不静默失效）。
+    /// </summary>
+    internal static void EmitDelayedPowerApply(CodeWriter w, CharacterProfile p, EffectSpec e,
+        string ownerExpr, string playerExpr)
+    {
+        string n = Lit.Dec(e.Amount);
+        // 回读用：`CET:Effect=` 那一行带着这条效果的全部信息（种类 / 数值 / 状态 / 目标卡 /
+        // 作用对象 / 选牌方式…），`CET:NextTurn=1` 说明它是「下回合生效」——
+        // 和生成类那套标记**完全同一份**（见 SelfContainedMarker），回读端只认一次。
+        // 「给予关键词」那条还要额外带上关键词（SelfContainedMarker 里没有这一项，
+        // 而延迟状态下 EmitGiveKeyword 的 CET:GiveKeyword= 标记写在**状态类体内**、卡这边看不到）；
+        // 「获得药水」那条要带上「指定还是随机 / 指定的是哪一瓶」（同 PotionMarker 的约定：
+        // 随机档才写 PotionPick、真的选了药水才写 Potion）。
+        w.Line(SelfContainedMarker(e) + " CET:NextTurn=1"
+            + (e.Kind == "GiveKeyword" ? $" CET:Given={Lit.Identifier(e.GivenKeyword ?? "", "")}" : "")
+            + (e.Kind == "GainPotion" && e.IsPotionRandom ? " CET:PotionPick=Random" : "")
+            + (e.Kind == "GainPotion" && !string.IsNullOrWhiteSpace(e.PotionId) ? $" CET:Potion={e.PotionId!.Trim()}" : ""));
+        w.Line($"// 下回合生效：现在只挂延迟状态，下回合开始时再{EffectCatalog.FindKind(e.Kind).Display}"
+            + (e.TargetSide is "Enemy" or "Ally" ? "（打到打出时选中的那个目标；目标不在了就退成第一个可打的敌人）" : ""));
+        w.Line($"await PowerCmd.Apply<{DelayedPowerClassName(e, p)}>(choiceContext, {ownerExpr}, {n}, {playerExpr}, null);");
+    }
+
+    /// <summary>
+    /// 「下回合生效」+ 新支持的种类时，把那条效果**原样**发射一遍（走
+    /// <see cref="EmitCardEffectOnce"/> 同一套发射器），产出的语句就是延迟状态类的方法体。
+    ///
+    /// 表达式替换表（延迟状态 vs 卡牌链）：
+    ///   · <c>base.CombatState</c>      → <c>__fgDelayedCombat</c>（PowerModel 上没有这个属性）；
+    ///   · <c>cardPlay.Target</c>        → <c>__fgDelayedTarget</c>（延迟状态下没有 cardPlay）；
+    ///   · <c>cardPlay</c>（`FromCard(this, cardPlay)` 那几处）→ <c>null</c>；
+    ///   · <c>this</c>（当作 CardModel 用）→ <c>null</c>。
+    /// ⚠ **不能**替换 <c>base.Owner</c>：延迟状态里 <c>base.Owner</c> 是 Creature，
+    /// 而卡牌链里它是 Player —— 两边的类型不一样（替换会在 CreatureCmd.Heal 这种地方 CS1503）。
+    /// 但**金额**来源本来就不一样：卡牌链读 <c>base.DynamicVars.X.BaseValue</c>，
+    /// 延迟状态下没有那些变量，所以在 <paramref name="varMap"/> 里把每条效果映射成**字面量**
+    ///（同一套 <see cref="VarNamesOf"/> 算法，只是取值改成常量）。
+    ///
+    /// 替换顺序有意义（先换长的），别调换。字符串字面量里不会出现这些记号（注释除外，注释换了也无妨）。
+    /// </summary>
+    private static void EmitDelayedEffectBody(CodeWriter w, CharacterProfile p, EffectSpec e,
+        Dictionary<string, string>? literalAmounts)
+    {
+        // 先把上下文声明出来（只有在这条效果真的会用到时才声明，免得 CS0219 之类的噪声）。
+        w.Line("Player __fgDelayedPlayer = base.Owner.Player;");
+        // ⚠ 声明成 Creature 而不是 ICombatState：卡牌链上的发射器把「战斗状态」用在两处 ——
+        //   `X.CombatState.HittableEnemies`（只用得到 HittableEnemies）和
+        //   `X.CombatState.CreateCard<T>(player)`（那需要 Creature 上的版本）。
+        //   声明成 Creature 时，把 `base.CombatState` 换成 `__fgDelayedSelf.CombatState` 两边都过。
+        w.Line("Creature __fgDelayedSelf = base.Owner;");
+        if (e.TargetSide is "Enemy" or "Ally")
+        {
+            w.Line("// 打出时选中的那个目标（PowerCmd.Apply 的 target 参数）；目标已经离场就退成第一个可打的敌人");
+            w.Line("Creature __fgDelayedTarget = base.Target");
+            w.Line("    ?? __fgDelayedSelf.CombatState.HittableEnemies.FirstOrDefault()");
+            w.Line("    ?? base.Owner;");
+        }
+
+        // 宠物类效果要「已经召唤出来的那一只」—— 卡牌链上它是 OnPlay 开头查好的局部变量，
+        // 延迟状态里没有它，只能按「这个玩家名下的召唤物」重新查一次（查不到就整条跳过，不静默做错人）。
+        string? petVar = null;
+        if (NeedsExistingPet(e) && PetGen.Resolve(p, e.PetSummon) is { } pd)
+        {
+            petVar = PetAttackVarName(pd.ClassName);
+            // 召唤物查询的写法照抄 PetGen 自己生成的那句：本体把「玩家名下的召唤物」放在
+            // PlayerCombatState.Pets 里（ICombatState 上没有 Pets —— 探针实测 CS1061）。
+            w.Line($"Creature? {petVar} = __fgDelayedPlayer.PlayerCombatState?.Pets"
+                + $".FirstOrDefault(p => p.Monster is {pd.ClassName} && p.IsAlive);   // 这只伙伴还在场吗");
+            w.Open($"if ({petVar} is not null)");
+        }
+
+        var tmp = new CodeWriter();
+        CharacterProfile? prevFormulaOwner = _formulaOwner;
+        _formulaOwner = p;
+        try
+        {
+            EmitCardEffectOnce(tmp, p, e, useX: false, varMap: null, petVar: petVar, petDef: null,
+                effectComment: null, petLookup: null, captureFatal: false, inDelayedBody: true,
+                literalAmounts: literalAmounts);
+        }
+        finally
+        {
+            _formulaOwner = prevFormulaOwner;
+        }
+
+        // ⚠ 用一个不可能出现在生成代码里的记号先替掉 `this`，最后再换成实参 ——
+        // 否则 `this` 会被前面那些替换里恰好出现的字母序列影响。分两步最稳。
+        const string thisToken = "\u0001THIS\u0001";
+        string body = tmp.ToString();
+        body = body.Replace("base.Owner.Creature", "__fgDelayedSelf")
+                   .Replace("base.Owner", "__fgDelayedPlayer")
+                   .Replace("base.CombatState", DelayedCombatExpr)
+                   .Replace("cardPlay.Target", DelayedTargetExpr)
+                   .Replace("cardPlay", "null")
+                   .Replace("this", thisToken)
+                   .Replace(thisToken, DelayedCardSourceExpr);
+        foreach (string line in body.Replace("\r\n", "\n").Split('\n'))
+        {
+            if (line.Trim().Length == 0) { w.Line(); continue; }
+            w.Line(line.TrimEnd());
+        }
+        if (petVar is not null) w.Close();
+    }
+
+    // ==================== 「下回合生效」的**通用**延迟分支（V0.2.133）====================
+    //
+    // V0.2.132 及以前只有 12 种（本体那五个 + 生成类七个）真的有延迟分支。本轮把它扩到
+    // **除 `EffectCatalog.NextTurnMeaningless` 之外的每一种**（65 - 8 = 57 种），做法是：
+    //   · 打出时只挂一个 `StringComparison.Ordinal` 的延迟状态（= `<角色>ForgeDelayed<...>`），
+    //     挂之前把「这一条效果需要的上下文」一起交给它（见 EmitDelayedApply）；
+    //   · 下回合开始时（`AfterPlayerTurnStart`）那个状态跑**同一套既有发射器**
+    //     （`EmitCardEffectOnce`）—— 所以「打出时」与「下回合」两条路发出来的语句只有
+    //     「上下文表达式」不同，行为不会慢慢长歪。
+    //
+    // 为什么用「替换占位表达式」而不是给 `EmitCardEffectOnce` 加十几个参数：
+    // 那几个发射器里写死了 `base.Owner.Creature`（卡牌链里 base.Owner 是 Player）和
+    // `cardPlay.Target`（只有「打出的那一瞬间」才有）；延迟状态里 base.Owner **本身就是 Creature**，
+    // 也没有 cardPlay。与其把几十个调用点全改一遍（那是本项目最容易踩的回归面），
+    // 不如在**写进延迟状态那一段**统一替换掉这几个表达式。
+
+    /// <summary>延迟状态里「玩家」的表达式（`base.Owner` 是 Creature，所以要取 .Player）。</summary>
+    internal const string DelayedPlayerExpr = "__fgDelayedPlayer";
+    /// <summary>延迟状态里「战斗状态」的表达式。</summary>
+    internal const string DelayedCombatExpr = "__fgDelayedSelf.CombatState";
+    /// <summary>延迟状态里「这一条效果打谁」的表达式（见 <see cref="DelayedTargetExpr"/> 的说明）。</summary>
+    internal const string DelayedTargetExpr = "__fgDelayedTarget";
+    /// <summary>延迟状态里「这一条效果从哪来」的实参 —— 那边没有 CardModel，一律 null。</summary>
+    internal const string DelayedCardSourceExpr = "null";
+
+    /// <summary>
+    /// 延迟状态里的**金额字面量表**：卡牌链读 <c>base.DynamicVars.X.BaseValue</c>（升级增量写在
+    /// OnUpgrade 的 UpgradeValueBy 里），而延迟状态里**根本没有那些动态变量**
+    ///（引用会 KeyNotFoundException / CS1061）—— 所以延迟状态里的数值一律在生成期折成常量。
+    ///
+    /// 取值口径：<c>Amount + UpgradeAmount</c>（升级后的值，把升级增量也保住；
+    /// 延迟状态下没法知道这张牌升级了没有，取「升级后」是保守且可预期的）。
+    /// 「数值 = X」用不了（延迟状态里没有 <c>x</c>）→ 退成基础数值。
+    /// </summary>
+    private static Dictionary<string, string> DelayedVarMap(CharacterProfile p)
+    {
+        // 键是**动态变量名**（`Damage` / `Block2` / …），不是 EffectSpec ——
+        // 延迟状态里没有 `base.DynamicVars`，那些名字只是拿来查「该用哪个常量」。
+        var effects = AllEffects(p).ToList();
+        var names = VarNamesOf(effects);
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var e in effects)
+        {
+            string? name = VarNameOf(e, names);
+            if (string.IsNullOrWhiteSpace(name)) continue;
+            map[name!] = Lit.Dec(e.Amount + e.UpgradeAmount);
+        }
+        return map;
+    }
+
+    /// <summary>延迟状态里这条效果的数值：按变量名查 <see cref="DelayedVarMap"/> 折好的常量；
+    /// 查不到（不声明变量的那几种）直接用 <c>Amount + UpgradeAmount</c>。</summary>
+    private static string LiteralAmountOf(EffectSpec e, IReadOnlyDictionary<string, string>? literalAmounts)
+    {
+        string name = VarNameOf(e);
+        if (literalAmounts is not null && literalAmounts.TryGetValue(name, out string? lit) && !string.IsNullOrWhiteSpace(lit))
+            return lit!;
+        return Lit.Dec(e.Amount + e.UpgradeAmount);
+    }
+
+    /// <summary>
+    /// 这些种类有没有**通用**延迟分支（<see cref="EmitCardEffectOnce"/> 顶部那个分支）。
+    ///
+    /// 与 <see cref="EffectCatalog.HonorsNextTurn"/> 的关系：本方法为 true ⇒ 一定有延迟状态分支；
+    /// 但「下回合生效」还有三条**老路**（不走这个分支）：
+    ///   · 格挡 / 抽牌 / 能量 / 额外资源量 —— 走本体现成的 `BlockNextTurnPower` 那四个；
+    ///   · 生成 / 复制 / 变化 / 全局加牌（`<see cref="IsDelayedSpawnKind"/>`）—— V0.2.88~90 的先例；
+    ///   · 施加状态（`ApplyPower`）—— 走 `<角色>ForgeDelayed<状态>`（层数 = 层数）。
+    /// 所以判据是「<see cref="EffectCatalog.HonorsNextTurn"/> 且不是上面那三类」。
+    /// </summary>
+    public static bool IsDelayedEffectKind(string? kind) =>
+        kind is not null
+        && EffectCatalog.HonorsNextTurn(kind)
+        && !IsDelayedSpawnKind(kind)
+        && kind is not ("Block" or "Draw" or "Energy" or "ExtraResource" or "ApplyPower");
+
+    /// <summary>这条效果「下回合生效」时走不走新加的通用延迟分支。</summary>
+    internal static bool UsesDelayedEffectBranch(EffectSpec e) => e.NextTurn && IsDelayedEffectKind(e.Kind);
+
+    /// <summary>通用延迟状态的去重键（同一条效果在同一个存档里只生成一个类）。</summary>
+    internal static string DelayedEffectKey(EffectSpec e) =>
+        "D:" + e.Kind + "|" + (e.PowerId ?? "") + "|" + (e.SpawnCardId ?? "") + "|" + (e.TargetSide ?? "")
+        + "|" + (e.SpawnFilter ?? "") + "|" + e.CardPick + "|" + e.SelectPile + "|" + e.PlaceTo
+        + "|" + (e.GivenKeyword ?? "") + "|" + (e.BoostStat ?? "") + "|" + (e.ScrapeCond ?? "") + (e.ScrapeOp ?? "")
+        + "|" + e.TempPowerReverse + "|" + e.PetSummon + "|" + (e.PetSacrificeGain ?? "");
+
     public static IEnumerable<EffectSpec> CollectDelayedEffects(CharacterProfile p)
     {
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -7410,6 +7646,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     + (e.IsSpawnRandom ? "r" : "f") + "|" + e.SpawnChoice + "|" + e.SpawnToPile + "|" + (e.HasSpawnModifier ? "m" : "")
                     + (e.AmountIsXEffective ? "|X" : "");
                 if (seen.Add(key)) yield return e;
+            }
+            else if (IsDelayedEffectKind(e.Kind))
+            {
+                if (seen.Add(DelayedEffectKey(e))) yield return e;
             }
         }
     }
@@ -7886,6 +8126,30 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         foreach (var e in CollectDelayedEffects(p))
         {
+            // 「下回合生效」的**通用**延迟状态（V0.2.133）：层数 = 这条效果的数值，
+            // 下回合开始时跑**同一套发射器**（EmitDelayedEffectBody），跑完自毁。
+            if (IsDelayedEffectKind(e.Kind))
+            {
+                string clsNew = n.DelayedPowerClass(e);
+                w.Line($"/// <summary>下回合开始时执行「{EffectCatalog.FindKind(e.Kind).Display}」（层数 = 数值）。</summary>")
+                 .Line($"// CET:DelayedEffect={e.Kind}")
+                 .Open($"public sealed class {clsNew} : PowerModel")
+                 .Line("public override PowerType Type => PowerType.Buff;")
+                 .Line()
+                 .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+                 .Line()
+                 .Open("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)")
+                 .Line("if (player != base.Owner.Player || base.Amount <= 0) return;")
+                 .Line();
+                EmitDelayedEffectBody(w, p, e, DelayedVarMap(p));
+                w.Line()
+                 .Line("await PowerCmd.Remove(this);")
+                 .Close()
+                 .Close()
+                 .Line();
+                continue;
+            }
+
             // 生成类（用户要求：生成卡牌之类也能下回合生效）：层数 = 张数，下回合开始时调用同一套发射器。
             if (IsDelayedSpawnKind(e.Kind))
             {
@@ -9148,6 +9412,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         Dictionary<EffectSpec, string>? varMap = null, string? roomVar = null, string? petAllGroup = null,
         int relicEffectIndex = 0)
     {
+        // 「下回合生效」的新支持种类（V0.2.133）：遗物链也接上（老存档里这些种类勾不上，见别处说明）。
+        if (UsesDelayedEffectBranch(e))
+        {
+            EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
+            return;
+        }
         string amt = VarAccess(e, varMap);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用），amount 为 0 时本体直接不挂状态
         if (IsSlowPercentEffect(e)) amt = "1m";
@@ -10460,6 +10730,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitPotionEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, string potionTarget,
         Dictionary<EffectSpec, string>? varMap = null)
     {
+        // 「下回合生效」的新支持种类（V0.2.133）：药水链也接上。
+        if (UsesDelayedEffectBranch(e))
+        {
+            EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
+            return;
+        }
         string amt = VarAccess(e, varMap);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用）
         if (IsSlowPercentEffect(e)) amt = "1m";

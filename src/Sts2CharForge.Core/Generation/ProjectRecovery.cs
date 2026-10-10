@@ -1206,6 +1206,14 @@ public static class ProjectRecovery
                         sc.PotionPick = Match(line, @"CET:PotionPick=(\w+)") ?? "Fixed";
                         sc.PotionId = Match(line, @"CET:Potion=([A-Za-z_]\w*)");
                     }
+                    // 「给予卡牌关键词」+「下回合生效」（V0.2.133）：延迟分支把关键词写在标记行上
+                    //（` CET:Given=<关键词>`）—— 那一条的 CET:GiveKeyword= 标记在**延迟状态类体内**，
+                    // 卡这边看不到，不从这里认就会丢配置。
+                    if (sc.Kind == "GiveKeyword")
+                    {
+                        string? given = Match(line, @"CET:Given=(\w+)");
+                        if (!string.IsNullOrWhiteSpace(given)) sc.GivenKeyword = given;
+                    }
                     // 这几种效果在 CanonicalVars 里也各有一个变量（CardsVar / PowerVar<PoisonPower>），
                     // 这里顺手把它认领掉 —— 否则后面同类型的「抽牌」「施加中毒」会捞到错的那一个。
                     if (sc.Kind is "UpgradeCard" or "Scry" or "CopyCard" or "ReplayCard" or "TurnEndPlay" or "ScrapeDraw")
@@ -1391,7 +1399,10 @@ public static class ProjectRecovery
                     // 「丢弃卡牌（数值 0 = 这张牌自己）」：整个实现就是一句 CardCmd.Discard(choiceContext, this)
                     || (selfContainedKind == "DiscardCard" && line.Contains("CardCmd.Discard(choiceContext, this)", StringComparison.Ordinal))
                     // 「下回合生效」的生成类：实现是「挂一个 ForgeDelayedXxx 延迟状态」那一句（效果本身已经由
-                    // CET:Effect= 标记行收尾），注释行也一起跳过
+                    // CET:Effect= 标记行收尾），注释行也一起跳过。
+                    // ⚠ V0.2.133：**通用**延迟分支也是同一句 `PowerCmd.Apply<<角色>ForgeDelayed<种类>…>`，
+                    //   所以这里不能只看「注释行」—— 认不出来就会把那条效果**再回读一遍**成 ApplyPower
+                    //   （探针实测：GainPotion 的「随机」被覆盖成「指定」、ApplyPower 的作用对象丢成「自己」）。
                     || (line.Contains("PowerCmd.Apply<", StringComparison.Ordinal)
                         && line.Contains("ForgeDelayed", StringComparison.Ordinal))
                     || line.StartsWith("// 下回合生效：", StringComparison.Ordinal)
@@ -2050,6 +2061,23 @@ public static class ProjectRecovery
                     ApplyLoop(e, frames);
                     Done(e);
                     continue;
+                }
+                // 「下回合生效」的**通用延迟状态**（V0.2.133）：类名是 <角色>ForgeDelayed<种类><尾巴><作用对象>
+                // （见 Naming.DelayedPowerSuffix）——必须排在下面那条通用的 ForgeDelayed 之前，
+                // 否则会被当成「下回合施加状态」、PowerId 里留下 "Damage" 这种垃圾。
+                // 种类 / 数值 / 目标卡 / 状态 / 作用对象 由紧在前面的 `CET:Effect=` 标记行提供
+                //（那个分支已经在前面把这条效果造好并跳过了整段实现，这里只是兜底认回「下回合」）。
+                else if (EffectCatalog.IsDelayedEffectKindNamed(power))
+                {
+                    string kind = EffectCatalog.DelayedEffectKindOf(power);
+                    if (kind.Length > 0 && e.Kind == "ApplyPower" && string.IsNullOrEmpty(e.PowerId))
+                    {
+                        e.Kind = kind;
+                        e.NextTurn = true;
+                        string? lit = Match(line, @"ChoiceContext, \w+, (-?[\d.]+)m,");
+                        if (lit is not null && decimal.TryParse(lit, NumberStyles.Number, CultureInfo.InvariantCulture, out decimal nv))
+                            e.Amount = nv;
+                    }
                 }
                 else if (power.Contains("ForgeDelayed", StringComparison.Ordinal))
                 {

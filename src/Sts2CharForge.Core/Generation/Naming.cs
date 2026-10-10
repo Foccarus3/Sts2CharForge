@@ -189,6 +189,27 @@ public sealed record Naming(
                 : e.SpawnCardId!.Trim();
             return "ForgeDelayed" + stem + Lit.Identifier(card, "");
         }
+        // V0.2.133 的**通用**延迟分支：这些种类大多**没有 PowerId**，必须按「种类 + 那几个会分叉的栏位」
+        // 各自起名 —— 否则「造成伤害 / 回复生命 / 击晕…」全叫 ForgeDelayedPower，
+        // 同一个类名生成两次（CS0102，后写的覆盖前写的）。
+        // ⚠ 只有**延迟造成的结果真的不一样**的栏位才编进类名（否则同一个存档里两条小差异的效果
+        //   会各生成一个几乎一样的类）。判据与 CSharpCodeGen.DelayedEffectKey 保持一致。
+        if (CSharpCodeGen.IsDelayedEffectKind(e.Kind))
+        {
+            string tail = e.Kind switch
+            {
+                "ApplyPower" or "TempPower" or "DoublePower" or "Expose" or "ClearPowerOne"
+                    or "ForbidBlock" or "ForbidHeal" or "BoostCard" or "PetApplyPower" or "PetSacrifice" => e.PowerId,
+                "GiveKeyword" => e.GivenKeyword,
+                "PlaceCard" => e.PlaceTo,
+                _ => null,
+            };
+            // 「作用对象」不同的同一条效果生成出来的**语句也不同**（自己 / 全体敌人 / 全部友方…），
+            // 所以类名要带上这一档 —— 但默认档（Enemy）**不写**，保持短名好读（也避免老存档里
+            // 已经存在的 ForgeDelayedDamage 突然改名）。
+            string side = string.Equals(e.TargetSide, "Enemy", StringComparison.Ordinal) ? "" : e.TargetSide;
+            return "ForgeDelayed" + e.Kind + Lit.Identifier(tail ?? "", "") + Lit.Identifier(side, "");
+        }
         return "ForgeDelayed" + (e.PowerId ?? "Power");
     }
 

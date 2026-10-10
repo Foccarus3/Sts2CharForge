@@ -16160,7 +16160,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								("TempPower", "TempPowerReverse", true),
 								("Damage", "TempPowerReverse", false),
 								("Block", "NextTurn", true),
-								("Damage", "NextTurn", false),
+								// V0.2.133：「下回合生效」补齐到全部效果（除语义上做不了的那 8 种），
+								// 所以「造成伤害」这一类也**显示**勾选框了（以前只给 12 种显示）
+								("Damage", "NextTurn", true),
+								// 语义上做不了延迟的（刮削 / 结束回合 / 费用变 0…）仍然**不显示**
+								("ScrapeDraw", "NextTurn", false),
+								("EndTurn", "NextTurn", false),
 								("PlaceCard", "PlaceTo", true),
 								// 卡牌那种独立「数值（公式）」框：锻造链一律不摆（上面那个「数值」框就能写公式）
 								("Block", "AmountFormula", false),
@@ -22886,28 +22891,115 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			// ② 额外资源量 + 下回合生效：本体有现成的 StarNextTurnPower（回合开始时 GainStars 再自毁）
 			Check("「获得额外资源量」标了支持「下回合生效」",
 				EffectCatalog.FindKind("ExtraResource").SupportsNextTurn, "支持");
+			// ===== V0.2.133： 「下回合生效」补齐到全部效果（除语义上做不了的那 8 种）=====
+			{
+				// ① 判据只有一份：EffectKindOption.SupportsNextTurn **就是** HonorsNextTurn
+				string[] allKinds = EffectCatalog.EffectKinds.Select((EffectKindOption k) => k.Kind).ToArray();
+				Check("「下回合生效」的判据只有一份：每一栏的 SupportsNextTurn 都 == HonorsNextTurn（不会再有「勾了没反应」）",
+					allKinds.All((string k) => EffectCatalog.FindKind(k).SupportsNextTurn == EffectCatalog.HonorsNextTurn(k)),
+					$"{allKinds.Length} 种逐条相等");
+				Check("65 种里只有那 8 种「语义上做不了」的不支持（费用变 0 / 抽到就减费 / 放回手牌 / 本场费用-N / 结束回合 / 额外回合 / 刮削 / 回合结束自动打出）",
+					allKinds.Where((string k) => !EffectCatalog.HonorsNextTurn(k)).OrderBy((string k) => k, StringComparer.Ordinal)
+						.SequenceEqual(new[] { "CheapenDraw", "CheapenSelf", "CheapenSelfOnDraw", "EndTurn", "ExtraTurn",
+							"ReturnSelfToHand", "ScrapeDraw", "TurnEndPlay" }),
+					"不支持的是：" + string.Join(" / ", allKinds.Where((string k) => !EffectCatalog.HonorsNextTurn(k))));
+				Check("那 8 种在界面上**不显示**勾选框（宁可不显示，也不要「勾了没反应」）",
+					new[] { "CheapenSelf", "CheapenSelfOnDraw", "ReturnSelfToHand", "CheapenDraw", "EndTurn", "ExtraTurn",
+						"ScrapeDraw", "TurnEndPlay" }.All((string k) => !new EffectSpec { Kind = k }.ShowNextTurn),
+					"都不显示");
+				// 用户已定的那 8 种「从此生效」：界面上有勾选框，且真的生成了延迟状态
+				string[] eightKinds = { "OverdraftEnergy", "DoublePower", "Expose", "ClearPowerOne",
+					"ClearPowerDebuffs", "ForbidBlock", "ForbidHeal", "PetAttack" };
+				Check("用户 2026-10-10 拍板「从此生效」的那 8 种：判据支持 + 界面上有勾选框（老存档勾过的会真的生效）",
+					eightKinds.All((string k) => EffectCatalog.HonorsNextTurn(k) && new EffectSpec { Kind = k }.ShowNextTurn),
+					"8 种全部生效");
+				Check("这 8 种走的是**通用延迟分支**（不是本体现成的四种，也不是生成类那七种）",
+					eightKinds.All((string k) => CSharpCodeGen.IsDelayedEffectKind(k)
+						&& !CSharpCodeGen.IsDelayedSpawnKind(k)),
+					"通用分支");
+				// ② 每一种「支持」的种类都真的生成得出延迟状态类，而且卡这边不再立刻执行
+				var notHonored = allKinds.Where((string k) => !EffectCatalog.HonorsNextTurn(k)).ToHashSet(StringComparer.Ordinal);
+				var genOk = new List<string>();
+				var genBad = new List<string>();
+				foreach (string k in allKinds.Where((string k) => !notHonored.Contains(k)))
+				{
+					CharacterProfile one = ProfileFactory.Sample();
+					var c = new CardSpec { Name = "自检" + k, ClassName = "UiCheck133" + k, CardType = "Skill",
+						Rarity = "Common", Cost = 1, InCardPool = true };
+					var ef = new EffectSpec { Kind = k, Amount = 2m, NextTurn = true, TargetSide = "Self" };
+					if (k is "ApplyPower" or "TempPower" or "DoublePower" or "Expose" or "ClearPowerOne"
+						or "ForbidBlock" or "ForbidHeal" or "BoostCard" or "PetApplyPower")
+						ef.PowerId = "StrengthPower";
+					if (k == "GiveKeyword") ef.GivenKeyword = "Exhaust";
+					one.Cards.Add(c);
+					c.Effects.Add(ef);
+					string src = CSharpCodeGen.CardSource(one, c, 0);
+					string dp = CSharpCodeGen.DelayedPowersSource(one);
+					string cls = Naming.From(one).DelayedPowerClass(ef);
+					bool ok = dp.Contains($"public sealed class {cls} : PowerModel")
+						&& src.Contains($"PowerCmd.Apply<{cls}>(choiceContext,");
+					// 已经真的实现的老路（本体四种 + 生成类七种）不生成「通用延迟类」，但必须挂点东西
+					if (!ok && (k is "Block" or "Draw" or "Energy" or "ExtraResource" or "GenerateCard" or "CopyCard"
+						or "TransformCard" or "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal"))
+						ok = src.Contains("PowerCmd.Apply<") || src.Contains("PlayerCmd.Gain");
+					(ok ? genOk : genBad).Add(k);
+					// 延迟类名不能撞（每个种类 / 状态 / 作用对象各一个类）
+					Check($"延迟类名不重复：{k}", genBad.Count == 0 || !genBad.Contains(k), cls);
+				}
+				Check("每一种「支持下回合生效」的种类都生成出了对应的延迟状态类（57 种）", genBad.Count == 0,
+					genBad.Count == 0 ? $"{genOk.Count} 种全部生成" : "没生成：" + string.Join(" / ", genBad));
+				// ③ 出问题的三种必须拦住 + 说清（不再静默）
+				foreach (string bad in new[] { "ScrapeDraw", "EndTurn", "CheapenSelf" })
+				{
+					CharacterProfile bp = ProfileFactory.Sample();
+					var bc = new CardSpec { Name = "自检不支持" + bad, ClassName = "UiCheck133Bad" + bad, CardType = "Skill",
+						Rarity = "Common", Cost = 1, InCardPool = true };
+					bc.Effects.Add(new EffectSpec { Kind = bad, Amount = 1m, NextTurn = true });
+					bp.Cards.Add(bc);
+					Check($"校验器：给语义上做不了延迟的「{bad}」勾了下回合生效 → 报错说清（不是静默失效）",
+						ProfileValidator.Validate(bp).Any((ValidationIssue i) => i.IsError && i.Message.Contains("不支持「下回合生效」")),
+						ProfileValidator.Validate(bp).FirstOrDefault((ValidationIssue i) => i.Message.Contains("不支持「下回合生效」"))?.Message ?? "(没报)");
+				}
+				// ④ 遗物 / 药水 / 自定义状态那三条链也接了（V0.2.133 之前只做在卡牌上、会拦住）
+				CharacterProfile rp = ProfileFactory.Sample();
+				string[] probeKinds = { "Damage", "Heal", "Gold", "Stun", "ForbidBlock", "Scry", "FillHand", "GiveKeyword" };
+				foreach (string k in probeKinds)
+				{
+					var r = new RelicSpec { Name = "自检遗物" + k, ClassName = "UiCheck133R" + k, Rarity = "Common", Trigger = "PlayerTurnStart" };
+					var re = new EffectSpec { Kind = k, Amount = 2m, NextTurn = true, TargetSide = "Self" };
+					if (k == "GiveKeyword") re.GivenKeyword = "Exhaust";
+					r.Effects.Add(re);
+					rp.Relics.Add(r);
+					Check($"遗物链也能「下回合生效」：{k}（不再被校验器拦住）",
+						CSharpCodeGen.RelicSource(rp, r, rp.Relics.Count - 1).Contains("PowerCmd.Apply<")
+						&& !ProfileValidator.Validate(rp).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只支持做在**卡牌**上")),
+						"遗物链接上了");
+				}
+				// ⑤ 老存档口径：那 8 种之外，任何种类都不许改变老存档的输出 ——
+				//    这些种类在 V0.2.132 及以前**界面上根本没有勾选框**，所以老存档里必然 NextTurn=false；
+				//    这里断言「NextTurn=false 时生成端一个字都不变」（走的是原来那条路）。
+				CharacterProfile offProbe = ProfileFactory.Sample();
+				var offCard = new CardSpec { Name = "自检没勾", ClassName = "UiCheck133Off", CardType = "Skill",
+					Rarity = "Common", Cost = 1, InCardPool = true };
+				offCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 7m, TargetSide = "Enemy", NextTurn = false });
+				offProbe.Cards.Add(offCard);
+				string offSrc = CSharpCodeGen.CardSource(offProbe, offCard, 0);
+				Check("没勾「下回合生效」的效果走的是老路径（立刻打伤害，不挂延迟状态）",
+					offSrc.Contains("DamageCmd.Attack") && !offSrc.Contains("ForgeDelayed"),
+					"老路径");
+			}
 			// 「下回合生效」现在只对**真的实现了延迟分支**的五种放行、并在界面上只给它们显示勾选框）"
 			// 以前有 8 个种类写着支持但生成端没有延迟分支 → 勾了等于没勾（用户报过「勾了没反应」）。"
 			{
-				string[] honored = { "Block", "Draw", "Energy", "ExtraResource", "ApplyPower",
-					"GenerateCard", "CopyCard", "TransformCard", "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal", "UpgradeCardGlobal" };
-				string[] notHonored = { "OverdraftEnergy", "DoublePower", "Expose", "ClearPowerOne", "ClearPowerDebuffs",
-					"ForbidBlock", "ForbidHeal", "PetAttack", "Scry", "TakeFromDraw" };
-				Check("「下回合生效」的单一判据：只有真的实现了延迟分支的算支持（五种状态类 + 生成类七种）",
-					honored.All((string k) => EffectCatalog.HonorsNextTurn(k))
-					&& notHonored.All((string k) => !EffectCatalog.HonorsNextTurn(k)),
-					"状态类五种 + 生成类七种");
-				Check("勾选框只在支持的种类上显示（别的种类不显示 = 勾不上，不会再出现「勾了没反应」）",
-					new EffectSpec { Kind = "Draw" }.ShowNextTurn && new EffectSpec { Kind = "Block" }.ShowNextTurn
-					&& new EffectSpec { Kind = "GenerateCard" }.ShowNextTurn && new EffectSpec { Kind = "CopyCard" }.ShowNextTurn
-					&& new EffectSpec { Kind = "TransformCard" }.ShowNextTurn
-					&& !new EffectSpec { Kind = "Scry" }.ShowNextTurn && !new EffectSpec { Kind = "PetAttack" }.ShowNextTurn,
-					"只显示能用的");
+				Check("老五种（格挡 / 抽牌 / 能量 / 额外资源量 / 施加状态）仍然走本体现成的那套",
+					new[] { "Block", "Draw", "Energy", "ExtraResource", "ApplyPower" }
+						.All((string k) => EffectCatalog.HonorsNextTurn(k) && !CSharpCodeGen.IsDelayedEffectKind(k)),
+					"本体现成");
 				CharacterProfile ntProbe = ProfileFactory.Sample();
-				CardSpec ntCard = new CardSpec { Name = "自检下回合预见", ClassName = "UiCheckNextTurnScry", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
-				ntCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 2m, NextTurn = true });
+				CardSpec ntCard = new CardSpec { Name = "自检下回合刮削", ClassName = "UiCheckNextTurnScry", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				ntCard.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 2m, NextTurn = true });
 				ntProbe.Cards.Add(ntCard);
-				Check("校验器：给还没支持的「预见」勾了下回合生效 → 报错并说清（不是静默失效）",
+				Check("校验器：给语义上做不了延迟的「刮削」勾了下回合生效 → 报错并说清（不是静默失效）",
 					ProfileValidator.Validate(ntProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("不支持「下回合生效」")),
 					ProfileValidator.Validate(ntProbe).FirstOrDefault((ValidationIssue i) => i.Message.Contains("不支持「下回合生效」"))?.Message ?? "(没报)");
 				// ===== 生成类效果的「下回合生效」（用户要求：生成卡牌之类也要能下回合）=====
@@ -22966,9 +23058,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					var dsRelic = new RelicSpec { Name = "自检下回合生成遗物", ClassName = "UiCheckDelayedRelic", Rarity = "Common", Trigger = "PlayerTurnStart" };
 					dsRelic.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", NextTurn = true });
 					dsRelicProbe.Relics.Add(dsRelic);
-					Check("校验器：遗物 / 药水 / 状态上给生成类勾「下回合生效」→ 拦住（那三条链还没接）",
-						ProfileValidator.Validate(dsRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只支持做在**卡牌**上")),
-						"拦住了");
+					Check("V0.2.133：遗物上的「生成类 + 下回合生效」也不再被拦住（三条链都接了通用延迟）",
+						!ProfileValidator.Validate(dsRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只支持做在**卡牌**上")),
+						"不再拦住");
+					// ⚠ 已知边界：遗物链上的**生成类**（GenerateCard 等七种）还没接上延迟分支
+					//   （那七种的延迟状态里拿不到「这张牌」）—— 只接上了**通用延迟分支**的那些种类。
+					var dsRelic2 = new RelicSpec { Name = "自检下回合遗物伤害", ClassName = "UiCheckDelayedRelic2", Rarity = "Common", Trigger = "PlayerTurnStart" };
+					dsRelic2.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "AllEnemies", NextTurn = true });
+					dsRelicProbe.Relics.Add(dsRelic2);
+					Check("V0.2.133：遗物链接上了通用延迟（「造成伤害 + 下回合生效」挂的是延迟状态）",
+						CSharpCodeGen.RelicSource(dsRelicProbe, dsRelic2, dsRelicProbe.Relics.Count - 1).Contains("PowerCmd.Apply<"),
+						"遗物链接上了");
 				}
 			}
 			CharacterProfile starProbe = ProfileFactory.Sample();
