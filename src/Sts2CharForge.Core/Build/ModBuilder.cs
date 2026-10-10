@@ -12,9 +12,20 @@ public sealed record BuildResult(bool Success, List<BuildStepResult> Steps, stri
         Steps.Select(s => $"### {s.Name} {(s.Success ? "OK" : "失败")}{Environment.NewLine}{s.Output}"));
 }
 
-/// <summary>一键构建：dotnet build → Godot 导入 → 导出 PCK → 安装到指定目录。</summary>
+/// <summary>一键构建：dotnet build → Godot 导入 → 导出 PCK →（可选）安装到指定目录。</summary>
 public static class ModBuilder
 {
+    /// <summary>
+    /// 跑一遍构建。<b>装不装、装到哪，完全由 <paramref name="installDir"/> 决定</b>：
+    /// 为 null / 空白就**一个文件都不装**（跳过第 4 步），非空才把 <c>&lt;ModId&gt;.dll/.pck/.json</c> 拷过去。
+    ///
+    /// <para>⚠ <b>调用方不许在这里替用户"兜底"填目录</b>（V0.2.137 红线⑧）：
+    /// 命令行以前写的是 <c>installDir ?? profile.Paths.InstallDir</c> —— 不给 <c>--install</c> 时会退回用
+    /// 存档里的 <c>Paths.InstallDir</c>，于是「只想编译一下」的探针把模组真的装进了存档里写着的游戏
+    /// mods 目录。<b>存档里的 InstallDir 只给图形界面用</b>（GUI 自己会把「用户点了安装」和目录一起算好
+    /// 再传进来，见 <c>MainWindow.RunBuild</c> 的 <c>installTo = (install ? text : null)</c>）；
+    /// 命令行必须把 <c>--install</c> 直接透传，没给就传 null。</para>
+    /// </summary>
     public static BuildResult Build(string projectRoot, string modId, string godotExe, string? installDir,
         Action<string>? log = null, string? dotnetExe = null)
     {
@@ -58,7 +69,7 @@ public static class ModBuilder
         steps.Add(new BuildStepResult("导出 PCK", pckExists, Tail(allOutput, 60)));
         if (!pckExists) return new BuildResult(false, steps, null);
 
-        // 4) 安装
+        // 4) 安装（**只在 installDir 非空时**做 —— 见 Build 的注释：调用方不许拿存档里的 InstallDir 兜底）
         string? installedTo = null;
         if (!string.IsNullOrWhiteSpace(installDir))
         {

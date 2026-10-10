@@ -170,7 +170,12 @@ public static class NameStabilizer
     public static int RenumberCardNames(CharacterProfile p, List<string>? notes = null)
     {
         var renamed = new Dictionary<string, string>(StringComparer.Ordinal);
-        int count = Naming.From(p).RenumberCardClassNames(p.AllCards, renamed);
+        // ⚠ V0.2.137：**三个列表分别编号**（每页各自 1..N，前缀 Card / Curse / Ancient）——
+        // 传 p.AllCards 会退回老口径那种「一条连续编号、只有一个 Card 前缀」。
+        var n = Naming.From(p);
+        int count = n.RenumberCardClassNames(p.Cards, renamed)
+                  + n.RenumberCardClassNames(p.Curses, renamed)
+                  + n.RenumberCardClassNames(p.AncientCards, renamed);
         if (renamed.Count > 0) RepairCardClassReferences(p, renamed, notes);
         return count;
     }

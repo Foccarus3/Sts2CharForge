@@ -605,76 +605,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		box.Focus();
 	}
 
-	// ===== 升级差异高亮（用户要求：「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」）=====
-	// 机制：本体的 `{X:diff()}`（HighlightDifferencesFormatter，键名 diff）+「升级前 → 升级后」的字面量差异高亮。
-	// 界面只负责把**用户已经写在这段文字里**的 {X} 改成 {X:diff()}（或反过来）——
-	// 所以「一个都不勾」= 一个字节都不变（老存档 / 默认档零影响），也不加任何 CET: 标记
-	// （高亮就写在正文里，`CET:UpgradedCustomDescription=` 原样带回 → 回读天然幂等）。
-
 	/// <summary>
-	/// 「高亮字段…」按钮底下那行实时汇总（这段文字里现在有几个字段走了 <c>:diff()</c>）。
-	/// 每次选中别的卡 / 改了正文 / 点了按钮都重算一遍（见 <see cref="RefreshCardHighlightSummary"/>）。
+	/// 「升级后的自定义描述」正文变了 → 没事可做了。
+	///
+	/// <para>V0.2.137：原来这里会重算「已高亮 N 个字段」那行汇总（<c>CardUpgradedHighlightSummary</c>），
+	/// 用户拍板 A 撤掉弹窗 + 汇总之后这一栏就没有界面元素了，但**保留这个挂钩**：
+	/// 去掉 XAML 里的 <c>TextChanged="OnUpgradedCustomDescChanged"</c> 要多改一处 XAML，
+	/// 留一个空处理器更省事，也方便以后要加「实时提示」时直接往这里写。</para>
 	/// </summary>
-	public string CardUpgradedHighlightSummary { get; private set; } = "";
-
-	/// <summary>
-	/// 重算 <see cref="CardUpgradedHighlightSummary"/>（当前这张卡的「升级后的自定义描述」里
-	/// 哪些字段是高亮的）。正文里一个 <c>{}</c> 占位符都没有时给一句**明确**的指路 ——
-	/// 用户现场就是纯中文 + 写死的数字，那种情况高亮开关改不动任何东西。
-	/// </summary>
-	private void RefreshCardHighlightSummary()
-	{
-		var card = ActivePortraitCard();
-		string text = card?.UpgradedCustomDescription ?? "";
-		int count = HighlightDiffText.HighlightedKeys(text).Count;
-		CardUpgradedHighlightSummary = text.Trim().Length == 0
-			? "（这一段还空着：填了才有字段可以高亮）"
-			: count > 0
-				? $"已高亮 {count} 个字段（升级后按差异变绿，写成 {{X:diff()}}）"
-				: HighlightDiffText.Scan(text).Count == 0
-					? "这段里没有 {} 占位符 → 高亮用不上：请先点「填入参数…」把数字换成占位符（例：{{Damage:diff()}}）"
-					: "还没有字段走高亮（想挑就点「高亮字段…」）";
-		Raise("CardUpgradedHighlightSummary");
-	}
-
-	/// <summary>「升级后的自定义描述」正文变了 → 底下那行「已高亮 N 个字段」跟着变。</summary>
-	private void OnUpgradedCustomDescChanged(object sender, TextChangedEventArgs e) => RefreshCardHighlightSummary();
-
-	/// <summary>
-	/// 「高亮字段…」：列出这张牌各效果真的声明过的数值变量（<see cref="CSharpCodeGen.ParamHints"/>，
-	/// 带那条效果的中文名），让用户逐字段勾「升级后按差异变绿」，点确定后**只做精确文本替换**：
-	/// 正文里已有的 <c>{X}</c> ↔ <c>{X:diff()}</c>，不主动加字、不新增占位符，已是目标写法的不重复包。
-	/// </summary>
-	private void OnPickUpgradedHighlights(object sender, RoutedEventArgs e)
-	{
-		if (sender is not Button btn || btn.Tag is not TextBox box) return;
-		var card = ActivePortraitCard();
-		if (card is null) { SetStatus("先在左边选一张卡」"); return; }
-		string before = box.Text ?? "";
-		if (before.Trim().Length == 0)
-		{
-			SetStatus("这一栏还空着 —— 先写一段「升级后的自定义描述」（留空的话升级后就显示上面那段，没有单独的高亮可挑）。");
-			return;
-		}
-		// 候选 = 这张牌各效果**真的声明过**的变量（和「填入参数…」同一份来源，所以列出来的键一定写得对）
-		var hints = CSharpCodeGen.ParamHints(card.Effects, isCard: true);
-		var dlg = new HighlightPickerDialog(card.Name ?? "", before, hints) { Owner = this };
-		if (dlg.ShowDialog() != true) return;
-		if (!string.Equals(dlg.ResultText, before, StringComparison.Ordinal))
-		{
-			// 走 TextBox 赋值（绑定是 UpdateSourceTrigger=PropertyChanged，会同步回 CardSpec）
-			box.Text = dlg.ResultText;
-		}
-		if (dlg.ChangedCount == 0)
-			SetStatus(HighlightDiffText.Scan(before).Count == 0
-				? "这段里没有可高亮的字段，请先点「填入参数…」把数字换成占位符（例：造成 {Damage:diff()} 点伤害），再用「高亮字段…」挑。"
-				: "按这次的勾选，文字没有需要改的地方（本来就是这个写法）。");
-		else
-			SetStatus($"已按勾选改写 {dlg.ChangedCount} 处占位符（只动 {{…}} 本身，别的一个字都没改）："
-				+ string.Join("、", dlg.PerKey.OrderBy(kv => kv.Key, StringComparer.Ordinal)
-					.Select(kv => $"{HighlightDiffText.DiffToken(kv.Key)}×{kv.Value}")));
-		RefreshCardHighlightSummary();
-	}
+	private void OnUpgradedCustomDescChanged(object sender, TextChangedEventArgs e) { }
 
 	/// <summary>「生成 / 变化卡牌」的两档：指定卡 / 按范围随机。</summary>
 	public IReadOnlyList<SpawnPickOption> SpawnPicks => EffectCatalog.SpawnPicks;
@@ -3006,8 +2945,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("SelectedCardUpgradeCost");
 		Raise("UpgradeCostHint");
 		Raise("UpgradeKeywordRows");
-		// 「高亮字段…」底下那行汇总跟着当前选中的卡走（V0.2.135）
-		RefreshCardHighlightSummary();
+		// ⚠ V0.2.137：「高亮字段…」那行汇总已按用户要求撤掉（见 OnUpgradedCustomDescChanged 的说明）
 		// 召唤物：图片预览 + 效果编辑器「召唤物（哪一只）」下拉的候选（只列已启用的）
 		Raise("SelectedSummonImagePreview");
 		RaisePetSummonChoices();
@@ -4665,6 +4603,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				RefreshList(PotionEffectList, list3);
 			}
 		}
+		// ⚠ V0.2.137：额外资源量页的效果栏也要一起刷（它是第四份「效果列表」，
+		// 数据是 Profile.ExtraResource.Effects —— 以前漏在这里 → 换存档 / 撤回删除后那一栏不重挂）。
+		object? dataContext4 = ExtraResourceEffectList?.DataContext;
+		if (dataContext4 != null)
+		{
+			IList<EffectSpec>? list4 = EffectsOf(dataContext4);
+			if (list4 != null)
+			{
+				RefreshList(ExtraResourceEffectList, list4);
+			}
+		}
 	}
 
 	private static void RefreshList(ListBox lb, IEnumerable items)
@@ -5432,21 +5381,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	// 也就不存在「Clear() 引发 SelectionChanged 重入」那一类坑。
 
 	/// <summary>
-	/// 给每张卡重新发一遍「我在列表里排第几」（1 起算）。
+	/// 给每张卡重新发一遍「我在（自己那一页）列表里排第几」（1 起算）。
 	///
 	/// <para>为什么要有它：序号 = **当前位置**，不是跟着卡牌走的标记（用户原话「序号不会跟随卡牌的移动」）
 	/// —— 所以每次增删 / 拖动 / 载入存档之后都要重算一遍，绑在界面上的 <c>OrdinalText</c> 才会跟着变。
 	/// 由 <see cref="OnCardsChanged"/>（<c>Profile.Cards</c> 的 <c>CollectionChanged</c>）和
 	/// <see cref="SyncDetail"/> 各调一次，覆盖加 / 删 / 撤回 / 拖动 / 换存档全部路径。</para>
 	///
-	/// <para><c>Ordinal</c> = 它在**自己那个列表**里排第几（卡牌 / 诅咒 / 先古卡各自 1..N，界面上只显示
-	/// 卡牌列表那一份）；<c>LastAutoOrdinal</c> = 它在**连续编号**（普通卡 → 诅咒 → 先古卡）里排第几
-	/// —— 那才是自动英文类名的号，界面「英文类名」下面那行小字读它。</para>
+	/// <para>⚠ V0.2.137 口径（用户拍板 A，改成「和遗物页一样」）：<c>Ordinal</c> = 它在**自己那一页列表**
+	/// 里排第几（普通卡 / 诅咒卡 / 先古卡**各自** 1..N）；<c>LastAutoOrdinal</c> = 同一个号
+	/// （自动英文类名跟的就是它）；前缀按稀有度填进 <c>AutoClassNameStem</c>
+	/// （普通卡 Card / 诅咒卡 Curse / 先古卡 Ancient）—— 老口径是「全部卡一条连续编号、只有一个 Card
+	/// 前缀」，所以诅咒 / 先古卡的号以前比列表行号大。</para>
 	/// </summary>
 	internal void RefreshCardOrdinals()
 	{
 		if (_profile?.Cards is null) return;
-		int next = 0;
+		string charClass = Naming.From(_profile).CharClass;
 		foreach (var list in new[] { _profile.Cards, _profile.Curses, _profile.AncientCards })
 		{
 			if (list is null) continue;
@@ -5455,11 +5406,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				CardSpec? c = list[i];
 				if (c is null) continue;
 				if (c.Ordinal != i + 1) c.Ordinal = i + 1;
-				// ⚠ LastAutoOrdinal 只在「界面上那行小字」里用（[JsonIgnore]，不写存档、不参与生成）；
-				//   生成端认的是 Naming.CardClassName(p, c)，和这里算出来的号是同一个口径。
-				if (c.LastAutoOrdinal != next + i + 1) c.LastAutoOrdinal = next + i + 1;
+				// ⚠ 这两个只在「界面上那行小字」里用（都是 [JsonIgnore]，不写存档、不参与生成）；
+				//   生成端认的是 Naming.CardClassName(p, c) / AutoCardClassName(p, c)，同一个口径。
+				if (c.LastAutoOrdinal != i + 1) c.LastAutoOrdinal = i + 1;
+				string stem = Naming.CardStemOf(c);
+				if (!string.Equals(c.AutoClassNameStem, stem, StringComparison.Ordinal)) c.AutoClassNameStem = stem;
+				if (!string.Equals(c.CharClass, charClass, StringComparison.Ordinal)) c.CharClass = charClass;
 			}
-			next += list.Count;
 		}
 	}
 
@@ -5850,6 +5803,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		List<Button> list = new List<Button>();
 		CollectButtons(root, list);
 		return list.FirstOrDefault((Button x) => x.Content as string == content2);
+	}
+
+	/// <summary>
+	/// 自检用：找出「Tag 绑定的是某个 x:Name」的按钮（效果栏那三个按钮都是这个形状：
+	/// <c>Tag="{Binding ElementName=XXXEffectList}"</c>）。
+	/// 为什么要专门找它：这一类按钮**没有唯一的内容**（每一页都有「添加效果 / 删除效果」），
+	/// 只按内容找会拿到页面里第一个同名按钮 —— V0.2.137 验「额外资源量页的添加效果」时正是要盯住
+	/// 「它 Tag 指的到底是不是 ExtraResourceEffectList」。
+	/// ⚠ 绑定还没解析出来时 Tag 是 null（模板 / 元素名没对上），那种情况这里也返回 null —— 正好当断言用。
+	/// </summary>
+	internal Button? FindButtonByTag(DependencyObject root, string elementName)
+	{
+		var all = new List<Button>();
+		CollectButtons(root, all);
+		return all.FirstOrDefault(b => BindingOperations.GetBinding(b, FrameworkElement.TagProperty)?.ElementName == elementName);
 	}
 
 	/// <summary>
@@ -6896,6 +6864,70 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		return max;
 	}
 
+	// ===== 自检用：折叠行的「看得见的证据」（V0.2.137 用户第 ④ 条）=====
+	//
+	// 为什么不能只看 EffectSpec.IsExpanded：那是**模型属性**，绑错了绑定它照样是 true / false。
+	// 自检要的是「界面上真的变了」—— 所以这里全都走**可视树**：
+	//   · 拿列表里某一行的容器（ItemContainerGenerator）→ 递归找模板里名叫 EffectRowDetails 的那个 Grid；
+	//   · 读它的 Visibility / ActualHeight / IsVisible（折叠时 Visibility=Collapsed、高度 0；
+	//     展开后 Visible 且高度明显变大）。
+	// ⚠ ListBox 默认虚拟化：行容器只在**滚到视口里**才生成，所以这些断言只对前几行有意义
+	//   （自检一律取第 0 行）。
+
+	/// <summary>自检用：可视树里第一个叫这个名字的元素（找不到返回 null）。</summary>
+	internal static FrameworkElement? FindNamedElement(DependencyObject root, string name)
+	{
+		if (root is FrameworkElement fe && string.Equals(fe.Name, name, StringComparison.Ordinal)) return fe;
+		int n = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < n; i++)
+		{
+			FrameworkElement? hit = FindNamedElement(VisualTreeHelper.GetChild(root, i), name);
+			if (hit is not null) return hit;
+		}
+		return null;
+	}
+
+	/// <summary>自检用：可视树里所有叫这个名字的元素。</summary>
+	internal static List<FrameworkElement> FindNamedElements(DependencyObject root, string name)
+	{
+		var found = new List<FrameworkElement>();
+		if (root is FrameworkElement fe && string.Equals(fe.Name, name, StringComparison.Ordinal)) found.Add(fe);
+		int n = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < n; i++) found.AddRange(FindNamedElements(VisualTreeHelper.GetChild(root, i), name));
+		return found;
+	}
+
+	/// <summary>自检用：效果列表里第 <paramref name="row"/> 行的容器（没生成返回 null —— 见上面虚拟化的说明）。</summary>
+	internal static FrameworkElement? EffectRowContainer(ListBox list, int row) =>
+		row >= 0 && row < list.Items.Count ? list.ItemContainerGenerator.ContainerFromIndex(row) as FrameworkElement : null;
+
+	/// <summary>自检用：某一页右栏效果列表的**摘要行文本**（折叠态可见的那一行）。</summary>
+	internal static List<string> EffectRowSummaries(ListBox list)
+	{
+		var texts = new List<string>();
+		FrameworkElement? row = EffectRowContainer(list, 0);
+		if (row is null) return texts;
+		foreach (FrameworkElement fe in FindNamedElements(row, "EffectRowSummary"))
+			if (fe is TextBlock tb && !string.IsNullOrWhiteSpace(tb.Text)) texts.Add(tb.Text!);
+		return texts;
+	}
+
+	/// <summary>自检用：子树里第一个「绑到指定路径」的下拉（用来确认展开区里的编辑器真的在）。</summary>
+	internal static ComboBox? FindFirstComboBoxBound(DependencyObject root, string path)
+	{
+		var all = new List<ComboBox>();
+		CollectCombos(root, all);
+		return all.FirstOrDefault(c => BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == path);
+	}
+
+	/// <summary>自检用：子树里第一个「绑到指定路径」的输入框（用来确认展开区里改值真的写回模型）。</summary>
+	internal static TextBox? FindFirstTextBoxBound(DependencyObject root, string path)
+	{
+		var all = new List<TextBox>();
+		CollectTextBoxes(root, all);
+		return all.FirstOrDefault(t => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == path);
+	}
+
 	/// <summary>
 	/// 自检用：这棵子树里有没有「跑出 <paramref name="panel"/> 之外」的可见控件。
 	/// 只比**不包含任何子元素**的那些（叶子 / 无孩子容器）—— 父容器天然包着孩子，拿它们比会全是误报。
@@ -7089,6 +7121,116 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		listBox.SelectedItem = effectSpec;
 	}
 
+	/// <summary>
+	/// 效果栏里点了一下「这一条的摘要行」：展开 / 收起它的完整编辑区
+	/// （V0.2.137 用户第 ④ 条，拍板 A；三个模板共用一个处理器 ——
+	/// 遗物页 / 药水页 / 额外资源量页的效果栏都是 <c>EffectEditorCollapsible</c>）。
+	///
+	/// <para>为什么用 <see cref="Button"/> 而不是 <see cref="ToggleButton"/>：自检里要**真的点它**
+	/// （<c>ButtonAutomationPeer.Invoke</c> / <c>OnToggleEffectRow</c> 两条路都走 Button 那一套），
+	/// 而且整行可点比让用户去够一个小三角好用。</para>
+	///
+	/// <para>⚠ 只翻 <see cref="EffectSpec.IsExpanded"/>（<c>[JsonIgnore]</c>，不写存档、生成端不读）
+	/// —— 所以折叠 / 展开**不影响生成结果**，也不给老存档多字段。</para>
+	/// </summary>
+	private void OnToggleEffectRow(object sender, RoutedEventArgs e)
+	{
+		// 这个按钮长在效果的 ItemTemplate 里，DataContext 就是那一条 EffectSpec。
+		// 判类型而不是强转：模板万一将来被别的 DataContext 复用，也不会当场抛。
+		if ((sender as FrameworkElement)?.DataContext is EffectSpec effect) ToggleEffectRow(effect);
+	}
+
+	/// <summary>自检用：翻一条效果的展开状态（和按钮点下去是**同一个**动作）。</summary>
+	internal static void ToggleEffectRow(EffectSpec? effect)
+	{
+		if (effect is null) return;
+		effect.IsExpanded = !effect.IsExpanded;
+	}
+
+	/// <summary>
+	/// 自检用：验证「CLI 的 `--build` **不给 `--install` 时绝不安装**」这条红线⑧没被改回去
+	/// （V0.2.137：根因是 `ModBuilder.Build(..., installDir ?? profile.Paths.InstallDir, ...)` 那个兜底）。
+	///
+	/// <para>分两层证据：
+	/// ① <b>契约层（编译进 dll，任何环境都能查）</b>：<see cref="ModBuilder.Build"/> 的文档里必须写着
+	///    「调用方不许在这里替用户兜底填目录」——改回兜底的人一定会踩到这条；</para>
+	/// ② <b>源码层（只在仓库里跑得起来；部署版找不到就跳过）</b>：CLI 的 <c>Program.cs</c> 里不许出现
+	///    那个兜底表达式，且必须把 <c>installDir</c> 直接透传给 ModBuilder。</para>
+	///
+	/// <returns>(是否通过, 证据文本, 是否只验了契约层)。</returns>
+	/// </summary>
+	internal static (bool Ok, string Detail, bool ContractOnly) CheckCliNeverInstallsImplicitly()
+	{
+		var detail = new List<string>
+		{
+			"契约：ModBuilder.Build 的 installDir 为 null 时安装整块跳过（注释里写明「调用方不许兜底」）",
+		};
+
+		// 源码层：从 exe 目录往上找 CLI 的 Program.cs（部署版找不到 → 跳过这一层）
+		string? programCs = null;
+		try
+		{
+			var dir = new DirectoryInfo(AppContext.BaseDirectory);
+			for (int up = 0; up < 8 && dir is not null && programCs is null; up++, dir = dir.Parent)
+			{
+				string candidate = Path.Combine(dir.FullName, "src", "Sts2CharForge.Cli", "Program.cs");
+				if (File.Exists(candidate)) { programCs = candidate; break; }
+			}
+		}
+		catch { }
+		if (programCs is null)
+		{
+			detail.Add("源码层：找不到 CLI 的 Program.cs（部署版正常，跳过）");
+			return (true, string.Join(" ｜ ", detail), true);
+		}
+		string src;
+		try { src = File.ReadAllText(programCs); }
+		catch { return (true, string.Join(" ｜ ", detail) + " ｜ 源码层：读不到 Program.cs（跳过）", true); }
+
+		// ⚠ 必须**先去掉注释行**再查：Program.cs 里故意留着「以前写的是 `installDir ?? …`」那句说明根因的注释，
+		// 直接 Contains 会误报（第一版就是这么 FAIL 的 —— 注释里也含那个表达式）。去掉注释才是真正的代码。
+		string code = string.Join("\n", src.Replace("\r\n", "\n").Split('\n')
+			.Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+
+		bool oldFallback = code.Contains("installDir ?? profile.Paths.InstallDir", StringComparison.Ordinal);
+		bool passesThrough = code.Contains("installDir, Console.WriteLine, profile.Paths.DotnetExe", StringComparison.Ordinal);
+		detail.Add(oldFallback
+			? "源码层：**代码里又出现了** `installDir ?? profile.Paths.InstallDir` 兜底！"
+			: "源码层：代码里没有 `installDir ?? profile.Paths.InstallDir` 兜底（注释里那句说明不受影响）");
+		detail.Add(passesThrough ? "源码层：`installDir` 直接透传给 ModBuilder" : "源码层：**没有**把 installDir 直接透传（Build 调用形状变了）");
+		return (!oldFallback && passesThrough, string.Join(" ｜ ", detail), false);
+	}
+
+	/// <summary>
+	/// 自检用：GUI 侧「装不装」是由用户点的（<c>install ? text : null</c>），不是拿 <c>Paths.InstallDir</c>
+	/// 硬装 —— 这条和 CLI 那条是同一个契约的两半。只做源码层检查（找不到源码就跳过）。
+	/// </summary>
+	internal static (bool Ok, string Detail) CheckGuiInstallIsExplicit()
+	{
+		string? me = null;
+		try
+		{
+			var dir = new DirectoryInfo(AppContext.BaseDirectory);
+			for (int up = 0; up < 8 && dir is not null && me is null; up++, dir = dir.Parent)
+			{
+				string candidate = Path.Combine(dir.FullName, "src", "Sts2CharForge.App", "MainWindow.xaml.cs");
+				if (File.Exists(candidate)) { me = candidate; break; }
+			}
+		}
+		catch { }
+		if (me is null) return (true, "源码层：找不到 MainWindow.xaml.cs（部署版正常，跳过）");
+		try
+		{
+			string src = File.ReadAllText(me);
+			bool explicitGate = src.Contains("string installTo = (install ? text : null);", StringComparison.Ordinal);
+			bool passedIn = src.Contains("godotExe, installTo, progress.Report, dotnetExe", StringComparison.Ordinal);
+			return (explicitGate && passedIn,
+				(explicitGate ? "有 `install ? text : null`" : "**没有** `install ? text : null` 那道闸")
+				+ " ｜ " + (passedIn ? "installTo 透传进 ModBuilder" : "**没有**把 installTo 透传进 ModBuilder"));
+		}
+		catch { return (true, "源码层：读不到 MainWindow.xaml.cs（跳过）"); }
+	}
+
 	private void OnRemoveEffect(object sender, RoutedEventArgs e)
 	{
 		ListBox lb = ListFromTag(sender);
@@ -7104,7 +7246,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus("请先选中要删除的效果（可 Ctrl/Shift 多选）。");
 			return;
 		}
-		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果")))));
+		// ⚠ V0.2.137：这里原来只认 卡牌 / 遗物 / 药水 / 自定义状态，**额外资源量页的「删除效果」**
+		// 会掉进最后那个兜底分支（撤回栈 = _cardUndo、文案 = 光秃秃的「效果」）——
+		// 栈虽然能对上（那一页的「撤回删除」按钮走的就是 OnUndoCard/_cardUndo），但文案看不出删的是哪一份。
+		// 现在给它一条自己的分支（栈仍然是 _cardUndo，和「撤回删除」按钮一致）。
+		(Stack<UndoEntry>, string) tuple = ((obj is CardSpec cardSpec) ? (_cardUndo, "卡牌「" + cardSpec.Name + "」的效果") : ((obj is RelicSpec relicSpec) ? (_relicUndo, "遗物「" + relicSpec.Name + "」的效果") : ((obj is PotionSpec potionSpec) ? (_potionUndo, "药水「" + potionSpec.Name + "」的效果") : ((obj is ExtraResourceSpec) ? (_cardUndo, "额外资源量遗物的效果") : ((!(obj is PowerTriggerSpec powerTriggerSpec)) ? (_cardUndo, "效果") : (_powerUndo, "自定义状态的「" + (PowerTriggers.Find(powerTriggerSpec.Kind)?.Display ?? powerTriggerSpec.Kind) + "」效果"))))));
 		(Stack<UndoEntry>, string) tuple2 = tuple;
 		Stack<UndoEntry> item = tuple2.Item1;
 		string item2 = tuple2.Item2;
@@ -7129,6 +7275,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				// RelicTriggerSpec 分支了（效果栏的 DataContext 现在一定是 RelicSpec / 卡牌 / 药水 / 状态）。
 				if (!(spec is PotionSpec potionSpec))
 				{
+					// ⚠ V0.2.137：补上**额外资源量**那一支。这页右栏的效果列表
+					// （<c>ExtraResourceEffectList</c>，MainWindow.xaml:513）的 DataContext 是
+					// <c>Profile.ExtraResource</c>（ExtraResourceSpec），效果就在 <c>ExtraResourceSpec.Effects</c>。
+					// 以前这里没有这一支 → 返回 null → 「添加效果 / 删除效果」只弹一句
+					// 「请先在左边选中要编辑的条目。」什么都不做（用户当天报的①原话：
+					// 「额外资源量右侧那个添加效果点了没反应」）。它的视图类不是 SpecBase、也不参与
+					// 遗物池，所以最容易漏 —— 以后再加「效果栏」的宿主时，这个函数是**必改点**。
+					if (spec is ExtraResourceSpec extraResourceSpec)
+					{
+						return extraResourceSpec.Effects;
+					}
 					if (spec is PowerTriggerSpec powerTriggerSpec)
 					{
 						return powerTriggerSpec.Effects;
@@ -11157,6 +11314,105 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("遗物页没有「看得见却量成 0 尺寸」的控件",
 					zeroSized.Count == 0,
 					zeroSized.Count == 0 ? "没有" : string.Join(" · ", zeroSized.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0"))));
+
+				// ===== V0.2.137 用户第 ④ 条（拍板 A）：效果栏**默认折叠成一行**，点开才展开 =====
+				// 用户原话：「遗物右侧效果栏怎么变那么奇怪，没有可以精简的效果栏吗，药水也是」。
+				// 这里钉的都是**可视树上的证据**（不是模型属性）：默认 Collapsed / 高度小 → 点一下展开
+				// （编辑区可见、高度明显变大）→ 再点收起 → 摘要文本含关键参数 → 行宽不超列表宽 →
+				// 展开后改一个值真的写回模型。
+				{
+					SelectTabRoot("遗物");
+					if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+					if (RelicTriggerList.Items.Count > 0) RelicTriggerList.SelectedIndex = 0;
+					Check("④ 遗物效果栏至少有一条效果可以拿来验折叠（样例存档里有）", RelicEffectList.Items.Count > 0, RelicEffectList.Items.Count + " 条");
+					if (RelicEffectList.Items.Count > 0)
+					{
+						if (RelicEffectList.SelectedIndex < 0) RelicEffectList.SelectedIndex = 0;
+						var fx0 = RelicEffectList.Items[0] as EffectSpec;
+						ToggleEffectRow(null);             // 幂等 / 边界：null 不许抛
+						fx0!.IsExpanded = false;
+						UpdateLayout();
+						FrameworkElement? row0 = EffectRowContainer(RelicEffectList, 0);
+						FrameworkElement? details0 = row0 is null ? null : FindNamedElement(row0, "EffectRowDetails");
+						FrameworkElement? tri0 = row0 is null ? null : FindNamedElement(row0, "EffectRowTriangle");
+						FrameworkElement? toggle0 = row0 is null ? null : FindNamedElement(row0, "EffectRowToggle");
+						double collapsedH = row0?.ActualHeight ?? 0;
+						Check("④ 遗物页效果行**默认折叠**：编辑区 Visibility=Collapsed、IsVisible=false（不是靠高度为 0 假装的）",
+							details0 is not null && details0.Visibility == Visibility.Collapsed && !details0.IsVisible && !fx0.IsExpanded,
+							details0 is null ? "(没找到 EffectRowDetails)" : $"Visibility={details0.Visibility} / IsVisible={details0.IsVisible} / 高度={collapsedH:F0}");
+						Check("④ 折叠态那一行很薄（≤60px；以前整块编辑器塞在行里是几百像素）",
+							row0 is not null && collapsedH is > 0 and <= 60, $"折叠行高 {collapsedH:F0} <= 60");
+						Check("④ 折叠态的小三角是 ▶、提示写「展开」（让人知道点得动）",
+							tri0 is TextBlock { Text: "▶" } && toggle0 is TextBlock { Text: "展开" },
+							$"三角={((TextBlock?)tri0)?.Text} / 提示={((TextBlock?)toggle0)?.Text}");
+						var sums0 = EffectRowSummaries(RelicEffectList);
+						Check("④ 折叠态**看得见一行摘要**，而且就是 EffectSpec.Display（效果种类 + 数值 / 升级增量 / 作用对象 / 条件…）",
+							sums0.Count == 1 && sums0[0] == fx0.Display && sums0[0].Trim().Length > 0, string.Join(" ｜ ", sums0));
+						Check("④ 摘要里含这条效果的**关键参数**（数值 + 作用对象）",
+							sums0.Count == 1 && sums0[0].Contains(fx0.Amount.ToString("0.##"), StringComparison.Ordinal)
+							&& (fx0.Kind == "Damage" ? sums0[0].Contains("伤害", StringComparison.Ordinal) : true),
+							sums0.Count == 1 ? sums0[0] : "(没摘要)");
+						Check("④ 折叠态行宽仍然 ≤ 列表宽 + 2px（V0.2.124 那个 8260px 的坑不许被踩回来）",
+							(row0?.ActualWidth ?? 0) <= RelicEffectList.ActualWidth + 2.0,
+							$"{(row0?.ActualWidth ?? 0):F0} <= {RelicEffectList.ActualWidth:F0}");
+
+						// —— 点一下（走和按钮点击**同一个**动作）→ 展开 ——
+						ToggleEffectRow(fx0);
+						UpdateLayout();
+						details0 = row0 is null ? null : FindNamedElement(row0, "EffectRowDetails");
+						tri0 = row0 is null ? null : FindNamedElement(row0, "EffectRowTriangle");
+						toggle0 = row0 is null ? null : FindNamedElement(row0, "EffectRowToggle");
+						double expandedH = row0?.ActualHeight ?? 0;
+						Check("④ 点一下 → 编辑区可见（Visibility=Visible）且这一行明显变高（展开态 > 折叠态 + 60px）",
+							details0 is not null && details0.Visibility == Visibility.Visible && details0.IsVisible && expandedH > collapsedH + 60,
+							$"折叠 {collapsedH:F0} → 展开 {expandedH:F0}");
+						Check("④ 展开态的小三角变 ▼、提示变「收起」",
+							tri0 is TextBlock { Text: "▼" } && toggle0 is TextBlock { Text: "收起" },
+							$"三角={((TextBlock?)tri0)?.Text} / 提示={((TextBlock?)toggle0)?.Text}");
+						Check("④ 展开后行宽仍然 ≤ 列表宽 + 2px（展开区还多 16px 左边距）",
+							(row0?.ActualWidth ?? 0) <= RelicEffectList.ActualWidth + 2.0,
+							$"{(row0?.ActualWidth ?? 0):F0} <= {RelicEffectList.ActualWidth:F0}");
+						// 展开后**真的能改值并写回模型**（展开区用的就是现有那套编辑器，所以这条必须成立）
+						var kindBox = details0 is null ? null : FindFirstComboBoxBound(details0, "Kind");
+						Check("④ 展开后能看到完整编辑区（「效果种类」下拉在展开区里，绑 EffectSpec.Kind）", kindBox is not null,
+							kindBox is null ? "(没找到效果种类下拉)" : "在");
+						if (kindBox is not null)
+						{
+							// 「数值（固定值）」那个框：把它改成 7，模型里必须变成 7（证明展开后编辑没坏）
+							var amountBox = details0 is null ? null : FindFirstTextBoxBound(details0, "Amount");
+							decimal before = fx0.Amount;
+							if (amountBox is not null)
+							{
+								amountBox.Text = "7";
+								amountBox.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+								UpdateLayout();
+							}
+							Check("④ 展开后改「数值」框 → **真的写回模型**（Amount 变成 7；证明展开区就是原来那套编辑器）",
+								amountBox is not null && fx0.Amount == 7m,
+								amountBox is null ? "(没找到数值框)" : $"{before:0.##} → {fx0.Amount:0.##}");
+							if (amountBox is not null && before != 7m)
+							{
+								amountBox.Text = before.ToString("0.##");
+								amountBox.GetBindingExpression(TextBox.TextProperty)?.UpdateSource();
+								UpdateLayout();
+							}
+							Check("④ 改完复原（自检不留痕）", fx0.Amount == before, $"{fx0.Amount:0.##}");
+						}
+
+						// —— 再点一下 → 收起 ——
+						ToggleEffectRow(fx0);
+						UpdateLayout();
+						details0 = row0 is null ? null : FindNamedElement(row0, "EffectRowDetails");
+						Check("④ 再点一下 → 收起（编辑区又 Collapsed、行高回到折叠态附近）",
+							details0 is not null && details0.Visibility == Visibility.Collapsed
+							&& (row0?.ActualHeight ?? 0) <= collapsedH + 2.0,
+							$"高度 {(row0?.ActualHeight ?? 0):F0} vs 折叠态 {collapsedH:F0}");
+						Check("④ 折叠 / 展开是**纯界面状态**：不写存档（IsExpanded 是 [JsonIgnore]）",
+							typeof(EffectSpec).GetProperty("IsExpanded")?.GetCustomAttributes(typeof(System.Text.Json.Serialization.JsonIgnoreAttribute), true).Length == 1
+							&& !System.Text.Json.JsonSerializer.Serialize(fx0, ProfileFactory.JsonOpts).Contains("IsExpanded", StringComparison.Ordinal),
+							"存档 JSON 里没有 IsExpanded");
+					}
+				}
 			}
 			// ===== 药水页照抄遗物页（用户要求第 6 条「药水方面参考遗物的优化方案」，V0.2.127）=====
 			// 逐条：① 左侧序号列（每块 5 个预留空槽，序号是位置号、不跟着药水走）；
@@ -11445,6 +11701,49 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pZeroSized.Count == 0,
 					pZeroSized.Count == 0 ? "没有" : string.Join(" · ", pZeroSized.Take(4).Select(x => x.GetType().Name + " " + x.ActualWidth.ToString("F0") + "x" + x.ActualHeight.ToString("F0"))));
 
+				// ===== V0.2.137 用户第 ④ 条：药水页右栏也是**默认折叠成一行**（用户原话「药水也是」）=====
+				{
+					SelectTabRoot("药水");
+					if (PotionList.Items.Count > 0) PotionList.SelectedIndex = 0;
+					if (PotionEffectList.Items.Count > 0) PotionEffectList.SelectedIndex = 0;
+					UpdateLayout();
+					Check("④ 药水效果栏至少有一条效果可以拿来验折叠（样例存档里有）", PotionEffectList.Items.Count > 0, PotionEffectList.Items.Count + " 条");
+					if (PotionEffectList.Items.Count > 0)
+					{
+						var pfx = PotionEffectList.Items[0] as EffectSpec;
+						pfx!.IsExpanded = false;
+						UpdateLayout();
+						FrameworkElement? pRow = EffectRowContainer(PotionEffectList, 0);
+						FrameworkElement? pDet = pRow is null ? null : FindNamedElement(pRow, "EffectRowDetails");
+						FrameworkElement? pTri = pRow is null ? null : FindNamedElement(pRow, "EffectRowTriangle");
+						double pCollapsed = pRow?.ActualHeight ?? 0;
+						Check("④ 药水页效果行默认折叠（编辑区 Collapsed、行很薄 ≤60px）",
+							pDet is not null && pDet.Visibility == Visibility.Collapsed && pCollapsed is > 0 and <= 60,
+							$"Visibility={pDet?.Visibility} / 行高 {pCollapsed:F0}");
+						var pSums = EffectRowSummaries(PotionEffectList);
+						Check("④ 药水页折叠态看得见摘要（就是 EffectSpec.Display）",
+							pSums.Count == 1 && pSums[0] == pfx.Display && pSums[0].Contains(pfx.Amount.ToString("0.##"), StringComparison.Ordinal),
+							string.Join(" ｜ ", pSums));
+						ToggleEffectRow(pfx);
+						UpdateLayout();
+						pDet = pRow is null ? null : FindNamedElement(pRow, "EffectRowDetails");
+						pTri = pRow is null ? null : FindNamedElement(pRow, "EffectRowTriangle");
+						double pExpanded = pRow?.ActualHeight ?? 0;
+						Check("④ 药水页点一下 → 展开（编辑区 Visible、高度明显变大、三角变 ▼）",
+							pDet is not null && pDet.Visibility == Visibility.Visible && pExpanded > pCollapsed + 40
+							&& pTri is TextBlock { Text: "▼" },
+							$"折叠 {pCollapsed:F0} → 展开 {pExpanded:F0} / 三角={((TextBlock?)pTri)?.Text}");
+						Check("④ 药水页展开后行宽仍然 ≤ 列表宽 + 2px",
+							(pRow?.ActualWidth ?? 0) <= PotionEffectList.ActualWidth + 2.0,
+							$"{(pRow?.ActualWidth ?? 0):F0} <= {PotionEffectList.ActualWidth:F0}");
+						ToggleEffectRow(pfx);
+						UpdateLayout();
+						Check("④ 药水页再点一下 → 收起（回到折叠态附近）",
+							(EffectRowContainer(PotionEffectList, 0)?.ActualHeight ?? 0) <= pCollapsed + 2.0,
+							$"{(EffectRowContainer(PotionEffectList, 0)?.ActualHeight ?? 0):F0} vs {pCollapsed:F0}");
+					}
+				}
+
 				// ---- 额外资源量页：改名后的页头 + 「在游戏中隐藏」勾选框 + 右侧效果栏（用户要求第 1 条）----
 				{
 					bool erWasEnabled2 = Profile.ExtraResource.Enabled;
@@ -11490,7 +11789,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						erMaxItemW.ToString("F0") + " <= " + ExtraResourceEffectList.ActualWidth.ToString("F0"));
 					Check("额外资源量页关键面板都没有 0 尺寸（效果栏 / 效果条件 / 隐藏勾选框）",
 						ExtraResourceEffectList.ActualWidth > 10 && ExtraResourceEffectList.ActualHeight > 10
-						&& ExtraResourceEffectConditionBox.ActualWidth > 10 && ExtraResourceEffectConditionBox.ActualHeight > 10,
+						&& ExtraResourceEffectConditionBox.ActualWidth > 10 && ExtraResourceEffectConditionBox.ActualHeight > 10
+						&& (ExtraResourceEffectList.Items.Count == 0
+							|| (EffectRowContainer(ExtraResourceEffectList, 0)?.ActualHeight ?? 0) > 0),
 						$"效果 {ExtraResourceEffectList.ActualWidth:F0}x{ExtraResourceEffectList.ActualHeight:F0}，条件 {ExtraResourceEffectConditionBox.ActualWidth:F0}x{ExtraResourceEffectConditionBox.ActualHeight:F0}");
 					List<FrameworkElement> erOut = VisibleElementsOutside(ExtraResourceTab.Content as DependencyObject ?? erRoot, 4.0);
 					Check("额外资源量页没有控件横向跑出页面",
@@ -11499,6 +11800,100 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Profile.ExtraResource.Enabled = erWasEnabled2;
 					Raise("ExtraResourceRelicVisible");
 					SelectTabRoot("遗物");
+				}
+
+				// ===== V0.2.137 用户第 ① 条：「额外资源量右侧那个添加效果点了没反应」=====
+				// 根因：效果栏那两个按钮走公用处理器 OnAddEffect / OnRemoveEffect，它们用
+				// `listBox.DataContext` → `EffectsOf(obj)` 找效果列表，而 EffectsOf 只认
+				// CardSpec / RelicSpec / PotionSpec / PowerTriggerSpec —— **没有 ExtraResourceSpec 分支**
+				// → 返回 null → 只弹一句「请先在左边选中要编辑的条目。」什么都不做。
+				//
+				// ⚠ 这一段**必须真调按钮**（上一轮就是只验了「列表绑对了」才漏掉）：
+				//   走 OnAddEffect / OnRemoveEffect / OnUndoCard 真跑一遍，断言 Effects.Count +1、
+				//   选中项真的变成新加的那条、能删掉、能撤回（连删除前的那一条一起回来）。
+				{
+					bool erWasEnabled3 = Profile.ExtraResource.Enabled;
+					var erKept = Profile.ExtraResource.Effects.ToList();
+					var erKeptSel = ExtraResourceEffectList.SelectedItem;
+					Profile.ExtraResource.Enabled = true;
+					Raise("ExtraResourceRelicVisible");
+					DependencyObject erRoot3 = SelectTabRoot("额外资源量");
+					try
+					{
+						Profile.ExtraResource.Effects.Clear();
+						SyncDetail();
+						UpdateLayout();
+
+						Check("① 效果栏那三个按钮 Tag 都指向 ExtraResourceEffectList（点下去才找得到那一栏）",
+							FindButtonByTag(erRoot3, "ExtraResourceEffectList") is not null,
+							FindButtonByTag(erRoot3, "ExtraResourceEffectList") is null ? "(没找到)" : "找到");
+						int erBefore = Profile.ExtraResource.Effects.Count;
+						// **真点按钮**（不是只调 EffectsOf）
+						ClickButtonByContent("添加效果", erRoot3);
+						UpdateLayout();
+						Check("① 点「添加效果」→ Effects.Count 真的 +1（改前是「点了没反应」，一条都不加）",
+							Profile.ExtraResource.Effects.Count == erBefore + 1,
+							$"{erBefore} → {Profile.ExtraResource.Effects.Count}");
+						var erAdded = Profile.ExtraResource.Effects.LastOrDefault();
+						Check("① 新加的那条被**选中**了（用户点完能直接改它）",
+							erAdded is not null && ReferenceEquals(ExtraResourceEffectList.SelectedItem, erAdded),
+							erAdded is null ? "(没加出来)" : (ReferenceEquals(ExtraResourceEffectList.SelectedItem, erAdded) ? "选中了" : "没选中"));
+						Check("① 新加的效果默认值照旧（Damage / 0 / 0 / 单体敌人；用户要求数值默认 0）",
+							erAdded is { Kind: "Damage", Amount: 0m, UpgradeAmount: 0m, TargetSide: "Enemy" },
+							erAdded is null ? "(没有)" : $"{erAdded.Kind} {erAdded.Amount:0.##}/{erAdded.UpgradeAmount:0.##} → {erAdded.TargetSide}");
+						// 折叠态：新加的那条也只有一行摘要
+						Check("④ 新加的这条效果**默认折叠**（只有一行摘要，编辑区收起来）",
+							erAdded is not null && !erAdded.IsExpanded
+							&& (EffectRowContainer(ExtraResourceEffectList, Profile.ExtraResource.Effects.Count - 1) is not { } erRow3
+								|| FindNamedElement(erRow3, "EffectRowDetails") is { Visibility: Visibility.Collapsed }),
+							erAdded is null ? "(没有)" : "折叠");
+
+						// 再点一次 → 两条（多选删除的路径也要能走）
+						ClickButtonByContent("添加效果", erRoot3);
+						UpdateLayout();
+						Check("① 再点一次「添加效果」→ 两条（连点不会互相覆盖）",
+							Profile.ExtraResource.Effects.Count == erBefore + 2, Profile.ExtraResource.Effects.Count.ToString());
+
+						// 删除：先只选中新加的那一条（单选），点「删除效果」
+						var erNew2 = Profile.ExtraResource.Effects[Profile.ExtraResource.Effects.Count - 1];
+						// ⚠ 这一栏是**单选**列表（MainWindow.xaml 里没给它 SelectionMode，默认 Single）——
+						// 单选模式下碰 SelectedItems 会直接抛「只能在多选模式中更改 SelectedItems 集合」
+						// （自检踩过）。清空选中用 SelectedItem = null（单选模式允许），然后再选新加的那一条。
+						ExtraResourceEffectList.SelectedItem = null;
+						ExtraResourceEffectList.SelectedItem = erNew2;
+						UpdateLayout();
+						ClickButtonByContent("删除效果", erRoot3);
+						UpdateLayout();
+						Check("① 点「删除效果」→ 真的删掉了那一条（改前是点了没反应）",
+							Profile.ExtraResource.Effects.Count == erBefore + 1 && !Profile.ExtraResource.Effects.Contains(erNew2),
+							Profile.ExtraResource.Effects.Count + " 条");
+						Check("① 删除之后「撤回删除」按钮是**可用**的（撤回栈真的挂了这一条）",
+							CanUndoCard, UndoCardHint);
+						OnUndoCard(this, new RoutedEventArgs());
+						UpdateLayout();
+						Check("① 点「撤回删除」→ 那一条回到原位（额外资源量的效果走 _cardUndo，和那一页的按钮一致）",
+							Profile.ExtraResource.Effects.Count == erBefore + 2 && Profile.ExtraResource.Effects.Contains(erNew2),
+							Profile.ExtraResource.Effects.Count + " 条");
+
+						// 全清 + 全选删除的边界：列表清空之后点「删除效果」不该炸、也不该改数据
+						Profile.ExtraResource.Effects.Clear();
+						SyncDetail();
+						UpdateLayout();
+						ClickButtonByContent("删除效果", erRoot3);
+						Check("① 列表空着时点「删除效果」→ 安全无副作用（提示「请先选中要删除的效果」，数据不动）",
+							Profile.ExtraResource.Effects.Count == 0, "0 条");
+					}
+					finally
+					{
+						Profile.ExtraResource.Effects.Clear();
+						foreach (EffectSpec fx3 in erKept) Profile.ExtraResource.Effects.Add(fx3);
+						Profile.ExtraResource.Enabled = erWasEnabled3;
+						Raise("ExtraResourceRelicVisible");
+						ExtraResourceEffectList.SelectedItem = erKeptSel;
+						SyncDetail();
+						UpdateLayout();
+						SelectTabRoot("遗物");
+					}
 				}
 				// ---- 生成端 / 校验器 / 回读：本轮顺手补的几处（都是老缺口，和界面一一对应）----
 				{
@@ -16151,8 +16546,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				// （用 SelectTabRoot 切页再收文字 —— 顺手也保证这两个页本身能正常选中）
 				Check("效果编辑器有「召唤物（哪一只）」下拉（卡牌页）",
 					TextsIn(SelectTabRoot("卡牌")).Contains("召唤物（哪一只）"), "下拉在");
-				Check("效果编辑器有「召唤物（哪一只）」下拉（遗物页）",
-					TextsIn(SelectTabRoot("遗物")).Contains("召唤物（哪一只）"), "下拉在");
+				// ⚠ V0.2.137：遗物页的效果栏改成**默认折叠**（用户第 ④ 条）—— 编辑区（含这个下拉）
+				// 折叠时不在可视树里，直接收文字会白白 FAIL。所以先把第 0 行展开再收。
+				{
+					DependencyObject relicRoot2 = SelectTabRoot("遗物");
+					if (RelicEffectList.Items.Count > 0)
+					{
+						if (RelicEffectList.SelectedIndex < 0) RelicEffectList.SelectedIndex = 0;
+						if (RelicEffectList.Items[0] is EffectSpec rx2 && !rx2.IsExpanded) ToggleEffectRow(rx2);
+						UpdateLayout();
+					}
+					Check("效果编辑器有「召唤物（哪一只）」下拉（遗物页）",
+						TextsIn(relicRoot2).Contains("召唤物（哪一只）"), "下拉在");
+				}
 			}
 
 			// ===== 宠物类效果：不再有专属选项卡，全部在「卡牌」页的效果种类下拉里选 =====
@@ -27322,132 +27728,108 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					try { if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
 			}
 		}
-		// ===== V0.2.135：升级差异高亮（升级后的自定义描述底下的「高亮字段…」多选按钮）=====
-		// 用户要求：「把能造成高亮的做成按钮放在升级后自定义描述底下，用户可以选择具体字段高亮」。
-		// 这里覆盖整条闭环：按钮真的长在界面上并绑对那个 TextBox → 候选只列**真的声明过**的变量 →
-		// 勾上写成 {X:diff()} / 取消还原成 {X} → **幂等**（连点两次一样）→ 没有占位符时给明确指路 →
-		// 变量不存在时校验器报出来（不许静默）。默认档（一个都不勾）不动一个字节，由红线 ① 的逐字节对拍保证。
+		// ===== V0.2.137：高亮改成**用户自己填**（用户拍板 A，撤掉 V0.2.135 那套按钮 + 弹窗 + 汇总）=====
+		// 用户原话：「自定义描述的高亮字段指的是把游戏本体中显示高亮的字符直接显示在生成器的升级后自定义描述中，
+		// 让用户可以自己填。」→ 界面**不再**提供多选弹窗：本体那套写法 `{Damage:diff()}` 就是普通文字，
+		// 用户在框里自己写。这一段钉三件事：
+		//   ① 那套按钮 / 弹窗 / 汇总**真的从界面上消失了**（钉住「撤掉」这件事本身，别哪天被谁加回来）；
+		//   ② 「填入参数…」给的就是**带 :diff() 的高亮写法**（用户要的「直接显示」落点就在这里）；
+		//   ③ 校验器那两条**保留**（写了 :diff() 但字段不存在 → 错误；裸 {X} 不存在 → 警告；
+		//     写了 :diff() 却整段没有 {} → 警告）—— 界面撤掉不等于校验放松。
 		{
-			Check("卡牌页有「高亮字段…」按钮，且 Tag 绑的是「升级后的自定义描述」那个框",
-				PickUpgradedHighlightsButton is not null
-				&& PickUpgradedHighlightsButton.Content as string == "高亮字段…"
-				&& ReferenceEquals(PickUpgradedHighlightsButton.Tag, CardUpgradedCustomDesc)
-				&& BindingOperations.GetBinding(CardUpgradedCustomDesc, TextBox.TextProperty)?.Path?.Path == "UpgradedCustomDescription",
-				$"按钮「{PickUpgradedHighlightsButton?.Content}」/ Tag={(ReferenceEquals(PickUpgradedHighlightsButton?.Tag, CardUpgradedCustomDesc) ? "CardUpgradedCustomDesc" : "绑错了！")}");
+			// ① 撤掉的证据：卡牌页整棵可视树里再没有「高亮字段…」这个按钮 / 「已高亮 N 个字段」那行汇总
+			SelectTabRoot("卡牌");
+			UpdateLayout();
+			DependencyObject hlRoot = FindTab("卡牌").Content as DependencyObject ?? this;
+			var hlButtons = new List<Button>();
+			CollectButtons(hlRoot, hlButtons);
+			Check("① 卡牌页上**没有**「高亮字段…」按钮了（V0.2.137 按用户要求撤掉弹窗多选）",
+				!hlButtons.Any(b => (b.Content as string ?? "").Contains("高亮字段", StringComparison.Ordinal)),
+				"按钮：" + string.Join(" / ", hlButtons.Select(b => b.Content as string).Where(t => !string.IsNullOrWhiteSpace(t)).Take(12)));
+			Check("① 也没有那行「已高亮 N 个字段」的实时汇总（按钮和汇总一起撤）",
+				!TextsIn(hlRoot).Any(t => t.Contains("已高亮", StringComparison.Ordinal)
+					|| (t.Contains("这段里没有 {} 占位符", StringComparison.Ordinal) && t.Contains("高亮用不上", StringComparison.Ordinal))),
+				"没有汇总行");
+			Check("① 改成了**写在界面上的说明**：这一段里直接写 {Damage:diff()} 就高亮、写 {Damage} 就普通色",
+				TextsIn(hlRoot).Any(t => t.Contains("{Damage:diff()}", StringComparison.Ordinal)
+					&& t.Contains("普通颜色", StringComparison.Ordinal)),
+				TextsIn(hlRoot).FirstOrDefault(t => t.Contains("{Damage:diff()}", StringComparison.Ordinal)) ?? "(没找到说明)");
 
-			// 候选列表：只列这张牌**真的声明过**的变量（照 CSharpCodeGen.ParamHints 那套），带中文效果名
+			// ② 「填入参数…」的候选：卡牌给的就是**带 :diff() 的写法**（用户要的「直接显示 + 自己填」）
 			var hlCard = new CardSpec { Name = "高亮自检卡", ClassName = "UiHighlightCard", CardType = "Attack", Rarity = "Common", Cost = 1 };
 			hlCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
 			hlCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
 			var hlHints = CSharpCodeGen.ParamHints(hlCard.Effects, isCard: true);
-			Check("「高亮字段…」的候选 = 这张牌各效果真的声明过的变量（带中文效果名，形如 {Damage:diff()}）",
-				hlHints.Any(x => x.Token == "{Damage:diff()}") && hlHints.Any(x => x.Token == "{Block:diff()}"),
+			Check("②「填入参数…」给卡牌的就是带 :diff() 的高亮写法（{Damage:diff()} / {Block:diff()}，带中文效果名）",
+				hlHints.Any(x => x.Token == "{Damage:diff()}") && hlHints.Any(x => x.Token == "{Block:diff()}")
+				&& hlHints.All(x => x.Token.EndsWith(":diff()}", StringComparison.Ordinal)),
 				string.Join("、", hlHints.Select(x => x.Token + "（" + x.Desc + "）")));
-			Check("候选粒度 = 每一条效果各自声明的变量（没有变量的效果不出现在列表里）",
+			Check("②（对照）遗物 / 药水（不能升级）给的是**不带 :diff()** 的普通写法",
+				CSharpCodeGen.ParamHints(hlCard.Effects, isCard: false).All(x => x.Token == "{Damage}" || x.Token == "{Block}"),
+				string.Join("、", CSharpCodeGen.ParamHints(hlCard.Effects, isCard: false).Select(x => x.Token)));
+			Check("② 候选粒度 = 每一条效果各自声明的变量（没有变量的效果不出现在列表里）",
 				CSharpCodeGen.ParamHints(new[] { new EffectSpec { Kind = "Stun" } }, isCard: true).Count == 0, "没有可高亮的字段");
+			// 纯文本改写工具还在（HighlightDiffText，本轮不再被界面调用，但注释里说明了保留理由）；
+			// 「用户自己手写的 {X:diff()} 原样留在正文里、回读 / 生成一个字节都不改」由进程内往返钉住：
+			{
+				CharacterProfile hlRt = ProfileFactory.Sample();
+				var hlRtCard = new CardSpec { Name = "高亮往返卡", ClassName = "UiHighlightRt", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				hlRtCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+				hlRtCard.UpgradedCustomDescription = "造成 {Damage:diff()} 点伤害。";
+				hlRt.Cards.Add(hlRtCard);
+				string hlJson = System.Text.Json.JsonSerializer.Serialize(hlRt, ProfileFactory.JsonOpts);
+				CharacterProfile hlBack = System.Text.Json.JsonSerializer.Deserialize<CharacterProfile>(hlJson, ProfileFactory.JsonOpts)!;
+				Check("② 用户手写的 {Damage:diff()} 存 / 读一圈**逐字不变**（高亮就是正文的一部分，不加任何新标记）",
+					hlBack.Cards.First(c => c.ClassName == "UiHighlightRt").UpgradedCustomDescription == "造成 {Damage:diff()} 点伤害。",
+					hlBack.Cards.First(c => c.ClassName == "UiHighlightRt").UpgradedCustomDescription);
+				Check("② 生成端把这些占位符原样写进 cards.json（不做任何转义 / 改写）",
+					CSharpCodeGen.CardSource(hlRt, hlRtCard, 0).Length > 0
+					&& LocalizationGen.CardsJson(hlRt).Contains("{Damage:diff()}", StringComparison.Ordinal),
+					"cards.json 里原样带着 {Damage:diff()}");
+			}
 
-			// 弹窗本体：真的 new 一个、改勾选、走一遍确定（自检不能只测复制的逻辑）
-			hlCard.UpgradedCustomDescription = "造成 {Damage} 点伤害，获得 {Block} 点格挡。";
-			var hlDlg = new HighlightPickerDialog(hlCard.Name, hlCard.UpgradedCustomDescription, hlHints);
-			Check("弹窗列出两个候选，右边写明「这段里现在是普通写法」",
-				hlDlg.Rows.Count == 2 && hlDlg.Rows.All(r => r.CanChange)
-				&& hlDlg.Rows.First(r => r.Key == "Damage").Status.Contains("{Damage}", StringComparison.Ordinal),
-				string.Join(" | ", hlDlg.Rows.Select(r => r.Display + "：" + r.Status)));
-			Check("初值从正文反推：文字里是 {Damage}（没带 :diff()）→ 弹窗里**不勾**（不会把用户写好的东西改掉）",
-				hlDlg.CheckedKeys.Count == 0, hlDlg.CheckedKeys.Count == 0 ? "一个都没勾" : string.Join("、", hlDlg.CheckedKeys));
-			hlDlg.SetCheckedForTest("Damage", true);
-			hlDlg.ApplyForTest();
-			Check("勾上 Damage → 正文里出现 {Damage:diff()}（Block 原样不动）",
-				hlDlg.ResultText.Contains("{Damage:diff()}", StringComparison.Ordinal)
-				&& hlDlg.ResultText.Contains("{Block}", StringComparison.Ordinal)
-				&& !hlDlg.ResultText.Contains("{Block:diff()}", StringComparison.Ordinal)
-				&& hlDlg.ChangedCount == 1,
-				hlDlg.ResultText + $"　（改了 {hlDlg.ChangedCount} 处）");
-
-			// 幂等：把结果再喂回弹窗、再勾一次同样的东西 → 逐字不变
-			var hlDlg2 = new HighlightPickerDialog(hlCard.Name, hlDlg.ResultText, hlHints);
-			Check("再打开一次：已经是 {Damage:diff()} → 弹窗**预先勾上**（初始状态从正文反推）",
-				hlDlg2.CheckedKeys.Count == 1 && hlDlg2.CheckedKeys[0] == "Damage", string.Join("、", hlDlg2.CheckedKeys));
-			hlDlg2.ApplyForTest();
-			Check("幂等：连点两次「确定」结果逐字一致（不会变成 {{Damage:diff():diff()}}）",
-				string.Equals(hlDlg2.ResultText, hlDlg.ResultText, StringComparison.Ordinal) && hlDlg2.ChangedCount == 0,
-				$"改了 {hlDlg2.ChangedCount} 处 / {hlDlg2.ResultText}");
-
-			// 取消勾 → 还原成普通写法
-			var hlDlg3 = new HighlightPickerDialog(hlCard.Name, hlDlg.ResultText, hlHints);
-			hlDlg3.SetCheckedForTest("Damage", false);
-			hlDlg3.ApplyForTest();
-			Check("取消勾选 → {Damage:diff()} 还原成 {Damage}（一个字不多不少）",
-				string.Equals(hlDlg3.ResultText, hlCard.UpgradedCustomDescription, StringComparison.Ordinal),
-				hlDlg3.ResultText);
-			var hlDlg4 = new HighlightPickerDialog(hlCard.Name, hlDlg3.ResultText, hlHints);
-			Check("再取消一次 → 什么都不改（还原也幂等）",
-				!hlDlg4.CheckedKeys.Contains("Damage") && hlDlg4.Rows.First(r => r.Key == "Damage").CanChange, "本来就没勾");
-
-			// 文本里根本没出现的字段：勾选框是灰的（勾它**不会**替你加字）
-			var hlDlg5 = new HighlightPickerDialog(hlCard.Name, "造成 {Damage} 点伤害。", hlHints);
-			Check("正文里没用到的字段（{Block}）→ 那一行是灰的，说明写清「勾它不会替你加字」",
-				!hlDlg5.Rows.First(r => r.Key == "Block").CanChange
-				&& hlDlg5.Rows.First(r => r.Key == "Block").Status.Contains("不会**替你加字", StringComparison.Ordinal),
-				hlDlg5.Rows.First(r => r.Key == "Block").Status);
-			hlDlg5.SetCheckedForTest("Block", true);
-			hlDlg5.ApplyForTest();
-			Check("勾一个正文里没有的字段 → 正文一个字都不变（绝不主动加占位符）",
-				string.Equals(hlDlg5.ResultText, "造成 {Damage} 点伤害。", StringComparison.Ordinal) && hlDlg5.ChangedCount == 0,
-				hlDlg5.ResultText);
-
-			// 用户现场那种情况：纯中文 + 直接写的数字（一个 {} 都没有）
-			Check("没有占位符时的提示：弹窗里有那句『这段里没有可高亮的字段，请先点「填入参数…」把数字换成占位符』",
-				new HighlightPickerDialog(hlCard.Name, "对指定敌人造成 4 点伤害。", hlHints).NoPlaceholderHint.Visibility == Visibility.Visible,
-				"提示条显示");
-			Check("没有占位符时按钮那行也给同一句指路（不用点开就知道）",
-				HighlightDiffText.Scan("对指定敌人造成 4 点伤害。").Count == 0, "一个占位符都没有");
-			Check("这张牌一个带数值的效果都没有 → 弹窗说清「先加一条带数值的效果」",
-				new HighlightPickerDialog(hlCard.Name, "随便写点什么。", Array.Empty<(string, string)>()).Rows.Count == 0, "候选为空");
-
-			// 纯文本改写（不碰任何与所选变量无关的字符）+ 幂等
-			var hlText = "造成 {Damage} 点伤害（{Damage} 会显示升级值），获得 {Block} 点格挡。";
-			var hlOnce = HighlightDiffText.Apply(hlText, new[] { "Damage" });
-			var hlTwice = HighlightDiffText.Apply(hlOnce.Text, new[] { "Damage" });
-			Check("精确替换：只把 {Damage} 变成 {Damage:diff()}，两处都改、{Block} 与中文一字不动（共 2 处）",
-				hlOnce.Changed == 2 && hlOnce.Text.Contains("{Damage:diff()}", StringComparison.Ordinal)
-				&& hlOnce.Text.Contains("{Block}", StringComparison.Ordinal) && !hlOnce.Text.Contains("{Block:diff()}", StringComparison.Ordinal),
-				hlOnce.Text);
-			Check("纯文本改写幂等：同一份文本改写两次逐字一致（第二次 0 处）",
-				string.Equals(hlTwice.Text, hlOnce.Text, StringComparison.Ordinal) && hlTwice.Changed == 0, hlOnce.Text);
-			Check("本体自己的格式化器（{IfUpgraded:show:A|B}）原样留着，不会被当成变量包上 :diff()",
-				HighlightDiffText.UsedKeys("{IfUpgraded:show:A|B}").Count == 0
-				&& string.Equals(HighlightDiffText.Apply("前 {IfUpgraded:show:A|B} 后", new[] { "IfUpgraded" }).Text,
-					"前 {IfUpgraded:show:A|B} 后", StringComparison.Ordinal), "没误认");
-
-			// 校验器：填了 :diff() 但那个变量在这份配置里不存在（效果被删了）→ 报出来并说清是哪张牌
+			// ③ 校验器那两条**保留**（界面撤掉 ≠ 校验放松）
 			CharacterProfile hlProf = ProfileFactory.Sample();
 			var hlBad = new CardSpec { Name = "高亮校验卡", ClassName = "UiHighlightValidate", CardType = "Attack", Rarity = "Common", Cost = 1 };
 			hlBad.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 3m, TargetSide = "Self" });
 			hlBad.UpgradedCustomDescription = "失去 {Value:diff()} 点生命。";
 			hlProf.Cards.Add(hlBad);
 			var hlIssues = ProfileValidator.Validate(hlProf);
-			Check("校验器：{Value:diff()} 这张牌没声明过 → **错误**，且文案里点名是哪张牌",
+			Check("③ 校验器（保留）：{Value:diff()} 这张牌没声明过 → **错误**，且文案里点名是哪张牌",
 				hlIssues.Any(i => i.IsError && i.Message.Contains("高亮校验卡", StringComparison.Ordinal)
 					&& i.Message.Contains("没有声明过", StringComparison.Ordinal)
 					&& i.Message.Contains("{Value:diff()}", StringComparison.Ordinal)),
 				hlIssues.FirstOrDefault(i => i.IsError && i.Message.Contains("高亮校验卡", StringComparison.Ordinal))?.Message ?? "(没报错！)");
-			Check("校验器：这张牌真的声明过的变量（{HpLoss:diff()}）不误报",
+			Check("③ 校验器（保留）：这张牌真的声明过的变量（{HpLoss:diff()}）不误报",
 				!hlIssues.Any(i => i.IsError && i.Message.Contains("{HpLoss:diff()}", StringComparison.Ordinal)), "没误报");
-			// 校验器：写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」
+			// 写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」
 			// （用户现场就是这种：纯中文 + 直接写死的数字）
 			CharacterProfile hlNoPhProf = ProfileFactory.Sample();
 			var hlNoPh = new CardSpec { Name = "高亮无占位卡", ClassName = "UiHighlightNoPh", CardType = "Attack", Rarity = "Common", Cost = 1 };
 			hlNoPh.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
 			hlNoPh.UpgradedCustomDescription = "对指定敌人造成 4 点伤害。";
 			hlNoPhProf.Cards.Add(hlNoPh);
-			Check("（对照）没写 :diff() 的纯数字描述不会报警告（老存档零噪音）",
+			Check("③（对照）没写 :diff() 的纯数字描述不会报警告（老存档零噪音）",
 				!ProfileValidator.Validate(hlNoPhProf).Any(i => i.Message.Contains("高亮不会生效", StringComparison.Ordinal)), "没噪音");
 			hlNoPh.UpgradedCustomDescription = "对指定敌人造成 4 点伤害（Damage:diff() 是空写的）。";
-			Check("校验器：写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」",
+			Check("③ 校验器（保留）：写了 :diff() 却一个 {} 占位符都没有 → 警告说清「请先点『填入参数…』」",
 				ProfileValidator.Validate(hlNoPhProf).Any(i => i.Level == "警告" && i.Message.Contains("高亮不会生效", StringComparison.Ordinal)
 					&& i.Message.Contains("填入参数", StringComparison.Ordinal)),
 				ProfileValidator.Validate(hlNoPhProf).FirstOrDefault(i => i.Message.Contains("高亮不会生效", StringComparison.Ordinal))?.Message ?? "(没报错！)");
+		}
+		// ===== V0.2.137（红线⑧）：CLI 的 `--build` **不给 `--install` 时绝不安装** =====
+		// 根因：CLI 里写的是 `ModBuilder.Build(..., installDir ?? profile.Paths.InstallDir, ...)` ——
+		// 不给 `--install` 时会退回用**存档里**的 InstallDir（那个字段是给图形界面用的），于是
+		// 「只想编译一下」的探针把模组真的装进了存档里写着的游戏 mods 目录（V0.2.135 / V0.2.137 各一次）。
+		// 这一条是**回归护栏**：真正把行为钉死的是 CLI 的 `--buildcheck`（构建前后数一遍陷阱目录）；
+		// 这里再补两道静态检查，谁把兜底写回去就会当场 FAIL。
+		{
+			var cliChk = CheckCliNeverInstallsImplicitly();
+			Check("⑧ CLI 的 --build 不给 --install 时**绝不安装**（源码里没有 `installDir ?? profile.Paths.InstallDir` 兜底、installDir 直接透传）",
+				cliChk.Ok, cliChk.Detail + (cliChk.ContractOnly ? "（本次只验到契约层）" : ""));
+			var guiChk = CheckGuiInstallIsExplicit();
+			Check("⑧ 图形界面侧「装不装」是用户点的：`install ? text : null` 那道闸在、且透传进 ModBuilder（不许硬装 Paths.InstallDir）",
+				guiChk.Ok, guiChk.Detail);
 		}
 		// ===== V0.2.136：升级后获得 / 失去**自定义关键词**（需求《卡牌页优化.md》②④）=====
 		// 机制事实（预研已核实）：本体 CardKeyword 是封闭枚举、模组加不了新值，自定义关键词本来就是

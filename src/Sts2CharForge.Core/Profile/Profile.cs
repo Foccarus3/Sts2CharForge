@@ -542,6 +542,34 @@ public sealed class EffectSpec : SpecBase
         Raise(nameof(ShowPlainFixedTimesBox));
     }
 
+    private bool _isExpanded;
+
+    /// <summary>
+    /// 界面用：这一条效果在右侧效果栏里是**展开**（显示完整编辑区）还是**折叠成一行摘要**
+    /// （V0.2.137 用户要求的第 ④ 条，拍板 A）。
+    ///
+    /// <para>用户原话：「遗物右侧效果栏怎么变那么奇怪，没有可以精简的效果栏吗，药水也是」——
+    /// 以前每条效果都把整块编辑器塞进列表行，一行好几百像素、一眼看不完。
+    /// 现在**默认折叠**（只显示「效果种类 + 关键参数」那一行摘要 + 一个小三角），点那一行才展开。</para>
+    ///
+    /// <para>⚠ <see cref="JsonIgnoreAttribute"/>：纯界面状态，**不写进存档**、生成端一个字节都不读它
+    /// —— 所以老存档零影响、往返不会多出字段。作用范围只有遗物页 / 药水页 / 额外资源量页的
+    /// 效果栏（卡牌页 / 诅咒页 / 先古卡页的编辑器不动，用户没提）。</para>
+    ///
+    /// <para>默认 <c>false</c> = 折叠：新加的效果、刚打开存档的效果都是收起的一行。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool IsExpanded
+    {
+        get => _isExpanded;
+        set
+        {
+            if (_isExpanded == value) return;
+            _isExpanded = value;
+            Raise(nameof(IsExpanded));
+        }
+    }
+
     // ==================================================================================
     //  锻造【效果】模块（V0.2.129）：和「卡牌」页共用同一套 EffectSpec 编辑器
     // ==================================================================================
@@ -2824,15 +2852,16 @@ public sealed class CardSpec : SpecBase
     private int _ordinal;
 
     /// <summary>
-    /// 这张卡在 <c>Profile.Cards</c> 里的**当前位置**（1 起算），只给界面显示用。
+    /// 这张卡**在它自己那一页列表里**的当前位置（1 起算），只给界面显示用。
     ///
     /// <para>⚠ 它**不写进存档**（<see cref="JsonIgnoreAttribute"/>）：序号是「当前的排序位置」，
     /// 不是跟着卡牌走的标记 —— 拖动换位置 / 删掉中间一张之后，由界面自己的
     /// <c>RefreshCardOrdinals</c> 重新发一遍。和 <see cref="RelicSpec.Ordinal"/> /
     /// <see cref="PotionSpec.Ordinal"/> 同一套做法（写进存档会给老存档多一个字段）。</para>
     ///
-    /// <para>⚠ 按用户拍板 Q5 = A，**序号口径 = 列表里全部行**：本体卡 / 初始的打击与防御也占号
-    /// （它们在卡牌列表最上面，就是第 1、2 号）。自动英文类名跟的就是这个号。</para>
+    /// <para>⚠ V0.2.137 口径（用户拍板 A）：**每页列表各自 1..N** —— 普通卡（含本体卡 / 初始的
+    /// 打击与防御，它们本来就排在这个列表最上面、就是第 1、2 号）、诅咒卡、先古卡**各自**从 1 数。
+    /// 自动英文类名跟的就是这个号（前缀各不相同，见 <see cref="AutoClassNameStem"/>）。</para>
     /// </summary>
     [JsonIgnore]
     public int Ordinal { get => _ordinal; set => Set(ref _ordinal, value); }
@@ -2841,15 +2870,17 @@ public sealed class CardSpec : SpecBase
     private int _lastAutoOrdinal;
 
     /// <summary>
-    /// 上一次生成时，这张卡的「自动类名」是第几号（对应 <c>&lt;角色类名&gt;Card&lt;它&gt;</c>）。
+    /// 上一次生成时，这张卡的「自动类名」是第几号
+    /// （对应 <c>&lt;角色类名&gt; + <see cref="AutoClassNameStem"/> + 它</c>）。
     ///
     /// <para>⚠ 和遗物 / 药水那边同一个理由：英文类名留空时**类名本身要保持空白**（一写实就再也分不出
     /// 「工具生成的」和「用户手打的」—— 见 <c>Naming.RenumberCardClassNames</c> 的注释）。
     /// 但界面上「英文类名」那一栏总得让用户看到「不填会用哪个名字」，所以单独把**序号**记在这里，
     /// 由 <see cref="AutoClassNameHint"/> 拼出完整名字。不写进存档。</para>
     ///
-    /// <para>⚠ 这个号是**全部卡（普通卡 + 诅咒 + 先古卡）里连续编号**的那个号，普通卡的号正好等于它在
-    /// 「卡牌」列表里的行号；诅咒 / 先古卡排在普通卡后面，所以它们的号会比各自列表里的行号大。</para>
+    /// <para>⚠ V0.2.137：这个号 = 它在**自己那一页列表**里的位置（和 <see cref="Ordinal"/> 同值）。
+    /// 老口径（V0.2.130 ~ V0.2.136）是「普通卡 + 诅咒 + 先古卡一条连续编号」，诅咒 / 先古卡的号会比
+    /// 各自列表里的行号大 —— 新口径下两者相等（前缀区分三类，不再靠连续编号避撞名）。</para>
     /// </summary>
     [JsonIgnore]
     public int LastAutoOrdinal { get => _lastAutoOrdinal; set => Set(ref _lastAutoOrdinal, value); }
@@ -2861,8 +2892,37 @@ public sealed class CardSpec : SpecBase
         get
         {
             int n = _lastAutoOrdinal >= 1 ? _lastAutoOrdinal : _ordinal;
-            return "<角色类名>Card" + (n >= 1 ? n : 1);
+            // V0.2.137：三套前缀（普通卡 Card / 诅咒卡 Curse / 先古卡 Ancient）+ **各页自己的号**。
+            // 前缀由界面在 RefreshCardOrdinals 里按稀有度填进 AutoClassNameStem（模型层拿不到
+            // 「这份配置的角色类名」和「它在哪个列表里」）；没填时退回 Card。
+            string stem = string.IsNullOrWhiteSpace(_autoStem) ? Generation.Naming.CardStem : _autoStem!;
+            return CharClass + stem + (n >= 1 ? n : 1);
         }
+    }
+
+    // ===== 界面用：这份卡牌当前所属的「自动名前缀」与角色类名（都不写存档）=====
+    private string _autoStem = "";
+    private string _charClass = "";
+
+    /// <summary>
+    /// 界面用：这张卡该用哪一套自动名前缀（Card / Curse / Ancient，由
+    /// <c>MainWindow.RefreshCardOrdinals</c> 按稀有度填）。
+    /// 模型层自己不知道「角色类名是多少」也看不到所在列表，所以只能由界面点一下 ——
+    /// 生成端 / 校验器**不读它**（它们走 <c>Naming.AutoCardClassName</c>，那是唯一的口径来源）。
+    /// </summary>
+    [JsonIgnore]
+    public string AutoClassNameStem
+    {
+        get => _autoStem;
+        set { if (Set(ref _autoStem, value ?? "")) { Raise(nameof(AutoClassNameHint)); Raise(nameof(ClassNameHint)); } }
+    }
+
+    /// <summary>界面用：这份配置的角色类名（由界面填，只给「英文类名」那行小字拼完整名字用）。</summary>
+    [JsonIgnore]
+    public string CharClass
+    {
+        get => _charClass;
+        set { if (Set(ref _charClass, value ?? "")) { Raise(nameof(AutoClassNameHint)); Raise(nameof(ClassNameHint)); } }
     }
 
     /// <summary>
@@ -2875,10 +2935,16 @@ public sealed class CardSpec : SpecBase
         !Generation.Naming.IsValidIdentifier(_className)
         || Generation.Naming.IsAutoCardClassNameFor(null, _className);
 
-    /// <summary>界面用：「英文类名」那一栏下面那行小字。</summary>
+    /// <summary>
+    /// 界面用：「英文类名」那一栏下面那行小字。
+    ///
+    /// <para>V0.2.137：序号口径改成「**每页列表各自 1..N**」（和遗物 / 药水页一样），
+    /// 所以这句里说清「按**这一页**列表里的序号重算」（旧文案只写「左边列表」，
+    /// 诅咒 / 先古卡页上会让人以为是接着普通卡往下数）。</para>
+    /// </summary>
     [JsonIgnore]
     public string ClassNameHint => ClassNameIsAuto
-        ? "留空 = 自动。现在对应 " + AutoClassNameHint + "（重新生成 / 构建时按左边列表的序号重算，拖动换位置就跟着变）。"
+        ? "留空 = 自动。现在对应 " + AutoClassNameHint + "（重新生成 / 构建时按**这一页**列表里的序号重算，拖动换位置就跟着变）。"
         : "现在这个名字是**你手填的**：重新生成 / 构建都不会改它（想让它跟着序号走就把这一栏清空）。";
 
     /// <summary>界面用：左侧列表那一行的提示（序号 + 类名是自动还是手填）。</summary>

@@ -692,26 +692,28 @@ public static class ProfileValidator
             string cls = n.CardClassName(p, c);
             if (!cardNames.Add(cls))
                 issues.Add(new("错误", $"卡牌类名重复：{cls}（自定义卡牌的英文类名需唯一）。"));
-            // 「自动类名跟序号走」（用户要求第 1 条《卡牌页优化.md》，拍板 Q5 = A）不许**静默**生效：
-            // 用户手打了一个正好长得像自动编号的名字（`<角色类名>Card<数字>`）、而那个数字和它现在排的
-            // 位置对不上时，下一次生成 / 构建会被按当前位置改名（`Naming.RenumberCardClassNames`）
-            // —— 这种「名字会被改掉」的事必须在报告里明说，否则用户只会看到「我没改它，它自己变了」。
+            // 「自动类名跟序号走」（用户要求第 1 条《卡牌页优化.md》）不许**静默**生效：
+            // 用户手打了一个正好长得像自动编号的名字（`<角色类名> + Card|Curse|Ancient + <数字>`）、
+            // 而那个数字和它现在排的位置对不上时，下一次生成 / 构建会被按当前位置改名
+            // （`Naming.RenumberCardClassNames`）—— 这种「名字会被改掉」的事必须在报告里明说，
+            // 否则用户只会看到「我没改它，它自己变了」。
             // 名字数字 == 当前位置（幂等那条路）就不报，免得每次生成都刷一行没用的提示。
             // ⚠ 比的是「这个位置**应该**用的自动名」，不能用 n.CardClassName(p, c) ——
             // 那个函数在有类名时原样返回用户的类名，一比就永远相等、永远不报。
-            // ⚠ 号的口径和 Naming.CardClassName 完全一致：**AllCards 里连续编号**（卡牌 → 诅咒 → 先古卡），
-            // 所以普通卡的号正好等于它在「卡牌」列表里的行号（本体卡 / 初始打击防御也占号）。
+            // ⚠ V0.2.137 号的口径（用户拍板 A）和 Naming.AutoCardClassName **完全一致**：
+            // **每页列表各自 1..N**（普通卡含本体卡 / 初始打击防御、诅咒、先古卡各自从 1 数），
+            // 前缀按稀有度分三套 —— 所以这里必须直接调那个函数，别再自己拼
+            // `CharClass + "Card" + 连续行号`（老口径的拼法在新口径下会误报 / 漏报）。
             // ⚠ 这里用**带角色类名**的判据（`n.IsAutoCardClassName`）：生成端
             // `RenumberCardClassNames` 用的就是它，两边必须一字不差 —— 用「只按形状认」那版
             // 会对手打的 `MyCard1`（本角色类名不是 My）报一条永远不会发生的「下次会改名」。
             if (n.IsAutoCardClassName(c.ClassName))
             {
-                int autoRow = 0;
-                foreach (var x in p.AllCards) { if (ReferenceEquals(x, c)) break; autoRow++; }
-                string wantAuto = n.CharClass + "Card" + (autoRow + 1).ToString();
+                string wantAuto = n.AutoCardClassName(p, c);
                 if (!string.Equals(c.ClassName!.Trim(), wantAuto, StringComparison.Ordinal))
                     issues.Add(new("提示", $"卡牌「{c.Name}」的英文类名 {c.ClassName.Trim()} 长得像**工具自动生成的编号**，"
-                        + $"但它现在排第 {autoRow + 1} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
+                        + $"但它现在排在{(c.IsCurseCard ? "诅咒卡" : c.IsAncientCard ? "先古卡" : "普通卡")}列表第 "
+                        + $"{Naming.CardRowOf(p, c)} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
                         + "如果你想让它固定不变，请换一个不像自动编号的名字（例：SevenSlash）。"));
             }
             // 多人联机：本体模型 ID 只看**类名**（不含命名空间），而且联机时所有人的模组都得装齐 ——

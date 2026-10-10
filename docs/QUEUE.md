@@ -1,5 +1,127 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 24 批需求（用户 2026-10-10 当天报的**四条**；**未发版**，版本号仍是 V0.2.136）
+
+> 派活 HEAD = `daf8a95 发版 V0.2.136`；`--uicheck` 基线 = **3200 PASS / 0 FAIL**（Debug 与发布版都是）。
+> 任务书：`_tmp\待发任务书_V0.2.137.md`。**本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**
+> （只读 `status/diff/log/show` + `git worktree add/remove`；两处删除的源文件用 `git reset` 把索引退回
+> HEAD、工作区仍是「已删」—— 没有产生提交）。
+> ⚠ 本轮**新加的红线⑧**（不许改用户存档目录、不许写用户游戏安装目录、探针只用 `--build`）：
+> - **不许改 `D:\ds\s\4\自定义角色存档\` 下的任何东西** —— 要拿真实存档做输入**先复制到 `_tmp`**
+>   （生成端会在存档旁边刷新 `<存档名>.forge_classmap.json`）；
+> - **不许写用户游戏安装目录**（`d:\download\steam\…\Slay the Spire 2\mods` 等）；
+> - **探针只用 `--build`、绝对不用 `--install`** —— CLI 会把「不像游戏 mods 目录」的目标**自动改写成真实
+>   游戏 mods 目录**，V0.2.135 那轮真把探针模组装进了用户的游戏目录；
+> - 不许发版 / 不许跑 `release_all.ps1` / 不许任何 git 写操作（只读 `status/diff/log/show` 与 `git worktree add/remove` 可以）；
+> - 禁区（动画四个 `.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape`）一个字不许碰；改 `.ps1` 保持 BOM。
+
+> **用户原话（四条）**
+> ① 「额外资源量右侧那个添加效果点了没反应。」
+> ② 「卡牌的那个排序有点问题，可以做的和遗物左侧的排序一样。」
+> ③ 「自定义描述的高亮字段指的是把游戏本体中显示高亮的字符直接显示在生成器的升级后自定义描述中，让用户可以自己填。」
+> ④ 「遗物右侧效果栏怎么变那么奇怪，没有可以精简的效果栏吗，药水也是」
+> **用户已拍板**：②= **A**（每页列表各自 1..N、自动英文类名跟这个号、诅咒 / 先古卡用各自前缀）；
+> ③= **A**（撤掉弹窗多选，`{Damage:diff()}` 当普通文字让用户自己填）；④= **A**（每条效果默认折叠成一行、点开才展开）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **额外资源量页「添加效果 / 删除效果」点了没反应** | **根因**：效果栏那三个按钮走公用处理器 `OnAddEffect` / `OnRemoveEffect`，它们用 `listBox.DataContext` → `EffectsOf(obj)` 找效果列表；而 `MainWindow.EffectsOf`（`MainWindow.xaml.cs:7105` 一带）只认 `CardSpec / RelicSpec / PotionSpec / PowerTriggerSpec` —— **没有 `ExtraResourceSpec` 分支** → `return null` → 只弹一句「请先在左边选中要编辑的条目。」什么都不做。**修**：给 `EffectsOf` 加 `ExtraResourceSpec` 分支（返回 `ExtraResourceSpec.Effects`）。**同类漏网全查了一遍**（清单见下）：`OnRemoveEffect` 的「归属 / 撤回栈」switch 也补了 `ExtraResourceSpec` 一条（撤回栈仍是 `_cardUndo`，因为那一页的「撤回删除」按钮走的就是 `OnUndoCard`；以前掉进兜底分支、文案只有光秃秃的「效果」）；`RefreshVisibleLists` 原来只刷卡牌 / 遗物 / 药水三栏效果列表，**漏了额外资源量那一栏** → 补上（换存档 / 撤回删除后那一栏不重挂）。**自检「真点按钮」**：`ClickButtonByContent("添加效果"…)` → 断言 `Effects.Count +1`、选中项变成新加的那条、默认值照旧、再点一次 +2、选中后点「删除效果」真的删掉、`CanUndoCard` 变 true、点「撤回删除」那一条回到原位；另加「列表空着时点删除效果安全无副作用」。**顺手给额外资源量页的「撤回删除」按钮补了 `ToolTip` + `IsEnabled` 绑 `CanUndoCard`**（以前没有 `ToolTip`，看不出撤回的是哪一条）。 | ✅ 待发 |
+| ② | **卡牌序号口径改成「和遗物页一样」（拍板 A）** | **序号**：`RefreshCardOrdinals` 改成**每页各自 1..N**（`Ordinal` = 它在自己那一页列表里的位置；`LastAutoOrdinal` 同值）。**三套前缀**：`Naming.CardStem`/`CurseStem`/`AncientStem` + `CardStemOf(CardSpec)`（按**稀有度**判，和生成端分流同一口径；状态卡住 `Cards` 列表、用 `Card` 前缀）+ `CardListOf` / `CardRowOf` / **`AutoCardClassName(p,c)`（唯一口径来源）**。`Naming.CardClassName(p,c)` 与 `RenumberCardClassNames(自己那一页列表)` 都走它；`IsAutoCardClassNameFor` 三个前缀都认（少了任何一个都会出现「自动名被当成手填、永远不跟列表走」）。`NameStabilizer.RenumberCardNames` 改成对 **`Cards` / `Curses` / `AncientCards` 分别**跑（传 `AllCards` 会退回老口径）。**校验器**那条「长得像自动编号 → 下次会改名」的提示改成调 `n.AutoCardClassName(p,c)`（并写清是**哪一页**的第几位）。**界面**：三处「英文类名」标题 / 小字跟着改（卡牌页 + 诅咒页 + 状态卡页），卡牌页多一行说明三套前缀；`CardSpec` 新增 `[JsonIgnore]` 的 `AutoClassNameStem` / `CharClass`（由 `RefreshCardOrdinals` 按稀有度填 —— 模型层看不到「角色类名」和「它在哪个列表里」），`AutoClassNameHint` 因此能拼出 `SparkleCurse1` 这种真名字（顺手修掉「`<角色类名>Card1` 占位符」那个老缺口）。**引用一起改**：`NameStabilizer.RepairCardClassReferences` 原有那套（效果「目标卡」/「转化为先古卡」/ 锻造图「目标卡」字段 / 上传的卡面键）**一行没改就继续生效**（`renamed` 表还是旧类名→新类名）。**回读 / 本地化 / 素材**：`ProjectRecovery`（按稀有度回各自列表）、`LocalizationGen`（entry 键）、`ArtGenerator`（素材文件名）本来就统一调 `CardClassName(p,c)`，**零改动**。**结论：「本体卡（打击 / 防御）还占不占号」→ 占**（它们就在「卡牌」列表里、仍是第 1、2 号）；变的是诅咒 / 先古卡：老口径接着普通卡往下数，新口径各自从 1 起、换前缀 | ✅ 待发 |
+| ③ | **高亮改成用户自己填（拍板 A）** | **撤掉**：`MainWindow.xaml` 里「高亮字段…」按钮 + 按钮右边那行汇总 + 那段注释；`CardUpgradedHighlightSummary` / `RefreshCardHighlightSummary` / `OnPickUpgradedHighlights` 三个成员**删掉**（`SyncDetail` 里那次调用也删）；`HighlightPickerDialog.xaml(.cs)` **整个文件删除**（唯一入口就是那个按钮）；`OnUpgradedCustomDescChanged` 留成**空处理器**（XAML 里的 `TextChanged` 挂钩不动，少改一处）。**改成**：那一栏底下摆一句说明「直接写 `{Damage:diff()}` 就高亮、写 `{Damage}` 就普通色」+「填入参数…」的 ToolTip 写明「卡牌给的就是带 `:diff()` 的高亮写法」。**`ParamHints` 到底给不给 `:diff()`**：**本来就给**（`CSharpCodeGen.ParamHints` 里 `isCard ? $"{{{key}:diff()}}" : $"{{{key}}}"`，V0.2.135 就是这么写的）→ **一处代码都没改，口径是「卡牌给带 `:diff()` 的、遗物 / 药水给不带 `:diff()` 的」**，自检新增两条把这个事实钉住。**保留**校验器那两条（`:diff()` 字段不存在 → 错误；整段没有 `{}` 却写了 `:diff()` → 警告；裸 `{X}` 不存在 → 警告）。`Core\Generation\HighlightDiffText.cs` **留着当工具方法**（现在界面不再调用它；注释里写明了保留理由与「以后要用就从这里拿」），自检不再测弹窗、改为测「按钮真的没了 / 说明在 / 来源带 `:diff()` / 存读一圈逐字不变 / 生成端原样写进 cards.json / 校验器两条仍在」 | ✅ 待发 |
+| ④ | **效果栏默认折叠成一行、点开才展开（拍板 A）** | **新模板**：`MainWindow.xaml` 窗口资源里加 `EffectEditorCollapsible` —— 折叠态 = 一个小三角 + **一行摘要**（`EffectSpec.Display`：效果种类 + 数值 / 升级增量 / 作用对象 / 条件…，**不另算一份文案**）+ 右边「展开 / 收起」；整行是一个 `Button`（`Click="OnToggleEffectRow"`，用 Button 而不是 ToggleButton 是为了**自检里能真点**）→ 翻 `EffectSpec.IsExpanded` → 下面的 `EffectRowDetails` 显隐。**展开区里用的还是原来那套编辑器**：`App.xaml` 把 `EffectEditorPlain` / `EffectEditorPotion` 各拆成「外壳（ScrollViewer）+ 内容（`…Inner`）」两层，三个页面各自的 `ListBox.Resources` 里放一份 `EffectRowEditorTemplate`（`x:Shared="False"`）指向对应的 Inner —— **一个字都没重写**。**模型**：`EffectSpec.IsExpanded`（`[JsonIgnore]`、默认 false，不写存档、生成端不读）。**作用范围**：遗物页 / 药水页 / 额外资源量页右栏；卡牌页 / 诅咒页 / 先古卡页**不动**。**V0.2.124 那个坑**：三个 ListBox 的 `ScrollViewer.HorizontalScrollBarVisibility="Disabled"` + `HorizontalContentAlignment="Stretch"` 原样保留，自检钉「折叠态与展开态行宽都 ≤ 列表宽 + 2px」（展开区多 16px 左边距也过了）。**新增转换器** `BoolToTextConverter`（`bool → 文字`，参数 `展开/收起`；分隔符用 `/` 而不是 `|`，因为 XAML 标记扩展里 `|` 不稳）。**自检**：遗物页 15 条 + 药水页 6 条 + 额外资源量页 1 条，全部是**可视树证据**（`EffectRowDetails.Visibility` / `ActualHeight` / 三角文字 / 摘要文本含关键参数 / 展开后改「数值」框真的写回模型 / `IsExpanded` 不出现在存档 JSON 里） | ✅ 待发 |
+
+> **① 的「同类漏网」清单（本轮逐个查过，按类型分支却没带 `ExtraResourceSpec` 的地方）**
+> - `MainWindow.EffectsOf`（`MainWindow.xaml.cs:7105` 一带）—— **真 bug**，已修（用户报的那条）。
+> - `OnRemoveEffect` 的「归属 / 撤回栈」switch（同文件再上几行）—— **真漏**（掉兜底分支），已修。
+> - `RefreshVisibleLists`（`MainWindow.xaml.cs:4636` 一带）—— **真漏**（少刷第四栏），已修。
+> - `MainWindow.xaml` 那一页「撤回删除」按钮—— 原来**没有 `ToolTip` / `IsEnabled`**（另外两页都有），已补绑 `CanUndoCard` / `UndoCardHint`。
+> - 其余按类型分支的地方**都查过、都不需要加**：`SyncDetail`（按 `CardList` / `RelicUiSelection` / `PotionList` 选中项分支，额外资源量页那条效果走 `OnExtraResourceEffectSelectionChanged` 清遗物选中，和它无关）、
+>   `OnCardEffectSelectionChanged`（只管「卡牌链」标记，额外资源量 / 遗物 / 药水本来就不该被打上）、
+>   `NameStabilizer.RepairCardClassReferences`（已经单独处理 `p.ExtraResource.Effects`，见 `AllEffects` + 那一支显式循环）、
+>   `OnAddEffect`（只依赖 `EffectsOf`，修一处即可）。
+> - ⚠ `ExtraResourceSpec` **不是 `SpecBase` 子类**（没有 `PropertyChanged`）——它的 `Effects` 集合本身有通知，所以列表能刷新；
+>   但 `HideInGame` 这类标量属性改了界面不会自己更新（**既有状况**，不在本轮四条范围内，留给以后）。
+
+> **② 的「老 → 新类名映射表」（口径：普通卡 `<角色>Card<n>` 不变；诅咒 / 先古卡从「接着普通卡连续编号」改成「各自从 1 起 + 换前缀」）**
+>
+> | 卡的种类 | 老口径（V0.2.130 ~ V0.2.136） | 新口径（V0.2.137） | 说明 |
+> |---|---|---|---|
+> | 普通卡（含本体卡 / 打击 / 防御 / 状态卡） | `<角色>Card<它在 Cards 列表里的行号>` | **一模一样** | 普通卡的号＝列表行号，两版相同（本体卡仍占第 1、2 号） |
+> | 诅咒卡（`Curses` 第 k 行） | `<角色>Card<Cards.Count + k>`（接着普通卡往下数） | `<角色>Curse<k>` | 前缀换成 `Curse`、号从 1 起 |
+> | 先古卡（`AncientCards` 第 k 行） | `<角色>Card<Cards.Count + Curses.Count + k>` | `<角色>Ancient<k>` | 前缀换成 `Ancient`、号从 1 起 |
+> | 手填的类名（认不出是自动名的） | 一个字不动 | **一个字不动** | 两版相同；`MyOwnSlash` / `SparkleCardMask` / `Abb2` 都不算自动名 |
+> | 没填类名（留空） | 类名留空、只记 `LastAutoOrdinal`（= 连续号） | 类名留空、只记 `LastAutoOrdinal`（= **本页**号） | 生成端读 `AutoCardClassName` 自己拼；`LastAutoOrdinal` 是 `[JsonIgnore]`、不写存档 |
+>
+> **置换规则**（`RenumberCardClassNames`）：`<角色>Card<x>`（任意 x）→ 按**该卡现在所属那一页**重算 = 普通卡 `<角色>Card<行号>`、
+> 诅咒卡 `<角色>Curse<行号>`、先古卡 `<角色>Ancient<行号>`。所以老存档里 `SparkleCard45`（其实是诅咒）会变成 `SparkleCurse2` 之类；
+> 同一批 `renamed`（旧→新）会**同一次**改掉按类名存的引用与上传的卡面键（`RepairCardClassReferences`）。
+> **幂等**：跑第二遍 `renamed` 为空、一个字节都不动（自检里连跑三遍比签名）。
+
+> **红线实测数字（本批，Debug 与发布版各一遍）**
+> - ① **默认档逐字节不变**：`--samplegen` **112 个文件 111 个逐文件 SHA256 一致**（唯一差异 = `ExampleMod.sln` 的随机 GUID；两边文件集合也完全相同：113 个）。
+>   两份**真实存档**对拍：`DarkVinci.json`（源 = 用户目录里的 `DarkVinci.json.bak`，任务书写的 `DarkVinci.json` 实际不存在）
+>   与 `SparkleMod.json`（**先复制到 `_tmp\v02137\` 再当输入**，绝不动 `D:\ds\s\4\自定义角色存档\`）：
+>   `DarkVinci` **125 个文件 → 行尾归一化后 124 个逐字节一致，唯一差异是 `DarkVinci.sln` 的随机 GUID**；
+>   `SparkleMod` **304 个文件 → 303 个逐字节一致，唯一差异是 `SparkleMod.sln`**。
+>   **⚠ 这两份存档里一张自动编号的卡都没有**（生成日志里 `卡牌英文类名已按当前序号重新编号…` 那一行只出现在
+>   SparkleMod、且 `renamed` 表为空 —— 用户一直手填类名），所以**没有文件被改名**，不需要套映射。
+>   真正会改名的那一类给在红线 ④ 的探针里（见那张映射表）。
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**（365 个警告，比改动前的 361 个多 4 个，
+>   全部是**自检代码里**新加的 `FrameworkElement?` 可空流分析警告，不是生成端）。
+> - ③ `--uicheck`：Debug **3223 PASS / 0 FAIL**（基线 3200/0，**净 +23 条**：第 ①~④ 条新增 21 条 +
+>   红线⑧ 根因修复那 2 条；同时删掉旧的弹窗自检 15 条等）；发布版 **3223 PASS / 0 FAIL**（`dotnet publish src\Sts2CharForge.App -c Release -r win-x64
+>   --self-contained true -o D:\ds\s\_tmp\v02137_pub` → `Unblock-File` → 先删旧 `uicheck_result.txt` →
+>   `[System.Diagnostics.Process]::Start(...)`（`UseShellExecute=$false`、`TEMP`/`TMP`=`D:\ds\s\_tmp\apppub_tmp`、
+>   `DOTNET_DISABLE_GUI_ERRORS=1`）+ `WaitForExit()`；**没有用 `Start-Process`**）。
+> - ④ **探针**：`_tmp\v02137\probe137.json`（SparkleMod 存档 + 手填 / 老自动名 / 留空三类各若干 +
+>   诅咒 2 + 先古 2 + 跨类引用：`GenerateCard.SpawnCardId`、`TransformCard.AncientRows`、额外资源量效果的引用）：
+>   老版（`git worktree` @ `daf8a95`）与新版各生成一遍（331 个文件）→
+>   **旧→新映射表**：`ProbeCard49 → ProbeCurse1`、`ProbeCard50 → ProbeCurse2`、`ProbeCard52 → ProbeAncient2`、
+>   `ProbeCard53 → ProbeAncient3`、`ProbeCard37 → ProbeCard45`（普通卡跟着位置重排）；手填的 `ProbeHandSlash` /
+>   `ProbeRefGen` / `ProbeTrans` / 老存档里那些 `SparkleCard*` **一个字没动**；没有新老对应关系的**多出 0 / 缺失 0**。
+>   **把「旧→新」映射套回 base 侧（文件名 + 正文 + 本地化键三种大小写写法）再与 new 侧逐字节比 →
+>   331 / 331 全部一致、0 处不一致**（`.sln` 的随机 GUID 掩码、行尾归一化）。
+>   **`--build`（只用 `--build`）**：真 `dotnet build` **0 错误**、Godot 导入 / 导出 PCK **DONE**、构建成功。
+>   **`--recover`：0 条「没认出来」**，48 张卡 / 2 诅咒 / 3 先古逐项还原成
+>   `ProbeCard45 / ProbeCard46 / ProbeCurse1 / ProbeCurse2 / ProbeAncient2 / ProbeAncient3`，
+>   `GenerateCard.SpawnCardId` 也还原成 `ProbeCard45`（跨类引用跟着新类名）。
+>   **幂等证据**：① 同一份存档「纯生成」与「`--build` 之后」的同一批 330 个文件**逐字节一致**；
+>   ② 把 `--recover` 出来的存档连跑两次（`recA` / `recB`，只换存档名与输出目录）→ **319 个文件全部逐字节一致、0 处差异**。
+>   ⚠ **本轮踩到一次红线⑧（已修正根因 + 已当场删掉误装的文件）**：探针存档的 `Paths.InstallDir` 里带着真实
+>   游戏 mods 目录，而 CLI 里写的是 `ModBuilder.Build(..., installDir ?? profile.Paths.InstallDir, ...)` ——
+>   **不给 `--install` 时会退回用存档里的 InstallDir**，于是 `Probe137.dll/pck/json` 真的被装进了
+>   `d:\download\steam\…\Slay the Spire 2\mods`。**当场删掉那三个文件**（用户自己的 `SparkleMod.*` / `lv.*`
+>   一个字节没动，复核过目录里只剩它们）。
+>
+>   **根因修复（本批的一部分）**：CLI 改成**显式才装** —— `ModBuilder.Build(result.ProjectRoot, …,
+>   **installDir**, …)`（去掉 `?? profile.Paths.InstallDir` 兜底）；不给 `--install` 时连
+>   `profile.Paths.InstallDir` 都不写回（那个字段**只给图形界面用**）；`ModBuilder.Build` 的文档注释里
+>   写明**调用方不许在这里替用户兜底填目录**。
+>   **有没有人依赖旧行为**：逐处查过 —— GUI 的 `RunBuild` 传自己的 `installTo = (install ? text : null)`
+>   （**不走**这条兜底，行为不变）；`tools\*.ps1` 没有一处调 `forge --build/--install`；
+>   `--buildtest` 传的是临时目录（`forge_buildtest\out\install`），不受影响；
+>   文档里那些历史探针记录（V0.2.127 / V0.2.132 / V0.2.135 等写的 `--build --install`）是**显式给了
+>   `--install`** 的真安装、不受影响，旧记录也不改写历史。
+>   **用法说明**：`Program.cs` 顶部注释 / `--help` / `README.md`（新增「命令行」小节）/
+>   `tools\使用说明.template.txt` 四处都写明**要安装必须显式给 `--install <mods 目录>`**。
+>   **自检**：① CLI 新增 `forge --buildcheck`（可加 `--godot <exe>`）—— 造一份 `Paths.InstallDir` 指向
+>   **陷阱目录**的存档，构建前后各数一遍：不给 `--install` → 陷阱目录 **0 → 0 个文件**、`InstalledTo=null`；
+>   给了 `--install`（指向另一个临时目录）→ 真装进去 3 个文件。② `--uicheck` 加 2 条静态护栏
+>   （**去掉注释行后**源码里不许出现那串兜底表达式 + `installDir` 必须直接透传；GUI 侧 `install ? text : null` 那道闸）。
+>   **实测**：`forge --buildcheck` → `[OK] … 通过（① 没给就不装；② 给了就装）`（exit 0）；
+>   端到端 `--build`（**不给 `--install`**，存档里写着陷阱目录 + 真 Godot）→ **0 错误**、
+>   `[OK] 构建完成：…\build`，陷阱目录 **0 → 0**、用户游戏 `mods` 目录**逐文件时间戳一个都没变**；
+>   同一存档 `--build --install <陷阱目录>` → `[已安装] Probe137.dll/.pck/.json`、陷阱目录 3 个文件、
+>   游戏 `mods` 目录仍然没变。`--uicheck` 因此从 3221 变 **3223 PASS / 0 FAIL**（净新增这 2 条）。
+> - ⑤ **五处配套**：① 界面 + 自检；② 模型 + 生成（编号口径）+ 校验器 + 界面 + 文档；③ 界面（撤）+ 校验器（留）+ 文档；
+>   ④ 模型（`IsExpanded`）+ 界面模板 + 自检。文档：`README.md`、`tools\使用说明.template.txt`（**CRLF、无 BOM**）、本文件。
+> - **行尾约定**：本轮改过的 8 个既有源文件逐个统计过 —— `MainWindow.xaml` / `MainWindow.xaml.cs` / `App.xaml` /
+>   `Naming.cs` / `NameStabilizer.cs` / `ProfileValidator.cs` / `Profile.cs` / `HexToBrushConverter.cs`
+>   **全 CRLF、裸 LF = 0、无 BOM**（`HexToBrushConverter.cs` 原本在工作区是 LF，本轮统一成 CRLF 以和同目录其它文件一致）；
+>   `README.md` 与 `docs\QUEUE.md` 本来就是 **LF**、`tools\使用说明.template.txt` 是 **CRLF + 无 BOM**（复核过字节）。
+>   `git diff --numstat` 无「整文件重写」的行尾噪声。两个源文件删除（`HighlightPickerDialog.xaml(.cs)`）用
+>   `git rm` 时索引被暂存过，已用 `git reset HEAD <那两条路径>` 把索引退回 HEAD（**没有提交、没有别的 git 写操作**）。
+
 ## 第 23 批需求（V0.2.136：**升级后获得 / 失去自定义关键词**，《卡牌页优化.md》第 2 条 ④）
 
 > 需求原文：「**升级后的关键字底下增加对自定义关键词的处理**」。
@@ -474,11 +596,11 @@
 > ⑤ 五处配套（生成 + 回读 + 卡面/文案 + 校验器 + 界面）+ 文档（README / tools/使用说明.template.txt / docs/RELEASE_NOTES_V<新版本>.md）；
 > ⑥ 打包：`powershell -NoProfile -ExecutionPolicy Bypass -File D:\ds\s\t3\tools\release_all.ps1 -Bump patch -NoRelease -Yes`；
 > ⑦ 禁区：`AnimFramesGen.cs` / `GifFrames.cs` / `AnimTypes.cs` / `FrameAnimGen.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape` 的逻辑不要动；子代理不许 git add/commit。
-> ⑧ **用户数据禁区（2026-10-10 用户明确要求：「以后不需要处理我的存档」）**：
->    · **一个字都不许改**用户存档目录 `D:\ds\s\4\自定义角色存档\`（`*.json` / `*.json.bak` / `_备份\` / 工程目录）—— 只允许**只读**（`--profile <用户存档>` 生成到 `_tmp` 下的输出目录是允许的，**不要**用 `--out` 指回用户目录）；
->    · **一个字都不许写**用户的游戏安装目录（例如 `d:\download\steam\steamapps\common\Slay the Spire 2\mods`、`C:\Program Files (x86)\Steam\...`）；
->    · **探针/验证一律只用 `--build`，不要用 `--install`** —— CLI 在目标不像 mods 目录时会**自动改写成真实游戏 mods 目录**（V0.2.135 那轮真发生过：探针版 `DarkVinci.*` 被装进用户游戏目录，用户原版随后消失）。要让生成物落盘就用 `--out`。
->    · **不要直接拿用户存档当 `--profile` 输入**：生成端会在存档**旁边**刷新 `<存档名>.forge_classmap.json`（`NameStabilizer` 的固有副作用）→ 先把存档**复制到 `_tmp`** 再跑，产物 `--out` 也指到 `_tmp`。
+> ⑧ **用户数据禁区（2026-10-10 用户两次明确要求：「以后不需要处理我的存档」「我存档和游戏目录我会自己处理」）**：
+>    · 用户存档目录 `D:\ds\s\4\自定义角色存档\`：**不要读、不要复制、不要拿去当 `--profile` 输入**（连只读都不做）——用户自己管；
+>    · 用户游戏安装目录（`d:\download\steam\steamapps\common\Slay the Spire 2\mods`、`C:\Program Files (x86)\Steam\...`）：**一个字都不许写、也不要去核对/盘点**；
+>    · **一切验证只用 `ProfileFactory.Sample()` 与 `_tmp` 下自造的探针存档**；「真实存档回归」这类结论交给用户自己跑，不要替他做。
+>    · **探针/验证只用 `--build`，不要用 `--install`**；`--install` 只在你**显式**想装到某个 `_tmp` 目录时才用（V0.2.137 起 CLI 不给 `--install` 就绝不安装 —— 此前两次误装都源于「不给就退回用存档里的 `InstallDir`」这条兜底）。
 > 探针目录约定：`D:\ds\s\t3\_tmp\<name>`，csproj 要带 `<Compile Remove="out/**">`；uicheck 运行方式：
 > `TEMP=TMP=D:\ds\s\_tmp\apppub_tmp <AppBase>\Sts2CharForge.exe --uicheck`，结果读 `<AppBase>\uicheck_result.txt`（UTF8）。
 > ⚠ 自动化里**不要**用 `Start-Process` / `start` 起发布出来的 exe：未签名 exe 走 ShellExecute 会被

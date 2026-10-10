@@ -10,6 +10,8 @@
         <local:MultiSelectModeConverter x:Key="MultiSelectMode"/>
         <local:OkToBrushConverter x:Key="OkToBrush"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- V0.2.137 效果栏折叠行：bool → 文字（ConverterParameter 写 "折叠文本|展开文本"） -->
+        <local:BoolToTextConverter x:Key="BoolToText"/>
         <!-- 「多选」开关：外观与其他按钮一致，按下（开启）时高亮，一眼能看出开没开 -->
         <Style x:Key="MultiToggle" TargetType="ToggleButton">
             <Setter Property="Padding" Value="8,4"/>
@@ -877,28 +879,37 @@
             </ScrollViewer>
         </DataTemplate>
 
-        <!-- 遗物用：不能升级，没有「升级增量」 -->
+        <!-- 遗物用：不能升级，没有「升级增量」
+             ⚠ V0.2.137：模板拆成「外壳（滚动条）+ 内容」两层 —— 内容这一层单独一份
+             `EffectEditorPlainInner`，好让遗物 / 药水 / 额外资源量三页的效果栏
+             用 `EffectRowEditorTemplate`（DynamicResource）在**折叠行的展开区**里引它。
+             这样「点开那一行才展开完整编辑区」用的就是**现有这同一套编辑器**，一个字都没重写。
+             （外壳还留着：万一以后有别处要整块塞进列表行，直接引它就行。） -->
+        <DataTemplate x:Key="EffectEditorPlainInner">
+            <StackPanel>
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                <!-- 「转化为先古卡」的配对表（只在遗物上、只在选了那个效果种类时出现）。
+                     模板本体放在 MainWindow.xaml 的窗口资源里（AncientPairingEditor）——
+                     App.xaml 里的模板里写 Click 会被解析成 App 的方法（CS1061），放窗口里才绑得到。 -->
+                <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientPairingEditor}"/>
+                <!-- 「转化为先古遗物」的两栏（只在遗物上、只在选了那个效果种类时出现） -->
+                <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientRelicSwapEditor}"/>
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                <!-- 「召唤物」下拉（遗物版）：候选和卡牌版一样，只是走独立模板方便自检区分 -->
+                <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
+                    <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding PetSummon}"/>
+                </Grid>
+            </StackPanel>
+        </DataTemplate>
+
         <DataTemplate x:Key="EffectEditorPlain">
             <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
-                    <!-- 「转化为先古卡」的配对表（只在遗物上、只在选了那个效果种类时出现）。
-                         模板本体放在 MainWindow.xaml 的窗口资源里（AncientPairingEditor）——
-                         App.xaml 里的模板里写 Click 会被解析成 App 的方法（CS1061），放窗口里才绑得到。 -->
-                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientPairingEditor}"/>
-                    <!-- 「转化为先古遗物」的两栏（只在遗物上、只在选了那个效果种类时出现） -->
-                    <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource AncientRelicSwapEditor}"/>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
-                    <!-- 「召唤物」下拉（遗物版）：候选和卡牌版一样，只是走独立模板方便自检区分 -->
-                    <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
-                                  ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
-                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                  SelectedValue="{Binding PetSummon}"/>
-                    </Grid>
-                </StackPanel>
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlainInner}"/>
             </ScrollViewer>
         </DataTemplate>
 
@@ -942,24 +953,32 @@
             </ScrollViewer>
         </DataTemplate>
 
-        <!-- 药水用：和遗物一样，但保留底下的说明文字 -->
-        <DataTemplate x:Key="EffectEditorPotion">            <ScrollViewer VerticalScrollBarVisibility="Auto">
-                <StackPanel>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
-                    <!-- 药水上的「召唤伙伴 / 伙伴攻击」是**不支持**的（校验器会报错拦住），
-                         这里仍然给一个下拉，免得用户在药水上选了这两种效果却找不到「哪一只」，
-                         以为是界面出问题了 —— 生成时写出的是「药水不支持」那行说明注释。 -->
-                    <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                        <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
-                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
-                                  ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
-                                  DisplayMemberPath="Display" SelectedValuePath="Id"
-                                  SelectedValue="{Binding PetSummon}"/>
-                    </Grid>
-                    <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
-                               Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
-                </StackPanel>
+        <!-- 药水用：和遗物一样，但保留底下的说明文字。
+             ⚠ V0.2.137：和 EffectEditorPlain 同一个拆法（外壳 + `EffectEditorPotionInner`）。
+             药水**不能升级**，所以它和遗物共用同一套折叠行模板 EffectEditorCollapsible，
+             只是 `EffectRowEditorTemplate` 指向 `EffectEditorPotionInner`。 -->
+        <DataTemplate x:Key="EffectEditorPotionInner">
+            <StackPanel>
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                <!-- 药水上的「召唤伙伴 / 伙伴攻击」是**不支持**的（校验器会报错拦住），
+                     这里仍然给一个下拉，免得用户在药水上选了这两种效果却找不到「哪一只」，
+                     以为是界面出问题了 —— 生成时写出的是「药水不支持」那行说明注释。 -->
+                <Grid Margin="0,6,0,0" Visibility="{Binding PetAction, Converter={StaticResource BoolToVis}}">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="召唤物（哪一只）" Style="{StaticResource Label}" MinWidth="96"/>
+                    <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding PetSummonsPlain, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              SelectedValue="{Binding PetSummon}"/>
+                </Grid>
+                <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
+                           Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
+            </StackPanel>
+        </DataTemplate>
+
+        <DataTemplate x:Key="EffectEditorPotion">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotionInner}"/>
             </ScrollViewer>
         </DataTemplate>
 

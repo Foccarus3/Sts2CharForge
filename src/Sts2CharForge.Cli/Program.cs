@@ -7,12 +7,19 @@ using Sts2CharForge.Core.Profile;
 //   forge --check                                   自检（效果库数量等）
 //   forge --demo profile.json                       写出示例配置
 //   forge --profile profile.json                    只生成工程
-//   forge --profile profile.json --build            生成 + 编译 + 导出 PCK
-//   forge --profile profile.json --build --install "D:\...\mods"
+//   forge --profile profile.json --build            生成 + 编译 + 导出 PCK（**不安装**）
+//   forge --profile profile.json --build --install "D:\...\mods"   还要安装到游戏
 //   forge --profile profile.json --out "D:\out"     指定输出目录
+//   forge --buildcheck                              自检：不给 --install 时**绝不安装**（红线⑧）
+//
+// ⚠⚠ **安装必须显式给 `--install <mods 目录>`**（V0.2.137 起，红线⑧）：
+//   以前这里写的是 `installDir ?? profile.Paths.InstallDir` —— 不给 `--install` 时会**退回用存档里的
+//   `Paths.InstallDir`**（那个字段是**给图形界面用的**），于是「只想编译一下」的探针会把模组真的装进
+//   存档里写着的游戏 mods 目录（V0.2.135 / V0.2.137 各发生过一次，用户明确要求「以后不需要处理我的存档 /
+//   也不要动我的游戏目录」）。现在改成：**`--install` 指哪装哪、没给就一个文件都不装**。
 
-string? profilePath = null, outDir = null, installDir = null, recoverDir = null, sampleGenDir = null;
-bool doBuild = false, demo = false, check = false, detect = false;
+string? profilePath = null, outDir = null, installDir = null, recoverDir = null, sampleGenDir = null, becCheckGodotExe = null;
+bool doBuild = false, demo = false, check = false, detect = false, buildCheck = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -24,6 +31,8 @@ for (int i = 0; i < args.Length; i++)
         case "--recover": recoverDir = Next(args, ref i); break;
         case "--samplegen": sampleGenDir = Next(args, ref i); break;
         case "--build": doBuild = true; break;
+        case "--buildcheck": buildCheck = true; break;
+        case "--godot": becCheckGodotExe = Next(args, ref i); break;
         case "--demo": demo = true; break;
         case "--check": check = true; break;
         case "--detect": detect = true; break;
@@ -134,6 +143,92 @@ if (demo)
     return 0;
 }
 
+// --buildcheck：自检「没给 --install 就绝不安装」（红线⑧，V0.2.137）
+//
+// 为什么要它：这条红线前两次都是**靠人眼看**「游戏 mods 目录里有没有多出文件」才发现的，
+// 而「探针只跑 --build」这个习惯本身挡不住代码里的兜底 —— 所以把行为钉成一条命令，谁都能跑。
+//
+//   · installDir 参数：**只由 `--install` 传**，**绝不退回 profile.Paths.InstallDir**（那字段给 GUI 用）；
+//   · 不给 `--install` 时 `ModBuilder.Build` 收到的永远是 null → 它内部
+//     `if (!string.IsNullOrWhiteSpace(installDir))` 那一整块（安装）根本不进；
+//   · 给 `--install` 时按老规矩装。（Godot 在不在都行：装的那一步在 Godot 之前，不会因为导出失败被跳过。）
+if (buildCheck)
+{
+    Console.WriteLine("=== --buildcheck：不给 --install 时绝不安装（红线⑧）===");
+    CharacterProfile bcProfile = ProfileFactory.Sample();
+    string bcRoot = Path.Combine(Path.GetTempPath(), "forge_buildcheck_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+    string bcTrap = Path.Combine(bcRoot, "存档里写着的安装目录");
+    string bcOut = Path.Combine(bcRoot, "out");
+    Directory.CreateDirectory(bcTrap);
+    bcProfile.Paths.OutputDir = bcOut;
+    // 和 --samplegen 一样先把「解包工程 / 游戏 data」自动探一次（示例配置里这两栏是空的）
+    if (string.IsNullOrWhiteSpace(bcProfile.Paths.VanillaProject))
+        bcProfile.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? bcGame = Environment.GetEnvironmentVariable("FORGE_GAME") ?? PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(bcGame) && string.IsNullOrWhiteSpace(bcProfile.Paths.GameDataDir))
+        bcProfile.Paths.GameDataDir = Path.Combine(bcGame, "data_sts2_windows_x86_64");
+    // 想连「② 给了 --install 就真装」那一档一起验，就用 --godot 指一下本机的 Godot
+    //（不给就只验「① 不给就不装」—— 那是红线⑧ 真正关心的那一条）。
+    if (!string.IsNullOrWhiteSpace(becCheckGodotExe)) bcProfile.Paths.GodotExe = becCheckGodotExe!;
+    // 关键：存档里**故意**写着一个「游戏 mods 目录」（这里用临时目录模拟）——
+    // 老代码会拿它去安装，新代码必须一个文件都不往里放。
+    bcProfile.Paths.InstallDir = bcTrap;
+    EffectCatalog.Initialize(bcProfile.Paths.VanillaProject, bcProfile.Paths.GameDataDir);
+
+    int SnapshotCount() => Directory.Exists(bcTrap) ? Directory.GetFiles(bcTrap, "*", SearchOption.AllDirectories).Length : -1;
+    int bcBefore = SnapshotCount();
+    Console.WriteLine("存档里的 Paths.InstallDir（陷阱目录）：" + bcTrap);
+    Console.WriteLine($"构建前那里有 {bcBefore} 个文件");
+
+    GenerationResult bcGen = ModGenerator.Generate(bcProfile, m => { });
+    if (!bcGen.Success)
+    {
+        Console.WriteLine("[X] 生成失败，无法继续：" + string.Join(" / ", bcGen.Issues.Where(x => x.IsError).Take(3)));
+        try { Directory.Delete(bcRoot, true); } catch { }
+        return 1;
+    }
+    // ① 不给 --install：模拟命令行那条 if（installDir 为 null → 传 null）
+    string? bcNoInstall = null;
+    BuildResult bcBuild = ModBuilder.Build(bcGen.ProjectRoot, Naming.From(bcProfile).ModId, bcProfile.Paths.GodotExe,
+        bcNoInstall, null, bcProfile.Paths.DotnetExe);
+    int bcAfterNoInstall = SnapshotCount();
+    bool bcUntouched = bcAfterNoInstall == bcBefore && bcBuild.InstalledTo is null;
+    Console.WriteLine($"① 不给 --install → InstalledTo={(bcBuild.InstalledTo ?? "(null)")}，陷阱目录现在有 {bcAfterNoInstall} 个文件");
+    Console.WriteLine(bcUntouched
+        ? "[PASS] 没给 --install：陷阱目录一个文件都没多（存档里的 InstallDir 被忽略）"
+        : $"[FAIL] 没给 --install 却动了陷阱目录（{bcBefore} → {bcAfterNoInstall}）");
+
+    // ② 给了 --install（指向另一个临时目录）：应该真的装进去
+    //    ⚠ 本机这份示例配置里如果没有 Godot，就**不能**造一个假 exe 糊过去：ModBuilder 找到 Godot 才会走到
+    //      安装那一步，假 exe 只会让导出失败、连安装都到不了 —— 那样断言就变成假的。这种情况下明确报
+    //      「跳过」（退出码仍以 ① 为准），不假装通过。
+    string bcRealInstall = Path.Combine(bcRoot, "显式给的安装目录");
+    bool bcGodot = !string.IsNullOrWhiteSpace(bcProfile.Paths.GodotExe) && File.Exists(bcProfile.Paths.GodotExe);
+    bool bcPositiveSkipped = !bcGodot;
+    bool bcPositive = bcPositiveSkipped;
+    if (bcPositiveSkipped)
+    {
+        Console.WriteLine("② [跳过] 本机没有 Godot 可执行文件（示例配置里的 Paths.GodotExe 不存在）→ 装不了，"
+            + "「给了 --install 就真装」这一档没验；① 的结论不受影响。");
+    }
+    else
+    {
+        BuildResult bcBuild2 = ModBuilder.Build(bcGen.ProjectRoot, Naming.From(bcProfile).ModId, bcProfile.Paths.GodotExe,
+            bcRealInstall, null, bcProfile.Paths.DotnetExe);
+        int bcInstalled = Directory.Exists(bcRealInstall) ? Directory.GetFiles(bcRealInstall).Length : 0;
+        bcPositive = bcBuild2.InstalledTo is not null && bcInstalled >= 3;
+        Console.WriteLine(bcPositive
+            ? $"[PASS] ② 给了 --install：真的装进 {bcRealInstall}（{bcInstalled} 个文件）"
+            : $"[FAIL] ② 给了 --install 却没装成（InstalledTo={(bcBuild2.InstalledTo ?? "(null)")} / {bcInstalled} 个文件）");
+        bcPositiveSkipped = false;
+    }
+    try { Directory.Delete(bcRoot, true); } catch { }
+    Console.WriteLine(bcUntouched && bcPositive
+        ? "[OK] --buildcheck 通过（① 没给就不装" + (bcPositiveSkipped ? "；② 本机没 Godot，跳过）" : "；② 给了就装）")
+        : "[X] --buildcheck 失败");
+    return bcUntouched && bcPositive ? 0 : 1;
+}
+
 if (profilePath is null) { PrintHelp(); return 1; }
 if (!File.Exists(profilePath)) { Console.WriteLine("[X] 找不到配置：" + profilePath); return 1; }
 
@@ -146,6 +241,8 @@ if (outDir is not null) profile.Paths.OutputDir = outDir;
 // 效果库（增益/减益列表）是运行时从本机的游戏文件读取的：优先解包工程，其次从 sts2.dll 反射兜底
 EffectCatalog.Initialize(profile.Paths.VanillaProject, profile.Paths.GameDataDir);
 Console.WriteLine("效果库：" + EffectCatalog.CatalogStatus);
+// ⚠ 只把**显式给的** `--install` 写回配置（它会进生成出来的 build.ps1 / 使用说明）。
+// 不给 `--install` 时**一个字都不动存档里的 InstallDir** —— 那个字段是给图形界面用的。
 if (installDir is not null) profile.Paths.InstallDir = installDir;
 if (string.IsNullOrWhiteSpace(profile.Paths.OutputDir))
     profile.Paths.OutputDir = Path.Combine(AppContext.BaseDirectory, "自定义角色");
@@ -157,8 +254,14 @@ if (!doBuild) { Console.WriteLine("工程已生成：" + result.ProjectRoot); re
 
 Console.WriteLine();
 Console.WriteLine("=== 构建 ===");
+// ⚠⚠ V0.2.137（红线⑧）：这里**只传显式给的 `--install`**，绝不退回 `profile.Paths.InstallDir`
+//    —— 那个字段是**给图形界面用的**（GUI 自己会把「要不要安装」和目录一起算好再传给 ModBuilder）。
+//    以前写的是 `installDir ?? profile.Paths.InstallDir`：探针只想编译一下，却因为存档里写着游戏 mods
+//    目录而被真的安装（V0.2.135 / V0.2.137 各一次）。
+if (installDir is null)
+    Console.WriteLine("（没给 --install：只生成 + 编译 + 导出 PCK，**不会安装**到任何地方。）");
 var build = ModBuilder.Build(result.ProjectRoot, Naming.From(profile).ModId, profile.Paths.GodotExe,
-    installDir ?? profile.Paths.InstallDir, Console.WriteLine, profile.Paths.DotnetExe);
+    installDir, Console.WriteLine, profile.Paths.DotnetExe);
 
 foreach (var step in build.Steps)
 {
@@ -185,11 +288,20 @@ Sts2CharForge 命令行
   forge --detect                                   自动探测游戏安装目录
   forge --demo profile.json                        写出示例配置
   forge --profile profile.json                     生成模组工程
-  forge --profile profile.json --build             生成 + 编译 + 导出 PCK
+  forge --profile profile.json --build             生成 + 编译 + 导出 PCK（**不会安装**到任何地方）
   forge --profile profile.json --build --install "D:\...\mods"
+                                                   还要**安装**到那个 mods 目录（必须显式给这个参数）
   forge --profile profile.json --out "D:\out"      指定输出目录
   forge --samplegen "D:\out"                        把示例配置生成一遍并打出每个文件的 SHA256（改生成端时的回归对照）
+  forge --buildcheck                                自检：不给 --install 时**绝不安装**（红线⑧；构建前后都数一遍陷阱目录）
+  forge --buildcheck --godot "D:\...\Godot_..._console.exe"
+                                                    连「给了 --install 就真装一次」那一档一起验（要本机有 Godot）
   forge --recover "D:\...\生成的工程目录"           从工程反推回配置存档（存档被误覆盖时的救命功能）
+
+⚠ **要装到游戏里必须显式给 `--install <mods 目录>`**（V0.2.137 起）：
+   不给 `--install` 时只生成 + 编译 + 导出 PCK，**一个文件都不会装** —— 存档里的 `Paths.InstallDir`
+   是**给图形界面用的**，命令行不再拿它兜底（以前会，于是「只想编译一下」的探针会把模组真的装进
+   存档里写着的游戏 mods 目录）。
   forge --recover "工程目录" --out "恢复.json"      指定恢复出来的存档路径
   forge --recover "工程目录" --profile 旧.json      用旧存档补「环境路径」这类反推不出来的字段
 """);

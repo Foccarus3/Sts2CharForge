@@ -108,3 +108,28 @@ public sealed class MultiSelectModeConverter : IValueConverter
     public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
         throw new NotSupportedException();
 }
+
+/// <summary>
+/// 布尔 → 一段文字（V0.2.137：效果栏折叠行的「小三角」和「展开 / 收起」提示都用它）。
+///
+/// <para>参数写法：<c>ConverterParameter=展开/收起</c> —— 「/」前是 false（折叠态）、后是 true（展开态）。
+/// 分隔符用 <c>/</c> 而不是 <c>|</c>：XAML 的标记扩展把**逗号**当参数分隔符，而 <c>|</c> 在部分
+/// XAML 写入路径下也不稳；<c>/</c> 两边都安全（这几段文字里不含「/」）。</para>
+///
+/// <para>为什么要一个转换器：WPF 自带没有「bool → 文本」的转换器，而用 <c>DataTrigger</c>
+/// 得为每个模板写两套 Setter（三角形 / 提示各一套、共四处）；一个转换器 + 一个资源就够，模板也短。</para>
+/// </summary>
+public sealed class BoolToTextConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        string spec = parameter as string ?? "";
+        int bar = spec.IndexOf('/');
+        string whenFalse = bar < 0 ? spec : spec.Substring(0, bar);
+        string whenTrue = bar < 0 ? spec : spec.Substring(bar + 1);
+        return value is true ? whenTrue : whenFalse;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
