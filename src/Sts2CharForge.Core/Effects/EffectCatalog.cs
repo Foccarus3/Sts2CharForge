@@ -1884,8 +1884,73 @@ public static class EffectCatalog
     /// ⚠ 本体注释写得很清楚：**多人时才会弹目标选择，单人你看不到这一档**；
     /// 而且 `CardModel.cs:1742` —— 场上活着的玩家单位 ≤ 1 时 `AnyAlly` 的牌**直接打不出去**。
     /// </summary>
+    /// <summary>
+    /// 效果的「作用对象」候选（**V0.2.132 起 7 档**，共用一张表：卡牌 / 遗物 / 药水 / 自定义状态 /
+    /// 锻造【效果】模块五处的下拉都绑它）。
+    ///
+    /// <para>档位与含义（需求原文：「作用对象包括『自己，指定队友，全部友方（可以选择包不包括召唤物），
+    /// 单体敌人，随机敌人，全部敌人，全体单位』」）：</para>
+    /// <list type="bullet">
+    /// <item><c>Self</c> 自己。</item>
+    /// <item><c>Ally</c> 指定队友（本体 <c>TargetType.AnyAlly</c>，**只有卡牌**有「玩家选中的目标」）。</item>
+    /// <item><c>AllAllies</c> 全部友方 —— 同一边的玩家单位、排除自己；「包不包括召唤物」是
+    /// <c>EffectSpec.AllAlliesExcludePets</c> 这个子选项（默认 false = 含召唤物，老行为）。</item>
+    /// <item><c>Enemy</c> 单体敌人（卡牌用选中的那个目标；遗物 / 药水取可打的第一个敌人）。</item>
+    /// <item><c>RandomEnemies</c> 随机敌人 N 个（N = 命中次数）。</item>
+    /// <item><c>AllEnemies</c> 全部敌人（<c>CombatState.HittableEnemies</c>）。</item>
+    /// <item><c>AllUnits</c> <b>全体单位（V0.2.132 新增）</b> —— 场上两边**所有存活单位**
+    /// （自己 + 队友 + 召唤物 + 敌人），取 <c>CombatState.Creatures.Where(c =&gt; c.IsAlive)</c>。</item>
+    /// </list>
+    ///
+    /// <para>⚠ 「指定队友 / 全部队友」用的是本体现成的目标档：
+    /// <c>TargetType.AnyAlly</c>（任意队友、**不含自己**）+ <c>AllAllies</c>（全部队友），
+    /// 本体卡「BelieveInYou」是前者、「BladeSymphony」是后者。
+    /// 本体注释写得很清楚：**多人时才会弹目标选择，单人你看不到这一档**；
+    /// 而且 `CardModel.cs:1742` —— 场上活着的玩家单位 ≤ 1 时 `AnyAlly` 的牌**直接打不出去**。</para>
+    ///
+    /// <para>⚠ 顺序 = 需求里的顺序（自己 / 队友 / 友方 / 单体敌人 / 随机敌人 / 全部敌人 / 全体单位），
+    /// 只影响下拉的排列；<b>老档位的生成文本一个字节都没动</b>（生成端按字符串分支，与顺序无关）。</para>
+    /// </summary>
     public static IReadOnlyList<string> TargetSides { get; } =
-        new[] { "Self", "Enemy", "Ally", "AllEnemies", "AllAllies", "RandomEnemies" };
+        new[] { "Self", "Ally", "AllAllies", "Enemy", "RandomEnemies", "AllEnemies", "AllUnits" };
+
+    /// <summary>
+    /// 作用对象的**中文名**（界面提示 / 校验消息 / 卡面文案共用一份，免得三处各写一套）。
+    /// 认不出来的原样返回（手写 JSON 里可能有别的值）。
+    /// </summary>
+    public static string TargetSideZh(string? id) => (id ?? "").Trim() switch
+    {
+        "Self" => "自己",
+        "Ally" => "指定队友",
+        "AllAllies" => "全部友方",
+        "Enemy" => "单体敌人",
+        "RandomEnemies" => "随机敌人",
+        "AllEnemies" => "全部敌人",
+        "AllUnits" => "全体单位",
+        var other => other,
+    };
+
+    /// <summary>
+    /// 「全体单位」这一档**生成端真的实现了**的效果种类（V0.2.132）。
+    ///
+    /// 为什么要这张表：<c>CSharpCodeGen.EmitPerCreature</c> / <c>EmitAttack</c> / <c>EmitStun</c> 以及
+    /// 各条目标分支的 <c>default</c> 都是「当成自己」—— 用不支持的种类选了「全体单位」会**静默变成
+    /// 对自己**，所以校验器按这份名单**报错拦住**（见 <c>ProfileValidator</c>）。
+    /// 名单和生成端逐条对应：伤害 / 格挡 / 回复生命 / 失去生命 / 最大生命 / 施加增益减益 / 临时增益 / 击晕。
+    /// </summary>
+    public static bool SupportsAllUnits(string? kind) =>
+        kind is "Damage" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "ApplyPower" or "TempPower" or "Stun";
+
+    /// <summary>
+    /// 「全体单位」在**自定义状态（能力）的触发时机**那条链上真的实现了的种类（V0.2.132）。
+    ///
+    /// <para>比 <see cref="SupportsAllUnits"/> 窄：状态链的「获得格挡 / 回复生命 / 失去生命 / 最大生命」
+    /// 是**手写**的、只打 <c>base.Owner</c>（压根不读作用对象），选「全体单位」会静默变成「对自己」；
+    /// 真正按作用对象展开的只有：造成伤害 / 施加增益减益 / 临时增益 / 击晕 / 清除指定状态 / 清除所有减益
+    ///（后两个也走 <c>EmitPerCreature</c>）。</para>
+    /// </summary>
+    public static bool SupportsAllUnitsOnPower(string? kind) =>
+        kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "ClearPowerOne" or "ClearPowerDebuffs";
     public static IReadOnlyList<string> PotionUsages { get; } = new[] { "CombatOnly", "AnyTime" };
     public static IReadOnlyList<string> PotionTargets { get; } = new[] { "Self", "AnyEnemy", "AllEnemies" };
 

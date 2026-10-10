@@ -1468,6 +1468,8 @@ public static class ForgeGraphGen
         "AllAllies" => "AllAllies",
         "AllEnemies" => "AllEnemies",
         "RandomEnemies" => "RandomEnemy",
+        // V0.2.132：卡牌那栏新加的「全体单位」在节点图里**本来就有**同一档（【对象】的 AllUnits）
+        "AllUnits" => "AllUnits",
         _ => "ChosenEnemy",          // Enemy（默认）= 打出这张牌时选中的那个目标
     };
 
@@ -1684,10 +1686,17 @@ public static class ForgeGraphGen
             "Self" => UnitRef.Self,
             // 「指定队友」：锻造图里和【对象】的「指定队友」同一档（那一档也是自己 —— 见 ResolveUnit）
             "Ally" => UnitRef.Self,
-            "AllAllies" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)"),
+            // 「全部友方」：节点图里的 AllAllies 档 = 自己 + 召唤物；勾了「不包括召唤物」时只剩自己
+            //（V0.2.132 —— 不新增运行时助手，免得动到已生成工程的 ForgeFormulaRuntime 文本）。
+            "AllAllies" => e.AllAlliesExcludePets
+                ? new UnitRef("__fgSelf", "new List<Creature> { __fgSelf }")
+                : new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)"),
             "AllEnemies" => new UnitRef("ForgeFormulaRuntime.FirstEnemy(__fgPlayer)", "ForgeFormulaRuntime.EnemyList(__fgPlayer)", PerFoe: false),
             "RandomEnemies" => new UnitRef("ForgeFormulaRuntime.RandomEnemy(__fgPlayer, allowDuplicates: " + (dup ? "true" : "false") + ")",
                                           "ForgeFormulaRuntime.EnemyList(__fgPlayer)"),
+            // 「全体单位」（V0.2.132 卡牌那栏新增的第 7 档）：节点图【对象】本来就有同一档，
+            // 用同一个运行时助手（自己 + 召唤物 + 敌人）。
+            "AllUnits" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllUnits(__fgPlayer)"),
             // Enemy（默认）/ 认不出来 = 打出这张牌时选中的那个目标（老图的默认档）
             _ => UnitRef.Target,
         };

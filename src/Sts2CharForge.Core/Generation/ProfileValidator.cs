@@ -212,6 +212,9 @@ public static class ProfileValidator
                                 : "生成端还没给「自定义状态」那条链实现这个效果种类（会什么都不做），所以先拦下来。")
                             + $"状态触发器里能用的是：{string.Join(" / ", PowerTriggers.SupportedEffectKinds)}。"));
                     }
+                    // 作用对象 = 「全体单位」（V0.2.132 第 7 档）：状态链也在生成端实现了
+                    //（CustomPowerGen.EmitEffect / EmitDamage），但只对那几个种类 —— 其余一律报错拦住。
+                    ValidateAllUnitsTarget(issues, $"{who}「{when}」", j + 1, EffectCatalog.FindKind(e.Kind), e, "Power");
                     // 复制 / 重放 / 回合结束时自动打出，以及「斩杀」条件：都要「打出某张牌」的上下文，
                     // 状态触发器里没有 —— 生成时会留一行「已忽略」，这里也说清楚（不静默丢）。
                     if (e.Kind is "CopyCard" or "ReplayCard" or "TurnEndPlay")
@@ -1938,6 +1941,9 @@ public static class ProfileValidator
                         + "「指定队友」只能做在卡牌上；想让遗物 / 药水影响全队，请改用「全部队友」。"));
                 }
             }
+            // 作用对象 = 「全体单位」（V0.2.132 新增的第 7 档）：生成端真的实现了的种类有限 ——
+            // 其余种类落进各条目标分支的 default 会**静默变成「对自己」**，所以这里直接报错拦住。
+            ValidateAllUnitsTarget(issues, owner, index, kind, e, ctx);
             // 数值 0 的效果（用户要求）：游戏里**不显示、也不执行**。
             // 为什么不做成「写个 0 摆着」：本体的伤害 / 格挡会被力量 / 敏捷加成
             //（0 点伤害 + 3 点力量 = 3 点伤害），所以 0 必须真的「不存在」。
@@ -2159,6 +2165,12 @@ public static class ProfileValidator
                 issues.Add(new("警告", $"{owner} 的「{kind.Display}」勾了「概率生效」，但药水**不支持概率**："
                     + "这一勾不会生成任何掷骰（在药水上一直是这样）。想去掉这条提示就把勾去掉；"
                     + "真要「有概率地生效」请把它做成卡牌 / 遗物上的效果。"));
+            // 「不同效果的概率之间是否独立」（V0.2.132）：勾了就说清它和默认档的区别 ——
+            // 只在**显式勾上**时才有这条（老存档是 false，一句都不会多）。
+            if (e.ChanceEnabled && e.ChanceIndependent)
+                issues.Add(new("提示", $"{owner} 的「{kind.Display}」勾了「不同效果的概率各自独立判定」："
+                    + "这一条会**自己掷一次**（可能和同一张牌里别的概率效果同时中、也可能同时不中）；"
+                    + "不勾（默认）时同一张牌里所有概率效果**共用一次掷骰、各占一段区间**（互斥：不可能同时生效）。"));
             // 全局（牌组）类效果：直接改玩家的牌组、跨战斗永久生效，这类改动值得先提醒一句
             if (CSharpCodeGen.IsGlobalCardEffect(e.Kind))
             {
@@ -2568,6 +2580,34 @@ public static class ProfileValidator
     /// 于是整块布的图问题**一个都不会告诉用户**。最要命的一条是「【效果】选了节点图没接上的种类」：
     /// 生成、编译、进游戏全都不报错，只是什么都不做 —— 别人实测报的「给召唤物 buff 不生效」就是这个。
     /// </summary>
+    /// <summary>
+    /// 作用对象 = 「全体单位」（V0.2.132 新增的第 7 档）时的校验。
+    ///
+    /// <para><b>为什么必须有这一条</b>：<c>CSharpCodeGen.EmitPerCreature</c> / <c>EmitAttack</c> /
+    /// <c>EmitStun</c> 以及各条目标分支的 <c>default</c> 都是「当成自己」—— 用没有实现这一档的
+    /// 效果种类选了「全体单位」，生成出来的就是「对自己做这件事」，而生成 / 编译 / 进游戏全都不报错。
+    /// 所以这里按 <see cref="EffectCatalog.SupportsAllUnits"/>（= 生成端真的写了分支的那几个种类）
+    /// 直接报错拦住，并把支持名单写清楚（不静默）。</para>
+    /// </summary>
+    private static void ValidateAllUnitsTarget(List<ValidationIssue> issues, string owner, int index,
+        EffectKindOption kind, EffectSpec e, string ctx)
+    {
+        if (!string.Equals(e.TargetSide, "AllUnits", StringComparison.Ordinal)) return;
+        // 自定义状态那条链支持的更少（它的「格挡 / 回血 / 失去生命 / 最大生命」是手写的、只打自己）
+        bool powerChain = ctx == "Power";
+        if (powerChain ? EffectCatalog.SupportsAllUnitsOnPower(e.Kind) : EffectCatalog.SupportsAllUnits(e.Kind)) return;
+        string support = powerChain
+            ? "造成伤害 / 施加增益减益 / 临时增益 / 击晕 / 清除指定状态 / 清除所有减益"
+            : "造成伤害 / 获得格挡 / 回复生命 / 失去生命 / 最大生命 / 施加增益减益 / 临时增益 / 击晕";
+        issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」的作用对象选了「全体单位」，"
+            + "但这个效果种类还没有实现「全体单位」这一档（生成端会把它当成「对自己」）—— "
+            + $"目前支持「全体单位」的是：{support}。"
+            + "请改回「自己 / 全部敌人」之类的老档位，或者换一个上面列的种类。"
+            + (ctx == "Potion"
+                ? "（另外：药水实际打谁由药水自己的「作用目标」决定，效果里的作用对象只影响卡面描述。）"
+                : "")));
+    }
+
     private static void ValidateForgeGraph(List<ValidationIssue> issues, string owner, ForgeGraphSpec? g,
         CharacterProfile p, string scope, string? cardTargetType = null)
     {

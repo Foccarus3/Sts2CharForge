@@ -813,7 +813,12 @@ public static class ProjectRecovery
         ConditionSpec? pendingCondFull = null;
         // 作用对象是「队友」的效果：生成出来的语句和「指定敌人」一模一样（都是 cardPlay.Target），
         // 反推不出这一档，所以生成时写一行 `// CET:TargetSide=Ally|AllAllies`，由紧跟着那条效果认领。
+        // V0.2.132：新档「全体单位」也走这一行标记；「全部友方不包括召唤物」在同一行补 ` CET:AllyNoPets=1`。
         string? pendingTargetSide = null;
+        bool pendingAllyNoPets = false;
+        // 「不同效果的概率之间是否独立」（V0.2.132）：`// CET:ChanceIndependent=1 CET:ChancePct=70`
+        // 由紧跟着那条效果认领（只在显式勾了「独立」时才写）。
+        decimal? pendingChanceIndependent = null;
 
         // 「给予卡牌关键词」：生成时写一行 `// CET:GiveKeyword=<本体枚举名 或 custom:键> CET:GiveKeywordTemp=0/1`。
         // 关键词和「是不是临时」只能靠这行标记还原；数值 / 选牌方式 / 哪一摞牌从紧跟着的那几行代码里读，
@@ -887,7 +892,17 @@ public static class ProjectRecovery
             if (pendingTargetSide is not null)
             {
                 e.TargetSide = pendingTargetSide;
+                if (pendingAllyNoPets) e.AllAlliesExcludePets = true;
                 pendingTargetSide = null;
+                pendingAllyNoPets = false;
+            }
+            // 「不同效果的概率之间是否独立」（V0.2.132）：标记里带着百分比 —— 一条效果自己独立掷一次。
+            if (pendingChanceIndependent is { } chancePct)
+            {
+                e.ChanceEnabled = true;
+                e.ChanceIndependent = true;
+                e.ChancePercent = chancePct;
+                pendingChanceIndependent = null;
             }
             // 「生成 / 变化卡牌」的附加设置（范围限定 / 升级 / 免费…）：标记行存下来的那几项配到这条效果上。
             // 「范围界定」（需求 ③：消耗 / 丢弃 / 升级 / 给关键词 / 复制 / 重放 / 回合结束自动打出 /
@@ -937,6 +952,10 @@ public static class ProjectRecovery
         // 回读出来的「给自己加 5 点格挡」会变成「给指定敌人加格挡」（下次生成就真的加到敌人身上了）。
         string SideOfTarget(string text)
         {
+            // 「全体单位」（V0.2.132）：循环体是 CombatState.Creatures（两边所有存活单位）。
+            // 卡牌链还有 `// CET:TargetSide=AllUnits` 标记兜底；这里认一下，让遗物 / 状态链也能反推。
+            if (text.Contains("CombatState.Creatures", StringComparison.Ordinal))
+                return "AllUnits";
             if (text.Contains("cardPlay.Target", StringComparison.Ordinal) || text.Contains("target", StringComparison.Ordinal))
                 return "Enemy";
             if (text.Contains("foe", StringComparison.Ordinal))
@@ -1081,6 +1100,11 @@ public static class ProjectRecovery
                             pendingCountFormulas[key] = value;
                     }
                 }
+                // 「不同效果的概率之间是否独立」（V0.2.132）：生成端**只在勾了「独立」时**才写这一行 ——
+                // 所以看到它就等于「这条效果勾了概率 + 勾了独立」，百分比也在同一行里（回读本来不回读概率，
+                // 见 EffectSpec.ChanceIndependent 的注释）。默认档一个字节都不会出现。
+                if (line.Contains("CET:ChanceIndependent=1", StringComparison.Ordinal))
+                    pendingChanceIndependent = Dec(line, @"CET:ChancePct=([\d.]+)", 50m);
                 // 条件数值的公式（用户要求⑦）：整条条件都在这一行里
                 string? condRaw = Match(line, @"CET:CondFull=(.*)$");
                 if (condRaw is not null)
@@ -1198,6 +1222,8 @@ public static class ProjectRecovery
                 if (tsRaw is not null)
                 {
                     pendingTargetSide = tsRaw;
+                    // V0.2.132：「全部友方不包括召唤物」跟在同一行末尾（` CET:AllyNoPets=1`）
+                    pendingAllyNoPets = line.Contains("CET:AllyNoPets=1", StringComparison.Ordinal);
                     continue;
                 }
                 // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：

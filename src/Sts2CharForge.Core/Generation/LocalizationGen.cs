@@ -1215,7 +1215,10 @@ public static class LocalizationGen
             "Enemy" => "对指定敌人",
             "Ally" => "对指定队友",
             "AllEnemies" => "对所有敌人",
-            "AllAllies" => "对所有队友",
+            // V0.2.132：「全部友方」勾了「不包括召唤物」时卡面写清（默认档一个字都不加）
+            "AllAllies" => e.AllAlliesExcludePets ? "对所有队友（不含召唤物）" : "对所有队友",
+            // V0.2.132 新档「全体单位」= 两边所有存活单位
+            "AllUnits" => "对所有单位",
             "RandomEnemies" => e.RepeatIsX && isCard ? "对随机敌人 X 次" : $"对随机敌人 {repeatText} 次",
             _ => "对自己",
         };
@@ -1235,7 +1238,8 @@ public static class LocalizationGen
                 "Enemy" => "指定敌人",
                 "Ally" => "指定队友",
                 "AllEnemies" => "所有敌人",
-                "AllAllies" => "所有队友",
+                "AllAllies" => e.AllAlliesExcludePets ? "所有队友（不含召唤物）" : "所有队友",
+                "AllUnits" => "所有单位",
                 "RandomEnemies" => e.RepeatIsX && isCard ? "随机敌人 X 次" : $"随机 {repeatText} 个敌人",
                 _ => "",
             });

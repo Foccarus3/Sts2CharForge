@@ -26526,6 +26526,239 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				HookAnimationSpec();
 			}
 		}
+		// ==================================================================================
+		// V0.2.132（《卡牌页优化.md》右侧④）：作用对象 7 档 + 概率独立 + 卡牌链编辑器重排
+		// ==================================================================================
+		{
+			// ---- A. 作用对象 7 档（共用表）----
+			var want7 = new[] { "Self", "Ally", "AllAllies", "Enemy", "RandomEnemies", "AllEnemies", "AllUnits" };
+			Check("作用对象扩到 7 档、顺序与需求一致（自己 / 指定队友 / 全部友方 / 单体敌人 / 随机敌人 / 全部敌人 / 全体单位）",
+				EffectCatalog.TargetSides.Count == 7 && want7.All(x => EffectCatalog.TargetSides.Contains(x))
+				&& string.Join(",", EffectCatalog.TargetSides) == string.Join(",", want7),
+				string.Join(" / ", EffectCatalog.TargetSides));
+			Check("作用对象的中文名表齐了（界面 / 校验消息共用）",
+				EffectCatalog.TargetSideZh("AllUnits") == "全体单位" && EffectCatalog.TargetSideZh("AllAllies") == "全部友方"
+				&& EffectCatalog.TargetSideZh("Ally") == "指定队友" && EffectCatalog.TargetSideZh("RandomEnemies") == "随机敌人");
+			Check("「全体单位」的支持名单和生成端一致（8 种）",
+				EffectCatalog.SupportsAllUnits("Damage") && EffectCatalog.SupportsAllUnits("Stun")
+				&& EffectCatalog.SupportsAllUnits("ApplyPower") && !EffectCatalog.SupportsAllUnits("Draw")
+				&& !EffectCatalog.SupportsAllUnits("GenerateCard"), "伤害/击晕/施加状态支持，抽牌/生成卡牌不支持");
+
+			// ---- 生成：默认档（全部友方含召唤物）必须与老版本逐字相同；勾「不包括召唤物」才多一句过滤 ----
+			CharacterProfile tgtProfile = ProfileFactory.Sample();
+			CardSpec allyCardBefore = new CardSpec { Name = "全友方旧档", ClassName = "UiCheckAllAlliesOld", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+			allyCardBefore.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "AllAllies" });
+			tgtProfile.Cards.Add(allyCardBefore);
+			string allyOldSrc = CSharpCodeGen.CardSource(tgtProfile, allyCardBefore, 0);
+			Check("（红线）「全部友方」默认档生成的就是老那句过滤条件（含召唤物，逐字不变）",
+				allyOldSrc.Contains(".Where(c => c.IsAlive && c != base.Owner.Creature).ToList()")
+				&& !allyOldSrc.Contains("PetOwner"), "老写法");
+			EffectSpec allyEff = new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "AllAllies", AllAlliesExcludePets = true };
+			CardSpec allyCardAfter = new CardSpec { Name = "全友方不含召唤物", ClassName = "UiCheckAllAlliesNoPets", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+			allyCardAfter.Effects.Add(allyEff);
+			tgtProfile.Cards.Add(allyCardAfter);
+			string allyNewSrc = CSharpCodeGen.CardSource(tgtProfile, allyCardAfter, 0);
+			Check("勾「全部友方不包括召唤物」→ 过滤条件尾巴补 `&& c.PetOwner is null`",
+				allyNewSrc.Contains(".Where(c => c.IsAlive && c != base.Owner.Creature && c.PetOwner is null).ToList()"), "补上了");
+			Check("「全部友方」的两档都写 `// CET:TargetSide=AllAllies` 标记（回读用）；勾了不含召唤物时标记里多一项",
+				allyOldSrc.Contains("// CET:TargetSide=AllAllies")
+				&& allyNewSrc.Contains("// CET:TargetSide=AllAllies CET:AllyNoPets=1"), "有标记");
+
+			// ---- 生成：全体单位（7 档里新增的那一档）五条链都真的展开成「两边所有存活单位」 ----
+			string unitsExpr = "base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList()";
+			var unitsCases = new (string Kind, string Label)[]
+			{
+				("Damage", "造成伤害"), ("Block", "获得格挡"), ("ApplyPower", "施加增益减益"),
+				("TempPower", "临时增益"), ("Stun", "击晕"),
+			};
+			foreach (var (ukind, ulabel) in unitsCases)
+			{
+				CharacterProfile up = ProfileFactory.Sample();
+				var uc = new CardSpec { Name = "全体单位" + ulabel, ClassName = "UiCheckAllUnits" + ukind, Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				uc.Effects.Add(new EffectSpec
+				{
+					Kind = ukind, Amount = 3m, TargetSide = "AllUnits",
+					PowerId = ukind is "ApplyPower" or "TempPower" ? "WeakPower" : null,
+				});
+				up.Cards.Add(uc);
+				string usrc = CSharpCodeGen.CardSource(up, uc, 0);
+				Check($"「全体单位」+「{ulabel}」→ 循环体遍历 CombatState.Creatures 的存活单位",
+					usrc.Contains(unitsExpr) && usrc.Contains("// CET:TargetSide=AllUnits"), usrc.Contains(unitsExpr) ? "展开了" : "没展开");
+			}
+			Check("（对照）「全体单位」不再落到 default 里被当成「对自己」",
+				!CSharpCodeGen.CardSource(ProfileFactory.Sample(), new CardSpec
+				{
+					Name = "对照全体单位", ClassName = "UiCheckAllUnitsCtl", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true,
+					Effects = { new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "AllUnits" } },
+				}, 0).Contains("await CreatureCmd.GainBlock(base.Owner.Creature,"), "没有直接给自己");
+
+			// 校验器：没实现「全体单位」的种类必须报错拦住（不许静默变成「对自己」）
+			CharacterProfile uv = ProfileFactory.Sample();
+			var uvCard = new CardSpec { Name = "全体单位越界", ClassName = "UiCheckAllUnitsBad", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+			uvCard.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "AllUnits" });
+			uv.Cards.Add(uvCard);
+			var uvIssues = ProfileValidator.Validate(uv);
+			Check("校验器：「抽牌 + 全体单位」→ 错误说清这一档还没实现、并列出支持的种类",
+				uvIssues.Any(i => i.IsError && i.Message.Contains("全体单位") && i.Message.Contains("对自己")), 
+				uvIssues.FirstOrDefault(i => i.IsError)?.Message ?? "(没报错)");
+			uvCard.Effects[0].Kind = "Block";
+			uvCard.Effects[0].Amount = 4m;
+			Check("（对照）「格挡 + 全体单位」不报错（生成端真的实现了这一档）",
+				!ProfileValidator.Validate(uv).Any(i => i.IsError && i.Message.Contains("全体单位")), "不报");
+
+			// ---- 锻造节点图：这一档映射成【对象】里本来就有的 AllUnits（同一个运行时助手） ----
+			Check("锻造节点图：「全体单位」映射到【对象】的 AllUnits 档（文案 + 生成一致）",
+				ForgeGraphGen.TargetSideToPick("AllUnits") == "AllUnits"
+				&& ForgeGraphGen.TargetSideToPick("AllAllies") == "AllAllies", "映射对");
+
+			// ---- 自定义状态（能力）那条链：「全体单位」也要真的展开 ----
+			// ⚠ 这条链上 base.Owner **本身就是 Creature**（不是 Player）—— 写死 base.Owner.Creature 会
+			// CS1061（探针真编译踩到过一次），所以这里两条断言把「写对了 + 没写 .Creature」都钉住。
+			CharacterProfile auraProfile = ProfileFactory.Sample();
+			var auraPower = new CustomPowerSpec { Name = "自检全体单位光环", Type = "Buff" };
+			var auraTrigger = new PowerTriggerSpec { Kind = "TurnStart" };
+			auraTrigger.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "AllUnits" });
+			auraTrigger.Effects.Add(new EffectSpec { Kind = "ApplyPower", Amount = 1m, TargetSide = "AllUnits", PowerId = "WeakPower" });
+			auraTrigger.Effects.Add(new EffectSpec { Kind = "TempPower", Amount = 1m, TargetSide = "AllUnits", PowerId = "StrengthPower" });
+			auraTrigger.Effects.Add(new EffectSpec { Kind = "Stun", Amount = 1m, TargetSide = "AllUnits" });
+			auraTrigger.Effects.Add(new EffectSpec { Kind = "ClearPowerOne", Amount = 1m, TargetSide = "AllUnits", PowerId = "WeakPower" });
+			auraPower.Triggers.Add(auraTrigger);
+			auraProfile.CustomPowers.Add(auraPower);
+			string auraSrc = CustomPowerGen.Source(auraProfile, auraPower, 0);
+			Check("自定义状态链：「全体单位」展开成 `base.Owner.CombatState.Creatures`（状态钩子里 base.Owner 就是 Creature）",
+				auraSrc.Contains("foreach (Creature other in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+				&& auraSrc.Contains("foreach (Creature unit in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())"),
+				"展开了");
+			Check("自定义状态链：击晕的「全体单位」从 player 取战斗状态（base.Owner.Player.Creature.CombatState）",
+				auraSrc.Contains("foreach (Creature unit in base.Owner.Player.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList())"),
+				"对");
+			Check("（红线）自定义状态链上**从不**出现 `base.Owner.Creature`（那会 CS1061，探针真编译踩到过）",
+				!auraSrc.Contains("base.Owner.Creature"), "没有");
+			Check("校验器：自定义状态链上「格挡 + 全体单位」→ 报错（那条链的格挡是手写只打自己的）",
+				ProfileValidator.Validate(new CharacterProfile
+				{
+					CustomPowers = { new CustomPowerSpec { Name = "自检越界光环", Type = "Buff", Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllUnits" } } } } } },
+				}).Any(i => i.IsError && i.Message.Contains("全体单位")), "拦住了");
+
+			// ---- B. 概率「不同效果之间是否独立」 ----
+			// 默认（不勾）= 老行为：同组共用一次掷骰、各占区间
+			CharacterProfile chp = ProfileFactory.Sample();
+			var chpCard = new CardSpec { Name = "概率默认档", ClassName = "UiCheckChanceOld", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+			chpCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", ChanceEnabled = true, ChancePercent = 60m });
+			chpCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", ChanceEnabled = true, ChancePercent = 30m });
+			chp.Cards.Add(chpCard);
+			string chOld = CSharpCodeGen.CardSource(chp, chpCard, 0);
+			Check("（红线）概率默认档：仍是「共用一次掷骰 + 各占区间」（第一条 0~60、第二条 60~90）",
+				chOld.Contains("概率生效：同组效果共用这一次掷骰") && chOld.Contains("__chanceRoll >= 0 && __chanceRoll < 60")
+				&& chOld.Contains("__chanceRoll >= 60 && __chanceRoll < 90") && !chOld.Contains("ChanceIndependent"), "老写法");
+			// 勾「独立」：这一条自己掷一次、不参与区间划分、并写回读标记
+			chpCard.Effects[0].ChanceIndependent = true;
+			chpCard.Effects[0].ChancePercent = 70m;
+			string chNew = CSharpCodeGen.CardSource(chp, chpCard, 0);
+			Check("勾「不同效果的概率各自独立判定」→ 这一条自己掷一次（NextDouble() * 100 < 70）",
+				chNew.Contains("base.Owner.RunState.Rng.Niche.NextDouble() * 100.0 < 70"), "独立判一次");
+			Check("独立的那一条**退出**区间划分，同组别的效果照旧占区间（60 起算）",
+				!chNew.Contains("__chanceRoll >= 0 && __chanceRoll < 70") && chNew.Contains("__chanceRoll >= 0 && __chanceRoll < 30"), "退出了");
+			Check("独立档写回读标记（只在勾了非默认档时才写）",
+				chNew.Contains("// CET:ChanceIndependent=1 CET:ChancePct=70")
+				&& !chOld.Contains("CET:ChanceIndependent"), "有标记");
+			// 全部独立 → 不声明共用掷骰变量
+			chpCard.Effects[1].ChanceIndependent = true;
+			string chAllIndep = CSharpCodeGen.CardSource(chp, chpCard, 0);
+			Check("全部勾独立时不声明 `__chanceRoll`（没有区间、没有公式就不需要它）",
+				!chAllIndep.Contains("double __chanceRoll") && chAllIndep.Contains("NextDouble() * 100.0 < 70")
+				&& chAllIndep.Contains("NextDouble() * 100.0 < 30"), "不声明");
+			Check("校验器：勾了「独立」→ 提示说清和老行为（共用掷骰 / 互斥）的区别",
+				ProfileValidator.Validate(chp).Any(i => i.Level == "提示" && i.Message.Contains("各自独立判定")), "提示了");
+			chpCard.Effects[0].ChanceIndependent = false;
+			chpCard.Effects[1].ChanceIndependent = false;
+
+			// ---- 界面：卡牌链重排后「概率 + 是否独立 + 下回合生效」在卡牌链上、其余四条链一个字不变 ----
+			var cardChain = new EffectSpec { Kind = "Damage", Amount = 5m, NextTurn = false, IsCardChain = true };
+			var plainChain = new EffectSpec { Kind = "Damage", Amount = 5m, NextTurn = false };
+			Check("卡牌链：新摆的「概率」「下回合生效」两行显示、老位置那两行收起",
+				cardChain.ShowCardChanceRow && !cardChain.ShowPlainChanceRow && !cardChain.ShowPlainNextTurnRow
+				&& cardChain.ShowCardTimesRow && !cardChain.ShowPlainFixedTimesBox, "重排生效");
+			Check("（红线）遗物 / 药水 / 自定义状态 / 锻造链：还是老位置那两行（新摆的两行对它们恒为 Collapsed）",
+				!plainChain.ShowCardChanceRow && !plainChain.ShowCardNextTurnRow && plainChain.ShowPlainChanceRow
+				&& plainChain.ShowPlainFixedTimesBox && !plainChain.ShowCardTimesRow, "老样子");
+			var drawChain = new EffectSpec { Kind = "Draw", Amount = 2m, TargetSide = "Self", IsCardChain = true };
+			Check("卡牌链：用不到「命中次数」的种类（抽牌）那一行仍然收起（沿用原有按种类显隐规则）",
+				!drawChain.ShowCardRepeatRow && !drawChain.ShowPlainFixedRepeatBox, "收起了");
+			var dmgChain = new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", IsCardChain = true };
+			Check("卡牌链：造成伤害时「命中次数」那一行（固定框 + 公式框）出现",
+				dmgChain.ShowCardRepeatRow, "出现");
+			Check("界面：卡牌效果编辑器里有「不同效果的概率各自独立判定」勾选框（绑 ChanceIndependent）",
+				dmgChain.ChanceIndependent == false, "默认关");
+			SelectTabRoot("卡牌");
+			if (CardList.SelectedItem is CardSpec selCard && selCard.Effects.Count > 0) CardEffectList.SelectedIndex = 0;
+			UpdateLayout();
+			var cardPageRoot = SelectTabRoot("卡牌");
+			var pageChecks = new List<CheckBox>();
+			CollectCheckBoxes(cardPageRoot, pageChecks);
+			var pageCheckPaths = pageChecks.Select(c => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path).ToList();
+			Check("界面（卡牌页）：效果编辑器里有「概率生效」「概率独立」「不包括召唤物」三个勾选框",
+				pageCheckPaths.Contains("ChanceEnabled") && pageCheckPaths.Contains("ChanceIndependent")
+				&& pageCheckPaths.Contains("AllAlliesExcludePets"), string.Join(" / ", pageCheckPaths));
+			// ⚠ 判显隐必须看 IsVisible：Collapsed 的控件照样在可视化树里（老坑，见 QUEUE 里
+			//「TextsIn 会把 Collapsed 里的文字也收进来」那条）—— 上面那几个绑定路径别的链也能收到。
+			Check("界面（卡牌页）：「概率独立」那一行在卡牌链上**真的可见**",
+				pageChecks.Any(c => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path == "ChanceIndependent" && c.IsVisible),
+				"可见");
+			var cardPageBoxes = new List<TextBox>();
+			CollectTextBoxes(cardPageRoot, cardPageBoxes);
+			var cardPageBoxPaths = cardPageBoxes.Select(b => BindingOperations.GetBinding(b, TextBox.TextProperty)?.Path?.Path).ToList();
+			Check("界面（卡牌页）：命中次数 / 生效次数 / 概率 三格公式框都在（重排后没丢）",
+				cardPageBoxPaths.Contains("RepeatFormula") && cardPageBoxPaths.Contains("TimesFormula")
+				&& cardPageBoxPaths.Contains("ChanceFormula"), string.Join(" / ", cardPageBoxPaths.Distinct()));
+			var relicPageRoot = SelectTabRoot("遗物");
+			var relicChecks = new List<CheckBox>();
+			CollectCheckBoxes(relicPageRoot, relicChecks);
+			Check("（红线）遗物页的效果编辑器里「概率独立」那一行是**收起的**（那一档只做在卡牌链上）",
+				!relicChecks.Any(c => BindingOperations.GetBinding(c, ToggleButton.IsCheckedProperty)?.Path?.Path == "ChanceIndependent" && c.IsVisible),
+				"遗物页看不见");
+			SelectTabRoot("卡牌");
+
+			// ---- 生成 → 回读：新档位（全体单位 / 全部友方不含召唤物）+ 概率独立全部还原 ----
+			string tgRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02132_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				CharacterProfile rp = ProfileFactory.Sample();
+				var rc = new CardSpec { Name = "回读新档位", ClassName = "UiCheckV02132", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				rc.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "AllUnits" });
+				rc.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllAllies", AllAlliesExcludePets = true });
+				rc.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "Enemy", ChanceEnabled = true, ChanceIndependent = true, ChancePercent = 70m });
+				rp.Cards.Add(rc);
+				rp.Paths.OutputDir = tgRoot;
+				rp.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				rp.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var rgen = ModGenerator.Generate(rp);
+				Check("（准备）带「全体单位 / 全部友方不含召唤物 / 概率独立」的存档能生成工程", rgen.Success,
+					rgen.Success ? rgen.ProjectRoot : string.Join(" ｜ ", rgen.Issues.Where(x => x.IsError).Select(x => x.Message)));
+				if (rgen.Success)
+				{
+					var rrec = ProjectRecovery.FromProject(rgen.ProjectRoot);
+					CardSpec? rback = rrec.Profile.Cards.FirstOrDefault(x => x.ClassName == "UiCheckV02132");
+					Check("从工程恢复：作用对象「全体单位」认得回来（靠 CET:TargetSide=AllUnits）",
+						rback is not null && rback.Effects.Count == 3 && rback.Effects[0].TargetSide == "AllUnits",
+						rback is null ? "(缺卡)" : string.Join(" / ", rback.Effects.Select(x => x.TargetSide)));
+					Check("从工程恢复：「全部友方 + 不包括召唤物」也认得回来（靠 CET:AllyNoPets=1）",
+						rback is not null && rback.Effects.Count == 3 && rback.Effects[1].TargetSide == "AllAllies"
+						&& rback.Effects[1].AllAlliesExcludePets,
+						rback is null ? "(缺卡)" : $"TargetSide={rback.Effects[1].TargetSide} ExcludePets={rback.Effects[1].AllAlliesExcludePets}");
+					Check("从工程恢复：概率「独立」+ 百分比认得回来（靠 CET:ChanceIndependent=1 CET:ChancePct=70）",
+						rback is not null && rback.Effects.Count == 3 && rback.Effects[2].ChanceEnabled
+						&& rback.Effects[2].ChanceIndependent && rback.Effects[2].ChancePercent == 70m,
+						rback is null ? "(缺卡)" : $"Chance={rback.Effects[2].ChanceEnabled}/{rback.Effects[2].ChanceIndependent}/{rback.Effects[2].ChancePercent}");
+					Check("从工程恢复（V0.2.132 新档位）：没认出来的语句为 0", !rrec.HasUnparsed,
+						rrec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				}
+			}
+			finally
+			{
+				try { Directory.Delete(tgRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

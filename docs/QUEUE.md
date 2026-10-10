@@ -1,5 +1,58 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 19 批需求（用户 2026-10-XX 提，按《卡牌页优化.md》**右侧④**里的作用对象扩档 + 概率独立 + 卡牌链 UI 重排）
+
+> 需求原文：`docs\需求\卡牌页优化.md` 右侧④。**用户拍板**：`docs\需求\已拍板决定.md` **Q4=B**（一次做齐）——
+> 但按用户排期，本轮只做**作用对象 + 概率独立 + UI 重排**；「下回合生效适配全部效果」（`HonorsNextTurn` 12 → 65）
+> 是**下一版**，本轮一个字没动。盘点报告：`D:\ds\s\t3\_tmp\需求盘点_锻造页与卡牌页.md` §2.1 / §2.3 / §6.1。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **作用对象扩到 7 档**（自己 / 指定队友 / 全部友方（可选含召唤物）/ 单体敌人 / 随机敌人 / 全部敌人 / **全体单位**），**共用一张表**（卡牌·遗物·药水·自定义状态·锻造链五处下拉一起走） | `EffectCatalog.TargetSides` = 7 档（顺序 = 需求里的顺序）+ 新档 `AllUnits` + 新中文名表 `TargetSideZh` + 「哪些种类真的实现了这一档」`SupportsAllUnits` / `SupportsAllUnitsOnPower`。**生成端**：`EmitPerCreature`（共用目标展开）/ `EmitAttack`（伤害）/ 卡牌 `ApplyPower`·`TempPower` 两个 switch / `EmitStun` / 遗物链 `Damage`·`ApplyPower`·`TempPower` / `CustomPowerGen` 的 `EmitDamage`·`ApplyPower`·`TempPower` —— 全部新增 `AllUnits` 分支（循环体 = `<生物表达式>.CombatState.Creatures.Where(c => c.IsAlive).ToList()`：卡牌 / 遗物是 `base.Owner.Creature.CombatState`、自定义状态是 `base.Owner.CombatState` —— 状态链上写 `.Creature` 会 CS1061，见下面探针那段；本体 `CombatState.cs:71` = `_allies.Concat(_enemies)`）。**「全部友方」子选项**：`EffectSpec.AllAlliesExcludePets`（默认 false = 老行为），勾上才在过滤条件尾巴补 `&& c.PetOwner is null`（`CSharpCodeGen.AllyFilterSuffix`）。**卡面文案**：`LocalizationGen` 的 target / who 两个 switch 加 `AllUnits`（「对全体单位」/「所有单位」），「全部友方不含召唤物」写「对所有队友（不含召唤物）」。**校验器（不许静默）**：`ProfileValidator.ValidateAllUnitsTarget` —— 没实现这一档的种类**报错**并列出支持名单（卡牌/遗物/药水 8 种；自定义状态那条链更窄：伤害 / 施加状态 / 临时增益 / 击晕 / 清除状态×2），不拦的话生成端会把它当成「对自己」。**回读**：卡牌链写 `// CET:TargetSide=AllUnits`（勾了不含召唤物再补 ` CET:AllyNoPets=1`）；遗物链 / 状态链 / 药水链**只在出现新档位时才补这一行标记**（老存档一个字符都不多）；`SideOfTarget` 也认 `CombatState.Creatures`。**界面**：五处下拉自动跟着走（共用表）+ 「全部友方」底下新增「不包括召唤物（只算玩家本体）」勾选框（`ShowAllyNoPetsOption`）。**锻造节点图**：`TargetSideToPick` / `TargetSideUnit` 加 `AllUnits` → `ForgeFormulaRuntime.AllUnits(__fgPlayer)`，「不含召唤物」= 只剩 `__fgSelf`（不新增运行时助手，免得动已生成工程的 `ForgeFormulaRuntime.cs`） | ✅V0.2.132 |
+| ② | **「不同效果的概率之间是否独立」**（新语义，**默认必须 = 老行为**） | 新字段 `EffectSpec.ChanceIndependent`（默认 false = 同一张牌 / 同一只遗物里勾了概率的效果**共用一次掷骰、各占区间**，老行为逐字不变）。**生成端**：`ChanceSlices` 把勾了独立的**排除**出区间划分；`EffectConditionGuard` 新增 `else if (e.ChanceEnabled && e.ChanceIndependent)` → `{player}.RunState.Rng.Niche.NextDouble() * 100.0 < N`（这一条自己掷一次）；全部独立时不声明 `__chanceRoll`（没有区间、没公式就不需要它）。**回读**：`EmitCardEffect` 只在**显式勾了独立**时写 `// CET:ChanceIndependent=1 CET:ChancePct=<百分比>`（百分比也带上 —— 概率本身**从来没回读过**，老缺口，见下），`ProjectRecovery` 按它还原 `ChanceEnabled/ChanceIndependent/ChancePercent`。**校验器**：勾了给一条提示说清与老行为的区别。**卡面 / 列表文案**：`ChanceText` 补一句「，各自独立判定」。**界面**：勾选框长在**卡牌链**的「概率」那一行里（`ShowCardChanceRow`） | ✅V0.2.132 |
+| ③ | **卡牌链效果编辑器按需求顺序重排**（升级增量 → 效果种类 → 数值 → 作用对象 → 命中次数 → 生效次数 → 概率 → 下回合生效 → 其余按种类） | `App.xaml` 的 `EffectCommon`：**命中次数 / 生效次数**改成「固定值框 + 公式框并排」（新增 `ShowCardRepeatRow` / `ShowCardTimesRow`；老的那两个固定框改绑 `ShowPlainFixedRepeatBox` / `ShowPlainFixedTimesBox`，**只在非卡牌链显示**）；**概率**（勾选 + 百分比 + 概率公式 + 独立开关）挪到 Grid 第 6 行、**下回合生效**挪到第 7 行（`ShowCardChanceRow` / `ShowCardNextTurnRow`，只有卡牌链显示；StackPanel 里那两行老控件改绑 `ShowPlainChanceRow` / `ShowPlainNextTurnRow`）；「增益 / 减益」「目标卡」两行从 Grid 5/6 挪到 8/9（**位置没变**：5、6 行对四条老链是 Collapsed 的 Auto 行、高度 0）。`EffectEditorCard` 的「次数公式」组只剩「复制的份数 / 重放次数」（其余三格搬到上面各自的并排行里）。**遗物 / 药水 / 自定义状态 / 锻造链的控件树、绑定路径、行位置一个都没动**（新摆的元素对它们恒为 Collapsed） | ✅V0.2.132 |
+| ④ | **「命中次数」不再考虑「对群数」**（核对有没有残留） | 核对结果：**界面上一处 `AmountIsX` / `TimesIsX` / `RepeatIsX` 入口都没有了**（V0.2.131 撤掉三个「= X」勾选框，本轮复查 App.xaml 无绑定）；**没有**独立的「对群数」字段 —— 从头到尾只有 `RepeatCount` 一个数字（「造成伤害」= 段数 /「随机敌人」= 挑几个目标），生成端这个数字照旧全读；卡牌链那一行的标题改成「命中次数（公式）」，**其余四条链的老标题「对群数/命中次数」保持原样**（免得动那四处外观，要不要一起改名留给用户定）。等价性对拍：含「随机敌人 + 命中次数 2」的老存档，改动前后生成的 `cs/Cards/LegacyRandomEnemies.cs` **SHA256 完全相同**（`7414ba79…`，`.TargetingRandomOpponents(...).WithHitCount(2)`） | ✅V0.2.132（核对项，没有能力被删） |
+
+> **红线实测数字（V0.2.132）**
+> - `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**；
+> - `--uicheck`：Debug **3040 PASS / 0 FAIL**、发布版（`dotnet publish -c Release -r win-x64 --self-contained true`
+>   → `Unblock-File` → `[System.Diagnostics.Process]::Start(UseShellExecute=$false)` + `WaitForExit`，跑前先删旧结果文件）
+>   **3040 PASS / 0 FAIL**（基线 3001/0，**新增 39 条**：7 档表 / 全体单位五条链生成 / 校验器拦住不支持的种类 /
+>   全部友方不含召唤物 / 概率独立三档 / 新标记回读 / 卡牌链重排与遗物链对照 / 状态链不出现 `base.Owner.Creature`）；
+> - **默认档逐字不变**：`--samplegen` 112 个文件 **111 个逐文件 SHA256 一致**（只差 `ExampleMod.sln` 的随机 GUID）；
+>   另用两份**老形状存档**对拍（`_tmp\v02132\legacy_targets.json` = 6 档作用对象齐全；`legacy_chance.json` = 概率生效）：
+>   136 个文件 **135 个逐字节一致**、127 个文件 **126 个逐字节一致**（两处唯一差异都只有 `.sln` 的随机 GUID）；
+> - **探针** `D:\ds\s\_tmp\v02132`：16 张卡 + 1 只遗物（7 档各一张、4 张全体单位、全部友方两档、概率三档）→
+>   CLI `--build --install` **真 `dotnet build` 0 错误**（2 条既有 warning）→ `--recover` **0 条「没认出来」**、
+>   作用对象 / 不含召唤物 / 命中次数 / 状态 / 概率独立 + 百分比**逐项还原**；另一份探针 `probe132_cp.json`
+>   把**自定义状态（能力）那条链**的「全体单位」也真编译一遍（伤害 / 施加状态 / 临时增益 / 击晕四条）→
+>   `--build` **0 错误** + `--recover` **0 条「没认出来」**、四条作用对象全还原成 `AllUnits`。
+>   ⚠ **这份补的探针当场抓到一个真 bug 并已修**：状态链的 `base.Owner` 本身就是 `Creature`，
+>   而「全体单位」最初写死 `base.Owner.Creature.CombatState` → 生成出来 `CS1061`
+>   （`cs/Powers/<状态>.cs`）—— 现在 `EmitPerCreature` 从 `selfExpr` 取、`EmitStun` 从 `playerExpr` 取，
+>   `--uicheck` 新增 4 条断言把「状态链上不出现 `base.Owner.Creature`」钉死。
+>   **幂等**：同一份存档连跑两次 113 个文件**只有 `.sln` 不同**；
+>   「生成 → 回读 → 再生成 → 再回读 → 再生成」的**第 2、3 轮产物逐字节一致**（同样只差 `.sln`）；
+>   同一个工程回读两次**输出字节相同**（73204 字节，同一 SHA256）。
+>
+> **本轮明确不做**（留给下一版 / 等用户拍板）：右④ 里的「**下回合生效适配全部效果**」（`HonorsNextTurn` 12 → 65，
+> Q4=B 已拍板要一次做齐，但按排期单独一版）、右①「升级增量填公式」、④「升级后关键字 + 自定义关键词」、
+> ⑤「升级描述变绿」；把其余四条链的「对群数/命中次数」也改名；「全部友方含不含召唤物」之外的组合档。
+>
+> **已知边界 / 留给用户定**：① 概率的**百分比**（`ChanceEnabled` / `ChancePercent`）**老版本就不回读**
+> （`--recover` 后固定 50%），本轮只把**新档「独立」**的百分比用 `CET:ChancePct=` 带回来了 ——
+> 要不要顺手做「从 `__chanceRoll >= a && < b` 反推百分比」（区间被缩放时会有歧义）？② 卡牌链的「命中次数」标题
+> 改了、其余四条链没改；③ 「全体单位」在**药水**上只影响卡面描述（药水实际打谁由药水自己的「作用目标」决定，
+> 校验器给警告）—— 要不要给「全体单位」也开一档**药水作用目标**？④ 自定义状态那条链的「获得格挡 / 回复生命 /
+> 失去生命 / 最大生命」是**手写只打自己**的（不读作用对象），所以它支持「全体单位」的种类比卡牌链窄
+> （校验器会报错说清）—— 要不要把那条链也改成按作用对象展开（会动老存档生成文本，要单独一版）。
+> ⑤ **存档形状多了两个字段**：`EffectSpec.AllAlliesExcludePets` / `ChanceIndependent`（都是 `bool`，默认 false）。
+> `ProfileFactory` 的 `JsonOpts` 没有「默认值不写」的开关，所以**保存一次存档就会给每条效果写上这两个键**
+> （和以前新增 `TargetSideCustom` / `ForgeAmountText` / `ChanceFormula` 时一样）。老存档读得回来、
+> **生成结果逐字节不变**，但存档 JSON 会多两行；要不要给它们加 `[JsonIgnore(Condition = WhenWritingDefault)]`？
+> ⑥ 卡牌链的「命中次数」那一行的**表头**现在只写「命中次数（公式）」（固定框没有单独的表头 —— 它跟着公式框那一行），
+> 要不要给固定框也补一个「命中次数」小标题？
+
 ## 第 18 批需求（用户 2026-10-XX 提，按《卡牌页优化.md》**中间② + 右侧②③**；其余留给后面几版）
 
 > 需求原文：`docs\需求\卡牌页优化.md`。**用户拍板**：`docs\需求\已拍板决定.md` **Q3 = A「两者都要」**
@@ -222,6 +275,16 @@ override，而遗物自己那条触发时机也生成同一个 override —— �
 `ForgeGraph` 非空；`--recover` 出来的 18 张卡 **`IsForged` 全是 false、`ForgeGraph` 全空**（V0.2.127 及以前同样如此，不是新引入）。
 - V0.2.128 只顺手修掉附带假报警：图体代码以前被当成「卡牌时机 / 遗物触发时机」解析 → 平白 6 条「没认出来」，现在整段跳过（0 条）。
 - 真支持要给生成端加「整张图的标记 / 内嵌 JSON」+ `ProjectRecovery` 反序列化 + 校验器 + 探针，属独立一版。
+
+**「数值 0 效果」的升级增量回读认不出来**（V0.2.131 在**用户真实存档**上实测发现；小而具体，建议单开一小版修）：
+现象 —— 从工程恢复时报 `⚠ 有 1 处生成代码没认出来：<卡类名>: 升级增量找不到对应效果（变量 Cards2）`。
+根因（已定位到具体文件与行）—— 用户存档 `DarkVinci.json` 的卡「染色」有两条效果：`GenerateCard Amount=1` 与
+**`Draw Amount=0 UpgradeAmount=1`**（数值 0、靠升级增量才有值）。生成端对这种效果会**额外造一个合成动态变量**：
+`DarkVinciDyeing.cs` 里 `new CardsVar("Cards2", 0)` + `OnUpgrade()` → `base.DynamicVars["Cards2"].UpgradeValueBy(1m);`。
+`ProjectRecovery` 是靠**变量名**把 `UpgradeValueBy` 映射回某条效果的，而 `Cards2` 不属于任何一条效果自己声明的变量
+（它是为「数值 0」造的合成变量）→ 映射失败，这条升级增量还原不出来。
+- 修法（二选一）：① 回读时把 `<Kind>Var<数字>` 形状的合成变量按**声明顺序**归给「数值 0 的那条效果」；② 生成端在那个合成变量旁写一个标记注释（如 `// CET:SyntheticVar=<效果序号>`），回读按标记认。
+- 影响面：只在「数值 0 + 填了升级增量」的效果上；用户真实存档已实际命中（`DarkVinci` 1 处；`SparkleMod` 0 处）。
 
 
 ## ① 「下回合生效」补齐生成 / 变化 / 复制 / 全局加牌 —— **已完成（V0.2.88 ~ V0.2.92）**

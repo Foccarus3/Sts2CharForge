@@ -128,33 +128,108 @@
                           ItemsSource="{Binding TargetSides, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding TargetSide}"/>
 
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
-                           Visibility="{Binding ShowFixedRepeatBox, Converter={StaticResource BoolToVis}}"
+                <!-- 需求右侧④：「全部友方（可以选择包不包括召唤物）」—— 只有选了「全部友方」才摆这一行。
+                     默认（不勾）= 老行为：同一边的玩家单位全算（含召唤物），生成的过滤条件与 V0.2.131 逐字节相同。
+                     这一行对**五条链**都显示（共用表），锻造节点图那边映射成【对象】的「全部友方（只剩自己）」。 -->
+                <CheckBox Grid.Row="3" Grid.Column="1" Margin="0,2,0,0" Style="{StaticResource Check}"
+                          Content="全部友方：不包括召唤物（只算玩家本体）"
+                          IsChecked="{Binding AllAlliesExcludePets}"
+                          Visibility="{Binding ShowAllyNoPetsOption, Converter={StaticResource BoolToVis}}"
+                          ToolTip="只对上面「作用对象 = 全部友方」这一档有意义：&#10;不勾（默认）= 同一边的**所有**玩家单位（含召唤物），和以前完全一样；&#10;勾上 = 只对玩家本体这类单位生效，召唤物不算（生成时补一句 `c.PetOwner is null`）。"/>
+
+                <!-- 命中次数（需求右侧④：「不再需要考虑对群数，只考虑命中次数」）：
+                     卡牌链上用下面那个横排（固定次数框 + 公式框并排）；其余四条链照旧用老控件（一个字都不变）。 -->
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowPlainFixedRepeatBox, Converter={StaticResource BoolToVis}}"
                            ToolTip="只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到这个数字；其它种类会自动收起这一栏（填了不生效）。"/>
-                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"
-                         Visibility="{Binding ShowFixedRepeatBox, Converter={StaticResource BoolToVis}}"/>
+                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowPlainFixedRepeatBox, Converter={StaticResource BoolToVis}}"/>
                 <!-- 锻造【效果】模块的「命中次数」：同一栏，框里能写公式（锻造图里一直摆着 —— 本体好几处会读它） -->
-                <TextBlock Grid.Row="3" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="对群数/命中次数" Style="{StaticResource Label}" MinWidth="96"
                            Visibility="{Binding ShowForgeRepeatBox, Converter={StaticResource BoolToVis}}"
                            ToolTip="多段攻击的段数 / 随机挑几个敌人。锻造图里可以直接写公式或参数（X / Y / 内置只读量）。"/>
-                <TextBox Grid.Row="3" Grid.Column="1" Style="{StaticResource Field}"
+                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}"
                          Text="{Binding ForgeHitsText, UpdateSourceTrigger=PropertyChanged}"
                          Visibility="{Binding ShowForgeRepeatBox, Converter={StaticResource BoolToVis}}"/>
+                <!-- 卡牌链专用：命中次数（固定次数 + 公式并排；需求右侧④要它们挨着） -->
+                <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Margin="0,2,0,0"
+                            Visibility="{Binding ShowCardRepeatRow, Converter={StaticResource BoolToVis}}">
+                    <TextBox Width="70" Style="{StaticResource Field}" Text="{Binding RepeatCount, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="多段攻击的段数 / 随机挑几个敌人（用得到这个数字的种类才会出现这一行）。"/>
+                    <TextBlock Margin="10,0,4,0" VerticalAlignment="Center" FontWeight="Bold" MinWidth="96"
+                               Text="命中次数（公式）"
+                               Visibility="{Binding ShowRepeatFormulaBox, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Width="150" Style="{StaticResource Field}"
+                             Text="{Binding RepeatFormula, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding ShowRepeatFormulaBox, Converter={StaticResource BoolToVis}}"
+                             ToolTip="例：X（= 老勾选框「命中次数 = X」，本体「旋风斩 / 天际钻头」那种）、Turn、2+HandCount。算出来会夹到 1~20；留空 = 用左边那个固定次数。"/>
+                </StackPanel>
 
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
-                           Visibility="{Binding ShowFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
-                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"
-                         Visibility="{Binding ShowFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
+                <!-- 生效次数：卡牌链上和命中次数一样改成「固定框 + 公式框」并排，其余四条链照旧 -->
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowPlainFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
+                <TextBox Grid.Row="5" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"
+                         Visibility="{Binding ShowPlainFixedTimesBox, Converter={StaticResource BoolToVis}}"/>
                 <!-- 锻造【效果】模块的「生效次数」：同一栏，框里能写公式（用户要求⑦ / V0.2.128 的能力） -->
-                <TextBlock Grid.Row="4" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
+                <TextBlock Grid.Row="5" Grid.Column="0" Text="生效次数（整条效果重复几遍）" Style="{StaticResource Label}" MinWidth="96"
                            Visibility="{Binding ShowForgeTimesBox, Converter={StaticResource BoolToVis}}"
                            ToolTip="整条效果重复几遍。锻造图里可以直接写公式或参数（X / Y / 内置只读量）。"/>
-                <TextBox Grid.Row="4" Grid.Column="1" Style="{StaticResource Field}"
+                <TextBox Grid.Row="5" Grid.Column="1" Style="{StaticResource Field}"
                          Text="{Binding ForgeTimesText, UpdateSourceTrigger=PropertyChanged}"
                          Visibility="{Binding ShowForgeTimesBox, Converter={StaticResource BoolToVis}}"/>
+                <StackPanel Grid.Row="5" Grid.Column="1" Orientation="Horizontal" Margin="0,2,0,0"
+                            Visibility="{Binding ShowCardTimesRow, Converter={StaticResource BoolToVis}}">
+                    <TextBox Width="70" Style="{StaticResource Field}" Text="{Binding Times, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="整条效果重复执行几遍（1~20）。"/>
+                    <TextBlock Margin="10,0,4,0" VerticalAlignment="Center" FontWeight="Bold" MinWidth="96"
+                               Text="生效次数（公式）"
+                               Visibility="{Binding ShowTimesFormulaBox, Converter={StaticResource BoolToVis}}"/>
+                    <TextBox Width="150" Style="{StaticResource Field}"
+                             Text="{Binding TimesFormula, UpdateSourceTrigger=PropertyChanged}"
+                             Visibility="{Binding ShowTimesFormulaBox, Converter={StaticResource BoolToVis}}"
+                             ToolTip="例：X（= 老勾选框「生效次数 = X」，打出时消耗掉的能量）、Turn（这一场第几回合）、HandCount（手牌张数）。算出来会夹到 1~20；留空 = 用左边那个固定次数。"/>
+                </StackPanel>
 
-                <TextBlock Grid.Row="5" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"/>
-                <local:SearchComboBox Grid.Row="5" Grid.Column="1"
+                <!-- ===== 卡牌链专用（需求右侧④给的顺序：…生效次数 → 概率 → 下回合生效 →（其余按种类））=====
+                     概率 + 「不同效果的概率之间是否独立」+ 下回合生效这三件事给卡牌链单独摆在这里；
+                     遗物 / 药水 / 自定义状态 / 锻造链继续用下面 StackPanel 里那两行老控件（对它们这两行恒为 Collapsed）。 -->
+                <StackPanel Grid.Row="6" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,2,0,0"
+                            Visibility="{Binding ShowCardChanceRow, Converter={StaticResource BoolToVis}}">
+                    <StackPanel Orientation="Horizontal">
+                        <CheckBox Content="概率生效" Style="{StaticResource Check}" IsChecked="{Binding ChanceEnabled}"
+                                  ToolTip="勾上以后，这条效果只有下面这个百分比的机会会真的执行；没掷中的话只跳过这一条，同一张牌里的其它效果照常执行。"/>
+                        <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
+                                 IsEnabled="{Binding ChanceEnabled}"
+                                 Text="{Binding ChancePercent, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="%"/>
+                        <TextBlock Margin="10,0,4,0" VerticalAlignment="Center" FontWeight="Bold" MinWidth="96"
+                                   Text="概率（公式）"
+                                   Visibility="{Binding ShowChanceFormulaBox, Converter={StaticResource BoolToVis}}"/>
+                        <TextBox Width="150" Style="{StaticResource Field}"
+                                 Text="{Binding ChanceFormula, UpdateSourceTrigger=PropertyChanged}"
+                                 Visibility="{Binding ShowChanceFormulaBox, Converter={StaticResource BoolToVis}}"
+                                 ToolTip="这条效果生效的百分比（0~100），现算。⚠ 写了公式的这条会**自己独立判一次**，不再和同组其它「概率生效」的效果共用一次掷骰。"/>
+                    </StackPanel>
+                    <!-- 「不同效果的概率之间是否独立」：默认（不勾）= 老行为 —— 同一张牌里勾了概率的效果
+                         共用一次掷骰、各占一段区间（互斥）；勾上 = 这一条自己掷一次。 -->
+                    <CheckBox Margin="0,2,0,0" Style="{StaticResource Check}"
+                              Content="不同效果的概率各自独立判定（默认 = 同一张牌里共用一次掷骰、各占一段区间）"
+                              IsChecked="{Binding ChanceIndependent}"
+                              ToolTip="不勾（默认，和老版本一样）：同一张牌里所有勾了「概率生效」的效果**共用一次掷骰**、各占一段区间 —— 掷出 0~39 只跑第一条、40~99 只跑第二条（也就是「不会同时生效」）。&#10;勾上：这一条**自己独立掷一次**，可能和别的概率效果同时中、也可能同时不中。"/>
+                </StackPanel>
+
+                <!-- 下回合生效（卡牌链专用那一行；其余四条链用 StackPanel 里那一份老控件） -->
+                <CheckBox Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,2,0,0" Style="{StaticResource Check}"
+                          Content="下回合生效（抽牌 / 格挡 / 能量 / 额外资源量 / 增益减益）"
+                          IsChecked="{Binding NextTurn}"
+                          Visibility="{Binding ShowCardNextTurnRow, Converter={StaticResource BoolToVis}}"
+                          ToolTip="只有这五种真的有延迟分支（格挡 / 抽牌 / 能量 / 额外资源量 / 施加扣除状态）：本体的下回合状态或工具生成的延迟状态。别的种类勾不上（这一行不显示）——「生成 / 变化 / 复制卡牌的 下回合生成」还在做。"/>
+
+                <!-- ⚠ 行号说明（V0.2.132 卡牌链重排）：5、6 行现在是**卡牌链专用**的「概率」「下回合生效」
+                     （见上面那两块），所以种-类专属的这两行往后挪到 7、8 行。对遗物 / 药水 / 自定义状态 /
+                     锻造链来说 5、6 行是空的（Collapsed 的 Auto 行高度为 0）—— 排版位置与以前**完全一样**。 -->
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"/>
+                <local:SearchComboBox Grid.Row="8" Grid.Column="1"
                                       SearchPath="Display"
                                       ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
                                       SelectedValuePath="Id" SelectedValue="{Binding PowerId}"
@@ -164,8 +239,8 @@
                     </local:SearchComboBox.ItemTemplate>
                 </local:SearchComboBox>
 
-                <TextBlock Grid.Row="6" Grid.Column="0" Text="目标卡（生成 / 变化 / 强化用）" Style="{StaticResource Label}" MinWidth="96"/>
-                <local:SearchComboBox Grid.Row="6" Grid.Column="1"
+                <TextBlock Grid.Row="9" Grid.Column="0" Text="目标卡（生成 / 变化 / 强化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <local:SearchComboBox Grid.Row="9" Grid.Column="1"
                                       SearchPath="Display"
                                       ItemsSource="{Binding AllCards, RelativeSource={RelativeSource AncestorType=Window}}"
                                       SelectedValuePath="Id" SelectedValue="{Binding SpawnCardId, Mode=TwoWay}"
@@ -234,8 +309,10 @@
 
                 <!-- 这里以下的都是「按条件出现的行」：一律放进这个竖直排列的 StackPanel 里。
                      为什么不各占一格 Grid 行：条件显隐时行高会在 0 和实际高度之间跳，
-                     和相邻的 auto 行很容易挤在一起（用户报过「是否临时关键词与其他选项重叠」）。 -->
-                <StackPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
+                     和相邻的 auto 行很容易挤在一起（用户报过「是否临时关键词与其他选项重叠」）。
+                     ⚠ V0.2.132：卡牌链的「概率」「下回合生效」已经搬到上面的 5、6 行，
+                     这里那两行的 Visibility 因此多了一个「非卡牌链」条件（其余四条链照旧）。 -->
+                <StackPanel Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
                     <!-- 「取几张」：恰好 N / 最多 N（可以少选）/ 任意张（需求：「消耗任意张手牌」）。
                          只对选牌类效果出现（消耗 / 丢弃 / 升级 / 从三摞拿牌）。 -->
                     <Grid Visibility="{Binding UsesCountMode, Converter={StaticResource BoolToVis}}">
@@ -447,12 +524,14 @@
 
                     <CheckBox Content="下回合生效（抽牌 / 格挡 / 能量 / 额外资源量 / 增益减益）" Style="{StaticResource Check}"
                               IsChecked="{Binding NextTurn}"
-                              Visibility="{Binding ShowNextTurn, Converter={StaticResource BoolToVis}}"
+                              Visibility="{Binding ShowPlainNextTurnRow, Converter={StaticResource BoolToVis}}"
                               ToolTip="只有这五种真的有延迟分支（格挡 / 抽牌 / 能量 / 额外资源量 / 施加扣除状态）：本体的下回合状态或工具生成的延迟状态。别的种类勾不上（这一行不显示）——「生成 / 变化 / 复制卡牌的 下回合生成」还在做。"/>
                     <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
-                    <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常） -->
+                    <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常）
+                         ⚠ V0.2.132：卡牌链上这一行搬到了 Grid 第 6 行（和「概率公式」「是否独立」在同一行里），
+                         所以这里的 Visibility 多一个「非卡牌链」条件；其余四条链与以前一模一样。 -->
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
-                                Visibility="{Binding ShowChanceRowNormal, Converter={StaticResource BoolToVis}}">
+                                Visibility="{Binding ShowPlainChanceRow, Converter={StaticResource BoolToVis}}">
                         <CheckBox Content="概率生效" Style="{StaticResource Check}" IsChecked="{Binding ChanceEnabled}"
                                   ToolTip="勾上以后，这条效果只有下面这个百分比的机会会真的执行；没掷中的话只跳过这一条，同一张牌 / 遗物 / 状态里的其它效果照常执行。"/>
                         <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
@@ -763,24 +842,14 @@
                     </Grid>
                     <!-- 次数类公式（用户要求⑦：所有能填数值的地方都能写公式，次数类优先）。
                          只做在卡牌上，所以这一块长在「卡牌专用」的模板里（遗物 / 药水 / 状态看不到）。
-                         「X」也在这里写（= 老勾选框「生效次数 = X」/「命中次数 = X」）。 -->
-                    <GroupBox Header="次数公式（留空 = 用上面那个固定次数）" Margin="0,6,0,0">
+                         ⚠ V0.2.132：需求右侧④给的顺序是「…命中次数 → 生效次数 → 概率 → 下回合生效」，
+                         所以「生效次数 / 命中次数 / 概率」三格已经**搬到上面 EffectCommon 里那三行**
+                         （和各自的固定值框并排）；这里只剩「复制的份数 / 重放次数」这两格
+                         （它们是「其余按种类只留用得到的」那一档，跟着复制 / 重放效果出现）。 -->
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <GroupBox Header="次数公式（复制的份数 / 重放次数；留空 = 用上面那个固定次数）" Margin="0,6,0,0">
                         <StackPanel>
-                            <Grid Visibility="{Binding ShowTimesFormulaBox, Converter={StaticResource BoolToVis}}">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="生效次数" Style="{StaticResource Label}" MinWidth="96"/>
-                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
-                                         Text="{Binding TimesFormula, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="整条效果重复几遍。例：X（= 老勾选框「生效次数 = X」，打出时消耗掉的能量）、Turn（这一场第几回合）、HandCount（手牌张数）、DiscardedThisTurn*2。算出来会夹到 1~20。"/>
-                            </Grid>
-                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowRepeatFormulaBox, Converter={StaticResource BoolToVis}}">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="命中次数 / 对群数" Style="{StaticResource Label}" MinWidth="96"/>
-                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
-                                         Text="{Binding RepeatFormula, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="多段攻击的段数 / 随机挑几个敌人。例：X（= 老勾选框「命中次数 / 对群数 = X」，本体「旋风斩 / 天际钻头」那种）。算出来会夹到 1~20。"/>
-                            </Grid>
-                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowCopiesFormulaBox, Converter={StaticResource BoolToVis}}">
+                            <Grid Visibility="{Binding ShowCopiesFormulaBox, Converter={StaticResource BoolToVis}}">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                                 <TextBlock Text="复制的份数" Style="{StaticResource Label}" MinWidth="96"/>
                                 <TextBox Grid.Column="1" Style="{StaticResource Field}"
@@ -794,18 +863,10 @@
                                          Text="{Binding ReplayFormula, UpdateSourceTrigger=PropertyChanged}"
                                          ToolTip="每张额外打出几次。算出来会夹到 1~20。"/>
                             </Grid>
-                            <Grid Margin="0,4,0,0" Visibility="{Binding ShowChanceFormulaBox, Converter={StaticResource BoolToVis}}">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="概率（%）" Style="{StaticResource Label}" MinWidth="96"/>
-                                <TextBox Grid.Column="1" Style="{StaticResource Field}"
-                                         Text="{Binding ChanceFormula, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="这条效果生效的百分比（0~100），现算。⚠ 写了公式的这条会**自己独立判一次**，不再和同组其它「概率生效」的效果共用一次掷骰。"/>
-                            </Grid>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,4,0,0"
                                        Text="{Binding CountFormulaHint}"/>
                         </StackPanel>
                     </GroupBox>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
                     <!-- 公式的「可用量」清单（只在卡牌这个模板里显示：公式目前只做在卡牌上）。
                          模板本体在 MainWindow.xaml 的窗口资源里（App.xaml 里写 Click 会解析成 App 的方法）。 -->
                     <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource FormulaBuiltinList}"

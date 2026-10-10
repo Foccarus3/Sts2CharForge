@@ -911,6 +911,12 @@ public static class CustomPowerGen
         // 每条效果外面永远包一层作用域：里面会声明 other / pick 这类临时变量，
         // 同一个触发时机里两条效果都声明同名变量时 C# 会 CS0136/CS0128 编译不过
         w.Open("");
+        // V0.2.132：新档位在状态链上也要能回读 —— 只在**新档位**（全体单位 / 全部友方不含召唤物）
+        // 出现时才写这一行；老存档（6 档 + 含召唤物）一个字符都不多（红线①）。
+        if (string.Equals(e.TargetSide, "AllUnits", StringComparison.Ordinal))
+            w.Line("// CET:TargetSide=AllUnits");
+        else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesExcludePets)
+            w.Line("// CET:TargetSide=AllAllies CET:AllyNoPets=1");
         if (loop) w.Open($"for (int __rep = 0; __rep < {(e.TimesIsStack ? "(int)base.Amount" : times.ToString())}; __rep++)");
 
         switch (e.Kind)
@@ -1141,6 +1147,16 @@ public static class CustomPowerGen
                         CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
                         w.Close();
                         break;
+                    case "AllUnits":
+                        // 全体单位（V0.2.132）：状态触发器里 `base.Owner` 本身就是 Creature，
+                        // 所以直接取它自己的 CombatState（不能用卡牌那套 base.Owner.Creature）。
+                        w.Open("if (base.Owner.CombatState is not null)")
+                         .Open("foreach (Creature other in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+                         .Line(CSharpCodeGen.ApplyPowerLine(e, useX: false, e.PowerId, "other", amt, "base.Owner", cardSourceExpr: "null"));
+                        CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
+                        w.Close()
+                         .Close();
+                        break;
                     case "RandomEnemies":
                         {
                             string times2 = e.RepeatIsStack ? "(int)base.Amount" : Math.Max(1, e.RepeatCount).ToString();
@@ -1299,6 +1315,14 @@ public static class CustomPowerGen
                          .Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, other, {amt}, base.Owner, null);")
                          .Close();
                         break;
+                    case "AllUnits":
+                        // 全体单位（V0.2.132）：两边所有存活单位，各打一份临时状态
+                        w.Open("if (base.Owner.CombatState is not null)")
+                         .Open("foreach (Creature other in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+                         .Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, other, {amt}, base.Owner, null);")
+                         .Close()
+                         .Close();
+                        break;
                     default:
                         EmitFoeBlock(w, foeFrom, foe =>
                             $"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, {foe}, {amt}, base.Owner, null);");
@@ -1341,6 +1365,14 @@ public static class CustomPowerGen
             case "AllEnemies":
                 w.Open("foreach (Creature other in base.Owner.CombatState.HittableEnemies)")
                  .Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);")
+                 .Close();
+                break;
+            case "AllUnits":
+                // 全体单位（V0.2.132）：两边所有存活单位（含自己 / 队友 / 召唤物 / 敌人）各挨一下
+                w.Open("if (base.Owner.CombatState is not null)")
+                 .Open("foreach (Creature other in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+                 .Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);")
+                 .Close()
                  .Close();
                 break;
             case "RandomEnemies":

@@ -1157,7 +1157,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         // 写了「概率公式」的那几条**退出**这个区间划分（它的百分比是运行时才算出来的，
         // 生成时算不出区间）—— 它们各自独立判一次，见 EffectConditionGuard。
-        var list = effects.Where(e => e.ChanceEnabled && e.ChancePercent > 0m && !e.UsesCountFormula("Chance")).ToList();
+        // V0.2.132：勾了「不同效果的概率各自独立判定」（EffectSpec.ChanceIndependent）的也退出 ——
+        // 它走的是「自己掷一次」那条路。默认档（false）与以前**逐字节相同**。
+        var list = effects.Where(e => e.ChanceEnabled && e.ChancePercent > 0m
+            && !e.UsesCountFormula("Chance") && !e.ChanceIndependent).ToList();
         var map = new Dictionary<EffectSpec, (double, double)>();
         if (list.Count == 0) return map;
         double sum = (double)list.Sum(e => e.ChancePercent);
@@ -1189,6 +1192,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         //（不能参与「同组共用一次掷骰、各占一段区间」—— 那段区间是生成时按固定百分比算的）。
         if (CountFormulaExpr(_formulaOwner, e, "Chance", out _) is { } chanceF)
             parts.Add($"__chanceRoll < (double)({chanceF})");
+        else if (e.ChanceEnabled && e.ChanceIndependent)
+            // V0.2.132：「不同效果的概率之间是否独立」勾上的那一条 —— **自己独立掷一次**
+            //（不再和同组其它效果共用一次掷骰 / 各占区间）。默认档不会走到这里，老文本不变。
+            parts.Add($"{player}.RunState.Rng.Niche.NextDouble() * 100.0 < {e.ChancePercent.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}");
         else if (chanceSlices is not null && chanceSlices.TryGetValue(e, out var slice))
             parts.Add($"__chanceRoll >= {slice.Start.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)} && __chanceRoll < {slice.End.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)}");
         else if (e.ChanceEnabled)
@@ -1206,6 +1213,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (e.ChanceEnabled)
             bits.Add(string.IsNullOrWhiteSpace(e.ChanceFormula)
                 ? $"{e.ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}% 概率生效"
+                  + (e.ChanceIndependent ? "（各自独立判定）" : "")
                 : $"{ForgeFormula.DisplayText(e.ChanceFormula)}% 概率生效（现算，自己独立判一次）");
         return string.Join("；", bits);
     }
@@ -3297,9 +3305,37 @@ public static class ExtraResourceEnergyCounterDiagPatch
         NeedsExistingPet(e) && e.Kind is not ("PetGuardOn" or "PetGuardOff");
 
     /// <summary>
+    /// 「全部友方」这一档的过滤后缀（V0.2.132，需求：「全部友方（可以选择包不包括召唤物）」）。
+    ///
+    /// <para>默认（<c>AllAlliesExcludePets = false</c>）返回**空串** —— 拼出来的过滤条件与 V0.2.131
+    /// 逐字节相同（<c>c =&gt; c.IsAlive &amp;&amp; c != base.Owner.Creature</c>），老存档的生成文本一个字节不变。</para>
+    ///
+    /// <para>勾了「不包括召唤物」才补一句 <c>&amp;&amp; c.PetOwner is null</c>
+    ///（本体 <c>Creature.PetOwner</c> 非空 = 那是这个玩家召唤出来的宠物）。</para>
+    /// </summary>
+    internal static string AllyFilterSuffix(EffectSpec e) =>
+        e.AllAlliesExcludePets ? " && c.PetOwner is null" : "";
+
+    /// <summary>
+    /// 「全体单位」那一档的守卫行（V0.2.132 新档）：<c>CombatState</c> 可能为 null（战斗外），先判一下。
+    /// 和 AllAllies 用同一个取法（<c>base.Owner.Creature.CombatState</c>），卡牌 / 遗物 / 药水 / 状态四条链通用。
+    /// </summary>
+    internal const string AllUnitsGuardLine = "if (base.Owner.Creature.CombatState is not null)";
+
+    /// <summary>
+    /// 「全体单位」那一档的循环头：<c>CombatState.Creatures</c> = <c>_allies.Concat(_enemies)</c>
+    ///（本体 CombatState.cs:71），也就是**两边所有单位**（含自己 / 队友 / 召唤物 / 敌人）；
+    /// 再按 <c>IsAlive</c> 滤掉尸体。
+    /// </summary>
+    internal const string AllUnitsForeachLine =
+        "foreach (Creature unit in base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList())";
+
+    /// <summary>
     /// 把「对某个生物做一件事」按作用对象展开（格挡 / 回复生命 / 失去生命 / 最大生命 现在支持打敌人）。
     /// Self = 自己；Enemy = 这张牌指定的目标（遗物/药水没有目标时退回「可打的第一个敌人」）；
-    /// AllEnemies = 所有可打的敌人；RandomEnemies = 随机 N 个（N 可以 = X）。
+    /// AllEnemies = 所有可打的敌人；RandomEnemies = 随机 N 个（N 可以 = X）；
+    /// AllAllies = 同一边的玩家单位（排除自己，可选排除召唤物）；
+    /// AllUnits = 场上两边所有存活单位（V0.2.132 新增）。
     /// </summary>
     private static void EmitPerCreature(CodeWriter w, EffectSpec e, bool useX,
         string selfExpr, string? cardTargetExpr, string enemiesExpr, Func<string, string> body)
@@ -3309,6 +3345,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AllEnemies":
                 w.Open($"foreach (Creature foe in {enemiesExpr})");
                 w.Line(body("foe"));
+                w.Close();
+                break;
+
+            case "AllUnits":
+                // 全体单位（V0.2.132）：自己 + 队友 + 召唤物 + 敌人，只要活着就各来一次。
+                // ⚠ 战斗状态从 selfExpr 取（**不要**写死 base.Owner.Creature）：三条链传进来的 selfExpr
+                // 都是「那个生物的表达式」—— 卡牌 / 遗物是 base.Owner.Creature，自定义状态是 base.Owner
+                //（状态钩子里 base.Owner 本身就是 Creature，写 base.Owner.Creature 会 CS1061）。
+                w.Open($"if ({selfExpr}.CombatState is not null)");
+                w.Open($"foreach (Creature unit in {selfExpr}.CombatState.Creatures.Where(c => c.IsAlive).ToList())");
+                w.Line(body("unit"));
+                w.Close();
                 w.Close();
                 break;
 
@@ -3358,9 +3406,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 全部队友 = 同一边（战斗状态里的 PlayerCreatures）里除自己以外的存活者。
                 // 本体「全体友方」用的就是 combatState.PlayerCreatures（本体卡 BladeSymphony 那种）。
                 // 用 base.Owner.Creature.CombatState 而不是 base.CombatState：卡牌 / 遗物两条链都通用。
+                // V0.2.132：勾了「不包括召唤物」时在过滤条件末尾补一句（默认档拼出来与以前逐字节相同）。
                 w.Open("if (base.Owner.Creature.CombatState is not null)")
                  .Open("foreach (Creature ally in base.Owner.Creature.CombatState.PlayerCreatures"
-                     + ".Where(c => c.IsAlive && c != base.Owner.Creature).ToList())")
+                     + ".Where(c => c.IsAlive && c != base.Owner.Creature" + AllyFilterSuffix(e) + ").ToList())")
                  .Line(body("ally"))
                  .Close()
                  .Close();
@@ -6090,6 +6139,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line("// CET:CountFormulas=" + EscapeMarker(string.Join("|",
                 EffectSpec.CountFormulaKeys.Where(k => !string.IsNullOrWhiteSpace(e.CountFormula(k)))
                     .Select(k => k + "=" + ForgeFormula.DisplayText(e.CountFormula(k))))));
+        // 「不同效果的概率之间是否独立」（V0.2.132）：**只在显式勾了「独立」时**写这一行 ——
+        // 默认档（同组共用一次掷骰、各占区间）一个字都不写，老存档的生成文本因此逐字节不变。
+        // 为什么要把百分比也带上：这一档的守卫是 `NextDouble() * 100.0 < N`，而回读**从来**
+        // 不回读概率（老缺口，见 ProjectRecovery 里没有 ChanceEnabled 的分支）—— 不写就还原不出 N。
+        if (e.ChanceEnabled && e.ChanceIndependent)
+            w.Line("// CET:ChanceIndependent=1 CET:ChancePct="
+                + e.ChancePercent.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture));
         // 条件数值的公式（用户要求⑦）：条件守卫那一行里已经变成算完的表达式，反推不回来 —— 所以整条条件
         // （种类 + 固定数值 + 状态 + 指向对象 + 两个公式）都写进一行标记，回读直接按它重建。
         // （标记写在条件守卫的**块内**：回读时由这一块里那条效果认领，见 ProjectRecovery 的 Done。）
@@ -6292,7 +6348,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (formula is not null && e.UpgradeAmount != 0m) amt = UpgradeAwareAmount(e, formula);
         // 作用对象是「队友」时写一行标记：生成出来的语句和「指定敌人」**长得一模一样**
         //（都是 `cardPlay.Target`），回读分不出这两档，只能靠标记还原（见 ProjectRecovery 的 pendingTargetSide）。
-        if (e.TargetSide is "Ally" or "AllAllies") w.Line($"// CET:TargetSide={e.TargetSide}");
+        // V0.2.132：「全体单位」的循环体（CombatState.Creatures）也认不出来，一起写标记；
+        // 「全部友方不包括召唤物」的过滤条件补在标记里（` CET:AllyNoPets=1`）—— 老存档两样都不会写，
+        // 生成文本一个字节不变。
+        if (e.TargetSide is "Ally" or "AllAllies" or "AllUnits")
+            w.Line($"// CET:TargetSide={e.TargetSide}" + (e.AllAlliesExcludePets ? " CET:AllyNoPets=1" : ""));
         // 格挡走的是另一条取数路径（BlockValueAccess），单独把公式接上去（升级增量同理）
         string blockAmt = formula is not null
             ? (e.UpgradeAmount != 0m ? UpgradeAwareAmount(e, formula) : formula)
@@ -6696,9 +6756,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     case "AllAllies":
                         w.Open("if (base.Owner.Creature.CombatState is not null)");
                         w.Open("foreach (Creature ally in base.Owner.Creature.CombatState.PlayerCreatures"
-                             + ".Where(c => c.IsAlive && c != base.Owner.Creature).ToList())");
+                             + ".Where(c => c.IsAlive && c != base.Owner.Creature" + AllyFilterSuffix(e) + ").ToList())");
                         w.Line(ApplyPowerLine(e, useX, e.PowerId, "ally", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "ally");
+                        w.Close();
+                        w.Close();
+                        break;
+
+                    // 全体单位（V0.2.132）：场上两边所有存活单位（含自己 / 队友 / 召唤物 / 敌人）
+                    case "AllUnits":
+                        w.Open(AllUnitsGuardLine);
+                        w.Open(AllUnitsForeachLine);
+                        w.Line(ApplyPowerLine(e, useX, e.PowerId, "unit", amt, "base.Owner.Creature"));
+                        EmitSlowPercentFix(w, e, "unit");
                         w.Close();
                         w.Close();
                         break;
@@ -6736,8 +6806,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     case "AllAllies":
                         w.Open("if (base.Owner.Creature.CombatState is not null)")
                          .Open("foreach (Creature ally in base.Owner.Creature.CombatState.PlayerCreatures"
-                             + ".Where(c => c.IsAlive && c != base.Owner.Creature).ToList())")
+                             + ".Where(c => c.IsAlive && c != base.Owner.Creature" + AllyFilterSuffix(e) + ").ToList())")
                          .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, ally, {amt}, base.Owner.Creature, this);")
+                         .Close()
+                         .Close();
+                        break;
+
+                    // 全体单位（V0.2.132）：两边所有存活单位，各打一份临时状态
+                    case "AllUnits":
+                        w.Open(AllUnitsGuardLine)
+                         .Open(AllUnitsForeachLine)
+                         .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, unit, {amt}, base.Owner.Creature, this);")
                          .Close()
                          .Close();
                         break;
@@ -6819,9 +6898,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AllAllies":
                 w.Open("if (base.Owner.Creature.CombatState is not null)");
                 w.Open("foreach (Creature ally in base.Owner.Creature.CombatState.PlayerCreatures"
-                     + ".Where(c => c.IsAlive && c != base.Owner.Creature).ToList())");
+                     + ".Where(c => c.IsAlive && c != base.Owner.Creature" + AllyFilterSuffix(e) + ").ToList())");
                 w.Line($"{pre}await DamageCmd.Attack({amt})")
                  .Indent().Line(".FromCard(this, cardPlay)").Line(".Targeting(ally)")
+                 .Line(RepeatExpr(e, useX) == "1" ? "" : $".WithHitCount({RepeatExpr(e, useX)})")
+                 .Line(".WithHitFx(\"vfx/vfx_attack_slash\")").Line(".Execute(choiceContext);").Dedent().Line();
+                w.Close();
+                w.Close();
+                break;
+
+            // 全体单位（V0.2.132）：场上两边所有存活单位，逐个各打一次（含自己 / 队友 / 召唤物 / 敌人）
+            case "AllUnits":
+                w.Open(AllUnitsGuardLine);
+                w.Open(AllUnitsForeachLine);
+                w.Line($"{pre}await DamageCmd.Attack({amt})")
+                 .Indent().Line(".FromCard(this, cardPlay)").Line(".Targeting(unit)")
                  .Line(RepeatExpr(e, useX) == "1" ? "" : $".WithHitCount({RepeatExpr(e, useX)})")
                  .Line(".WithHitFx(\"vfx/vfx_attack_slash\")").Line(".Execute(choiceContext);").Dedent().Line();
                 w.Close();
@@ -8773,6 +8864,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             }
             // 「全部召唤物」的「召唤伙伴」：给这一组一个组号，回读时把展开的多份合并回一条
             string? petAllGroup = PetGen.IsAll(e.PetSummon) && e.Kind == "SummonPet" ? "r" + petAllSeq++ : null;
+            // V0.2.132：新档位在**遗物链**上也要能回读 —— 卡牌链的标记写在 EmitCardEffect 里，
+            // 遗物这条链没有；只在**新档位**（全体单位 / 全部友方不含召唤物）出现时才补一行，
+            // 老存档（6 档 + 含召唤物）一个字符都不多（红线①）。
+            if (string.Equals(e.TargetSide, "AllUnits", StringComparison.Ordinal))
+                w.Line("// CET:TargetSide=AllUnits");
+            else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesExcludePets)
+                w.Line("// CET:TargetSide=AllAllies CET:AllyNoPets=1");
             EmitRelicEffect(w, p, e, hasContext, relicVars, roomVar, petAllGroup, relicEffectIndex++);
             if (cond is not null) w.Close();
         }
@@ -9192,6 +9290,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // （以前这里写的是 Unblockable|Unpowered|Move = DamageProps.cardHpLoss，
                     //   和「失去生命」一模一样，于是护盾一格都吃不到 —— 用户报的就是这个。）
                     w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Unpowered, null, null);");
+                else if (e.TargetSide == "AllUnits")
+                    // 全体单位（V0.2.132）：两边所有存活单位（含自己 / 队友 / 召唤物 / 敌人）
+                    w.Open(AllUnitsGuardLine)
+                     .Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList(), {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Close();
                 else
                     w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, ValueProp.Move, base.Owner.Creature);");
                 break;
@@ -9351,6 +9454,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // 一次性对全体施加（上面那条重载），这里逐个补百分比
                     EmitSlowPercentFixForAll(w, e);
                 }
+                else if (e.TargetSide == "AllUnits")
+                {
+                    // 全体单位（V0.2.132）：两边所有存活单位，各施加一份
+                    w.Open(AllUnitsGuardLine)
+                     .Open(AllUnitsForeachLine)
+                     .Line(ApplyPowerLine(e, useX: false, e.PowerId, "unit", amt, "base.Owner.Creature", cardSourceExpr: "null"));
+                    EmitSlowPercentFix(w, e, "unit");
+                    w.Close()
+                     .Close();
+                }
                 else
                 {
                     // 「指定敌人」：遗物没有「玩家选中的目标」→ 取可打的第一个敌人（和其它效果同一套约定）
@@ -9385,6 +9498,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 }
                 else if (e.TargetSide == "AllEnemies")
                     w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, base.Owner.Creature, null);");
+                else if (e.TargetSide == "AllUnits")
+                {
+                    // 全体单位（V0.2.132）：两边所有存活单位，各打一份临时状态
+                    w.Open(AllUnitsGuardLine)
+                     .Open(AllUnitsForeachLine)
+                     .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, unit, {amt}, base.Owner.Creature, null);")
+                     .Close()
+                     .Close();
+                }
                 else
                 {
                     w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
@@ -9549,6 +9671,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "AllEnemies":
                 w.Open($"foreach (Creature foe in {enemiesExpr})")
                  .Line("await CreatureCmd.Stun(foe);")
+                 .Close();
+                break;
+            case "AllUnits":
+                // 全体单位（V0.2.132）：两边所有存活单位，各打晕一次。
+                // ⚠ 战斗状态从 playerExpr 取：卡牌 / 遗物传 base.Owner（Player），
+                // 自定义状态传 base.Owner.Player —— 写死 base.Owner.Creature 在状态链上会 CS1061。
+                w.Open($"if ({playerExpr}.Creature.CombatState is not null)")
+                 .Open($"foreach (Creature unit in {playerExpr}.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+                 .Line("await CreatureCmd.Stun(unit);")
+                 .Close()
                  .Close();
                 break;
             case "RandomEnemies":
@@ -10332,6 +10464,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用）
         if (IsSlowPercentEffect(e)) amt = "1m";
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";
+        // V0.2.132：药水这条链也把新档位写一行回读标记（只在**新档位**出现时才写；
+        // 药水实际打谁仍由药水自己的「作用目标」决定，这一栏只影响卡面描述 —— 校验器会提示）。
+        if (string.Equals(e.TargetSide, "AllUnits", StringComparison.Ordinal))
+            w.Line("// CET:TargetSide=AllUnits");
+        else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesExcludePets)
+            w.Line("// CET:TargetSide=AllAllies CET:AllyNoPets=1");
         switch (e.Kind)
         {
             case "EndTurn":

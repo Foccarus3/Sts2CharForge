@@ -245,6 +245,15 @@ public sealed class EffectSpec : SpecBase
     private int _times = 1;
     private bool _allowDuplicates = true;
     private bool _nextTurn;
+    // ===== V0.2.132（《卡牌页优化.md》右侧④）=====
+    // 「全部友方」这一档**要不要把召唤物排除在外**（默认 false = 老行为：同一边的玩家单位全算，
+    // 召唤物也算友方）。只有 TargetSide == "AllAllies" 时它才有意义；默认档生成出来的代码与
+    // V0.2.131 **逐字节相同**（见 CSharpCodeGen.AllyFilterSuffix）。
+    private bool _allAlliesExcludePets;
+    // 「不同效果的概率之间是否独立」：默认 false = 老行为（同一张牌 / 同一只遗物里勾了概率的效果
+    // **共用一次掷骰**、各占一段区间，见 ChanceSlices）；true = 这条效果**自己掷一次**、不再占区间。
+    // 默认档不写任何新标记 → 老存档生成文本不变。
+    private bool _chanceIndependent;
     // 「生成卡牌 + 按范围随机」时：候选 = 这一组范围里的**全部卡**，玩家自己挑一张（不再随机抽候选）
     private bool _spawnChosen;
     private string? _powerId;
@@ -380,6 +389,12 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(UsesAmountFormula));
                 // 次数类公式那几行的显隐（「命中次数 / 复制份数 / 重放次数」只在对应的种类下才有效）
                 RaiseCountFormulaBoxes();
+                // 「下回合生效」那一行按种类显隐（V0.2.132：卡牌链上它挪到 Grid 第 6 行，
+                // 老控件那一份在 StackPanel 里 —— 两边的开关都要通知，换种类时才会当场出现 / 收起）。
+                Raise(nameof(ShowNextTurn));
+                Raise(nameof(ShowCardNextTurnRow));
+                Raise(nameof(ShowPlainNextTurnRow));
+                Raise(nameof(ShowCardRepeatRow));
                 Raise(nameof(Display));
             }
         }
@@ -502,7 +517,29 @@ public sealed class EffectSpec : SpecBase
     public bool IsCardChain
     {
         get => _isCardChain;
-        set { if (_isCardChain == value) return; _isCardChain = value; Raise(nameof(ShowAmountBox)); }
+        set
+        {
+            if (_isCardChain == value) return;
+            _isCardChain = value;
+            Raise(nameof(IsCardChain));
+            Raise(nameof(ShowAmountBox));
+            // V0.2.132：卡牌链专用那几行（概率 / 下回合生效 / 命中次数·生效次数公式）也按它显隐 ——
+            // 不通知的话「在列表里点一条效果」时那几行不会当场出现（老坑：V0.2.107 的触发时机）。
+            RaiseCardChainRows();
+        }
+    }
+
+    /// <summary>卡牌链专用那几行 + 让位给它们的老控件，全部通知一遍（见 App.xaml 的 EffectCommon）。</summary>
+    private void RaiseCardChainRows()
+    {
+        Raise(nameof(ShowCardChanceRow));
+        Raise(nameof(ShowCardNextTurnRow));
+        Raise(nameof(ShowPlainChanceRow));
+        Raise(nameof(ShowPlainNextTurnRow));
+        Raise(nameof(ShowCardRepeatRow));
+        Raise(nameof(ShowPlainFixedRepeatBox));
+        Raise(nameof(ShowCardTimesRow));
+        Raise(nameof(ShowPlainFixedTimesBox));
     }
 
     // ==================================================================================
@@ -548,6 +585,7 @@ public sealed class EffectSpec : SpecBase
             Raise(nameof(ShowForgeRepeatBox));
             Raise(nameof(ShowChanceRowNormal));
             Raise(nameof(ShowChanceRowForge));
+            RaiseCardChainRows();
         }
     }
 
@@ -571,6 +609,34 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore] public bool ShowChanceRowNormal => !IsForgeChain;
     /// <summary>锻造链的「概率生效（%）」文本框（100 = 必定，能写公式）。</summary>
     [JsonIgnore] public bool ShowChanceRowForge => IsForgeChain;
+
+    // ===== V0.2.132（《卡牌页优化.md》右侧④：卡牌链的效果编辑器重排）=====
+    //
+    // 需求给的顺序：升级增量 → 效果种类 → 数值 → 作用对象 → 命中次数 → 生效次数 → 概率 → 下回合生效
+    // →（其余按种类只留用得到的）。「概率」和「下回合生效」原来在 App.xaml 那个「按条件出现的行」
+    // StackPanel 里（在种类专属项**下面**），现在给卡牌链单独摆到 Grid 的第 5、6 行（正好在
+    // 「生效次数」下面、种类专属项上面）；**遗物 / 药水 / 自定义状态 / 锻造链一个字都不动** ——
+    // 它们继续用 StackPanel 里那两行老控件，新摆的那两行对它们恒为 Collapsed（见下面这些开关）。
+    //
+    // 为什么要「老控件 + 新控件」两份：WPF 里一个控件不能同时出现在两个位置。同一份绑定复制一份，
+    // 靠 IsCardChain 二选一显示 —— 于是四处老链的控件树、绑定路径、行位置全都是原样。
+
+    /// <summary>卡牌链专用的「概率」行（Graph 第 5 行：勾选框 + 百分比 + 概率公式 + 「是否独立」）。</summary>
+    [JsonIgnore] public bool ShowCardChanceRow => IsCardChain;
+    /// <summary>卡牌链专用的「下回合生效」行（Graph 第 6 行）。</summary>
+    [JsonIgnore] public bool ShowCardNextTurnRow => IsCardChain && ShowNextTurn;
+    /// <summary>老「概率」行（StackPanel 里那一份）—— 卡牌链之外照旧显示，卡牌链上让位给上面那一行。</summary>
+    [JsonIgnore] public bool ShowPlainChanceRow => ShowChanceRowNormal && !IsCardChain;
+    /// <summary>老「下回合生效」勾选框 —— 同上，卡牌链上让位给第 6 行那一份。</summary>
+    [JsonIgnore] public bool ShowPlainNextTurnRow => ShowNextTurn && !IsCardChain;
+    /// <summary>卡牌链上「命中次数」那一行里的**公式框**（和固定数字框并排）。</summary>
+    [JsonIgnore] public bool ShowCardRepeatRow => IsCardChain && ShowRepeatCountInput;
+    /// <summary>卡牌链上「命中次数」固定数字框（搬进上面那一行的横排里，老位置那份让位）。</summary>
+    [JsonIgnore] public bool ShowPlainFixedRepeatBox => ShowFixedRepeatBox && !IsCardChain;
+    /// <summary>卡牌链上「生效次数」那一行里的**公式框**（和固定数字框并排）。</summary>
+    [JsonIgnore] public bool ShowCardTimesRow => IsCardChain;
+    /// <summary>卡牌链上「生效次数」固定数字框（搬进上面那一行的横排里，老位置那份让位）。</summary>
+    [JsonIgnore] public bool ShowPlainFixedTimesBox => ShowFixedTimesBox && !IsCardChain;
 
     private string _forgeAmountText = "";
 
@@ -1038,6 +1104,11 @@ public sealed class EffectSpec : SpecBase
         // 「命中次数 / 对群数」那一行本身（换种类 / 换作用对象时要跟着出现或收起）
         Raise(nameof(UsesRepeatCount));
         Raise(nameof(ShowRepeatCountInput));
+        // V0.2.132：卡牌链上「命中次数」那一行是横排（固定框 + 公式框），让位关系也要一起通知
+        Raise(nameof(ShowCardRepeatRow));
+        Raise(nameof(ShowPlainFixedRepeatBox));
+        Raise(nameof(ShowCardTimesRow));
+        Raise(nameof(ShowPlainFixedTimesBox));
     }
 
     /// <summary>次数类公式那一栏底下的说明（写清了只做在卡牌上、和「= X / = 层数」不能同时用）。</summary>
@@ -1209,19 +1280,41 @@ public sealed class EffectSpec : SpecBase
         set { if (Set(ref _chancePercent, value)) Raise(nameof(Display)); }
     }
 
-    /// <summary>概率那一行在效果列表 / 卡面上的文案（写了公式就印公式）。</summary>
+    /// <summary>
+    /// 「不同效果的概率之间是否独立」（V0.2.132，《卡牌页优化.md》右侧④）。
+    ///
+    /// <para><b>默认 false = 老行为</b>：同一张牌 / 同一只遗物 / 同一个触发时机里，所有勾了「概率生效」的效果
+    /// **共用一次掷骰**、各占一段区间（第一条 40% + 第二条 60% = 掷出 0~39.999 只跑第一条，
+    /// 40~99.999 只跑第二条，见 <c>CSharpCodeGen.ChanceSlices</c>）。</para>
+    ///
+    /// <para>true = 这条效果**自己独立掷一次**（<c>NextDouble() * 100.0 &lt; 这条的百分比</c>），
+    /// 不再参与区间划分 —— 于是「50% 的两条」会各自判定，可能两条都中、也可能两条都不中。</para>
+    ///
+    /// <para>为什么放在**效果**上而不是整张牌上：界面那一栏长在每条效果自己的「概率」底下（需求原文
+    /// 「再其下为概率…并且可以选择不同效果的概率之间是否独立」），而且遗物 / 状态链的「一组」是各条
+    /// 触发时机，放在效果上才能让每一条各自决定。默认档<b>不写任何新标记</b>，老存档的生成文本一个字节都不变。</para>
+    /// </summary>
+    public bool ChanceIndependent
+    {
+        get => _chanceIndependent;
+        set { if (Set(ref _chanceIndependent, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>概率那一行在效果列表 / 卡面上的文案（写了公式就印公式；选了「独立」再补一句）。</summary>
     [JsonIgnore]
     public string ChanceText => !ChanceEnabled ? ""
-        : !string.IsNullOrWhiteSpace(ChanceFormula) ? $"（{Generation.ForgeFormula.DisplayText(ChanceFormula)}% 概率）"
-        : $"（{ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}% 概率）";
+        : !string.IsNullOrWhiteSpace(ChanceFormula)
+            ? $"（{Generation.ForgeFormula.DisplayText(ChanceFormula)}% 概率{(_chanceIndependent ? "，各自独立判定" : "")}）"
+            : $"（{ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}% 概率{(_chanceIndependent ? "，各自独立判定" : "")}）";
 
     /// <summary>「召唤 / 伙伴攻击」这条效果指向的召唤物（类名；留空 = 还没选）。</summary>
     [JsonIgnore]
     public string PetSummonTag => (PetSummon ?? "").Trim();
-    /// <summary>本条效果对谁生效：Self / Enemy / AllEnemies / RandomEnemies</summary>
+    /// <summary>本条效果对谁生效：Self / Ally / AllAllies / Enemy / RandomEnemies / AllEnemies / AllUnits</summary>
     /// <summary>
     /// 作用对象（这条效果对谁生效）。改它会连带影响「命中次数 / 对群数」那一行要不要显示
-    ///（只有「随机敌人」会用到那个数字，见 <see cref="UsesRepeatCount"/>）。
+    ///（只有「随机敌人」会用到那个数字，见 <see cref="UsesRepeatCount"/>），以及「全部友方」
+    /// 那条「不包括召唤物」的子选项要不要显示（见 <see cref="ShowAllyNoPetsOption"/>）。
     /// </summary>
     public string TargetSide
     {
@@ -1231,10 +1324,29 @@ public sealed class EffectSpec : SpecBase
             if (!Set(ref _targetSide, value)) return;
             Raise(nameof(UsesRepeatCount));
             Raise(nameof(ShowRepeatCountInput));
+            Raise(nameof(ShowAllyNoPetsOption));
             RaiseCountFormulaBoxes();
             Raise(nameof(Display));
         }
     }
+
+    /// <summary>
+    /// 「全部友方」这一档**不包括召唤物**（V0.2.132，需求原文：「全部友方（可以选择包不包括召唤物）」）。
+    ///
+    /// <para><b>默认 false = 老行为</b>：同一边的玩家单位全算（含召唤物）——
+    /// 生成的过滤条件原样是 <c>c =&gt; c.IsAlive &amp;&amp; c != base.Owner.Creature</c>，
+    /// 和 V0.2.131 逐字节相同。true 才在末尾补一句 <c>&amp;&amp; c.PetOwner is null</c>
+    ///（本体 <c>Creature.PetOwner</c> 非空 = 那是宠物 / 召唤物）。</para>
+    /// </summary>
+    public bool AllAlliesExcludePets
+    {
+        get => _allAlliesExcludePets;
+        set { if (Set(ref _allAlliesExcludePets, value)) Raise(nameof(Display)); }
+    }
+
+    /// <summary>界面 XAML 直接绑：「全部友方」的子选项那一行只在选了「全部友方」时显示。</summary>
+    [JsonIgnore]
+    public bool ShowAllyNoPetsOption => string.Equals(_targetSide, "AllAllies", StringComparison.Ordinal);
     public int RepeatCount { get => _repeatCount; set => Set(ref _repeatCount, value); }
     /// <summary>生效次数：整条效果重复执行几遍（1~20，1 = 只执行一次）</summary>
     public int Times { get => _times; set => Set(ref _times, value); }
