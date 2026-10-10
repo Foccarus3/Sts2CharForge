@@ -8,6 +8,16 @@ namespace Sts2CharForge.Core.Generation;
 /// <summary>生成本地化文件（characters / cards / relics / potions / ancients / powers）。</summary>
 public static class LocalizationGen
 {
+    /// <summary>
+    /// 角色「说明」留空时生成端填的那句**兜底文案**（V0.2.134 抽成常量）。
+    ///
+    /// 为什么要有这个常量：这一句是**生成端造的默认值**，不是用户写的。从工程恢复时如果不认得它，
+    /// 就会把它当成用户填的说明读回来 —— 于是「空说明」生成出来的工程，恢复后说明变成了这一句，
+    /// 再生成一次 mod_manifest.json 就跟第一次不一样了（实测：这一版自检里抓到）。
+    /// 生成 / 回读两边共用这一个字符串，判据就是「说明 == 这句 && 清单里 description 是空的」→ 当没填。
+    /// </summary>
+    public const string DefaultCharacterDescription = "一个自定义角色。";
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -41,7 +51,7 @@ public static class LocalizationGen
         {
             [$"{n.CharEntry}.title"] = p.DisplayName,
             [$"{n.CharEntry}.titleObject"] = p.DisplayName,
-            [$"{n.CharEntry}.description"] = string.IsNullOrWhiteSpace(p.Description) ? "一个自定义角色。" : p.Description,
+            [$"{n.CharEntry}.description"] = string.IsNullOrWhiteSpace(p.Description) ? DefaultCharacterDescription : p.Description,
             [$"{n.CharEntry}.pronounObject"] = obj,
             [$"{n.CharEntry}.possessiveAdjective"] = poss,
             [$"{n.CharEntry}.pronounPossessive"] = possPro,

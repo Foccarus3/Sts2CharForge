@@ -24,6 +24,12 @@ public sealed class RecoveryResult
     /// </summary>
     public List<string> PetClassNames { get; } = new();
 
+    /// <summary>
+    /// V0.2.134：**从工程里认回来的锻造节点图**（每张图一行，给用户看的摘要）。
+    /// 老工程（V0.2.133 及以前生成、没有图标记）这里是空的 —— 那不是错误，只是图恢复不回来。
+    /// </summary>
+    public List<string> IsForged { get; } = new();
+
     public bool HasUnparsed => Unparsed.Count > 0;
 }
 
@@ -80,6 +86,12 @@ public static class ProjectRecovery
         }
         p.ModId = modId;
         p.ModDisplayName = modName.Length > 0 ? modName : modId;
+        // V0.2.134：清单里本来就写着作者 / 版本 / 模组说明，以前**没有回读**（不报错、静默变成空串）——
+        // 后果是「从工程恢复 → 再生成一次」的 mod_manifest.json 会跟第一次不一样。
+        // 这三样在工程里没有别的载体，只能从清单认回来；空串照旧不回写（别把模板带来的值冲掉）。
+        if (author.Length > 0) p.Author = author;
+        if (version.Length > 0) p.Version = version;
+        if (description.Length > 0) p.Description = description;
 
         var loc = LocTables.Load(projectDir, modId);
 
@@ -97,6 +109,13 @@ public static class ProjectRecovery
         string charEntry = EffectCatalog.SlugFor(charClass);
         p.DisplayName = loc.Get($"{charEntry}.title", p.ModDisplayName);
         p.Description = loc.Get($"{charEntry}.description", description);
+        // V0.2.134：「说明」那一栏在工程里**没有自己的载体** —— 空说明生成出去就是本地化表里那句
+        // 兜底文案（见 LocalizationGen.DefaultCharacterDescription）。不把这一档认出来的话，
+        // 恢复出来的存档会「无中生有」多出一句说明，再生成一次 mod_manifest.json 就与第一次不同。
+        // 判据两条一起看：本地化文本 == 兜底那句 **且** 清单里 description 是空的 → 当作用户没填。
+        if (string.Equals(p.Description, LocalizationGen.DefaultCharacterDescription, StringComparison.Ordinal)
+            && description.Length == 0)
+            p.Description = "";
         p.DeathText = loc.Get($"{charEntry}.eventDeathPrevention", "……还不到时候。");
         p.DeadBanterText = loc.Get($"{charEntry}.banter.dead.endTurnPing", "……");
         result.Notes.Add($"角色：{p.DisplayName}（{charClass}）HP {p.StartingHp} / 金币 {p.StartingGold}");
@@ -175,6 +194,10 @@ public static class ProjectRecovery
                 if (Path.GetFileName(file).EndsWith("ExtraResourceRelic.cs", StringComparison.Ordinal)) continue;
                 var relic = ParseRelic(file, p, loc, nameToPowerId, result);
                 relic.IsStartingRelic = startingRelics.Contains(relic.ClassName);
+                // V0.2.134：锻造节点图（遗物那一档）—— 和卡牌同一个标记、同一套回读。
+                if (ForgeGraphGen.AttachMarker(file, relic, result, $"遗物「{relic.Name}」的锻造节点图",
+                        portVersionSink: () => p.ForgeGraphPortVersion = ForgeGraphGen.PortVersion))
+                    result.IsForged.Add($"{relic.Name}（遗物 · {relic.ForgeGraph!.Nodes.Count} 个模块）");
                 p.Relics.Add(relic);
             }
         }
@@ -183,7 +206,14 @@ public static class ProjectRecovery
         string potionDir = Path.Combine(cs, "Potions");
         if (Directory.Exists(potionDir))
             foreach (string file in Sorted(Directory.GetFiles(potionDir, "*.cs")))
-                p.Potions.Add(ParsePotion(file, p, loc, nameToPowerId, result));
+            {
+                var potion = ParsePotion(file, p, loc, nameToPowerId, result);
+                // V0.2.134：锻造节点图（药水那一档）。
+                if (ForgeGraphGen.AttachMarker(file, potion, result, $"药水「{potion.Name}」的锻造节点图",
+                        portVersionSink: () => p.ForgeGraphPortVersion = ForgeGraphGen.PortVersion))
+                    result.IsForged.Add($"{potion.Name}（药水 · {potion.ForgeGraph!.Nodes.Count} 个模块）");
+                p.Potions.Add(potion);
+            }
 
         // ---- 额外资源量 ----
         ParseExtraResource(projectDir, cs, p, loc, result, nameToPowerId);
@@ -255,6 +285,12 @@ public static class ProjectRecovery
         result.Notes.Add($"卡牌 {p.Cards.Count(c => !c.IsVanillaCard)} 张（初始牌 {p.Cards.Count(c => c.InStartingDeck && !c.IsVanillaCard)} 张 / 不入池 {p.Cards.Count(c => !c.IsVanillaCard && !c.InCardPool)} 张）"
             + (p.Cards.Any(c => c.IsVanillaCard) ? $" + 本体卡引用 {p.Cards.Count(c => c.IsVanillaCard)} 条" : "")
             + $"、遗物 {p.Relics.Count} 个、药水 {p.Potions.Count} 个、自定义状态 {p.CustomPowers.Count} 个");
+        // V0.2.134：锻造节点图从工程恢复的结果（老工程 = 0 张，不是错误，界面 / 日志照旧说清）
+        if (result.IsForged.Count > 0)
+            result.Notes.Add($"锻造节点图：从工程里认回 {result.IsForged.Count} 张 —— " + string.Join("、", result.IsForged));
+        else
+            result.Notes.Add("锻造节点图：这个工程里一行图标记都没有（V0.2.133 及以前生成的工程就是这一档）"
+                + "—— 图仍然为空，其余字段照旧恢复；要拿回图请用生成它的那一版重新生成一次。");
         return result;
     }
 
@@ -477,6 +513,10 @@ public static class ProjectRecovery
         // 只借用「环境路径 / 素材路径」这些工程里反推不出来的东西
         return new CharacterProfile
         {
+            // ⚠ 锻造图的端口版本要借过来（V0.2.134）：不借的话恢复出来的存档是 0，
+            // 下次一 Load 就被 ForgeGraphGen.MigrateIfPorts 当成老存档**再迁一次**，
+            // 【if】的「是 / 否」两支会挪位（实测：6 张图各丢一条线 / 换一条线）。
+            ForgeGraphPortVersion = t.ForgeGraphPortVersion,
             // 召唤物的宠物图路径借过来（工程里只能反推出「有没有」，反推不出用户原来选的是哪张图）。
             // 这里只借**第一只**的图当模板：真正的图片路径在下面 ParseSummon 里按工程里的 PNG 重新指过去。
             Summons = new System.Collections.ObjectModel.ObservableCollection<SummonSpec>(
@@ -664,6 +704,15 @@ public static class ProjectRecovery
             card.UpgradeStarCost = baseStar + starDelta;
 
         ParseCardCondition(card, text, nameToPowerId, result, cls);
+        // V0.2.134：锻造节点图（从工程恢复）。生成端把整张图写成一行 `// CET:ForgeGraph=<版本>:<Base64>`
+        // （见 ForgeGraphGen.MarkerOf）—— 这里按标记把图整个装回来，并把 IsForged 置 true。
+        // 老工程（V0.2.133 及以前，没有这行标记）→ ReadMarker 返回 null、**不报错**，
+        // 图仍然是空的、IsForged 仍然是 false（和以前逐字一样，不产生「没认出来」）。
+        if (ForgeGraphGen.AttachMarker(file, card, result, $"卡牌「{cls}」的锻造节点图",
+                portVersionSink: () => profile.ForgeGraphPortVersion = ForgeGraphGen.PortVersion))
+            result.IsForged.Add($"{card.Name}（{card.ForgeGraph!.Nodes.Count} 个模块 / {card.ForgeGraph.Links.Count} 条连线）");
+        ForgeGraphGen.AttachMarker(file, card, result, $"卡牌「{cls}」的升级后锻造节点图", upgraded: true,
+            portVersionSink: () => profile.ForgeGraphPortVersion = ForgeGraphGen.PortVersion);
         return card;
 
         static void p_xPlus(CardSpec c) => c.XPlusOnUpgrade = true;

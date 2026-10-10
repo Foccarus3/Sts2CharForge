@@ -1,5 +1,83 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 21 批需求（V0.2.134：**锻造节点图能从工程恢复**，用户 2026-10-10 拍板「要」）
+
+> 拍板依据：`docs\需求\已拍板决定.md` **第五节第 ② 条**（用户选「要做这一版」）。
+> 背景：`ProjectRecovery` 从 V0.2.103 起只回读「效果列表 + 卡牌/遗物/药水的时机与描述」，
+> **从来不认锻造节点图**；工程里只有编译结果，节点图只存在存档里。用户真实存档已受影响
+> （`DarkVinci.json` 6 张、`SparkleMod.json` 2 张锻造卡，`--recover` 后 `IsForged` 全 false、图全空）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **锻造节点图能从工程恢复**（`IsForged=true` + `ForgeGraph` 非空 + 逐字段还原） | **生成端**：`ForgeGraphGen` 新增 `MarkerView=1` / `MarkerPrefix` / `MarkerOf` / `ApplyGraphMarker`，由 `TimingFields`（三个调用点 = 卡牌 / 遗物 / 药水，且本来就在「图非空」的 if 里、每个执行点各调一次）统一追加一行 **`// CET:ForgeGraph=1:<图的紧凑 JSON 的 Base64>`**（写在类级、紧贴「===== 锻造节点图」那一行前面）；`TimingFields` 原体抽成 `TimingFieldsCore`，**老存档图空时一个字符都不多**。选 Base64 而不是裸 JSON：图上任何一栏都可能带引号 / 反斜杠 / 换行 / 中文，Base64 之后保证单行、无歧义、`Convert.FromBase64String` 直接读回。**回读端**：`ProjectRecovery` 在 `ParseCard` / 遗物 / 药水三处调 `ForgeGraphGen.AttachMarker` → `ReadMarker`（支持 `skip` 读第二行 = 升级后那块布）→ `ForgeGraphSpec` 整个装回来 + `IsForged=true`。**老工程（V0.2.133 及以前、没有这行）照旧**：`ReadMarker` 返回 null、**不报错、不产生「没认出来」**，图仍空、`IsForged` 仍 false。**不许静默**：版本不认识 / Base64·JSON 坏了 → 进 `RecoveryResult.Unparsed` 说清是哪个条目的哪块布；`ModGenerator` 生成后自检把每个带标记的文件当场解开验一遍，解不开直接**错误级中止生成**。**界面**：`OnRecoverProfileFromProject` 日志单独一行 + 状态栏 / 确认框带上「含锻造图 N 张」。**端口版本（这一版的关键修复）**：恢复出来的存档 `ForgeGraphPortVersion` 以前是 0 → 下次一 Load 就被 `MigrateIfPorts` 当老存档**再迁一次**（实测 6 张图各丢一条线、换一条线）→ 现在认到标记就抬到 `ForgeGraphGen.PortVersion`，`CloneForTemplate` 也照抄模板那份 | ✅V0.2.134 |
+| ② | **顺带补掉端到端往返暴露的三处既有回读缺口**（都不是这一版引入的，但都会让「恢复出的存档再生成一次」跟第一次不一样） | ① `mod_manifest.json` 里的 `author` / `version` / `description` 本来就写着、以前**没读**（恢复后静默变空串）→ 现在读回来（空串不回写，别冲掉模板带来的值）；② 角色「说明」留空时生成端写的**兜底文案**（抽成 `LocalizationGen.DefaultCharacterDescription` = 「一个自定义角色。」）以前会被当成用户填的说明读回来 → 现在「文案 == 兜底那句 **且** 清单里 description 是空的」当没填；③ 上面那条端口版本 | ✅V0.2.134 |
+
+> **图标记格式定义（发版说明用）**
+> ```
+> // CET:ForgeGraph=<版本>:<Base64(UTF-8(图的紧凑 JSON))>
+> ```
+> - `<版本>` 现在是 `1`（`ForgeGraphGen.MarkerVersion`）；**改格式就 +1，回读端遇到不认识的版本一定报错说清**（不许静默丢图）。
+> - JSON 就是 `ForgeGraphSpec` 用存档同一套 `ProfileFactory.JsonOpts` 序列化的结果（`Nodes[].Id/Kind/X/Y/Fields/EffectSpec/EffectFromLegacy` + `Links[]` + `Note`）。
+> - 位置：生成出来的类里，紧贴在 `// ===== 锻造节点图…` 那一行**前面**；每个条目**每块布一行**（卡牌升级前 / 升级后各一行，遗物 / 药水各一行）。`ReadMarker` 的 `skip` 参数读的就是第几行。
+> - **只在图非空时写**；图空 / null 的条目一个字符都不加。
+
+> **代价清单（必须让用户知道：从这一版起，锻造图会写进产物）**
+> - **逐字节不变**：`--samplegen`（示例存档，没有锻造图）112 个文件里 **111 个逐文件 SHA256 一致**，唯一差异是 `ExampleMod.sln` 的**随机 GUID**（去掉 GUID 后逐字相同）。任何**没有锻造图**的存档同理。
+> - **多出标记的清单（改动前 → 改动后，逐文件逐字节对拍；「删掉新增的标记行后有内容行逐字节相同」= 证明别的一字未改）**：
+>
+> | 存档 | 文件 | 原字节 | 新字节 | Δ | 新增行 |
+> |---|---|---|---|---|---|
+> | `DarkVinci.json` | `cs/Cards/DarkVinciDoubleFlash.cs` | 4957 | 28173 | +23216 | 2 |
+> | | `cs/Cards/DarkVinciFlash.cs` | 3759 | 30015 | +26256 | 2 |
+> | | `cs/Cards/DarkVinciIgnite.cs` | 5112 | 40368 | +35256 | 2 |
+> | | `cs/Cards/DarkVinciImpastoForm.cs` | 3922 | 14522 | +10600 | 2 |
+> | | `cs/Cards/DarkVinciPhotosynthesis.cs` | 5277 | 28373 | +23096 | 2 |
+> | | `cs/Cards/DarkVinciTide.cs` | 4714 | 23306 | +18592 | 2 |
+> | `SparkleMod.json` | `cs/Cards/SparkleCard41.cs` | 4825 | 28037 | +23212 | 2 |
+> | | `cs/Cards/SparkleCard42.cs` | 2980 | 14212 | +11232 | 1（没有升级后那块布） |
+>
+> 其余文件**一字未改**（`DarkVinci` 124 个文件里 117 个逐字节一致 + 6 个卡牌文件只多标记 + `.sln` 随机 GUID；
+> `SparkleMod` 303 个文件里 300 个逐字节一致 + 2 个卡牌文件只多标记 + `.sln`）。
+> 新增行**全部**以 `// CET:ForgeGraph=` 开头（逐文件核过），删掉这些行之后 `before` / `after` 的**有内容行逐字节相同**；行尾一律 CRLF、无 BOM 变化。
+> 标记长度：Base64 之后一行 10~40 KB（含【效果】模块 `EffectSpec` 的图最大，`DarkVinciIgnite` 17 模块 = 35 KB）。
+
+> **红线实测数字（V0.2.134）**
+> - ② `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误**；
+> - ③ `--uicheck`：Debug **3134 PASS / 0 FAIL**（基线 3115/0，**新增 19 条**）、
+>   发布版（`dotnet publish src\Sts2CharForge.App -c Release -r win-x64 --self-contained true -o D:\ds\s\_tmp\v02134_pub`
+>   → `Unblock-File` → 先删旧 `uicheck_result.txt` → `[System.Diagnostics.Process]::Start(UseShellExecute=$false,
+>   TEMP=TMP=D:\ds\s\_tmp\apppub_tmp, DOTNET_DISABLE_GUI_ERRORS=1)` + `WaitForExit()`；**没有用 `Start-Process`**）
+>   **3134 PASS / 0 FAIL**；
+> - ④ **端到端往返（本轮的验收核心）**：
+>   · 含锻造图的真实存档 `DarkVinci.json` → 生成 → `--recover` → **`IsForged` 6/6 张（源 6 / 恢复 6）**、
+>     **非空图块数 12/12**、**逐字段对照 42 个字段块 / 不一致 0**（节点 Id·种类·坐标·每一格 `Fields`·`EffectSpec`·`EffectFromLegacy`·连线·`Note` 全过）；
+>   · **「恢复出的存档再生成一次」逐字节**：**124 个文件 / 103 个逐字节一致**，剩 21 个是**既有回读缺口**
+>     （**与图无关**：卡牌升级增量写在公式变量末位参数上、组引用 `Group:<id>`、状态外观覆盖挑错状态 —— 详见下面「已知未修」），
+>     这 21 个里**没有任何一个含 `CET:ForgeGraph=` 行**；
+>   · **「图标记本身逐字节幂等」用一份干净探针 `_tmp\v02134\uc\UcProbe134.json` 全量证明**：
+>     生成 → `--recover` → 再生成，**64 个文件 / 差异 0**（含 `.sln`）；
+>   · `--uicheck` 里也有一条同样的自检断言：**两次生成逐文件对拍 = 逐字节一致 63 个文件**（只放过 `.sln` 的随机 GUID）；
+>   · **老工程（改动前生成、没有标记）→ `--recover` 仍然 0 条「没认出来」**（图 0 张，其余字段照旧；
+>     与改动前逐条比对，「没认出来」都是同 1 条既有的 `DarkVinciDyeing: 升级增量找不到对应效果（变量 Cards2）`）；
+> - ⑤ 五处配套：生成端（`ForgeGraphGen` 写标记 + `ModGenerator` 生成后自检）、回读端（`ProjectRecovery`）、
+>   文案（README + `tools\使用说明.template.txt`，**无 BOM** 字节复核）、校验器（版本 / 损坏一定说清，均进「没认出来」清单）、
+>   界面（恢复日志 + 状态栏 + 确认框带「含锻造图 N 张」）；
+> - **行尾约定**：本轮改过的 6 个源文件（`ForgeGraphGen.cs` / `ProjectRecovery.cs` / `ModGenerator.cs` /
+>   `LocalizationGen.cs` / `Program.cs` / `MainWindow.xaml.cs`）逐个统计过 —— **全是 CRLF、裸 LF = 0、无 BOM 变化**；
+>   `README.md` 与 `docs\QUEUE.md` 本来就是 **LF**、`tools\使用说明.template.txt` 是 **CRLF + 无 BOM**（复核过字节）。
+
+> **已知未修 / 边界**：① **「组」（`CardGroups` / 卡牌 `GroupIds`）仍然不能从工程恢复** ——
+> 工程里只有「范围限定 = 组：`<id>`」那一处痕迹，组名和成员表只存在存档里。后果：恢复出的存档里那个组是空的，
+> 还有效果引用它时**下次生成会被校验器拦下并说清**（`DarkVinci` 实测命中：卡「染色」的「生成卡牌」范围限定引用了组 `b8009bf2…`）。
+> 有意**不**按猜出来的成员生成（那会让产物悄悄变样），请到「自定义参数 / 组」页补一下；
+> 用旧存档当模板时组名会跟着带过来。
+> ② **「恢复出的存档再生成一次」在真实存档上还不逐字节一致**（探针 / 自检那种干净配置是逐字节一致的）。
+> 剩下的 21 处差异全是**既有**回读缺口，本轮只做了「锻造节点图 + 三处顺手补的」这一批：
+> 卡牌效果的**升级增量**（公式变量的末位参数 `UpgradeValueBy` 映射不回某条效果）、
+> **组**（同 ①）、**状态外观覆盖**（`ForgeHpBarOverlay` 挑错了颜色档）、
+> **先古对话行数**、**延迟状态的作用对象**（退成「自己」）。这些都记在上面各批的「已知」里，与锻造图无关。
+> ③ 图标记让**含锻造图的存档**产物变大（见代价清单），用户已拍板接受这一版。
+
 ## 第 20 批需求（V0.2.133：「下回合生效」适配全部效果，用户拍板 Q4=B 的下半段）
 
 > 需求原文：`docs\需求\卡牌页优化.md` 右侧④：「其下为是否下回合生效，**这个很重要，让这个适配所有的效果**」。
@@ -311,12 +389,16 @@ override，而遗物自己那条触发时机也生成同一个 override —— �
 - 修法会动既有生成行为（要给复位 override 起个不撞的名字 / 把判据扩到遗物自己那条钩子），
   需要单独一版 + 回归，所以本版只记录、没动。
 
-**锻造节点图（`ForgeGraph`）不能被「从工程恢复」还原**（V0.2.128 实测记录，建议单开一版）：
+**~~锻造节点图（`ForgeGraph`）不能被「从工程恢复」还原~~**（V0.2.128 记录 → **✅V0.2.134 已修**，见「第 21 批需求」）：
 `ProjectRecovery` 从 V0.2.103 起只回读「效果列表 + 卡牌/遗物/药水的时机与描述」，**从来不认锻造节点图** ——
 工程里只有编译结果，节点图本身只存在存档里。V0.2.128 的探针实测：源存档 18 张卡里 4 张 `IsForged=true` 且
 `ForgeGraph` 非空；`--recover` 出来的 18 张卡 **`IsForged` 全是 false、`ForgeGraph` 全空**（V0.2.127 及以前同样如此，不是新引入）。
 - V0.2.128 只顺手修掉附带假报警：图体代码以前被当成「卡牌时机 / 遗物触发时机」解析 → 平白 6 条「没认出来」，现在整段跳过（0 条）。
-- 真支持要给生成端加「整张图的标记 / 内嵌 JSON」+ `ProjectRecovery` 反序列化 + 校验器 + 探针，属独立一版。
+- **V0.2.134 已真支持**：生成端写一行 `// CET:ForgeGraph=1:<Base64(紧凑 JSON)>`（**只在图非空时写**），
+  回读端按它重建整张图（含升级后那块布）并置 `IsForged=true`；老工程（没有这行）照旧 0 条「没认出来」、只是图仍空。
+  **代价**：含锻造图的存档生成结果会多出这行标记（每个条目每块布一行，10~40 KB），
+  用户真实存档实测 `DarkVinci` 6 张卡 / `SparkleMod` 2 张卡命中；**没有锻造图的存档逐字节不变**（`--samplegen` 111/112 逐字节一致，只差 `.sln` 随机 GUID）。
+  验收：真实存档 `DarkVinci` 往返逐字段对照 **42 个字段块 / 不一致 0**；干净探针「生成 → 恢复 → 再生成」**64 个文件 / 差异 0**。
 
 **「数值 0 效果」的升级增量回读认不出来**（V0.2.131 在**用户真实存档**上实测发现；小而具体，建议单开一小版修）：
 现象 —— 从工程恢复时报 `⚠ 有 1 处生成代码没认出来：<卡类名>: 升级增量找不到对应效果（变量 Cards2）`。

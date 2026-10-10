@@ -82,6 +82,10 @@ if (recoverDir is not null)
         ProfileFactory.Save(rec.Profile, target);
         Console.WriteLine("已恢复：" + target);
         foreach (string note in rec.Notes) Console.WriteLine("  · " + note);
+        // V0.2.134：锻造节点图（`// CET:ForgeGraph=` 标记）认回来几张 —— 在 notes 之后单独列一行，
+        // 让命令行输出里一眼看得到「图到底回没回来」（老工程这一行是 0，**不是错误**）。
+        Console.WriteLine($"  · 锻造节点图：{rec.IsForged.Count} 张"
+            + (rec.IsForged.Count > 0 ? "（" + string.Join("、", rec.IsForged) + "）" : ""));
         if (rec.HasUnparsed)
         {
             Console.WriteLine($"  ⚠ 有 {rec.Unparsed.Count} 处生成代码没认出来（在界面上人工补一下）：");

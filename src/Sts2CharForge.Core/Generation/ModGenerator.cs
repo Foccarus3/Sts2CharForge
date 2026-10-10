@@ -1,3 +1,4 @@
+using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -260,6 +261,24 @@ public static class ModGenerator
             string potionSrc = CSharpCodeGen.PotionSource(profile, profile.Potions[i], i);
             ProjectFilesGen.WriteText(Path.Combine(cs, "Potions", potionCls + ".cs"), potionSrc);
             AuditVars(potionCls, potionSrc);
+        }
+
+        // ===== 生成后自检：锻造节点图的标记（V0.2.134）=====
+        // 「从工程恢复」唯一的依据就是产物里那行 `// CET:ForgeGraph=<版本>:<Base64>`（见 ForgeGraphGen.MarkerOf）。
+        // 它必须**自己读得回来**（版本认识 + Base64 / JSON 完整），否则用户要等到存档丢了才发现没得恢复。
+        // 所以这里把刚写下的卡牌 / 遗物 / 药水逐个解开验一遍：解不开就是错误级、当场说清是哪个文件。
+        // ⚠ 只有**图非空**的条目才写这一行 —— 没有图的存档这条自检一条都不跑，一个字节都不多。
+        foreach (string file in Directory.GetFiles(cs, "*.cs", SearchOption.AllDirectories)
+                     .OrderBy(x => x, StringComparer.Ordinal))
+        {
+            string text = File.ReadAllText(file, Encoding.UTF8);
+            if (!text.Contains(ForgeGraphGen.MarkerPrefix, StringComparison.Ordinal)) continue;
+            string? problem;
+            ForgeGraphGen.ReadMarker(text, out problem);
+            if (problem is not null)
+                issues.Add(new Generation.ValidationIssue("错误",
+                    $"生成出来的 {Path.GetRelativePath(cs, file).Replace('\\', '/')} 里的锻造节点图标记自己读不回来：{problem}"
+                    + "（这会让「从工程恢复」拿不回那张图 —— 这是生成器的问题，请把这条信息发给我。）"));
         }
 
         if (CSharpCodeGen.UsesExtraTurn(profile))

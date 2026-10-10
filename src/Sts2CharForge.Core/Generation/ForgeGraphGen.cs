@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -497,11 +500,152 @@ public static class ForgeGraphGen
         return sb.ToString();
     }
 
+    // ==================================================================================
+    //  V0.2.134：把整张图写进生成产物（唯一的「从工程恢复」依据）
+    // ==================================================================================
+
+    /// <summary>
+    /// 图标记的**格式版本**。改一次格式就 +1；回读端遇到不认识的版本**必须报错说清**，不许静默丢图。
+    /// v1 = <c>// CET:ForgeGraph=1:&lt;JSON 的 Base64&gt;</c>
+    /// </summary>
+    public const int MarkerVersion = 1;
+
+    /// <summary>
+    /// 图标记的写法（单行注释，放在**类级**、紧贴在「===== 锻造节点图」那一段前面）：
+    /// <code>// CET:ForgeGraph=1:&lt;图的紧凑 JSON 的 Base64（UTF-8）&gt;</code>
+    ///
+    /// 为什么先写 JSON 再 Base64（而不是把 JSON 直接塞进注释）：
+    ///   · 图上任何一栏（公式原文 / 状态名 / 类名 / 备注）都可能带引号、反斜杠、换行、中文，
+    ///     直接塞进去要自己定义一套转义；Base64 之后**保证**只有 <c>A-Za-z0-9+/=</c>，
+    ///     单行、无歧义、现成的 <c>Convert.FromBase64String</c> 就能读回来；
+    ///   · 长度上 Base64 只多 33%，而这段标记**只在图非空时才写**（见 <see cref="ApplyGraphMarker"/>），
+    ///     没有图的存档一个字节都不多。
+    /// </summary>
+    public const string MarkerPrefix = "// CET:ForgeGraph=";
+
+    /// <summary>把一块布编成一行标记（图是空的 / null 返回 <c>null</c> = 一个字符都不写）。</summary>
+    public static string? MarkerOf(ForgeGraphSpec? g)
+    {
+        if (g is null || g.IsEmpty) return null;
+        byte[] json = JsonSerializer.SerializeToUtf8Bytes(g, ProfileFactory.JsonOpts);
+        return $"{MarkerPrefix}{MarkerVersion}:{Convert.ToBase64String(json)}";
+    }
+
+    /// <summary>
+    /// 给一个条目（卡牌 / 遗物 / 药水）把它的图标记追加进 <paramref name="sb"/>。
+    /// <paramref name="upgraded"/> 只对卡牌有意义（升级后那块布）。
+    ///
+    /// 返回是否真的写了（false = 图空 / null，一个字符都没加）。
+    /// </summary>
+    public static bool ApplyGraphMarker(StringBuilder sb, object owner, bool upgraded = false)
+    {
+        string? line = MarkerOf(GraphOf(owner, upgraded));
+        if (line is null) return false;
+        sb.AppendLine();
+        sb.AppendLine("    " + line);
+        return true;
+    }
+
+    /// <summary>
+    /// 从一段生成出来的源码里把图标记读回来（没有标记 → <c>null</c>，老工程就是这一档，**不是错误**）。
+    ///
+    /// 返回 null 的三种情况分得很清楚：
+    ///   · 压根没有 <c>CET:ForgeGraph=</c>：老工程 / 没有图的条目 → 照旧（图空、<c>IsForged=false</c>）；
+    ///   · 有标记但读不出来（版本不认识 / Base64 坏了 / JSON 坏了）→ <paramref name="problem"/> 里说清原因，
+    ///     调用方必须把它报给用户（**不许静默丢图**）。
+    /// </summary>
+    /// <param name="skip">
+    /// 跳过前几个标记（**卡牌有两块布**：源码里第 1 个标记是「升级前」、第 2 个是「升级后」，
+    /// 生成顺序见 <c>CSharpCodeGen.CardSource</c> —— 所以读升级后那一块要 skip=1）。
+    /// </param>
+    public static ForgeGraphSpec? ReadMarker(string source, out string? problem, int skip = 0)
+    {
+        problem = null;
+        Match m = null;
+        foreach (Match hit in Regex.Matches(source ?? "", Regex.Escape(MarkerPrefix) + @"(?<ver>\d+):(?<b64>[A-Za-z0-9+/=]*)"))
+        {
+            if (skip > 0) { skip--; continue; }
+            m = hit;
+            break;
+        }
+        if (m is null) return null;
+        int ver = int.Parse(m.Groups["ver"].Value, CultureInfo.InvariantCulture);
+        if (ver != MarkerVersion)
+        {
+            problem = $"锻造节点图的标记版本不认识（产物里写的是 v{ver}，这个版本只认 v{MarkerVersion}）—— "
+                + "这个工程是**更新的版本**生成的，请用生成它的那个版本去「从工程恢复」，或者直接用手上的存档。";
+            return null;
+        }
+        string b64 = m.Groups["b64"].Value;
+        try
+        {
+            byte[] json = Convert.FromBase64String(b64);
+            return JsonSerializer.Deserialize<ForgeGraphSpec>(json, ProfileFactory.JsonOpts);
+        }
+        catch (Exception ex)
+        {
+            problem = "锻造节点图的标记读不出来（Base64 / JSON 坏了）：" + ex.Message
+                + " —— 这一段大概是被手改坏了；不改它的话「从工程恢复」拿不回这张图"
+                + "（图上其它字段不受影响，照旧能恢复）。";
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 把 <paramref name="file"/> 里的图标记读出来贴到 <paramref name="owner"/> 上（认到了返回 true）。
+    ///
+    /// 认不出来**不抛异常、也不报「没认出来」**：老工程（没有标记）必须照旧跑完，只是图仍然为空。
+    /// 只有「有标记但坏了 / 版本不认识」才写进 <see cref="RecoveryResult.Unparsed"/>（**不许静默丢图**）。
+    /// </summary>
+    /// <param name="portVersionSink">
+    /// 认到标记时被置成 <see cref="PortVersion"/>。**这一条是 V0.2.134 的关键**：
+    /// 标记里存的是**已经迁到新版端口**的图，而恢复出来的存档
+    /// （<see cref="CharacterProfile.ForgeGraphPortVersion"/> 默认 0）一 Load 就会被
+    /// <see cref="MigrateIfPorts"/> 再迁一次 —— 那会**按老下标重接【if】的线**，
+    /// 把「是 / 否」两支挪位、甚至删掉线，图就不是原来那张了（第二次生成的逐文件对拍会破）。
+    /// 所以认到标记的同时必须把这个版本号抬到当前值，让迁移函数直接返回（幂等）。
+    /// </param>
+    public static bool AttachMarker(string file, object owner, RecoveryResult result, string what,
+        bool upgraded = false, Action? portVersionSink = null)
+    {
+        string? problem;
+        var g = ReadMarker(File.ReadAllText(file, Encoding.UTF8), out problem, skip: upgraded ? 1 : 0);
+        if (problem is not null)
+        {
+            result.Unparsed.Add($"{what}：{problem}");
+            return false;
+        }
+        if (g is null) return false;
+        portVersionSink?.Invoke();
+        switch (owner)
+        {
+            case CardSpec c when upgraded: c.UpgradedForgeGraph = g; break;
+            case CardSpec c: c.ForgeGraph = g; c.IsForged = true; break;
+            case RelicSpec r: r.ForgeGraph = g; r.IsForged = true; break;
+            case PotionSpec s: s.ForgeGraph = g; s.IsForged = true; break;
+            default: return false;
+        }
+        return true;
+    }
+
     /// <summary>
     /// 「生效次数」要用的字段 / 复位钩子（只在这个执行点真的需要时才生成）。
     /// 返回空串 = 不需要（默认档一个字符都不多）。
+    ///
+    /// V0.2.134：本函数**同时负责写图标记** —— 三个调用点（卡牌 / 遗物 / 药水）都在
+    /// 「图非空」的 if 里、而且每个执行点各调一次，所以在这里写标记刚好做到
+    /// 「每个条目的每块布各一行、位置固定在锻造那一段的开头」，不用去改三处调用点。
     /// </summary>
     public static string TimingFields(CharacterProfile p, object owner, bool upgraded = false)
+    {
+        var sb = new StringBuilder();
+        ApplyGraphMarker(sb, owner, upgraded);
+        sb.Append(TimingFieldsCore(p, owner, upgraded));
+        return sb.ToString();
+    }
+
+    /// <summary>「生效次数」那一段本身（图标记由 <see cref="TimingFields"/> 负责，见那里的说明）。</summary>
+    private static string TimingFieldsCore(CharacterProfile p, object owner, bool upgraded = false)
     {
         var g = GraphOf(owner, upgraded);
         var plan = Plan(g, ScopeOf(owner));

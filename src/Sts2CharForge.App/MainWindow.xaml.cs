@@ -1282,6 +1282,98 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>自检用：图里有几个某种模块」 /summary>
 	private static int CountKind(ForgeGraphSpec g, string kind) => g.Nodes.Count(n => n.Kind == kind);
 
+	// ===== V0.2.134：锻造节点图「从工程恢复」自检用的三个小工具 =====
+
+	/// <summary>
+	/// 自检用：现造一块能覆盖各档字段的布（触发时机 / 效果 + 数值公式 / 指向对象 / if）。
+	/// <paramref name="tag"/> 只是为了让两块布的节点 Id 不一样（升级前 / 升级后）。
+	/// </summary>
+	private static ForgeGraphSpec ForgeGraphProbeGraph(string tag)
+	{
+		var g = new ForgeGraphSpec { Note = "自检用备注 " + tag };
+		var trig = new ForgeNodeSpec { Kind = "Trigger", X = 20, Y = 20 };
+		trig.SetField("Timing", ForgeTimings.CardPlayed);
+		var energy = new ForgeNodeSpec { Kind = "Energy", X = 24, Y = 24 };
+		energy.SetField("EnergyCost", "1");
+		var unit = new ForgeNodeSpec { Kind = "Unit", X = 20, Y = 280 };
+		// 「指向对象」用「全部敌人」：它不需要玩家选目标，所以卡牌的 TargetType 不用跟着挪
+		//（自检要的是「图能原样往返」，不是校验某一种目标类型）。
+		unit.SetField("Pick", "AllEnemies");
+		var eff = new ForgeNodeSpec { Kind = "Effect", X = 320, Y = 280 };
+		eff.SetField("Effect", "Damage");
+		eff.SetField("Amount", "6");
+		var val = new ForgeNodeSpec { Kind = "Value", X = 320, Y = 400 };
+		val.SetField("Formula", tag == "A" ? "M*3" : "M+3");   // 公式原文要逐字还原（M 由自检存档里的自定义参数提供）
+		g.Nodes.AddRange(new[] { trig, energy, unit, eff, val });
+		g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = unit.Id, FromPort = 0, ToPort = 0 });
+		g.Links.Add(new ForgeLinkSpec { From = unit.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+		g.Links.Add(new ForgeLinkSpec { From = val.Id, To = eff.Id, FromPort = 0, ToPort = 1 });
+		return g;
+	}
+
+	/// <summary>
+	/// 自检用：两块布**逐字段**对拍（节点 Id / 种类 / 坐标 / 每一格 Fields / EffectSpec / 备注 / 连线）。
+	/// 返回空串 = 完全一致；否则返回第一处不同的说明（FAIL 的 detail 直接用）。
+	/// </summary>
+	private static string ForgeGraphSpecDiff(ForgeGraphSpec a, ForgeGraphSpec b)
+	{
+		string J(object o) => System.Text.Json.JsonSerializer.Serialize(o, ProfileFactory.JsonOpts);
+		if (a.Nodes.Count != b.Nodes.Count) return $"节点数 {a.Nodes.Count} vs {b.Nodes.Count}";
+		for (int i = 0; i < a.Nodes.Count; i++)
+		{
+			var x = a.Nodes[i];
+			var y = b.Nodes[i];
+			if (x.Id != y.Id) return $"节点#{i} Id {x.Id} vs {y.Id}";
+			if (x.Kind != y.Kind) return $"节点#{i} 种类 {x.Kind} vs {y.Kind}";
+			if (Math.Abs(x.X - y.X) > 1e-9 || Math.Abs(x.Y - y.Y) > 1e-9) return $"节点#{i} 坐标 ({x.X},{x.Y}) vs ({y.X},{y.Y})";
+			foreach (string k in x.Fields.Keys.Union(y.Fields.Keys, StringComparer.Ordinal).OrderBy(k => k, StringComparer.Ordinal))
+			{
+				string xv = x.Get(k, "<缺>");
+				string yv = y.Get(k, "<缺>");
+				if (!string.Equals(xv, yv, StringComparison.Ordinal)) return $"节点#{i} 的「{k}」：源=「{xv}」恢复=「{yv}」";
+			}
+			if ((x.EffectSpec is null) != (y.EffectSpec is null)) return $"节点#{i} EffectSpec 有无不同";
+			if (x.EffectSpec is not null && J(x.EffectSpec) != J(y.EffectSpec))
+				return $"节点#{i} EffectSpec 不同：源={J(x.EffectSpec)} 恢复={J(y.EffectSpec)}";
+			if (x.EffectFromLegacy != y.EffectFromLegacy) return $"节点#{i} EffectFromLegacy {x.EffectFromLegacy} vs {y.EffectFromLegacy}";
+		}
+		if (a.Links.Count != b.Links.Count) return $"连线数 {a.Links.Count} vs {b.Links.Count}";
+		for (int i = 0; i < a.Links.Count; i++)
+			if (a.Links[i].From != b.Links[i].From || a.Links[i].To != b.Links[i].To
+				|| a.Links[i].FromPort != b.Links[i].FromPort || a.Links[i].ToPort != b.Links[i].ToPort)
+				return $"连线#{i} {a.Links[i].Display} vs {b.Links[i].Display}";
+		if (!string.Equals(a.Note, b.Note, StringComparison.Ordinal)) return $"备注「{a.Note}」vs「{b.Note}」";
+		return "";
+	}
+
+	/// <summary>
+	/// 自检用：两个文件第一处不同行的说明（FAIL 的 detail 里带一句，一眼看出差在哪）。
+	/// 只用于**自检失败时**的排查，不参与任何生成。
+	/// </summary>
+	private static string FirstLineDiff(string a, string b)
+	{
+		var la = File.ReadAllLines(a);
+		var lb = File.ReadAllLines(b);
+		for (int i = 0; i < Math.Min(la.Length, lb.Length); i++)
+			if (!string.Equals(la[i], lb[i], StringComparison.Ordinal))
+				return $"（第 {i + 1} 行：①{Trim120(la[i])} ②{Trim120(lb[i])}）";
+		return la.Length == lb.Length ? "" : $"（行数 {la.Length} vs {lb.Length}）";
+	}
+
+	private static string Trim120(string s) => s.Length <= 120 ? s : s.Substring(0, 120) + "…";
+
+	/// <summary>自检用：整目录复制（造好的工程要改一个文件做「标记坏了」的探针）。</summary>
+	private static void CopyFolder(string from, string to)
+	{
+		Directory.CreateDirectory(to);
+		foreach (string f in Directory.GetFiles(from, "*", SearchOption.AllDirectories))
+		{
+			string dst = Path.Combine(to, Path.GetRelativePath(from, f));
+			Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+			File.Copy(f, dst, true);
+		}
+	}
+
 	/// <summary>自检用：照着生成端的走法把执行顺序读成一串（出口从小到大，和 EmitChain 的读法一致）。 /summary>
 	private static string ChainKinds(ForgeGraphSpec g)
 	{
@@ -7708,9 +7800,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			foreach (string note in rec.Notes) AppendLog("  · " + note);
 			foreach (string line in rec.Unparsed.Take(30)) AppendLog("  ⚠ 没认出来：" + line);
 			RefreshProfiles();
-			SetStatus($"已从工程恢复存档：{Path.GetFileName(target)}（{rec.Profile.Cards.Count} 张卡）"
+			// V0.2.134：锻造节点图从工程恢复的结果 —— 单独写一行到日志，状态栏也带上张数，
+			// 让用户一眼看出「图到底回没回来」（老工程就是 0 张，不是错误）。
+			AppendLog($"  ── 锻造节点图：从工程收回 {rec.IsForged.Count} 张"
+				+ (rec.IsForged.Count > 0 ? "（" + string.Join("、", rec.IsForged) + "）" : "（这个工程里没有图标记）"));
+			SetStatus($"已从工程恢复存档：{Path.GetFileName(target)}（{rec.Profile.Cards.Count} 张卡"
+				+ (rec.IsForged.Count > 0 ? $"，含锻造图 {rec.IsForged.Count} 张" : "")
+				+ "）"
 				+ (rec.HasUnparsed ? $"，另有 {rec.Unparsed.Count} 处需要人工核对（见日志）" : ""));
-			if (Confirm($"已生成「{Path.GetFileName(target)}」（{rec.Profile.Cards.Count} 张卡 / {rec.Profile.Relics.Count} 个遗物 / {rec.Profile.Potions.Count} 个药水）。\n\n"
+			if (Confirm($"已生成「{Path.GetFileName(target)}」（{rec.Profile.Cards.Count} 张卡 / {rec.Profile.Relics.Count} 个遗物 / {rec.Profile.Potions.Count} 个药水"
+				+ (rec.IsForged.Count > 0 ? $"，其中锻造节点图收回 {rec.IsForged.Count} 张" : "") + "）。\n\n"
 				+ "现在就载入它吗？（建议先载入看一眼，确认没问题再接着用）", "恢复完成"))
 				LoadProfileCore(target);
 		}
@@ -26857,6 +26956,207 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			finally
 			{
 				try { Directory.Delete(tgRoot, true); } catch { }
+			}
+		}
+		// ===== V0.2.134：锻造节点图**能从工程恢复**（`// CET:ForgeGraph=` 标记）=====
+		// 用户 2026-10-10 拍板要做这一版。自检覆盖整条闭环：
+		//   图非空才写标记 → 从工程恢复出图 + IsForged → 逐字段还原 → 再生成一次逐字节一致；
+		//   外加两条**不许静默**：版本不认识 / Base64 坏了必须报错说清；老工程（没标记）一条都不报。
+		{
+			string fgRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02134_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			string noGraphRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02134n_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			string recRoot134 = Path.Combine(Path.GetTempPath(), "forge_uicheck_v02134r_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			string fgen1RootForProbe = "";
+			try
+			{
+				// ⚠ 这一段刻意**不用 ProfileFactory.Sample()**：示例存档里有几张卡踩到「从工程恢复」的老口径
+				// （延迟状态的作用对象 / 先古对话行数 / 升级增量那几处，V0.2.133 及以前就这样，与本版无关）——
+				// 掺进来会让「两次生成逐字节一致」这条断言变成在测**那些老问题**，而不是测本版。
+				// 自检要的是「图标记让往返不破」，所以起点是一份**干净的、只含本版关心的东西**的配置：
+				//   · 一张锻造卡（升级前 + 升级后两块布，含【效果】模块的新编辑器 spec 与公式原文）；
+				//   · 一张**图是空的**对照卡（标记一行都不该写）；
+				//   · 三张卡（卡池奖励校验要求至少 3 张可用）。
+				var fp = new CharacterProfile
+				{
+					ModId = "UiCheckForge134", ModDisplayName = "自检角色", CharacterClass = "UiCheckForge134",
+					DisplayName = "自检角色", StartingHp = 80, StartingGold = 99,
+					ForgeGraphPortVersion = ForgeGraphGen.PortVersion,
+				};
+				fp.Paths.OutputDir = fgRoot;
+				fp.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				fp.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				// 【数值】里写公式要有个**认得的量**（不然校验器会正确地报「不是一个参数」）——
+				// 顺带把「自定义参数也能跟着图一起从工程回来」这条也验到。
+				fp.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.CurrentHp, Target = ParamTargets.Self });
+				ForgeGraphSpec baseGraph = ForgeGraphProbeGraph("A");
+				ForgeGraphSpec upGraph = ForgeGraphProbeGraph("B");
+				var fc = new CardSpec
+				{
+					Name = "锻造图自检卡", ClassName = "UiCheckForgedCard", Cost = 0,
+					CardType = "Attack", Rarity = "Common", InCardPool = true,
+					IsForged = true, ForgeGraph = baseGraph, UpgradedForgeGraph = upGraph,
+				};
+				// 两块布的【效果】模块都走新编辑器那份 spec（EffectFromLegacy=false）：生成前桥会把它回写成老字段，
+				// 所以它同时验到「spec 也进了标记、恢复后逐字段一样」。
+				foreach (var g in new[] { baseGraph, upGraph })
+				{
+					ForgeNodeSpec? en = g.Nodes.FirstOrDefault(x => x.Kind == "Effect");
+					if (en is null) continue;
+					var spec = ForgeEffectBridge.Author(en);
+					spec.Kind = "Damage";
+					spec.ForgeAmountText = "9";
+					spec.Amount = 9m;
+					spec.TimesFormula = "2";
+					en.EffectFromLegacy = false;
+				}
+				fp.Cards.Add(fc);
+				// 对照卡：**没有图**（标记一行都不该写）
+				var plain = new CardSpec { Name = "无图自检卡", ClassName = "UiCheckPlain134", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				plain.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
+				fp.Cards.Add(plain);
+				var plain2 = new CardSpec { Name = "无图自检卡乙", ClassName = "UiCheckPlain134B", CardType = "Attack", Rarity = "Uncommon", Cost = 1, InCardPool = true };
+				plain2.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 7m, TargetSide = "Enemy" });
+				fp.Cards.Add(plain2);
+
+				// 「用户手上的存档」是**存过盘、再打开**过的（ProfileFactory.Load 会跑 Normalize / 老存档迁移，
+				// 比如把卡牌那 5 种效果的固定数值迁成公式）。自检里这份是内存里现造的 ——
+				// 先按真实路径落盘再读回来，两次生成的起点才真的一样（不然比的是两套不同的迁移结果）。
+				Directory.CreateDirectory(recRoot134);
+				string startPath = Path.Combine(recRoot134, "UiCheckForge134start.json");
+				ProfileFactory.Save(fp, startPath);
+				CharacterProfile start = ProfileFactory.Load(startPath);
+				start.Paths.OutputDir = fgRoot;
+				start.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				start.Paths.GameDataDir = Profile.Paths.GameDataDir;
+
+				var fgen1 = ModGenerator.Generate(start);
+				Check("（准备）带锻造节点图的存档能生成工程", fgen1.Success,
+					fgen1.Success ? fgen1.ProjectRoot : string.Join(" ｜ ", fgen1.Issues.Where(x => x.IsError).Select(x => x.Message)));
+				fgen1RootForProbe = fgen1.ProjectRoot;
+				if (fgen1.Success)
+				{
+					string cardFile = Path.Combine(fgen1.ProjectRoot, "cs", "Cards", "UiCheckForgedCard.cs");
+					string plainFile = Path.Combine(fgen1.ProjectRoot, "cs", "Cards", "UiCheckPlain134.cs");
+					string cardText = File.Exists(cardFile) ? File.ReadAllText(cardFile) : "";
+					Check("生成端：图非空的卡在 cs 里写了图标记（// CET:ForgeGraph=<版本>:<Base64>）",
+						cardText.Contains("// CET:ForgeGraph=", StringComparison.Ordinal), "写了 " + ForgeGraphGen.MarkerVersion + " 版标记");
+					Check("生成端：**图是空的条目一行标记都不写**（没有图的存档生成结果逐字节不变）",
+						File.Exists(plainFile) && !File.ReadAllText(plainFile).Contains("CET:ForgeGraph", StringComparison.Ordinal), "无图卡里没有标记");
+					Check("生成端：升级前 / 升级后两块布各一行标记（卡牌一共 2 行）",
+						System.Text.RegularExpressions.Regex.Matches(cardText, "// CET:ForgeGraph=").Count == 2,
+						System.Text.RegularExpressions.Regex.Matches(cardText, "// CET:ForgeGraph=").Count + " 行");
+
+					// ---- 端到端往返：从工程恢复 ----
+					RecoveryResult frec = ProjectRecovery.FromProject(fgen1.ProjectRoot);
+					CardSpec? fback = frec.Profile.Cards.FirstOrDefault(x => x.ClassName == "UiCheckForgedCard");
+					Check("从工程恢复：锻造卡 IsForged 认回来（老版本这里是 false）",
+						fback is not null && fback.IsForged, fback is null ? "(缺卡)" : "IsForged=" + fback.IsForged);
+					Check("从工程恢复：ForgeGraph 非空（节点 / 连线数都对得上）",
+						fback?.ForgeGraph is { IsEmpty: false } bg && bg.Nodes.Count == baseGraph.Nodes.Count && bg.Links.Count == baseGraph.Links.Count,
+						fback?.ForgeGraph is null ? "(图是 null)" : $"{fback.ForgeGraph.Nodes.Count} 模块 / {fback.ForgeGraph.Links.Count} 连线");
+					Check("从工程恢复：升级后那块布也认回来",
+						fback?.UpgradedForgeGraph is { IsEmpty: false } ug && ug.Nodes.Count == upGraph.Nodes.Count,
+						fback?.UpgradedForgeGraph is null ? "(升级后图是 null)" : fback.UpgradedForgeGraph.Nodes.Count + " 模块");
+					// 逐字段对照（节点 Id / 种类 / 坐标 / 每个字段 / 连线 / EffectSpec / Note）——
+					// 用和记录桥同一套 JSON 口径比，一处不同就返回那一处的说明。
+					string diffBase = fback?.ForgeGraph is null ? "(缺图)" : ForgeGraphSpecDiff(baseGraph, fback.ForgeGraph);
+					Check("从工程恢复：**逐字段**还原（节点 Id / 种类 / 坐标 / 每格 Fields / 连线 / EffectSpec / 备注，一处都不能差）",
+						diffBase.Length == 0, diffBase.Length == 0 ? "全部逐字段一致" : diffBase);
+					string diffUp = fback?.UpgradedForgeGraph is null ? "(缺升级后图)" : ForgeGraphSpecDiff(upGraph, fback.UpgradedForgeGraph);
+					Check("从工程恢复：升级后那块布也逐字段一致", diffUp.Length == 0,
+						diffUp.Length == 0 ? "全部逐字段一致"
+						: diffUp + " ｜ 升级后 EffectSpec=" + System.Text.Json.JsonSerializer.Serialize(
+							fback!.UpgradedForgeGraph!.Nodes.FirstOrDefault(n => n.Kind == "Effect")?.EffectSpec, ProfileFactory.JsonOpts));
+					Check("从工程恢复：Restore 之后端口版本抬到当前值（不让 MigrateIfPorts 再迁一次、把 if 的是/否挪位）",
+						frec.Profile.ForgeGraphPortVersion == ForgeGraphGen.PortVersion,
+						"PortVersion=" + frec.Profile.ForgeGraphPortVersion);
+					Check("从工程恢复（V0.2.134）：没认出来的语句为 0", !frec.HasUnparsed,
+						frec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+
+					// ---- 用恢复出来的存档**再生成一次**，与第一次逐文件对拍（.sln 的 GUID 例外）----
+					Directory.CreateDirectory(recRoot134);
+					string recPath = Path.Combine(recRoot134, "UiCheckForge134.json");
+					ProfileFactory.Save(frec.Profile, recPath);
+					CharacterProfile refilled = ProfileFactory.Load(recPath);
+					Check("恢复出来的存档：存一遍再读回来，图的端口版本 / 图本身都不变（不会一 Load 就被再迁一次）",
+						refilled.ForgeGraphPortVersion == ForgeGraphGen.PortVersion
+						&& refilled.Cards.FirstOrDefault(x => x.ClassName == "UiCheckForgedCard")?.ForgeGraph is { IsEmpty: false } rg2
+						&& ForgeGraphSpecDiff(baseGraph, rg2).Length == 0,
+						"PortVersion=" + refilled.ForgeGraphPortVersion);
+					refilled.Paths.OutputDir = fgRoot;
+					// 环境路径照旧从当前配置补（恢复出的存档里那份是模板带来的，自检里未必指向真工程）
+					refilled.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					refilled.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var fgen2 = ModGenerator.Generate(refilled);
+					Check("（准备）用恢复出来的存档再生成一次", fgen2.Success,
+						fgen2.Success ? "成功" : string.Join(" ｜ ", fgen2.Issues.Where(x => x.IsError).Select(x => x.Message)));
+					if (fgen2.Success)
+					{
+						var miss = new List<string>();
+						int same = 0;
+						foreach (string g1 in Directory.GetFiles(fgen1.ProjectRoot, "*", SearchOption.AllDirectories))
+						{
+							string rel = Path.GetRelativePath(fgen1.ProjectRoot, g1);
+							string g2 = Path.Combine(fgen2.ProjectRoot, rel);
+							if (!File.Exists(g2)) { miss.Add("第二次没有 " + rel); continue; }
+							if (System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(g1))
+								.AsSpan().SequenceEqual(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(g2)))) same++;
+							else if (!rel.EndsWith(".sln", StringComparison.OrdinalIgnoreCase))
+								miss.Add("内容不同 " + rel + FirstLineDiff(g1, g2));
+						}
+						Check("两次生成**逐文件对拍**：除了 .sln 的随机 GUID，全部逐字节一致（图的标记也一模一样）",
+							miss.Count == 0, miss.Count == 0 ? $"逐字节一致 {same} 个文件" : string.Join("；", miss.Take(4)));
+					}
+				}
+
+				// ---- 老工程（没有标记）：照旧，一条「没认出来」都不该多 ----
+				CharacterProfile np = ProfileFactory.Sample();
+				np.Paths.OutputDir = noGraphRoot;
+				np.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				np.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var ngen = ModGenerator.Generate(np);
+				Check("（准备）没有锻造图的存档能生成工程", ngen.Success, ngen.Success ? "成功" : "失败");
+				if (ngen.Success)
+				{
+					RecoveryResult nrec = ProjectRecovery.FromProject(ngen.ProjectRoot);
+					Check("老工程（没有图标记）→ 从工程恢复：一条图都没认回来、但**不是错误**（图空、其它字段照旧）",
+						nrec.IsForged.Count == 0 && !nrec.HasUnparsed,
+						$"图 {nrec.IsForged.Count} 张 / 没认出来 {nrec.Unparsed.Count} 条");
+				}
+
+				// ---- 标记坏了 / 版本不认识：必须说清，不许静默丢图 ----
+				{
+					string? problem;
+					ForgeGraphGen.ReadMarker("// CET:ForgeGraph=99:AAAA", out problem);
+					Check("标记版本不认识 → 说清是「更新的版本生成的」（不是静默当没看见）",
+						problem is not null && problem.Contains("版本不认识", StringComparison.Ordinal), problem ?? "(没报错！)");
+					ForgeGraphGen.ReadMarker("// CET:ForgeGraph=1:@@@@", out problem);
+					Check("标记的 Base64 坏了 → 说清读不出来（不是静默丢图）",
+						problem is not null && problem.Contains("读不出来", StringComparison.Ordinal), problem ?? "(没报错！)");
+					// 真工程上验一遍：把一张卡那行标记的版本改成 99 → 恢复时必须报出来
+					if (fgen1RootForProbe.Length > 0)
+					{
+						string brokenRoot = fgen1RootForProbe + "_broken";
+						try
+						{
+							if (Directory.Exists(brokenRoot)) Directory.Delete(brokenRoot, true);
+							CopyFolder(fgen1RootForProbe, brokenRoot);
+							string bf = Path.Combine(brokenRoot, "cs", "Cards", "UiCheckForgedCard.cs");
+							string bt = File.ReadAllText(bf);
+							File.WriteAllText(bf, bt.Replace("// CET:ForgeGraph=1:", "// CET:ForgeGraph=99:"), new System.Text.UTF8Encoding(false));
+							RecoveryResult brec = ProjectRecovery.FromProject(brokenRoot);
+							Check("真工程里那行标记版本被改成 99 → 从工程恢复**报出来**（进「没认出来」清单）",
+								brec.Unparsed.Any(x => x.Contains("版本不认识", StringComparison.Ordinal)),
+								brec.Unparsed.FirstOrDefault() ?? "(没报错！)");
+						}
+						finally { try { if (Directory.Exists(brokenRoot)) Directory.Delete(brokenRoot, true); } catch { } }
+					}
+				}
+			}
+			finally
+			{
+				foreach (string d in new[] { fgRoot, noGraphRoot, recRoot134 })
+					try { if (Directory.Exists(d)) Directory.Delete(d, true); } catch { }
 			}
 		}
 		Close();
