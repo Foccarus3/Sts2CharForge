@@ -1,5 +1,30 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 26 批需求（V0.2.140：**卡牌左侧序号改成和遗物页一样 —— 每 5 个一块 + 空槽直接显示灰色序号**，用户对 V0.2.130 那次的更正；**未发版**）
+
+> 派活 HEAD = `f906f2c 发版 V0.2.139`；`--uicheck` 基线 = **3241 PASS / 0 FAIL**（Debug 与发布版都是）。
+> 任务书：`_tmp\待发任务书_V0.2.140_卡牌序号五格一块.md`。**本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**
+> （只读 `status/diff/log/show` + `git worktree add`；改动前基线用 `git worktree add ..\_tmp_v02140_base f906f2c --detach` 取 HEAD 源码，**没用 `git stash`**）。
+> 红线⑧ 照旧：不读 / 不复制 / 不使用用户存档；不写、也不盘点用户游戏安装目录；一切验证只用 `ProfileFactory.Sample()` +
+> `_tmp` 自造探针；探针只用 `--build`；禁区（动画四个 `.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape`）一个字没碰。
+
+> **用户原话（2026-10-10，这是对 V0.2.137/V0.2.130 那次的更正）**
+> 「不是说卡牌左侧的序号做的像遗物一样，五个五个列，直接显示出来，比如只有一张卡时，有1-5序号，当有6张卡时，出现6到10序号」
+> **范围**：用户已确认「要」→ **三个卡牌列表页全做**（卡牌 / 诅咒卡 / 先古卡）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **卡牌左侧序号完全照遗物页 / 药水页那套**（每 5 个一块 + 空槽直接显示灰色序号），**三个卡牌列表页全做** | **行数** = `5 × ceil(max(N,1)/5)`（N = 该页真卡数）：1 张 → 1~5 行；5 张 → 1~5；**6 张 → 1~10**（7~10 空槽）；11 张 → 1~15。**序号仍是位置号**（空槽不占号、不跟随卡牌移动）。**三页共用一份实现** —— 新增 `SlotRowMirror<T>`（`src\Sts2CharForge.App\SlotRowMirror.cs`），三页各 new 一个实例（只有「读哪个真集合」不同），**不复制三份**；`SlotPlaceholder` / `ISlotRow` 沿用 V0.2.127 的通用类型（一个字没改）。**界面**：`ItemsSource` 从 `Profile.Cards` 改成**界面镜像集合** `CardRows` / `CurseRows` / `AncientRows`（`ObservableCollection<ISlotRow>`，**public** —— WPF `PropertyPath` 读不到 internal，遗物页实测踩过）；三页各自的 `ItemTemplate` 加序号列 + `DataTrigger IsPlaceholder`（`#AAAAAA` + `FontWeight=Normal` + 卡名那列 `Collapsed` + `ToolTip=null`）。**详情栏**：`CardDetail` 的 DataContext 改 `CardUiSelection`、显隐改 `HasCardSelection`（诅咒 / 先古同理 `CurseUiSelection`/`HasCurseSelection`、`AncientUiSelection`/`HasAncientSelection`）—— 点空槽时 `UiSelection` 保持上一张真卡、详情不清空，真取消选中才回空态（照 V0.2.125/V0.2.127 先例）。**拖动**：`CardRowAtPoint` 已给行号，空槽可当落点（`MoveCardTo` 会把行号夹到合法范围）；`OnAddCard` 不再用 `SelectedIndex = Count-1`（Count 是真卡数、不是行数，会落到空槽上）。**两个坑照先例挡**：`Rows.Clear()` → `SelectionChanged → SyncDetail → 重铺` 的**重入**（dirty 循环 + `IsSyncing` 期间不递归进 `SyncDetail`）；有几处历史代码直接给 `Profile` 字段赋值（不走 setter）→ 「挂错存档就重挂」自愈。**`CardList.SelectedItem` 逐处核**（本轮做了全量审计，分 A 写入 / B 天然过滤 / C 潜在 NRE 硬转 / D 口径失效 / E 注释）：**顺手修掉 3 个用户可见缺陷** —— (a) `SpecialCard` 只读 `AncientCardList.SelectedItem as CardSpec`，点空槽会让**先古卡那栏右侧详情整块塌掉** → 改 `AncientUiSelection`；(b) `CardEffectsAreForged` / `CardCoreFieldsVisible` 同理会**解锁锻造卡的效果编辑器** → 改 `CardUiSelection?.IsForged`；(c) `ForgeEnergyCostText` 同理会**让只读费用提示消失** → 改 `CardUiSelection`。`SpecialCardOf()` 的诅咒 / 先古两档也一并改读镜像属性。**生成端零改动**：`SlotRowMirror` / `SlotPlaceholder` 只被界面用，`Generation\*.cs` 一处没引用；`CardSpec` 新增的 `IsPlaceholder => false` 是 `[JsonIgnore]`（和 `RelicSpec` / `PotionSpec` 同形），存档面零变化 | ✅ 待发 |
+
+> **① 的验收数字**：`--samplegen` 改动前后逐文件 SHA256（只有 `ExampleMod.sln` 的随机 GUID 不同）；
+> `dotnet build Sts2CharForge.sln -c Debug --no-incremental` **0 错误**；`--uicheck` Debug + 发布版各 0 FAIL（基线 3241）；
+> 新增断言按用户原话三档钉：1 张 → 5 行（序号 `1.,2.,3.,4.,5.`，2~5 空槽）、6 张 → 10 行（1..10，7~10 空槽）、11 张 → 15 行、
+> 删回 5 张 → 5 行、空槽点得到但 `Card = null` 且不改任何卡、不进全选、`Profile.*` 里没有占位项、
+> 拖到空槽顺序真变且序号仍 1..N 连续、空槽序号实测 `#AAAAAA`、真生成一遍零「空槽」痕迹、行宽 ≤ 列表宽 + 2px；
+> 诅咒 / 先古两页各自同形（2 张 → 5 行、6 张 → 10 行、前缀 `Curse<n>` / `Ancient<n>` 各自从 1 起）。
+> **遗留（等用户定夺）**：诅咒卡 / 先古卡两栏目前**没有**接拖动（XAML 里本来就没有那四个拖放事件）——
+> 它们的空槽行**暂时不能当拖放落点**；要的话下一版补。
+
 ## 第 25 批需求（用户 2026-10-10 报的**两条**；**未发版**，版本号仍是 V0.2.138）
 
 > 派活 HEAD = `d3d7b60 发版 V0.2.138`；`--uicheck` 基线 = **3229 PASS / 0 FAIL**（Debug 与发布版都是）。

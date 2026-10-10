@@ -2596,10 +2596,11 @@ V0.2.112 起，卡牌上的固定数值在打开存档时会自动**迁成公式
 没填显示名时全部退回通用说法「额外资源量」。界面里的条件短名（效果列表那一行）也跟着显示名走。
 只要启用了额外资源量，计数器与卡面上悬停提示的标题和描述都会替换成我们自己的（不会露出本体别的角色的文案）。
 
-## 遗物页 / 药水页的左侧序号、$5$ 个一块的空槽、拖动换位置、自动类名跟序号走
+## 遗物页 / 药水页 / 卡牌三页的左侧序号、$5$ 个一块的空槽、拖动换位置、自动类名跟序号走
 
 V0.2.124/125 在遗物页做了这一套，V0.2.127 按用户要求（《遗物、药水优化.md》第 6 条
-「药水方面参考遗物的优化方案」）**照抄到药水页**，两页现在是同一套版式：
+「药水方面参考遗物的优化方案」）**照抄到药水页**，V0.2.140 又照抄到**三个卡牌列表页**
+（卡牌 / 诅咒卡 / 先古卡，见下一节）—— 现在是同一套版式：
 
 | 做什么 | 口径 |
 |---|---|
@@ -2642,23 +2643,87 @@ V0.2.124/125 在遗物页做了这一套，V0.2.127 按用户要求（《遗物�
     这一版**刻意不补生成**（补了会改掉老存档的生成结果，而「老存档生成结果逐字不变」是红线），
     改成**校验器明确报出来**（警告级）。想要「重复执行几遍」请用「生效次数」。
 
-## 卡牌页的左侧序号、拖动换位置、自动类名按序号（V0.2.130；序号口径 V0.2.137 改成「每页各自 1..N」）
+## 卡牌页的左侧序号、每 5 个一块的空槽、拖动换位置、自动类名按序号（V0.2.130；序号口径 V0.2.137；**空槽版式 V0.2.140**）
 
 用户要求（《卡牌页优化.md》第 1 条：「左侧序号、可拖动位置、对应序号英文类名」），
 拍板口径见 `docs\需求\已拍板决定.md` **Q5 = A**；
 V0.2.137 用户又提「卡牌的那个排序有点问题，可以做的和遗物左侧的排序一样」→ **拍板 A**：
 **每页列表各自 1..N**（和遗物 / 药水页完全一样），三页各用一套类名前缀。
 
+**V0.2.140** 用户对前一版**再更正一次**（原话）：
+> 「不是说卡牌左侧的序号做的像遗物一样，五个五个列，直接显示出来，比如只有一张卡时，有1-5序号，
+> 当有6张卡时，出现6到10序号」
+
+即**连版式都要和遗物 / 药水页一样**：序号直接显示、**每 5 个一块、不够一块的补灰空槽**。
+范围（用户 2026-10-10 已确认「要」）：**三个卡牌列表页全做** —— 卡牌 / 诅咒卡 / 先古卡。
+
 | 做什么 | 口径 |
 |---|---|
-| 最左边那一列序号 | 卡牌名最左侧从上到下 **1..N**；是这一张卡**现在排第几位**，**不跟着卡牌走**；拖动 / 增删之后重排 |
-| 序号按哪些行编号 | **每页列表各自 1..N**：普通卡列表（含本体卡 / 初始的打击与防御，它们就在这个列表里、就是第 1、2 号）、诅咒卡列表、先古卡列表**各自**从 1 数。用户原话的验收场景：「面具虚影」排第三张 → 删掉英文类名后生成 `SparkleCard3` |
+| 最左边那一列序号 | 卡牌名最左侧从上到下；是这一张卡**现在排第几位**，**不跟着卡牌走**；拖动 / 增删之后重排 |
+| 一次多留几个序号 | 显示的**行数** = `5 × ceil(max(N,1)/5)`（N = 该页真卡数）：1 张 → 1~5；5 张 → 1~5；**6 张 → 1~10**；11 张 → 1~15 |
+| 空槽 | 只显示灰色序号（`#AAAAAA`，真卡是 `#FF1F4E79` **加粗**），卡名那一列整块收起来、ToolTip 为空；**选不中**（不污染选中 / 多选 / 全选 / 删除 / 生成），但**可以当拖放落点** |
+| 序号按哪些行编号 | **每页列表各自 1..N，空槽不占号**：普通卡列表（含本体卡 / 初始的打击与防御，它们就在这个列表里、就是第 1、2 号）、诅咒卡列表、先古卡列表**各自**从 1 数。用户原话的验收场景：「面具虚影」排第三张 → 删掉英文类名后生成 `SparkleCard3` |
 | 三套自动类名前缀 | 普通卡 `<角色类名>Card<N>`、诅咒卡 `<角色类名>Curse<N>`、先古卡 `<角色类名>Ancient<N>`（N = **它自己那一页**列表里的位置）。**必须分三套前缀**：三页各自从 1 开始，同一个前缀会撞类名 → 本体注册时 `DuplicateModelException`。状态卡住在「卡牌」列表里，用 `Card` 前缀 |
-| 没有空槽行 | 和遗物 / 药水页**不一样**：卡牌页要的就是 1..N 连续，所以**没有**「每 5 个留空槽」那一套 |
-| 唯一事实来源 | `Profile.Cards` / `Curses` / `AncientCards` 各自仍是唯一事实来源；因为不需要空槽，`CardList.ItemsSource` **仍然直接绑 `Profile.Cards`**（没有界面镜像集合，`CardList.SelectedItem` 照旧是 `CardSpec`） |
-| 拖动换位置 | 按住行里的文字上下拖过系统阈值才起拖（不然点一下选中会被当成拖动）；松手插到鼠标下面那一行的位置；`MoveCardTo` 是纯逻辑，自检直接调它 |
+| 唯一事实来源 | `Profile.Cards` / `Curses` / `AncientCards` 各自仍是唯一事实来源 —— 空槽只活在**界面镜像集合**（`MainWindow.CardRows` / `CurseRows` / `AncientRows`）里，生成 / 存档 / 回读 / 校验都看不到它 |
+| 三页共用一份实现 | 三个列表页只有「读哪个真集合」不同，所以镜像逻辑抽成 `SlotRowMirror<T>`（`src\Sts2CharForge.App\SlotRowMirror.cs`），三页各 new 一个实例；**不复制三份**（复制三份以后必然漂）。遗物 / 药水两页那一份**没动**（避免改既有行为） |
+| 拖动换位置 | 按住行里的文字上下拖过系统阈值才起拖（不然点一下选中会被当成拖动）；松手插到鼠标下面那一行的位置（**拖到空槽 = 落到那一行的位置，超出末尾就夹到末尾**）；`MoveCardTo` 是纯逻辑，自检直接调它 |
 | 自动类名跟序号走 | 生成前跑 `NameStabilizer.RenumberCardNames`（内部对**三个列表分别**跑 `Naming.RenumberCardClassNames`）：**手填的一个字不动**；写着「本工具以前自动生成过的名字」（`<角色类名>` + `Card` / `Curse` / `Ancient` + `<N>`，按**名字形状**认）的按当前位置改名；**留空的保持留空**只记序号（一写实就再也分不出手打的和工具生成的）。**幂等** |
 | 界面提示 | 「英文类名」下面那行小字写清现在这张是「自动（跟序号走）」还是「你手填的」（**卡牌页 / 诅咒页 / 状态卡页都有这一行**）；卡牌页在留空时还会写出「普通卡 / 诅咒卡 / 先古卡各自的前缀」；列表每行的 ToolTip 写「第 N 位 ｜ 自动 / 手填 ｜ 可以拖动」 |
+
+列表模板（三页同形，序号列 34px + 卡名列 `*`）：
+
+```xml
+<TextBlock x:Name="CardRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+           Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+<TextBlock x:Name="CardRowName" Grid.Column="1" Text="{Binding Display}" .../>
+<DataTemplate.Triggers>
+  <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+    <Setter TargetName="CardRowRoot" Property="ToolTip" Value="{x:Null}"/>
+    <Setter TargetName="CardRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+    <Setter TargetName="CardRowOrdinal" Property="FontWeight" Value="Normal"/>
+    <Setter TargetName="CardRowName" Property="Visibility" Value="Collapsed"/>
+  </DataTrigger>
+</DataTemplate.Triggers>
+```
+
+**空槽绝不能被当成卡选中**，所以详情栏 / 显隐都不再绑 `SelectedItem`，改绑窗口上的三组属性
+（照遗物页 V0.2.125 / 药水页 V0.2.127 的写法）：
+
+| 页 | 详情栏 DataContext | 详情栏显隐（也管「请选择…」那句提示） |
+|---|---|---|
+| 卡牌 | `CardUiSelection` | `HasCardSelection` |
+| 诅咒卡 | `CurseUiSelection` | `HasCurseSelection` |
+| 先古卡 | `AncientUiSelection` | `HasAncientSelection` |
+
+语义：点中空槽行时 **`UiSelection` 保持上一张真卡**（右侧详情不清空），但**显隐判据看的是「列表里有没有选中一行」**
+—— 真的取消选中（`SelectedIndex = -1` / 点列表空白）才回到「请选择卡牌」。
+`UiSelection` 只可能是真卡（空槽被 `is CardSpec` 天然滤掉），三个镜像属性都**必须 public**
+（WPF 的 `PropertyPath` 走反射读不到 `internal` 成员；遗物页实测踩过这个坑）。
+
+同源的一条副作用口径（`CardList.SelectedItem` 现在可能是占位项，只读它算出来的东西会错）：
+
+| 属性 | 旧写法（点空槽时会错） | 现写法 |
+|---|---|---|
+| `CardEffectsAreForged` / `CardCoreFieldsVisible` | `(CardList?.SelectedItem as CardSpec)?.IsForged` | `CardUiSelection?.IsForged == true` |
+| `ForgeEnergyCostText` | `CardList?.SelectedItem is not CardSpec c` | `CardUiSelection is not CardSpec c` |
+| `SpecialCard`（先古卡 / 状态卡共用详情） | `AncientCardList?.SelectedItem as CardSpec` | `AncientUiSelection ?? (StatusCardList?.SelectedItem as CardSpec)` |
+| `SpecialCardOf()`（三栏「当前那张牌」） | 三个 `SelectedItem as CardSpec` | `CurseUiSelection ?? AncientUiSelection ?? (StatusCardList.SelectedItem as CardSpec)` |
+
+> 不修的话后果是**用户可见的错乱**：点一下空槽 → 先古卡那栏右侧整块详情塌掉；
+> 或者看着是锻造卡、右侧效果编辑器却被解锁了。
+
+两个实测踩到的坑（和遗物 / 药水页同一对，代码里都有注释）：
+
+1. 镜像集合必须能经 **`public`** 路径绑到（`CardRows` / `CurseRows` / `AncientRows`）——
+   绑 `internal` 字段时绑定状态直接是 `PathError`、`ItemsSource` 永远是 null；
+2. `Rows.Clear()` 会触发 `SelectionChanged → SyncDetail → 重新铺集合` 的**重入** ——
+   镜像铺两遍会各自按自己那份快照写，差一行；所以重入只置 dirty，由最外层循环重算到稳定。
+   并且卡牌页的 `SelectionChanged` 在镜像**正在铺**的时候**不再递归进 `SyncDetail`**。
+   换存档还有一条自愈：有几处历史代码直接给 `Profile` 字段赋值（不走属性 setter），
+   `CollectionChanged` 会留在上一份存档上 —— 镜像发现「挂的存档不是当前这份」就重挂一次。
+
+**生成端零改动**：`SlotRowMirror` / `SlotPlaceholder` 只被界面用到，`Generation\*.cs` 一处都没引用；
+`CardSpec` 新增的 `IsPlaceholder => false` 是 `[JsonIgnore]`，存档面零变化。
 
 ⚠ **V0.2.130 那一版**改的是「只数自有卡 → 全部行」（打击 / 防御也开始占号）；
 ⚠ **V0.2.137 这一版**改的是「全部卡一条连续编号 → 每页各自 1..N + 三套前缀」——

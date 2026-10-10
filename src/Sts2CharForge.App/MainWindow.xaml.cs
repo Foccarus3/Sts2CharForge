@@ -186,8 +186,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			// 三个列表（卡牌 / 诅咒 / 先古卡）共用这一套预览属性 —— 选中是互斥的，所以拿到的一定是当前那张
-			var cardSpec = (CardList.SelectedItem as CardSpec) ?? SpecialCardOf();
+			// 三个列表（卡牌 / 诅咒 / 先古卡）共用这一套预览属性 —— 选中是互斥的，所以拿到的一定是当前那张。
+			// ⚠ V0.2.140：卡牌页列表里有空槽行了，所以用 CardUiSelection（点空槽时保持上一张、不会变成 null）。
+			var cardSpec = CardUiSelection ?? SpecialCardOf();
 			if (cardSpec is null) return null;
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			if (!_profile.Art.CardPortraits.TryGetValue(key, out string value))
@@ -212,7 +213,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		get
 		{
-			var cardSpec = (CardList.SelectedItem as CardSpec) ?? SpecialCardOf();
+			// ⚠ V0.2.140：卡牌页列表里有空槽行了，所以用 CardUiSelection（点空槽时保持上一张、不会变成 null）。
+			var cardSpec = CardUiSelection ?? SpecialCardOf();
 			if (cardSpec is null) return "";
 			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
 			_profile.Art.CardPortraits.TryGetValue(key, out string? value);
@@ -264,7 +266,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 	/// <summary>当前正在编辑的那张卡（卡牌列表 / 诅咒 / 先古卡三处互斥）。</summary>
-	private CardSpec? ActivePortraitCard() => (CardList?.SelectedItem as CardSpec) ?? SpecialCardOf();
+	private CardSpec? ActivePortraitCard() => CardUiSelection ?? SpecialCardOf();
 
 	/// <summary>
 	/// 上传图和「游戏里的显示区域」的比例说明（预览旁边那行小字）。
@@ -343,9 +345,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			HookPotionListOrder();
 			SyncPotionRows();
 			PotionUiSelection = null;
-			// 卡牌页（V0.2.130）：左侧序号也是**位置号**，换存档后立刻按新存档的顺序重发一遍
-			// （和遗物 / 药水那两行同一个位置、同一个理由）
-			RefreshCardOrdinals();
+			// 卡牌页（V0.2.130 左侧序号；V0.2.140 改成**每 5 个一块 + 空槽带灰色序号**）：
+			// 三页的镜像集合（CardRows / CurseRows / AncientRows）要跟着新存档重铺一遍
+			SyncCardRowMirrors();
+			_cardMirror.SelectedRow = null;
+			_curseMirror.SelectedRow = null;
+			_ancientMirror.SelectedRow = null;
+			Raise("HasCardSelection");
+			Raise("HasCurseSelection");
+			Raise("HasAncientSelection");
 			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
 			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
 			HookAnimationSpec();
@@ -870,9 +878,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	///
 	/// 为什么要有它：卡面预览、升级后费用、升级后关键字、自定义关键词勾选这些**窗口级**属性
 	/// 以前写死了 <c>CardList.SelectedItem</c>，新开的两栏（诅咒 / 先古卡）共用同一套面板时就会拿到 null。
+	/// ⚠ V0.2.140：卡牌页列表里有空槽行了，所以用 <c>CardUiSelection</c>（点空槽时保持上一张）。
 	/// </summary>
 	internal CardSpec? ActiveCardForDetail() =>
-		(CardList?.SelectedItem as CardSpec) ?? SpecialCardOf();
+		CardUiSelection ?? SpecialCardOf();
 
 
 	/// <summary>
@@ -1032,7 +1041,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		get
 		{
-			var card = (CardList?.SelectedItem as CardSpec) ?? SpecialCardOf();
+			var card = CardUiSelection ?? SpecialCardOf();
 			if (card is null) return Array.Empty<CardGroupRow>();
 			return _profile.CardGroups.Select(g => new CardGroupRow(card, g)).ToList();
 		}
@@ -1889,7 +1898,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>卡牌页 / 组页上「这张牌属于哪些组」的勾选框需要重新读一遍（组的增删改了行的个数）。 /summary>
 	private void RaiseCardsGroupChanged()
 	{
-		if (CardList?.SelectedItem is CardSpec cur)
+		if (CardUiSelection is CardSpec cur)
 		{
 			// 同一张卡重新给一次 DataContext，行数变了才能重建 
 			CardDetail.DataContext = null;
@@ -1942,10 +1951,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	public bool ForgeCopyVisible => ForgeGraphTabs?.SelectedIndex == 1;
 
 	/// <summary>
-	/// 卡牌页当前选中的是不是**锻造卡**（名字带 * 的那些）。"
-	/// 需求：这种卡在卡牌页只能改中间那些属性，右边「效果」栏锁死（效果归锻造页的节点图）。"
+	/// 卡牌页当前选中的是不是**锻造卡**（名字带 * 的那些）。
+	/// 需求：这种卡在卡牌页只能改中间那些属性，右边「效果」栏锁死（效果归锻造页的节点图）。
+	///
+	/// <para>⚠ V0.2.140：必须读 <see cref="CardUiSelection"/> —— 卡牌列表里现在有空槽行，点空槽时
+	/// <c>CardList.SelectedItem</c> 是 <c>SlotPlaceholder</c>（<c>as CardSpec</c> 得 null），
+	/// 右侧那块「锻造卡 → 效果栏锁死 / 费用栏藏起来」就会**失效**（看着是锻造卡却能改它的效果）；
+	/// 而详情栏 <c>CardDetail.DataContext</c> 此刻仍然是上一张真锻造卡，两边就对不上了。</para>
 	/// </summary>
-	public bool CardEffectsAreForged => (CardList?.SelectedItem as CardSpec)?.IsForged == true;
+	public bool CardEffectsAreForged => CardUiSelection?.IsForged == true;
 
 	/// <summary>卡牌页右边效果栏能不能改（锻造卡不行）。 /summary>
 	public bool CardEffectsEditable => !CardEffectsAreForged;
@@ -1962,7 +1976,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		get
 		{
-			if (CardList?.SelectedItem is not CardSpec c || !c.IsForged) return "";
+			// ⚠ V0.2.140：读 CardUiSelection（卡牌列表里有空槽行了；点空槽时 SelectedItem 是占位项，
+			// 用它会返回空串 → 这条只读费用提示会消失，而右侧详情其实还停在上一张锻造卡上）。
+			if (CardUiSelection is not CardSpec c || !c.IsForged) return "";
 			var energyNode = c.ForgeGraph?.Nodes.FirstOrDefault((ForgeNodeSpec n) => n is not null && n.Kind == "Energy");
 			int cost = (int)Math.Round(energyNode?.GetNumber("EnergyCost") ?? 0);
 			int res = (int)Math.Round(energyNode?.GetNumber("ResourceCost") ?? 0);
@@ -2787,6 +2803,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	public MainWindow()
 	{
 		InitializeComponent();
+		// V0.2.140：三个卡牌列表页（卡牌 / 诅咒卡 / 先古卡）的界面镜像集合（真卡 + 末尾空槽行）。
+		// ⚠ 必须**最早**建：下面的 RefreshAll / BuildAncientRows / HookCardCount 中途就可能调到
+		// RefreshCardOrdinals / OnCardsChanged / SyncDetail，那些路径都要往镜像里写。
+		InitCardRowMirrors();
 		// 标题带上版本号（和整合包 / 启动器用的是同一个版本号：App.csproj 里的 InformationalVersion）
 		Title = $"Sts2CharForge {AppVersion.Current} —— 杀戮尖塔2 自定义角色生成器";
 		BuildArtSlots();
@@ -2820,6 +2840,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 所以这里必须自己挂一次，否则 PotionRows 一直是空的（自检实测：镜像 0 行）。
 		HookPotionListOrder();
 		SyncPotionRows();
+		// 卡牌三页同理（V0.2.140）：启动这条路径也不走 Profile 的 setter，
+		// 镜像集合（CardRows / CurseRows / AncientRows）必须在这里自己铺一遍。
+		SyncCardRowMirrors();
 		// 换存档（`Raise("Profile")`）：两个界面镜像集合必须跟着新存档重铺一遍。
 		//
 		// ⚠ 为什么非要在**通知**上做，而不是只在 <see cref="Profile"/> 的 setter 里做：
@@ -2838,14 +2861,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SyncRelicRows();
 			HookPotionListOrder();
 			SyncPotionRows();
+			// V0.2.140：卡牌三页的镜像也不能漏（同一个理由 —— 直接给 _profile 字段赋值的路径不走 setter）
+			SyncCardRowMirrors();
+			Raise("HasCardSelection");
+			Raise("HasCurseSelection");
+			Raise("HasAncientSelection");
 		};
 		CardList.SelectionChanged += delegate
 		{
+			// 「详情栏显隐」看的是列表里有没有选中一行（含空槽行），它不在 CardUiSelection 的变化里，
+			// 得单独通知一次（和遗物 / 药水页同一个套路）
+			NoteCardRowsSelection(CardList, _cardMirror);
+			Raise("HasCardSelection");
+			// ⚠ 正在铺镜像集合（SyncCardRows）时**不要**再递归进 SyncDetail：那一次选中变化是
+			// CardRows.Clear() / SelectedItem = null 自己引发的，外层那次 SyncDetail 会把该做的全做完；
+			// 递归进去的坏处是**时机**（那一刻三页的镜像 / 选中都还在半路上，遗物页实测踩过）。
+			if (_cardMirror.IsSyncing) return;
 			SyncDetail();
 			// 换卡之后「右边效果栏锁不键 / 中间费用栏显不显示」要跟着变（锻造卡都藏掉，需求）
 			Raise("CardEffectsAreForged");
 			Raise("CardEffectsEditable");
 			Raise("CardCoreFieldsVisible");
+		};
+		CurseList.SelectionChanged += delegate
+		{
+			// 诅咒页（V0.2.140 起也有空槽行）：选中变化 → 重认一次真诅咒 + 刷新显隐
+			NoteCardRowsSelection(CurseList, _curseMirror);
+			_curseMirror.RefreshUiSelection();
+			Raise("HasCurseSelection");
+		};
+		AncientCardList.SelectionChanged += delegate
+		{
+			// 先古卡那一栏同理
+			NoteCardRowsSelection(AncientCardList, _ancientMirror);
+			_ancientMirror.RefreshUiSelection();
+			Raise("HasAncientSelection");
 		};
 		RelicList.SelectionChanged += delegate
 		{
@@ -2925,9 +2975,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RefreshPotionOrdinals();
 		RefreshPotionUiSelection();
 		Raise("HasPotionSelection");
-		// 卡牌页（V0.2.130）：左侧序号是**位置号**（不跟随卡牌移动），每次重铺详情前先按当前顺序重发一遍
+		// 卡牌页（V0.2.130 左侧序号；V0.2.140 每 5 个一块 + 空槽带灰色序号，三页都做）：
+		// 先把三个镜像铺一遍（真卡 1..N + 末尾空槽），再算位置号，最后认一遍「当前选中的真卡是哪张」。
+		SyncCardRowMirrors();
 		RefreshCardOrdinals();
-		CardDetail.DataContext = CardList.SelectedItem;
+		_cardMirror.RefreshUiSelection();
+		_curseMirror.RefreshUiSelection();
+		_ancientMirror.RefreshUiSelection();
+		Raise("HasCardSelection");
+		Raise("HasCurseSelection");
+		Raise("HasAncientSelection");
+		CardDetail.DataContext = CardUiSelection;
 		RelicDetail.DataContext = RelicUiSelection;
 		PotionDetail.DataContext = PotionUiSelection;
 		KeywordDetail.DataContext = KeywordList.SelectedItem;
@@ -2950,7 +3008,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 召唤物：图片预览 + 效果编辑器「召唤物（哪一只）」下拉的候选（只列已启用的）
 		Raise("SelectedSummonImagePreview");
 		RaisePetSummonChoices();
-		CardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.Cards"));
+		// V0.2.140：三个卡牌列表页的 ItemsSource 改成**界面镜像集合**（真卡 + 末尾空槽行），
+		// 所以在 XAML 里直接绑（CardRows / CurseRows / AncientRows），这里不再重绑 Profile.Cards ——
+		// 免得每跑一次 SyncDetail 就把镜像换回真集合（遗物 / 药水页那两行还在，它们本来就绑镜像）。
 		RelicList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("RelicRows") { Source = this });
 		PotionList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("PotionRows") { Source = this });
 		KeywordList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomKeywords"));
@@ -4407,7 +4467,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		HookCardCount();
 		Raise(nameof(CardCountText));
 		// 卡牌页左侧序号是**位置号**（用户要求第 1 条）：加 / 删 / 撤回 / 拖动之后都要重发一遍。
-		// 三张列表（卡牌 / 诅咒 / 先古卡）的 CollectionChanged 都挂在这里，一起算正好。
+		// ⚠ V0.2.140：镜像集合（每 5 个一块 + 末尾空槽行）也要跟着重铺 —— 先铺镜像再算序号，
+		// 顺序无所谓（序号只写 CardSpec 上的 Ordinal，空槽的序号是 SlotPlaceholder 自己带的行号），
+		// 但两件事都要做：加了第 6 张时列表要从 5 行变 10 行。
+		if (ReferenceEquals(sender, _profile?.Cards)) SyncCardRows();
+		else if (ReferenceEquals(sender, _profile?.Curses)) SyncCurseRows();
+		else if (ReferenceEquals(sender, _profile?.AncientCards)) SyncAncientRows();
+		else SyncCardRowMirrors();
 		RefreshCardOrdinals();
 		// 加 / 删卡之后「目标卡（生成 / 变化用）」也要跟着更新 ——
 		// 以前这里只刷数量，新加的卡在下拉里搜不到（用户报的「保存的卡在目标卡处搜不到」就是这个）。
@@ -5304,15 +5370,18 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void OnAddCard(object sender, RoutedEventArgs e)
 	{
-		_profile.Cards.Add(new CardSpec
+		var c = new CardSpec
 		{
 			Name = "新卡",
 			CardType = "Attack",
 			Rarity = "Common",
 			Cost = 1
-		});
+		};
+		_profile.Cards.Add(c);
 		SyncDetail();
-		CardList.SelectedIndex = _profile.Cards.Count - 1;
+		// V0.2.140：列表里现在还有「每 5 个一块」的空槽行，SelectedIndex = Count-1 会落到空槽上
+		//（Count 是真卡数、不是行数）—— 照遗物 / 药水页的做法用**对象本身**选。
+		CardList.SelectedItem = c;
 		SetStatus("已添加卡牌，右侧填写属性与效果。想照本体「粘液」做一张状态牌：类型选「状态」、稀有度选「状态」。");
 	}
 
@@ -5370,23 +5439,96 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			System.Text.Json.JsonSerializer.Serialize(src, ProfileFactory.JsonOpts),
 			ProfileFactory.JsonOpts) ?? new CardSpec();
 
-	// ==================== 卡牌列表：序号 + 拖动换位置（用户要求第 1 条《卡牌页优化.md》）====================
+	// ==================== 三个卡牌列表页：序号 + 每 5 个一块的空槽 + 拖动换位置 ====================
 	//
-	// 序号显示在卡牌名最左侧、从上到下 1..N，序号是**位置号**（用户原话「序号不会跟随卡牌的移动」）。
-	// 口径按用户拍板 Q5 = A：**列表里全部行都占号** —— 本体卡 / 初始的打击与防御也占第 1、2 号，
-	// 自动英文类名跟的就是这个号（见 Naming.CardClassName / RenumberCardClassNames）。
+	// V0.2.140（用户对 V0.2.130 / V0.2.137 那两次的**更正**，原话）：
+	//   「不是说卡牌左侧的序号做的像遗物一样，五个五个列，直接显示出来，比如只有一张卡时，有1-5序号，
+	//     当有6张卡时，出现6到10序号」
+	// 含义 = **完全照遗物页 / 药水页那套版式**（见 V0.2.125 / V0.2.127）：
+	//   · 显示的**行数** = 5 × ⌈max(N,1)/5⌉（N = 真卡牌数）：1 张 → 1~5 行；5 张 → 1~5；
+	//     **6 张 → 1~10**（7~10 是空槽）；11 张 → 1~15；
+	//   · 序号**直接在每行最左侧显示**，空槽也带灰色序号；
+	//   · 序号仍是**位置号**（拖动 / 增删后重算），**不跟随卡牌移动**；
+	//   · 空槽**可以当拖放落点、不能当卡选中、不进全选**。
+	// 范围（用户 2026-10-10 已确认「要」）：**三个卡牌列表页全做** —— 卡牌 / 诅咒卡 / 先古卡，
+	// 各自的前缀照 V0.2.137 不变（Card / Curse / Ancient），序号各自从 1 起、= 该页列表里的位置号。
 	//
-	// ⚠ 和遗物页 / 药水页**不一样**：卡牌页没有「每块留 5 个空槽」（需求要的就是 1..N 连续），
-	// 所以这里**不需要界面镜像集合** —— CardList.ItemsSource 仍然直接绑 Profile.Cards，
-	// CardList.SelectedItem 照旧是 CardSpec（MainWindow.xaml.cs 里那一百多处引用一个字都不用改），
-	// 也就不存在「Clear() 引发 SelectionChanged 重入」那一类坑。
+	// ⚠ 三页**共用同一份实现**（<see cref="SlotRowMirror{T}"/>，抽出来就是为了不复制三份以后漂）；
+	//   三个镜像实例只有「读哪个真集合」和「详情栏绑哪一组属性」不同。
+	// ⚠ 空槽只活在界面镜像集合（CardRows / CurseRows / AncientRows）里，
+	//   <c>Profile.Cards</c> / <c>Curses</c> / <c>AncientCards</c> 里**永远只有真卡** ——
+	//   生成 / 存档 / 回读 / 校验都看不到空槽（红线①：生成结果逐字节不变）。
 
 	/// <summary>
-	/// 给每张卡重新发一遍「我在（自己那一页）列表里排第几」（1 起算）。
+	/// 卡牌列表（「卡牌」页）**真正绑的那个集合**：真卡（按 <c>Profile.Cards</c> 的顺序）+ 末尾的空槽行。
+	///
+	/// <para>⚠ 必须是 <c>public</c>：WPF 的 <c>PropertyPath</c> 走反射时**读不到 internal 成员**
+	/// （遗物页实测踩过：绑 internal 字段时绑定状态直接是 <c>PathError</c>、<c>ItemsSource</c> 永远是 null）。</para>
+	/// </summary>
+	public ObservableCollection<ISlotRow> CardRows => _cardMirror.Rows;
+
+	/// <summary>诅咒卡列表（「诅咒 / 先古 / 状态」页第一栏）绑的镜像集合：真诅咒 + 末尾空槽行。</summary>
+	public ObservableCollection<ISlotRow> CurseRows => _curseMirror.Rows;
+
+	/// <summary>先古卡列表（同一页第二栏）绑的镜像集合：真先古卡 + 末尾空槽行。</summary>
+	public ObservableCollection<ISlotRow> AncientRows => _ancientMirror.Rows;
+
+	/// <summary>
+	/// 界面上「当前选中的那一张真卡（卡牌页）」：选中项是真卡就是它；点中空槽行时**保持上一张**
+	/// （点空槽不该把右边详情清空）。卡牌详情栏的数据上下文绑它。
+	/// </summary>
+	public CardSpec? CardUiSelection => _cardMirror.UiSelection;
+
+	/// <summary>同上，诅咒页那一栏选中的真诅咒。</summary>
+	public CardSpec? CurseUiSelection => _curseMirror.UiSelection;
+
+	/// <summary>同上，先古卡那一栏选中的真先古卡。</summary>
+	public CardSpec? AncientUiSelection => _ancientMirror.UiSelection;
+
+	/// <summary>
+	/// 卡牌页详情栏 / 「请选择卡牌」提示的显隐判据：**列表里有没有选中一行**（选中的那行是空槽也算选了
+	/// —— 空槽行照样是列表里的一行，右侧详情不该闪没）。真的取消选中时列表选中项是 null → 回到「请选择卡牌」。
+	/// </summary>
+	public bool HasCardSelection => _cardMirror.HasSelection;
+
+	/// <summary>诅咒页详情栏的显隐判据（同上）。</summary>
+	public bool HasCurseSelection => _curseMirror.HasSelection;
+
+	/// <summary>先古卡详情栏的显隐判据（同上）。</summary>
+	public bool HasAncientSelection => _ancientMirror.HasSelection;
+
+	/// <summary>三页共用的那份镜像逻辑：每个列表页一个实例（各自的行集合 / 序号 / 前缀）。</summary>
+	private SlotRowMirror<CardSpec> _cardMirror = null!;
+
+	private SlotRowMirror<CardSpec> _curseMirror = null!;
+
+	private SlotRowMirror<CardSpec> _ancientMirror = null!;
+
+	/// <summary>
+	/// 建三个卡牌列表页的镜像（构造函数里调 —— 必须早于任何会碰这三个列表的代码：
+	/// <c>RefreshCardOrdinals</c> / <c>SyncDetail</c> / <c>OnCardsChanged</c> 都可能在建窗口的中途被调到）。
+	/// </summary>
+	private void InitCardRowMirrors()
+	{
+		_cardMirror = new SlotRowMirror<CardSpec>(p => p.Cards, () => Raise("CardUiSelection"));
+		_curseMirror = new SlotRowMirror<CardSpec>(p => p.Curses, () => Raise("CurseUiSelection"));
+		_ancientMirror = new SlotRowMirror<CardSpec>(p => p.AncientCards, () => Raise("AncientUiSelection"));
+	}
+
+	/// <summary>把「列表里选中的那一行」告诉镜像（它据此算 <c>HasSelection</c> / <c>UiSelection</c>）。</summary>
+	private void NoteCardRowsSelection(ListBox list, SlotRowMirror<CardSpec> mirror)
+	{
+		mirror.View = list;
+		mirror.SelectedRow = list.SelectedItem;
+	}
+
+	/// <summary>
+	/// 给三页的每张卡重新发一遍「我在**自己那一页**列表里排第几」（1 起算），
+	/// 再把三个界面镜像集合铺一遍（真卡 1..N + 末尾空槽行）。
 	///
 	/// <para>为什么要有它：序号 = **当前位置**，不是跟着卡牌走的标记（用户原话「序号不会跟随卡牌的移动」）
 	/// —— 所以每次增删 / 拖动 / 载入存档之后都要重算一遍，绑在界面上的 <c>OrdinalText</c> 才会跟着变。
-	/// 由 <see cref="OnCardsChanged"/>（<c>Profile.Cards</c> 的 <c>CollectionChanged</c>）和
+	/// 由 <see cref="OnCardsChanged"/>（三个真集合的 <c>CollectionChanged</c> 都挂在它上面）和
 	/// <see cref="SyncDetail"/> 各调一次，覆盖加 / 删 / 撤回 / 拖动 / 换存档全部路径。</para>
 	///
 	/// <para>⚠ V0.2.137 口径（用户拍板 A，改成「和遗物页一样」）：<c>Ordinal</c> = 它在**自己那一页列表**
@@ -5394,6 +5536,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// （自动英文类名跟的就是它）；前缀按稀有度填进 <c>AutoClassNameStem</c>
 	/// （普通卡 Card / 诅咒卡 Curse / 先古卡 Ancient）—— 老口径是「全部卡一条连续编号、只有一个 Card
 	/// 前缀」，所以诅咒 / 先古卡的号以前比列表行号大。</para>
+	///
+	/// <para>⚠ 发的号是**真集合里的位置**（1..N），**不是**镜像集合里的行号 —— 空槽行不占号。</para>
 	/// </summary>
 	internal void RefreshCardOrdinals()
 	{
@@ -5415,6 +5559,83 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				if (!string.Equals(c.CharClass, charClass, StringComparison.Ordinal)) c.CharClass = charClass;
 			}
 		}
+	}
+
+	/// <summary>
+	/// 只铺**一张卡牌列表页**的镜像（加 / 删 / 拖动之后只要铺动过的那一页就够了）。
+	/// 序号由 <see cref="RefreshCardOrdinals"/> 统一算，这里只管空槽行。
+	/// </summary>
+	internal void SyncCardRows()
+	{
+		if (_profile?.Cards is null) return;
+		_cardMirror.Sync(_profile);
+	}
+
+	/// <summary>只铺诅咒卡那一页的镜像（同上）。</summary>
+	internal void SyncCurseRows()
+	{
+		if (_profile?.Curses is null) return;
+		_curseMirror.Sync(_profile);
+	}
+
+	/// <summary>只铺先古卡那一页的镜像（同上）。</summary>
+	internal void SyncAncientRows()
+	{
+		if (_profile?.AncientCards is null) return;
+		_ancientMirror.Sync(_profile);
+	}
+
+	/// <summary>三页一起铺（换存档 / 载入 / 总刷新时用；幂等，重复调没副作用）。</summary>
+	internal void SyncCardRowMirrors()
+	{
+		SyncCardRows();
+		SyncCurseRows();
+		SyncAncientRows();
+	}
+
+	/// <summary>序号行数：<c>5 × ceil(max(N,1) / 5)</c>（卡牌 / 诅咒 / 先古卡三页同一个口径）。</summary>
+	internal static int CardSlotRowCount(int cardCount) => SlotRowMirror<CardSpec>.RowCountOf(cardCount);
+
+	/// <summary>
+	/// 自检用（V0.2.140）：先古卡那一栏的空槽行「在屏幕上点得到、但拿不到卡」。
+	/// 用真正的命中测试走一遍（<c>InputHitTest</c> → 往上找 <c>ListBoxItem</c>），
+	/// 顺便验「点空槽不会把已选中的真先古卡冲掉」。
+	/// </summary>
+	private bool AncientSlotRowProbe()
+	{
+		int slotIndex = Profile.AncientCards.Count;            // 第一行空槽的行号（0 起算的索引）
+		if (slotIndex >= AncientRows.Count) return false;
+		if (AncientCardList.ItemContainerGenerator.ContainerFromIndex(slotIndex) is not FrameworkElement fe) return false;
+		CardSpec? before = AncientUiSelection;
+		Point off = fe.TransformToVisual(AncientCardList).Transform(new Point(0, 0));
+		var hit = AncientRowAtPointForTest(new Point(off.X + fe.ActualWidth * 0.5, off.Y + fe.ActualHeight * 0.5));
+		AncientCardList.SelectedItem = AncientRows[slotIndex];
+		UpdateLayout();
+		return hit.Index == slotIndex && hit.Card is null
+			&& AncientCardList.SelectedItem is ISlotRow { IsPlaceholder: true }
+			&& ReferenceEquals(AncientUiSelection, before);
+	}
+
+	/// <summary>自检用：先古卡那一栏按鼠标位置找行（和拖动落点用的是同一套可视树命中）。</summary>
+	private (int Index, CardSpec? Card) AncientRowAtPointForTest(Point p)
+	{
+		DependencyObject? hit = AncientCardList.InputHitTest(p) as DependencyObject;
+		while (hit is not null && hit is not ListBoxItem)
+			hit = VisualTreeHelper.GetParent(hit);
+		if (hit is not ListBoxItem item) return (-1, null);
+		return (AncientCardList.ItemContainerGenerator.IndexFromContainer(item), item.DataContext as CardSpec);
+	}
+
+	/// <summary>自检用：卡牌列表里最高的那一行有多宽（照遗物 / 药水页那条：行宽必须 ≤ 列表宽 + 2px）。</summary>
+	internal double CardListActualMaxItemWidth()
+	{
+		double max = 0;
+		for (int i = 0; i < CardList.Items.Count; i++)
+		{
+			if (CardList.ItemContainerGenerator.ContainerFromIndex(i) is FrameworkElement fe)
+				max = Math.Max(max, fe.ActualWidth);
+		}
+		return max;
 	}
 
 	// 拖动换位置：MouseDown 记起点 → MouseMove 超过系统阈值才开始拖 → DragOver 画插入线 → Drop 真插进去
@@ -5999,22 +6220,55 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			StatusCardList.SelectedItem = wasSelected;
 	}
 
-	/// <summary>「先古卡 / 状态卡」共用详情区的当前对象（两个列表里有一个选中就是它）。 /summary>
-	public CardSpec? SpecialCard =>
-		(AncientCardList?.SelectedItem as CardSpec) ?? (StatusCardList?.SelectedItem as CardSpec);
+	/// <summary>
+	/// 「先古卡 / 状态卡」共用详情区的当前对象（两个列表里有一个选中就是它）。
+	///
+	/// <para>⚠ V0.2.140：先古卡那栏的列表里加了空槽行 —— 点一下空槽时
+	/// <c>AncientCardList.SelectedItem</c> 会是 <c>SlotPlaceholder</c>，用 <c>as CardSpec</c> 读它得 null，
+	/// 于是 <see cref="ShowSpecialCardDetail"/> 变 false、右侧详情**整块收起**（而 <c>AncientUiSelection</c>
+	/// 里其实还留着上一张真先古卡）。所以这一档必须读镜像属性 —— 和诅咒那栏
+	/// （<see cref="SpecialCardOf"/> 用 <see cref="CurseUiSelection"/>）同一个理由。</para>
+	/// </summary>
+	public CardSpec? SpecialCard => AncientUiSelection ?? (StatusCardList?.SelectedItem as CardSpec);
 
-	/// <summary>先古卡 / 状态卡详情区要不要显示（诅咒走它自己那块）。 /summary>
+	/// <summary>先古卡 / 状态卡详情区要不要显示（诅咒走它自己那块）。</summary>
 	public bool ShowSpecialCardDetail => SpecialCard is not null;
 
-	/// <summary>「诅咒 / 先古 / 状态」页当前选中的那张牌（三个列表里有一个选中就算）。 /summary>
+	/// <summary>
+	/// 「诅咒 / 先古 / 状态」页当前选中的那张牌（三个列表里有一个选中就算）。
+	///
+	/// <para>⚠ V0.2.140：诅咒那栏和先古卡那栏的列表里都加了空槽行（点空槽时
+	/// <c>SelectedItem</c> 会是 <c>SlotPlaceholder</c>），所以这两档都改读镜像属性
+	/// —— 它们只在「选中的是真卡」时才有值（空槽行天然被 <c>is CardSpec</c> 滤掉）。</para>
+	/// </summary>
 	internal CardSpec? SpecialCardOf() =>
-		(CurseList.SelectedItem as CardSpec) ?? (AncientCardList.SelectedItem as CardSpec) ?? (StatusCardList.SelectedItem as CardSpec);
-
-	/// <summary>三个列表都没选中时显示那句空态提示。 /summary>
-	public bool ShowSpecialCardHint => SpecialCardOf() is null;
+		CurseUiSelection ?? AncientUiSelection ?? (StatusCardList.SelectedItem as CardSpec);
 
 	/// <summary>
-	/// 三个列表（卡牌 / 诅咒 / 先古卡）共用同一套「卡面预览」属性，所以选中要互斥：
+	/// 自检用（V0.2.140）：把 `Visibility` 这类**绑定驱动**的属性立刻重算一遍。
+	///
+	/// <para>为什么需要它：源属性变了之后，WPF 的绑定不一定马上写目标属性 ——
+	/// `PropertyChanged → 绑定重算 → SetValue` 可能被排进 <c>Dispatcher</c> 队列，而
+	/// <c>--uicheck</c> 是**同步**跑的（没有消息循环在转），于是断言读到的是上一帧的值。
+	/// 实测踩到：<c>ShowSpecialCardHint</c> 明明已经是 false（面板该收起），
+	/// 元素上的 <c>Visibility</c> 还留着 <c>Visible</c>，那句「选中诅咒后空态提示收起」就白 FAIL 了。</para>
+	///
+	/// <para>只对**显式传进来的**那几个元素做（不去动别的绑定），自检里用一次就扔。</para>
+	/// </summary>
+	private static void FlushBindings(params FrameworkElement[] elements)
+	{
+		foreach (FrameworkElement fe in elements)
+		{
+			if (fe is null) continue;
+			fe.GetBindingExpression(UIElement.VisibilityProperty)?.UpdateTarget();
+			fe.UpdateLayout();
+		}
+	}
+
+	/// <summary>三个列表都没选中时显示那句空态提示。</summary>
+	public bool ShowSpecialCardHint => SpecialCardOf() is null;
+
+	/// <summary>三个列表（卡牌 / 诅咒 / 先古卡）共用同一套「卡面预览」属性，所以选中要互斥：
 	/// 选中这一栏就把另外两栏的选择清掉，否则预览会看着像串了（用户报过类似的观感问题）。
 	/// </summary>
 	/// <summary>
@@ -6062,25 +6316,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private void OnSpecialCardSelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
 		// 三个列表（诅咒 / 先古卡 / 状态卡）的选择互斥：选中这一栏就把另外两栏（+ 卡牌页的列表）清掉，
-		// 否则卡面预览会看着像串了。"
-		if (sender == CurseList && CurseList.SelectedItem is not null)
+		// 否则卡面预览会看着像串了。
+		// ⚠ V0.2.140：诅咒栏和先古卡栏的列表里都有空槽行了，所以「选中的是空槽」也要当成**没选中**处理
+		// —— 否则点一下诅咒那栏的空槽，先古卡那栏的选中就会被清掉、右侧却什么都没切过去。
+		// ⚠ 判据一律用 `SelectedItems.Count`，不要用 `SelectedItem is not null`：
+		// 走 `SelectedItems.Add()` 那条路时，WPF 是**先**更新选中集合、**后**才把 `SelectedItem` 补上，
+		// 而 `SelectionChanged` 事件在这一步之前就发出来了 —— 那时读 `SelectedItem` 还是 null，
+		// 互斥那一步会被整段跳过（V0.2.140 实测：`OnAddStatusCard` 里用 SelectedItems.Add 选新卡，
+		// 结果诅咒 / 先古两栏的选中一直留着，右侧详情显示的是上一张先古卡）。
+		if (sender == CurseList && CurseList.SelectedItems.Count > 0 && CurseList.SelectedItem is not SlotPlaceholder)
 		{
-			AncientCardList.SelectedItem = null;
+			_ancientMirror.ClearSelection();
 			StatusCardList.SelectedItem = null;
 			CardList.SelectedItem = null;
 		}
-		else if (sender == AncientCardList && AncientCardList.SelectedItem is not null)
+		else if (sender == AncientCardList && AncientCardList.SelectedItems.Count > 0 && AncientCardList.SelectedItem is not SlotPlaceholder)
 		{
-			CurseList.SelectedItem = null;
+			_curseMirror.ClearSelection();
 			StatusCardList.SelectedItem = null;
 			CardList.SelectedItem = null;
 		}
-		else if (sender == StatusCardList && StatusCardList.SelectedItem is not null)
+		else if (sender == StatusCardList && StatusCardList.SelectedItems.Count > 0)
 		{
-			CurseList.SelectedItem = null;
-			AncientCardList.SelectedItem = null;
+			_curseMirror.ClearSelection();
+			_ancientMirror.ClearSelection();
 			CardList.SelectedItem = null;
 		}
+		// ⚠⚠ V0.2.140 必须补这一步：上面把另外两栏的 `SelectedItem` 置 null 之后，
+		// **镜像集合里认的「当前选中行」还停在旧的那一行**（`SlotRowMirror.SelectedRow` 是我们自己在
+		// SelectionChanged 里喂进去的，直接给 SelectedItem 赋 null 时若值没变就**不会**再触发那两条委托）。
+		// 不补的话 `CurseUiSelection` / `AncientUiSelection` 会一直留着上一张牌 ⇒ `SpecialCard` 拿到旧对象 ⇒
+		// 右侧「先古卡 / 状态卡」那块详情显示错的那张（实测：加一张状态卡，详情里却是上一张先古卡）。
+		//
+		// ⚠ 这里**不能**用 forceClear，也不能对**被点的那一栏**调 ClearSelection：用户点的是空槽行时
+		// `SelectedItem` 是 `SlotPlaceholder`（不是 null），那时要按老规矩**保持上一张真卡**
+		//（点空槽不该把右边详情清空）。所以要清的只是「明确置 null 的那两栏」，正是上面 ClearSelection 干的事。
+		NoteCardRowsSelection(CurseList, _curseMirror);
+		NoteCardRowsSelection(AncientCardList, _ancientMirror);
+		_curseMirror.RefreshUiSelection();
+		_ancientMirror.RefreshUiSelection();
+		Raise("HasCurseSelection");
+		Raise("HasAncientSelection");
 		Raise("ShowSpecialCardHint");
 		Raise("SpecialCard");
 		Raise("ShowSpecialCardDetail");
@@ -6099,6 +6375,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		};
 		_profile.Curses.Add(c);
 		SyncDetail();
+		// V0.2.140：列表里有空槽行了，不能用 SelectedIndex；用对象本身最稳
 		CurseList.SelectedItem = c;
 		SetStatus("已添加诅咒：费用 -1、不能被打出，右边加的效果会在「你的回合结束时，如果它还在你的手牌里」触发。");
 	}
@@ -6190,6 +6467,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		_profile.Cards.Add(c);
 		RebuildStatusCards();
 		SyncDetail();
+		// ⚠ V0.2.140 实测：这里**不能**写 `SelectedItem = c`（也不能写 `SelectedIndex = 0`）——
+		// `RebuildStatusCards` 每轮都 `StatusCards.Clear()` + 重新填，ListBox 内部那个 SelectedIndex
+		// 缓存被清成 -1 之后，Selector 拿它去算目标下标、算不出来就**静默丢掉这次赋值**
+		// （实测：赋值前后 SelectedItem 都是 null、SelectedIndex 都是 -1，而 Items 里明明有这张卡）。
+		// 走 `SelectedItems.Add` 是直接改选中集合、不经过那个缓存，实测选中项 / 详情面板 / 三栏互斥都正常。
+		StatusCardList.SelectedItems.Clear();
+		StatusCardList.SelectedItems.Add(c);
+		// `SelectedItems.Add` 之后 `SelectedItem` 是**延迟**补上的（SelectionChanged 先发、值后到），
+		// 这里显式收个尾，免得后面依赖 SelectedItem 的断言 / 绑定读到中间态。
+		UpdateLayout();
 		StatusCardList.SelectedItem = c;
 		SetStatus("已添加状态卡：稀有度 / 类型都是「状态」，默认不能升级、不进战斗奖励 —— 拿到它要靠你自己的效果（生成卡牌 / 获得卡牌（全局））。");
 	}
@@ -8394,7 +8681,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("本地化键：Naming.Slug 与本体 StringHelper.Slugify 完全一致（连续大写 XiaoQI → XIAO_Q_I、AIPet → A_I_PET）",
 				slugBad.Count == 0, string.Join(" ｜ ", slugRows));
 		}
-		Check("卡牌列表绑定到 Profile.Cards", CardList.ItemsSource == Profile.Cards);
+		// ⚠ V0.2.140 起：卡牌列表的 ItemsSource 也变成**界面镜像集合** CardRows（真卡 + 末尾空槽行），
+		// 和遗物 / 药水那两行同一个形状；真卡集合 Profile.Cards 仍是唯一事实来源 ——
+		// 这里验「镜像 = Profile.Cards 的真卡那一截 + 末尾按行号给的空槽」。
+		Check("卡牌列表绑定到 Profile.Cards 的界面镜像（真卡一截 + 末尾空槽行，每 5 个一块）",
+			CardList.ItemsSource == CardRows
+			&& CardRows.Count == CardSlotRowCount(Profile.Cards.Count)
+			&& CardRows.Take(Profile.Cards.Count).SequenceEqual<ISlotRow>(Profile.Cards)
+			&& CardRows.Skip(Profile.Cards.Count).All(r => r.IsPlaceholder && r is SlotPlaceholder),
+			$"镜像 {CardRows.Count} 行 = 真卡 {Profile.Cards.Count} + 空槽 {CardRows.Count - Profile.Cards.Count}");
 		// ⚠ V0.2.125 起：列表的 ItemsSource 变成**界面镜像集合** RelicRows
 		//（真遗物 + 末尾空槽行），真遗物集合 Profile.Relics 仍是唯一事实来源 ——
 		// 所以这里改验「镜像 = Profile.Relics 的真遗物那一截」，以及集合身份没被换掉。
@@ -8641,7 +8936,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Tag = CardEffectList,
 			DataContext = CardList.SelectedItem
 		};
-		CardSpec cardSpec = (CardSpec)CardList.SelectedItem;
+		CardSpec cardSpec = CardUiSelection ?? throw new InvalidOperationException("自检前置条件不成立：卡牌页应当已选中一张真卡");
 		int count2 = cardSpec.Effects.Count;
 		OnAddEffect(sender, new RoutedEventArgs());
 		Check("添加效果生效", cardSpec.Effects.Count == count2 + 1, $"{count2} → {cardSpec.Effects.Count}");
@@ -8777,6 +9072,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("Ctrl+A：焦点在列表上就全选（窗口级快捷键）",
 			TrySelectAllShortcut(CardList) && CardList.SelectedItems.Count == Profile.Cards.Count,
 			$"选中 {CardList.SelectedItems.Count} / 共 {Profile.Cards.Count}");
+		// V0.2.140：列表里多了「每 5 个一块」的空槽行 —— 全选必须**压根不选它们**（一个都不许进 SelectedItems）
+		Check("Ctrl+A（全选）绝不会选中空槽行：选中的全是真卡、数量和真卡数一致、空槽 0 个",
+			CardList.SelectedItems.Count == Profile.Cards.Count
+			&& CardList.SelectedItems.OfType<CardSpec>().Count() == Profile.Cards.Count
+			&& CardList.SelectedItems.Cast<object>().All(o => o is not ISlotRow { IsPlaceholder: true }),
+			$"选中 {CardList.SelectedItems.Count} 个（其中空槽 {CardList.SelectedItems.Cast<object>().Count(o => o is ISlotRow { IsPlaceholder: true })} 个）/ 真卡 {Profile.Cards.Count} / 列表 {CardRows.Count} 行");
 		Check("Ctrl+A 不抢文本框：焦点不在列表上时不处理（照旧全选文字）",
 			!TrySelectAllShortcut(new TextBox()), "文本框放行");
 		Check("Ctrl+A 不会去动单选列表（那些列表本来就没有「全选」）",
@@ -8803,10 +9104,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("单张删除撤回后完全复原（顺序一致）", Profile.Cards.Select((CardSpec c) => c.Name).SequenceEqual(names0), $"{Profile.Cards.Count} 张");
 		FindButtonByContent("全选", root)?.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
 		UpdateLayout();
-		Check("点「全选」选中了列表里的每一张卡", CardList.SelectedItems.Count == Profile.Cards.Count && Profile.Cards.Count > 0, $"选中 {CardList.SelectedItems.Count} / 共 {Profile.Cards.Count}");
+		Check("点「全选」选中了列表里的每一张卡",
+			CardList.SelectedItems.Count == Profile.Cards.Count && Profile.Cards.Count > 0
+			&& CardList.SelectedItems.OfType<CardSpec>().Count() == Profile.Cards.Count
+			&& CardList.SelectedItems.Cast<object>().All(o => o is not ISlotRow { IsPlaceholder: true }),
+			$"选中 {CardList.SelectedItems.Count} / 共 {Profile.Cards.Count} / 列表 {CardRows.Count} 行");
 		ClickButtonByContent("删除", root);
 		UpdateLayout();
 		Check("批量删除后卡牌清空", Profile.Cards.Count == 0, $"{Profile.Cards.Count} 张");
+		// V0.2.140：真卡删光了，列表里剩下的**全是**空槽（行数仍按 5 × ceil(max(N,1)/5) 给 = 5 行）
+		Check("卡牌全删光后，列表里只剩空槽行（行数仍是 5，空槽带序号 1.~5.）",
+			CardRows.Count == CardSlotRowCount(0) && CardRows.Count == 5
+			&& CardRows.All(r => r.IsPlaceholder) && CardList.SelectedItems.Count == 0,
+			$"列表 {CardRows.Count} 行 / 序号 {string.Join(",", CardRows.Select(r => r.OrdinalText))} / 选中 {CardList.SelectedItems.Count}");
 		Check("列表清空后详情栏收起、显示「请选择卡牌」（边界）", CardDetail.Visibility != 0 && CardEmptyHint.Visibility == Visibility.Visible, $"CardDetail={CardDetail.Visibility} / 提示={CardEmptyHint.Visibility}");
 		ClickButtonByContent("撤回删除", root);
 		UpdateLayout();
@@ -8843,7 +9153,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Profile.Cards.Clear();
 		UpdateLayout();
 		ClickButtonByContent("全选", root);
-		Check("空列表点「全选」→ 不报错且没有选中项（边界）", Profile.Cards.Count == 0 && CardList.SelectedItems.Count == 0, $"共 {Profile.Cards.Count} / 选中 {CardList.SelectedItems.Count}");
+		Check("空列表点「全选」→ 不报错且没有选中项（边界）",
+			Profile.Cards.Count == 0 && CardList.SelectedItems.Count == 0
+			&& CardRows.Count == 5 && CardRows.All(r => r.IsPlaceholder),
+			$"共 {Profile.Cards.Count} / 选中 {CardList.SelectedItems.Count} / 列表 {CardRows.Count} 行（全是空槽）");
 		foreach (CardSpec item2 in list3)
 		{
 			Profile.Cards.Add(item2);
@@ -9128,7 +9441,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		SelectTabRoot("卡牌");
 		CardList.SelectedIndex = 0;
 		UpdateLayout();
-		CardSpec cardSpec3 = (CardSpec)CardList.SelectedItem;
+		CardSpec cardSpec3 = CardUiSelection ?? throw new InvalidOperationException("自检前置条件不成立：卡牌页应当已选中一张真卡");
 		int count8 = cardSpec3.Effects.Count;
 		Button sender6 = new Button
 		{
@@ -9489,7 +9802,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (Profile.Cards.Count > 0)
 		{
 			CardList.SelectedIndex = 0;
-			if (((CardSpec)CardList.SelectedItem).Effects.Count > 0)
+			if (CardUiSelection is CardSpec { Effects.Count: > 0 })
 			{
 				CardEffectList.SelectedIndex = 0;
 			}
@@ -12863,7 +13176,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						.ToList();
 				}
 				List<CardSpec> keptCards = Profile.Cards.ToList();     // 这一轮的临时改动最后原样还回去
-				CardSpec? keptCardSel = CardList.SelectedItem as CardSpec;
+				CardSpec? keptCardSel = CardUiSelection;
 				try
 				{
 					SelectTabRoot("卡牌");
@@ -12872,8 +13185,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						(CardList.DisplayMemberPath ?? "(null)") + " / " + (CardList.ItemTemplate is null ? "无模板" : "有模板"));
 					Check("卡牌列表允许拖放（AllowDrop=True，四个拖放事件都接上了）",
 						CardList.AllowDrop, "AllowDrop=" + CardList.AllowDrop);
-					Check("ItemsSource 仍然是 Profile.Cards（没有多套一层界面镜像集合 —— 卡牌页不需要空槽行）",
-						ReferenceEquals(CardList.ItemsSource, Profile.Cards), "绑的是真集合");
+					Check("ItemsSource 绑的是界面镜像集合 CardRows（真卡 + 末尾空槽行）；真卡集合 Profile.Cards 仍是唯一事实来源",
+						ReferenceEquals(CardList.ItemsSource, CardRows) && !ReferenceEquals(CardList.ItemsSource, Profile.Cards)
+						&& CardRows.Take(Profile.Cards.Count).SequenceEqual<ISlotRow>(Profile.Cards)
+						&& CardRows.Skip(Profile.Cards.Count).All(r => r.IsPlaceholder),
+						$"镜像 {CardRows.Count} 行 = 真卡 {Profile.Cards.Count} + 空槽 {CardRows.Count - Profile.Cards.Count}");
 					// 序号从 1 连续到 N（含本体卡 / 初始打击防御）
 					UpdateLayout();
 					string ordAll = string.Join(",", Profile.Cards.Select(c => c.OrdinalText));
@@ -12902,12 +13218,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("拖动卡牌项换位置：Profile.Cards 顺序真的变、序号仍是 1..N 连续、选中项跟着被拖的那张",
 						cardMoved && ReferenceEquals(Profile.Cards[2], draggedCard)
 						&& Profile.Cards.Select(c => c.Ordinal).SequenceEqual(Enumerable.Range(1, Profile.Cards.Count))
-						&& ReferenceEquals(CardList.SelectedItem, draggedCard),
+						&& ReferenceEquals(CardUiSelection, draggedCard),
 						$"{cardsBefore} → " + string.Join("→", Profile.Cards.Select(c => c.Name))
 						+ $" ／ 序号 {string.Join(",", Profile.Cards.Select(c => c.OrdinalText))}");
 					// 拖到列表最后一行的位置（over = null 时按行号算落点）
 					CardSpec lastDragged = Profile.Cards[0];
-					bool movedToEnd = MoveCardTo(lastDragged, null, Profile.Cards.Count - 1);
+					int lastDropRow = CardRows.Count - 1;
+					bool movedToEnd = MoveCardTo(lastDragged, null, lastDropRow);
 					UpdateLayout();
 					Check("拖到列表末尾（落点没有卡、只给行号）：照样真换位置、序号仍 1..N 连续",
 						movedToEnd && ReferenceEquals(Profile.Cards[Profile.Cards.Count - 1], lastDragged)
@@ -12938,6 +13255,363 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					foreach (CardSpec c in keptCards) Profile.Cards.Add(c);
 					RefreshCardOrdinals();
 					if (keptCardSel is not null) CardList.SelectedItem = keptCardSel;
+					SyncDetail();
+					UpdateLayout();
+				}
+			}
+
+			// ===== 卡牌页：**每 5 个一块 + 空槽带灰色序号**（V0.2.140，用户对 V0.2.130 那次的更正）=====
+			// 用户原话：「不是说卡牌左侧的序号做的像遗物一样，五个五个列，直接显示出来，比如只有一张卡时，
+			// 有1-5序号，当有6张卡时，出现6到10序号」。
+			// 照 V0.2.125 遗物页 / V0.2.127 药水页那套**逐条**重做（同一份实现 SlotRowMirror<CardSpec>，
+			// 三个卡牌列表页共用），这里把用户要求的三档数字 + 空槽的每一条性质都钉成断言。
+			{
+				List<CardSpec> slotKeptCards = Profile.Cards.ToList();
+				CardSpec? slotKeptSel = CardUiSelection;
+				// ⚠ 这一段要看「实化出来的行」（颜色 / 命中测试），而列表默认虚拟化 —— 屏幕高度只放得下
+				// 前几行，第 7 行之后的空槽根本不会实化，断言就会白 FAIL。所以这一段**临时关掉虚拟化**，
+				// 让所有行都实化；跑完在 finally 里原样打开。
+				bool slotVirtWas = VirtualizingPanel.GetIsVirtualizing(CardList);
+				try
+				{
+					VirtualizingPanel.SetIsVirtualizing(CardList, false);
+					SelectTabRoot("卡牌");
+					// 造 N 张探针卡（自动类名留空 = 走「自动编号」那条路，顺便验序号→类名对得上）
+					List<CardSpec> MakeProbeCards(int n)
+					{
+						var made = new List<CardSpec>();
+						for (int i = 0; i < n; i++)
+						{
+							made.Add(new CardSpec
+							{
+								Name = "槽" + (i + 1),
+								ClassName = "",
+								CardType = "Attack",
+								Rarity = "Common",
+								Cost = 1,
+								InCardPool = true,
+							});
+						}
+						return made;
+					}
+					void SetProbeCards(int n)
+					{
+						Profile.Cards.Clear();
+						foreach (CardSpec c in MakeProbeCards(n)) Profile.Cards.Add(c);
+						RefreshCardOrdinals();
+						SyncDetail();
+						UpdateLayout();
+					}
+					// 界面上真画出来的序号（列表虚拟化 → 只数已实化的行）
+					(int Real, int Slot, int OrdinalTexts, string Colors) OrdinalEvidence()
+					{
+						UpdateLayout();
+						var blocks = new List<TextBlock>();
+						CollectTextBlocks(CardList, blocks);
+						var infos = blocks
+							.Where(t => (t.Text ?? "").Length is 2 or 3 && (t.Text ?? "").EndsWith(".") && char.IsDigit((t.Text ?? "x")[0]))
+							.Select(t => (Text: t.Text!, Color: (t.Foreground as SolidColorBrush)?.Color.ToString() ?? "(不是纯色)", Visible: t.IsVisible))
+							.ToList();
+						int real = infos.Count(o => Profile.Cards.Any(c => c.OrdinalText == o.Text));
+						int slot = infos.Count(o => CardRows.Any(r => r.IsPlaceholder && r.OrdinalText == o.Text));
+						return (real, slot, infos.Count,
+							string.Join(" / ", infos.Select(o => o.Text + "=" + o.Color + (o.Visible ? "" : "(不可见)"))));
+					}
+
+					// ---- ① 1 张卡 → 显示 1~5 行（2~5 是空槽），序号也画出来了 ----
+					SetProbeCards(1);
+					string ord1 = string.Join(",", CardRows.Select(r => r.OrdinalText));
+					Check("（空槽 ①）1 张卡 → 列表显示 1~5 行，2~5 是空槽（用户原话「只有一张卡时，有1-5序号」）",
+						CardRows.Count == 5 && CardRows.Count == CardSlotRowCount(1)
+						&& ord1 == "1.,2.,3.,4.,5."
+						&& CardRows.Take(1).All(r => !r.IsPlaceholder) && CardRows.Skip(1).All(r => r.IsPlaceholder)
+						&& CardRows.Count == 5 && Profile.Cards.Count == 1,
+						$"行 {CardRows.Count} / 序号 {ord1} / 列表 Items {CardList.Items.Count} / 真卡 {Profile.Cards.Count}"
+						+ " / 名册[" + string.Join(" | ", CardRows.Select(r => r is CardSpec cc ? "卡:" + cc.Name + ":" + cc.Ordinal : "空槽:" + r.OrdinalText)) + "]");
+					Check("（空槽 ①）界面上真画出了 5 个「N.」序号（不是只算在集合里）",
+						OrdinalEvidence().OrdinalTexts == 5, $"看到 {OrdinalEvidence().OrdinalTexts} 个");
+					// 空槽行不能被当成卡选中：点它 → 选中项不是 CardSpec、右栏还停在原来那张、卡一个字段都没被改
+					CardList.SelectedItem = Profile.Cards[0];
+					UpdateLayout();
+					string dump1 = string.Join(" | ", Profile.Cards.Select(c => c.Name + ":" + c.Ordinal + ":" + c.ClassName));
+					CardSpec? selBeforeSlot = CardUiSelection;
+					CardList.SelectedItem = CardRows[2];     // 第 3 行 = 空槽
+					UpdateLayout();
+					Check("（空槽 ①）点空槽行：选中项不是 CardSpec / 当前选中的真卡没变 / 真卡一个字段都没被改",
+						CardList.SelectedItem is not CardSpec && CardList.SelectedItem is ISlotRow { IsPlaceholder: true }
+						&& ReferenceEquals(CardUiSelection, selBeforeSlot) && CardUiSelection is not null
+						&& string.Join(" | ", Profile.Cards.Select(c => c.Name + ":" + c.Ordinal + ":" + c.ClassName)) == dump1
+						&& CardEmptyHint.Visibility != Visibility.Visible && CardDetail.Visibility == Visibility.Visible,
+						$"SelectedItem={CardList.SelectedItem?.GetType().Name ?? "(null)"}（空槽行）/ CardUiSelection={CardUiSelection?.Name ?? "(null)"}"
+						+ $" / 提示={CardEmptyHint.Visibility} / 详情={CardDetail.Visibility}");
+
+					// ---- ② 6 张卡 → 显示 1~10 行（7~10 是空槽，用户原话「当有6张卡时，出现6到10序号」）----
+					SetProbeCards(6);
+					string ord6 = string.Join(",", CardRows.Select(r => r.OrdinalText));
+					Check("（空槽 ②）6 张卡 → 列表显示 1~10 行，7~10 是空槽、序号 1..10 都在",
+						CardRows.Count == 10 && CardRows.Count == CardSlotRowCount(6)
+						&& ord6 == string.Join(",", Enumerable.Range(1, 10).Select(i => i + "."))
+						&& CardRows.Take(6).All(r => !r.IsPlaceholder) && CardRows.Skip(6).All(r => r.IsPlaceholder)
+						&& Profile.Cards.Count == 6,
+						$"行 {CardRows.Count} / 序号 {ord6} / 真卡 {Profile.Cards.Count}");
+					Check("（空槽 ②）卡片的序号仍然是「位置号」1..N 连续（空槽不占号）",
+						Profile.Cards.Select((c, i) => c.Ordinal == i + 1 && c.OrdinalText == (i + 1) + ".").All(x => x),
+						string.Join(",", Profile.Cards.Select(c => c.OrdinalText)));
+					// 11 张 → 1~15（用户口径的第三档）
+					SetProbeCards(11);
+					Check("（空槽 ②）11 张卡 → 列表显示 1~15 行（序号 1..15、12~15 是空槽）",
+						CardRows.Count == 15 && CardRows.Count == CardSlotRowCount(11)
+						&& CardRows.Take(11).All(r => !r.IsPlaceholder) && CardRows.Skip(11).All(r => r.IsPlaceholder)
+						&& string.Join(",", CardRows.Select(r => r.OrdinalText)) == string.Join(",", Enumerable.Range(1, 15).Select(i => i + ".")),
+						$"行 {CardRows.Count} / 真卡 {Profile.Cards.Count} / 末尾 4 行={string.Join(",", CardRows.Skip(11).Select(r => r.OrdinalText))}");
+
+					// ---- ③ 删回 5 张 → 行数回到 5（没有空槽）----
+					SetProbeCards(6);
+					Profile.Cards.RemoveAt(5);
+					RefreshCardOrdinals();
+					SyncDetail();
+					UpdateLayout();
+					string ord5 = string.Join(",", CardRows.Select(r => r.OrdinalText));
+					Check("（空槽 ③）从 6 张删回 5 张 → 行数回到 5（序号 1~5，一个空槽都没有）",
+						CardRows.Count == 5 && ord5 == "1.,2.,3.,4.,5." && CardRows.All(r => !r.IsPlaceholder)
+						&& Profile.Cards.Count == 5,
+						$"行 {CardRows.Count} / 序号 {ord5} / 真卡 {Profile.Cards.Count}");
+
+					// ---- ④ 拖到空槽 → 顺序真变 + 序号仍 1..N 连续（空槽能当落点）----
+					SetProbeCards(6);
+					CardSpec slotDragged = Profile.Cards[0];
+					CardList.SelectedItem = slotDragged;
+					UpdateLayout();
+					bool slotMoved = MoveCardTo(slotDragged, null, 8);      // 第 9 行是空槽 → 夹到末尾
+					UpdateLayout();
+					Check("（空槽 ④）拖一张卡到空槽那一行：Profile.Cards 顺序真的变、序号仍是 1..N 连续、空槽数不变",
+						slotMoved && ReferenceEquals(Profile.Cards[5], slotDragged)
+						&& Profile.Cards.Select((c, i) => c.Ordinal == i + 1 && c.OrdinalText == (i + 1) + ".").All(x => x)
+						&& CardRows.Count == 10 && CardRows.Take(6).SequenceEqual<ISlotRow>(Profile.Cards)
+						&& CardRows.Skip(6).All(r => r.IsPlaceholder),
+						"拖到末尾 → " + string.Join(" → ", Profile.Cards.Select(c => c.Name))
+						+ $" ／ 序号 {string.Join(",", Profile.Cards.Select(c => c.OrdinalText))} / 行 {CardRows.Count}");
+					// 空槽那一行在屏幕上点得到，而且它不给出任何卡（CardRowAtPoint.Card = null）
+					DependencyObject? slotRowC = CardList.ItemContainerGenerator.ContainerFromIndex(6) as DependencyObject;
+					(CardSpec? SlotRowData, string SlotRowDetail) = (null, "(没有容器)");
+					if (slotRowC is FrameworkElement slotRowCFe)
+					{
+						Point slotOffset = slotRowCFe.TransformToVisual(CardList).Transform(new Point(0, 0));
+						int slotNullHits = 0;
+						var slotGot = new List<string>();
+						foreach ((double fx, double fy) in new (double, double)[] { (0.5, 0.5), (0.5, 0.25), (0.5, 0.75) })
+						{
+							var atSlot = CardRowAtPoint(new Point(slotOffset.X + slotRowCFe.ActualWidth * fx, slotOffset.Y + slotRowCFe.ActualHeight * fy));
+							slotGot.Add($"({fx:F2},{fy:F2})→行{atSlot.Index}/{(atSlot.Card?.Name ?? "无卡")}");
+							if (atSlot.Card is null) slotNullHits++;
+						}
+						SlotRowData = slotNullHits > 0 ? null : CardRowAtPoint(new Point(slotOffset.X + slotRowCFe.ActualWidth / 2, slotOffset.Y + slotRowCFe.ActualHeight / 2)).Card;
+						SlotRowDetail = $"容器 {slotRowCFe.ActualWidth:F0}x{slotRowCFe.ActualHeight:F0}@{slotOffset.X:F0},{slotOffset.Y:F0} " + string.Join(" ", slotGot);
+					}
+					Check("（空槽 ④）空槽那一行在屏幕上点得到、而且它不给出任何卡（CardRowAtPoint.Card = null）",
+						slotRowC is not null && SlotRowData is null && CardRows[6].IsPlaceholder,
+						SlotRowDetail);
+
+					// ---- ⑤ 空槽序号实测是**灰**的（真卡是 #FF1F4E79 加粗）----
+					var slotColorEv = OrdinalEvidence();
+					Check("（空槽 ⑤）空槽行的序号是灰的（#AAAAAA / 170,170,170）、真卡行不是灰的，而且行本身可见",
+						slotColorEv.Real > 0 && slotColorEv.Slot > 0
+						&& slotColorEv.Colors.Contains("AAAAAA", StringComparison.OrdinalIgnoreCase),
+						$"实化序号 {slotColorEv.OrdinalTexts} 个（真卡 {slotColorEv.Real} / 空槽 {slotColorEv.Slot}）／ {slotColorEv.Colors}");
+					var slotPh = CardRows[6] as SlotPlaceholder;
+					Check("（空槽 ⑤）空槽行的「卡名」那一列是空的、ToolTip 是空（只有灰色序号）",
+						slotPh is not null && slotPh.Display.Length == 0 && slotPh.RowTip is null
+						&& !string.IsNullOrEmpty(CardRows[6].OrdinalText),
+						$"Display='{slotPh?.Display}' RowTip={(CardRows[6].RowTip ?? "(null)")} Ordinal='{CardRows[6].OrdinalText}'");
+
+					// ---- ⑥ 空槽不进全选 / Profile.Cards 里没有占位项 / 真生成一遍零「空槽」痕迹 ----
+					CardList.SelectedItems.Clear();
+					foreach (ISlotRow row in CardRows)
+					{
+						if (!row.IsPlaceholder) CardList.SelectedItems.Add(row);
+					}
+					Check("（空槽 ⑥）「全选」只选中真卡：SelectedItems 里一个空槽都没有",
+						CardList.SelectedItems.Count == Profile.Cards.Count
+						&& CardList.SelectedItems.OfType<SlotPlaceholder>().Count() == 0
+						&& !CardList.SelectedItems.Cast<object>().Any(o => o is ISlotRow { IsPlaceholder: true }),
+						$"选中 {CardList.SelectedItems.Count} / 真卡 {Profile.Cards.Count} / 行数 {CardRows.Count}");
+					CardList.SelectedItems.Clear();
+					Check("（空槽 ⑥）Profile.Cards / Curses / AncientCards 里没有 `SlotPlaceholder` 占位项（真集合是唯一事实来源）",
+						!Profile.Cards.Any(c => c is SlotPlaceholder) && !Profile.Curses.Any(c => c is SlotPlaceholder)
+						&& !Profile.AncientCards.Any(c => c is SlotPlaceholder)
+						&& CardRows.OfType<SlotPlaceholder>().Count() > 0,
+						$"{Profile.Cards.Count} / {Profile.Curses.Count} / {Profile.AncientCards.Count} 张（镜像里占位 {CardRows.OfType<SlotPlaceholder>().Count()} 个）");
+					var slotCardProfA = ProfileFactory.Sample();
+					slotCardProfA.Paths.OutputDir = Path.Combine(Path.GetTempPath(), "forge_cardslot_a_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					slotCardProfA.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					slotCardProfA.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var slotCardGen = ModGenerator.Generate(slotCardProfA);
+					string slotCardFiles = slotCardGen.Success
+						? string.Join("\n", Directory.GetFiles(slotCardGen.ProjectRoot, "*", SearchOption.AllDirectories)
+							.Select(f => Path.GetRelativePath(slotCardGen.ProjectRoot, f).Replace('\\', '/'))
+							.OrderBy(x => x, StringComparer.Ordinal))
+						: "";
+					Check("（空槽 ⑥）真生成一遍：文件清单 / 源码里一个「空槽 / SlotPlaceholder」痕迹都没有",
+						slotCardGen.Success && slotCardFiles.Length > 0
+						&& !slotCardFiles.Contains("SlotPlaceholder") && !slotCardFiles.Contains("空槽")
+						&& !slotCardFiles.Contains("SlotRowMirror"),
+						slotCardGen.Success ? $"生成 {slotCardFiles.Split('\n').Length} 个文件，一个「空槽」都没有" : string.Join(" / ", slotCardGen.Issues.Where(i => i.IsError).Take(3)));
+					try { if (Directory.Exists(slotCardProfA.Paths.OutputDir)) Directory.Delete(slotCardProfA.Paths.OutputDir, true); } catch { }
+
+					// ---- ⑦ 布局体检（照遗物 / 药水页：行宽 ≤ 列表宽 + 2px、没有 0 尺寸控件）----
+					SetProbeCards(6);
+					double cardMaxItemW = CardListActualMaxItemWidth();
+					Check("（空槽 ⑦）卡牌列表的行没被排成超宽（行宽 <= 列表宽 + 2px）",
+						Profile.Cards.Count == 0 || cardMaxItemW <= CardList.ActualWidth + 2.0,
+						cardMaxItemW.ToString("F0") + " <= " + CardList.ActualWidth.ToString("F0"));
+					Check("（空槽 ⑦）卡牌列表有正常尺寸（不是 0 尺寸）",
+						CardList.ActualWidth > 10 && CardList.ActualHeight > 10,
+						$"{CardList.ActualWidth:F0}x{CardList.ActualHeight:F0}");
+
+					// ---- ⑧ 序号 → 自动类名仍然对得上（V0.2.137 口径不变：Card<序号>）----
+					var namingNow = Naming.From(Profile);
+					for (int i = 0; i < Profile.Cards.Count; i++)
+					{
+						CardSpec c = Profile.Cards[i];
+						Check($"（空槽 ⑧）第 {i + 1} 张（留空类名）→ 生成端拼出 {namingNow.CharClass}Card{i + 1}",
+							namingNow.CardClassName(Profile, c) == namingNow.CharClass + "Card" + (i + 1),
+							$"序 {c.Ordinal} / 生成端 {namingNow.CardClassName(Profile, c)} / 手填='{c.ClassName}'");
+					}
+					string handName = "MyOwnSlashProbe";
+					string autoName = namingNow.CharClass + "Card1";
+					Profile.Cards[1].ClassName = handName;
+					Profile.Cards[2].ClassName = autoName;
+					RefreshCardOrdinals();
+					SyncDetail();
+					UpdateLayout();
+					namingNow.RenumberCardClassNames(Profile.Cards);
+					Check($"（空槽 ⑧）手填的类名一个字不动、工具自动名跟着序号走、留空的保持留空",
+						Profile.Cards[1].ClassName == handName
+						&& Profile.Cards[0].ClassName == "" && Profile.Cards[0].LastAutoOrdinal == 1
+						&& Profile.Cards[2].ClassName == namingNow.CharClass + "Card3",
+						$"手填={Profile.Cards[1].ClassName} / 留空='{Profile.Cards[0].ClassName}':{Profile.Cards[0].LastAutoOrdinal} / 自动={Profile.Cards[2].ClassName}");
+					Check("（空槽 ⑧）顺序号仍然是「位置号」：自动名重编号是幂等的（连跑两遍一个字不变）",
+						string.Join("|", Profile.Cards.Select(c => c.Name + ":" + c.ClassName + ":" + c.LastAutoOrdinal)) is string sig1
+						&& namingNow.RenumberCardClassNames(Profile.Cards) >= 0
+						&& namingNow.RenumberCardClassNames(Profile.Cards) >= 0
+						&& string.Join("|", Profile.Cards.Select(c => c.Name + ":" + c.ClassName + ":" + c.LastAutoOrdinal)) == sig1,
+						$"{Profile.Cards.Count} 张卡");
+				}
+				finally
+				{
+					// 虚拟化原样打开
+					VirtualizingPanel.SetIsVirtualizing(CardList, slotVirtWas);
+					// 原样还回去（真集合 + 选中项），免得影响后面的断言
+					Profile.Cards.Clear();
+					foreach (CardSpec c in slotKeptCards) Profile.Cards.Add(c);
+					RefreshCardOrdinals();
+					if (slotKeptSel is not null && Profile.Cards.Contains(slotKeptSel)) CardList.SelectedItem = slotKeptSel;
+					SyncDetail();
+					UpdateLayout();
+				}
+			}
+
+			// ===== 诅咒卡 / 先古卡两页：同样是「每 5 个一块 + 空槽灰色序号」（V0.2.140，用户确认三页都做）=====
+			{
+				List<CardSpec> spKeptCurse = Profile.Curses.ToList();
+				List<CardSpec> spKeptAncient = Profile.AncientCards.ToList();
+				try
+				{
+					SelectTabRoot("诅咒 / 先古 / 状态");
+					// 诅咒：2 张 → 5 行（3~5 空槽），序号用 Curse 前缀
+					Profile.Curses.Clear();
+					Profile.Curses.Add(new CardSpec { Name = "槽咒甲", ClassName = "", CardType = "Curse", Rarity = "Curse", Cost = -1, Unplayable = true });
+					Profile.Curses.Add(new CardSpec { Name = "槽咒乙", ClassName = "", CardType = "Curse", Rarity = "Curse", Cost = -1, Unplayable = true });
+					RefreshCardOrdinals();
+					SyncDetail();
+					UpdateLayout();
+					string cOrd = string.Join(",", CurseRows.Select(r => r.OrdinalText));
+					Check("（诅咒页）2 张诅咒 → 列表显示 1~5 行（3~5 是空槽），ItemsSource 是镜像 CurseRows",
+						ReferenceEquals(CurseList.ItemsSource, CurseRows) && CurseRows.Count == 5 && cOrd == "1.,2.,3.,4.,5."
+						&& CurseRows.Take(2).All(r => !r.IsPlaceholder) && CurseRows.Skip(2).All(r => r.IsPlaceholder)
+						&& CurseRows.Count == 5,
+						$"行 {CurseRows.Count} / 序号 {cOrd} / 列表 Items {CurseList.Items.Count}");
+					var curseNaming = Naming.From(Profile);
+					Check("（诅咒页）序号 → 自动类名仍按 Curse 前缀、各自从 1 数（V0.2.137 口径不变）",
+						curseNaming.CardClassName(Profile, Profile.Curses[0]) == curseNaming.CharClass + "Curse1"
+						&& curseNaming.CardClassName(Profile, Profile.Curses[1]) == curseNaming.CharClass + "Curse2"
+						&& Profile.Curses[1].Ordinal == 2,
+						$"{curseNaming.CardClassName(Profile, Profile.Curses[0])} / {curseNaming.CardClassName(Profile, Profile.Curses[1])}");
+					// 加到 6 张 → 10 行
+					for (int i = 3; i <= 6; i++)
+						Profile.Curses.Add(new CardSpec { Name = "槽咒" + i, ClassName = "", CardType = "Curse", Rarity = "Curse", Cost = -1, Unplayable = true });
+					RefreshCardOrdinals();
+					SyncDetail();
+					UpdateLayout();
+					Check("（诅咒页）加到 6 张 → 列表显示 1~10 行（7~10 是空槽）",
+						CurseRows.Count == 10 && CurseRows.Take(6).All(r => !r.IsPlaceholder) && CurseRows.Skip(6).All(r => r.IsPlaceholder)
+						&& string.Join(",", CurseRows.Select(r => r.OrdinalText)) == string.Join(",", Enumerable.Range(1, 10).Select(i => i + ".")),
+						$"行 {CurseRows.Count} / 序号 {string.Join(",", CurseRows.Select(r => r.OrdinalText))}");
+					// 点诅咒那栏的空槽：不能被当成卡选中、右栏不清空、先古卡那栏的选中也不该被误清
+					CurseList.SelectedItem = Profile.Curses[0];
+					UpdateLayout();
+					CardSpec? curseSelBefore = CurseUiSelection;
+					CurseList.SelectedItem = CurseRows[7];
+					UpdateLayout();
+					Check("（诅咒页）点空槽行：选中项不是 CardSpec / CurseUiSelection 没变 / 右栏没被收起来",
+						CurseList.SelectedItem is ISlotRow { IsPlaceholder: true } && ReferenceEquals(CurseUiSelection, curseSelBefore)
+						&& CurseUiSelection is not null && HasCurseSelection,
+						$"SelectedItem={CurseList.SelectedItem?.GetType().Name ?? "(null)"} / CurseUiSelection={CurseUiSelection?.Name ?? "(null)"}");
+					// 诅咒那栏的空槽不进全选
+					CurseList.SelectedItems.Clear();
+					foreach (ISlotRow row in CurseRows)
+					{
+						if (!row.IsPlaceholder) CurseList.SelectedItems.Add(row);
+					}
+					Check("（诅咒页）「全选」只选中真诅咒：SelectedItems 里一个空槽都没有",
+						CurseList.SelectedItems.Count == Profile.Curses.Count
+						&& CurseList.SelectedItems.OfType<SlotPlaceholder>().Count() == 0,
+						$"选中 {CurseList.SelectedItems.Count} / 真诅咒 {Profile.Curses.Count} / 行数 {CurseRows.Count}");
+					CurseList.SelectedItems.Clear();
+
+					// 先古卡：1 张 → 5 行，序号用 Ancient 前缀
+					Profile.AncientCards.Clear();
+					Profile.AncientCards.Add(new CardSpec { Name = "槽古甲", ClassName = "", CardType = "Skill", Rarity = "Ancient", Cost = 1 });
+					RefreshCardOrdinals();
+					SyncDetail();
+					UpdateLayout();
+					string aOrd = string.Join(",", AncientRows.Select(r => r.OrdinalText));
+					Check("（先古卡页）1 张 → 列表显示 1~5 行（2~5 是空槽），ItemsSource 是镜像 AncientRows",
+						ReferenceEquals(AncientCardList.ItemsSource, AncientRows) && AncientRows.Count == 5 && aOrd == "1.,2.,3.,4.,5."
+						&& AncientRows.Take(1).All(r => !r.IsPlaceholder) && AncientRows.Skip(1).All(r => r.IsPlaceholder),
+						$"行 {AncientRows.Count} / 序号 {aOrd}");
+					Check("（先古卡页）序号 → 自动类名仍按 Ancient 前缀、从 1 数（V0.2.137 口径不变）",
+						Naming.From(Profile).CardClassName(Profile, Profile.AncientCards[0]) == Naming.From(Profile).CharClass + "Ancient1",
+						Naming.From(Profile).CardClassName(Profile, Profile.AncientCards[0]));
+					// 三页各自独立：改其中一页的行数不影响另一页
+					Check("（三页独立）诅咒 6 张 → 10 行、先古卡 1 张 → 5 行，互不影响；卡牌页也还是自己的行数",
+						CurseRows.Count == 10 && AncientRows.Count == 5
+						&& CardRows.Count == CardSlotRowCount(Profile.Cards.Count)
+						&& !ReferenceEquals(CurseRows, AncientRows) && !ReferenceEquals(CardRows, CurseRows),
+						$"卡牌 {CardRows.Count} / 诅咒 {CurseRows.Count} / 先古 {AncientRows.Count}");
+					// 拖先古卡到它那栏的空槽 → 点得到那行、但它不给卡；也不能污染已选中的真先古卡
+					AncientCardList.SelectedItem = Profile.AncientCards[0];
+					UpdateLayout();
+					Check("（先古卡页）空槽那一行在屏幕上点得到、而且它不给出任何卡（Ancient = null）",
+						AncientSlotRowProbe(), "见上（空槽行可点但拿不到卡）");
+					AncientCardList.SelectedItems.Clear();
+					foreach (ISlotRow row in AncientRows)
+					{
+						if (!row.IsPlaceholder) AncientCardList.SelectedItems.Add(row);
+					}
+					Check("（先古卡页）「全选」只选中真先古卡：SelectedItems 里一个空槽都没有",
+						AncientCardList.SelectedItems.Count == Profile.AncientCards.Count
+						&& AncientCardList.SelectedItems.OfType<SlotPlaceholder>().Count() == 0,
+						$"选中 {AncientCardList.SelectedItems.Count} / 真先古卡 {Profile.AncientCards.Count} / 行数 {AncientRows.Count}");
+					AncientCardList.SelectedItems.Clear();
+				}
+				finally
+				{
+					Profile.Curses.Clear();
+					foreach (CardSpec c in spKeptCurse) Profile.Curses.Add(c);
+					Profile.AncientCards.Clear();
+					foreach (CardSpec c in spKeptAncient) Profile.AncientCards.Add(c);
+					RefreshCardOrdinals();
 					SyncDetail();
 					UpdateLayout();
 				}
@@ -13738,7 +14412,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			condPowerJson.Contains("条件：拥有冰附魔至少 4 点") ? "拥有冰附魔至少 4 点" : condPowerJson.Replace("\n", " "));
 		Check("没启用额外资源量时不覆盖本体悬停提示（保持本体文案）", !LocalizationGen.StaticHoverTipsJson(ProfileFactory.Sample()).Contains("STAR_COUNT"), "没有 STAR_COUNT 键");
 		DependencyObject root15 = SelectTabRoot("卡牌");
-		if (CardList.Items.Count > 0 && CardList.SelectedItem == null) CardList.SelectedIndex = 0;
+		// V0.2.140：列表里现在有空槽行，所以「有没有选中一张真卡」要问 CardUiSelection
+		//（CardList.SelectedItem 可能是空槽行；而 CardList.Items.Count 至少 5 行、恒 > 0）。
+		if (CardUiSelection is null && Profile.Cards.Count > 0) CardList.SelectedItem = Profile.Cards[0];
 		if (CardEffectList.Items.Count > 0) CardEffectList.SelectedIndex = 0;
 		UpdateLayout();
 		const string condHeader = "条件选项（只对上面这一条效果生效）";
@@ -13915,7 +14591,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("「药水属性」那一栏能上下滚动", FindLabelledTextAndHasScrollAncestor("药水属性", "药水"), "药水属性已放进滚动区");
 		// 界面上那 6 行下拉必须真的有选项（之前绑错了路径 → 下拉是空的）
 		SelectTabRoot("卡牌");
-		if (CardList.Items.Count > 0 && CardList.SelectedItem == null) CardList.SelectedIndex = 0;
+		// V0.2.140：列表里现在有空槽行，所以「有没有选中一张真卡」要问 CardUiSelection
+		//（CardList.SelectedItem 可能是空槽行；而 CardList.Items.Count 至少 5 行、恒 > 0）。
+		if (CardUiSelection is null && Profile.Cards.Count > 0) CardList.SelectedItem = Profile.Cards[0];
 		UpdateLayout();
 		List<ComboBox> kwCombos = new List<ComboBox>();
 		CollectCombos(CardDetail, kwCombos);
@@ -14870,8 +15548,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					forged.ForgeEditingHint.Contains("锻造") && forged.ForgeEditingHint.Contains("效果"), forged.ForgeEditingHint.Replace("\n", " "));
 				// 需求：卡牌页选中锻造卡时右边效果栏锁死（属性在中间照常改）
 				{
-					var keepSel = CardList.SelectedItem;
+					CardSpec? keepSel = CardUiSelection;   // V0.2.140：读镜像属性（列表里有空槽行，SelectedItem 可能是占位项）
+					PumpDispatcher(120);
 					CardList.SelectedItem = forged;
+					PumpDispatcher(120);
 					Check("卡牌页选中锻造卡 → 效果栏锁死（CardEffectsEditable=false）",
 						CardEffectsAreForged && !CardEffectsEditable, $"IsForged={CardEffectsAreForged}");
 					// 用户报过「在锻造页修改能量后，卡牌页还是显示原来 0 的数值」：费用那一栏藏起来之后）"
@@ -14880,9 +15560,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						ForgeEnergyCostText.Contains("由锻造页") && ForgeEnergyCostText.Contains("能量"), ForgeEnergyCostText);
 					Check("卡牌页选中锻造卡 → 中间的「费用 / X 费用 / 额外资源量费用 / 升级后 X+1」整块藏掉（需求）",
 						!CardCoreFieldsVisible, $"CardCoreFieldsVisible={CardCoreFieldsVisible}");
-					CardList.SelectedItem = keepSel;
+					// ⚠ V0.2.140 起不能拿「进来时选中的那一张」当恢复目标：清单里现在会**保住**选中项
+					//（以前 Add 之后选中项会被打断成 null），所以 keepSel 有可能正好就是这张锻造卡。
+					// 这里明确挑一张**非锻造**的卡恢复（断言要的就是「普通卡那两块回来了」）。
+					CardList.SelectedItem = keepSel is CardSpec ks && !ks.IsForged
+						? ks
+						: Profile.Cards.FirstOrDefault((CardSpec c) => !c.IsForged);
+					PumpDispatcher(120);
 					Check("换回普通卡后这两块又回来了",
-						CardEffectsEditable && CardCoreFieldsVisible, $"效果栏 {CardEffectsEditable} 费用栏={CardCoreFieldsVisible}");
+						CardEffectsEditable && CardCoreFieldsVisible,
+						$"效果栏 {CardEffectsEditable} 费用栏={CardCoreFieldsVisible} / 现在选中的={CardUiSelection?.Name ?? "(null)"}（IsForged={CardUiSelection?.IsForged}）");
 				}
 
 				// ===== 节点图（那块「布」）=====
@@ -16616,7 +17303,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				DependencyObject cardRoot = SelectTabRoot("卡牌");
 				// 没选中卡牌时右侧详情是**收起**的（只显示一句空态提示）→ 效果种类下拉根本不在树里，
 				// 下面的断言会白白 FAIL。先确认选中一张（自检里前面几段多半已经选过，这里兜底）。
-				if (CardList.SelectedItem is null && Profile.Cards.Count > 0) CardList.SelectedIndex = 0;
+				if (CardUiSelection is null && Profile.Cards.Count > 0) CardList.SelectedItem = Profile.Cards[0];
 				UpdateLayout();
 				List<ComboBox> cardCombos = new List<ComboBox>();
 				CollectCombos(cardRoot, cardCombos);
@@ -20967,7 +21654,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (Profile.Cards.Count > 0)
 		{
 			CardList.SelectedIndex = 0;
-			if (((CardSpec)CardList.SelectedItem).Effects.Count > 0)
+			if (CardUiSelection is CardSpec { Effects.Count: > 0 })
 			{
 				CardEffectList.SelectedIndex = 0;
 			}
@@ -21000,7 +21687,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				VisibleTextsIn(cardTabRoot).Any((string t) => t.Contains("范围限定（随机出什么）"))
 				&& SpawnFilters.Count == 6, string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
 			Profile.Cards.Remove(spawnUiCard);
-			CardList.SelectedIndex = 0;   // 后面还有断言要用 CardList.SelectedItem，清掉自检卡后必须选回去
+			// V0.2.140：列表里有空槽行了 —— 用对象本身选（空列表时 FirstOrDefault() = null = 取消选中），
+			// 别用 SelectedIndex = 0（真卡删光时行 0 是空槽，会进「选中了空槽」那个假状态）
+			CardList.SelectedItem = Profile.Cards.FirstOrDefault();   // 后面还有断言要用选中的卡，清掉自检卡后必须选回去
 			UpdateLayout();
 			Check("（收尾）自检加的那张卡已清掉", !Profile.Cards.Contains(spawnUiCard));
 		}
@@ -21065,7 +21754,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("「生成到」下拉显示的是中文（值还是 Hand/Draw/Discard/Exhaust）",
 			SpawnTargets.All((SpawnTargetOption o) => o.Display != o.Id) && SpawnTargets.Select((SpawnTargetOption o) => o.Id).SequenceEqual(new[] { "Hand", "Draw", "Discard", "Exhaust" }),
 			string.Join(",", SpawnTargets.Select((SpawnTargetOption o) => o.Id + "=" + o.Display)));
-		CardSpec cardSpec23 = (CardSpec)CardList.SelectedItem;
+		CardSpec cardSpec23 = CardUiSelection ?? throw new InvalidOperationException("自检前置条件不成立：卡牌页应当已选中一张真卡");
 		int count15 = cardSpec23.Effects.Count;
 		OnAddEffect(new Button
 		{
@@ -22017,9 +22706,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			// ---- 界面接线 ----
 			Check("有「诅咒 / 先古 / 状态」选项卡（用户要求：状态卡并进这一页）",
 				FindTab("诅咒 / 先古 / 状态") is not null, FindTab("诅咒 / 先古 / 状态") is null ? "没找到" : "找到了");
-			Check("诅咒列表绑的是 Profile.Curses、先古卡列表绑的是 Profile.AncientCards",
-				BindingOperations.GetBinding(CurseList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Curses"
-				&& BindingOperations.GetBinding(AncientCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.AncientCards",
+			Check("诅咒列表绑的是界面镜像 CurseRows、先古卡列表绑的是 AncientRows（真集合 Profile.Curses / Profile.AncientCards 仍是唯一事实来源）",
+				BindingOperations.GetBinding(CurseList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "CurseRows"
+				&& BindingOperations.GetBinding(AncientCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "AncientRows"
+				&& ReferenceEquals(CurseList.ItemsSource, CurseRows) && ReferenceEquals(AncientCardList.ItemsSource, AncientRows)
+				&& CurseRows.Take(Profile.Curses.Count).SequenceEqual<ISlotRow>(Profile.Curses)
+				&& AncientRows.Take(Profile.AncientCards.Count).SequenceEqual<ISlotRow>(Profile.AncientCards),
 				(BindingOperations.GetBinding(CurseList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "?") + " / "
 				+ (BindingOperations.GetBinding(AncientCardList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "?"));
 			Check("状态卡列表绑的是这一页自己的「状态卡」镜像（StatusCards → 它就是 Profile.Cards 里稀有度为「状态」的那些）",
@@ -22040,20 +22732,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			ClickButtonByContent("添加诅咒", curseRoot);
 			UpdateLayout();
 			Check("点「添加诅咒」会加一条诅咒、并自动选中",
-				Profile.Curses.Count == curseBefore + 1 && ReferenceEquals(CurseList.SelectedItem, Profile.Curses[^1]),
-				$"{Profile.Curses.Count} 条");
+				Profile.Curses.Count == curseBefore + 1 && ReferenceEquals(CurseUiSelection, Profile.Curses[^1]),
+				$"{Profile.Curses.Count} 条 / 选中={CurseUiSelection?.Name ?? "(null)"}");
 			CardSpec added = Profile.Curses[^1];
 			Check("新诅咒的默认值：费用 -1、类型 / 稀有度 Curse、勾上「不能被打出」",
 				added.Cost == -1 && added.CardType == "Curse" && added.Rarity == "Curse" && added.Unplayable, $"{added.Cost} / {added.CardType} / {added.Rarity}");
 			curseRoot = SelectTabRoot("诅咒 / 先古 / 状态");
 			UpdateLayout();
+			// ⚠ 绑定的 Visibility 不一定会立刻写目标（见 FlushBindings 的说明）；
+			// 同步跑的自检先把它重算一遍，不然读到的是上一帧的显隐。
+			PumpDispatcher(120);
+			FlushBindings(SpecialCardEmptyHint, CurseDetail);
 			// 空态那行是同一格里叠着的 TextBlock，**收起时仍在可视树里**（Visibility=Collapsed）——
 			// 所以这里查 IsVisible，不能只查文字在不在（TextsIn 是不过滤可见性的）
 			List<TextBlock> curseBlocks = new List<TextBlock>();
 			CollectTextBlocks(curseRoot, curseBlocks);
 			Check("选中诅咒后空态提示收起、诅咒详情面板出现",
 				!curseBlocks.Any(t => t.Text != null && t.Text.Contains("请选择诅咒 / 先古卡 / 状态卡") && t.IsVisible)
-				&& curseBlocks.Any(t => t.Text == "诅咒属性" && t.IsVisible), "面板在");
+				&& curseBlocks.Any(t => t.Text == "诅咒属性" && t.IsVisible),
+				$"面板在 / 空态提示={SpecialCardEmptyHint.Visibility} 诅咒详情={CurseDetail.Visibility} / 已选中={CurseUiSelection?.Name ?? "(null)"}");
 			Check("诅咒详情面板里的效果编辑器是「遗物那套」（没有「升级增量 / 数值 = X」那几行）",
 				curseBlocks.Any(t => t.Text == "诅咒属性" && t.IsVisible)
 				&& !curseBlocks.Any(t => t.Text == "升级增量" && t.IsVisible), "没有升级那两行");
@@ -22072,6 +22769,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			int statusBefore = Profile.Cards.Count(x => x.IsStatusCard);
 			ClickButtonByContent("添加状态卡", curseRoot);
 			UpdateLayout();
+			PumpDispatcher(120);
 			Check("点「添加状态卡」→ 加进 Profile.Cards（数据只有一份），类型 / 稀有度默认 Status、费用 1",
 				Profile.Cards.Count(x => x.IsStatusCard) == statusBefore + 1
 				&& StatusCards.Count == statusBefore + 1
@@ -22079,13 +22777,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				$"{StatusCards.Count} 张 / 类型={StatusCards[^1].CardType} 稀有度={StatusCards[^1].Rarity} 费用={StatusCards[^1].Cost}");
 			Check("新状态卡自动选中，用的是「先古卡 / 状态卡」共用的那块详情面板（状态卡属性）",
 				ReferenceEquals(StatusCardList.SelectedItem, StatusCards[^1]) && ShowSpecialCardDetail && SpecialCard is not null,
-				"面板在");
+				$"面板在 / 状态选中={((StatusCardList.SelectedItem as CardSpec)?.Name ?? "(null)")} 期望={StatusCards[^1].Name}");
 			curseRoot = SelectTabRoot("诅咒 / 先古 / 状态");
 			UpdateLayout();
+			PumpDispatcher(120);
+			FlushBindings(SpecialCardDetail);
 			List<TextBlock> statusBlocks = new List<TextBlock>();
 			CollectTextBlocks(curseRoot, statusBlocks);
 			Check("状态卡详情里写着「稀有度固定为「状态」（Status）…默认不能升级」",
-				statusBlocks.Any(t => t.Text != null && t.Text.Contains("稀有度固定为「状态」（Status）") && t.IsVisible), "在");
+				statusBlocks.Any(t => t.Text != null && t.Text.Contains("稀有度固定为「状态」（Status）") && t.IsVisible),
+				$"在 / 当前详情对象={SpecialCard?.Name ?? "(null)"} / 面板={SpecialCardDetail.Visibility}");
 			// 稀有度改走 → 镜像里也要消失（这一页不复制数据，所以必须跟着 Profile.Cards 变）
 			CardSpec wasStatus = StatusCards[^1];
 			int statusCountNow = StatusCards.Count;
@@ -22898,7 +23599,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (Profile.Cards.Count > 1)
 		{
 			CardList.SelectedIndex = 1;
-			Check("切换卡牌后右侧详情跟随", CardDetail.DataContext == CardList.SelectedItem, "面板=" + (CardDetail.DataContext as CardSpec)?.Name);
+			Check("切换卡牌后右侧详情跟随", CardDetail.DataContext == CardUiSelection && CardDetail.DataContext is CardSpec, "面板=" + (CardDetail.DataContext as CardSpec)?.Name);
 		}
 		if (Profile.Relics.Count > 1)
 		{
@@ -23479,7 +24180,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				relicScan.Count >= 2 && relicScan.Missing.Length == 0,
 				$"扫到 {relicScan.Count} 个面板" + (relicScan.Missing.Length == 0 ? "，都有 M 框" : "；缺 M 框：" + relicScan.Missing));
 			SelectTabRoot("卡牌");
-			if (CardList.Items.Count > 0) CardList.SelectedIndex = 0;
+			if (Profile.Cards.Count > 0) CardList.SelectedItem = Profile.Cards[0];
 			PumpDispatcher(150);
 			var cardScan = ScanCondGroups();
 			Check("卡牌页的「条件选项」面板也都有第二个数值框",
@@ -25820,7 +26521,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				SetSpawnChoiceAndDisplay(copyUiCard.Effects[0], 3m).Contains("3 张中选一张"),
 				SetSpawnChoiceAndDisplay(copyUiCard.Effects[0], 3m));
 			Profile.Cards.Remove(copyUiCard);
-			CardList.SelectedIndex = 0;
+			CardList.SelectedItem = Profile.Cards.FirstOrDefault();     // V0.2.140：用对象选（列表里有空槽行）
 			UpdateLayout();
 			Check("（收尾）自检加的那张复制卡已清掉", !Profile.Cards.Contains(copyUiCard));
 		}
@@ -27153,7 +27854,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("数值 0 = 这张牌自己那一档**也照旧显示**「范围界定」（用户报过「怎么不能填范围了」：按数值藏行会让人没法填）",
 				VisibleTextsIn(csUiRoot).Any((string t) => t.Contains("范围界定（哪些牌能选）")), "显示了");
 			Profile.Cards.Remove(csUiCard);
-			CardList.SelectedIndex = 0;
+			CardList.SelectedItem = Profile.Cards.FirstOrDefault();     // V0.2.140：用对象选（列表里有空槽行）
 			UpdateLayout();
 			Check("（收尾）自检加的那张范围界定卡已清掉", !Profile.Cards.Contains(csUiCard));
 
@@ -27180,7 +27881,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("效果列表那句写的是「抽 N 张 → 对其中「条件」的牌操作」（默认档在列表里也说得清）",
 				scrapeUiCard.Effects[0].Display.Contains("对其中「非 0 费」的牌丢弃"), scrapeUiCard.Effects[0].Display);
 			Profile.Cards.Remove(scrapeUiCard);
-			CardList.SelectedIndex = 0;
+			CardList.SelectedItem = Profile.Cards.FirstOrDefault();     // V0.2.140：用对象选（列表里有空槽行）
 			UpdateLayout();
 			Check("（收尾）自检加的那张刮削界面卡已清掉", !Profile.Cards.Contains(scrapeUiCard));
 		}
@@ -27784,7 +28485,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("界面：卡牌效果编辑器里有「不同效果的概率各自独立判定」勾选框（绑 ChanceIndependent）",
 				dmgChain.ChanceIndependent == false, "默认关");
 			SelectTabRoot("卡牌");
-			if (CardList.SelectedItem is CardSpec selCard && selCard.Effects.Count > 0) CardEffectList.SelectedIndex = 0;
+			if (CardUiSelection is CardSpec { Effects.Count: > 0 }) CardEffectList.SelectedIndex = 0;
 			UpdateLayout();
 			var cardPageRoot = SelectTabRoot("卡牌");
 			var pageChecks = new List<CheckBox>();

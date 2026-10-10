@@ -2054,7 +2054,15 @@ public sealed class EffectSpec : SpecBase
     }
 }
 
-public sealed class CardSpec : SpecBase
+/// <summary>
+/// 一张卡（普通卡 / 诅咒卡 / 先古卡 / 状态卡都是它，靠 <see cref="CardType"/> / <see cref="Rarity"/> 分流）。
+///
+/// <para>V0.2.140 起也实现 <see cref="ISlotRow"/>：三个卡牌列表页（卡牌 / 诅咒卡 / 先古卡）的左侧列表
+/// 照遗物页 / 药水页那套改成「每 5 个一块 + 末尾空槽行」，这两边的行（真卡 = <see cref="CardSpec"/>、
+/// 空槽 = 界面那边的 <c>SlotPlaceholder</c>）要塞进同一个 <c>ObservableCollection&lt;ISlotRow&gt;</c>。
+/// 和 <see cref="RelicSpec"/> / <see cref="PotionSpec"/> 一模一样：<see cref="IsPlaceholder"/> 恒 false。</para>
+/// </summary>
+public sealed class CardSpec : SpecBase, ISlotRow
 {
     private string _name = "新卡";
     private string _className = "";
@@ -2955,6 +2963,10 @@ public sealed class CardSpec : SpecBase
     /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
     [JsonIgnore]
     public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
+
+    /// <summary>界面用：真卡行当然不是空槽（空槽行是界面那边的 <c>SlotPlaceholder</c>，见 ISlotRow）。</summary>
+    [JsonIgnore]
+    public bool IsPlaceholder => false;
 }
 
 /// <summary>

@@ -635,17 +635,21 @@
                         <!-- 用户要求第 1 条《卡牌页优化.md》：卡牌名最左侧是**序号列**（从上到下 1..N，
                              序号是位置号、不跟随卡牌移动），可以**拖动卡牌项**换位置；
                              自动生成的英文类名跟着这个序号走（见 Naming.RenumberCardClassNames）。
-                             ⚠ 序号口径按用户拍板 Q5 = A：**列表里全部行都占号** —— 本体卡 / 初始的
-                             打击与防御也占第 1、2 号。
-                             ⚠ 卡牌列表**不用界面镜像集合**（不像遗物 / 药水页要补「每块 5 个」空槽）：
-                             序号要的就是 1..N 连续，所以 ItemsSource 仍然直接绑 Profile.Cards，
-                             CardList.SelectedItem 照旧是 CardSpec（那一百多处引用一个字都不用改）。 -->
+                             ⚠ 序号口径按用户拍板 Q5 = A：**列表里全部行都占号**。
+                             ⚠ V0.2.140（用户对 V0.2.130 那次的更正，原话「不是说卡牌左侧的序号做的像遗物一样，
+                             五个五个列，直接显示出来，比如只有一张卡时，有1-5序号，当有6张卡时，出现6到10序号」）：
+                             列表改成**和遗物 / 药水页一模一样**的版式 ——
+                             行数 = 5 × ceil(max(N,1)/5)（1 张 → 1~5 行；6 张 → 1~10 行；11 张 → 1~15 行），
+                             多出来的行是**空槽**（SlotPlaceholder，只显示灰色序号、没有内容、选不中、但可当拖放落点）。
+                             ItemsSource 绑的是 MainWindow.CardRows 这个**界面镜像集合**
+                             （真卡 + 末尾空槽行）；真卡集合 Profile.Cards 仍是唯一事实来源。
+                             诅咒卡 / 先古卡那两栏各自同理（CurseRows / AncientRows，前缀 Curse / Ancient）。 -->
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
-                                   Text="最左边的数字 = 这张卡**现在排第几位**（1..N，含最上面的本体卡 / 初始打击防御；拖动换位置后跟着重排）。自动生成的英文类名会跟着这个序号走（&lt;角色类名&gt;Card&lt;序号&gt;），手填的不会被改。诅咒卡 / 先古卡在各自那一页从 1 数，用 Curse / Ancient 前缀。"/>
+                                   Text="最左边的数字 = 这张卡**现在排第几位**（1..N，含最上面的本体卡 / 初始打击防御；拖动换位置后跟着重排）。序号每次多留 5 个：不够 5 张时后面几行是**灰色空槽**（拖卡牌过去就放到那个位置）；空槽不能被选中。自动生成的英文类名会跟着这个序号走（&lt;角色类名&gt;Card&lt;序号&gt;），手填的不会被改。诅咒卡 / 先古卡在各自那一页从 1 数，用 Curse / Ancient 前缀。"/>
                         <TextBlock DockPanel.Dock="Bottom" x:Name="CardDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
                                    Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
                         <ListBox x:Name="CardList" SelectionMode="{Binding MultiSelectCards, Converter={StaticResource MultiSelectMode}}"
-                                 ItemsSource="{Binding Profile.Cards}" DisplayMemberPath="{x:Null}"
+                                 ItemsSource="{Binding CardRows}" DisplayMemberPath="{x:Null}"
                                  AllowDrop="True" PreviewMouseLeftButtonDown="OnCardListPreviewMouseDown"
                                  PreviewMouseMove="OnCardListPreviewMouseMove"
                                  DragOver="OnCardListDragOver" Drop="OnCardListDrop"
@@ -663,26 +667,39 @@
                                         <TextBlock x:Name="CardRowName" Grid.Column="1" Text="{Binding Display}" TextWrapping="Wrap"
                                                    VerticalAlignment="Center"/>
                                     </Grid>
+                                    <!-- 空槽行：只有灰色序号（卡名那一列整块收起来）。判据是接口上的 IsPlaceholder，
+                                         真卡 = false、空槽 = true（见 SlotPlaceholder / ISlotRow）。 -->
+                                    <DataTemplate.Triggers>
+                                        <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                            <Setter TargetName="CardRowRoot" Property="ToolTip" Value="{x:Null}"/>
+                                            <Setter TargetName="CardRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+                                            <Setter TargetName="CardRowOrdinal" Property="FontWeight" Value="Normal"/>
+                                            <Setter TargetName="CardRowName" Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </DataTemplate.Triggers>
                                 </DataTemplate>
                             </ListBox.ItemTemplate>
                         </ListBox>
                     </DockPanel>
 
-                    <!-- 没选中卡牌时：收起属性/效果栏，只留一句提示 -->
+                    <!-- 没选中卡牌时：收起属性/效果栏，只留一句提示。
+                         ⚠ V0.2.140：显隐判据和 DataContext 都改走窗口上的 HasCardSelection / CardUiSelection
+                         —— 列表里现在有空槽行，绑 SelectedItem 的话点一下空槽就会把右侧整块收掉
+                         （照遗物页 V0.2.125 / 药水页 V0.2.127 的写法：空槽行也算「选中了一行」，详情不清空）。 -->
                     <TextBlock x:Name="CardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择卡牌"
-                               Visibility="{Binding SelectedItem, ElementName=CardList, Converter={StaticResource EmptyToVisibility}}"/>
+                               Visibility="{Binding HasCardSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToCollapsed}}"/>
 
                     <!-- 锻造卡（名字带 *）：中间照常改属性，右边效果栏锁死（效果由锻造页的节点图决定，需求） -->
                     <TextBlock x:Name="CardForgedHint" Grid.Column="2" FontSize="13" Foreground="#7A5A00"
                                HorizontalAlignment="Center" VerticalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap"
                                MaxWidth="420"
-                               DataContext="{Binding SelectedItem, ElementName=CardList}"
+                               DataContext="{Binding CardUiSelection, RelativeSource={RelativeSource AncestorType=Window}}"
                                Text="{Binding ForgeEditingHint}"
                                Visibility="Collapsed"/>
 
-                    <Grid x:Name="CardDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=CardList}"
-                          Visibility="{Binding SelectedItem, ElementName=CardList, Converter={StaticResource NotEmptyToVisibility}}">
+                    <Grid x:Name="CardDetail" Grid.Column="2" DataContext="{Binding CardUiSelection, RelativeSource={RelativeSource AncestorType=Window}}"
+                          Visibility="{Binding HasCardSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.35*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
                         </Grid.ColumnDefinitions>
@@ -1810,10 +1827,38 @@
                                             Background="{Binding Profile.CurseStyle.PreviewHex, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource HexBrush}}"
                                             ToolTip="当前卡框颜色的色块"/>
                                 </Grid>
-                                <ListBox x:Name="CurseList" ItemsSource="{Binding Profile.Curses}" DisplayMemberPath="Display"
+                                <!-- V0.2.140：诅咒那一栏也照遗物 / 药水页那套 —— 每 5 个一块、空槽带灰色序号。
+                                     ItemsSource 绑 MainWindow.CurseRows（真诅咒 + 末尾空槽行），
+                                     真集合 Profile.Curses 仍是唯一事实来源；空槽可当拖放落点、选不中、不进全选。 -->
+                                <ListBox x:Name="CurseList" ItemsSource="{Binding CurseRows, RelativeSource={RelativeSource AncestorType=Window}}"
                                          SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          SelectionChanged="OnSpecialCardSelectionChanged"
-                                         ToolTip="诅咒：打不出去，留在手牌里就会在回合结束时坑你。本体的「受伤 / 疑虑 / 苦恼 / 厄运」就是这一类。"/>
+                                         AllowDrop="True" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         HorizontalContentAlignment="Stretch"
+                                         ToolTip="诅咒：打不出去，留在手牌里就会在回合结束时坑你。本体的「受伤 / 疑虑 / 苦恼 / 厄运」就是这一类。">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid x:Name="CurseRowRoot" ToolTip="{Binding RowTip}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="34"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock x:Name="CurseRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                                           Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <TextBlock x:Name="CurseRowName" Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                                    <Setter TargetName="CurseRowRoot" Property="ToolTip" Value="{x:Null}"/>
+                                                    <Setter TargetName="CurseRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+                                                    <Setter TargetName="CurseRowOrdinal" Property="FontWeight" Value="Normal"/>
+                                                    <Setter TargetName="CurseRowName" Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
                             </DockPanel>
                         </GroupBox>
 
@@ -1851,10 +1896,36 @@
                                              Text="{Binding Profile.AncientStyle.FrameColor, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
                                              ToolTip="填 6 位十六进制（例如 E0B24C）。生成时会按它算 HSV 写一份卡框材质，只有先古卡用这个框色。"/>
                                 </DockPanel>
-                                <ListBox x:Name="AncientCardList" ItemsSource="{Binding Profile.AncientCards}" DisplayMemberPath="Display"
+                                <!-- V0.2.140：先古卡那一栏同理（每 5 个一块 + 空槽灰色序号，CurseRows 的兄弟 AncientRows） -->
+                                <ListBox x:Name="AncientCardList" ItemsSource="{Binding AncientRows, RelativeSource={RelativeSource AncestorType=Window}}"
                                          SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          SelectionChanged="OnSpecialCardSelectionChanged"
-                                         ToolTip="先古卡 = 本体稀有度 Ancient 的强力牌（本体「丰饶 / 神化 / 幽灵形态」那种）。它们不会出现在战斗奖励里：拿到它们靠先古之民给的遗物（本体「尘封的书」会从你的卡池里随机挑一张先古卡），或者你自己的效果（「生成卡牌 / 获得卡牌（全局）」里选它）。"/>
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         HorizontalContentAlignment="Stretch"
+                                         ToolTip="先古卡 = 本体稀有度 Ancient 的强力牌（本体「丰饶 / 神化 / 幽灵形态」那种）。它们不会出现在战斗奖励里：拿到它们靠先古之民给的遗物（本体「尘封的书」会从你的卡池里随机挑一张先古卡），或者你自己的效果（「生成卡牌 / 获得卡牌（全局）」里选它）。">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid x:Name="AncientRowRoot" ToolTip="{Binding RowTip}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="34"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock x:Name="AncientRowOrdinal" Grid.Column="0" Text="{Binding OrdinalText}" FontWeight="Bold"
+                                                           Foreground="#1F4E79" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                                <TextBlock x:Name="AncientRowName" Grid.Column="1" Text="{Binding Display}" TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"/>
+                                            </Grid>
+                                            <DataTemplate.Triggers>
+                                                <DataTrigger Binding="{Binding IsPlaceholder}" Value="True">
+                                                    <Setter TargetName="AncientRowRoot" Property="ToolTip" Value="{x:Null}"/>
+                                                    <Setter TargetName="AncientRowOrdinal" Property="Foreground" Value="#AAAAAA"/>
+                                                    <Setter TargetName="AncientRowOrdinal" Property="FontWeight" Value="Normal"/>
+                                                    <Setter TargetName="AncientRowName" Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </DataTemplate.Triggers>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
                             </DockPanel>
                         </GroupBox>
 
@@ -1882,13 +1953,16 @@
                     </Grid>
 
                     <!-- 两张详情面板都没选中时：一句提示 -->
-                    <TextBlock Grid.Column="2" FontSize="16" Foreground="#999"
+                    <TextBlock x:Name="SpecialCardEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center" Text="请选择诅咒 / 先古卡 / 状态卡"
                                Visibility="{Binding ShowSpecialCardHint, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}"/>
 
-                    <!-- ===== 诅咒详情 ===== -->
-                    <Grid Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=CurseList}"
-                          Visibility="{Binding SelectedItem, ElementName=CurseList, Converter={StaticResource NotEmptyToVisibility}}">
+                    <!-- ===== 诅咒详情 =====
+                         ⚠ V0.2.140：数据上下文 / 显隐都改走窗口上的 CurseUiSelection / HasCurseSelection
+                         —— 诅咒列表里现在有空槽行，绑 SelectedItem 的话点一下空槽右侧就会收起来
+                         （照遗物页 V0.2.125 / 药水页 V0.2.127 的写法）。 -->
+                    <Grid x:Name="CurseDetail" Grid.Column="2" DataContext="{Binding CurseUiSelection, RelativeSource={RelativeSource AncestorType=Window}}"
+                          Visibility="{Binding HasCurseSelection, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.1*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
                         </Grid.ColumnDefinitions>
@@ -1969,7 +2043,7 @@
                     </Grid>
 
                     <!-- ===== 先古卡 / 状态卡详情（两张牌共用这一块：一次只会选中其中一个）===== -->
-                    <Grid Grid.Column="2" DataContext="{Binding SpecialCard, RelativeSource={RelativeSource AncestorType=Window}}"
+                    <Grid x:Name="SpecialCardDetail" Grid.Column="2" DataContext="{Binding SpecialCard, RelativeSource={RelativeSource AncestorType=Window}}"
                           Visibility="{Binding ShowSpecialCardDetail, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="1.1*" MinWidth="320"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*" MinWidth="360"/>
