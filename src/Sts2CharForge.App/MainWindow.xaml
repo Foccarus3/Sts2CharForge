@@ -987,7 +987,11 @@
                             <Grid IsEnabled="{Binding CardEffectsEditable, RelativeSource={RelativeSource AncestorType=Window}}">
                                 <Grid.RowDefinitions><RowDefinition Height="140"/><RowDefinition Height="8"/><RowDefinition Height="*"/></Grid.RowDefinitions>
                                 <ListBox x:Name="CardEffectList" Grid.Row="0" SelectionMode="{Binding MultiSelectCards, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}" ItemsSource="{Binding Effects}" DisplayMemberPath="Display" SelectionChanged="OnCardEffectSelectionChanged"/>
-                                <Border Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
+                                <!-- ⚠ x:Name 只为自检用（V0.2.143：卡牌页这份「条件选项」绑的是 SelectedItem，
+                                     和遗物 / 药水 / 额外资源量三页右下角那块同一个形状 —— 那三页以前因为
+                                     折叠行的 Button 吃掉了点击、SelectedItem 一直是 null，所以「选了存不住」。
+                                     卡牌页的效果列表**不是**折叠行模板，所以本来就选得中、一直正常。 -->
+                                <Border x:Name="CardEffectEditorBox" Grid.Row="2" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=CardEffectList}">
                                     <!-- 条件选项跟着每条效果走（在效果编辑面板的最下面），不再挂整张牌 -->
                                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorCard}"/>

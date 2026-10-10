@@ -1213,3 +1213,28 @@ README / 使用说明 / `RELEASE_NOTES_V0.2.92.md` + 自检 8 条断言（含生
   （用不到的种类收起那一栏 + 校验器报错/警告）+ 自检 21 条。
 
 ## 已完成（按版本）
+
+- V0.2.143 修「遗物 / 药水 / 额外资源量页右下角『单条效果的触发条件』选不中目标效果、改了存不住」
+  （用户原话「遗物的条件选项怎么用不了了」，验收口径「做的和卡牌一样就行了」）。
+  **真因在 XAML / 事件层**：四页共用的折叠效果行模板 `EffectEditorCollapsible`（`MainWindow.xaml`）
+  **整行就是一颗 `Button`**（`Click="OnToggleEffectRow"`）—— WPF 里 Button 在**冒泡阶段**先处理
+  `MouseLeftButtonDown` 并置 `e.Handled = true` → 外层 `ListBoxItem` 收不到这次点击 →
+  **那一行永远不会被选中**；而右下角那块 `RelicEffectConditionBox` / `PotionEffectConditionBox` /
+  `ExtraResourceEffectConditionBox` 的 DataContext 正是 `{Binding SelectedItem, ElementName=…EffectList}`
+  → **一直是 null** → 在里面选条件 = 写进空对象、**静默丢失**（切走再回来就变回「无条件」）。
+  卡牌页没有这块（条件编辑器在展开区里、绑那一行自己的效果），所以一直正常。
+  **修法**：`OnToggleEffectRow` 翻展开状态之后新增一句 `SelectEffectRowOf(sender, effect)`（四页共用）——
+  从被点的元素往上找 `ListBoxItem` → `ItemsControlFromItemContainer` 反查它属于哪个 `ListBox` →
+  设 `SelectedItem`；找不到 `ListBoxItem` 时退化成「在窗口可视树里找那个 `ItemsSource` 正好装着这条效果的
+  列表」（找到多个 / 找不到都安静返回，宁可不选中也不许改错列表）；全都不命中就 `item.IsSelected = true`。
+  **自检补上这次漏掉的方向**（以前只测「模型 → 界面」，从没测过「在下列表里选 → 写回存档」）：
+  真的点那一行那颗按钮（`RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent, b))`，和用户点下去落进同一个处理器）
+  → 断言 `SelectedItem` **就是这条效果**（修好之前是 null）+ 行容器 `IsSelected` + 右下角那块 DataContext 立刻跟上；
+  再在下拉里真的选一个条件 → 断言写回 `EffectSpec.Condition.Kind` → 切走再切回**条件还在**（遗物 / 药水 / 额外资源量各一组）；
+  外加「展开区那份与右下角那块绑的是**同一个对象**」+ 卡牌页回归（卡牌页效果列表不是折叠行模板、不误改）。新增 25 条断言。
+  **反向验证**：把新加的那句「选中」临时注释掉 → `--uicheck` **11 条 FAIL**（PASS 3328 / FAIL 11）；改回即 **PASS 3339 / FAIL 0**。
+  ⚠ 自检里**不要**在设 `SelectedItem` 前后调 `SyncDetail()`：它会重绑 `ItemsSource`，把「右下角绑 SelectedItem」
+  那条 Binding 一起换掉（踩过，会假红 / 假绿）。⚠ `ButtonAutomationPeer.Invoke()` 在这条**没有消息循环**的自检路径上
+  不触发 Click（实测），要真的走 Click 就用 `RaiseEvent`。
+  红线：`--samplegen` 113 个文件逐字节不变（只差 `ExampleMod.sln` 的随机 GUID；`README.md` 只差 CRLF/LF）／
+  `dotnet build` 0 错误／`--uicheck` Debug 与发布版都 0 FAIL／探针 `--build` 0 错误 + 导出 PCK OK + `--recover` 0 条「没认出来」。

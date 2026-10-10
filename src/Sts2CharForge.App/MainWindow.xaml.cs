@@ -7420,12 +7420,101 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	///
 	/// <para>⚠ 只翻 <see cref="EffectSpec.IsExpanded"/>（<c>[JsonIgnore]</c>，不写存档、生成端不读）
 	/// —— 所以折叠 / 展开**不影响生成结果**，也不给老存档多字段。</para>
+	///
+	/// <para>⚠ V0.2.143（用户报「遗物的条件选项怎么用不了了 / 选了存不住」）：这颗按钮**还要顺手把
+	/// 这一行选中**。原因：整行就是一颗 <see cref="Button"/>，Button 在**冒泡阶段**先吃掉
+	/// <c>MouseLeftButtonDown</c> 并置 <c>e.Handled = true</c> → 外层 <see cref="ListBoxItem"/>
+	/// 收不到这次点击 → <c>SelectedItem</c> 永远是 null。而遗物 / 药水 / 额外资源量三页右下角那块
+	/// 「单条效果的触发条件」的 DataContext 正是 <c>{Binding SelectedItem, ElementName=XXXEffectList}</c>
+	/// → 一直是 null → 在里面选条件写进空对象、**静默丢失**（切回来就变回「无条件」）。
+	/// 卡牌页没有这块（它的条件编辑器在展开区里、绑那一行自己的效果），所以一直正常。</para>
 	/// </summary>
 	private void OnToggleEffectRow(object sender, RoutedEventArgs e)
 	{
 		// 这个按钮长在效果的 ItemTemplate 里，DataContext 就是那一条 EffectSpec。
 		// 判类型而不是强转：模板万一将来被别的 DataContext 复用，也不会当场抛。
-		if ((sender as FrameworkElement)?.DataContext is EffectSpec effect) ToggleEffectRow(effect);
+		if ((sender as FrameworkElement)?.DataContext is not EffectSpec effect) return;
+		ToggleEffectRow(effect);
+		// 点行 = 选中行（四页共用；见上面 V0.2.143 的说明）。
+		SelectEffectRowOf(sender as DependencyObject, effect);
+	}
+
+	/// <summary>
+	/// 点了一下效果行 → 把这一行**选中**（V0.2.143 的修复本体）。
+	///
+	/// <para>为什么必须显式选：行模板里整行是一颗 <see cref="Button"/>，Button 在冒泡阶段先把
+	/// <c>MouseLeftButtonDown</c> 标成 Handled，外层 <see cref="ListBoxItem"/> 的选中行为就轮不到了
+	/// —— 于是「右下角单条效果的条件」那块（DataContext 绑 <c>SelectedItem</c>）一直是 null。</para>
+	///
+	/// <para>两条路都要留着（任务书要求「处理 ListBoxItem 找不到时的退化路径」）：</para>
+	/// ① 正常路：从被点的那个元素往上找 <see cref="ListBoxItem"/> →
+	///    <c>ItemsControl.ItemsControlFromItemContainer</c> 反查它属于哪个 <see cref="ListBox"/>
+	///    → 把 <c>SelectedItem</c> 设成这一条效果；反查不到列表（不在列表里）就退回
+	///    <c>IsSelected = true</c>；
+	/// ② 退化路：连 <see cref="ListBoxItem"/> 都没生成时（虚拟化 / 拿不到父链），
+	///    在窗口可视树里找**唯一一个** ItemsSource 正好装着这条效果的列表 → 设 SelectedItem。
+	///    找不到 / 找到多个就安静返回（宁可不选中，也不许选错列表）。</para>
+	///
+	/// <para><c>internal static</c> 是为了自检能直接拿它验「选中」这一步（把选中那一步临时去掉 → 自检必须红）。</para>
+	/// </summary>
+	internal static void SelectEffectRowOf(DependencyObject? clicked, EffectSpec? effect)
+	{
+		if (effect is null) return;
+		for (DependencyObject? node = clicked; node is not null; node = VisualTreeHelper.GetParent(node))
+		{
+			if (node is not ListBoxItem item) continue;
+			if (ItemsControl.ItemsControlFromItemContainer(item) is ListBox list)
+			{
+				if (!ReferenceEquals(list.SelectedItem, effect)) list.SelectedItem = effect;
+			}
+			else
+			{
+				// 退化：连列表都反查不到，至少把这一行的选中态点上（右下角那块照样能跟着走）
+				item.IsSelected = true;
+			}
+			return;
+		}
+		// 退化路：行容器还没生成（虚拟化 / 拿不到 sender 的父链）——
+		// 从这条效果的序号出发，在窗口可视树里找那个 ItemsSource 正好装着它的列表（唯一命中才动手）。
+		ListBox? owner = ListBoxOwningEffect(clicked as DependencyObject ?? Application.Current?.MainWindow, effect);
+		if (owner is not null && !ReferenceEquals(owner.SelectedItem, effect)) owner.SelectedItem = effect;
+	}
+
+	/// <summary>
+	/// 自检 / 退化用：窗口可视树里那个 <c>ItemsSource</c> 正好装着 <paramref name="effect"/> 的
+	/// <see cref="ListBox"/>（找到多个 / 找不到都返回 null —— 宁可不选，也不许把别的页的列表改坏）。
+	/// </summary>
+	internal static ListBox? ListBoxOwningEffect(DependencyObject? root, EffectSpec effect)
+	{
+		if (root is null) return null;
+		var lists = new List<ListBox>();
+		CollectListBoxes(root, lists);
+		ListBox? hit = null;
+		foreach (ListBox lb in lists)
+		{
+			if (lb.ItemsSource is not System.Collections.IEnumerable src) continue;
+			bool has = false;
+			foreach (object? it in src)
+			{
+				if (ReferenceEquals(it, effect)) { has = true; break; }
+			}
+			if (!has) continue;
+			if (hit is not null) return null;    // 多个列表都装着它 → 分不清，放弃
+			hit = lb;
+		}
+		return hit;
+	}
+
+	/// <summary>自检用：一棵子树里所有 <see cref="ListBox"/>。</summary>
+	private static void CollectListBoxes(DependencyObject root, List<ListBox> into)
+	{
+		int n = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < n; i++)
+		{
+			DependencyObject child = VisualTreeHelper.GetChild(root, i);
+			if (child is ListBox lb && !into.Contains(lb)) into.Add(lb);
+			CollectListBoxes(child, into);
+		}
 	}
 
 	/// <summary>自检用：翻一条效果的展开状态（和按钮点下去是**同一个**动作）。</summary>
@@ -29469,6 +29558,327 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			{
 				try { if (Directory.Exists(dbgRoot)) Directory.Delete(dbgRoot, true); } catch { }
 			}
+		}
+		// ===== V0.2.143（用户报「遗物的条件选项怎么用不了了 / 选了存不住」）=====
+		// 真因：四页共用的折叠效果行模板 EffectEditorCollapsible 里**整行是一颗 Button**
+		// （Click="OnToggleEffectRow"）。Button 在**冒泡阶段**先处理 MouseLeftButtonDown 并置
+		// e.Handled=true → 外层 ListBoxItem 收不到这次点击 → **那一行永远不会被选中**；
+		// 而遗物 / 药水 / 额外资源量三页右下角那块「单条效果的触发条件」的 DataContext 是
+		// {Binding SelectedItem, ElementName=XXXEffectList} → **一直是 null** →
+		// 在里面的下拉选条件 = 写进空对象、静默丢失（切走再回来就变回「无条件」）。
+		// 卡牌页没有这块（条件编辑器在展开区里、绑那一行自己的效果），所以一直正常。
+		//
+		// 这一段的判据一律用**可视树上的证据** + **真的点那颗按钮**（ButtonAutomationPeer.Invoke，
+		// 走和用户点下去同一条 Click 路，只是不做鼠标命中测试）—— 不能只调 ToggleEffectRow，
+		// 那样测不出「选中」这一步（这正是 V0.2.142 漏掉的方向：只测了「模型 → 界面」）。
+		{
+			// 自检用：真的点某一行那颗「展开 / 收起」按钮（走按钮的 Click 事件 —— 和用户点下去
+			// 落到的是**同一个** OnToggleEffectRow；ButtonAutomationPeer 在这条无消息循环的
+			// 自检路径上不触发 Click，实测过）。
+			bool ClickEffectRowButton(ListBox list, int row)
+			{
+				FrameworkElement? rowEl = EffectRowContainer(list, row);
+				if (rowEl is null) return false;
+				var btns = new List<Button>();
+				CollectButtons(rowEl, btns);
+				Button? b = btns.FirstOrDefault(x => ReferenceEquals(x.DataContext, list.Items[row]));
+				if (b is null) return false;
+				b.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent, b));
+				UpdateLayout();
+				return true;
+			}
+			// 自检用：在某一页右下角那块条件框的「条件」下拉里真的选一个条件
+			// （SelectedItem 是双侧绑定 → 直接写回 Condition.Kind）。
+			ComboBox? ConditionComboOf(Border? box) =>
+				box is null ? null : FindFirstComboBoxBound(box, "Condition.Kind");
+			bool PickCondition(ComboBox combo, string id)
+			{
+				ConditionOption? opt = PlainEffectConditions.FirstOrDefault(o => o.Id == id);
+				if (opt is null || !ReferenceEquals(combo.ItemsSource, PlainEffectConditions)) return false;
+				combo.SelectedItem = opt;
+				combo.GetBindingExpression(Selector.SelectedValueProperty)?.UpdateSource();
+				UpdateLayout();
+				return true;
+			}
+			// 自检用：把一条效果的条件存下来 / 原样还回去（自检不留痕）。
+			(ConditionSpec Snap, object? ComboLocalValue) SnapshotCondition(EffectSpec fx, Border? box)
+			{
+				var c = fx.Condition ?? new ConditionSpec();
+				fx.Condition = c;
+				var combo = ConditionComboOf(box);
+				return (
+					new ConditionSpec
+					{
+						Kind = c.Kind, Timing = c.Timing, Target = c.Target,
+						Amount = c.Amount, Amount2 = c.Amount2,
+						AmountFormula = c.AmountFormula, Amount2Formula = c.Amount2Formula,
+						PowerId = c.PowerId, WhenUnmet = c.WhenUnmet,
+					},
+					combo?.ReadLocalValue(Selector.SelectedValueProperty));
+			}
+			void RestoreCondition(EffectSpec fx, Border? box, (ConditionSpec Snap, object? ComboLocalValue) save)
+			{
+				ConditionSpec s = save.Snap;
+				fx.Condition.Kind = s.Kind;
+				fx.Condition.Timing = s.Timing;
+				fx.Condition.Target = s.Target;
+				fx.Condition.Amount = s.Amount;
+				fx.Condition.Amount2 = s.Amount2;
+				fx.Condition.AmountFormula = s.AmountFormula;
+				fx.Condition.Amount2Formula = s.Amount2Formula;
+				fx.Condition.PowerId = s.PowerId;
+				fx.Condition.WhenUnmet = s.WhenUnmet;
+				ConditionComboOf(box)?.ClearValue(Selector.SelectedValueProperty);
+				UpdateLayout();
+			}
+
+			// ---- ① 遗物页：真的点一行 → 那一行必须被选中（修好之前这里是 null）----
+			{
+				SelectTabRoot("遗物");
+				if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+				if (RelicTriggerList.Items.Count > 0) RelicTriggerList.SelectedIndex = 0;
+				UpdateLayout();
+				Check("V0.2.143 遗物页：样例存档里有遗物 + 效果可以拿来验「点行 = 选中行」",
+					RelicEffectList.Items.Count > 0, RelicEffectList.Items.Count + " 条效果");
+				if (RelicEffectList.Items.Count > 0)
+				{
+					var fx1 = (EffectSpec)RelicEffectList.Items[0];
+					fx1.IsExpanded = false;
+					// 刻意把选中清掉（= 用户在没点过这一行之前的状态）：修好之前，点下去也选不中。
+					// ⚠ 只用 SelectedItem（不要在这里调 SyncDetail —— 那会把 ItemsSource 重绑一遍，
+					//   顺手把「右下角那块绑 SelectedItem」的 Binding 一起换掉，后面就测不出真东西了）。
+					RelicEffectList.SelectedItem = null;
+					UpdateLayout();
+					Check("V0.2.143 遗物页（前提）：没点之前那一行确实没被选中（否则这条测试没有意义）",
+						RelicEffectList.SelectedItem is null, RelicEffectList.SelectedItem?.GetType().Name ?? "(null)");
+
+					bool clicked = ClickEffectRowButton(RelicEffectList, 0);
+					Check("V0.2.143 遗物页：真的点得到那一行那颗「展开 / 收起」按钮（整行就是一颗 Button）",
+						clicked, clicked ? "点到了" : "(没找到那一行的按钮，或它不是按钮)");
+					Check("V0.2.143 遗物页：点这一行 → **这一行被选中**（RelicEffectList.SelectedItem 就是这条效果）"
+						+ "，修好之前一直是 null（外层 ListBoxItem 的点击被这颗 Button 吃掉了）",
+						ReferenceEquals(RelicEffectList.SelectedItem, fx1),
+						"SelectedItem=" + (RelicEffectList.SelectedItem as EffectSpec)?.Kind + " / 期望=" + fx1.Kind);
+					FrameworkElement? rowSel = EffectRowContainer(RelicEffectList, 0);
+					Check("V0.2.143 遗物页：行容器自己的 IsSelected 也是 true（列表里看得出高亮，不是只改了 SelectedItem）",
+						rowSel is ListBoxItem { IsSelected: true },
+						rowSel is ListBoxItem li ? "IsSelected=" + li.IsSelected : "(没生成行容器)");
+					Check("V0.2.143 遗物页：点行**同时**把这一条展开了（原来的展开功能一个字都没改坏）",
+						fx1.IsExpanded, "IsExpanded=" + fx1.IsExpanded);
+					Check("V0.2.143 遗物页：点完这一行之后，右下角那块的条件框 DataContext 立刻变成这条效果（用户点完就能直接改条件）",
+						ReferenceEquals(RelicEffectConditionBox?.DataContext, fx1) && RelicEffectConditionBox?.IsVisible == true,
+						"DataContext=" + ((RelicEffectConditionBox?.DataContext as EffectSpec)?.Kind ?? "(null)"));
+				}
+			}
+
+			// ---- ② 遗物页：右下角那块的下拉里选条件 → 写回 EffectSpec.Condition → 切走切回还在 ----
+			{
+				SelectTabRoot("遗物");
+				if (RelicList.Items.Count > 0) RelicList.SelectedIndex = 0;
+				UpdateLayout();
+				if (RelicEffectList.Items.Count > 0) RelicEffectList.SelectedItem = RelicEffectList.Items[0];
+				UpdateLayout();
+				if (RelicEffectList.Items.Count > 0)
+				{
+					var fx2 = (EffectSpec)RelicEffectList.Items[0];
+					var save2 = SnapshotCondition(fx2, RelicEffectConditionBox);
+					var combo2 = ConditionComboOf(RelicEffectConditionBox);
+					Check("V0.2.143 遗物页：右下角那块的条件框 DataContext 就是上面选中的那条效果（不是 null / 不是上一条）",
+						ReferenceEquals(RelicEffectConditionBox?.DataContext, fx2)
+						&& RelicEffectConditionBox?.IsVisible == true,
+						"DataContext=" + (RelicEffectConditionBox?.DataContext as EffectSpec)?.Kind ?? "(null)");
+					Check("V0.2.143 遗物页：右下角那块里的「条件」下拉绑的是 EffectSpec.Condition.Kind，候选表是 PlainEffectConditions",
+						combo2 is not null && ReferenceEquals(combo2.ItemsSource, PlainEffectConditions),
+						combo2 is null ? "(没找到条件下拉)" : combo2.Items.Count + " 个候选");
+					// 展开区里那份「条件选项」绑的是**同一个** EffectSpec（两处改的是同一份数据）
+					FrameworkElement? row2 = EffectRowContainer(RelicEffectList, 0);
+					FrameworkElement? det2 = row2 is null ? null : FindNamedElement(row2, "EffectRowDetails");
+					var comboInner = det2 is null ? null : FindFirstComboBoxBound(det2, "Condition.Kind");
+					Check("V0.2.143 遗物页：展开区里那份条件编辑器与右下角那块**绑的是同一个对象**（DataContext 都是这条效果；"
+						+ "两处改的是同一个 EffectSpec.Condition，不是两份数据）",
+						comboInner is not null && ReferenceEquals(comboInner.DataContext, fx2)
+						&& ReferenceEquals(comboInner.DataContext, RelicEffectConditionBox?.DataContext),
+						comboInner is null ? "(展开区里没找到条件下拉)" : "同一个 EffectSpec");
+					string origKind2 = fx2.Condition.Kind;
+					ConditionOption? target2 = PlainEffectConditions.FirstOrDefault(o => o.Id != origKind2);
+					Check("V0.2.143 遗物页（准备）：条件候选里有一条与当前不同的条件可选",
+						target2 is not null, "当前=" + origKind2 + " / 待选=" + (target2?.Id ?? "(没有)"));
+					if (target2 is not null)
+					{
+						bool picked = PickCondition(combo2!, target2.Id);
+						Check("V0.2.143 遗物页：在下列表里**真的选一个条件** → 写回 EffectSpec.Condition.Kind",
+							picked && fx2.Condition.Kind == target2.Id,
+							origKind2 + " → " + fx2.Condition.Kind + "（期望 " + target2.Id + "）");
+						// 切到另一只遗物、再切回来 —— 条件必须还在（这就是用户说的「存住了」）
+						int other2 = -1;
+						for (int i = 1; i < RelicList.Items.Count; i++)
+							if (RelicList.Items[i] is RelicSpec) { other2 = i; break; }
+						Check("V0.2.143 遗物页（准备）：列表里还有第二只遗物可以切过去",
+							other2 > 0, "第 " + (other2 + 1) + " 行");
+						if (other2 > 0)
+						{
+							RelicList.SelectedIndex = other2;
+							UpdateLayout();
+							RelicList.SelectedIndex = 0;
+							UpdateLayout();
+							if (RelicEffectList.Items.Count > 0) RelicEffectList.SelectedItem = RelicEffectList.Items[0];
+							UpdateLayout();
+							Check("V0.2.143 遗物页：**切到另一只遗物再切回来，条件还在**（写的是模型、不是只改了界面）",
+								RelicEffectList.Items.Count > 0 && ((EffectSpec)RelicEffectList.Items[0]).Condition.Kind == target2.Id,
+								"切回来=" + (((EffectSpec)RelicEffectList.Items[0]).Condition.Kind) + " / 期望 " + target2.Id);
+							Check("V0.2.143 遗物页：切回来右下角那块绑的还是这条效果（DataContext 没串到别的效果上）",
+								ReferenceEquals(RelicEffectConditionBox?.DataContext, RelicEffectList.Items[0]),
+								"DataContext=" + ((RelicEffectConditionBox?.DataContext as EffectSpec)?.Kind ?? "(null)"));
+						}
+					}
+					RestoreCondition(fx2, RelicEffectConditionBox, save2);
+					Check("V0.2.143 遗物页：自检不留痕（条件已原样还回去）",
+						fx2.Condition.Kind == save2.Snap.Kind, fx2.Condition.Kind);
+				}
+			}
+
+			// ---- ③ 药水页：同一套（点行 → 选中 → 右下角改条件 → 写回）----
+			{
+				SelectTabRoot("药水");
+				if (PotionList.Items.Count > 0) PotionList.SelectedIndex = 0;
+				UpdateLayout();
+				Check("V0.2.143 药水页：样例存档里有药水效果可以验（点行 = 选中行）",
+					PotionEffectList.Items.Count > 0, PotionEffectList.Items.Count + " 条效果");
+				if (PotionEffectList.Items.Count > 0)
+				{
+					var pfx2 = (EffectSpec)PotionEffectList.Items[0];
+					pfx2.IsExpanded = false;
+					PotionEffectList.SelectedItem = null;
+					UpdateLayout();
+					bool pClicked = ClickEffectRowButton(PotionEffectList, 0);
+					Check("V0.2.143 药水页：真的点那一行 → 这一行被选中（修好之前是 null）",
+						pClicked && ReferenceEquals(PotionEffectList.SelectedItem, pfx2),
+						"SelectedItem=" + (PotionEffectList.SelectedItem as EffectSpec)?.Kind + " / 期望=" + pfx2.Kind);
+					var pSave = SnapshotCondition(pfx2, PotionEffectConditionBox);
+					var pCombo = ConditionComboOf(PotionEffectConditionBox);
+					Check("V0.2.143 药水页：右下角那块的条件框绑的是上面选中的那条效果、下拉绑定对",
+						ReferenceEquals(PotionEffectConditionBox?.DataContext, pfx2) && pCombo is not null
+						&& ReferenceEquals(pCombo.ItemsSource, PlainEffectConditions),
+						"DataContext=" + ((PotionEffectConditionBox?.DataContext as EffectSpec)?.Kind ?? "(null)"));
+					string pOrig = pfx2.Condition.Kind;
+					ConditionOption? pTarget = PlainEffectConditions.FirstOrDefault(o => o.Id != pOrig);
+					if (pCombo is not null && pTarget is not null)
+					{
+						bool pPicked = PickCondition(pCombo, pTarget.Id);
+						Check("V0.2.143 药水页：在下列表里真的选一个条件 → 写回 EffectSpec.Condition.Kind",
+							pPicked && pfx2.Condition.Kind == pTarget.Id,
+							pOrig + " → " + pfx2.Condition.Kind + "（期望 " + pTarget.Id + "）");
+						// 切走再切回来（把药水列表的选中清掉再选回来 —— 列表重新读一遍模型）
+						PotionList.SelectedItem = null;
+						UpdateLayout();
+						PotionList.SelectedItem = pfx2;
+						UpdateLayout();
+						Check("V0.2.143 药水页：切走再切回来条件还在（写的是模型）",
+							PotionEffectList.Items.Count > 0 && ((EffectSpec)PotionEffectList.Items[0]).Condition.Kind == pTarget.Id,
+							"切回来=" + (((EffectSpec)PotionEffectList.Items[0]).Condition.Kind) + " / 期望 " + pTarget.Id);
+					}
+					RestoreCondition(pfx2, PotionEffectConditionBox, pSave);
+					Check("V0.2.143 药水页：自检不留痕（条件已原样还回去）",
+						pfx2.Condition.Kind == pSave.Snap.Kind, pfx2.Condition.Kind);
+				}
+			}
+
+			// ---- ④ 额外资源量页：同一套（样例存档里这一份效果是空的 → 自检自己放一条进去，用完原样还回去）----
+			{
+				bool erWasOn = Profile.ExtraResource.Enabled;
+				var erKeepFx = Profile.ExtraResource.Effects.ToList();
+				Profile.ExtraResource.Enabled = true;
+				Raise("ExtraResourceRelicVisible");
+				SelectTabRoot("额外资源量");
+				UpdateLayout();
+				try
+				{
+					if (ExtraResourceEffectList.Items.Count == 0)
+					{
+						// 样例存档的额外资源量效果是空的：临时放一条（自检不留痕，finally 里清掉）
+						Profile.ExtraResource.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+						UpdateLayout();
+					}
+					Check("V0.2.143 额外资源量页：效果栏里有可以点的效果行（样例为空时自检自己放一条临时的）",
+						ExtraResourceEffectList.Items.Count > 0, ExtraResourceEffectList.Items.Count + " 条效果");
+					if (ExtraResourceEffectList.Items.Count > 0)
+					{
+						var efx = (EffectSpec)ExtraResourceEffectList.Items[0];
+						efx.IsExpanded = false;
+						ExtraResourceEffectList.SelectedItem = null;
+						UpdateLayout();
+						bool eClicked = ClickEffectRowButton(ExtraResourceEffectList, 0);
+						Check("V0.2.143 额外资源量页：真的点那一行 → 这一行被选中（修好之前是 null）",
+							eClicked && ReferenceEquals(ExtraResourceEffectList.SelectedItem, efx),
+							"SelectedItem=" + (ExtraResourceEffectList.SelectedItem as EffectSpec)?.Kind + " / 期望=" + efx.Kind);
+						var eSave = SnapshotCondition(efx, ExtraResourceEffectConditionBox);
+						var eCombo = ConditionComboOf(ExtraResourceEffectConditionBox);
+						Check("V0.2.143 额外资源量页：右下角那块的条件框绑的是上面选中的那条效果、下拉绑定对",
+							ReferenceEquals(ExtraResourceEffectConditionBox?.DataContext, efx) && eCombo is not null
+							&& ReferenceEquals(eCombo.ItemsSource, PlainEffectConditions),
+							"DataContext=" + ((ExtraResourceEffectConditionBox?.DataContext as EffectSpec)?.Kind ?? "(null)"));
+						string eOrig = efx.Condition.Kind;
+						ConditionOption? eTarget = PlainEffectConditions.FirstOrDefault(o => o.Id != eOrig);
+						if (eCombo is not null && eTarget is not null)
+						{
+							bool ePicked = PickCondition(eCombo, eTarget.Id);
+							Check("V0.2.143 额外资源量页：在下列表里真的选一个条件 → 写回 EffectSpec.Condition.Kind",
+								ePicked && efx.Condition.Kind == eTarget.Id,
+								eOrig + " → " + efx.Condition.Kind + "（期望 " + eTarget.Id + "）");
+							// 切走再切回来（把效果列表的选中清掉再选回来 —— 列表重新读一遍模型）
+							ExtraResourceEffectList.SelectedItem = null;
+							UpdateLayout();
+							ExtraResourceEffectList.SelectedItem = ExtraResourceEffectList.Items[0];
+							UpdateLayout();
+							Check("V0.2.143 额外资源量页：切走再切回来条件还在（写的是模型）",
+								((EffectSpec)ExtraResourceEffectList.Items[0]).Condition.Kind == eTarget.Id,
+								"切回来=" + (((EffectSpec)ExtraResourceEffectList.Items[0]).Condition.Kind) + " / 期望 " + eTarget.Id);
+						}
+						RestoreCondition(efx, ExtraResourceEffectConditionBox, eSave);
+					}
+				}
+				finally
+				{
+					// 把额外资源量的效果恢复成进来时的样子（自检不留痕）
+					if (!Profile.ExtraResource.Effects.SequenceEqual(erKeepFx))
+					{
+						Profile.ExtraResource.Effects.Clear();
+						foreach (EffectSpec k in erKeepFx) Profile.ExtraResource.Effects.Add(k);
+					}
+					Profile.ExtraResource.Enabled = erWasOn;
+					Raise("ExtraResourceRelicVisible");
+					SelectTabRoot("遗物");
+					UpdateLayout();
+				}
+			}
+
+			// ---- ⑤ 卡牌页回归：卡牌页效果列表**不是**折叠行模板（条件编辑器在展开区里、绑那一行自己的效果），
+			//      所以「点行 = 选中行」的修复一个字都不该动到它 ----
+			{
+				SelectTabRoot("卡牌");
+				UpdateLayout();
+				Check("V0.2.143 卡牌页回归：卡牌页的效果列表**不用**折叠行模板（所以不受这次修复影响）",
+					CardEffectList.ItemTemplate is null && CardEffectList.DisplayMemberPath is not null,
+					"ItemTemplate=" + (CardEffectList.ItemTemplate is null ? "无" : "有")
+					+ " / DisplayMemberPath=" + (CardEffectList.DisplayMemberPath ?? "(null)"));
+				Check("V0.2.143 卡牌页回归：卡牌页那条「条件选项」还是绑在 SelectedItem 上（老行为：点行本来就选得中）",
+					CardEffectEditorBox is not null
+					&& BindingOperations.GetBinding(CardEffectEditorBox, FrameworkElement.DataContextProperty)?.ElementName == "CardEffectList"
+					&& BindingOperations.GetBinding(CardEffectEditorBox, FrameworkElement.DataContextProperty)?.Path?.Path == "SelectedItem",
+					CardEffectEditorBox is null ? "(没找到)" : "绑 SelectedItem");
+				if (CardEffectList.Items.Count > 0)
+				{
+					var cfx = CardEffectList.Items[0] as EffectSpec;
+					// ⚠ 卡牌页的卡牌效果列表是**直接** ItemsSource=选中卡的 Effects（选项照旧能选中），
+					//   这里只选第一条、不做清空（清空会把「右下角绑 SelectedItem」那条 Binding 换成局部值）。
+					CardEffectList.SelectedItem = CardEffectList.Items[0];
+					UpdateLayout();
+					Check("V0.2.143 卡牌页回归：选一条卡牌效果 → 那条效果的「条件选项」编辑器就在（和以前一样）",
+						cfx is not null && ReferenceEquals(CardEffectEditorBox?.DataContext, cfx),
+						cfx is null ? "(没有效果)" : "DataContext=" + cfx.Kind);
+				}
+			}
+			SelectTabRoot("遗物");
 		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
