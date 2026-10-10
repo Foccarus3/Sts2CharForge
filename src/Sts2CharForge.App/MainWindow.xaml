@@ -290,7 +290,7 @@
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                             <RowDefinition Height="*"/>
                         </Grid.RowDefinitions>
 
@@ -342,11 +342,19 @@
                         <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="#888" Margin="4,0,0,0"
                                    Text="已移到「先古之民」页：左边选先古之民（建筑师的对话也在那里），右边一段一段写。"/>
 
-                        <TextBlock Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
+                        <TextBlock Grid.Row="9" Grid.Column="0" Text="生成调试日志" Style="{StaticResource Label}" VerticalAlignment="Top"/>
+                        <StackPanel Grid.Row="9" Grid.Column="1" Grid.ColumnSpan="3" Margin="0,4,0,0">
+                            <CheckBox Style="{StaticResource Check}" IsChecked="{Binding Profile.DebugLog}"
+                                      Content="打开「生成调试日志」（排查用：只影响日志，不影响游戏行为；排查完请关掉）"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,4,0,0"
+                                       Text="默认关着。打开后重新生成，模组会在每条效果执行的地方往游戏日志里多打几行 [模组调试] …（游戏日志里是 [INFO] [模组调试] …）：写明「谁在跑（哪张牌 / 遗物 / 药水 / 状态 + 类名）、效果种类、目标是谁（名字 + 是不是自己）、执行前 / 执行后的数值」，其中「施加状态」会把**执行前**与**执行后**的层数各打一行 —— 目标身上本来没有这个状态时记「-」并标「本来没有这个状态」，已经有了就记真实层数（排查「填了 -2 层却不生效」这类问题就看这两行）。⚠ 加的都是「读一下、打一行」，不改任何游戏行为；但日志会变多，排查完请把这个勾去掉再重新生成一次。"/>
+                        </StackPanel>
+
+                        <TextBlock Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
                                    Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
 
                         <!-- 召唤物已经整组搬到「召唤物」选项卡（紧跟「角色」之后）—— 那里是列表 + 右侧详情 -->
-                        <TextBlock Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
+                        <TextBlock Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
                                    Text="「召唤伙伴 / 伙伴攻击」的配置已经搬到「召唤物」选项卡（紧跟本页之后）：左边是召唤物列表，右边配名字 / 生命 / 站位距离 / 替主人承伤 / 图片。卡牌和遗物的效果里选「召唤伙伴」或「伙伴攻击」时，会多一个「召唤物（哪一只）」下拉。"/>
                     </Grid>
                 </ScrollViewer>

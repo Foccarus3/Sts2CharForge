@@ -106,6 +106,25 @@ public sealed class CharacterProfile
     /// <summary>[已废弃·不生效] 同上。</summary>
     public bool ForceIroncladFillerWhenSparse { get; set; }
 
+    /// <summary>
+    /// 「生成调试日志」（V0.2.142）：**默认 false**。
+    ///
+    /// 打开后，生成出来的模组会在每条效果真正执行的地方多打几行 <c>Godot.GD.Print</c>
+    /// （游戏日志里的 <c>[INFO] [模组调试] …</c>），写明「谁在跑 / 目标是谁 / 执行前执行后的数值」——
+    /// 专门用来排查**运行期**问题（例：填了 -2 力量在游戏里不生效）：这种问题日志里没有异常，
+    /// 也看不出「目标身上本来有没有这个状态」，只能靠这个开关打出来。
+    ///
+    /// 三条硬约束：
+    /// <list type="bullet">
+    /// <item><b>只影响日志，不影响游戏行为</b>：加的全是「读一下 / 打一行」的语句，不碰任何状态与数值；</item>
+    /// <item><b>默认关着时生成结果与 V0.2.141 逐字节一致</b>：这个字段读的就是它自己，
+    ///   关着时生成端一行日志都不写（见 <c>DebugLogGen</c>）；</item>
+    /// <item><b>必须进存档</b>（不加 <c>[JsonIgnore]</c>）：否则关掉开关再打开就变回 false，
+    ///   而且老存档没有这个字段 → 读进来就是 false，行为与现在完全一致。</item>
+    /// </list>
+    /// </summary>
+    public bool DebugLog { get; set; }
+
     public ObservableCollection<CardSpec> Cards { get; set; } = new();
 
     /// <summary>

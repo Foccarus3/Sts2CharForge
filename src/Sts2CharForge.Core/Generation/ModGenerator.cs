@@ -22,6 +22,9 @@ public static class ModGenerator
         // 老存档（EffectFromLegacy = true）**不会被回写**，生成结果逐字不变。
         ForgeEffectBridge.Normalize(profile);
         foreach (var fg in ForgeEffectBridge.GraphsOf(profile)) ForgeEffectBridge.SyncGraph(fg);
+        // 「生成调试日志」（V0.2.142）用的临时变量序号：整次生成从头开始
+        //（「同一份存档生成两次文本逐字节相同」是既有红线，见 DebugLogGen._seq；各 Source 生成器里还会各自再归零一次）。
+        DebugLogGen.Reset();
         // 自定义状态登记：卡牌/遗物/药水的「施加增益/减益」要能引用它们
         // 注意：这里必须和 UI（MainWindow 的 SetCustomPowers）一样，只登记**启用**的状态。
         // 否则「停用/删除过的状态」也会被当成「存在」，校验器就放过了引用它的卡牌，
@@ -507,6 +510,10 @@ public static class ModGenerator
             int nSlow = CSharpCodeGen.SlowPercentEffects(profile).Count();
             Log($"  已生成「缓慢」数值助手（{nSlow} 条效果直接设百分比：本体「缓慢」显示/生效的是每打出一张牌 +10%，跟层数无关）");
         }
+
+        // 「生成调试日志」（V0.2.142，默认关）不需要任何额外文件：生成端只是**往前后另加几行**
+        // `Godot.GD.Print(...) // CET:DebugLog`（原本那几条语句一个字符都不改）。
+        // 关着时一行都不写 —— 生成文本与加这个开关之前逐字节一致（红线①）。
 
         // 自定义状态（能力牌用）：每个状态一个 PowerModel 子类
         int powerCount = 0;

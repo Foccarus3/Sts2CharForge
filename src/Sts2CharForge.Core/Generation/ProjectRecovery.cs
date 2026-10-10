@@ -1145,6 +1145,12 @@ public static class ProjectRecovery
             //   · `...ForgeGivenKeywordTiming.Notify(...)`：把「被给予自定义关键词」转给卡自己的钩子那一步。
             if (line.StartsWith("await Task.CompletedTask;", StringComparison.Ordinal)) continue;
             if (line.Contains("CET:GivenKeywordNotify", StringComparison.Ordinal)) continue;
+            // V0.2.142「生成调试日志」：开关打开时生成端会**另加**几行
+            //   `Godot.GD.Print("…");   // CET:DebugLog`（原本那几条效果语句一个字符都不改）。
+            // 它们不是效果，回读整行跳过 —— 开关默认关着时生成物里一行都没有，
+            // 老工程的反推结果一个字节都不变。带这个标记的那一行也可能**和原来那条语句拼在同一行**
+            // （ApplyPower 的「执行前 / 执行后」是拼在前后两端的），所以这里按整行跳过而不是按标记删片段。
+            if (line.Contains("CET:DebugLog", StringComparison.Ordinal)) continue;
             if (line.StartsWith("//"))
             {
                 // 需求⑩「卡牌时机」：这个标记说明「接下来的效果挂在这个子时机的钩子上」（见 Done / timingCond）

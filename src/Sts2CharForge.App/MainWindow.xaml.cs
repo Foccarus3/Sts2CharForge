@@ -29383,6 +29383,93 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& !text.Contains("Uncommon", StringComparison.Ordinal) && !text.Contains("/ Power", StringComparison.Ordinal);
 			}
 		}
+
+		// ===== V0.2.142：生成调试日志开关（排查用；**默认关着时生成结果一个字节都不变**）=====
+		// 为什么这些断言必须钉住：这个开关最大的风险不是「打不出日志」，而是**悄悄改掉默认输出**
+		//（用户没勾它，生成出来的模组却变了）。所以下面既钉「开关真的进了存档 / 界面上真有那个勾选框
+		// 且文案说清只影响日志」，也钉「开 → 有日志、关 → 一个字都不多」这条闭环。
+		{
+			// ① 默认关（老存档没有这个字段 → 读进来就是 false，行为和以前完全一样）
+			CharacterProfile dbgDefault = ProfileFactory.Sample();
+			Check("V0.2.142：调试日志开关默认关着（老存档读进来也是 false）", !dbgDefault.DebugLog, $"DebugLog={dbgDefault.DebugLog}");
+			Check("V0.2.142：界面「角色」页上有那个勾选框、且文案写明「只影响日志」（用户在界面上看得到）",
+				TextsIn(SelectTabRoot("角色")).Any(t => t.Contains("打开「生成调试日志」", StringComparison.Ordinal))
+				&& TextsIn(SelectTabRoot("角色")).Any(t => t.Contains("只影响日志", StringComparison.Ordinal))
+				&& TextsIn(SelectTabRoot("角色")).Any(t => t.Contains("不影响游戏行为", StringComparison.Ordinal))
+				&& TextsIn(SelectTabRoot("角色")).Any(t => t.Contains("排查完请关掉", StringComparison.Ordinal)),
+				string.Join(" ｜ ", TextsIn(SelectTabRoot("角色")).Where(t => t.Contains("调试", StringComparison.Ordinal)).Take(3)));
+			// ② 开关进存档：存一遍再读回来还是 true（不加 [JsonIgnore] 才成立）
+			CharacterProfile dbgSaved = ProfileFactory.Sample();
+			dbgSaved.DebugLog = true;
+			string dbgJson = Path.Combine(Path.GetTempPath(), "forge_uicheck_debuglog_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+			ProfileFactory.Save(dbgSaved, dbgJson);
+			Check("V0.2.142：开关会写进存档（存一遍读回来还是 true）", ProfileFactory.Load(dbgJson).DebugLog, dbgJson);
+			File.Delete(dbgJson);
+			// ③ 开 → 生成文本里出现日志；关 → 一个字都不多
+			CardSpec dbgCard = new CardSpec { Name = "自检调试日志卡", ClassName = "UiCheckDebugLog", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			dbgCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", Amount = -2m, PowerId = "StrengthPower", TargetSide = "Enemy" });
+			CharacterProfile dbgOff = ProfileFactory.Sample();
+			dbgOff.Cards.Add(dbgCard);
+			CharacterProfile dbgOn = ProfileFactory.Sample();
+			dbgOn.Cards.Add(new CardSpec
+			{
+				Name = dbgCard.Name, ClassName = dbgCard.ClassName, CardType = dbgCard.CardType, Rarity = dbgCard.Rarity,
+				Cost = dbgCard.Cost, InCardPool = true,
+				Effects = { new EffectSpec { Kind = "ApplyPower", Amount = -2m, PowerId = "StrengthPower", TargetSide = "Enemy" } },
+			});
+			dbgOn.DebugLog = true;
+			string dbgOffSrc = CSharpCodeGen.CardSource(dbgOff, dbgOff.Cards[^1], 0);
+			string dbgOnSrc = CSharpCodeGen.CardSource(dbgOn, dbgOn.Cards[^1], 0);
+			Check("V0.2.142：开关**关着**时生成文本里一个日志字符都没有（红线①：默认输出不变）",
+				!dbgOffSrc.Contains("GD.Print", StringComparison.Ordinal) && !dbgOffSrc.Contains("CET:DebugLog", StringComparison.Ordinal),
+				dbgOffSrc.Contains("GD.Print", StringComparison.Ordinal) ? "竟然有 GD.Print！" : "干净");
+			Check("V0.2.142：开关**打开**时生成文本里出现日志（Godot.GD.Print + CET:DebugLog 标记）",
+				dbgOnSrc.Contains("Godot.GD.Print", StringComparison.Ordinal) && dbgOnSrc.Contains("CET:DebugLog", StringComparison.Ordinal),
+				dbgOnSrc.Contains("Godot.GD.Print", StringComparison.Ordinal) ? "有" : "没有！");
+			// ④ 「本来没有这个状态」和「已经有了」两种情形都要能打出来（这正是加这个开关的目的）
+			Check("V0.2.142：施加状态的日志里同时有「执行前层数」与「执行后层数」两行",
+				dbgOnSrc.Contains("执行前层数=", StringComparison.Ordinal) && dbgOnSrc.Contains("执行后层数=", StringComparison.Ordinal), "两行都在");
+			Check("V0.2.142：目标身上**本来没有**这个状态时会标「本来没有这个状态」（层数记 -）",
+				dbgOnSrc.Contains("本来没有这个状态", StringComparison.Ordinal) && dbgOnSrc.Contains("已经有了这个状态", StringComparison.Ordinal),
+				"按 GetPower 是不是 null 分别标记");
+			Check("V0.2.142：日志里写明「谁在跑」（卡牌名 + 类名）与「目标是谁」（名字 + 是不是自己）",
+				dbgOnSrc.Contains("卡牌「自检调试日志卡」(UiCheckDebugLog)", StringComparison.Ordinal)
+				&& dbgOnSrc.Contains(".Name ??", StringComparison.Ordinal) && dbgOnSrc.Contains("（不是自己）", StringComparison.Ordinal),
+				"来源 + 目标都在");
+			Check("V0.2.142：负数施加状态时日志说清是哪一档（力量 → 「实际按『施加负层数』执行」）",
+				dbgOnSrc.Contains("实际按「施加负层数」执行", StringComparison.Ordinal), "说清了");
+			// ⑤ 真的编译得动（不是只有自检通过）：生成 → dotnet build
+			string dbgRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_debuglog_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				dbgOn.Paths.OutputDir = dbgRoot;
+				dbgOn.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				dbgOn.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				dbgOn.Paths.GodotExe = Profile.Paths.GodotExe;
+				dbgOn.Paths.DotnetExe = Profile.Paths.DotnetExe;
+				var dbgGen = ModGenerator.Generate(dbgOn);
+				Check("（准备）开着调试日志的存档能生成工程", dbgGen.Success, dbgGen.ProjectRoot);
+				if (dbgGen.Success)
+				{
+					string dbgCardFile = Path.Combine(dbgGen.ProjectRoot, "cs", "Cards", "UiCheckDebugLog.cs");
+					string dbgFileText = File.Exists(dbgCardFile) ? File.ReadAllText(dbgCardFile) : "";
+					Check("（准备）生成出来的卡牌源码里那两行日志在**各自单独的行**上（回读按行跳过，见 ProjectRecovery）",
+						dbgFileText.Contains("CET:DebugLog", StringComparison.Ordinal)
+						&& dbgFileText.Split('\n').Any(l => l.Contains("CET:DebugLog", StringComparison.Ordinal) && l.TrimStart().StartsWith("await PowerCmd.Apply", StringComparison.Ordinal) == false
+							&& l.Contains("Godot.GD.Print", StringComparison.Ordinal)),
+						"日志行自成一行的占多数");
+					var dbgBuild = Sts2CharForge.Core.Build.ModBuilder.Build(dbgGen.ProjectRoot, Naming.From(dbgOn).ModId,
+						dbgOn.Paths.GodotExe, null, null, dbgOn.Paths.DotnetExe);
+					var dbgDllStep = dbgBuild.Steps.FirstOrDefault(st => st.Name.Contains("编译 DLL", StringComparison.Ordinal));
+					Check("V0.2.142：开着调试日志生成出来的工程真的编译得过（dotnet build 0 错误）", dbgDllStep is { Success: true },
+						dbgDllStep is null ? "(没找到编译那一步)" : dbgDllStep.Output.Split('\n').LastOrDefault(l => l.Contains("个错误", StringComparison.Ordinal)) ?? dbgDllStep.Name);
+				}
+			}
+			finally
+			{
+				try { if (Directory.Exists(dbgRoot)) Directory.Delete(dbgRoot, true); } catch { }
+			}
+		}
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

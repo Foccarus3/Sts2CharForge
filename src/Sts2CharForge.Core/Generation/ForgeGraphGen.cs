@@ -2088,12 +2088,19 @@ public static class ForgeGraphGen
             string one = pick == "ChosenSummon"
                 ? $"ForgeFormulaRuntime.NamedSummon(__fgPlayer, \"{unitNode!.Get("SummonId")}\")"
                 : "ForgeFormulaRuntime.FirstSummon(__fgPlayer)";
-            string call = $"await PowerCmd.Apply<{powerId}>({ctx.ChoiceVar}, __fgPet, {amount}, __fgSelf, {ctx.CardSelfExpr});";
+            string call = DebugLogGen.PowerBefore(ApplyPowerEffectOf(node), "__fgPet", powerId, amount)
+                + $"await PowerCmd.Apply<{powerId}>({ctx.ChoiceVar}, __fgPet, {amount}, __fgSelf, {ctx.CardSelfExpr});"
+                + DebugLogGen.PowerAfter(ApplyPowerEffectOf(node), "__fgPet", powerId);
             petBody = pick == "AllSummons"
                 ? $"foreach (Creature __fgPet in ForgeFormulaRuntime.SummonList(__fgPlayer)) {{ {call} }}"
                 : $"{{ Creature? __fgPet = {one}; if (__fgPet is not null) {{ {call} }} }}";
         }
-        string body = kind switch
+        // 「生成调试日志」（V0.2.142，默认关）：这一段的效果属于「这张布上的这一个【效果】节点」。
+        // 关着时这个 using 什么都不做、下面那几个内联日志助手也一律返回空串 —— 生成文本逐字节不变（红线①）。
+        string body;
+        using (DebugLogGen.Begin(p, ctx.Scope switch { "Relic" => "锻造遗物图", "Potion" => "锻造药水图", _ => "锻造卡牌图" },
+                   $"{DebugLogMainName(ctx)}【效果】{def.Display}(fg:{node.Id})", DebugLogMainClass(ctx), "__fgSelf"))
+        body = kind switch
         {
             // ---------- 单体 / 群体的基础效果 ----------
             // 【造成伤害】加【全体敌人】：走群体版本的一次性命令（TargetingAllOpponents），
@@ -2101,18 +2108,24 @@ public static class ForgeGraphGen
             //（那是「每个敌人各打 N 下」，用户实测报过）。
             // 【随机敌人】仍然逐个动手：随机挑一个 → 挑中的那个打 N 下（那是「随机 N 下」的本体语义）。
             "Damage" when !unit.PerFoe =>
-                hitsMulti
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), $"{foes}.FirstOrDefault()", amount)
+                + (hitsMulti
                     ? $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar});"
-                    : $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).Execute({ctx.ChoiceVar});",
-            "Damage" => hitsMulti
-                ? $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar}); }}"
-                : $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).Execute({ctx.ChoiceVar}); }}",
-            "Block" => nextTurn
-                ? $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<BlockNextTurnPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});"
-                : $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainBlock(__fgFoe, {amount}, ValueProp.Move, {ctx.CardPlayExpr});",
-            "Heal" => $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Heal(__fgFoe, {amount});",
-            "HpLoss" => $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Damage({ctx.ChoiceVar}, __fgFoe, {amount}, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, {ctx.CardSelfExpr}, {ctx.CardPlayExpr});",
-            "MaxHp" => $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainMaxHp(__fgFoe, {amount});",
+                    : $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).Execute({ctx.ChoiceVar});"),
+            "Damage" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                + (hitsMulti
+                    ? $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar}); }}"
+                    : $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).Execute({ctx.ChoiceVar}); }}"),
+            "Block" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                + (nextTurn
+                    ? $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<BlockNextTurnPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});"
+                    : $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainBlock(__fgFoe, {amount}, ValueProp.Move, {ctx.CardPlayExpr});"),
+            "Heal" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Heal(__fgFoe, {amount});",
+            "HpLoss" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Damage({ctx.ChoiceVar}, __fgFoe, {amount}, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, {ctx.CardSelfExpr}, {ctx.CardPlayExpr});",
+            "MaxHp" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainMaxHp(__fgFoe, {amount});",
             "ApplyPower" => powerId.Length == 0
                 ? null
                 // 负数**不再自己写一套**（V0.2.139）：以前这里内联的是
@@ -2122,16 +2135,18 @@ public static class ForgeGraphGen
                 // 现在统一走 CSharpCodeGen.ApplyPowerLine（唯一事实来源，和卡牌/遗物/药水/状态四条链同一份），
                 // 正负两档与「允许负层数的 5 个状态」名单都由它判；上下文变量名传这一档自己的
                 // （ctx.ChoiceVar：造不出来时是 null!，写死 choiceContext 会 CS0103）。
-                : $"foreach (Creature __fgFoe in {foes}) " + CSharpCodeGen.ApplyPowerLine(
-                    ApplyPowerEffectOf(node), useX: false, powerId, "__fgFoe", amount, "__fgSelf",
-                    ctx.CardSelfExpr, ctxVar: ctx.ChoiceVar),
+                : DebugLogApplyPower(ApplyPowerEffectOf(node), "__fgFoe", powerId, amount,
+                    $"foreach (Creature __fgFoe in {foes}) " + CSharpCodeGen.ApplyPowerLine(
+                        ApplyPowerEffectOf(node), useX: false, powerId, "__fgFoe", amount, "__fgSelf",
+                        ctx.CardSelfExpr, ctxVar: ctx.ChoiceVar)),
             // 临时增益 / 临时减益：**不能**直接施加真状态（那就是永久的了）——
             // 施加生成端那套「临时 Power」（<c>TempPowers.cs</c> 里的类：挂上时把层数加进真状态、
             // 到点再撤掉、自己消失）。类名由 TempPowerEffectOf 算，和 CollectTempPowerEffects 是同一份。
             // 数值是正还是负由那个类自己处理（负数档扣层数 / 施加负层数，见 TempPowersSource）。
             "TempPower" => powerId.Length == 0
                 ? null
-                : $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<{CSharpCodeGen.TempPowerClassName(TempPowerEffectOf(node), p)}>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
+                : DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
+                  + $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<{CSharpCodeGen.TempPowerClassName(TempPowerEffectOf(node), p)}>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
             "DoublePower" => powerId.Length == 0
                 ? null
                 : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __dbl = __fgFoe.GetPower<{powerId}>(); if (__dbl is not null) await PowerCmd.ModifyAmount({ctx.ChoiceVar}, __dbl, __dbl.Amount * (({amount}) - 1m), __fgSelf, {ctx.CardSelfExpr}); }}",
@@ -2193,6 +2208,39 @@ public static class ForgeGraphGen
             }
         });
     }
+
+    /// <summary>
+    /// 「生成调试日志」（V0.2.142）：锻造图里的「施加状态」——套上「执行前 / 执行后层数」两行
+    /// （和另外五条链同一份写法，见 <see cref="DebugLogGen.PowerBefore"/>）。
+    /// 关着时返回 <paramref name="core"/> 原文，一个字符都不变（红线①）。
+    /// </summary>
+    private static string DebugLogApplyPower(EffectSpec e, string targetExpr, string powerType, string amount, string core)
+    {
+        if (!DebugLogGen.On) return core;
+        return DebugLogGen.PowerBefore(e, targetExpr, powerType, amount)
+            + core
+            + DebugLogGen.PowerAfter(e, targetExpr, powerType);
+    }
+
+    /// <summary>
+    /// 日志里「这段锻造图挂在什么上」——节点图生成时拿不到 CardSpec / RelicSpec / PotionSpec 本身
+    /// （<see cref="EmitCtx"/> 里只有上下文表达式），所以只写「范围 + 节点号」（节点号在后面拼）：
+    /// 排查时够定位到是哪张图的哪一块布。
+    /// </summary>
+    private static string DebugLogMainName(EmitCtx ctx) => ctx.Scope switch
+    {
+        "Relic" => "遗物（锻造图）",
+        "Potion" => "药水（锻造图）",
+        _ => "卡牌（锻造图）",
+    };
+
+    /// <summary>同上：类名也拿不到，写范围名（真正定位靠日志里的【效果】节点号）。</summary>
+    private static string DebugLogMainClass(EmitCtx ctx) => ctx.Scope switch
+    {
+        "Relic" => "RelicForgeGraph",
+        "Potion" => "PotionForgeGraph",
+        _ => "CardForgeGraph",
+    };
 
     /// <summary>
     /// 「这几条代码重复 N 遍」——生效次数那一栏的两种档位：
