@@ -298,17 +298,18 @@ public static class ProfileValidator
                     else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count > 0
                              && !EffectCatalog.IsCustomPower(e.PowerId) && EffectCatalog.FindPower(e.PowerId) is null)
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条要施加的状态找不到：{e.PowerId}。"));
-                    // 「施加状态」填负数 = 扣除目标身上已有的层数。
-                    // 为什么这一条以前没有、现在必须有：状态触发器那条链原来的「施加状态」是**手写**的
-                    // PowerCmd.Apply（不是 CSharpCodeGen.ApplyPowerLine），负数会被本体拿去**新建一个 -N 层的状态**
-                    //（ApplyInternal(target, -N, …)），和卡牌 / 遗物 / 药水（负数 = GetPower + ModifyAmount 扣层数）
-                    // 完全是两回事。现在那条链也改成复用 ApplyPowerLine 了，这里给一条提示说清语义，
-                    // 免得用户以为「-3 = 给目标挂一个 -3 层」。
-                    // 放成 else 之外的独立 if：没选状态时上面已经报了错误，这条提示跟着说一句也不冲突。
+                    // 「施加状态」填负数 = 扣层数。V0.2.139 起分两档（见 CSharpCodeGen.ApplyPowerLine）：
+                    //   · 本体允许负层数的 5 个状态（力量/敏捷/专注/尖啸/萎缩）→ 照本体「尖啸」那套直接施加负值；
+                    //   · 其余 → 先取目标身上那份实例再 ModifyAmount 扣（层数不能为负）。
+                    // 之所以要给提示：免得用户以为「-3」永远是「扣目标身上已有的 3 层」。
                     if (e.Kind == "ApplyPower" && e.Amount < 0)
                         issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」数值是 {e.Amount}："
                             + $"会生成「{(e.TargetSide == "Self" ? "失去" : "扣除")} {-e.Amount} 层{EffectCatalog.PowerName(e.PowerId)}」"
-                            + "（先找目标身上那份状态实例再扣；目标身上没有这个状态时什么都不做）"
+                            + (EffectCatalog.AllowsNegativeLayers(e.PowerId)
+                                ? $"（{EffectCatalog.PowerName(e.PowerId)}本体允许负层数，所以**照本体「尖啸」那套直接施加 -{-e.Amount} 层**，"
+                                  + "目标身上本来 0 层也能扣成负的）"
+                                : $"（{EffectCatalog.PowerName(e.PowerId)}本体不允许负层数，所以是从目标身上已有的层数里扣；"
+                                  + "目标身上没有这个状态时什么都不做）")
                             + "—— 和卡牌 / 遗物 / 药水同一条实现，**不是**「给目标挂一个 " + e.Amount + " 层的新状态」。"));
                     // 每条效果自己的条件选项（能力/状态里的条件不支持「这张牌」类条件）
                     ValidateCondition(issues, $"{who}「{when}」第 {j + 1} 条", e.Condition, "Power");
@@ -2111,7 +2112,14 @@ public static class ProfileValidator
             if (e.Kind == "ApplyPower" && e.Amount < 0)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 {e.Amount}："
                     + $"会生成「{(e.TargetSide == "Self" ? "失去" : "扣除")} {-e.Amount} 层{EffectCatalog.PowerName(e.PowerId)}」"
-                    + "（先找目标身上那份状态实例再扣；目标身上没有这个状态时什么都不做）。"));
+                    + (EffectCatalog.AllowsNegativeLayers(e.PowerId)
+                        // 力量 / 敏捷 / 专注 / 尖啸 / 萎缩这几个本体 AllowNegative => true：照本体「尖啸」那套
+                        // 直接把负层数施加进去 —— 目标身上**本来 0 层**也能扣成负的（V0.2.139 起）
+                        ? $"（{EffectCatalog.PowerName(e.PowerId)}本体允许负层数，所以**照本体「尖啸」那套直接施加 -{-e.Amount} 层** —— "
+                          + "目标身上本来 0 层也能扣成负的。）"
+                        // 其余状态层数不能为负：只能从「目标身上已有的层数」里扣
+                        : $"（{EffectCatalog.PowerName(e.PowerId)}本体不允许负层数，所以是从目标**身上已有的层数**里扣"
+                          + "（先找那份状态实例再扣）；目标身上没有这个状态时什么都不做 —— 层数不能凭空变成负的。）")));
             if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.Powers.Count == 0) { /* 效果库整体为空时由上面统一报错 */ }
             else if (e.Kind is "ApplyPower" or "TempPower" && EffectCatalog.FindPower(e.PowerId) is null && !EffectCatalog.IsCustomPower(e.PowerId))
                 issues.Add(new("错误", $"{owner} 的增益/减益还没选状态：未选择有效的 Power（可以选本体的状态，也可以选「自定义状态」页里自己造的那个）。"));

@@ -802,10 +802,12 @@ public static class ProjectRecovery
             string? alias = aliasMatch.Success ? aliasMatch.Groups[1].Value : null;
             // 数值：**纯常数公式**（老存档迁过来的固定值就是这种）取 `(8m)`；真·现算公式取不到就记 0 ——
             // 数值本身由生成端写的 `// CET:AmountFormula=` 标记负责还原，这里只要「种类 + 名字 + 顺序」对。
-            Match constMatch = Regex.Match(line, @"=>\s*\((-?[\d.]+)m\)");
-            decimal fxAmount = constMatch.Success
-                ? decimal.Parse(constMatch.Groups[1].Value, CultureInfo.InvariantCulture)
-                : 0m;
+            //
+            // ⚠ **负数**的公式形态也要认（V0.2.139）：公式原文被「先把公式括起来再加负号」写成
+            // `=> -((2m))`（见 CSharpCodeGen.VarDeclarationCore：`-({公式})`），旧正则要求 `(` 后紧跟数字，
+            // 匹配不到 → 变量表里记 0。而「负数分档」（CSharpCodeGen.IsNegativeAmount 的公式那一档）
+            // 正是看这个数：记 0 会让「力量 -2」回读成正数，回读结果再生成一次方向就反了。
+            decimal fxAmount = FxConstantAmount(line);
             // 升级增量（生成端写在参数表最后那个 `, 6m)`）不用在这里还原 —— 它由 `OnUpgrade` 里那句
             // `UpgradeValueBy(6m)` 负责（下面 ParseUpgrade 按变量名对回效果）。这里只要「种类 + 名字 + 顺序」对。
             found.Add((m.Index, new Var(suffix, power, fxAmount, false, false, alias)));
@@ -813,9 +815,31 @@ public static class ProjectRecovery
         return found.OrderBy(x => x.At).Select(x => x.V).ToList();
     }
 
+    /// <summary>
+    /// 「数值公式」变量那一行里的**常数**（V0.2.139）。
+    ///
+    /// 生成端两种写法（见 CSharpCodeGen.VarDeclarationCore 的公式那一支）：
+    ///   · 正数 / 老写法：<c>static (card, target) =&gt; (8m)</c>（公式原文 <c>"8"</c>）
+    ///   · **负数**：公式原文 <c>"-8"</c>，被「先把公式括起来再加负号」写法变成 <c>=&gt; -((8m))</c>
+    ///
+    /// 这里两种都认，取出**带符号的数**（<c>-8</c>）。真·现算公式（含运行时量）取不到 → 0
+    /// （数值由 <c>// CET:AmountFormula=</c> 标记负责还原）。
+    /// </summary>
+    private static decimal FxConstantAmount(string line)
+    {
+        // ① `=> -((8m))`：外面那个负号是「负数」本身
+        var neg = Regex.Match(line, @"=>\s*-\(\((-?[\d.]+)m\)\)");
+        if (neg.Success)
+            return -decimal.Parse(neg.Groups[1].Value, CultureInfo.InvariantCulture);
+        // ② `=> (8m)` / `=> (-8m)`（正数，或负号写在公式原文里）
+        var pos = Regex.Match(line, @"=>\s*\((-?[\d.]+)m\)");
+        if (pos.Success)
+            return decimal.Parse(pos.Groups[1].Value, CultureInfo.InvariantCulture);
+        return 0m;
+    }
+
     /// <summary>生成代码里的一层块（循环 / 条件）。</summary>
     private sealed record Block(bool IsLoop, string Count, ConditionSpec? Cond);
-
     /// <summary>把效果语句反推成 EffectSpec（本文件的核心）。</summary>
     private static void ParseEffects(IList<EffectSpec> into, string body, List<Var> vars,
         Dictionary<string, string> nameToPowerId, EffectCtx ctx, RecoveryResult result, string where,
@@ -1942,9 +1966,12 @@ public static class ProjectRecovery
                 continue;
             }
 
-            if (line.Contains("PowerCmd.ModifyAmount(choiceContext, __negPower,"))
+            if (line.Contains("PowerCmd.ModifyAmount(") && line.Contains("__negPower"))
             {
-                // 负数「施加状态」= 扣除层数（生成的是先 GetPower<T>() 再 ModifyAmount(-(Math.Abs(数值))））
+                // 负数「施加状态」= 扣除层数（生成的是先 GetPower<T>() 再 ModifyAmount(-(Math.Abs(数值)))，见
+                // CSharpCodeGen.ApplyPowerLine 的「不允许负层数」那一档）——只对**层数不能为负**的状态生成。
+                // V0.2.139：这里不再写死 `choiceContext` 那个变量名（锻造链的是 `null!`，以后还可能改），
+                // 只认「ModifyAmount + __negPower」这个形状。
                 var mNeg = Regex.Match(line, @"GetPower<(\w+)>\(\)");
                 var mPower = mNeg.Success ? mNeg : Regex.Match(line, @"__negPower, -\(System\.Math\.Abs\(base\.DynamicVars\[""(\w+)""\]");
                 if (!mPower.Success) { result.Unparsed.Add($"{where}: {line}"); continue; }
@@ -1973,6 +2000,55 @@ public static class ProjectRecovery
                 ApplyLoop(eNeg, frames);
                 Done(eNeg);
                 continue;
+            }
+
+            // 负数「施加状态」第 2 种写法（V0.2.139）：状态本体**允许负层数**（力量 / 敏捷 / 专注 / 尖啸 / 萎缩）
+            // → 生成的是照本体「尖啸」那套的 `PowerCmd.Apply<T>(目标, -N, …)`（不再先取实例再扣）。
+            // 不认下来的话这一句会被下面那条通用分支回读成**正数**（+2 层力量 —— 方向正好反了）。
+            // 数值取法和上面那条一样：按状态名去 CanonicalVars 里找那个 PowerVar（升级增量也挂在它上面）。
+            if (line.StartsWith("await PowerCmd.Apply<", StringComparison.Ordinal))
+            {
+                var mNegApply = Regex.Match(line, @"await PowerCmd\.Apply<(\w+)>\(([^;]*)\);");
+                if (mNegApply.Success)
+                {
+                    string powerNeg = mNegApply.Groups[1].Value;
+                    var negParts = SplitArgs(mNegApply.Groups[2].Value);
+                    // ⚠ 实参下标：0 = choiceContext、1 = 目标、**2 = 数值**、3 = 施加者、4 = cardSource。
+                    //   判「是不是负数」只能看**第 2 个实参**（V0.2.139 第一版写成了 [1]，那是目标表达式
+                    //   `base.Owner.Creature` —— 永远判不成负数，于是这一支从来没进过）。
+                    if (negParts.Count > 2 && IsNegativeAmountExpr(negParts[2]))
+                    {
+                        var eNegApply = new EffectSpec
+                        {
+                            Kind = "ApplyPower",
+                            PowerId = nameToPowerId.TryGetValue(powerNeg, out var pidNeg) ? pidNeg : powerNeg,
+                            TargetSide = SideOfTarget(line),
+                            Amount = 0m,
+                        };
+                        int atNegApply = vars.FindIndex(v => v.Kind == "Power"
+                            && (string.Equals(v.Name, powerNeg, StringComparison.Ordinal)
+                                || string.Equals(v.PowerId, powerNeg, StringComparison.Ordinal)));
+                        if (atNegApply >= 0) { eNegApply.Amount = -Math.Abs(vars[atNegApply].Amount); vars.RemoveAt(atNegApply); }
+                        else
+                        {
+                            // 常量负数（自定义状态链上是 `-2m`；锻造链上是 `(-2m)` / `-((2m))`）——
+                            // 没有 PowerVar 可查，直接从那个实参里抠出数字（剥掉生成器包的括号）。
+                            string lit = negParts[2].Trim().TrimEnd('m', 'M');
+                            Match litNum = Regex.Match(lit, @"-?[\d.]+");
+                            if (!litNum.Success
+                                || !decimal.TryParse(litNum.Value, NumberStyles.Float, CultureInfo.InvariantCulture, out decimal negVal))
+                            {
+                                // 认不出来就别硬猜：列出来让用户人工补（静默回读成正数就把配置读反了）
+                                result.Unparsed.Add($"{where}: 负层数「施加状态」的层数没认出来（{powerNeg}）");
+                                continue;
+                            }
+                            eNegApply.Amount = negVal;
+                        }
+                        ApplyLoop(eNegApply, frames);
+                        Done(eNegApply);
+                        continue;
+                    }
+                }
             }
 
             if (line.StartsWith("await PowerCmd.Apply<", StringComparison.Ordinal))
@@ -4632,6 +4708,25 @@ public static class ProjectRecovery
         expr = expr.Trim();
         var m = Regex.Match(expr, @"^System\.Math\.Abs\((.+)\)$");
         return m.Success ? m.Groups[1].Value.Trim() : expr;
+    }
+
+    /// <summary>
+    /// 生成代码里那个「数值」实参写的是不是**一眼看得出是负数**（V0.2.139）。
+    ///
+    /// 用途：「施加增益/减益」对**本体允许负层数**的那 5 个状态（力量 / 敏捷 / 专注 / 尖啸 / 萎缩）
+    /// 生成的是 <c>PowerCmd.Apply&lt;StrengthPower&gt;(…, -2m, …)</c>（本体「尖啸」的写法），
+    /// 回读时要从这个实参认出配置里填的是 <c>-2</c>。
+    ///
+    /// 判据故意只认**字面量负号**（<c>-2m</c> / <c>-2</c>）与生成器自己包的一层括号
+    /// （<c>(-2m)</c>，锻造链是这么写的）：<c>base.DynamicVars["X"].BaseValue</c> 这种表达式
+    /// 正负要到运行时才知道，这里**不乱猜**（猜错会把用户的配置读成反的）。
+    /// </summary>
+    private static bool IsNegativeAmountExpr(string expr)
+    {
+        string s = expr.Trim();
+        while (s.Length > 1 && s.StartsWith("(", StringComparison.Ordinal) && s.EndsWith(")", StringComparison.Ordinal))
+            s = s[1..^1].Trim();
+        return s.Length > 1 && s[0] == '-';
     }
 
     private static List<string> SplitArgs(string args)

@@ -257,6 +257,27 @@ public static class ForgeGraphGen
         TempPowerReverse = node.Get("Reverse", TempPowerReverses.TurnEnd),
     };
 
+    /// <summary>
+    /// 【效果】= 施加增益/减益 那个模块按**生成端读到的那几个字段**还原成一个 <see cref="EffectSpec"/>。
+    ///
+    /// 为什么要它（V0.2.139）：负数分档（直接施加负层数 / 先取实例再扣）由
+    /// <see cref="CSharpCodeGen.ApplyPowerLine"/> 一处判，判据是 <c>EffectSpec</c> 上的
+    /// <c>PowerId</c> / <c>Amount</c>；而锻造链这边手上只有 <see cref="ForgeNodeSpec.Fields"/>
+    /// （老存档只有 Fields，<c>node.EffectSpec</c> 是 null）—— 不还原的话「负数分档」会按一个空 spec 判错。
+    /// <c>Amount</c> 的取法和 <see cref="EmitEffect"/> 里那句 <c>ForgeNumbers.Resolve(p, node, "Amount", 6)</c>
+    /// 完全一致（写公式 → 走运行时变量 → 这里拿到的是 fallback，正负由运行时决定，
+    /// 和改动前那条内联分支的口径一样：只有**写死的数**才判得出正负）。
+    ///
+    /// ⚠ **不要**在这里填 <c>AmountFormula</c>：<c>UsesAmountFormula</c> 只看那一栏非空，
+    /// 填了字面量 "-2" 会被 <c>IsNegativeAmount</c> 当成「正负要到运行时才知道」→ 负数分档直接失效。
+    /// </summary>
+    public static EffectSpec ApplyPowerEffectOf(ForgeNodeSpec node) => new()
+    {
+        Kind = "ApplyPower",
+        PowerId = node.Get("PowerId"),
+        Amount = (decimal)node.GetNumber("Amount", 0),
+    };
+
     /// <summary>这条目的图会不会接管生成（只有「图非空」才接管，空图 / null 一切照旧）。</summary>
     public static bool UsesGraph(CardSpec c) => c.ForgeGraph is { IsEmpty: false } || c.UpgradedForgeGraph is { IsEmpty: false };
 
@@ -2094,7 +2115,16 @@ public static class ForgeGraphGen
             "MaxHp" => $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainMaxHp(__fgFoe, {amount});",
             "ApplyPower" => powerId.Length == 0
                 ? null
-                : $"foreach (Creature __fgFoe in {foes}) {{ if ({amount} < 0m) {{ PowerModel? __negPower = __fgFoe.GetPower<{powerId}>(); if (__negPower is not null) await PowerCmd.ModifyAmount({ctx.ChoiceVar}, __negPower, {amount}, __fgSelf, {ctx.CardSelfExpr}); }} else await PowerCmd.Apply<{powerId}>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr}); }}",
+                // 负数**不再自己写一套**（V0.2.139）：以前这里内联的是
+                // `if (amount < 0m) { GetPower<T>() → ModifyAmount(amount) }` —— 两处都不对：
+                //   ① 传进去的 amount 本身就是负的（ModifyAmount(-2) = **加** 2 层，方向反了）；
+                //   ② 力量这类本体 AllowNegative 的状态被白白降级成「只扣已有层数」。
+                // 现在统一走 CSharpCodeGen.ApplyPowerLine（唯一事实来源，和卡牌/遗物/药水/状态四条链同一份），
+                // 正负两档与「允许负层数的 5 个状态」名单都由它判；上下文变量名传这一档自己的
+                // （ctx.ChoiceVar：造不出来时是 null!，写死 choiceContext 会 CS0103）。
+                : $"foreach (Creature __fgFoe in {foes}) " + CSharpCodeGen.ApplyPowerLine(
+                    ApplyPowerEffectOf(node), useX: false, powerId, "__fgFoe", amount, "__fgSelf",
+                    ctx.CardSelfExpr, ctxVar: ctx.ChoiceVar),
             // 临时增益 / 临时减益：**不能**直接施加真状态（那就是永久的了）——
             // 施加生成端那套「临时 Power」（<c>TempPowers.cs</c> 里的类：挂上时把层数加进真状态、
             // 到点再撤掉、自己消失）。类名由 TempPowerEffectOf 算，和 CollectTempPowerEffects 是同一份。

@@ -1746,10 +1746,37 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>
     /// 这条「获得能量 / 获得金币」的数值是负数吗（负数 = 扣除）。
-    /// 「数值 = X」和「数值公式」的卡牌不算：正负要到运行时才知道，判不出来，只能按「获得」生成。
+    ///
+    /// 判据（V0.2.139 起把「数值公式」这一档也判进来了）：
+    ///   ① 「数值 = X」的卡牌 → 不算（正负要到运行时才知道，判不出来，只能按「获得」生成）；
+    ///   ② 固定数值 &lt; 0 → 算负数；
+    ///   ③ 写了**数值公式**、而且这条公式在生成期能折成一个负数常数 → 也算负数。
+    ///
+    /// 为什么 ③ 必须加：卡牌链上那 5 种支持公式的效果（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）
+    /// 只要数值不是 0，<c>ProfileFactory.MigrateAmountsToFormulas</c> 就会把固定数值**迁进公式那一栏**
+    /// （界面从此只编辑公式）—— 于是「填 -2」进到生成端时 <c>Amount</c> 还是 -2、而 <c>AmountFormula</c>
+    /// 已经是 <c>"-2"</c>，旧判据里那个 <c>!UsesAmountFormula</c> 直接把负数分档关掉了：
+    /// 用户报的「在生成器填负值的力量不生效」在**卡牌链**上就是这个原因（三个 -2 全被当成正数生成）。
+    /// 公式是纯表达式（没有副作用），这里折一次常数不改变任何其它行为。
     /// </summary>
     internal static bool IsNegativeAmount(EffectSpec e, bool useX) =>
-        e.Amount < 0 && !(useX && e.AmountIsXEffective) && !e.UsesAmountFormula;
+        e.Amount < 0 && !(useX && e.AmountIsXEffective)
+        || IsNegativeFormulaAmount(e, useX);
+
+    /// <summary>
+    /// 这条效果的**数值公式**在生成期折出来是不是负数（见 <see cref="IsNegativeAmount"/> 的 ③）。
+    ///
+    /// 拿不到配置（<see cref="_formulaOwner"/> 为 null）/ 公式里有运行时量（X、内置只读量…）/
+    /// 解析失败 → 一律返回 false（**不乱猜正负**，按老的「获得」那档生成，校验器会拦住写不了的公式）。
+    /// </summary>
+    internal static bool IsNegativeFormulaAmount(EffectSpec e, bool useX)
+    {
+        if (useX && e.AmountIsXEffective) return false;
+        if (!e.UsesAmountFormula) return false;
+        if (_formulaOwner is null) return false;
+        var r = ForgeNumbers.ResolveText(_formulaOwner, e.AmountFormulaText, 0, ForgeNumbers.Place.PrologueVars);
+        return r.Constant && r.Value < 0m;
+    }
 
     /// <summary>取绝对值的那层壳（负数效果用；字面量和 DynamicVars 取值都适用）。</summary>
     internal static string AbsExpr(string expr) => $"System.Math.Abs({expr})";
@@ -1763,10 +1790,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>
     /// 「施加增益/减益 N 层」那一行。
     ///
-    /// 为什么负数不能直接交给本体 <c>PowerCmd.Apply</c>：它会走到 <c>ApplyInternal(target, -N, …)</c>
-    /// 去**新建一个层数为 -N 的状态**（等于凭空挂个负数），而不是「扣掉目标身上已有的 N 层」。
-    /// 所以负数先找目标身上那份已有实例，再用 <c>PowerCmd.ModifyAmount</c> 扣（本体扣层数就是这条）；
-    /// 目标身上没有这个状态时什么都不做（扣不了），和「获得力量 -3 = 失去 3 点力量」的直觉一致。
+    /// 负数分**两档**走（判据 = 那个状态本体允不允许负层数，见 <see cref="EffectCatalog.AllowsNegativeLayers"/>）：
+    ///
+    /// <list type="number">
+    /// <item><b>允许负层数</b>（力量 / 敏捷 / 专注 / 尖啸 / 萎缩）：直接把负数施加进去
+    ///   （<c>PowerCmd.Apply&lt;StrengthPower&gt;(…, -2m, …)</c>）。本体「尖啸 PiercingWail」扣敌人力量
+    ///   就是这条写法 —— 目标身上**本来 0 层**也能扣成 -2。写法与「临时增益」那条**已有**的正确实现
+    ///   （<see cref="TempPowersSource"/> 的 <c>negative &amp;&amp; vanillaNegative</c> 分支）完全一致，不留第二套。</item>
+    /// <item><b>不允许负层数</b>（虚弱 / 易伤…）：不能直接 Apply —— 那会**新建一个层数为负**的状态
+    ///   （什么也不做的挂件），而不是「扣掉目标身上已有的 N 层」。所以先取已有实例再
+    ///   <c>PowerCmd.ModifyAmount(-|N|)</c> 扣；目标身上没有这个状态时什么都不做（层数不能凭空变负）。</item>
+    /// </list>
+    ///
+    /// ⚠ V0.2.139 之前是**一律**走第 2 档 —— 于是「力量 -2」在目标身上本来没有力量时被静默跳过
+    /// （用户报的「填负值的力量不生效」）。
     /// </summary>
     internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr)
         => ApplyPowerLine(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr: "this");
@@ -1784,9 +1821,34 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// （用户实测：遗物「每回合开始 → 获得状态」生成出来编译失败）。所以遗物 / 药水 / 自定义状态一律传 <c>null</c>。
     /// </summary>
     internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr, string cardSourceExpr)
+        => ApplyPowerLine(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr, ctxVar: "choiceContext");
+
+    /// <summary>
+    /// 同上，但**显式**指定 <c>cardSource</c> 与<b>选择上下文那个变量名</b>。
+    ///
+    /// 为什么必须显式：<c>PowerCmd.Apply</c> / <c>ModifyAmount</c> 的最后一个参数是 <c>CardModel?</c>。
+    /// 卡牌那边写 <c>this</c> 没问题（卡牌自己就是 CardModel），**但遗物和药水不是 CardModel** ——
+    /// 传 <c>this</c> 会让编译器去选 <c>Apply&lt;T&gt;(ctx, IEnumerable&lt;Creature&gt;? targets, …)</c> 那个重载，
+    /// 然后报两条看不懂的错：
+    ///   参数 2: 无法从 Creature 转换为 IEnumerable&lt;Creature&gt;
+    ///   参数 5: 无法从 …Relic1 转换为 MegaCrit.Sts2.Core.Models.CardModel?
+    /// 整个模组编译不过。V0.2.37「获得类数值支持负数」把遗物 / 药水也并到这个辅助函数上时踩过这个坑
+    /// （用户实测：遗物「每回合开始 → 获得状态」生成出来编译失败）。所以遗物 / 药水 / 自定义状态一律传 <c>null</c>。
+    ///
+    /// <paramref name="ctxVar"/>（V0.2.139）：那四条链（卡牌 / 遗物 / 药水 / 状态）的钩子签名里都有
+    /// <c>choiceContext</c> 这个参数，所以默认就是它；**锻造链**不是 —— 它那个上下文变量名由
+    /// <c>ForgeGraphGen.EmitCtx.ChoiceVar</c> 决定（造不出来时是 <c>null!</c>，写死 <c>choiceContext</c>
+    /// 会 CS0103）。统一走这个参数，四条链 + 锻造链共用同一份写法，不留第二套。
+    /// </summary>
+    internal static string ApplyPowerLine(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr, string cardSourceExpr, string ctxVar)
         => IsNegativeAmount(e, useX)
-            ? $"{{ PowerModel? __negPower = {targetExpr}.GetPower<{type}>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -({AbsExpr(amt)}), {applierExpr}, {cardSourceExpr}); }}   // 负数 = 扣除层数"
-            : $"await PowerCmd.Apply<{type}>(choiceContext, {targetExpr}, {amt}, {applierExpr}, {cardSourceExpr});";
+            ? (EffectCatalog.AllowsNegativeLayers(e.PowerId)
+                // 允许负层数：照本体「尖啸」那套**直接施加负数**（0 层也能扣成负的）。
+                // 写法与临时增益那条已有实现（TempPowersSource）对齐，别写第二套。
+                ? $"await PowerCmd.Apply<{type}>({ctxVar}, {targetExpr}, {amt}, {applierExpr}, {cardSourceExpr});   // 负数 = 施加负层数（{EffectCatalog.PowerName(e.PowerId, type ?? "该状态")}本体允许负层数，本体「尖啸」就是这么写的）"
+                // 不允许负层数：先取实例再 ModifyAmount 扣（本体「扣层数」就是这条）
+                : $"{{ PowerModel? __negPower = {targetExpr}.GetPower<{type}>(); if (__negPower is not null) await PowerCmd.ModifyAmount({ctxVar}, __negPower, -({AbsExpr(amt)}), {applierExpr}, {cardSourceExpr}); }}   // 负数 = 扣除已有层数（该状态本体不允许负层数；目标身上没有这个状态时什么都不做）")
+            : $"await PowerCmd.Apply<{type}>({ctxVar}, {targetExpr}, {amt}, {applierExpr}, {cardSourceExpr});";
 
     /// <summary>「获得 N 枚金币」那一行（N 是负数时生成 LoseGold，数值取绝对值）。</summary>
     internal static string GainGoldLine(EffectSpec e, string amt, bool useX, string ownerExpr) =>
@@ -8622,11 +8684,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 不含 Unblockable → 不会被这一句挡掉，照旧算「受到伤害」。
                 lines.Add("if (props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)) return;");
                 lines.Add("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
+                // V0.2.139：**自己已经死了就别再跑**（钩子是 CreatureCmd.Damage 无条件广播的，致死那一下也进）。
+                // 不挡的话「受到伤害时回复生命」会在自己死后把血拉回来 —— 多人模式下队友还活着 = 看起来复活。
+                // 位置：在「只认自己」那句**之后**（= 挨打的确实是本人），且在效果之前。
+                // 锻造链的 Owner 是 Player，所以必须写 base.Owner.Creature（不是 base.Owner）。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             case "Attacked":
                 lines.Add("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
                 lines.Add("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner.Creature).Sum(r => r.UnblockedDamage);");
                 lines.Add("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
+                // V0.2.139：本体 AfterAttack 在**所有命中结束之后**才跑一次 ——「这一击把我打死了」也是
+                // 在这个时点才调到这里（__takenThisAttack 照样 > 0）。不挡的话「受到攻击后回复生命」
+                // 会把自己从 0 血拉回来（多人模式下 = 复活）。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             case "GoldGained":
                 lines.Add("if (player != base.Owner) return;");
@@ -8689,6 +8760,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "HpLost":
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己掉血");
                 lines.Add("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
+                // V0.2.139：致死那一下这个钩子也会进来（delta 正好是负的），不挡的话
+                //「失去生命时回复生命」会在自己死后把血拉回来（多人模式下队友还活着 = 复活）。
+                // 锻造链的 base.Owner 是 Player → 必须写 base.Owner.Creature。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             case "BlockGained":
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
@@ -8795,6 +8870,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 本体「原体黏土 SelfFormingClay / 残存之心 BeatingRemnant」都是这么判的：
                 // 全被格挡（或 0 伤害）的那一下不算「受到伤害」。（每一下都会进这个钩子 —— 连击就是多次触发）
                 lines.Add("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
+                // V0.2.139：**自己已经死了就别再跑**。本体 Hook.AfterDamageReceived 在 CreatureCmd.Damage 里
+                // **无条件**广播（扣血那一步之后才派发），所以「被敌人打死的那一下」照样会进到这里 ——
+                // 效果里只要有「回复生命」，就会把 HP 从 0 拉回正数：多人模式下队友还活着 = 看起来「复活」。
+                // 单人模式一样生效（致死那一下不再触发这只遗物）—— 这是预期语义。
+                // 位置：在「只认自己」那句**之后**（= 挨打的确实是本人），且在效果之前。
+                // ⚠ 遗物链的 base.Owner 是 **Player**，所以这里必须写 base.Owner.Creature。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             // 「受到攻击后」：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次
             //（AbstractModel.AfterAttack 的注释就是这么写的）—— 所以连击只算一次。
@@ -8803,6 +8885,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
                 lines.Add("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner.Creature).Sum(r => r.UnblockedDamage);");
                 lines.Add("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
+                // V0.2.139：同上 ——「这一击把我打死了」也是在所有命中结束之后才调到这里
+                //（__takenThisAttack 照样 > 0），不挡的话「受到攻击后回复生命」会把人从 0 血拉回来。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             case "GoldGained":
                 lines.Add("if (player != base.Owner) return;");
@@ -8899,6 +8984,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 本体 AfterCurrentHpChanged：delta 为正是回血，只有 delta < 0 才算「失去生命」
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己掉血");
                 lines.Add("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
+                // V0.2.139：致死那一下这个钩子也会进来（delta 正好是负的）—— 不挡的话
+                //「失去生命时回复生命」会在自己死后把血拉回来（多人模式下队友还活着 = 复活）。
+                // ⚠ 遗物链的 base.Owner 是 Player → 必须写 base.Owner.Creature。
+                lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
             case "BlockGained":
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
@@ -9326,8 +9415,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>生成出来的那一行是不是「不满足就退出本钩子」的守卫（`return;` 结尾）。</summary>
-    private static bool IsRelicGuardLine(string line) =>
-        line.Contains("return;", StringComparison.Ordinal);
+    /// <remarks>
+    /// V0.2.139：判断前先**去掉行尾的行注释**（`… return;   // 说明`）。以前这里只看整行里有没有
+    /// <c>return;</c>，而这条判据（<see cref="EmitRelicMultiTriggerHook"/> 里用它把前置行分成
+    /// 「守卫 / 声明」两拨）是**按语义分类**的 —— 一行声明里只要出现字符串 <c>"return;"</c>
+    /// （或者以后有人写别的花样）就会被**静默挪进守卫**那一拨，再被 <see cref="NegateRelicGuard"/>
+    /// 取反、塞进 <c>if (…)</c> 条件里。注释是生成器自己加的说明文字，不该影响这个分类。
+    /// </remarks>
+    private static bool IsRelicGuardLine(string line)
+    {
+        string code = line;
+        int comment = code.IndexOf("//", StringComparison.Ordinal);
+        if (comment >= 0) code = code[..comment];
+        return code.Contains("return;", StringComparison.Ordinal);
+    }
 
     /// <summary>
     /// 把守卫行 <c>if (条件) return;</c> 取反成条件表达式（多条时机合并时用 —— 同一个钩子方法里

@@ -449,6 +449,13 @@ public static class CustomPowerGen
                 // 注意这个钩子**每一下伤害都会进**：敌人一次「1 点 × 5 下」的连击会触发 5 次
                 //（想「一次攻击只算一次」用下面的「自己受到攻击后」）。
                 w.Line("if (result.UnblockedDamage <= 0) return;   // 这一下全被格挡 / 0 伤害：不算受到伤害");
+                // V0.2.139：**自己已经死了就别再跑**。这个钩子在 CreatureCmd.Damage 里是**无条件**广播的
+                //（扣血那一步之后才派发），所以「被敌人打死的那一下」照样会进来 —— 效果里只要有
+                // 「回复生命」，就会把 HP 从 0 拉回正数：多人模式下队友还活着，于是看起来就是「复活」。
+                // 单人模式一样生效（致死那一下不再触发本状态的效果）—— 这是预期语义。
+                // 位置：在「只认自己」（上面那句）**之后**，因为 base.Owner 只有在确认「挨打的是自己」之后
+                // 才保证是本人；也在效果之前。状态链的 base.Owner 本身就是 Creature。
+                w.Line("if (base.Owner.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 if (hpLossGuard) EmitHpLossGuardOpen(w);
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "dealer");
                 if (hpLossGuard) EmitHpLossGuardClose(w);
@@ -464,6 +471,9 @@ public static class CustomPowerGen
                 EmitChoiceContextBootstrap(w, "HpLost", items);
                 w.Line("if (creature != base.Owner) return;   // 只认自己掉血");
                 w.Line("if (delta >= 0m) return;   // delta 为正是回血，不算「失去生命」");
+                // V0.2.139：同 DamageReceived —— 致死那一下这个钩子也会进来（delta 正好是负的），
+                // 不挡的话「失去生命时回复生命」会在自己死后把血拉回来（多人模式下 = 复活）。
+                w.Line("if (base.Owner.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 if (hpLossGuard) EmitHpLossGuardOpen(w);
                 EmitItemsWithAmountGate(w, items, p);
                 if (hpLossGuard) EmitHpLossGuardClose(w);
@@ -479,6 +489,10 @@ public static class CustomPowerGen
                 w.Line("// 多次连击只算一次：本体的 AfterAttack 是所有命中跑完之后才调一次");
                 w.Line("decimal __takenThisAttack = command.Results.SelectMany(hits => hits).Where(r => r.Receiver == base.Owner).Sum(r => r.UnblockedDamage);");
                 w.Line("if (__takenThisAttack <= 0) return;   // 这一次攻击没真的打到我（全被格挡 / 打的是别人）");
+                // V0.2.139：本体 AfterAttack 在**一次攻击的所有命中都结束之后**才跑一次 —— 那么
+                //「这一击把我打死了」也是在这个时点才调到这里（__takenThisAttack 还是 > 0）。
+                // 不挡的话「受到攻击后回复生命」会把自己从 0 血拉回来（多人模式下 = 复活）。
+                w.Line("if (base.Owner.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "command.Attacker");
                 w.Close();
                 break;

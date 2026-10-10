@@ -12,6 +12,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -13045,11 +13046,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& ForgeGraphGen.TempPowerEffectOf(ForgeEffectNode("TempPower", "StrengthPower", 4, ""))
 					.TempPowerReverse == TempPowerReverses.TurnEnd,
 				"两档都对");
-			Check("节点图里「施加状态」填负数：扣层数用的是 amount 本身（以前写成 -(amount) 会变成**加**层数）",
-				!CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
-					.Contains("-((6m))")
-				&& CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
-					.Contains("await PowerCmd.ModifyAmount(choiceContext, __negPower, (-6m)"),
+			// ⚠ V0.2.139：这一条改的是**判据**（不是放宽）—— 锻造图上的「施加状态」填负数，以前内联生成的
+			// `if (amount < 0m) { GetPower<T>() → ModifyAmount(amount) }` 有两处错：传进去的 amount 本身就是负的
+			// （ModifyAmount(-6) = **加** 6 层，方向反了）、而且把允许负层数的状态白白降级成「只扣已有层数」。
+			// 现在统一走 CSharpCodeGen.ApplyPowerLine：力量（本体 AllowNegative）→ **直接施加 -6m**（照本体「尖啸」）。
+			// 这里照样钉住「符号没反」：施加的必须是 -6m，绝不许出现 `-(-6m)` / `((6m))` 这种被取正的东西。
+			Check("节点图里「施加状态」填负数：力量（本体允许负层数）→ 施加的就是 amount 本身 -6m"
+				+ "（照本体「尖啸」那套直接施加负值；以前那种内联写法会把 -(amount) 变成**加**层数）",
+				CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
+					.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, __fgFoe, (-6m)", StringComparison.Ordinal)
+				&& !CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
+					.Contains("-((6m))", StringComparison.Ordinal),
 				"符号对了");
 			// 数值 0（默认值）= 打出去一点变化都没有：以前是「提示」，现在**拦住说清**（用户报的就是这个）
 			CharacterProfile zeroTempProf = ProfileFactory.Sample();
@@ -20083,11 +20090,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& !argRelicApplyLine.Contains(", this);", StringComparison.Ordinal), argRelicApplyLine);
 
 			// ② 遗物：同一条效果的负数（扣除层数）走 ModifyAmount —— 同一个坑，也要 null
+			// ⚠ V0.2.139：这里**必须**用「本体不允许负层数」的状态（虚弱），不再是力量 ——
+			//   力量属于本体允许负层数的那 5 个（AllowNegative => true），负数改成**直接施加负值**了
+			//   （照本体「尖啸」那套），不再走 ModifyAmount 这条路。要钉「ModifyAmount 那条路的 cardSource」
+			//   就得挑一个仍旧走那条路的状态。
 			var argRelicNeg = new RelicSpec
 			{
 				Name = "自检遗物扣层数实参", ClassName = "UiCheckPowerArgRelicNeg", Rarity = "Common", InRelicPool = true,
 				Trigger = "PlayerTurnStart",
-				Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" } },
+				Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -3m, TargetSide = "Self" } },
 			};
 			argRelicProbe.Relics.Add(argRelicNeg);
 			string argRelicNegSrc = CSharpCodeGen.RelicSource(argRelicProbe, argRelicNeg, argRelicProbe.Relics.Count - 1);
@@ -20154,8 +20165,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& !argCardApplyLine.Contains(", null);", StringComparison.Ordinal), argCardApplyLine);
 
 			// ⑧ 卡牌：负数（扣除层数）也仍然是 this
+			// ⚠ V0.2.139：同上 —— 用「本体不允许负层数」的虚弱，力量那条负数已经改成直接施加负值。
 			var argCardNeg = new CardSpec { Name = "自检卡牌扣层数实参", ClassName = "UiCheckPowerArgCardNeg", Rarity = "Common", Cost = 1, InCardPool = true };
-			argCardNeg.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -3m, TargetSide = "Self" });
+			argCardNeg.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -3m, TargetSide = "Self" });
 			argCardProbe.Cards.Add(argCardNeg);
 			string argCardNegSrc = CSharpCodeGen.CardSource(argCardProbe, argCardNeg, argCardProbe.Cards.Count - 1);
 			string argCardModifyLine = argCardNegSrc.Split('\n')
@@ -20185,9 +20197,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// ===== 本轮修复：① 自定义状态触发器「施加状态」填负数 / ② 遗物·药水落在没实现的种类上 =====
 		{
 			// ① 自定义状态触发器的「施加状态」现在和卡牌 / 遗物 / 药水走**同一条**实现
-			//（CSharpCodeGen.ApplyPowerLine：先 GetPower<T>() 取目标身上那份实例，再 PowerCmd.ModifyAmount 扣层数）。
+			//（CSharpCodeGen.ApplyPowerLine）。V0.2.139 起那条实现按「本体允不允许负层数」分两档：
+			//   · 力量 / 敏捷 / 专注 / 尖啸 / 萎缩（AllowNegative => true）→ **照本体「尖啸」那套直接施加负值**；
+			//   · 其余（虚弱 / 毒…）→ 先 GetPower<T>() 取那份实例再 ModifyAmount 扣。
 			// 旧写法是在 CustomPowerGen.EmitEffect 里手写 PowerCmd.Apply，负数会被本体拿去**新建一个 -3 层的状态**
-			//（ApplyInternal(target, -N, …)），和另外三个上下文（负数 = 扣层数）完全不一致 —— 用户实测报的就是这个。
+			//（ApplyInternal(target, -N, …)）—— 现在不会有这种「凭空挂负层数」的怪东西了。
 			CharacterProfile negPowProbe = ProfileFactory.Sample();
 			negPowProbe.CustomPowers.Clear();
 			negPowProbe.CustomPowers.Add(new CustomPowerSpec
@@ -20213,18 +20227,28 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				},
 			});
 			string negPowSrc = CustomPowerGen.Source(negPowProbe, negPowProbe.CustomPowers[0], 0);
-			Check("自定义状态触发器「施加状态」填负数 → 先取目标身上那份实例再 PowerCmd.ModifyAmount 扣层数（和卡牌 / 遗物 / 药水同一条实现）",
-				negPowSrc.Contains("PowerModel? __negPower = base.Owner.GetPower<StrengthPower>();", StringComparison.Ordinal)
-				&& negPowSrc.Contains("await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(-3m)), base.Owner, null);", StringComparison.Ordinal),
-				negPowSrc.Split('\n').FirstOrDefault((string l) => l.Contains("PowerCmd.ModifyAmount(", StringComparison.Ordinal))?.Trim() ?? "(没找到 ModifyAmount 那一行)");
+			Check("V0.2.139：自定义状态触发器「施加状态」填负数 → 按本体允不允许负层数分两档："
+				+ "力量（允许）直接施加 -3m；虚弱 / 中毒（不允许）仍旧先取实例再 PowerCmd.ModifyAmount 扣层数"
+				+ "（和卡牌 / 遗物 / 药水同一条实现）",
+				negPowSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, -3m, base.Owner, null);", StringComparison.Ordinal)
+				&& !negPowSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal)
+				&& negPowSrc.Contains("other.GetPower<WeakPower>()", StringComparison.Ordinal)
+				&& negPowSrc.Contains("other.GetPower<PoisonPower>()", StringComparison.Ordinal),
+				negPowSrc.Split('\n').FirstOrDefault((string l) => l.Contains("PowerCmd.", StringComparison.Ordinal))?.Trim() ?? "(没找到)");
 			int negModifyCount = negPowSrc.Split(new[] { "PowerCmd.ModifyAmount(" }, StringSplitOptions.None).Length - 1;
-			Check("（三条目标路都走负数分支）自己 / 全体敌人 / 单体敌人一共 3 处 ModifyAmount",
-				negModifyCount == 3, "ModifyAmount 出现 " + negModifyCount + " 次");
+			Check("V0.2.139：（不允许负层数的两条路走 ModifyAmount）全体敌人上的虚弱 -2 / 单体敌人上的中毒 -1 = 2 处；"
+				+ "力量 -3 已经改成直接施加负值、不再走这条路",
+				negModifyCount == 2, "ModifyAmount 出现 " + negModifyCount + " 次");
+			// 「凭空挂一个负层数状态」的老毛病：不允许负层数的状态**一个都不许**出现 Apply(…, 负数)。
+			// 允许负层数的状态（力量）出现 Apply(…, -3m) 是**正确的**（本体「尖啸」就是这么写的）。
 			string[] negApplyBadLines = negPowSrc.Split('\n')
-				.Where((string l) => l.Contains("PowerCmd.Apply<", StringComparison.Ordinal) && l.Contains(", -", StringComparison.Ordinal)).ToArray();
-			Check("（防回归）负数那条不再生成「新建一个 -N 层状态」的 PowerCmd.Apply —— 生成里没有任何 PowerCmd.Apply 带负数值",
+				.Where((string l) => l.Contains("PowerCmd.Apply<WeakPower>(", StringComparison.Ordinal) && l.Contains(", -", StringComparison.Ordinal)
+					|| l.Contains("PowerCmd.Apply<PoisonPower>(", StringComparison.Ordinal) && l.Contains(", -", StringComparison.Ordinal))
+				.ToArray();
+			Check("V0.2.139：（防回归）**不允许负层数**的状态（虚弱 / 中毒）绝不会生成「新建一个 -N 层状态」的 PowerCmd.Apply；"
+				+ "而允许负层数的力量生成 Apply(…, -3m) 正是本体「尖啸」的写法",
 				negApplyBadLines.Length == 0,
-				negApplyBadLines.Length == 0 ? "一处都没有（负数全走 ModifyAmount）" : string.Join(" ｜ ", negApplyBadLines.Select((string l) => l.Trim())));
+				negApplyBadLines.Length == 0 ? "一处都没有（不允许负层数的负数全走 ModifyAmount）" : string.Join(" ｜ ", negApplyBadLines.Select((string l) => l.Trim())));
 			Check("（对照）同一条链的正数仍然生成 PowerCmd.Apply<…>（只有负数换路）",
 				negPowSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, 2m, base.Owner, null);", StringComparison.Ordinal),
 				negPowSrc.Split('\n').FirstOrDefault((string l) => l.Contains("PowerCmd.Apply<StrengthPower>", StringComparison.Ordinal))?.Trim() ?? "(没找到)");
@@ -20234,8 +20258,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				negModifyLines.Length > 0
 				&& negModifyLines.All((string l) => l.Contains(", null);", StringComparison.Ordinal) && !l.Contains(", this);", StringComparison.Ordinal)),
 				negModifyLines.FirstOrDefault()?.Trim() ?? "(没找到)");
-			Check("校验器：自定义状态触发器「施加状态」填负数 → 给一条提示说清「负数 = 扣目标身上已有的层数」（不是挂一个 -3 层的新状态）",
-				ProfileValidator.Validate(negPowProbe).Any(i => i.Message.Contains("给目标挂一个 -3 层的新状态")),
+			Check("校验器：自定义状态触发器「施加状态」填负数 → 给一条提示说清语义（力量允许负层数 → 直接施加 -3 层；"
+				+ "不是「给目标挂一个 -3 层的新状态」那种凭空挂负层数）",
+				ProfileValidator.Validate(negPowProbe).Any(i => i.Message.Contains("照本体「尖啸」那套直接施加 -3 层")),
 				string.Join(" / ", ProfileValidator.Validate(negPowProbe).Where(i => i.Message.Contains("数值是")).Select(i => i.Level + ": " + i.Message)));
 
 			// ③ 自定义状态触发器的「施加状态」没选状态 → 校验器必须报错
@@ -25191,6 +25216,264 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					selfDmgCardSrc.Contains(selfDmgCardLine, StringComparison.Ordinal), selfDmgCardLine);
 			}
 
+			// ===== V0.2.139 ①：致死的那一下不许再跑效果（否则「回复生命」= 多人模式下的复活）=====
+			// 三条时机（受到伤害 / 失去生命 / 受到攻击后）× 三条链（状态 / 遗物 / 锻造）都要有
+			// 「自己已经死了就直接返回」，而且要排在效果之前、用各自链上**正确的实例表达式**：
+			//   · 状态链的 base.Owner 本身就是 Creature → `base.Owner.IsDead`；
+			//   · 遗物链 / 锻造链的 base.Owner 是 **Player** → 必须 `base.Owner.Creature.IsDead`
+			//     （锻造链的守卫由 CSharpCodeGen.ForgeTriggerGuardLines 生成，遗物链 / 锻造链共用同一套文本）。
+			{
+				string deadPower = "if (base.Owner.IsDead) return;";
+				string deadOwnerCreature = "if (base.Owner.Creature.IsDead) return;";
+				var deadProbeProfile = ProfileFactory.Sample();
+				deadProbeProfile.CustomPowers.Clear();
+				deadProbeProfile.Relics.Clear();
+				string[] deadTimings = { "DamageReceived", "HpLost", "Attacked" };
+				var deadMissing = new List<string>();
+				var deadOrderBad = new List<string>();
+				foreach (string dt in deadTimings)
+				{
+					// 状态链
+					var dp = new CustomPowerSpec { Name = "自检致死回血状态" + dt, ClassName = "UiCheckDeadPower" + dt, Type = "Buff" };
+					dp.Triggers.Add(new PowerTriggerSpec
+					{
+						Kind = dt,
+						Effects = { new EffectSpec { Kind = "Heal", Amount = 3m, TargetSide = "Self" } },
+					});
+					deadProbeProfile.CustomPowers.Clear();
+					deadProbeProfile.CustomPowers.Add(dp);
+					string powerSrcDead = CustomPowerGen.Source(deadProbeProfile, dp, 0);
+					if (!powerSrcDead.Contains(deadPower, StringComparison.Ordinal)) deadMissing.Add("状态:" + dt);
+					int deadAt = powerSrcDead.IndexOf(deadPower, StringComparison.Ordinal);
+					int healAt = powerSrcDead.IndexOf("CreatureCmd.Heal", StringComparison.Ordinal);
+					if (deadAt < 0 || healAt < 0 || deadAt > healAt) deadOrderBad.Add("状态:" + dt);
+
+					// 遗物链
+					var dr = new RelicSpec
+					{
+						Name = "自检致死回血遗物" + dt, ClassName = "UiCheckDeadRelic" + dt, Rarity = "Common", Trigger = dt,
+						Effects = { new EffectSpec { Kind = "Heal", Amount = 3m, TargetSide = "Self" } },
+					};
+					deadProbeProfile.Relics.Clear();
+					deadProbeProfile.Relics.Add(dr);
+					string relicSrcDead = CSharpCodeGen.RelicSource(deadProbeProfile, dr, 0);
+					if (!relicSrcDead.Contains(deadOwnerCreature, StringComparison.Ordinal)) deadMissing.Add("遗物:" + dt);
+					int rDeadAt = relicSrcDead.IndexOf(deadOwnerCreature, StringComparison.Ordinal);
+					int rHealAt = relicSrcDead.IndexOf("CreatureCmd.Heal", StringComparison.Ordinal);
+					if (rDeadAt < 0 || rHealAt < 0 || rDeadAt > rHealAt) deadOrderBad.Add("遗物:" + dt);
+
+					// 锻造链（守卫行由 ForgeTriggerGuardLines 生成，图和遗物页同一套）
+					string forgeGuardDead = string.Join("\n", CSharpCodeGen.ForgeTriggerGuardLines(dt, "StrengthPower", 3m));
+					if (!forgeGuardDead.Contains(deadOwnerCreature, StringComparison.Ordinal)) deadMissing.Add("锻造:" + dt);
+				}
+				Check("V0.2.139：三条时机（受到伤害 / 失去生命 / 受到攻击后）× 三条链（状态 / 遗物 / 锻造）的守卫里"
+					+ "都有「自己已经死了就直接返回」—— 致死的那一下不再跑效果（否则效果里的「回复生命」会把自己拉回来，"
+					+ "多人模式下队友还活着看起来就是复活）",
+					deadMissing.Count == 0, deadMissing.Count == 0 ? "9 处全有" : "缺：" + string.Join("/", deadMissing));
+				Check("V0.2.139：「自己已经死了」那句守卫排在效果**之前**（状态链 / 遗物链逐字查位置）",
+					deadOrderBad.Count == 0, deadOrderBad.Count == 0 ? "都在效果之前" : "顺序不对：" + string.Join("/", deadOrderBad));
+				Check("V0.2.139：三条链各自用**正确的实例表达式** —— 状态链 base.Owner.IsDead（base.Owner 就是 Creature），"
+					+ "遗物链 / 锻造链 base.Owner.Creature.IsDead（那两条链的 base.Owner 是 Player，写错会 CS1061 编译不过）",
+					!CSharpCodeGen.RelicTriggerGuardLines("DamageReceived", "", 0m, "Any", deadProbeProfile)
+						.Concat(CSharpCodeGen.ForgeTriggerGuardLines("DamageReceived", "", 0m))
+						.Any(l => l.Contains("if (base.Owner.IsDead)", StringComparison.Ordinal))
+					&& CSharpCodeGen.RelicTriggerGuardLines("HpLost", "", 0m, "Any", deadProbeProfile)
+						.Concat(CSharpCodeGen.ForgeTriggerGuardLines("HpLost", "", 0m))
+						.Concat(CSharpCodeGen.RelicTriggerGuardLines("Attacked", "", 0m, "Any", deadProbeProfile))
+						.Concat(CSharpCodeGen.ForgeTriggerGuardLines("Attacked", "", 0m))
+						.All(l => !l.Contains("if (base.Owner.IsDead)", StringComparison.Ordinal)), "对");
+			}
+
+			// ===== V0.2.139 ②：负值「施加增益/减益」按「本体允不允许负层数」分流 =====
+			// 用户报的：「在生成器填负值的力量不生效」（卡牌「施加增益/减益」数值 -2、未升级）。
+			// 根因：负数**一律**走 GetPower + ModifyAmount → 目标身上本来没有力量时什么都不做。
+			// 改成：允许负层数的 5 个状态（力量/敏捷/专注/尖啸/萎缩）→ 照本体「尖啸」那套**直接施加负数**；
+			// 其余（虚弱/易伤…）保持 GetPower + ModifyAmount。
+			{
+				Check("V0.2.139：本体允许负层数的名单 = 力量 / 敏捷 / 专注 / 尖啸 / 萎缩，虚弱 / 易伤不在里面"
+					+ "（生成端就是按这份名单分流的唯一判据）",
+					EffectCatalog.AllowsNegativeLayers("StrengthPower")
+					&& EffectCatalog.AllowsNegativeLayers("DexterityPower")
+					&& EffectCatalog.AllowsNegativeLayers("FocusPower")
+					&& EffectCatalog.AllowsNegativeLayers("ShriekPower")
+					&& EffectCatalog.AllowsNegativeLayers("ShrinkPower")
+					&& !EffectCatalog.AllowsNegativeLayers("WeakPower")
+					&& !EffectCatalog.AllowsNegativeLayers("VulnerablePower"), "对");
+
+				var negPowProfile = ProfileFactory.Sample();
+				negPowProfile.CustomPowers.Clear();
+				var negPow = new CustomPowerSpec { Name = "自检负值力量状态", ClassName = "UiCheckNegPowerStr", Type = "Buff" };
+				negPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, TargetSide = "Self" } },
+				});
+				negPowProfile.CustomPowers.Add(negPow);
+				string negPowSrc = CustomPowerGen.Source(negPowProfile, negPow, 0);
+
+				var negCardProfile = ProfileFactory.Sample();
+				var negCard = new CardSpec
+				{
+					Name = "自检负值力量卡", ClassName = "UiCheckNegStrCard", CardType = "Skill", Rarity = "Common",
+					Cost = 1, InCardPool = true,
+				};
+				negCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, UpgradeAmount = 0m, TargetSide = "Self" });
+				negCardProfile.Cards.Add(negCard);
+				string negCardSrc = CSharpCodeGen.CardSource(negCardProfile, negCard, 0);
+
+				var negRelicProfile = ProfileFactory.Sample();
+				negRelicProfile.Relics.Clear();
+				var negRelic = new RelicSpec
+				{
+					Name = "自检负值力量遗物", ClassName = "UiCheckNegStrRelic", Rarity = "Common", Trigger = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, UpgradeAmount = 0m, TargetSide = "Self" } },
+				};
+				negRelicProfile.Relics.Add(negRelic);
+				string negRelicSrc = CSharpCodeGen.RelicSource(negRelicProfile, negRelic, 0);
+
+				var negPotionProfile = ProfileFactory.Sample();
+				negPotionProfile.Potions.Clear();
+				var negPotion = new PotionSpec
+				{
+					Name = "自检负值力量药水", ClassName = "UiCheckNegStrPotion",
+					Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, UpgradeAmount = 0m, TargetSide = "Self" } },
+				};
+				negPotionProfile.Potions.Add(negPotion);
+				string negPotionSrc = CSharpCodeGen.PotionSource(negPotionProfile, negPotion, 0);
+
+				Check("V0.2.139：力量 -2（本体允许负层数）→ 生成的是**直接施加负值** `PowerCmd.Apply<StrengthPower>(…)`"
+					+ "（照本体「尖啸 PiercingWail」那套：目标身上本来 0 层也能扣成 -2），而且**不出现** GetPower<StrengthPower>",
+					negPowSrc.Contains("PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, -2m,", StringComparison.Ordinal)
+					&& !negPowSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal)
+					// 卡牌链上「数值」实参长什么样取决于档案是不是**从文件载入的**
+					//（ProfileFactory.Load / Sample 会把固定数值迁进「数值公式」那一栏，生成的是 -((2m))；
+					//  自检里现造的卡没走过那道迁移，生成的是 base.DynamicVars["StrengthPower"].BaseValue）——
+					// 两种形态都是「直接施加负值」，所以这里两种都认，但**必须**是负数、且不许有 GetPower。
+					&& Regex.IsMatch(negCardSrc, @"PowerCmd\.Apply<StrengthPower>\(choiceContext, base\.Owner\.Creature, (-\(\(2m\)\)|base\.DynamicVars\[""StrengthPower""\]\.BaseValue),", RegexOptions.None)
+					&& !negCardSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal)
+					&& !negCardSrc.Contains("ModifyAmount", StringComparison.Ordinal), "对");
+				Check("V0.2.139：遗物 / 药水链上的力量 -2 也走同一条写法（cardSource 照旧传 null —— 遗物/药水不是 CardModel，"
+					+ "传 this 会让整个模组编译不过）",
+					negRelicSrc.Contains("PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, base.DynamicVars[\"StrengthPower\"].BaseValue, base.Owner.Creature, null)", StringComparison.Ordinal)
+					&& negPotionSrc.Contains("PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, base.DynamicVars[\"StrengthPower\"].BaseValue, base.Owner.Creature, null)", StringComparison.Ordinal)
+					&& !negRelicSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal)
+					&& !negPotionSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal), "对");
+
+				// 用户报告的那条路的**端到端复现**：存成 JSON 再 Load 回来（ProfileFactory.Load 会把固定数值
+				// 迁进「数值公式」那一栏，界面加载存档再生成就是这条路）。
+				// 以前 IsNegativeAmount 看到 UsesAmountFormula 就直接把负数分档关掉了，
+				// 于是「填 -2 的力量」被当成正数生成：力量**和虚弱**都变成 Apply(…, -2/-1)。
+				string negMigJson = Path.Combine(Path.GetTempPath(), "forge_uicheck_negmig_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+				string negMigSrc = "";
+				bool negMigMigrated = false;
+				try
+				{
+					var negMigProfile = ProfileFactory.Sample();
+					negMigProfile.Cards.Clear();
+					var negMigCard = new CardSpec { Name = "自检负值力量卡", ClassName = "UiCheckNegStrCardMig", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					negMigCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, UpgradeAmount = 0m, TargetSide = "Self" });
+					negMigCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -1m, UpgradeAmount = 0m, TargetSide = "Self" });
+					negMigProfile.Cards.Add(negMigCard);
+					ProfileFactory.Save(negMigProfile, negMigJson);
+					var negMigLoaded = ProfileFactory.Load(negMigJson);
+					var negMigCardLoaded = negMigLoaded.Cards.First(c => c.ClassName == "UiCheckNegStrCardMig");
+					negMigMigrated = negMigCardLoaded.Effects[0].UsesAmountFormula && negMigCardLoaded.Effects[1].UsesAmountFormula;
+					negMigSrc = CSharpCodeGen.CardSource(negMigLoaded, negMigCardLoaded, 0);
+				}
+				finally
+				{
+					try { if (File.Exists(negMigJson)) File.Delete(negMigJson); } catch { }
+				}
+				Check("V0.2.139：（端到端）从文件载入的那种卡（固定数值已迁进「数值公式」栏 → UsesAmountFormula=true）—— 先确认迁移确实发生了",
+					negMigMigrated, negMigMigrated ? "迁移发生了" : "**没迁移**（这条断言的前提不成立）");
+				Check("V0.2.139：（端到端）迁移过的卡上：力量 -2 → Apply<StrengthPower>(…, -((2m)), …)、"
+					+ "虚弱 -1 → GetPower<WeakPower> + ModifyAmount（两档都对，才说明公式那一档没把负数判丢）",
+					Regex.IsMatch(negMigSrc, @"PowerCmd\.Apply<StrengthPower>\(choiceContext, base\.Owner\.Creature, -\(\(2m\)\),")
+					&& !negMigSrc.Contains("GetPower<StrengthPower>", StringComparison.Ordinal)
+					&& negMigSrc.Contains("GetPower<WeakPower>", StringComparison.Ordinal)
+					&& negMigSrc.Contains("ModifyAmount", StringComparison.Ordinal)
+					&& !Regex.IsMatch(negMigSrc, @"PowerCmd\.Apply<WeakPower>\(choiceContext, base\.Owner\.Creature, -\(\(1m\)\),"), "对");
+
+				// 回读（V0.2.139）：两种负数写法都要认得回来，而且**符号不能读反**
+				//（以前那种「一律 ModifyAmount」的回读分支只看第 1 个实参 —— 那是目标表达式，永远判不成负数）。
+				string negRecRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_negrec_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					var negRecProfile = ProfileFactory.Sample();
+					negRecProfile.Paths.OutputDir = negRecRoot;
+					// 路径照界面那份（自检里示例配置的这两栏可能是空的，而生成要读解包工程 / sts2.dll）
+					negRecProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					negRecProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					// ⚠ 不清卡池：示例配置本来就有 Common / Uncommon / Rare 各一张（奖励抽 3 张要至少 3 张）
+					var negRecCard = new CardSpec { Name = "自检负值回读卡", ClassName = "UiCheckNegRecCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					negRecCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", Amount = -2m, UpgradeAmount = 0m, TargetSide = "Self" });
+					negRecCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -1m, UpgradeAmount = 0m, TargetSide = "Self" });
+					negRecProfile.Cards.Add(negRecCard);
+					var negRecGen = ModGenerator.Generate(negRecProfile);
+					if (!negRecGen.Success)
+					{
+						Check("V0.2.139：（回读）负数「施加状态」的工程能生成", false,
+							string.Join(" / ", negRecGen.Issues.Where(x => x.IsError).Select(x => x.Message)));
+					}
+					else
+					{
+						var negRec = ProjectRecovery.FromProject(negRecGen.ProjectRoot);
+						var negRecBack = negRec.Profile.Cards.FirstOrDefault(c => c.ClassName == "UiCheckNegRecCard");
+						Check("V0.2.139：（回读）负数「施加状态」从工程认回来时**符号不反**："
+							+ "力量 -2 → -2（本体允许负层数那条 Apply<T> 写法）、虚弱 -1 → -1（ModifyAmount 那条写法）",
+							negRecBack is not null
+							&& negRecBack.Effects.Count == 2
+							&& negRecBack.Effects[0].Kind == "ApplyPower" && negRecBack.Effects[0].PowerId == "StrengthPower" && negRecBack.Effects[0].Amount == -2m
+							&& negRecBack.Effects[1].Kind == "ApplyPower" && negRecBack.Effects[1].PowerId == "WeakPower" && negRecBack.Effects[1].Amount == -1m,
+							negRecBack is null ? "(没回读到这张卡)"
+								: string.Join(" / ", negRecBack.Effects.Select(e => $"{e.PowerId}={e.Amount}")));
+						Check("V0.2.139：（回读）这次回读没有「没认出来」的语句",
+							!negRec.HasUnparsed, negRec.Unparsed.FirstOrDefault() ?? "0 条");
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(negRecRoot)) Directory.Delete(negRecRoot, true); } catch { }
+				}
+
+				var negWeakProfile = ProfileFactory.Sample();
+				var negWeak = new CardSpec
+				{
+					Name = "自检负值虚弱卡", ClassName = "UiCheckNegWeakCard", CardType = "Skill", Rarity = "Common",
+					Cost = 1, InCardPool = true,
+				};
+				negWeak.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -1m, UpgradeAmount = 0m, TargetSide = "Self" });
+				negWeakProfile.Cards.Add(negWeak);
+				string negWeakSrc = CSharpCodeGen.CardSource(negWeakProfile, negWeak, 0);
+				var negWeakPow = new CustomPowerSpec { Name = "自检负值虚弱状态", ClassName = "UiCheckNegPowerWeak", Type = "Buff" };
+				negWeakPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = -1m, TargetSide = "Self" } },
+				});
+				negPowProfile.CustomPowers.Clear();
+				negPowProfile.CustomPowers.Add(negWeakPow);
+				string negWeakPowSrc = CustomPowerGen.Source(negPowProfile, negWeakPow, 0);
+
+				Check("V0.2.139：虚弱 -1（本体**不**允许负层数）→ 仍然是 `GetPower<WeakPower>` + `ModifyAmount` 扣已有层数"
+					+ "（层数不能凭空变成负的），**绝不出现** Apply<WeakPower>(…, 负数)",
+					negWeakSrc.Contains("GetPower<WeakPower>", StringComparison.Ordinal)
+					&& negWeakSrc.Contains("ModifyAmount", StringComparison.Ordinal)
+					&& !Regex.IsMatch(negWeakSrc, @"PowerCmd\.Apply<WeakPower>\(choiceContext, [^,]+, -")
+					&& negWeakPowSrc.Contains("GetPower<WeakPower>", StringComparison.Ordinal)
+					&& negWeakPowSrc.Contains("ModifyAmount", StringComparison.Ordinal)
+					&& !negWeakPowSrc.Contains("PowerCmd.Apply<WeakPower>(choiceContext, base.Owner, -1m,", StringComparison.Ordinal), "对");
+
+				// 旧写法**逐字不变**：遗物 / 药水链上「力量 -2」以前生成的那一行（ModifyAmount + __negPower）
+				// 不许再出现在力量这类状态上；而**不允许负层数**的那一档文案一个字都没动，回读也照旧。
+				Check("V0.2.139：力量 -2 上不再出现 `__negPower` + `ModifyAmount`（那是「只扣已有层数」的旧写法，"
+					+ "目标身上本来没有力量时什么都不做 —— 正是用户报的「填负值的力量不生效」）",
+					!negCardSrc.Contains("__negPower", StringComparison.Ordinal)
+					&& !negRelicSrc.Contains("__negPower", StringComparison.Ordinal)
+					&& !negPotionSrc.Contains("__negPower", StringComparison.Ordinal)
+					&& !negPowSrc.Contains("__negPower", StringComparison.Ordinal), "对");
+			}
+
 			// ⑤ 本轮新增：「自己失去生命时」= 本体 AfterCurrentHpChanged 里 delta < 0 的那一半。
 			//    它比「受到伤害后」更宽（那条只认伤害管线），而且这个钩子本体不给 choiceContext。
 			Check("自定义状态的触发时机里有「自己失去生命时」，走本体的 AfterCurrentHpChanged",
@@ -26361,10 +26644,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("格挡填负数 → 生成 CreatureCmd.LoseBlock（本体 GainBlock 对非正数什么都不做）",
 				negSrc.Contains("CreatureCmd.LoseBlock(choiceContext, base.Owner.Creature, System.Math.Abs(base.DynamicVars.Block.BaseValue), base.Owner.Creature)")
 				&& !negSrc.Contains("CreatureCmd.GainBlock(base.Owner.Creature, base.DynamicVars.Block.BaseValue"), "LoseBlock");
-			Check("施加状态填负数 → 先取目标身上那份实例再 PowerCmd.ModifyAmount 扣（本体 Apply 对负数会新建负层数状态）",
-				negSrc.Contains("PowerModel? __negPower = base.Owner.Creature.GetPower<StrengthPower>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(base.DynamicVars[\"StrengthPower\"].BaseValue)), base.Owner.Creature, this);")
+			// ⚠ V0.2.139：力量属于本体**允许负层数**的 5 个状态（AllowNegative => true）→ 负数改成
+			// 「照本体「尖啸」那套直接施加负值」；中毒不允许负层数 → 仍旧先取实例再 ModifyAmount 扣。
+			Check("施加状态填负数 → 分两档：力量（本体允许负层数）直接施加 -3m（本体「尖啸」的写法，0 层也能扣成负的）；"
+				+ "中毒（不允许负层数）先取目标身上那份实例再 PowerCmd.ModifyAmount 扣（本体 Apply 对负数会新建负层数状态）",
+				negSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, base.DynamicVars[\"StrengthPower\"].BaseValue, base.Owner.Creature, this);")
+				&& !negSrc.Contains("GetPower<StrengthPower>")
 				&& negSrc.Contains("PowerModel? __negPower = cardPlay.Target.GetPower<PoisonPower>();")
-				&& !negSrc.Contains("await PowerCmd.Apply<PoisonPower>(choiceContext, cardPlay.Target, base.DynamicVars[\"PoisonPower\"].BaseValue"), "ModifyAmount");
+				&& !negSrc.Contains("await PowerCmd.Apply<PoisonPower>(choiceContext, cardPlay.Target, base.DynamicVars[\"PoisonPower\"].BaseValue"), "两档都对");
 			string negJson = LocalizationGen.CardsJson(negProbe);
 			Check("卡面描述写成「失去 / 扣除」而不是「获得 -5」",
 				negJson.Contains("失去 5 点格挡。") && negJson.Contains("失去 3 层力量。") && negJson.Contains("扣除 5 层中毒。"), "描述对");

@@ -1,5 +1,43 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 25 批需求（用户 2026-10-10 报的**两条**；**未发版**，版本号仍是 V0.2.138）
+
+> 派活 HEAD = `d3d7b60 发版 V0.2.138`；`--uicheck` 基线 = **3229 PASS / 0 FAIL**（Debug 与发布版都是）。
+> 任务书：`_tmp\待发任务书_V0.2.139_回血复活与负值力量.md`。**本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**
+> （只读 `status/diff/log/show` + `git worktree add`；改动前基线用 `git worktree add` 取 HEAD 源码，**没用 `git stash`**）。
+> 红线⑧ 照旧：不读 / 不复制 / 不使用用户存档；不写、也不盘点用户游戏安装目录；一切验证只用 `ProfileFactory.Sample()` +
+> `_tmp` 自造探针；探针只用 `--build`；禁区（动画四个 `.cs`、`MainWindow.xaml` 动画页 + `AnimationSpec`、刮削 `Scrape`）一个字没碰。
+
+> **用户原话（两条）**
+> ① 「状态：当你受到伤害或失去生命时，你回复3点生命。BUG：多人模式，有队友存活时，被敌人打死后可以回复生命从而复活。」
+> ② 「在生成器填负值的力量不生效」（用户补充：卡牌「施加增益/减益」、数值 -2、升级增量 0、未升级牌）
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **多人模式：致死伤害 / 失去生命后靠回血「复活」** | **根因**：`DamageReceived` / `HpLost` / `Attacked` 三条时机的守卫里没有「自己已经死了就别再跑」。本体 `AfterDamageReceived` / `AfterCurrentHpChanged` 是**无条件广播**的（致死那一下照样进），`AfterAttack` 是**一次攻击所有命中结束后**跑一次（致死那一击也在这时点）—— 效果里的「回复生命」把 HP 从 0 拉回正数，多人模式下队友还活着 = 看起来复活。**修**：三条时机 × 三条链共 **9 处**插入点全部加一句守卫（位置在归属守卫之后、效果之前，用各自链**正确**的实例表达式）：<br>· 状态链（`CustomPowerGen.cs` 的 `DamageReceived` / `HpLost` / `Attacked` 三个 case）→ `if (base.Owner.IsDead) return;`（这条链的 `base.Owner` 本身就是 `Creature`）；<br>· 遗物链 + 锻造链（`CSharpCodeGen.RelicTriggerGuardLines` 与 `ForgeTriggerGuardLines` 的同名 case）→ `if (base.Owner.Creature.IsDead) return;`（那两条链的 `base.Owner` 是 `Player`）。<br>单人模式同样生效（致死那一下不再触发这只遗物 / 这个状态）—— 预期语义，写进 README。<br>⚠ 顺手把 `IsRelicGuardLine`（把前置行分成「守卫 / 声明」的判据）改成**先剥掉行尾 `//` 注释**再找 `return;` —— 它原来只看整行里有没有 `return;`，注释里出现那三个字就会被**静默挪进守卫**那一拨、再被 `NegateRelicGuard` 取反塞进 `if (…)`。 | ✅ 待发 |
+| ② | **填负值的「力量」不生效** | **根因（两层）**：<br>**(a)** `CSharpCodeGen.ApplyPowerLine` 的负数分支**一律**走 `GetPower + ModifyAmount`（目标身上没有该状态就什么都不做），而本体有 5 个状态 `AllowNegative => true`（力量 / 敏捷 / 专注 / 尖啸 / 萎缩）—— 本体「尖啸」扣敌人力量就是 `PowerCmd.Apply<StrengthPower>(目标, -6)`。**修**：按 `EffectCatalog.AllowsNegativeLayers` 分流，允许负层数 → 直接 `Apply(目标, 负值)`（与「临时增益」那条**已有**的正确写法对齐，同一条实现），不允许 → 保持 `GetPower + ModifyAmount`。**四条链 + 锻造链**统一走这一份（锻造链原来内联了自己的一套 `if (amount < 0m) { GetPower → ModifyAmount(amount) }`：传进去的 amount 本身就是负的 = **ModifyAmount(-2) 等于加 2 层**，方向反了）。<br>**(b)** 卡牌链上那 5 种支持公式的效果只要数值 ≠ 0，`ProfileFactory.MigrateAmountsToFormulas` 就会把固定数值搬进「数值公式」栏（界面从此只编辑公式）→ `IsNegativeAmount` 里那个 `!UsesAmountFormula` 直接把负数分档**关掉**：用户从存档载入的卡（`-2` 已经变成公式 `"-2"`）在卡牌链上被当成**正数**生成。**修**：`IsNegativeAmount` 增加「公式在生成期能折成负数常数」这一档（`IsNegativeFormulaAmount`，拿不到配置 / 含运行时量时返回 false，不乱猜）。<br>**(c) 回读**：`ProjectRecovery` 原来只认 `ModifyAmount + __negPower`（而且判据写死 `choiceContext`）→ 不认新的 `Apply<T>(…, 负值)` 写法，回读会把符号读**反**。新增一条分支（判据看**第 2 个实参** = 数值；第一版写成第 1 个实参 = 目标，永远判不成负数、等于整支没生效）＋ `FxConstantAmount` 认 `=> -((2m))` 这种「负数公式」形态。<br>**校验器 / 文档**：`ProfileValidator` 两处负数提示文案按两档改写，`README.md` / `tools\使用说明.template.txt` 同步。 | ✅ 待发 |
+
+> **② 的生成行对照（力量 -2 / 敏捷 -3 / 虚弱 -1，四条链）**
+>
+> | 链 | 力量 -2 | 虚弱 -1 |
+> |---|---|---|
+> | 卡牌（从存档载入，数值已迁进公式） | `await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, -((2m)), base.Owner.Creature, this);` | `{ PowerModel? __negPower = base.Owner.Creature.GetPower<WeakPower>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs(base.DynamicVars["WeakPower"].BaseValue)), base.Owner.Creature, this); }` |
+> | 遗物 | `await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner.Creature, base.DynamicVars["StrengthPower"].BaseValue, base.Owner.Creature, null);` | 同上（`cardSource` = `null`） |
+> | 药水 | 同遗物 | 同遗物 |
+> | 自定义状态 | `await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, -2m, base.Owner, null);` | `{ PowerModel? __negPower = base.Owner.GetPower<WeakPower>(); … }` |
+> | 锻造图 | `foreach (Creature __fgFoe in ForgeFormulaRuntime.TargetOrFirst(__fgTarget, __fgPlayer)) await PowerCmd.Apply<StrengthPower>(choiceContext, __fgFoe, (-2m), __fgSelf, null);` | `foreach (…) { PowerModel? __negPower = __fgFoe.GetPower<WeakPower>(); if (__negPower is not null) await PowerCmd.ModifyAmount(choiceContext, __negPower, -(System.Math.Abs((-1m))), __fgSelf, null); }` |
+>
+> **老存档影响**：只有「负数 + 那 5 种状态」的配置会变（从「什么都不做」变成「真的扣成负数」）—— 这正是修复；
+> 其余状态（虚弱 / 易伤 / 中毒…）的生成文本与以前**逐字相同**。
+
+> **红线实测数字（本批，Debug 与发布版各一遍）**
+> - `--samplegen` 改动前后逐文件 SHA256：**112 个文件，只有 `ExampleMod.sln` 不同**（随机 GUID，允许）。
+> - `dotnet build Sts2CharForge.sln -c Debug --no-incremental` → **0 错误 / 365 警告**。
+> - `--uicheck`：Debug **3241 PASS / 0 FAIL**（基线 3229，本轮 +12）、发布版 **3241 PASS / 0 FAIL**。
+> - 两份 `_tmp` 自造探针（`probe_revive.json` = 受到伤害 / 失去生命时回复 3 点生命；`probe_neg.json` = 力量 -2 / 敏捷 -3 / 虚弱 -1）
+>   → `--profile … --out … **--build**` 各 **0 错误**、PCK 导出成功；`--recover` 0 条「没认出来」。
+> - `--buildcheck`：**① 不给 `--install` → 陷阱目录 0 个文件**（红线⑧ 的机器判据）。
+
 ## 第 24 批需求（用户 2026-10-10 当天报的**四条**；**未发版**，版本号仍是 V0.2.136）
 
 > 派活 HEAD = `daf8a95 发版 V0.2.136`；`--uicheck` 基线 = **3200 PASS / 0 FAIL**（Debug 与发布版都是）。
