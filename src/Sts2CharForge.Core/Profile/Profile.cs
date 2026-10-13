@@ -67,6 +67,16 @@ public sealed class CharacterProfile
     /// <summary>自定义状态（能力牌用的「你自己的状态」：触发时机 + 效果）</summary>
     public ObservableCollection<CustomPowerSpec> CustomPowers { get; set; } = new();
 
+    /// <summary>
+    /// **你自己上传的音频文件**（V0.2.155）：「播放音频文件（我上传的）」这个效果种类用它们。
+    ///
+    /// <para>本体自己的声音走 FMOD（只能放本体已有的事件），模组**注册不了新的 FMOD 事件**
+    /// （bank 里存的是事件 GUID，凭路径注册不了）。所以「放自己的音频」这条路是**绕开 FMOD**：
+    /// 生成时把文件复制到工程里的 <c>audio/</c> 目录（会一起打进 PCK），运行时用 Godot 自己的
+    /// <c>AudioStreamPlayer</c> + <c>GD.Load&lt;AudioStream&gt;("res://audio/…")</c> 播。</para>
+    /// </summary>
+    public ObservableCollection<AudioAssetSpec> AudioAssets { get; set; } = new();
+
     public string ModId { get; set; } = "MyCharMod";
     public string ModDisplayName { get; set; } = "";
     public string Author { get; set; } = "";
@@ -306,18 +316,28 @@ public sealed class EffectSpec : SpecBase
     }
 
     /// <summary>
-    /// 选牌类效果的**取几张**方式（需求原文：「如果我像实现消耗任意张手牌怎么办」）。
+    /// 选牌类效果的**取几张**方式（需求原文：「如果我像实现消耗任意张手牌怎么办」+「选择所有手牌」）。
     ///
     /// 空串 = 恰好 N 张（老存档的行为，生成结果一个字符都不变）；
     /// <c>UpTo</c> = 最多 N 张（可以少选，本体「净化 Purity」那种：<c>new CardSelectorPrefs(prompt, 0, N)</c>）；
-    /// <c>Any</c> = 任意张（上限给一个很大的数，卡面不写数字）。
+    /// <c>Any</c> = 任意张（上限给一个很大的数，卡面不写数字）；
+    /// <c>All</c> = 全部（**不弹选牌界面**，直接对那一摞里符合条件的每一张动手 —— 本体「恶魔之焰」那种，
+    /// 见 <see cref="Generation.CSharpCodeGen"/> 里各发射器的 All 分支）。
     /// </summary>
     private string _countMode = "";
 
     public string CountMode
     {
         get => _countMode;
-        set => Set(ref _countMode, value ?? "");
+        set
+        {
+            if (!Set(ref _countMode, value ?? "")) return;
+            // 换档要当场刷新：列表行摘要（「消耗 所有手牌」）、以及「要不要声明 Cards 变量」那两条判据
+            Raise(nameof(CountIsAny));
+            Raise(nameof(CountIsAll));
+            Raise(nameof(CountHasNoNumber));
+            Raise(nameof(Display));
+        }
     }
 
     /// <summary>这条效果要不要显示「取几张」那一栏（只有选牌类效果有意义）。</summary>
@@ -325,9 +345,32 @@ public sealed class EffectSpec : SpecBase
     public bool UsesCountMode => Kind is "ExhaustCard" or "DiscardCard" or "UpgradeCard"
         or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust";
 
+    /// <summary>
+    /// 界面 XAML 直接绑的「取几张」那一行（V0.2.150）。
+    ///
+    /// <para>为什么和 <see cref="UsesCountMode"/> 不是同一个判据：那个旧的判据只管 6 种，
+    /// 可是机械测量（见 <see cref="EffectFieldPolicy"/>）说明「变化 / 复制 / 重放 / 回合结束自动打出 /
+    /// 放置卡牌 / 给予关键词 / 三种全局牌组」也**真的会读**它 —— 以前这些种类上这一栏被藏起来了
+    /// （填不了「最多 N 张 / 任意张」）。现在界面按测量结果摆，锻造链照旧。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowCountModeRow => IsForgeChain ? UsesCountMode : EffectFieldPolicy.UsesCountMode(Kind);
+
     /// <summary>「任意张」：不声明 Cards 变量（没有数字可显示，升级增量也没有落点）。</summary>
     [JsonIgnore]
-    public bool CountIsAny => UsesCountMode && CountMode == "Any";
+    public bool CountIsAny => ShowCountModeRow && CountMode == "Any";
+
+    /// <summary>
+    /// 「全部」（V0.2.163）：**不弹选牌界面**，直接对那一摞里符合条件的每一张动手
+    /// （本体「恶魔之焰」消耗所有手牌那种写法）。卡面写「所有」、不写数字，所以和「任意张」一样
+    /// 不声明 Cards 变量、升级增量也没有落点。
+    /// </summary>
+    [JsonIgnore]
+    public bool CountIsAll => ShowCountModeRow && CountMode == "All";
+
+    /// <summary>「任意张 / 全部」都没有一个固定的张数数字（两处共用这一条判据）。</summary>
+    [JsonIgnore]
+    public bool CountHasNoNumber => CountIsAny || CountIsAll;
 
     /// <summary>
     /// 条件选项：<b>只对「这一条效果」生效</b>（不是整张牌）。
@@ -363,9 +406,11 @@ public sealed class EffectSpec : SpecBase
                 // 「转化为先古卡」的配对表按它显示（换个效果种类就该收起来）
                 Raise(nameof(IsAncientTranscend));
                 Raise(nameof(IsAncientRelicSwap));
-                // 「取几张」那一栏按效果种类显示；「任意张」还会影响要不要声明 Cards 变量
+                // 「取几张」那一栏按效果种类显示；「任意张 / 全部」还会影响要不要声明 Cards 变量
                 Raise(nameof(UsesCountMode));
                 Raise(nameof(CountIsAny));
+                Raise(nameof(CountIsAll));
+                Raise(nameof(CountHasNoNumber));
                 Raise(nameof(IsPetEffect));
                 Raise(nameof(PetKindZh));
                 Raise(nameof(PetSacrificeUsesMultiplier));
@@ -393,6 +438,25 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(ShowCardScopeFilter));
                 Raise(nameof(HasCardScope));
                 Raise(nameof(IsSlowPower));
+                // V0.2.150：按种类裁剪的那几行（作用对象 / 增益减益 / 目标卡 / 生成到 / 选牌方式 /
+                // 升级增量 / 取几张 / 取卡方式 / 下回合生效）—— 换种类时都要当场出现或收起，
+                // 少 Raise 一个就会「换成这个种类了那一行却不出来」（用户报过这类 bug）。
+                Raise(nameof(ShowTargetSideRow));
+                Raise(nameof(ShowPowerRow));
+                Raise(nameof(ShowTargetCardRow));
+                Raise(nameof(ShowSpawnToRow));
+                Raise(nameof(ShowCardPickRow));
+                Raise(nameof(ShowUpgradeAmountRow));
+                Raise(nameof(ShowCountModeRow));
+                Raise(nameof(CountIsAny));
+                Raise(nameof(CountIsAll));
+                Raise(nameof(CountHasNoNumber));
+                Raise(nameof(ShowSpawnPickRow));
+                // V0.2.154：「音效」那一行（播放音效）—— 换种类要当场出现 / 收起
+                Raise(nameof(IsPlaySfx));
+                Raise(nameof(SfxZh));
+                // V0.2.155：「音频文件」那一行（播放上传的音频）
+                Raise(nameof(IsPlaySoundFile));
                 // 「刮削」那两行（条件 / 操作）的显隐绑的就是它 —— 换成别的效果种类时要跟着消失。
                 Raise(nameof(ShowScrapeOptions));
                 // 需求 ⑨：「获得药水」的「取药方式 / 目标药水」两行的显隐绑的就是这两个 ——
@@ -579,33 +643,12 @@ public sealed class EffectSpec : SpecBase
         Raise(nameof(ShowPlainFixedTimesBox));
     }
 
-    private bool _isExpanded;
-
-    /// <summary>
-    /// 界面用：这一条效果在右侧效果栏里是**展开**（显示完整编辑区）还是**折叠成一行摘要**
-    /// （V0.2.137 用户要求的第 ④ 条，拍板 A）。
-    ///
-    /// <para>用户原话：「遗物右侧效果栏怎么变那么奇怪，没有可以精简的效果栏吗，药水也是」——
-    /// 以前每条效果都把整块编辑器塞进列表行，一行好几百像素、一眼看不完。
-    /// 现在**默认折叠**（只显示「效果种类 + 关键参数」那一行摘要 + 一个小三角），点那一行才展开。</para>
-    ///
-    /// <para>⚠ <see cref="JsonIgnoreAttribute"/>：纯界面状态，**不写进存档**、生成端一个字节都不读它
-    /// —— 所以老存档零影响、往返不会多出字段。作用范围只有遗物页 / 药水页 / 额外资源量页的
-    /// 效果栏（卡牌页 / 诅咒页 / 先古卡页的编辑器不动，用户没提）。</para>
-    ///
-    /// <para>默认 <c>false</c> = 折叠：新加的效果、刚打开存档的效果都是收起的一行。</para>
-    /// </summary>
-    [JsonIgnore]
-    public bool IsExpanded
-    {
-        get => _isExpanded;
-        set
-        {
-            if (_isExpanded == value) return;
-            _isExpanded = value;
-            Raise(nameof(IsExpanded));
-        }
-    }
+    // ===== V0.2.144：`EffectSpec.IsExpanded`（V0.2.137 那个「折叠行」的纯界面标记）**已删除** =====
+    //
+    // 用户原话「遗物药水右侧的效果栏能不能同步卡牌的」→ 三页右侧改成卡牌页那种
+    // 「上面一行摘要列表 + 下面一整块共享编辑区」，折叠 / 展开这套交互不存在了，
+    // 所以那个 [JsonIgnore] 标记也没有存在意义（删掉它不影响任何存档：它本来就不写进 JSON，
+    // 生成端也从来没读过它）。
 
     // ==================================================================================
     //  锻造【效果】模块（V0.2.129）：和「卡牌」页共用同一套 EffectSpec 编辑器
@@ -698,8 +741,9 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore] public bool ShowCardRepeatRow => IsCardChain && ShowRepeatCountInput;
     /// <summary>卡牌链上「命中次数」固定数字框（搬进上面那一行的横排里，老位置那份让位）。</summary>
     [JsonIgnore] public bool ShowPlainFixedRepeatBox => ShowFixedRepeatBox && !IsCardChain;
-    /// <summary>卡牌链上「生效次数」那一行里的**公式框**（和固定数字框并排）。</summary>
-    [JsonIgnore] public bool ShowCardTimesRow => IsCardChain;
+    /// <summary>卡牌链上「生效次数」那一行里的**公式框**（和固定数字框并排）。
+    /// V0.2.150：那 2 种「挂在卡自己钩子上、没有重复落点」的效果不摆这一行（见 EffectFieldPolicy.UsesTimes）。</summary>
+    [JsonIgnore] public bool ShowCardTimesRow => IsCardChain && EffectFieldPolicy.UsesTimes(Kind);
     /// <summary>卡牌链上「生效次数」固定数字框（搬进上面那一行的横排里，老位置那份让位）。</summary>
     [JsonIgnore] public bool ShowPlainFixedTimesBox => ShowFixedTimesBox && !IsCardChain;
 
@@ -825,17 +869,25 @@ public sealed class EffectSpec : SpecBase
         {
             if (!FormulaSupports(Kind))
                 return $"「{EffectCatalog.FindKind(Kind).Display}」的数值要在生成的时候就得定下来"
-                     + "（抽几张 / 生成几张这类要提前分配变量和选牌上限），所以这一栏**只认光秃秃一个 X**："
-                     + "写 X = 原来的「数值 = X」那个勾选框（打出这张牌那一刻消耗掉的能量，费用框里也要填 X）。"
+                     + "（抽几张 / 生成几张这类要提前分配变量和选牌上限），所以这一栏**只认两种写法**："
+                     + "① 一个**纯数字 / 能折成常数的式子**（例：1、2+3）—— 它就是左边的固定数值（工具会自动折好）；"
+                     + "② 光秃秃一个 X = 原来的「数值 = X」那个勾选框（打出这张牌那一刻消耗掉的能量，费用框里也要填 X）。"
                      + "想写完整公式（M*3 / max(1, N/2) / Turn*2…）只有这 5 种："
                      + "造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益。";
-            return "留空 = 0（这条效果就不显示、也不执行）；写了 = 打出这张牌时才求值，卡面上显示算出来的数字。"
+            // V0.2.164：这三条链也能写公式了 —— 口径和卡牌不同，说清楚（见 ProfileValidator 的同名提示）
+            string chain = IsCardChain
+                ? "留空 = 0（这条效果就不显示、也不执行）；写了 = 打出这张牌时才求值，卡面上显示算出来的数字。"
+                : IsForgeChain
+                    ? "留空 = 用左边的固定数值；写了 = 每次触发时现算。"
+                    : "留空 = 用左边的固定数值；写了 = 这条效果触发 / 使用时现算"
+                      + "（遗物 / 药水悬停时显示的数字也跟着现算；自定义状态的说明里会直接写公式本身）。"
+                      + "⚠ 这几条链上没有「打出这张牌」那一刻：X / Y 读的是**当前**能量 / 额外资源量，"
+                      + "「指定敌人」来源的参数取的是**可打的第一个敌人**。";
+            return chain
                  + "可用参数名（M / N…，「自定义参数 / 组」页里定义的那几个）、X = 当前能量、Y = 当前额外资源量；"
                  + "还内置了一批**实时只读量**（不用定义，直接写）—— **完整清单就在下面那个「可用量」小框里**："
                  + Generation.FormulaBuiltins.HintList
-                 + "。支持 + - * / ( ) 和 min / max / floor / ceil / round / abs。例：M*3、max(1, N/2)、Turn*2。"
-                 + "⚠ 公式**只做在卡牌上**：遗物 / 药水 / 诅咒 / 自定义状态的触发时机里填了会被配置检查拦住"
-                 + "（那几条链没有「打出这张牌」那一刻的上下文）。";
+                 + "。支持 + - * / ( ) 和 min / max / floor / ceil / round / abs。例：M*3、max(1, N/2)、Turn*2。";
         }
     }
 
@@ -903,9 +955,46 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>这个效果种类支不支持「范围界定」（选牌类效果：只对某一类牌 / 某一组牌动手）。</summary>
     [JsonIgnore]
-    public bool UseCardScopeFilter => Kind is "ExhaustCard" or "DiscardCard" or "UpgradeCard"
-        or "GiveKeyword" or "CopyCard" or "ReplayCard" or "TurnEndPlay"
-        or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry";
+    public bool UseCardScopeFilter => EffectFieldPolicy.UsesCardScopeFilter(Kind);
+
+    // ==================== V0.2.150：按种类裁剪「常显栏位」 ====================
+    // 用户：「卡牌页右边的效果栏做的太差了，像造成伤害这个效果，只需要数值（公式）/ 升级增量 /
+    // 作用对象 / 命中次数 / 生效次数 / 概率 / 下回合生效 / 随机目标允许攻击同个敌人，
+    // 其他的都可以隐藏掉。其他每一条效果你都要问我每一个需要保留什么。」
+    //
+    // 下面这几行以前是**无条件显示**的（增益减益 / 目标卡 / 生成到 / 选牌方式 / 随机允许重复，
+    // 以及所有种类都摆着的「作用对象」）—— 判据现在统一走 EffectFieldPolicy，
+    // 那份清单是**机械测量**出来的（见那个类的注释），不是人拍的。
+    // 锻造链（IsForgeChain）一律照旧显示：节点图那边的显隐是它自己那套，改卡牌页不动它。
+
+    /// <summary>「作用对象」那一行要不要显示（只有生成端真的会读它的种类才摆）。</summary>
+    [JsonIgnore]
+    public bool ShowTargetSideRow => IsForgeChain || EffectFieldPolicy.UsesTargetSide(Kind);
+
+    /// <summary>「增益 / 减益」那一行的显隐（选哪个状态施加 / 翻倍 / 清除 / 暴露）。</summary>
+    [JsonIgnore]
+    public bool ShowPowerRow => IsForgeChain || EffectFieldPolicy.UsesPower(Kind);
+
+    /// <summary>「目标卡（生成 / 变化 / 强化用）」那一行的显隐。</summary>
+    [JsonIgnore]
+    public bool ShowTargetCardRow => IsForgeChain
+        || EffectFieldPolicy.UsesTargetCard(Kind, plainChain: !IsCardChain);
+
+    /// <summary>「生成到（生成卡牌用）」那一行的显隐。</summary>
+    [JsonIgnore]
+    public bool ShowSpawnToRow => IsForgeChain || EffectFieldPolicy.UsesSpawnTo(Kind);
+
+    /// <summary>「选牌方式（消耗 / 变化 / 丢弃用）」那一行的显隐。</summary>
+    [JsonIgnore]
+    public bool ShowCardPickRow => IsForgeChain || EffectFieldPolicy.UsesCardPick(Kind);
+
+    /// <summary>
+    /// 「升级增量」那一行的显隐（卡牌页专用）。
+    /// 23 种效果生成端根本不读它（击晕 / 结束回合 / 获得药水 / 全局牌组那几种…），全都不摆。
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowUpgradeAmountRow => EffectFieldPolicy.UsesUpgradeAmount(Kind);
+
 
     /// <summary>
     /// <b>这条效果是不是「数值 = X」</b>：老勾选框 <see cref="AmountIsX"/>，或者「数值（公式）」框里
@@ -968,7 +1057,7 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>「多选1」那个输入框要不要显示（只有「生成卡牌 + 按范围随机」用得到）。</summary>
     [JsonIgnore]
-    public bool ShowSpawnChoice => Kind == "GenerateCard" && IsSpawnRandom;
+    public bool ShowSpawnChoice => ShowSpawnPickRow && IsSpawnRandom;
 
     // ===== 复制卡牌：复制的份数 =====
     private int _copies = 1;
@@ -1107,7 +1196,7 @@ public sealed class EffectSpec : SpecBase
     /// <summary>这个次数类字段在这个效果上能不能写公式（只做在卡牌上，而且要那一栏真的显示）。</summary>
     public bool ShowsCountFormula(string key) => key switch
     {
-        "Times" => !TimesIsX && !TimesIsStack,        // 生效次数：勾了「= X / = 层数」就不能再写公式
+        "Times" => EffectFieldPolicy.UsesTimes(Kind) && !TimesIsX && !TimesIsStack,   // 生效次数：那 2 种挂在卡自己钩子上的不显示
         "Repeat" => UsesRepeatCount && !RepeatIsX && !RepeatIsStack,   // 命中次数：只对真的会用到它的种类显示
         "Copies" => ShowCopies,
         "Replay" => ShowReplayTimes,
@@ -1316,13 +1405,24 @@ public sealed class EffectSpec : SpecBase
         // 复制出来的本来就是新卡（CreateClone），和「生成卡牌」那一套附加处理完全一样，直接复用。
         or "CopyCard";
 
-    /// <summary>「范围限定」那一行要不要显示（只有选了「按范围随机」才有意义）。</summary>
+    /// <summary>
+    /// 「取卡方式（指定卡 / 按范围随机）」那一行 + 它下面那几行（范围限定 / 多选1 / 从范围里自己挑）
+    /// 的显隐（V0.2.150）。
+    ///
+    /// <para>和 <see cref="UsesSpawnOptions"/> 分开：复制卡牌虽然支持**附加处理**，
+    /// 但它不读「取卡方式 / 范围限定」（它挑哪张牌由「选牌方式 / 从哪里选牌 / 范围界定」决定），
+    /// 所以那一行在它上面是白摆的（机械测量：见 <see cref="EffectFieldPolicy.UsesSpawnPick"/>）。</para>
+    /// </summary>
     [JsonIgnore]
-    public bool ShowSpawnFilter => UsesSpawnOptions && IsSpawnRandom;
+    public bool ShowSpawnPickRow => IsForgeChain ? UsesSpawnOptions : EffectFieldPolicy.UsesSpawnPick(Kind);
+
+    /// <summary>「范围限定」那一行要不要显示（只有「按范围随机」才有意义）。</summary>
+    [JsonIgnore]
+    public bool ShowSpawnFilter => ShowSpawnPickRow && IsSpawnRandom;
 
     /// <summary>「指定卡」时在下面提示一句「范围限定」在哪（用户报过「找不到在哪限定范围」）。</summary>
     [JsonIgnore]
-    public bool ShowSpawnPickHint => UsesSpawnOptions && !IsSpawnRandom;
+    public bool ShowSpawnPickHint => ShowSpawnPickRow && !IsSpawnRandom;
 
     private bool _chanceEnabled;
     private decimal _chancePercent = 50m;
@@ -1390,6 +1490,7 @@ public sealed class EffectSpec : SpecBase
             Raise(nameof(UsesRepeatCount));
             Raise(nameof(ShowRepeatCountInput));
             Raise(nameof(ShowAllyNoPetsOption));
+            Raise(nameof(ShowAllowDuplicatesRow));
             RaiseCountFormulaBoxes();
             Raise(nameof(Display));
         }
@@ -1412,6 +1513,15 @@ public sealed class EffectSpec : SpecBase
     /// <summary>界面 XAML 直接绑：「全部友方」的子选项那一行只在选了「全部友方」时显示。</summary>
     [JsonIgnore]
     public bool ShowAllyNoPetsOption => string.Equals(_targetSide, "AllAllies", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 「随机目标允许攻击同个敌人」那一行要不要显示（V0.2.150）：
+    /// 只有「作用对象 = 随机敌人」这一档真的会读它（本体 <c>TargetingRandomOpponents(allowDuplicates:)</c> /
+    /// 生成代码里的 <c>foes.Remove(foe)</c>）—— 别的档它不参与生成，所以不摆。
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowAllowDuplicatesRow => EffectFieldPolicy.UsesAllowDuplicates(_targetSide);
+
     public int RepeatCount { get => _repeatCount; set => Set(ref _repeatCount, value); }
     /// <summary>生效次数：整条效果重复执行几遍（1~20，1 = 只执行一次）</summary>
     public int Times { get => _times; set => Set(ref _times, value); }
@@ -1431,12 +1541,14 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>「从范围里自己挑一张」那个勾选框要不要显示（只有「按范围随机」这一档才有意义）。</summary>
     [JsonIgnore]
-    public bool ShowSpawnChosen => UsesSpawnOptions && IsSpawnRandom;
+    public bool ShowSpawnChosen => ShowSpawnPickRow && IsSpawnRandom;
 
     /// <summary>
-    /// 「下回合生效」那个勾选框要不要显示：只有**真的实现了延迟分支**的种类才显示
+    /// 「下回合生效」那个勾选框要不要显示：只有**生成端真的会走延迟分支**的种类才显示
     /// （见 <see cref="EffectCatalog.HonorsNextTurn"/>）——
     /// 以前这个勾对所有种类都摆着，其中 8 个种类生成端根本没实现（勾了等于没勾，用户报过「勾了没反应」）。
+    /// <para>V0.2.150 用机械测量复核过：卡牌链上「生成端真的读 NextTurn」的种类**正好**就是这一份
+    /// （8 种不读），所以这里不另写清单 —— 两份判据迟早会漂。</para>
     /// </summary>
     [JsonIgnore]
     public bool ShowNextTurn => EffectCatalog.HonorsNextTurn(Kind);
@@ -1650,6 +1762,41 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public bool UsesPlaceTo => Kind == "PlaceCard";
 
+    // ===== 播放音效（V0.2.154，用户要求「能不能加一个播放音频的效果在效果种类里」）=====
+    private string _sfx = "";
+
+    /// <summary>
+    /// 要播放的本体 FMOD 事件路径（形如 <c>event:/sfx/block_gain</c>）。
+    /// 候选表见 <see cref="EffectCatalog.SfxChoices"/>（本体源码里真实用过的那些），
+    /// 但**也可以直接填任何路径** —— 生成的就是一句 <c>SfxCmd.Play("…", 音量)</c>。
+    /// </summary>
+    public string Sfx
+    {
+        get => _sfx;
+        set { if (Set(ref _sfx, value ?? "")) { Raise(nameof(Display)); Raise(nameof(SfxZh)); } }
+    }
+
+    /// <summary>界面用：「音效」那一行只在「播放音效」这一档显示。</summary>
+    [JsonIgnore]
+    public bool IsPlaySfx => Kind == "PlaySfx";
+
+    /// <summary>界面用：「音频文件」那一行只在「播放音频文件（我上传的）」这一档显示（V0.2.155）。</summary>
+    [JsonIgnore]
+    public bool IsPlaySoundFile => Kind == "PlaySoundFile";
+
+    /// <summary>这条音效的中文名（没选 = 「（没选音效）」，不在候选表里就原样显示路径）。</summary>
+    [JsonIgnore]
+    public string SfxZh => EffectCatalog.SfxDisplay(_sfx);
+
+    /// <summary>
+    /// 「数值」那一栏在「播放音效」上的含义 = **音量百分比**：留空 / 0 = 100%（正常音量），
+    /// 50 = 一半，200 = 两倍（生成 <c>SfxCmd.Play(路径, 1.5f)</c> 那个 1.5）。
+    /// 别的种类照旧（数值 = 力度 / 张数…）。
+    /// </summary>
+    [JsonIgnore]
+    public decimal SfxVolumePercent => Amount <= 0m ? 100m : Amount;
+
+
     /// <summary>
     /// 「数值 0 = 这张牌自己」——**只有「丢弃卡牌」这一档**（本批新增）。
     /// 只用来判断**生成语义**（0 这一档不挑牌、不声明张数变量），**不要拿它做界面显隐** ——
@@ -1667,13 +1814,23 @@ public sealed class EffectSpec : SpecBase
     public IReadOnlyList<PileChoiceOption> SelectPileChoices =>
         Kind == "DiscardCard" ? EffectCatalog.DiscardPiles : EffectCatalog.SelectPiles;
 
-    /// <summary>「从哪里选牌」那一行的标题（不同效果的措辞不一样：丢哪一摞 / 升级哪一摞）。</summary>
+    /// <summary>
+    /// 「从哪里选牌」那一行的**标签**（措辞按种类变）。
+    ///
+    /// <para>⚠ 这里必须**短**（V0.2.151 修的坑）：效果栏是一个两列 Grid，第一列是 <c>Width="Auto"</c>
+    /// 的标签列、第二列是 <c>*</c> 的输入列 —— 标签文字有多宽，第一列就有多宽，第二列只能吃剩下的。
+    /// 以前这里写的是「从哪里选牌（消耗 / 变化 / 复制…；选「牌顶」= 抽牌堆最上面那张，不用挑）」，
+    /// 34 个字把第一列撑到约 500px，于是整个编辑区第二列只剩 40px：
+    /// 「选牌方式 / 从哪里选牌」下拉变成一条缝、「生效次数（公式）」被挤出可视区
+    ///（用户报「次数公式怎么不见了」「放置卡牌效果怎么没反应」就是它）。
+    /// 详细说明都放在那一行 ComboBox 的 ToolTip 里（鼠标停上去就有），标签本身保持两个字到六个字。</para>
+    /// </summary>
     [JsonIgnore]
     public string SelectPileLabel => Kind switch
     {
-        "DiscardCard" => "从哪里丢弃（手牌 / 抽牌堆 / 牌顶）",
-        "UpgradeCard" => "从哪里升级（手牌 / 抽牌堆 / 弃牌堆 / 牌顶）",
-        _ => "从哪里选牌（消耗 / 变化 / 复制…；选「牌顶」= 抽牌堆最上面那张，不用挑）",
+        "DiscardCard" => "从哪里丢弃",
+        "UpgradeCard" => "从哪里升级",
+        _ => "从哪里选牌",
     };
 
     // ===== 给予卡牌关键词（GiveKeyword）=====
@@ -1994,6 +2151,10 @@ public sealed class EffectSpec : SpecBase
         get
         {
             string when = NextTurn ? "（下回合）" : "";
+            // 「取几张 = 全部」那一档**不弹选牌界面、也不是随机**：选牌方式不生效，
+            // 所以下面的摘要里一律不写它（和 V0.2.161 同一条规矩：不生效的栏位，文案里也不写）。
+            string pickZh = CountIsAll ? "" : CardPickZh;
+            static string PickPart(string p) => p.Length == 0 ? "" : $" ｜ {p}";
             // 生成 / 消耗 / 变化卡牌：把「哪张卡、放哪、怎么选」显示出来，方便一眼看出有没有填漏
             string extra = Kind switch
             {
@@ -2001,19 +2162,19 @@ public sealed class EffectSpec : SpecBase
                 "GenerateCard" => IsSpawnRandom
                     ? $" ｜ 生成「{SpawnFilterZh}」{(HasSpawnChoice ? $"（{SpawnChoice:0.##} 张中选一张）" : "")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}"
                     : $" ｜ 生成 {(SpawnCardId is { Length: > 0 } sc ? sc : "（未填→Shiv）")} → 放入{EffectCatalog.SpawnTargetZh(SpawnToPile)}",
-                "TransformCard" => $" ｜ 变为 {(SpawnCardId is { Length: > 0 } tc ? tc : "随机卡")} ｜ {CardPickZh}",
-                "ExhaustCard" => $" ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                "TransformCard" => $" ｜ 变为 {(SpawnCardId is { Length: > 0 } tc ? tc : "随机卡")}{(pickZh.Length == 0 ? "" : $" ｜ {pickZh}")}",
+                "ExhaustCard" => $"{PickPart(pickZh)} ｜ 从{SelectPileZh}",
                 // 丢弃：把「丢哪一摞 / 怎么选」显示出来（两种牌堆的行为差别挺大，值得一眼看到）
-                "DiscardCard" => $" ｜ 丢弃 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                "DiscardCard" => $" ｜ 丢弃{PickPart(pickZh)} ｜ 从{SelectPileZh}",
                 // 升级卡牌 / 预见：都是「选 N 张牌」，把从哪一摞 / 怎么看写出来
-                "UpgradeCard" => $" ｜ 升级 ｜ {CardPickZh} ｜ 从{SelectPileZh}",
+                "UpgradeCard" => $" ｜ 升级{PickPart(pickZh)} ｜ 从{SelectPileZh}",
                 // 复制卡牌：选几张 / 从哪一摞 / 每张复制几份（份数是它独有的那一栏）
-                "CopyCard" => $" ｜ 复制 ｜ {CardPickZh} ｜ 从{SelectPileZh} ｜ 每张 {Math.Max(1, Copies)} 份",
+                "CopyCard" => $" ｜ 复制{PickPart(pickZh)} ｜ 从{SelectPileZh} ｜ 每张 {Math.Max(1, Copies)} 份",
                 "Scry" => " ｜ 预见（看抽牌堆顶，可丢任意张）",
                 "AddCardGlobal" => $" ｜ 加进牌组：{(SpawnCardId is { Length: > 0 } ac ? ac : "（未填→Shiv）")}",
-                "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")} ｜ {CardPickZh}",
-                "RemoveCardGlobal" => $" ｜ 从牌组删牌 ｜ {CardPickZh}",
-                "UpgradeCardGlobal" => $" ｜ 升级牌组里的牌 ｜ {CardPickZh}",
+                "TransformCardGlobal" => $" ｜ 牌组里的牌变为 {(SpawnCardId is { Length: > 0 } tgc ? tgc : "随机卡")}{(pickZh.Length == 0 ? "" : $" ｜ {pickZh}")}",
+                "RemoveCardGlobal" => $" ｜ 从牌组删牌{PickPart(pickZh)}",
+                "UpgradeCardGlobal" => $" ｜ 升级牌组里的牌{PickPart(pickZh)}",
                 // 需求 ⑨：获得药水 —— 把「哪一瓶 / 随机」写出来（只看「获得药水」看不出配了哪一档）
                 "GainPotion" => IsPotionRandom
                     ? " ｜ 随机一瓶药水"
@@ -2053,7 +2214,7 @@ public sealed class EffectSpec : SpecBase
                     : "临时增益（本回合）") + (PowerId ?? "?"),
                 // 给予关键词：数值 = 选几张牌（0 = 这张牌自己），后面跟关键词名与是否临时
                 // （本体关键词显示中文名：Retain → 保留；自定义关键词显示它自己的名字）
-                "GiveKeyword" => (Amount <= 0 ? "自己" : (CardPick == "Chosen" ? "自己选 " : "随机 ") + $"{Amount:0.##} 张")
+                "GiveKeyword" => (CountIsAll ? "所有" : Amount <= 0 ? "自己" : (CardPick == "Chosen" ? "自己选 " : "随机 ") + $"{Amount:0.##} 张")
                     + "给予关键词「" + GivenKeywordZh + "」"
                     + (TempKeyword ? "（临时）" : ""),
                 "AddCardGlobal" => "获得卡牌（全局）",
@@ -2071,6 +2232,11 @@ public sealed class EffectSpec : SpecBase
                 // 刮削（本体卡「刮削 Scrape」）：界面上把「抽几张 → 对什么条件的牌做什么」写出来，
                 // 否则只看得到 Kind 名（条件和操作各有各的档，光看「刮削」两个字分不清）
                 "ScrapeDraw" => $"刮削（抽 {Amount:0.##} 张 → 对其中「{ScrapeCondZh}」的牌{ScrapeOpZh}）",
+                // V0.2.154：播放音效（数值那一栏 = 音量%）
+                "PlaySfx" => $"播放音效：{SfxZh}" + (SfxVolumePercent == 100m ? "" : $"（音量 {SfxVolumePercent:0.##}%）"),
+                // V0.2.155：播放上传的音频文件（这里拿不到整份配置，直接显示文件名 / Key）
+                "PlaySoundFile" => $"播放音频：{(string.IsNullOrWhiteSpace(Sfx) ? "（没选音频）" : Sfx.Trim())}"
+                    + (SfxVolumePercent == 100m ? "" : $"（音量 {SfxVolumePercent:0.##}%）"),
                 // 召唤伙伴 / 伙伴攻击：作用对象是宠物，不是「自己 / 敌人」，别显示那个「→ 自己」。
                 // 这里写的是选中那只召唤物的**类名**（Profile 层拿不到中文名 —— 那要读召唤物列表，
                 // 由 LocalizationGen / 界面负责翻译成中文名）。
@@ -2087,6 +2253,10 @@ public sealed class EffectSpec : SpecBase
             // 牺牲伙伴的数值已经写在公式说明里（固定 3 / 最大生命 × 3），同理不重复追加。
             string amountPart = PetAction && Kind != "PetHeal" && Kind != "PetLoseHp" && Kind != "PetGainMaxHp"
                 ? ""
+                // 「取几张 = 全部 / 任意张」（V0.2.163 / V0.2.133）：列表里写「所有 / 任意」而不是那个**不生效**的数字
+                //（全部档不弹选牌界面、任意档数字由玩家定，写「3」会让人以为就是 3 张）。
+                : CountHasNoNumber
+                    ? (CountIsAll ? " 所有" : " 任意张")
                 // 「数值公式」：列表里显示**公式本身**，而不是那个只用来占位的固定数字 ——
                 // 显示占位值等于骗人（界面上写着「造成伤害 6」，打出时算的却是 M*3）。
                 : UsesAmountFormula
@@ -2109,8 +2279,13 @@ public sealed class EffectSpec : SpecBase
                  + $"{(TimesIsX ? " ×X 次" : Times > 1 ? $" ×{Times} 次" : "")}"
                  + (UsesAnyCountFormula ? CountFormulaListText : "")
                  + $"{(RepeatIsX ? "（命中 X 次）" : "")}{ChanceText}{SlowPercentText}"
-                 // 召唤 / 伙伴攻击打的是宠物，没有「作用对象」这一说 —— 加了这个尾巴会让人以为「→ 自己」是给宠物加血
-                 + (PetAction ? "" : $" → {side}") + extra + CardScopeListText
+                 // 召唤 / 伙伴攻击打的是宠物，没有「作用对象」这一说 —— 加了这个尾巴会让人以为「→ 自己」是给宠物加血。
+                 // V0.2.161（用户实测报的「抽卡、获得能量之类的效果种类的对象没了，但是显示的是对敌人」）：
+                 // 「抽牌 / 获得能量 / 生成卡牌…」这些**生成端根本不读作用对象**的种类，界面上那一行已经藏起来了
+                 //（V0.2.150 按种类裁剪），可行尾还印着「→ 单体敌人」—— 因为 `_targetSide` 的**默认值就是 "Enemy"**。
+                 // 判据必须和显隐**同一份**（`EffectFieldPolicy.UsesTargetSide`）：
+                 // 「界面上显示的栏位，生成端一定读；藏起来的，生成端一定不读」—— 描述里也不许写。
+                 + (PetAction || !EffectFieldPolicy.UsesTargetSide(Kind) ? "" : $" → {side}") + extra + CardScopeListText
                  + (Condition.IsNone ? "" : $"  ｜ 条件：{Condition.DisplayShort}");
         }
     }
@@ -2406,16 +2581,24 @@ public sealed class CardSpec : SpecBase, ISlotRow
     [JsonIgnore]
     public string UpgradeStarCostText
     {
-        get => _upgradeStarCost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "";
+        // V0.2.148：**原文也要认**（和左边那个「升级后费用」框同款）。
+        // 以前这里只显示绝对数：填了 `Y`、或填了一个看不懂的式子时，绝对数是 null → 框子**显示成空**，
+        // 看着就像「填不进去」；而原文一直留在 UpgradeStarCostFormula 里 → 校验器那句错误也永远消不掉
+        //（用户实测报的：「升级后费用里面填不了 Y 和 X」「填过之后什么都没有也会报错」）。
+        get => _upgradeStarCost?.ToString(System.Globalization.CultureInfo.InvariantCulture)
+               ?? (string.IsNullOrWhiteSpace(_upgradeStarCostFormula) ? "" : _upgradeStarCostFormula);
         set
         {
             string text = (value ?? "").Trim();
-            if (text.Length == 0) { UpgradeStarCost = null; return; }
+            // ⚠ 清空必须**连原文一起清**：只清 UpgradeStarCost 的话，那句「看不懂」永远消不掉。
+            if (text.Length == 0) { UpgradeStarCost = null; UpgradeStarCostFormula = ""; return; }
             if (int.TryParse(text, System.Globalization.NumberStyles.AllowLeadingSign, System.Globalization.CultureInfo.InvariantCulture, out int plain))
-            { UpgradeStarCost = plain; return; }
+            { UpgradeStarCost = plain; UpgradeStarCostFormula = ""; return; }
             var r = Generation.ForgeNumbers.ResolveCost(null, text, "Y", allowPlus: false, "升级后额外资源量费用");
-            if (r.Ok && r.IsConstant) { UpgradeStarCost = r.Value; return; }
-            // 解析不出来：先存原样，交给校验器报错说清（不许静默丢掉）
+            if (r.Ok && r.IsConstant) { UpgradeStarCost = r.Value; UpgradeStarCostFormula = ""; return; }
+            // 其余两种都留原文：① `Y`（= 升级后还是 Y —— 本体改不了 X 那一档，语义上就是「升级不改」）
+            // 是**合法**写法，校验器不报错、生成端也不写任何 UpgradeStarCostBy；
+            // ② 看不懂 / `Y+1` 那种由校验器报错说清（V0.2.148 起 `Y` 从「报错」改成「合法 = 不改」）。
             UpgradeStarCost = null;
             UpgradeStarCostFormula = text;
         }
@@ -2445,7 +2628,13 @@ public sealed class CardSpec : SpecBase, ISlotRow
         + "「固定数值」来源的参数）；③ X = 消耗全部能量（本体「天际钻头 / 旋风斩」那套，X 值 = 打出时消耗掉的能量）。"
         + "本体 base(cost, …) 要的是**编译期常量**，所以读血量 / 读状态那种运行时表达式在费用栏里收不了"
         + "（校验器会拦下来并说清是哪一条）。额外资源量费用栏同理，写 Y = 消耗全部额外资源量（本体「星尘」那套）。"
-        + "「升级后费用」留空 = 升级不改费用；填 X+1 = 还是 X 费、升级后 X 多 1（原来那个勾选框的等价写法）。";
+        + "「升级后费用」留空 = 升级不改费用；填数字 = 升级后的绝对费用；填 X = 升级后还是 X（等于不改）；"
+        + "填 X+1 = 还是 X 费、升级后 X 多 1（原来那个勾选框的等价写法）。"
+        + "「升级后额外资源量费用」留空 = 不改；填数字 / 生成期常量式子 = 升级后的绝对资源量费用；"
+        + "填 Y = 升级后还是 Y（等于不改）—— ⚠ 本体 UpgradeStarCostBy 对「资源量费用 = X」的牌**会直接抛异常**，"
+        + "所以「升级后 Y+1」这种写法工具做不了（校验器会拦住并说清）。"
+        + "⚠ 另外：**升级改不了「数字费用 ↔ X 费」这一档**（X / Y 是卡牌构造时定死的，升级只能改数字）——"
+        + "想「升级后 X 费」做不到；能表达的是「一开始就 X 费 + 升级后 X+1」，或者「升级后费用填数字」（例：1 → 0 费）。";
 
     private KeywordUpgradeSpec _upgradeKeywords = new();
 
@@ -3362,13 +3551,16 @@ public sealed class RelicTriggerSpec : SpecBase
         "DamageReceived" or "DamageDealt" => "伤害至少多少才触发",
         "HpLost" => "失去生命至少多少才触发",
         "BlockGained" => "获得格挡至少多少才触发",
-        "PowerReached" => "到达 N 层",
+        "PowerReached" => "到达 N 层（层数跨过这一层那一下触发）",
         _ => "每累计几次触发",
     };
 
     /// <summary>数值那一行底下的说明。</summary>
     [JsonIgnore]
-    public string SpendHint => Amount <= 0m
+    public string SpendHint => Kind == "PowerReached"
+        ? $"填 N = 层数**跨过** N 那一下才触发（例：N=3 时，「从 0/1/2 涨到 3 或更多」的那一次触发；"
+          + $"已经是 3 层再加一层不会重复触发）。现在填的是 {Amount:0.##} 层。"
+        : Amount <= 0m
         ? (Generation.CSharpCodeGen.TriggerValueExpr(Kind) is not null && !ShowSpendFields
             ? "留空 / 填 0 = 不过滤（老行为）；填 N = **只有数值 ≥ N 的那次才触发**。"
             : ShowSpendFields || Generation.CSharpCodeGen.TriggerAmountNeedsScope(Kind)
@@ -4400,12 +4592,18 @@ public sealed class PowerTriggerSpec : SpecBase
         "DamageReceived" or "DamageDealt" => "伤害至少多少才触发",
         "HpLost" => "失去生命至少多少才触发",
         "BlockGained" => "获得格挡至少多少才触发",
+        // V0.2.152：这一档以前界面上**没有输入框**（TriggerSupportsAmount 漏了 PowerReached），
+        // N 永远停在默认值 1 —— 用户报的两条都是它。
+        "PowerReached" => "到达 N 层（层数跨过这一层那一下触发）",
         _ => "每累计几次触发",
     };
 
     /// <summary>「花掉 N 点」那一行底下的说明。</summary>
     [JsonIgnore]
-    public string TriggerSpendHint => TriggerAmount <= 0m
+    public string TriggerSpendHint => Kind == "PowerReached"
+        ? $"填 N = 层数**跨过** N 那一下才触发（例：N=3 时，「从 0/1/2 涨到 3 或更多」的那一次触发；"
+          + $"已经是 3 层再加一层不会重复触发）。现在填的是 {TriggerAmount:0.##} 层。"
+        : TriggerAmount <= 0m
         ? (Kind is "EnergySpent" or "StarsSpent"
             ? "留空 / 填 0 = 每花掉 1 点就触发一次（老行为）；填 N = **每累计花掉 N 点**触发一次（例：3 = 每 3 点一次）。"
             : Generation.CSharpCodeGen.TriggerValueExpr(Kind) is not null
@@ -5194,8 +5392,95 @@ public sealed class CardColorSpec : SpecBase
     public string Display => $"{CardFrame} · {NormalizeHex(DeckEntryColor)}";
 }
 
-public sealed class ArtSpec{
-    public string? Icon { get; set; }
+/// <summary>
+/// 用户上传的一条音频（V0.2.155）：「播放音频文件（我上传的）」效果种类引用它。
+///
+/// <para><b>为什么不用 FMOD</b>：本体自己的声音全是 FMOD 事件（<c>SfxCmd.Play("event:/…")</c>），
+/// 而模组**注册不了新的 FMOD 事件**（bank 里只有事件 GUID）。所以这条路绕开 FMOD：
+/// 生成时把文件复制进工程 <c>audio/</c>（导出预设是 <c>all_resources</c>，会一起打进 PCK），
+/// 运行时用 Godot 的 <c>AudioStreamPlayer</c> 播 <c>res://audio/&lt;Key&gt;</c>。</para>
+///
+/// <para><see cref="File"/> 存的是**本机绝对路径**（和「上传卡面」那些字段同一个口径：
+/// 界面直接记住你选的那个文件，生成时复制）。<see cref="Name"/> 是存档里的稳定标识，
+/// 也是生成出来的文件名（效果里存的就是它）。</para>
+/// </summary>
+public sealed class AudioAssetSpec : SpecBase
+{
+    private string _name = "";
+    private string _file = "";
+
+    /// <summary>显示名 + 存档里的稳定标识（生成时用它当文件名，会自动去掉非法字符）。</summary>
+    public string Name
+    {
+        get => _name;
+        set { if (Set(ref _name, value ?? "")) { Raise(nameof(Display)); Raise(nameof(Key)); Raise(nameof(Hint)); } }
+    }
+
+    /// <summary>本机那个音频文件的绝对路径（.ogg / .mp3 / .wav）。</summary>
+    public string File
+    {
+        get => _file;
+        set { if (Set(ref _file, value ?? "")) { Raise(nameof(Display)); Raise(nameof(Key)); Raise(nameof(Hint)); } }
+    }
+
+    /// <summary>
+    /// 生成时用的文件名（= <c>res://audio/&lt;Key&gt;</c> 里那个 Key）：<see cref="Name"/> 去掉非法字符
+    /// 之后保留原扩展名（只认 .ogg / .mp3 / .wav，别的按 .ogg 处理并让校验器报错）。
+    /// 效果里存的 <c>EffectSpec.Sfx</c> 就是它。
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Key
+    {
+        get
+        {
+            string stem = new string((_name ?? "").Trim()
+                .Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray()).Trim('_');
+            if (stem.Length == 0) stem = "sfx";
+            string ext = AudioExtOf(_file);
+            return stem + ext;
+        }
+    }
+
+    /// <summary>这个扩展名支持不支持（Godot 内置导入器：ogg / mp3 / wav）—— 看**原始**扩展名。</summary>
+    public static bool IsSupportedAudio(string? path)
+    {
+        string ext = (System.IO.Path.GetExtension(path ?? "") ?? "").Trim().ToLowerInvariant();
+        return ext is ".ogg" or ".oga" or ".mp3" or ".wav" or ".wave";
+    }
+
+    /// <summary>文件扩展名（不认识的返回 <c>.ogg</c>，让校验器去报「格式不支持」）。</summary>
+    public static string AudioExtOf(string? path)
+    {
+        string ext = (System.IO.Path.GetExtension(path ?? "") ?? "").Trim().ToLowerInvariant();
+        // .oga / .ogg 都是 Ogg Vorbis；.wave 也认
+        if (ext is ".oga") return ".ogg";
+        if (ext is ".wave") return ".wav";
+        return ext is ".ogg" or ".mp3" or ".wav" ? ext : ".ogg";
+    }
+
+    /// <summary>界面用：这一行的摘要（文件不在本机了就说清楚）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Display
+    {
+        get
+        {
+            string name = string.IsNullOrWhiteSpace(_name) ? "（没命名）" : _name.Trim();
+            string file = string.IsNullOrWhiteSpace(_file) ? "（没选文件）"
+                : System.IO.File.Exists(_file) ? System.IO.Path.GetFileName(_file) : "⚠ 文件不见了";
+            return $"{name} · {file} → audio/{Key}";
+        }
+    }
+
+    /// <summary>界面用：底下那句小字。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string Hint => string.IsNullOrWhiteSpace(_file)
+        ? "点「上传音频…」选一个 .ogg / .mp3 / .wav 文件。"
+        : (IsSupportedAudio(_file)
+            ? $"生成时会复制成工程里的 audio/{Key}（一起打进 PCK）。"
+            : $"⚠ 这个扩展名（{System.IO.Path.GetExtension(_file)}）本体 / Godot 不认，请换成 .ogg / .mp3 / .wav。");
+}
+
+public sealed class ArtSpec{    public string? Icon { get; set; }
     public string? IconOutline { get; set; }
     /// <summary>顶部头像描边颜色（RRGGBB / RRGGBBAA）。填了就按这个颜色自动生成描边图，
     /// 不用再自己传描边 PNG；留空则沿用上传的描边图或中性占位。</summary>

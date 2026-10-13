@@ -56,6 +56,24 @@ public partial class App : Application
             return;
         }
 
+        // 观感截图模式：把「角色」页整个窗口渲染成 PNG（用来肉眼确认布局）
+        if (e.Args.Any(a => a.Equals("--roleshot", StringComparison.OrdinalIgnoreCase)))
+        {
+            string outPng = Path.Combine(AppContext.BaseDirectory, "roleshot.png");
+            try
+            {
+                var w = new MainWindow();
+                w.ShotRolePage(outPng);
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "roleshot_error.txt"), ex.ToString(), new UTF8Encoding(false));
+                Shutdown(1);
+            }
+            return;
+        }
+
         // 观感截图模式：把「锻造」页的积木视图渲染成 PNG 存下来（给用户看观感用的，不参与生成）
         if (e.Args.Any(a => a.Equals("--blockshot", StringComparison.OrdinalIgnoreCase)))
         {
@@ -69,6 +87,23 @@ public partial class App : Application
             catch (Exception ex)
             {
                 File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "blockshot_error.txt"), ex.ToString(), new UTF8Encoding(false));
+                Shutdown(1);
+            }
+            return;
+        }
+
+        // 【开发用】把几种效果的效果栏渲染成 PNG（看版式，不参与生成、不写存档）
+        if (e.Args.Length >= 2 && e.Args[0].Equals("--uishot", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                var w = new MainWindow();
+                w.ShotEffectEditors(e.Args[1]);
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "uishot_error.txt"), ex.ToString(), new UTF8Encoding(false));
                 Shutdown(1);
             }
             return;

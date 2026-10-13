@@ -14,7 +14,7 @@ namespace Sts2CharForge.Core.Generation;
 ///
 ///   ① 纯数字（<c>6</c> / <c>0.5</c>，含 <c>double.TryParse</c> 认的那些老写法）→ 走老路，生成的文本一个字符都不变；
 ///   ② 公式、但**生成期就能折叠成常数**（<c>2*3</c>、<c>A+3</c> 且 A 是「固定数值」来源的参数）→ 也走老路（用折出来的数）；
-///   ③ 公式里用了**运行时才知道的量**（<c>X</c> / <c>Y</c> / 21 条内置只读量 / 运行时参数）
+///   ③ 公式里用了**运行时才知道的量**（<c>X</c> / <c>Y</c> / 内置只读量 / 运行时参数）
 ///      → 生成一段 C# 表达式（<see cref="Resolved.Expr"/>），由每个发射器决定怎么用；
 ///   ④ 解析不出来（拼错、括号不配、写了不存在的参数）→ <see cref="Resolved.Ok"/> = false，
 ///      **校验器报错**说清是哪个模块哪一栏 —— 绝不再像以前那样「静默回落 fallback」
@@ -72,10 +72,12 @@ public static class ForgeNumbers
         && key is "EnergyCost" or "ResourceCost";
 
     /// <summary>界面提示 / 校验器共用的那句话（「这一栏也能填公式」）。</summary>
-    public const string FormulaHint =
+    public static string FormulaHint =>
         "这一栏也能填公式或参数（和【数值】模块同一套）：X = 当前所有能量，Y = 当前所有额外资源量，"
         + "一个字母的自定义参数（要先在「自定义参数 / 组」页定义），"
-        + "以及 21 条内置只读量（Turn / HandCount / DiscardedThisTurn…）。支持 + - * / ( ) 和 min/max/floor/ceil/round/abs。"
+        + $"以及 {Generation.FormulaBuiltins.All.Count} 条内置只读量（Turn / HandCount / DeckStatusCount / PlayedThisTurn…，"
+        + "完整清单见效果编辑器下面那个「可用量」小框）。"
+        + "支持 + - * / ( ) 和 min/max/floor/ceil/round/abs。"
         + "只写数字的老写法一个字都不变。";
 
     /// <summary>拆一个栏位的文字（原文 + 去首尾空格）。</summary>
@@ -130,6 +132,26 @@ public static class ForgeNumbers
     }
 
     /// <summary>
+    /// 一段「公式」原文在**生成期**能不能折成一个常数？折出来是多少？（V0.2.146）
+    ///
+    /// <para>和 <see cref="TryEffectFormulaConst"/> 的区别：那个只认「那 5 种支持公式的效果」
+    /// （<see cref="EffectSpec.UsesAmountFormula"/>），这个**不看种类** —— 给「数值公式」框里
+    /// 顺手填了一个纯数字的场合用（<c>1</c> / <c>2+3</c> / <c>=1</c> 都算常数）。</para>
+    ///
+    /// <para>写 <c>X</c> / <c>Y</c> / 参数 / 内置只读量 → 返回 <c>false</c>（那是运行时语义，不乱猜）。</para>
+    /// </summary>
+    public static bool TryFormulaConst(CharacterProfile? p, string? formula, out decimal value)
+    {
+        value = 0m;
+        string t = EffectSpec.FormulaText(formula);
+        if (t.Length == 0) return false;
+        var r = ResolveText(p, t, 0, Place.PrologueVars);
+        if (!r.Ok || r.Runtime) return false;
+        value = r.Value;
+        return true;
+    }
+
+    /// <summary>
     /// 这条效果的「数值公式」在**生成期**能不能折成一个常数？折出来是多少？
     ///
     /// <para><b>为什么需要它</b>（V0.2.141）：生成端 <c>CSharpCodeGen.UpgradeAwareAmount</c> 分两条路 ——
@@ -146,10 +168,7 @@ public static class ForgeNumbers
     {
         value = 0m;
         if (!e.UsesAmountFormula) return false;
-        var r = ResolveText(p, e.AmountFormulaText, 0, Place.PrologueVars);
-        if (!r.Constant) return false;
-        value = r.Value;
-        return true;
+        return TryFormulaConst(p, e.AmountFormula, out value);
     }
 
     /// <summary>

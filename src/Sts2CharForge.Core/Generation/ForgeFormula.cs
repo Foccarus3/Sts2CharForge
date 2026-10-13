@@ -390,26 +390,40 @@ public static class ForgeFormula
     ///     （<c>__fgPlayer</c> → <c>base.Owner</c>、<c>__fgSelf</c> → <c>base.Owner.Creature</c>、
     ///      <c>__fgTarget</c> → <paramref name="playTargetExpr"/>，传 null 表示这个场合没有「打出的目标」）。
     /// </summary>
-    public static Func<string, string?> ConditionResolver(CharacterProfile p, string? playTargetExpr) => id => id switch
+    public static Func<string, string?> ConditionResolver(CharacterProfile p, string? playTargetExpr)
+        => InlineResolver(p, "base.Owner", "base.Owner.Creature", playTargetExpr);
+
+    /// <summary>
+    /// **全内联**解析器（V0.2.164：「数值公式」铺到遗物 / 药水 / 自定义状态那三条链）：
+    /// 三个占位符各由调用方给出**本链**的写法 ——
+    /// <list type="bullet">
+    /// <item>遗物 / 药水：<c>__fgPlayer</c> = <c>base.Owner</c>（Player）、<c>__fgSelf</c> = <c>base.Owner.Creature</c>；</item>
+    /// <item>自定义状态：<c>__fgPlayer</c> = <c>base.Owner.Player</c>、<c>__fgSelf</c> = <c>base.Owner</c>（状态钩子里 Owner 就是 Creature）。</item>
+    /// </list>
+    /// <paramref name="targetExpr"/> = 「指定敌人」那类参数在这条链上取谁（遗物 / 状态没有「玩家选中的目标」，
+    /// 传「可打的第一个敌人」；传 null = 这个场合没有目标，参数会退化成 <c>null</c>，校验器会先拦住）。
+    /// </summary>
+    public static Func<string, string?> InlineResolver(CharacterProfile p, string playerExpr, string selfExpr,
+        string? targetExpr) => id => id switch
     {
-        "X" => "ForgeFormulaRuntime.Energy(base.Owner)",
-        "Y" => "ForgeFormulaRuntime.Stars(base.Owner)",
+        "X" => $"ForgeFormulaRuntime.Energy({playerExpr})",
+        "Y" => $"ForgeFormulaRuntime.Stars({playerExpr})",
         _ => FormulaBuiltins.Find(id) is { } builtin
-            ? builtin.Expr("base.Owner", "base.Owner.Creature")
+            ? builtin.Expr(playerExpr, selfExpr)
             : (p.CustomParams.FirstOrDefault(x => x is not null
                     && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)) is { } param
-                ? InlineParam(param, playTargetExpr)
+                ? InlineParam(param, playerExpr, selfExpr, targetExpr)
                 : null),
     };
 
-    /// <summary>把参数表达式里的局部变量替换成内联写法（见 <see cref="ConditionResolver"/>）。</summary>
-    private static string InlineParam(ParamSpec p, string? playTargetExpr)
+    /// <summary>把参数表达式里的局部变量替换成内联写法（见 <see cref="ConditionResolver"/> / <see cref="InlineResolver"/>）。</summary>
+    private static string InlineParam(ParamSpec p, string playerExpr, string selfExpr, string? targetExpr)
     {
         string expr = ParamExpr(p);
-        expr = expr.Replace("__fgSelf", "base.Owner.Creature", StringComparison.Ordinal)
-                   .Replace("__fgPlayer", "base.Owner", StringComparison.Ordinal);
+        expr = expr.Replace("__fgSelf", selfExpr, StringComparison.Ordinal)
+                   .Replace("__fgPlayer", playerExpr, StringComparison.Ordinal);
         if (expr.Contains("__fgTarget", StringComparison.Ordinal))
-            expr = expr.Replace("__fgTarget", playTargetExpr ?? "null", StringComparison.Ordinal);
+            expr = expr.Replace("__fgTarget", targetExpr ?? "null", StringComparison.Ordinal);
         return expr;
     }
 
@@ -446,21 +460,28 @@ public static class ForgeFormula
     public static string ParamExpr(ParamSpec p)
     {
         string src = ParamSources.Normalize(p.Source);
+        string target = TargetExpr(p.Target);
+        // ⚠ 顺序要紧：**先认参数页那 7 个固定来源**（它们能指定「从谁身上取」），
+        // 认不出来再看是不是一条实时读数。反过来的话，内置量里同名的（例：MyMaxHp 不算，但
+        // 早先 `MaxHp` 就撞过）会把「指定敌人的最大生命」悄悄变成「自己的最大生命」。
+        switch (src)
+        {
+            case ParamSources.CurrentHp: return $"{target}?.CurrentHp ?? 0";
+            case ParamSources.MaxHp: return $"{target}?.MaxHp ?? 0";
+            case ParamSources.Gold: return "(decimal)(__fgPlayer?.Gold ?? 0)";
+            // ⚠ 当前能量在 PlayerCombatState 上（**Player 上没有 Energy**；本体只有 Player.MaxEnergy）——
+            // 以前这里生成的是 `__fgPlayer?.Energy`，那是个编译不过的表达式（CS1061），
+            // 只要有一个参数选「能量数」并被公式引用，生成的模组就整个编不过。
+            // 顺便加了战斗外兜底（战斗外 PlayerCombatState 是 null → 0）。
+            case ParamSources.Energy: return "((decimal)(__fgPlayer?.PlayerCombatState?.Energy ?? 0))";
+            case ParamSources.MaxEnergy: return "((decimal)(__fgPlayer?.MaxEnergy ?? 0))";
+            case ParamSources.Power: return $"ForgeFormulaRuntime.PowerAmount({target}, \"{p.PowerId ?? ""}\")";
+        }
         // 用户要求：参数页也能监听那些「实时读数」（回合数 / 丢弃·消耗·生成·复制张数 / 拿到的资源量 /
         // 身上状态数…）—— 它们就是公式内置量那张表（界面 / 生成 / 回读同一份），直接借它的表达式。
         if (FormulaBuiltins.Find(src) is { } builtin)
             return builtin.Expr("__fgPlayer", "__fgSelf");
-        string target = TargetExpr(p.Target);
-        return src switch
-        {
-            ParamSources.CurrentHp => $"{target}?.CurrentHp ?? 0",
-            ParamSources.MaxHp => $"{target}?.MaxHp ?? 0",
-            ParamSources.Gold => "(decimal)(__fgPlayer?.Gold ?? 0)",
-            ParamSources.Energy => "(__fgPlayer?.Energy ?? 0m)",
-            ParamSources.MaxEnergy => "(__fgPlayer?.MaxEnergy ?? 0m)",
-            ParamSources.Power => $"ForgeFormulaRuntime.PowerAmount({target}, \"{p.PowerId ?? ""}\")",
-            _ => p.Value.ToString("0.############################", CultureInfo.InvariantCulture) + "m",
-        };
+        return p.Value.ToString("0.############################", CultureInfo.InvariantCulture) + "m";
     }
 
     /// <summary>

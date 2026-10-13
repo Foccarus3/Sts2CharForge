@@ -1027,7 +1027,7 @@ public sealed class ForgeCanvasView : Grid
     }
 
     /// <summary>
-    /// 「填入参数…」：列出已定义的参数 + X / Y + 那 21 条**内置只读量**，点一下插到光标处。
+    /// 「填入参数…」：列出已定义的参数 + X / Y + 内置只读量（见 FormulaBuiltins.All），点一下插到光标处。
     /// 内置只读量（V0.2.128 加）：和【数值】模块的公式是同一套可用量，界面上得让人找得到它们叫什么。
     /// </summary>
     private void InsertParamInto(TextBox box)

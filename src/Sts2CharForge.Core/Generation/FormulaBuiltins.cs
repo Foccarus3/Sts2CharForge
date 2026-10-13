@@ -5,35 +5,55 @@ using System.Linq;
 namespace Sts2CharForge.Core.Generation;
 
 /// <summary>
-/// 「数值公式」里能直接写的**只读量**（用户要求：参数监听 —— 回合数、本回合 / 本场战斗丢了多少张牌、
-/// 消耗了多少张、生成了多少张、花了多少能量、拿了多少额外资源量、身上有几个状态）。
+/// 「数值公式」里能直接写的**只读量**（用户要求：参数监听 —— 回合数、本回合 / 本场战斗打出了多少张牌、
+/// 丢了多少张、消耗了多少张、生成了多少张、花了多少能量、拿了多少额外资源量、身上有几个状态…）。
 ///
 /// 为什么不做成「自定义参数」：参数要在「自定义参数 / 组」页先定义再引用，而这些量是**运行时的实时读数**，
 /// 每次求值都不一样，定义一次没有意义 —— 所以它们直接写名字就能用（和 <c>X</c> / <c>Y</c> 一样）。
 ///
-/// 数据来源**几乎**都是本体现成的 API（不需要额外补丁 / 记录器）：
+/// 数据来源**全部**是本体现成的公开 API（不需要额外补丁 / 记录器，唯一的例外是「获得的能量」，见
+/// <see cref="Tracker"/>）：
 ///   · 回合数 / 轮数：<c>PlayerCombatState.TurnNumber</c> / <c>ICombatState.RoundNumber</c>；
-///   · 牌堆张数：<c>CardPile.GetCards(player, PileType.Hand)</c> / <c>PileType.X.GetPile(player).Cards</c>；
-///   · 丢弃 / 消耗 / 生成：<c>CombatManager.Instance.History</c> 里的
-///     <c>CardDiscardedEntry</c> / <c>CardExhaustedEntry</c> / <c>CardGeneratedEntry</c>
-///     （本体在每个动作发生时都会记一条，见 <c>CombatHistory</c>）；
-///   · 花掉的能量 / 拿到的额外资源量：同上的 <c>EnergySpentEntry</c> / <c>StarsModifiedEntry</c>（只数正数）；
-///   · 身上的状态数量：<c>Creature.Powers</c>（只数**会对玩家显示**的那些，本体内部状态不算）。
-/// 例外是「获得的能量」：本体压根没记，只能自己打补丁记（用到才生成 <c>ForgeEnergyGainTracker</c>，
-/// 见 <c>CSharpCodeGen.EnergyGainTrackerSource</c>）。
+///   · 牌堆张数：<c>PlayerCombatState.Hand/DrawPile/…</c>（战斗堆）/ <c>Player.Deck</c>（跨战斗的牌组）；
+///   · 打出 / 抽到 / 丢弃 / 消耗 / 生成 / 伤害 / 格挡 / 击杀 / 召唤 / 能量 / 额外资源量：
+///     <c>CombatManager.Instance.History</c> 里的各类 Entry（本体在每个动作发生时都会记一条，
+///     见 <c>CombatHistory</c>；「历史」那一节的 19 种记录就是这张表的来源）；
+///   · 自己 / 敌人的生命、格挡、状态层数、遗物、药水、金币、跑图层数：本体模型上的公开属性。
 ///
 /// <c>{p}</c> / <c>{c}</c> 是占位符：生成端分别填「玩家表达式」和「自己那个生物表达式」
-/// （卡牌那边是 <c>__fgPlayer</c> / <c>__fgSelf</c>）。
+/// （卡牌那边是 <c>__fgPlayer</c> / <c>__fgSelf</c>；条件那种要内联的场合是
+/// <c>base.Owner</c> / <c>base.Owner.Creature</c>）。
+///
+/// ⚠ 三条口径（都写进了每条的 Display，界面上的「可用量」小框直接看得到）：
+///   1. **战斗外读到 0，不抛异常**：战斗牌堆（手牌 / 抽牌堆 / 弃牌堆 / 消耗堆 / 出牌堆）只有战斗里才有，
+///      本体 <c>PileType.GetPile</c> 在战斗外会直接抛 <c>InvalidOperationException</c> ——
+///      所以带 <c>{p}?.PlayerCombatState?.</c> 的那几条在战斗外（遗物「获得时」那种触发时机）读成 0。
+///   2. **「本回合」用本体判据** <c>HappenedThisTurn</c>（同一轮 + 同一侧 + 每个玩家的回合数都没变），
+///      所以**敌人的回合里读到的是你上一个回合的数据**。
+///   3. **打出牌数按「开始打出」记**（<c>CardPlaysStarted</c>，本体在 <c>OnPlay</c> **之前**记一条）——
+///      正在打出的这一张**算在内**；<c>CardPlaysFinished</c> 要等结算完才记（不含这一张）。
 ///
 /// ⚠ 「复制出来的牌」在本体的历史里**也算「生成」**（复制走的是同一个
 /// <c>CardPileCmd.AddGeneratedCardToCombat</c> → <c>History.CardGenerated</c>），
 /// 所以没有单独的「复制张数」——界面上和文档里都写明了这一点。
 /// </summary>
-public sealed record FormulaBuiltin(string Id, string Display, string CSharp)
+public sealed record FormulaBuiltin(string Id, string Display, string CSharp, IReadOnlyList<string>? LegacyCSharp = null)
 {
     /// <summary>把表达式里的占位符换成真正的 C# 片段。</summary>
     public string Expr(string player, string creature) =>
         CSharp.Replace("{p}", player).Replace("{c}", creature);
+
+    /// <summary>
+    /// 这条读数**以前版本**生成过的表达式（改过表达式时列在这儿）。
+    /// 从老工程回读（<see cref="ProjectRecovery"/>）时按原文逐字对，所以两个都要认 ——
+    /// 只认新版会让老工程里那个参数变成「认不出来」。
+    /// </summary>
+    public IEnumerable<string> AllExprs(string player, string creature)
+    {
+        yield return Expr(player, creature);
+        foreach (string legacy in LegacyCSharp ?? Array.Empty<string>())
+            yield return legacy.Replace("{p}", player).Replace("{c}", creature);
+    }
 }
 
 public static class FormulaBuiltins
@@ -43,30 +63,136 @@ public static class FormulaBuiltins
 
     public static IReadOnlyList<FormulaBuiltin> All { get; } = new[]
     {
-        // ===== 回合 / 轮 =====
+        // ===== ① 回合 / 轮 =====
         new FormulaBuiltin("Turn",  "自己这一侧的第几回合", "({p}?.PlayerCombatState?.TurnNumber ?? 0)"),
         new FormulaBuiltin("Round", "当前战斗轮数（所有单位各走一次算一轮）", "({p}?.Creature?.CombatState?.RoundNumber ?? 0)"),
-        // ===== 牌堆张数 =====
-        new FormulaBuiltin("HandCount",    "手牌张数",     "(CardPile.GetCards({p}, PileType.Hand).Count())"),
-        new FormulaBuiltin("DrawCount",    "抽牌堆张数",   "(PileType.Draw.GetPile({p}).Cards.Count())"),
-        new FormulaBuiltin("DiscardCount", "弃牌堆张数",   "(PileType.Discard.GetPile({p}).Cards.Count())"),
-        new FormulaBuiltin("ExhaustCount", "消耗牌堆张数", "(PileType.Exhaust.GetPile({p}).Cards.Count())"),
-        // ===== 本回合 / 本场战斗的计数（本体历史记录）=====
+        // ===== ② 牌堆张数（战斗里的五摞 + 跨战斗的牌组）=====
+        // 「战斗外读成 0」：战斗牌堆只有战斗里才有，本体 PileType.GetPile 在战斗外会抛异常。
+        // 老版本生成的是不带保护的那几句（PileType.X.GetPile(...)），所以旧表达式列进 LegacyCSharp。
+        new FormulaBuiltin("HandCount",    "手牌张数",     "(decimal)({p}?.PlayerCombatState?.Hand?.Cards.Count ?? 0)",
+            new[] { "(CardPile.GetCards({p}, PileType.Hand).Count())" }),
+        new FormulaBuiltin("DrawCount",    "抽牌堆张数",   "(decimal)({p}?.PlayerCombatState?.DrawPile?.Cards.Count ?? 0)",
+            new[] { "(PileType.Draw.GetPile({p}).Cards.Count())" }),
+        new FormulaBuiltin("DiscardCount", "弃牌堆张数",   "(decimal)({p}?.PlayerCombatState?.DiscardPile?.Cards.Count ?? 0)",
+            new[] { "(PileType.Discard.GetPile({p}).Cards.Count())" }),
+        new FormulaBuiltin("ExhaustCount", "消耗牌堆张数", "(decimal)({p}?.PlayerCombatState?.ExhaustPile?.Cards.Count ?? 0)",
+            new[] { "(PileType.Exhaust.GetPile({p}).Cards.Count())" }),
+        new FormulaBuiltin("DeckCount",    "牌组张数（跨战斗的整副牌，不是战斗里的牌堆）", Deck()),
+        // ===== ③ 手牌 / 牌组里各类型牌的张数（「拥有的状态牌数」在这两条：DeckStatusCount / HandStatusCount）=====
+        new FormulaBuiltin("HandAttackCount", "手牌里的攻击牌数", Hand("Attack")),
+        new FormulaBuiltin("HandSkillCount",  "手牌里的技能牌数", Hand("Skill")),
+        new FormulaBuiltin("HandPowerCount",  "手牌里的能力牌数", Hand("Power")),
+        new FormulaBuiltin("HandStatusCount", "手牌里的状态牌数", Hand("Status")),
+        new FormulaBuiltin("HandCurseCount",  "手牌里的诅咒牌数", Hand("Curse")),
+        new FormulaBuiltin("DeckAttackCount", "牌组里的攻击牌数", Deck("Attack")),
+        new FormulaBuiltin("DeckSkillCount",  "牌组里的技能牌数", Deck("Skill")),
+        new FormulaBuiltin("DeckPowerCount",  "牌组里的能力牌数", Deck("Power")),
+        new FormulaBuiltin("DeckStatusCount", "牌组里的状态牌数", Deck("Status")),
+        new FormulaBuiltin("DeckCurseCount",  "牌组里的诅咒牌数", Deck("Curse")),
+        new FormulaBuiltin("DeckUpgradableCount", "牌组里还能升级的牌数", "(decimal)(PileType.Deck.GetPile({p}).UpgradableCardCount)"),
+        // ===== ④ 自己的生命 / 格挡 / 资源 / 身上东西 =====
+        // ⚠ 这一组带 `My` 前缀：参数页「取值来源」里已经有 `CurrentHp` / `MaxHp` / `Gold` / `Energy` /
+        //   `MaxEnergy`（那几个**可以指定从谁身上取**，例如「指定敌人的最大生命」），名字撞了的话
+        //   `ParamSources` 那个下拉会出现两个同名项、而且按 Id 取值永远只会命中前面那个。
+        new FormulaBuiltin("MyHp",        "自己当前生命",       "((decimal){c}.CurrentHp)"),
+        new FormulaBuiltin("MyMaxHp",     "自己最大生命",       "((decimal){c}.MaxHp)"),
+        new FormulaBuiltin("MyHpMissing", "自己已损失的生命（最大生命 - 当前生命）",
+            "((decimal)({c}.MaxHp - {c}.CurrentHp))"),
+        new FormulaBuiltin("MyBlock",     "自己当前格挡",       "((decimal){c}.Block)"),
+        new FormulaBuiltin("MyEnergy",    "当前能量（打出这张牌时扣完费之后的余量）",
+            "((decimal)({p}?.PlayerCombatState?.Energy ?? 0))"),
+        new FormulaBuiltin("MyEnergyMax", "当前能量上限（含战斗内的加成 / 修正）",
+            "((decimal)({p}?.PlayerCombatState?.MaxEnergy ?? 0))"),
+        new FormulaBuiltin("MyStars",     "当前额外资源量",     "((decimal)({p}?.PlayerCombatState?.Stars ?? 0))"),
+        new FormulaBuiltin("MyGold",      "金币数",             "((decimal)({p}?.Gold ?? 0))"),
+        new FormulaBuiltin("RelicCount",  "遗物数量",       "((decimal)({p}?.Relics.Count ?? 0))"),
+        new FormulaBuiltin("PotionCount", "药水数量",       "((decimal)({p}?.Potions.Count() ?? 0))"),
+        new FormulaBuiltin("PetCount",    "自己的伙伴（召唤物）数量",
+            "((decimal)({p}?.PlayerCombatState?.Pets.Count ?? 0))"),
+        new FormulaBuiltin("OrbCount",    "自己的充能球数量",
+            "((decimal)({p}?.PlayerCombatState?.OrbQueue.Orbs.Count ?? 0))"),
+        // ===== ⑤ 身上状态的数量（只数会对玩家显示的；本体内部状态不算）=====
+        // ⚠ 这里必须 `.Where(...).Count()`，**不能**写 `.Powers.Count(x => ...)`：
+        //   Creature.Powers 是 IReadOnlyList，它自己有一个 **Count 属性** —— 成员查找先命中那个属性，
+        //   `Count(lambda)` 会直接编译不过（CS1955「不可调用的成员 Count」）。
+        //   V0.2.95 起 PowersOnMe 就是这么写的（一直编不过，探针 `_probe/formulaprobe` 真编译抓出来的）。
+        new FormulaBuiltin("PowersOnMe", "自己身上的状态数量（不含内部状态）",
+            "((decimal){c}.Powers.Where(__fgP => __fgP.IsVisible).Count())",
+            new[] { "({c}.Powers.Count(__fgP => __fgP.IsVisible))" }),
+        new FormulaBuiltin("BuffsOnMe", "自己身上的增益数量（按当前层数判定）",
+            "((decimal){c}.Powers.Where(__fgP => __fgP.TypeForCurrentAmount == PowerType.Buff).Count())"),
+        new FormulaBuiltin("DebuffsOnMe", "自己身上的减益数量（按当前层数判定）",
+            "((decimal){c}.Powers.Where(__fgP => __fgP.TypeForCurrentAmount == PowerType.Debuff).Count())"),
+        // ===== ⑥ 敌人 =====
+        new FormulaBuiltin("EnemyCount", "活着的敌人数",
+            "({c}.CombatState is null ? 0m : (decimal){c}.CombatState.Enemies.Where(__fgX => __fgX.IsAlive).Count())"),
+        new FormulaBuiltin("HittableEnemyCount", "可被攻击的敌人数（本体 HittableEnemies）",
+            "({c}.CombatState is null ? 0m : (decimal){c}.CombatState.HittableEnemies.Count)"),
+        new FormulaBuiltin("EnemyTotalHp", "活着的敌人的总生命",
+            "({c}.CombatState is null ? 0m : (decimal){c}.CombatState.Enemies.Where(__fgX => __fgX.IsAlive).Sum(__fgX => __fgX.CurrentHp))"),
+        // ===== ⑦ 跑图进度 / 跨战斗累计 =====
+        new FormulaBuiltin("Floor",     "当前总层数（跑图进度）", "((decimal)({p}?.RunState?.TotalFloor ?? 0))"),
+        new FormulaBuiltin("ActFloor",  "当前这一幕的层数",       "((decimal)({p}?.RunState?.ActFloor ?? 0))"),
+        new FormulaBuiltin("ActNumber", "当前是第几幕（从 1 数）",
+            "((decimal)(({p}?.RunState?.CurrentActIndex ?? 0) + 1))"),
+        new FormulaBuiltin("Ascension", "升华（进阶）等级",       "((decimal)({p}?.RunState?.AscensionLevel ?? 0))"),
+        new FormulaBuiltin("DamageDealtTotal", "本局累计造成的伤害（跨战斗）",
+            "((decimal)({p}?.ExtraFields.DamageDealt ?? 0))"),
+        new FormulaBuiltin("DebuffsAppliedTotal", "本局累计施加减益的次数（跨战斗）",
+            "((decimal)({p}?.ExtraFields.DebuffsApplied ?? 0))"),
+        // ===== ⑧ 本回合 / 本场战斗的计数（本体战斗历史）=====
+        // 打出：CardPlaysStarted（本体在 OnPlay **之前**记）→ 正在打出的这一张也算在内。
+        new FormulaBuiltin("PlayedThisTurn",   "本回合打出的牌数（含正在打出的这一张）", Plays(thisTurn: true,  null)),
+        new FormulaBuiltin("PlayedThisCombat", "本场战斗打出的牌数",                     Plays(thisTurn: false, null)),
+        new FormulaBuiltin("AttacksPlayedThisTurn",   "本回合打出的攻击牌数", Plays(thisTurn: true,  "Attack")),
+        new FormulaBuiltin("AttacksPlayedThisCombat", "本场战斗打出的攻击牌数", Plays(thisTurn: false, "Attack")),
+        new FormulaBuiltin("SkillsPlayedThisTurn",    "本回合打出的技能牌数", Plays(thisTurn: true,  "Skill")),
+        new FormulaBuiltin("SkillsPlayedThisCombat",  "本场战斗打出的技能牌数", Plays(thisTurn: false, "Skill")),
+        new FormulaBuiltin("PowersPlayedThisTurn",    "本回合打出的能力牌数", Plays(thisTurn: true,  "Power")),
+        new FormulaBuiltin("PowersPlayedThisCombat",  "本场战斗打出的能力牌数", Plays(thisTurn: false, "Power")),
+        new FormulaBuiltin("DrawnThisTurn",   "本回合抽到的牌数",   CountWhere("CardDrawnEntry", thisTurn: true)),
+        new FormulaBuiltin("DrawnThisCombat", "本场战斗抽到的牌数", CountWhere("CardDrawnEntry", thisTurn: false)),
         new FormulaBuiltin("DiscardedThisTurn",     "本回合丢弃的牌数",   Count("CardDiscardedEntry", thisTurn: true)),
         new FormulaBuiltin("DiscardedThisCombat",   "本场战斗丢弃的牌数", Count("CardDiscardedEntry", thisTurn: false)),
         new FormulaBuiltin("ExhaustedThisTurn",     "本回合消耗的牌数",   Count("CardExhaustedEntry", thisTurn: true)),
         new FormulaBuiltin("ExhaustedThisCombat",   "本场战斗消耗的牌数", Count("CardExhaustedEntry", thisTurn: false)),
+        // 用户要求「参数页也能监听复制了几张」：本体把复制记成**同一个** CardGenerated 记录，
+        // 所以这两个读数和「生成」是同一个表达式 —— 列出来是为了让「复制的牌数」在参数页 / 公式清单里找得到。
         new FormulaBuiltin("GeneratedThisTurn",     "本回合生成的牌数（复制出来的也算）",   Generated(thisTurn: true)),
         new FormulaBuiltin("GeneratedThisCombat",   "本场战斗生成的牌数（复制出来的也算）", Generated(thisTurn: false)),
-        // 用户要求「参数页也能监听复制了几张」：本体把复制记成**同一个** CardGenerated 记录，
-        // 所以这两个读数和上面两个是同一个表达式 —— 列出来是为了让「复制的牌数」在参数页 / 公式清单里找得到。
         new FormulaBuiltin("CopiedThisTurn",     "本回合复制的牌数（本体把复制记成「生成」，所以和上面同值）",   Generated(thisTurn: true)),
         new FormulaBuiltin("CopiedThisCombat",   "本场战斗复制的牌数（同上，和「生成」同值）", Generated(thisTurn: false)),
+        // 伤害 / 格挡 / 击杀：同一条历史记录（DamageReceivedEntry / BlockGainedEntry）里就有数。
+        // 「造成的伤害」只算**没被格挡**的那部分（Result.UnblockedDamage），而且排除打自己那一下
+        //（自伤也是 Dealer = 自己，不该算进「你造成的伤害」）。
+        new FormulaBuiltin("DamageDealtThisTurn", "本回合造成的伤害（只算没被格挡的，不含自伤）",
+            SumWhere("DamageReceivedEntry", thisTurn: true,  "__fgE.Dealer == {c} && __fgE.Receiver != {c}", "__fgE.Result.UnblockedDamage")),
+        new FormulaBuiltin("DamageDealtThisCombat", "本场战斗造成的伤害（只算没被格挡的，不含自伤）",
+            SumWhere("DamageReceivedEntry", thisTurn: false, "__fgE.Dealer == {c} && __fgE.Receiver != {c}", "__fgE.Result.UnblockedDamage")),
+        new FormulaBuiltin("DamageTakenThisTurn", "本回合受到的伤害（只算没被格挡的）",
+            SumWhere("DamageReceivedEntry", thisTurn: true,  "__fgE.Receiver == {c}", "__fgE.Result.UnblockedDamage")),
+        new FormulaBuiltin("DamageTakenThisCombat", "本场战斗受到的伤害（只算没被格挡的）",
+            SumWhere("DamageReceivedEntry", thisTurn: false, "__fgE.Receiver == {c}", "__fgE.Result.UnblockedDamage")),
+        new FormulaBuiltin("BlockGainedThisTurn",   "本回合获得的格挡",   SumWhere("BlockGainedEntry", thisTurn: true,  "__fgE.Receiver == {c}", "__fgE.Amount")),
+        new FormulaBuiltin("BlockGainedThisCombat", "本场战斗获得的格挡", SumWhere("BlockGainedEntry", thisTurn: false, "__fgE.Receiver == {c}", "__fgE.Amount")),
+        new FormulaBuiltin("EnemiesKilledThisTurn",   "本回合被自己打死的敌人数（按致死的那一下记）",
+            CountWhere("DamageReceivedEntry", thisTurn: true,  "__fgE.Dealer == {c} && __fgE.Result.WasTargetKilled")),
+        new FormulaBuiltin("EnemiesKilledThisCombat", "本场战斗被自己打死的敌人数（按致死的那一下记）",
+            CountWhere("DamageReceivedEntry", thisTurn: false, "__fgE.Dealer == {c} && __fgE.Result.WasTargetKilled")),
+        // 资源：能量花掉 / 拿到的本体现在就记（EnergySpentEntry）；「获得的能量」本体没有，只能自己打补丁记。
         new FormulaBuiltin("EnergySpentThisTurn",   "本回合花掉的能量",   Summed("EnergySpentEntry", thisTurn: true)),
         new FormulaBuiltin("EnergySpentThisCombat", "本场战斗花掉的能量", Summed("EnergySpentEntry", thisTurn: false)),
-        // 额外资源量：一条记录里正数是获得、负数是花掉 —— 这里只数**获得**的（用户要的是「获得」）
+        // 额外资源量：一条记录里正数是获得、负数是花掉。
         new FormulaBuiltin("StarsGainedThisTurn",   "本回合获得的额外资源量",   Stars(thisTurn: true)),
         new FormulaBuiltin("StarsGainedThisCombat", "本场战斗获得的额外资源量", Stars(thisTurn: false)),
+        new FormulaBuiltin("StarsSpentThisTurn",    "本回合花掉的额外资源量",
+            SumWhere("StarsModifiedEntry", thisTurn: true,  "__fgE.Actor == {c} && __fgE.Amount < 0", "-__fgE.Amount")),
+        new FormulaBuiltin("StarsSpentThisCombat",  "本场战斗花掉的额外资源量",
+            SumWhere("StarsModifiedEntry", thisTurn: false, "__fgE.Actor == {c} && __fgE.Amount < 0", "-__fgE.Amount")),
+        new FormulaBuiltin("SummonedThisTurn",   "本回合的召唤量（本体 SummonedEntry 里记的数）",
+            SumWhere("SummonedEntry", thisTurn: true,  "__fgE.Actor == {c}", "__fgE.Amount")),
+        new FormulaBuiltin("SummonedThisCombat", "本场战斗的召唤量（本体 SummonedEntry 里记的数）",
+            SumWhere("SummonedEntry", thisTurn: false, "__fgE.Actor == {c}", "__fgE.Amount")),
         // 获得的能量：本体只把能量记成一个数（PlayerCombatState.Energy + EnergyChanged 事件），
         // **没有**「这回合 / 这场战斗获得了多少能量」这种读数，所以只能由工具自己打补丁来记
         // （见 CSharpCodeGen.EnergyGainTrackerSource）。
@@ -74,10 +200,21 @@ public static class FormulaBuiltins
         // AddMaxEnergyToCurrent 那种「回满」不算「获得」，否则这个读数每回合都会莫名多出 3 点。
         new FormulaBuiltin("EnergyGainedThisTurn",   "本回合获得的能量（回合开始补满的不算）",   Tracker("GainedThisTurn")),
         new FormulaBuiltin("EnergyGainedThisCombat", "本场战斗获得的能量（回合开始补满的不算）", Tracker("GainedThisCombat")),
-        // ===== 身上的状态数量 =====
-        // 只数**会对玩家显示**的那些（本体内部状态 IsVisible=false，不该算进「身上有几个状态」）。
-        new FormulaBuiltin("PowersOnMe", "自己身上的状态数量（不含内部状态）",
-            "({c}.Powers.Count(__fgP => __fgP.IsVisible))"),
+        // ===== ⑨ 这张牌自己花掉的（V0.2.158）=====
+        // 为什么需要（用户实测：「次数填 Y（额外资源量）时只会触发一次」）：
+        // 本体是**先扣费、再跑效果**（PlayCardAction：`await _card.SpendResources()` → `OnPlayWrapper(...)`），
+        // 所以「当前能量 / 当前额外资源量」在效果跑的那一刻读到的是**扣完剩下的** ——
+        // 一张「Y 费」的牌读到 0（次数被夹到 1）；「X 费」的牌读能量同理。
+        // 想用「这张牌花掉的那部分」就用这两个读数 —— 本体本来就为 X 费牌准备了这两个方法
+        //（ResolveEnergyXValue() = 这次花掉的能量、ResolveStarXValue() = 这次花掉的额外资源量）。
+        // ⚠ **不是 X 费的牌上它们会抛异常**（本体第一句就是
+        //   `if (!EnergyCost.CostsX) throw new InvalidOperationException(...)` /
+        //   `if (!HasStarCostX) throw ...`）—— 所以生成出来的表达式必须**先判再调**（三元），
+        //   不然用户在普通牌上用一次 YSpent 就会在战斗中抛 InvalidOperationException（踩过）。
+        new FormulaBuiltin("XSpent", "这张牌花掉的能量（X 费牌就是那个 X；不是 X 费 = 0）",
+            "(base.EnergyCost.CostsX ? (decimal)base.ResolveEnergyXValue() : 0m)"),
+        new FormulaBuiltin("YSpent", "这张牌花掉的额外资源量（Y 费牌就是那个 Y；不是 Y 费 = 0）",
+            "(base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)"),
     };
 
     /// <summary>按名字找一条内置量（大小写不敏感；<c>M</c>/<c>N</c> 这种单字母参数不会和它们撞）。</summary>
@@ -96,6 +233,33 @@ public static class FormulaBuiltins
     // ---- 下面几个是上面那张表用的表达式拼装（读起来比一长串内联字符串清楚）。
     //      注意这里**不能**用内插字符串：{p} / {c} 是要留给 FormulaBuiltin.Expr 替换的占位符。
 
+    // ===== 牌堆 / 牌组 =====
+    // ⚠ 按类型过滤一律写 `.Where(...).Count()`：Cards 是 IReadOnlyList，自带 Count **属性** ——
+    //   写 `.Cards.Count(x => …)` 会先命中那个属性，直接 CS1955（探针 `_probe/formulaprobe` 真编译抓出来的）。
+
+    /// <summary>跨战斗的**牌组**（不是战斗里的牌堆 —— 那个要 <c>PlayerCombatState</c>，战斗外是 null）。</summary>
+    private static string Deck(string? cardType = null) => cardType is null
+        ? "(decimal)({p}.Deck.Cards.Count)"
+        : "(decimal)({p}.Deck.Cards.Where(__fgC => __fgC.Type == CardType." + cardType + ").Count())";
+
+    /// <summary>
+    /// 战斗里**手牌**的张数（可按类型过滤）。
+    /// 战斗外手牌根本不存在（<c>PlayerCombatState</c> 是 null）→ 读成 0，**不抛异常**。
+    /// </summary>
+    private static string Hand(string? cardType) => cardType is null
+        ? "(decimal)({p}?.PlayerCombatState?.Hand?.Cards.Count ?? 0)"
+        : "(decimal)({p}?.PlayerCombatState?.Hand?.Cards.Where(__fgC => __fgC.Type == CardType." + cardType + ").Count() ?? 0)";
+
+    // ===== 战斗历史 =====
+
+    /// <summary>「本回合」那半句判据（本体口径就是 CombatHistoryEntry.HappenedThisTurn）。</summary>
+    private static string Turn(bool thisTurn) =>
+        thisTurn ? " && __fgE.HappenedThisTurn({p}?.Creature?.CombatState)" : "";
+
+    /// <summary>历史的入口 + 这场战斗的兜底：不在战斗里（拿不到 CombatState）直接读成 0。</summary>
+    private static string Guard(string body) =>
+        "(({p}?.Creature?.CombatState) is null ? 0m : (decimal)(" + body + "))";
+
     /// <summary>「数一下历史里某类条目有几条」（只数自己做的那些；thisTurn = 只看这一回合）。</summary>
     private static string Count(string entry, bool thisTurn)
     {
@@ -103,6 +267,22 @@ public static class FormulaBuiltins
         return "(({p}?.Creature?.CombatState) is null ? 0m : (decimal)CombatManager.Instance.History.Entries"
              + ".OfType<" + Hist + entry + ">()"
              + ".Count(__fgE => __fgE.Actor == {c}" + turn + "))";
+    }
+
+    /// <summary>「数一下历史里某类条目有几条」（自己写判据 —— 用 <c>__fgE</c> 引用那一条；默认「自己做的那些」）。</summary>
+    private static string CountWhere(string entry, bool thisTurn, string where = "__fgE.Actor == {c}") =>
+        Guard("CombatManager.Instance.History.Entries.OfType<" + Hist + entry + ">()"
+            + ".Count(__fgE => " + where + Turn(thisTurn) + ")");
+
+    /// <summary>
+    /// 「打出」的计数：<c>CardPlaysStarted</c>（本体在 OnPlay **之前**记一条）——
+    /// 所以正在打出的这一张**算在内**（用 <c>CardPlaysFinished</c> 会少算这一张）。
+    /// </summary>
+    private static string Plays(bool thisTurn, string? cardType)
+    {
+        string filter = cardType is null ? "" : " && __fgE.CardPlay.Card.Type == CardType." + cardType;
+        return Guard("CombatManager.Instance.History.CardPlaysStarted"
+            + ".Count(__fgE => __fgE.Actor == {c}" + filter + Turn(thisTurn) + ")");
     }
 
     /// <summary>「生成卡牌」：本体把玩家主动生成的和敌人塞的都记一条，靠 Creator 区分（复制出来的也算生成）。</summary>
@@ -123,6 +303,12 @@ public static class FormulaBuiltins
              + ".Where(__fgE => __fgE.Actor == {c}" + turn + ")"
              + ".Sum(__fgE => __fgE.Amount))";
     }
+
+    /// <summary>「把历史里某类条目的某个数加起来」（自己写判据与被加的那个数）。</summary>
+    private static string SumWhere(string entry, bool thisTurn, string where, string amount) =>
+        Guard("CombatManager.Instance.History.Entries.OfType<" + Hist + entry + ">()"
+            + ".Where(__fgE => " + where + Turn(thisTurn) + ")"
+            + ".Sum(__fgE => " + amount + ")");
 
     /// <summary>
     /// 「获得的能量」：本体没有这个读数，靠工具生成的 <c>ForgeEnergyGainTracker</c>（打在本体**同步**方法

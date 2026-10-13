@@ -225,7 +225,10 @@ public static class CustomPowerGen
     private static void EmitItemsWithAmountGate(CodeWriter w, IEnumerable<PowerTriggerSpec> items,
         CharacterProfile p, string? foeFrom = null)
     {
-        foreach (var t in items)
+        // 先落到 List：下面要按「这个钩子里合并了几条触发时机」决定要不要给每条包裸块（≥2 条才包）。
+        var list = items as List<PowerTriggerSpec> ?? items.ToList();
+        bool ownScope = list.Count > 1;
+        foreach (var t in list)
         {
             string kind = PowerTriggers.Canonical(t.Kind);
             // 敌人死亡：本体历史里没有死亡记录 → 先自己数一个（BumpEnemyDeath），再判「每 N 个」
@@ -243,8 +246,9 @@ public static class CustomPowerGen
                 "base.Owner", "base.Owner.CombatState", "base.Owner.Player", CSharpCodeGen.TriggerValueExpr(kind));
             if (cond is null)
             {
-                if (!TryWrapRequireAll(w, t, () => EmitEffects(w, t, foeFrom: foeFrom, p: p)))
-                    EmitEffects(w, t, foeFrom: foeFrom, p: p);
+                // ⚠ 这一支**不套 if**：多条触发时机合并时，这里就是那个「帮助变量会撞车」的地方 → 必须各自包裸块。
+                if (!TryWrapRequireAll(w, t, () => EmitEffects(w, t, foeFrom: foeFrom, p: p, ownScope: ownScope)))
+                    EmitEffects(w, t, foeFrom: foeFrom, p: p, ownScope: ownScope);
                 continue;
             }
             w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}");
@@ -321,8 +325,16 @@ public static class CustomPowerGen
         w.Line();
         w.Line("// ===== 触发时机：回合结束时（触发器效果跑完再做衰减 / 移除）=====");
 
-        var playerSide = items.Where(t => t.Kind == "TurnEnd").ToList();
-        var enemySide = items.Where(t => t.Kind == "EnemyTurnEnd").ToList();
+        // ⚠⚠ 玩家的「回合结束时」有**两个 id**：目录里现在叫 PlayerTurnEnd，老存档 / 老工程里叫 TurnEnd
+        //（PowerTriggers.Canonical 会把后者规范化成前者，ProfileFactory.Load 读存档时也会改写成前者）。
+        // 这里必须按**规范化后的 id** 认：以前只写 `t.Kind == "TurnEnd"`，于是**现在所有存档**
+        //（存的是 PlayerTurnEnd）的这一条都被这个 Where 过滤掉 —— 方法照样生成、衰减 / 移除也在，
+        // 就是**效果体整个是空的**（游戏里那条状态什么都不做，日志里也看不出问题）。V0.2.157 修。
+        var playerSide = items.Where(t => PowerTriggers.Canonical(t.Kind) == "PlayerTurnEnd").ToList();
+        var enemySide = items.Where(t => PowerTriggers.Canonical(t.Kind) == "EnemyTurnEnd").ToList();
+        // 同一个钩子里合并了 ≥2 条触发时机时，每条各自包裸块（不然各条里的帮助变量会重复声明 → CS0128）
+        bool multiPlayer = playerSide.Count > 1;
+        bool multiEnemy = enemySide.Count > 1;
 
         if (power.RemoveAtTurnEnd)
         {
@@ -331,13 +343,13 @@ public static class CustomPowerGen
             w.Line(enemySide.Count > 0
                 ? "if (side != CombatSide.Player && side != CombatSide.Enemy) return;"
                 : "if (side != CombatSide.Player) return;");
-            foreach (var t in playerSide) EmitEffects(w, t, p: p);
+            foreach (var t in playerSide) EmitEffects(w, t, p: p, ownScope: multiPlayer);
             if (enemySide.Count > 0)
             {
                 w.Line();
                 w.Line("// 敌人回合结束时配的那几条");
                 w.Open("if (side == CombatSide.Enemy)");
-                foreach (var t in enemySide) EmitEffects(w, t, p: p);
+                foreach (var t in enemySide) EmitEffects(w, t, p: p, ownScope: multiEnemy);
                 w.Close();
             }
             w.Line();
@@ -350,17 +362,17 @@ public static class CustomPowerGen
         if (enemySide.Count == 0)
         {
             w.Line("if (side != CombatSide.Player) return;");
-            foreach (var t in playerSide) EmitEffects(w, t, p: p);
+            foreach (var t in playerSide) EmitEffects(w, t, p: p, ownScope: multiPlayer);
         }
         else
         {
             // 两种侧都配了：玩家侧跑玩家侧那几条，敌人侧跑敌人侧那几条（不能提前 return，否则敌人侧永远不执行）
             w.Open("if (side == CombatSide.Player)");
-            foreach (var t in playerSide) EmitEffects(w, t, p: p);
+            foreach (var t in playerSide) EmitEffects(w, t, p: p, ownScope: multiPlayer);
             w.Close();
             w.Line("else if (side == CombatSide.Enemy)");
             w.Open("");
-            foreach (var t in enemySide) EmitEffects(w, t, p: p);
+            foreach (var t in enemySide) EmitEffects(w, t, p: p, ownScope: multiEnemy);
             w.Close();
         }
 
@@ -370,6 +382,17 @@ public static class CustomPowerGen
     }
 
     /// <summary>把一种触发时机（可能配了好几条）生成成一个钩子方法。</summary>
+    /// <summary>
+    /// 正在生成的那只自定义状态**自己**的类名（给「盯自己这个状态」这类判断用）。
+    /// 拿不到（生成期没设 <see cref="_powerOwner"/> / 找不到序号）时返回空串 —— 调用方按「不是自己」处理。
+    /// </summary>
+    private static string SelfClassName(CharacterProfile? p)
+    {
+        if (p is null || _powerOwner is null) return "";
+        int idx = p.CustomPowers.IndexOf(_powerOwner);
+        return idx < 0 ? "" : ClassNameOf(p, _powerOwner, idx);
+    }
+
     private static void EmitTriggerMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items,
         CharacterProfile? p = null)
     {
@@ -390,34 +413,24 @@ public static class CustomPowerGen
                 w.Close();
                 break;
 
+            // 「打出一张牌时」= **本体的 BeforeCardPlayed**（这张牌还没结算）。
+            // ⚠ V0.2.157：以前这里用的是 AfterCardPlayed（结算完才回调）—— 于是「打出这张牌才施加的状态」
+            // 会在**同一张牌**上立刻触发一次（用户实测报的）。BeforeCardPlayed 在 OnPlay 之前派发
+            //（见 CardModel：Hook.BeforeCardPlayed → OnPlay → … → Hook.AfterCardPlayed），
+            // 那时这张牌的效果还没跑，所以它自己施加的状态还不存在 → 不会被自己触发。
+            // 「结算完」那一档是 CardResolved（AfterCardPlayedLate），语义不丢。
             case "CardPlayed":
-                w.Open("public override async Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
-                w.Line("if (cardPlay.Player != base.Owner.Player) return;");
-                // 不挑牌型的先无条件跑；挑牌型的各自包一层 if
-                EmitItemsWithAmountGate(w, items.Where(x => IsAnyCardFilter(x.CardFilter)), p, foeFrom: "cardPlay.Target");
-                foreach (var t in items.Where(x => !IsAnyCardFilter(x.CardFilter)))
-                {
-                    // 老的四档（攻击 / 技能 / 能力）生成的判据**逐字不变**（老存档的回归红线）；
-                    // V0.2.118 新加的 诅咒 / 状态 / 关键词组 / 组 走卡牌那边同一套「范围界定」谓词。
-                    if (t.CardFilter is "Attack" or "Skill" or "Power")
-                    {
-                        w.Open($"if (cardPlay.Card.Type == CardType.{t.CardFilter})");
-                    }
-                    else
-                    {
-                        w.Line($"// CET:CardFilter={t.CardFilter}");
-                        string? cond = CSharpCodeGen.ScopeCondForFilter(t.CardFilter, p);
-                        if (cond is null)
-                        {
-                            // 认不出来的筛选值：不乱猜，照旧不筛（校验器会报错说清）
-                            EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "cardPlay.Target");
-                            continue;
-                        }
-                        w.Open($"if ({cond.Replace("c.", "cardPlay.Card.")})");
-                    }
-                    EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "cardPlay.Target");
-                    w.Close();
-                }
+                w.Open("public override async Task BeforeCardPlayed(CardPlay cardPlay)");
+                // 这个钩子本体**没给 choiceContext**（签名只有 cardPlay）→ 需要时按本体做法自己造一个
+                EmitChoiceContextBootstrap(w, "CardPlayed", items);
+                EmitCardPlayedItems(w, items, p);
+                w.Close();
+                break;
+
+            // 「一张牌结算完毕时」= 本体的 AfterCardPlayedLate（牌已经生效完）—— 旧版的「打出一张牌后」
+            case "CardResolved":
+                w.Open("public override async Task AfterCardPlayedLate(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
+                EmitCardPlayedItems(w, items, p);
                 w.Close();
                 break;
 
@@ -630,7 +643,8 @@ public static class CustomPowerGen
                 {
                     if (tr.Kind == "CombatEnd")
                         w.Line($"// 触发时机：战斗结束时（房间结算之前）→「{string.Join("、", tr.Effects.Select(x => EffectCatalog.FindKind(x.Kind).Display))}」");
-                    EmitEffects(w, tr, roomVar: "room", p: p);
+                    // 「战斗胜利时 / 战斗结束时」共用一个钩子 → ≥2 条时每条各自包裸块（避免帮助变量重复声明）
+                    EmitEffects(w, tr, roomVar: "room", p: p, ownScope: items.Count > 1);
                 }
                 w.Close();
                 break;
@@ -639,6 +653,13 @@ public static class CustomPowerGen
             // 多判一条「这一次变化跨过了 N 层」（power.Amount = 变化后，amount = 这一次的增量）。
             case "PowerReached":
                 w.Open("public override async Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource)");
+                // V0.2.152：以前这里无条件写 `power != this` —— 于是「盯**自己这个状态**」永远不成立
+                //（用户报「我状态层数达到了却没生成卡牌」，他盯的就是这只状态自己）。
+                // 现在：**显式盯到自己这只状态时**才放行；留空（任意状态）/ 盯别的状态时照旧排除自己
+                //（免得自己给自己叠层 → 自己触发自己）。
+                // 自己触发自己会不会死循环：「跨过 N 那一下」这个判据本身就挡住了 ——
+                // 触发里再加层只会越过去（4 层时 4-1=3 不 < 3），不会重复触发。
+                string selfClass = SelfClassName(p);
                 foreach (var t in items)
                 {
                     string ownerGuard = t.PowerTarget == "AnyEnemy"
@@ -646,6 +667,10 @@ public static class CustomPowerGen
                           + " && base.Owner.CombatState is not null && base.Owner.CombatState.HittableEnemies.Contains(power.Owner)"
                         : "power != this && power.Owner == base.Owner";
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
+                    bool watchesSelf = want is not null && want.Length > 0
+                        && string.Equals(want, selfClass, StringComparison.Ordinal);
+                    if (watchesSelf)
+                        ownerGuard = ownerGuard.Replace("power != this && ", "", StringComparison.Ordinal);
                     string reach = Lit.Dec(Math.Max(0m, t.TriggerAmount));
                     w.Open($"if ({ownerGuard}{(want is null ? "" : $" && power is {Lit.Identifier(want, "VulnerablePower")}")}"
                          + $" && power.Amount >= {reach} && power.Amount - amount < {reach})");
@@ -777,13 +802,22 @@ public static class CustomPowerGen
         }
     }
     private static void EmitEffects(CodeWriter w, PowerTriggerSpec t, string? foeFrom = null, string? roomVar = null,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, bool ownScope = false)
     {
         if (t.Effects.Count == 0)
         {
             w.Line("// （这个触发时机下还没加效果）");
             return;
         }
+        // 一个钩子方法里合并了好几条触发时机时，每条各自包一层**裸块**。
+        // 为什么必须包：每条触发时机的效果里会就地声明一批「帮助变量」
+        //（概率的 __chanceRoll、随机目标的 Creature? other、拿牌的 __fgTake / __fgUp / srcVar / __fgPick、牺牲伙伴的局部…），
+        // 而「多条触发时机共用一个钩子」是支持的写法（见 TriggerAmountCond 的注释）——
+        // 不包的话第二条起就会「已在此范围定义了名为 __chanceRoll 的局部变量」CS0128（用户实测：
+        // LwenjunPower2.cs(37,16)：6 个错误全是同一个 __chanceRoll 重复声明）。
+        // ⚠ 只在**真的合并了多条**时才包：单条触发时机的输出一个字符都不变（「默认档逐字不变」）。
+        // ⚠ 裸块回读侧也认：ProjectRecovery 的 `line == "{"` 那一支会记一帧（不然它那个 `}` 会弹掉真正的循环 / 条件帧）。
+        if (ownScope) w.Open("");
         w.Line();
         // 概率生效：这一个触发时机里所有勾了概率的效果共用一次掷骰
         var powerChanceSlices = CSharpCodeGen.ChanceSlices(t.Effects);
@@ -804,6 +838,7 @@ public static class CustomPowerGen
             EmitEffect(w, e, foeFrom, roomVar, p);
             if (cond is not null) w.Close();
         }
+        if (ownScope) w.Close();   // 关掉这条触发时机自己的裸块（见方法开头）
     }
 
     /// <summary>
@@ -819,6 +854,42 @@ public static class CustomPowerGen
     }
 
     /// <summary>
+    /// 「打出一张牌时 / 一张牌结算完毕时」两条时机**共用的方法体**（V0.2.157 抽出来）：
+    /// 只看自己打出的牌 + 按「只对哪类牌生效」分流，再跑各自的效果。
+    /// 两条区别只在**钩子**（BeforeCardPlayed = 结算前 / AfterCardPlayedLate = 结算完），
+    /// 体一模一样 —— 抽一份免得两处漂移。
+    /// </summary>
+    private static void EmitCardPlayedItems(CodeWriter w, List<PowerTriggerSpec> items, CharacterProfile? p)
+    {
+        w.Line("if (cardPlay.Player != base.Owner.Player) return;");
+        // 不挑牌型的先无条件跑；挑牌型的各自包一层 if
+        EmitItemsWithAmountGate(w, items.Where(x => IsAnyCardFilter(x.CardFilter)), p, foeFrom: "cardPlay.Target");
+        foreach (var t in items.Where(x => !IsAnyCardFilter(x.CardFilter)))
+        {
+            // 老的四档（攻击 / 技能 / 能力）生成的判据**逐字不变**（老存档的回归红线）；
+            // V0.2.118 新加的 诅咒 / 状态 / 关键词组 / 组 走卡牌那边同一套「范围界定」谓词。
+            if (t.CardFilter is "Attack" or "Skill" or "Power")
+            {
+                w.Open($"if (cardPlay.Card.Type == CardType.{t.CardFilter})");
+            }
+            else
+            {
+                w.Line($"// CET:CardFilter={t.CardFilter}");
+                string? cond = CSharpCodeGen.ScopeCondForFilter(t.CardFilter, p);
+                if (cond is null)
+                {
+                    // 认不出来的筛选值：不乱猜，照旧不筛（校验器会报错说清）
+                    EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "cardPlay.Target");
+                    continue;
+                }
+                w.Open($"if ({cond.Replace("c.", "cardPlay.Card.")})");
+            }
+            EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "cardPlay.Target");
+            w.Close();
+        }
+    }
+
+    /// <summary>
     /// 这个触发时机的钩子有没有 choiceContext 参数？
     /// 本体有些钩子不带它：AfterSideTurnStart(side, participants, combatState)、
     /// AfterBlockGained(creature, amount, props, cardSource)、BeforeCombatStart()、
@@ -828,7 +899,11 @@ public static class CustomPowerGen
     internal static bool TriggerHasChoiceContext(string? kind) =>
         kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory" or "HpLost" or "CardGenerated" or "GoldGained"
             // 「某个状态被移除时」不是本体的钩子（是工具补丁调过来的普通方法）→ 同样没有 choiceContext
-            or "PowerRemoved");
+            or "PowerRemoved"
+            // V0.2.157：「打出一张牌时」用的是 BeforeCardPlayed(CardPlay)——签名里**没有** choiceContext
+            //（本体 AbstractModel.BeforeCardPlayed 就只有 cardPlay）。「一张牌结算完毕时」用的是
+            // AfterCardPlayedLate(choiceContext, cardPlay)，**有** context，所以不列进来。
+            or "CardPlayed");
 
     /// <summary>
     /// 这个钩子没有 choiceContext 时，自己造一个再往下跑。
@@ -891,9 +966,13 @@ public static class CustomPowerGen
     /// 这些效果生成出来的代码里**会用** choiceContext，所以落在「本体钩子不带 choiceContext」的
     /// 触发时机里时必须先 bootstrap 一个（否则 CS0103）。
     ///
-    /// 用户实测报过两次：第一次是漏了「自己获得格挡后」那条分支的 bootstrap，
+    /// 用户实测报过三次：第一次是漏了「自己获得格挡后」那条分支的 bootstrap，
     /// 第二次是这份清单本身漏了 HpLoss / MaxHp / 下回合生效的 ExtraResource ——
-    /// 「敌人回合开始时：失去 3 点生命」正好是 HpLoss，于是照样 CS0103。
+    /// 「敌人回合开始时：失去 3 点生命」正好是 HpLoss，于是照样 CS0103；
+    /// 第三次是「生成卡牌」—— 它**分档**（只有「多选1 / 自己挑一张」那两条路会弹选牌界面、
+    /// 才写 choiceContext），所以只能加在细化重载 <see cref="NeedsChoiceContext(EffectSpec)"/> 里，
+    /// **不要**加进这份不看档位的 string 清单（加了会让「指定卡 / 纯按范围随机」的默认档也凭空
+    /// 多出三行 bootstrap，破坏「默认档逐字不变」）。
     /// 以后新增任何在 EmitEffect 里写 choiceContext 的效果种类，都要加进这里（有自检兜底）。
     /// </summary>
     internal static bool NeedsChoiceContext(string? kind) =>
@@ -910,6 +989,12 @@ public static class CustomPowerGen
         // 「额外资源量」只有「下回合生效」才走 PowerCmd.Apply&lt;StarNextTurnPower&gt;(choiceContext, …)；
         // 普通获得走 PlayerCmd.GainStars（不需要），花费用负数额度也不占变量。
         "ExtraResource" => e.NextTurn && (e.Amount > 0 || e.AmountIsStack),
+        // 「生成卡牌」只有**弹选牌界面**的两条路会写 choiceContext（见 CSharpCodeGen.EmitGenerateCard）：
+        //   · 「多选1」（SpawnChoice &gt; 1）→ CardSelectCmd.FromChooseACardScreen / FromSimpleGrid
+        //   · 「自己挑一张」（SpawnChosen）→ 同上
+        // 「指定卡」和纯「按范围随机」都不写它 —— 所以只写在细化重载里（string 版不看档位，加了会污染默认档）。
+        // 漏掉这条的后果：「敌人回合开始时：生成卡牌（多选1）」这种配置生成出来 CS0103（用户实测报过）。
+        "GenerateCard" => e.IsSpawnRandom && (e.SpawnChosen || e.SpawnChoice > 1m),
         _ => NeedsChoiceContext(e.Kind),
     };
 
@@ -933,7 +1018,15 @@ public static class CustomPowerGen
     {
         // 数值 0 且升级也不加数值：整条丢掉（用户要求：不显示、也不执行 —— 0 点会被力量/敏捷加成）
         if (CSharpCodeGen.IsInertZero(e)) return;
-        string amt = e.AmountIsStack ? "base.Amount" : Lit.Dec(e.Amount);
+        // V0.2.164：状态链上也能写「数值公式」了 —— 同样写一行标记，「从工程恢复存档」按它认回来
+        if (e.UsesAmountFormula) w.Line($"// CET:AmountFormula={CSharpCodeGen.EscapeMarker(e.AmountFormula)}");
+        // V0.2.164：「数值公式」在状态链上也是**全内联**求值 —— 状态钩子里 base.Owner 本身就是 Creature，
+        // 「自己」= base.Owner、「玩家」= base.Owner.Player（没有「玩家选中的目标」→「指定敌人」取可打的第一个敌人）。
+        // 没写公式（或这种种类不支持公式）时退回固定数值 / 层数，输出与老版本逐字相同。
+        string amt = e.AmountIsStack
+            ? "base.Amount"
+            : (CSharpCodeGen.InlineAmountFormula(p, e, "base.Owner.Player", "base.Owner",
+                   CSharpCodeGen.FirstEnemyOf("base.Owner.Player")) ?? Lit.Dec(e.Amount));
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 直接 return（状态根本挂不上）
         if (CSharpCodeGen.IsSlowPercentEffect(e)) amt = "1m";
@@ -1006,6 +1099,16 @@ public static class CustomPowerGen
 
             case "ExtraTurn":
                 w.Line($"await PowerCmd.Apply<{Naming.AmbientExtraTurnPowerClass}>(choiceContext, base.Owner, 1m, base.Owner, null);");
+                break;
+
+            // 播放音效（V0.2.154）：状态触发时也能放（和卡牌 / 遗物 / 药水共用同一个发射器）
+            case "PlaySfx":
+                CSharpCodeGen.EmitPlaySfx(w, e);
+                break;
+
+            // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer，状态触发时也能放
+            case "PlaySoundFile":
+                CSharpCodeGen.EmitPlaySoundFile(w, e);
                 break;
 
             case "GenerateCard":

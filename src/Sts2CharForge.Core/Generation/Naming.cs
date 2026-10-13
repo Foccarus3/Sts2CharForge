@@ -463,12 +463,28 @@ public sealed record Naming(
     /// </summary>
     public int RenumberCardClassNames(IEnumerable<CardSpec> cards, IDictionary<string, string>? renamedOut = null)
     {
+        // ⚠⚠ V0.2.156：**两趟** —— 先把整张「旧名 → 新名」表算完，再动手改卡。
+        //
+        // 为什么必须两趟（用户实测报「在卡牌列表拖动卡牌后，卡面会变成其他卡」的真因之一）：
+        //   改 `ClassName` / `LastAutoOrdinal` 会触发 PropertyChanged，界面那边的
+        //   `OnCardChanged` / `OnCardsChanged` 会**重入**刷新（`RefreshCardChoices` → 又一次
+        //   `RenumberCardNames`）。一趟「边算边改」的写法在重入时**只算得出已经走过的那部分映射**
+        //   （剩下的卡 LastAutoOrdinal 已被重入的 `RefreshCardOrdinals` 改成新号了）——
+        //   于是引用 / 卡面被**分几次**搬，每一小次都以为自己拿到的是完整置换，结果互相覆盖。
+        //   实测：把 3 张牌从 [A,B,C] 拖成 [C,A,B] 时，映射被拆成三次（13→14 / 12→13 / 14→1），
+        //   三张卡面最后错位成「第 3 张拿了第 2 张的图、第 2 张没有图」。
+        //   两趟之后，第一趟不碰任何字段（纯读），重入也只会在第二趟里发生（那时映射已经定死，
+        //   重入的那次算出来是空映射，什么都不动）→ 结果永远一致。
+        var list = new List<CardSpec>();
+        foreach (var c in cards) if (c is not null) list.Add(c);
+
+        var plannedRenames = new List<(CardSpec Card, string Want)>();
+        var plannedOrdinals = new List<(CardSpec Card, int Row, bool Counted)>();
         int renumbered = 0;
-        int index = 0;
-        foreach (var c in cards)
+        for (int i = 0; i < list.Count; i++)
         {
-            if (c is null) { index++; continue; }
-            int row = index + 1;
+            CardSpec c = list[i];
+            int row = i + 1;
             string want = CharClass + CardStemOf(c) + row.ToString();
             if (IsValidIdentifier(c.ClassName))
             {
@@ -479,13 +495,13 @@ public sealed record Naming(
                     if (!string.Equals(c.ClassName!.Trim(), want, StringComparison.Ordinal))
                     {
                         renamedOut?.TryAdd(c.ClassName!.Trim(), want);
-                        c.ClassName = want;
-                        renumbered++;
+                        plannedRenames.Add((c, want));
+                        renumbered++;      // 计数口径和以前一样：改名 +1（下面那次 LastAutoOrdinal 不另外计）
                     }
                     // 和药水那版一致：界面上「英文类名」下面那行小字读 LastAutoOrdinal，
                     // 「行号早就等于自动名」的分支也要同步好，否则小字还写着上一个号、界面自相矛盾。
                     // 这个字段是 [JsonIgnore]，不写存档、不参与生成，改了不影响老存档的生成结果。
-                    if (c.LastAutoOrdinal != row) c.LastAutoOrdinal = row;
+                    if (c.LastAutoOrdinal != row) plannedOrdinals.Add((c, row, false));
                 }
             }
             else
@@ -493,12 +509,25 @@ public sealed record Naming(
                 // 没填类名：只记「这个位置对应的自动名是第几号」，类名留空（生成端会自己拼）
                 if (c.LastAutoOrdinal != row)
                 {
-                    c.LastAutoOrdinal = row;
+                    // V0.2.153：**「旧名 → 新名」也要在这里产出**（以前这一支什么都不记）。
+                    // 为什么必须记：没填类名的卡，它的名字是**算出来的**（<角色>Card + 行号），
+                    // 而效果里「目标卡」存的是这个字符串 —— 用户先选了目标卡、之后又增删 / 拖动过卡牌，
+                    // 改号那一刻不把引用一起搬，那个字符串就会落到**同名的另一张卡**身上（静默换卡；
+                    // 用户实测报「点击构建后目标卡里的东西会变」）。
+                    // 「上一轮的号」= <see cref="CardSpec.LastAutoOrdinal"/>（界面每次刷新候选表时会被这里写实）。
+                    if (renamedOut is not null && c.LastAutoOrdinal >= 1)
+                    {
+                        string oldName = CharClass + CardStemOf(c) + c.LastAutoOrdinal.ToString();
+                        if (!string.Equals(oldName, want, StringComparison.Ordinal)) renamedOut.TryAdd(oldName, want);
+                    }
+                    plannedOrdinals.Add((c, row, true));
                     renumbered++;
                 }
             }
-            index++;
         }
+
+        foreach (var (c, want) in plannedRenames) c.ClassName = want;
+        foreach (var (c, row, _) in plannedOrdinals) if (c.LastAutoOrdinal != row) c.LastAutoOrdinal = row;
         return renumbered;
     }
 

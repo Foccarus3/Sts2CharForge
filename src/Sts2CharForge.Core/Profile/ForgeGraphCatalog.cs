@@ -15,6 +15,8 @@ namespace Sts2CharForge.Core.Profile;
 public static class ForgeTimings
 {
     public const string CardPlayed = "CardPlayed";
+    /// <summary>V0.2.157：「一张牌结算完毕时」（旧版的「打出一张牌后」；本体 AfterCardPlayedLate）。</summary>
+    public const string CardResolved = "CardResolved";
     public const string CardAutoPlayed = "CardAutoPlayed";
     public const string CardExhausted = "CardExhausted";
     public const string CardDiscarded = "CardDiscarded";
@@ -113,8 +115,10 @@ public static class ForgeTimings
             "本体 AfterCardGeneratedForCombat：只算玩家自己生成的牌（敌人塞给你的状态牌不算）。"),
         new TimingOption(PowerReached, "某个状态层数到达 N 层时", "Relic", "AfterPowerAmountChanged",
             "本体 AfterPowerAmountChanged：只看自己身上的状态；「盯哪个状态 / 到达 N 层」在下面那两栏填。"),
-        new TimingOption(CardPlayed, "打出一张牌后", "Relic", "AfterCardPlayed",
-            "本体 AfterCardPlayed：只认自己打出的牌（敌人打牌不算）。"),
+        new TimingOption(CardPlayed, "打出一张牌时（这张牌还没生效）", "Relic", "BeforeCardPlayed",
+            "本体 BeforeCardPlayed：只认自己打出的牌（敌人打牌不算）。这时这张牌**还没结算**，所以「打出它才施加的状态」不会被它自己触发。"),
+        new TimingOption(CardResolved, "一张牌结算完毕时", "Relic", "AfterCardPlayedLate",
+            "本体 AfterCardPlayedLate：这张牌**已经生效完了**（旧版的「打出一张牌后」就是这一档）。只认自己打出的牌。"),
         new TimingOption(CardExhausted, "消耗一张牌后", "Relic", "AfterCardExhausted",
             "本体 AfterCardExhausted：只认自己被消耗的牌。"),
         new TimingOption(CardDrawn, "抽一张牌后", "Relic", "AfterCardDrawn",
@@ -249,8 +253,10 @@ public static class ForgeGraphCatalog
     /// <summary>
     /// 「数值栏里也能填公式」那句话（V0.2.128 需求 1）——界面提示和 ToolTip 共用这一份，
     /// 免得界面上写一套、校验器里写另一套。
+    /// 注意是**属性**不是常量了：V0.2.162 起它把内置只读量的**条数**写进去（那一批从 23 条涨到 80 条，
+    /// 写死的数字会过期），常量表达式里不能读 <c>FormulaBuiltins.All.Count</c>。
     /// </summary>
-    public const string NumberFormulaHint = Generation.ForgeNumbers.FormulaHint;
+    public static string NumberFormulaHint => Generation.ForgeNumbers.FormulaHint;
 
     /// <summary>这一栏的值是不是「必须编译期常量」（费用那两栏：本体 <c>base(cost, …)</c> 要常量）。</summary>
     public static bool NumberFieldNeedsConst(string? kindId, string fieldKey) =>

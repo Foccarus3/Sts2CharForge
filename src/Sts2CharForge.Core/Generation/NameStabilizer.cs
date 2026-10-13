@@ -53,6 +53,11 @@ public static class NameStabilizer
         string modId = Naming.From(p).ModId;
         ClassMap old = LoadMap(projectRoot, modId);
         bool changed = RepairReferences(p, old, notes);
+        // V0.2.153：**先按当前序号把「按类名存的引用」搬一次，再冻结类名**（RenumberCardNames 的注释里
+        // 写的就是「必须排在 Freeze 之前」）。不搬的话：引用里存的是上一轮的自动名，而 Freeze 把卡片的
+        // 显式类名按**现在的行号**写实 —— 两者对不上，引用就落到同名的另一张卡身上
+        //（用户实测报「点击构建后目标卡里的东西会变」）。
+        changed |= RenumberCardNames(p, notes) > 0;
         // 自定义关键词有一模一样的问题：英文标识留空时按位置自动编号（KEYWORD_1 / KEYWORD_2…），
         // 中间插入 / 删除一条后面就集体改名 —— 而卡牌上的「自定义关键词」、效果里的
         // 「给予卡牌关键词」和「范围限定 = 自定义关键词那一组（Keyword:XXX）」存的全是这个键。
@@ -214,17 +219,33 @@ public static class NameStabilizer
         if (p.ExtraResource?.Effects is { } erEffects)
             foreach (var e in erEffects) Fix(e, "额外资源量遗物的效果");
         // 用户上传的卡面是按**类名**存的（`ArtSpec.CardPortraits[cls]`，见 ArtGenerator 与「上传卡面」）——
-        // 自动名改号之后那一条就再也对不上了，卡面会**静悄悄地退回占位图**。所以跟着搬一次。
-        // 目标键已经有图时不覆盖（那条老键就留着了，不丢数据，用户可以在界面上重传）。
+        // 自动名改号之后那一条就再也对不上了，卡面会**静悄悄地退回占位图**，或者更糟：
+        // 那个名字现在属于**另一张卡**，于是「卡面变成别的卡的图」（用户实测报过）。
+        //
+        // ⚠ V0.2.156：这里必须**一次性重排**（先算完整张新表再整体换上），不能「边遍历边搬」——
+        //   改号是**一张名字的置换**，把某张牌往上拖就会形成**环**（例：[A,B,C] → [B,C,A] 时
+        //   A1→A3、A2→A1、A3→A2 是个三元环）。顺序搬 + 「目标已有图就跳过」的写法在环上会把
+        //   某几张图的落点搞错（先搬的那条占了后面那条的目标键 → 后面那条被跳过 → 图留在别人身上）。
+        //   一次性重排对环天然正确：每个旧键各自搬到它的新键上，互不干扰。
         if (p.Art?.CardPortraits is { Count: > 0 } portraits)
         {
-            foreach (var (oldName, newName) in renamed)
+            // 一次性重排：**从零重建**一张新表 —— 每个旧键各自搬到它的新键上。
+            // ⚠ 不能「在拷贝上按对 Remove(旧键) / 赋值(新键)」：环上（12→13、13→14、14→1）
+            //   先搬的那条已经把值放进了 13，第二条 Remove(13) 会把**刚放进去的那张图**删掉 →
+            //   原 12 的图整个丢掉（实测就是这样丢的）。
+            var rebuilt = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (key, value) in portraits)
             {
-                if (!portraits.TryGetValue(oldName, out string? src) || string.IsNullOrWhiteSpace(src)) continue;
-                if (portraits.ContainsKey(newName)) continue;
-                portraits[newName] = src;
-                portraits.Remove(oldName);
-                notes?.Add($"上传的卡面（{oldName}）已跟着新类名挂到「{newName}」上");
+                string target = renamed.TryGetValue(key, out string? to) ? to : key;
+                rebuilt[target] = value;
+                if (!string.Equals(target, key, StringComparison.Ordinal))
+                    notes?.Add($"上传的卡面（{key}）已跟着新类名挂到「{target}」上");
+            }
+            bool anyMoved = portraits.Any((KeyValuePair<string, string> kv) => renamed.ContainsKey(kv.Key));
+            if (anyMoved)
+            {
+                portraits.Clear();
+                foreach (var (k, v) in rebuilt) portraits[k] = v;
             }
         }
         foreach (var g in ForgeEffectBridge.GraphsOf(p))
@@ -309,48 +330,168 @@ public static class NameStabilizer
 
     // ==================== ② 冻结类名 ====================
 
+    /// <summary>
+    /// 把「留空的类名」永久写实。
+    ///
+    /// <para>⚠ V0.2.157：写实的时候**必须避让已经被占用的名字**。自动类名是按「它自己那一页列表的第几位」
+    /// 数出来的（<c>&lt;角色&gt;Card37</c>…），而这个号**可能已经属于别人** —— 最典型的是
+    /// 「上一轮冻结过的旧名字」：用户删掉前面一张卡之后，原来第 37 位的那张仍然叫 <c>…Card37</c>
+    /// （冻结过的名字不跟着位置走），而**新排到第 37 位**的那张空类名卡也会算出 <c>…Card37</c>
+    /// → 两张卡同一个类名。本体的模型 ID 只按类名算（忽略命名空间），重名的直接后果就是校验器那条
+    /// 「卡牌类名重复：GunnerRainyCard37」把构建拦死（用户实测报过）。</para>
+    ///
+    /// <para>⚠ 避让用的替代名**不能是「末尾数字加一」**（<c>…Card37</c> → <c>…Card38</c>）：
+    /// 那个形状仍然算「工具自动名」（<see cref="Naming.IsAutoCardClassName"/>），下一次生成 / 构建时
+    /// <see cref="Naming.RenumberCardClassNames"/> 会把它按**当前位置**改回 <c>…Card37</c>，
+    /// 撞名原样复现（校验器那条「长得像自动编号…下次会被改名」的提示说的就是这件事）。
+    /// 所以替代名末尾缀一个字母（<c>…Card37X</c>）：认不出是自动名 → 再也不会被改号。</para>
+    /// </summary>
     private static bool Freeze(CharacterProfile p, List<string> notes)
     {
         bool changed = false;
         var n = Naming.From(p);
+
+        // 已经被占着的类名：**五种模型一起收集** —— 本体模型库只按类名算 ID，卡牌 / 遗物 / 药水 /
+        // 召唤物 / 自定义状态**互相之间**撞名同样会让游戏加载模型库时抛 DuplicateModelException。
+        // ⚠ 只收「已经有确定类名」的：留空的那些还没占位（它们等下面几段自己来领）。
+        var used = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var c in p.AllCards)
+            if (c is not null && Naming.IsValidIdentifier(c.ClassName)) used.Add(n.CardClassName(p, c));
+        foreach (var r in p.Relics)
+            if (r is not null && Naming.IsValidIdentifier(r.ClassName)) used.Add(r.ClassName!.Trim());
+        foreach (var s in p.Potions)
+            if (s is not null && Naming.IsValidIdentifier(s.ClassName)) used.Add(s.ClassName!.Trim());
+        foreach (var sp in p.Summons)
+            if (sp is not null && Naming.IsValidIdentifier(sp.ClassName)) used.Add(sp.ClassName!.Trim());
+        foreach (var cp in p.CustomPowers)
+            if (cp is not null && Naming.IsValidIdentifier(cp.ClassName)) used.Add(cp.ClassName!.Trim());
+
+        // 领一个名字：想要的那个被占了就缀字母（理由见方法注释里那段「为什么不能加数字」）。
+        string Claim(string want)
+        {
+            if (used.Add(want)) return want;
+            for (int i = 1; ; i++)
+            {
+                string alt = i == 1 ? want + "X" : want + "X" + i.ToString();
+                if (used.Add(alt)) return alt;
+            }
+        }
+
         foreach (var c in p.AllCards)
         {
             if (c is null || c.IsVanillaCard || Naming.IsValidIdentifier(c.ClassName)) continue;
-            c.ClassName = n.CardClassName(p, c);
-            notes.Add($"英文类名已固定：卡牌「{c.Name}」→ {c.ClassName}");
+            string want = n.CardClassName(p, c);
+            string cls = Claim(want);
+            if (!string.Equals(cls, want, StringComparison.Ordinal))
+                notes.Add($"[警告] 卡牌「{c.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}"
+                    + "（这张卡如果上传过卡面 / 被别的效果按类名引用过，请在界面上重新选一次）");
+            c.ClassName = cls;
+            notes.Add($"英文类名已固定：卡牌「{c.Name}」→ {cls}");
             changed = true;
         }
         for (int i = 0; i < p.Relics.Count; i++)
         {
             var r = p.Relics[i];
             if (r is null || Naming.IsValidIdentifier(r.ClassName)) continue;
-            r.ClassName = n.RelicClassName(r, i);
-            notes.Add($"英文类名已固定：遗物「{r.Name}」→ {r.ClassName}");
+            string want = n.RelicClassName(r, i);
+            string cls = Claim(want);
+            if (!string.Equals(cls, want, StringComparison.Ordinal))
+                notes.Add($"[警告] 遗物「{r.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
+            r.ClassName = cls;
+            notes.Add($"英文类名已固定：遗物「{r.Name}」→ {cls}");
             changed = true;
         }
         for (int i = 0; i < p.Potions.Count; i++)
         {
             var s = p.Potions[i];
             if (s is null || Naming.IsValidIdentifier(s.ClassName)) continue;
-            s.ClassName = n.PotionClassName(s, i);
-            notes.Add($"英文类名已固定：药水「{s.Name}」→ {s.ClassName}");
+            string want = n.PotionClassName(s, i);
+            string cls = Claim(want);
+            if (!string.Equals(cls, want, StringComparison.Ordinal))
+                notes.Add($"[警告] 药水「{s.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
+            s.ClassName = cls;
+            notes.Add($"英文类名已固定：药水「{s.Name}」→ {cls}");
             changed = true;
         }
         for (int i = 0; i < p.Summons.Count; i++)
         {
             var sp = p.Summons[i];
             if (sp is null || Naming.IsValidIdentifier(sp.ClassName)) continue;
-            sp.ClassName = PetGen.ClassNameOf(p, sp);
-            notes.Add($"英文类名已固定：召唤物「{sp.Name}」→ {sp.ClassName}");
+            string want = PetGen.ClassNameOf(p, sp);
+            string cls = Claim(want);
+            if (!string.Equals(cls, want, StringComparison.Ordinal))
+                notes.Add($"[警告] 召唤物「{sp.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
+            sp.ClassName = cls;
+            notes.Add($"英文类名已固定：召唤物「{sp.Name}」→ {cls}");
             changed = true;
         }
         for (int i = 0; i < p.CustomPowers.Count; i++)
         {
             var cp = p.CustomPowers[i];
             if (cp is null || Naming.IsValidIdentifier(cp.ClassName)) continue;
-            cp.ClassName = CustomPowerGen.ClassNameOf(p, cp, i);
-            notes.Add($"英文类名已固定：自定义状态「{cp.Name}」→ {cp.ClassName}");
+            string want = CustomPowerGen.ClassNameOf(p, cp, i);
+            string cls = Claim(want);
+            if (!string.Equals(cls, want, StringComparison.Ordinal))
+                notes.Add($"[警告] 自定义状态「{cp.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
+            cp.ClassName = cls;
+            notes.Add($"英文类名已固定：自定义状态「{cp.Name}」→ {cls}");
             changed = true;
+        }
+
+        // 冻结完还要再拆一次「已经写实的名字之间」的重名 —— 见 DedupeCardClassNames 的注释。
+        changed |= DedupeCardClassNames(p, n, Claim, notes);
+        return changed;
+    }
+
+    /// <summary>
+    /// 把**已经有了类名**的卡牌之间重名的那些拆开（V0.2.157 修）。
+    ///
+    /// <para>为什么「冻结之后」还会重名：自动名是按**稀有度决定的那一页**数位置的
+    /// （<see cref="Naming.CardListOf"/>：普通卡 / 诅咒 / 先古各数各的），而一张卡**躺在哪一页**
+    /// 是另一回事 —— 一张稀有度写着「普通」、却被放进「诅咒卡」页的卡，数位置时去普通卡页里
+    /// 找不到自己（<see cref="Naming.CardRowOf"/> 给 0），而生成端
+    /// <see cref="Naming.RenumberCardClassNames"/> 会按**它所在那一页的行号**给它编号
+    /// （那一页的第 37 行 → <c>…Card37</c>），于是和**普通卡页第 37 行**那张正牌撞名。
+    /// 用户实测报的就是这条：「卡牌类名重复：GunnerRainyCard37」（校验器那条**错误**会拦死构建）。</para>
+    ///
+    /// <para>拆法：一组重名里保留**「页对得上」**的那张（<see cref="Naming.CardListOf"/> 选中的页里
+    /// 真有它 —— 那张的号是按规矩数出来的），其余的（**工具自动名形状**的）改成 <c>…37X</c>
+    /// 这种不再被改号的稳定名；**用户手填**的类名一个字符都不动 —— 那种情况校验器会照旧报错，
+    /// 让用户自己决定留哪张（工具不去猜他手打的名字是什么意思）。</para>
+    /// </summary>
+    private static bool DedupeCardClassNames(CharacterProfile p, Naming n, Func<string, string> claim, List<string> notes)
+    {
+        bool changed = false;
+        var groups = new Dictionary<string, List<CardSpec>>(StringComparer.Ordinal);
+        foreach (var c in p.AllCards)
+        {
+            if (c is null || c.IsVanillaCard || !Naming.IsValidIdentifier(c.ClassName)) continue;
+            string cls = n.CardClassName(p, c);
+            if (!groups.TryGetValue(cls, out var list)) groups[cls] = list = new List<CardSpec>();
+            list.Add(c);
+        }
+        foreach (var (cls, list) in groups)
+        {
+            if (list.Count < 2) continue;
+            // 保留「页对得上」的那张（自动名就是按那一页数出来的）；两张都对页 / 都错页时按列表先后。
+            CardSpec keep = list.FirstOrDefault(c => Naming.CardListOf(p, c).Any(x => ReferenceEquals(x, c))) ?? list[0];
+            foreach (var c in list)
+            {
+                if (ReferenceEquals(c, keep)) continue;
+                if (!n.IsAutoCardClassName(c.ClassName))
+                {
+                    notes.Add($"[警告] 卡牌「{c.Name}」的类名 {cls} 和卡牌「{keep.Name}」重复，而这个名字是手填的 —— "
+                        + "工具不动手填的类名，请到「卡牌」页把它们改成两个不同的名字。");
+                    continue;
+                }
+                string old = c.ClassName!.Trim();
+                string cls2 = claim(cls);      // cls 已被占 → 必然给一个 …X 的替代名
+                c.ClassName = cls2;
+                notes.Add($"[警告] 卡牌「{c.Name}」的类名 {old} 和卡牌「{keep.Name}」重复"
+                    + "（它躺的那一页和稀有度对不上，数位置时数出了同一个号），已改成 " + cls2
+                    + "（这张卡如果上传过卡面 / 被别的效果按类名引用过，请在界面上重新选一次）");
+                changed = true;
+            }
         }
         return changed;
     }

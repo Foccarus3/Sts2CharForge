@@ -22,6 +22,9 @@ public static class ModGenerator
         // 老存档（EffectFromLegacy = true）**不会被回写**，生成结果逐字不变。
         ForgeEffectBridge.Normalize(profile);
         foreach (var fg in ForgeEffectBridge.GraphsOf(profile)) ForgeEffectBridge.SyncGraph(fg);
+        // V0.2.146：「数值公式」框里填了**纯常数**（例：1）的，生成前折进固定数值
+        //（校验器那边也折了一遍；这里再兜一次，保证任何入口生成出来的代码都用那个数字 —— 幂等）。
+        ProfileFactory.FoldPlainConstantAmountFormulas(profile);
         // 「生成调试日志」（V0.2.142）用的临时变量序号：整次生成从头开始
         //（「同一份存档生成两次文本逐字节相同」是既有红线，见 DebugLogGen._seq；各 Source 生成器里还会各自再归零一次）。
         DebugLogGen.Reset();
@@ -164,8 +167,9 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile, animPlan));
         ProjectFilesGen.WriteText(Path.Combine(cs, "Patches.cs"), PatchesGen.PatchesSource(profile));
         // 锻造节点图的运行时辅助：**只有真的用了节点图才写**（空图 = 一个文件都不多，默认档逐字不变）。
-        // 「数值公式」用的是同一个运行时辅助类（公式求值器是共用的），所以卡牌上写了公式也要写这个文件。
-        if (ForgeGraphGen.AnyGraphs(profile) || ForgeGraphGen.AnyCardFormula(profile))
+        // 「数值公式」用的是同一个运行时辅助类（公式求值器是共用的），所以卡牌上写了公式也要写这个文件；
+        // V0.2.164 起遗物 / 药水 / 自定义状态的触发器上写了公式同样要（那三条链走全内联求值）。
+        if (ForgeGraphGen.AnyGraphs(profile) || ForgeGraphGen.AnyCardFormula(profile) || ForgeGraphGen.AnyNonCardFormula(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, ForgeGraphGen.RuntimeFile + ".cs"), ForgeGraphGen.RuntimeSource(profile));
             // 「当遗物被点击时」要一个 Harmony 补丁（只有真的用了那条时机才写）

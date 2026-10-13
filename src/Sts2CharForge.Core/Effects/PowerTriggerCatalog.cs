@@ -29,7 +29,13 @@ public static class PowerTriggers
     {
         new PowerTriggerOption("PlayerTurnStart", "玩家回合开始时",   "AfterPlayerTurnStart：本体恶魔形态就是挂这个（老存档里的 TurnStart 也认）"),
         new PowerTriggerOption("PlayerTurnEnd",  "玩家回合结束时",   "BeforeSideTurnEnd：本体缠身/战斗回合结算时用（老存档里的 TurnEnd 也认）"),
-        new PowerTriggerOption("CardPlayed",    "打出一张牌后",       "AfterCardPlayed：可以只对攻击/技能/能力牌生效", NeedCardFilter: true),
+        // V0.2.157：这一档以前用的是 AfterCardPlayed（= **结算完**才回调），于是「打这张牌才施加的这个状态」
+        // 会在**同一张牌**上立刻触发一次（用户实测报的：实际变成了「打出一张牌后」，和「一张牌结算完毕时」
+        // 几乎一样）。现在改用本体的 **BeforeCardPlayed**（真正的「打出的那一刻」：这张牌的效果还没跑，
+        // 所以它自己施加的状态还不存在 → 不会被自己触发）。
+        // 「结算完」那一档单独留成 CardResolved（见下），语义不丢。
+        new PowerTriggerOption("CardPlayed",    "打出一张牌时（这张牌还没生效）", "BeforeCardPlayed：这张牌**还没结算**，所以「打出它才施加的状态」不会被它自己触发。可以只对攻击/技能/能力牌生效", NeedCardFilter: true),
+        new PowerTriggerOption("CardResolved",  "一张牌结算完毕时",     "AfterCardPlayedLate：这张牌**已经生效完了**（旧版的「打出一张牌后」就是这一档）。可以只对攻击/技能/能力牌生效", NeedCardFilter: true),
         new PowerTriggerOption("CardExhausted", "消耗一张牌后",       "AfterCardExhausted：本体无痛感（获得格挡）用这个"),
         new PowerTriggerOption("CardDrawn",     "抽一张牌后",         "AfterCardDrawn"),
         new PowerTriggerOption("CardDiscarded", "弃掉一张牌后",       "AfterCardDiscarded"),
@@ -172,6 +178,11 @@ public static class PowerTriggers
         // 「大限已至 / 升级卡牌 / 预见」不在这个清单里：前两个要「玩家选中的目标」或选牌界面，
         // 状态触发器里没有这些上下文，校验会拦住。
         "Outbreak",
+        // V0.2.154 / V0.2.155：播放音效 / 播放上传的音频文件 —— 两条都不需要任何上下文
+        //（SfxCmd.Play 是静态的；AudioStreamPlayer 挂场景根），状态触发器里当然也能放。
+        // ⚠ 以前漏了这一条：生成端（CustomPowerGen）其实**已经**实现了，但这份清单没写上 →
+        // 校验器会把「状态里放声音」直接拦成错误（用户根本用不了）。
+        "PlaySfx", "PlaySoundFile",
         // 「升级卡牌（全局）」= 直接改牌组（本体「香盒 Pomander」那种），不需要卡牌上下文，状态里也能用
         "UpgradeCardGlobal",
         // 获得药水（需求 ⑨）：本体 PotionCmd.TryToProcure 只收玩家（不收 choiceContext），
@@ -261,11 +272,16 @@ public static class PowerTriggers
     /// </summary>
     public static string TriggerLine(PowerTriggerSpec t)
     {
-        string when = Find(t.Kind)?.Display ?? t.Kind;
+        // V0.2.152：「到达 N 层」那一档以前**原样印出下拉里那个字母 N**（「某个状态层数到达 N 层时」）——
+        // 用户填了 3，界面上那行和游戏里的状态描述都只显示 N，看着就像「工具没用我填的数」。
+        // 现在直接把填的层数写进文字里；顺带把「盯的是哪个状态」也写出来（和变化 / 被移除那两条一个口径）。
+        string when = t.Kind == "PowerReached"
+            ? $"某个状态层数到达 {Math.Max(1m, t.TriggerAmount):0.##} 层时"
+            : Find(t.Kind)?.Display ?? t.Kind;
         // 「只对哪类牌生效」（V0.2.118 起还多了 诅咒 / 状态 / 关键词组 / 自定义组）
         if (t.Kind == "CardPlayed" && !string.IsNullOrWhiteSpace(t.CardFilter) && t.CardFilter != "Any")
             when += $"（{CardFilterZh(t.CardFilter)}牌）";
-        if (t.Kind is "PowerChanged" or "PowerRemoved")
+        if (t.Kind is "PowerChanged" or "PowerRemoved" or "PowerReached")
             when += string.IsNullOrWhiteSpace(t.PowerId)
                 ? $"（盯：{WatchTargetZh(t.PowerTarget)}的任意状态）"
                 : $"（盯：{WatchTargetZh(t.PowerTarget)}的{EffectCatalog.PowerName(t.PowerId, t.PowerId)}）";
@@ -290,7 +306,12 @@ public static class PowerTriggers
 
     private static string EffectText(EffectSpec e)
     {
-        string amt = e.AmountIsStack ? "" : e.Amount.ToString("0.##");
+        // V0.2.164：「数值公式」在状态链上也支持了（全内联求值）。
+        // 状态描述是**生成期写死的纯文本**（本体的状态说明不是动态变量那一套），现算不了 ——
+        // 所以写了公式就把**公式本身**印出来（例：「造成 A 点伤害」），固定数值那个占位不印（印了就是骗人）。
+        string amt = e.AmountIsStack ? "" : (e.UsesAmountFormula
+            ? Generation.ForgeFormula.DisplayText(e.AmountFormula)
+            : e.Amount.ToString("0.##"));
         string n = e.AmountIsStack ? "自身层数" : amt;
         // 作用对象也要写出来（用户报过：改了「作用对象」左侧描述不跟着变）
         string foe = e.TargetSide switch
@@ -300,7 +321,10 @@ public static class PowerTriggers
             "RandomEnemies" => e.RepeatIsX ? "对随机敌人 X 次" : $"对随机 {Math.Max(1, e.RepeatCount)} 个敌人",
             _ => "",
         };
-        string who = e.TargetSide == "Self" ? "" : foe;
+        // V0.2.161（用户实测：「抽卡、获得能量之类的效果种类的对象没了，但是显示的是对敌人」）：
+        // 「抽牌 / 获得能量」这些种类**生成端不读作用对象**（界面上那一行也藏了）⇒ 描述里也不写「对指定敌人」——
+        // 判据和显隐同一份（EffectFieldPolicy.UsesTargetSide），别各写一套。
+        string who = e.TargetSide == "Self" || !EffectFieldPolicy.UsesTargetSide(e.Kind) ? "" : foe;
         string suffix = who.Length == 0 ? "" : $"（{who}）";
         if (e.ChanceEnabled) suffix += $"（{e.ChancePercent.ToString("0.##")}% 概率）";
         // 「获得能量 / 获得金币」填了负数 = 扣除（生成的是 LoseEnergy / LoseGold）：
@@ -323,6 +347,12 @@ public static class PowerTriggers
                 ? $"施加{EffectCatalog.PowerName(e.PowerId, "状态")}（受到伤害 +{e.SlowPercentEffective}%）"
                 : $"施加 [blue]{n}[/blue] 层{EffectCatalog.PowerName(e.PowerId, "状态")}",
             "GenerateCard" => $"生成 [blue]{n}[/blue] 张牌",
+            // 播放音效（V0.2.154）：数值那一栏在这条上是音量%，描述里写音效名（不加音量时就不写音量）
+            "PlaySfx" => $"播放音效：{EffectCatalog.SfxDisplay(e.Sfx)}"
+                + (e.SfxVolumePercent == 100m ? "" : $"（音量 {e.SfxVolumePercent:0.##}%）"),
+            // 播放上传的音频文件（V0.2.155）：这里拿不到配置（没有 profile 参数），直接用文件名
+            "PlaySoundFile" => $"播放音频：{(string.IsNullOrWhiteSpace(e.Sfx) ? "（没选音频）" : e.Sfx.Trim())}"
+                + (e.SfxVolumePercent == 100m ? "" : $"（音量 {e.SfxVolumePercent:0.##}%）"),
             // 获得药水（需求 ⑨）：指定档写清是哪一瓶（中文名从「目标药水」目录里取），随机档写「随机」。
             // 不写这一条的话状态描述里会原样印出「GainPotion」（界面 / 卡面都是给人看的）。
             "GainPotion" => e.IsPotionRandom

@@ -95,6 +95,8 @@ public sealed record SpawnTargetOption(string Id, string Display);
 /// <summary>「生成 / 变化卡牌」的范围限定的一个选项（Id = 空 / Attack / Skill / Power / Curse / Status）。</summary>
 public sealed record SpawnFilterOption(string Id, string Display, string Zh);
 
+/// <summary>「播放音效」那一栏的候选：本体 FMOD 事件路径 + 中文名（V0.2.154）。</summary>
+public sealed record SfxChoiceOption(string Id, string Display);
 /// <summary>
 /// 遗物稀有度下拉的一项：<c>Id</c> = 存进存档的英文档位（Starter / Common / …），
 /// <c>Display</c> = 界面上显示的中文（初始 / 常见 / …）。
@@ -106,11 +108,11 @@ public sealed record RarityOption(string Id, string Display);
 
 /// <summary>
 /// 「取几张」的一档（需求：「消耗任意张手牌」）。
-/// Id 空串 = 恰好 N 张（默认，老存档的行为）；UpTo = 最多 N 张；Any = 任意张。
+/// Id 空串 = 恰好 N 张（默认，老存档的行为）；UpTo = 最多 N 张；Any = 任意张；All = 全部（不弹选牌界面）。
 /// </summary>
 public sealed record CountModeOption(string Id, string Display);
 
-/// <summary>「取几张」的三档（选牌类效果用；见 <see cref="CountModeOption"/>）。</summary>
+/// <summary>「取几张」的四档（选牌类效果用；见 <see cref="CountModeOption"/>）。</summary>
 public static class CountModes
 {
     /// <summary>恰好 N 张（默认；空 Id 是为了让老存档的字段缺失也落回这一档）。</summary>
@@ -122,18 +124,26 @@ public static class CountModes
     /// <summary>任意张（上限给一个很大的数，卡面不写数字）。</summary>
     public const string Any = "Any";
 
+    /// <summary>
+    /// 全部（V0.2.163）：**不弹选牌界面**，直接对那一摞里符合条件的**每一张**动手 ——
+    /// 本体「恶魔之焰 FiendFire」消耗所有手牌 /「计算下注 CalculatedGamble」丢掉所有手牌就是这种。
+    /// 选牌方式（自己选 / 随机 / 牌顶）在这一档**不生效**（没有界面、也不是随机）。
+    /// </summary>
+    public const string All = "All";
+
     /// <summary>本体那种「没写就是全选」用的超大上限（本体自己写的就是这个数）。</summary>
     public const int AnyMax = 999999999;
 
-    public static IReadOnlyList<CountModeOption> All { get; } = new[]
+    public static IReadOnlyList<CountModeOption> AllModes { get; } = new[]
     {
         new CountModeOption(Exact, "恰好 N 张（默认）"),
         new CountModeOption(UpTo, "最多 N 张（可以少选，本体「净化」那种）"),
         new CountModeOption(Any, "任意张（不写数字，想选几张都行）"),
+        new CountModeOption(All, "全部（不弹选牌界面，直接对所有符合条件的牌动手）"),
     };
 
     public static string Zh(string? id) =>
-        All.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display ?? All[0].Display;
+        AllModes.FirstOrDefault(o => string.Equals(o.Id, id ?? "", StringComparison.Ordinal))?.Display ?? AllModes[0].Display;
 }
 
 /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
@@ -1083,7 +1093,124 @@ public static class EffectCatalog
         // 替主人承伤 开 / 关：用我们自己的共用守卫类 ForgePetGuardianPower（不是本体的 DieForYouPower）。
         new EffectKindOption(Kind: "PetGuardOn", Display: "伙伴替主人承伤（开）", Unit: "—", Min: 0, Max: 0, NeedsTarget: false),
         new EffectKindOption(Kind: "PetGuardOff", Display: "取消伙伴替主人承伤（关）", Unit: "—", Min: 0, Max: 0, NeedsTarget: false),
+        // ===== 播放音效（V0.2.154，用户要求「能不能加一个播放音频的效果在效果种类里」）=====
+        // 本体所有声音都走 FMOD：`SfxCmd.Play("event:/sfx/…", 音量)`（本体自己也是这么放的，
+        // 见 CreatureCmd 的 block_gain / heal / PlayDamage…）。所以这里生成的是一句
+        // `SfxCmd.Play(<事件路径>, <音量>f);` —— 不依赖任何新素材、任何一条链都能用。
+        // 「数值」这一栏当**音量百分比**：留空 / 0 = 100%（正常音量），50 = 一半，200 = 两倍。
+        // ⚠ 它是**唯一一个「0 有意义（= 100%）」**的种类，所以没有列进 CSharpCodeGen.AmountIsStrength
+        //（列进去的话「数值 0 = 这一条不生效」会把整条效果丢掉，用户就永远放不出默认音量的声音）。
+        // 事件路径填在「音效」那一栏（候选表是本体内真实用过的事件；也可以直接打字填任何 event:/… 路径）。
+        new EffectKindOption(Kind: "PlaySfx", Display: "播放音效（本体音效库）", Unit: "%音量", Min: 0, Max: 200, NeedsTarget: false),
+        // 播放**你自己上传的音频文件**（V0.2.155）。和上面那条的区别：
+        //   · 「播放音效」= 本体已有的 FMOD 事件（SfxCmd.Play("event:/…")）；
+        //   · 「播放音频文件」= 你上传的 .ogg/.mp3/.wav —— 本体**注册不了新的 FMOD 事件**
+        //     （bank 里只有事件 GUID），所以这条绕开 FMOD：生成时把文件复制进工程 audio/，
+        //     运行时用 Godot 的 AudioStreamPlayer + GD.Load<AudioStream>("res://audio/…") 播。
+        // 「音效」那一栏换成「音频文件」（下拉列出「美术资源」页上传的那些）；数值同样是音量%。
+        new EffectKindOption(Kind: "PlaySoundFile", Display: "播放音频文件（我上传的）", Unit: "%音量", Min: 0, Max: 200, NeedsTarget: false),
     };
+
+    /// <summary>
+    /// 「播放音效」那一栏的候选（V0.2.154）。
+    ///
+    /// <para><b>这份清单是怎么来的</b>：本体源码里**真实调用过**的 FMOD 事件路径
+    /// （<c>SfxCmd.Play("event:/…")</c>，一共抽出 362 个非模板事件）里挑出常用的一批，
+    /// 配上中文名。为什么不把 362 个全列出来：本体的 <c>banks/desktop/*.bank</c> 里存的是**事件 GUID**、
+    /// 读不到路径字符串（实测：把 42MB 的 bank 全文扫了一遍，一个 <c>event:/</c> 都没有），
+    /// 所以「完整清单」只能从源码里拿 —— 全塞进下拉反而更难找。</para>
+    ///
+    /// <para>没列到的路径**可以直接打字填**（那一栏是 SearchComboBox，填什么都认）——
+    /// 校验器只拦「不像事件路径」的（没以 <c>event:/</c> 开头），不拦「没在候选表里」的
+    /// （路径打错时最多是游戏里不放声音，不会崩）。</para>
+    /// </summary>
+    public static IReadOnlyList<SfxChoiceOption> SfxChoices { get; } = new[]
+    {
+        new SfxChoiceOption("event:/sfx/characters/attack_fire", "攻击命中（火）"),
+        new SfxChoiceOption("event:/sfx/block_hit", "被打中（有格挡）"),
+        new SfxChoiceOption("event:/sfx/block_break", "格挡被打破"),
+        new SfxChoiceOption("event:/sfx/block_gain", "获得格挡"),
+        new SfxChoiceOption("event:/sfx/heal", "回复生命"),
+        new SfxChoiceOption("event:/sfx/buff", "获得增益"),
+        new SfxChoiceOption("event:/sfx/debuff", "被施加减益"),
+        new SfxChoiceOption("event:/sfx/ui/gain_energy", "获得能量"),
+        new SfxChoiceOption("event:/sfx/ui/gold/gold_1", "金币 1"),
+        new SfxChoiceOption("event:/sfx/ui/gold/gold_2", "金币 2"),
+        new SfxChoiceOption("event:/sfx/ui/gold/gold_3", "金币 3"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_impact_into_single", "卡牌命中（单体）"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_impact_into_multi", "卡牌命中（群体）"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_movement_B_play_into_discard", "打出后进弃牌堆"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_movement_B_into_draw", "牌进抽牌堆"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_movement_B_into_discard", "牌进弃牌堆"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_movement_B_into_deck", "牌进牌组"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_movement_B_power", "能力牌打出"),
+        new SfxChoiceOption("event:/sfx/ui/cards/card_transform", "卡牌变化"),
+        new SfxChoiceOption("event:/sfx/ui/relic_activate_general", "遗物触发"),
+        new SfxChoiceOption("event:/sfx/ui/relic_activate_draw", "遗物触发（抽牌类）"),
+        new SfxChoiceOption("event:/sfx/ui/enchant_simple", "附魔（简单）"),
+        new SfxChoiceOption("event:/sfx/ui/enchant_shimmer", "附魔（华丽）"),
+        new SfxChoiceOption("event:/sfx/ui/treasure/treasure_act1", "宝箱（第一幕）"),
+        new SfxChoiceOption("event:/sfx/ui/treasure/treasure_act2", "宝箱（第二幕）"),
+        new SfxChoiceOption("event:/sfx/ui/treasure/treasure_act3", "宝箱（第三幕）"),
+        new SfxChoiceOption("event:/sfx/ui/clicks/ui_click", "界面点击"),
+        new SfxChoiceOption("event:/sfx/ui/clicks/ui_hover", "界面悬停"),
+        new SfxChoiceOption("event:/sfx/ui/clicks/ui_back", "界面返回"),
+        new SfxChoiceOption("event:/sfx/ui/clicks/ui_checkbox_on", "勾选（开）"),
+        new SfxChoiceOption("event:/sfx/ui/clicks/ui_checkbox_off", "勾选（关）"),
+        new SfxChoiceOption("event:/sfx/ui/map/map_open", "打开地图"),
+        new SfxChoiceOption("event:/sfx/ui/map/map_close", "关闭地图"),
+        new SfxChoiceOption("event:/sfx/ui/map/map_select", "地图选点"),
+        new SfxChoiceOption("event:/sfx/ui/map/map_erase", "地图擦除"),
+        new SfxChoiceOption("event:/sfx/ui/pause_open", "打开暂停"),
+        new SfxChoiceOption("event:/sfx/ui/pause_close", "关闭暂停"),
+        new SfxChoiceOption("event:/sfx/ui/wipe_ironclad", "角色转场（铁甲战士那款）"),
+        new SfxChoiceOption("event:/sfx/ui/wipe_map", "地图转场"),
+        new SfxChoiceOption("event:/sfx/byrdpip/byrdpip_attack", "伙伴攻击（小鸟 Byrdpip）"),
+        new SfxChoiceOption("event:/sfx/characters/osty/osty_attack", "伙伴攻击（Osty）"),
+        new SfxChoiceOption("event:/sfx/characters/osty/osty_die", "伙伴死亡（Osty）"),
+        new SfxChoiceOption("event:/sfx/characters/silent/silent_dagger_spray", "飞刀连发（静默猎手）"),
+        new SfxChoiceOption("event:/sfx/characters/silent/silent_fan_of_knives", "飞刀扇（静默猎手）"),
+        new SfxChoiceOption("event:/sfx/characters/ironclad/ironclad_whirlwind", "旋风斩（铁甲战士）"),
+        new SfxChoiceOption("event:/sfx/characters/ironclad/ironclad_hellraiser", "地狱狂徒（铁甲战士）"),
+        new SfxChoiceOption("event:/sfx/characters/defect/defect_hyperbeam", "超能光束（故障机器人）"),
+        new SfxChoiceOption("event:/sfx/characters/defect/defect_lightning_evoke", "闪电激发（故障机器人）"),
+        new SfxChoiceOption("event:/sfx/characters/regent/regent_forge", "锻造（摄政王）"),
+        new SfxChoiceOption("event:/sfx/characters/necrobinder/necrobinder_summon", "召唤（缚灵者）"),
+        new SfxChoiceOption("event:/sfx/characters/necrobinder/necrobinder_doom_kill", "灾厄击杀（缚灵者）"),
+        // 音乐也走同一套事件（一次性播放一遍；本体没有「循环播放 + 停止」这种需求，所以这里也做成一次性）
+        new SfxChoiceOption("event:/music/menu_update", "音乐：主菜单"),
+        new SfxChoiceOption("event:/music/act1_a1_v1", "音乐：第一幕"),
+        new SfxChoiceOption("event:/music/act2_a1_v2", "音乐：第二幕"),
+        new SfxChoiceOption("event:/music/act3_a1_v1", "音乐：第三幕"),
+    };
+
+    /// <summary>音效路径 → 中文名（不在候选表里就原样返回路径本身）。</summary>
+    public static string SfxDisplay(string? id)
+    {
+        string v = (id ?? "").Trim();
+        if (v.Length == 0) return "（没选音效）";
+        return SfxChoices.FirstOrDefault(x => string.Equals(x.Id, v, StringComparison.Ordinal))?.Display ?? v;
+    }
+
+    /// <summary>这条路径在候选表里吗（校验器用它给一句「没在候选表里，确认路径没打错」的提示）。</summary>
+    public static bool IsKnownSfx(string? id) =>
+        id is not null && SfxChoices.Any(x => string.Equals(x.Id, id.Trim(), StringComparison.Ordinal));
+
+    /// <summary>看起来像不像一条本体 FMOD 事件路径（<c>event:/…</c>）。</summary>
+    public static bool LooksLikeSfxPath(string? id) =>
+        (id ?? "").Trim().StartsWith("event:/", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 「播放音频文件（我上传的）」里存的那个 Key → 你在「美术资源」页给它起的名字
+    /// （找不到对应条目就原样返回 Key；空 = 「（没选音频）」）。
+    /// </summary>
+    public static string AudioAssetName(IEnumerable<Profile.AudioAssetSpec>? assets, string? key)
+    {
+        string k = (key ?? "").Trim();
+        if (k.Length == 0) return "（没选音频）";
+        var hit = assets?.FirstOrDefault(a => a is not null && string.Equals(a.Key, k, StringComparison.OrdinalIgnoreCase));
+        return hit is null || string.IsNullOrWhiteSpace(hit.Name) ? k : hit.Name.Trim();
+    }
 
     /// <summary>
     /// 「哪些效果种类是宠物类效果」这份名单（现在**只为记录 / 校验用** ——
@@ -1892,7 +2019,12 @@ public static class EffectCatalog
     /// </summary>
     public static bool NextTurnMeaningless(string? kind) =>
         kind is "CheapenSelf" or "CheapenSelfOnDraw" or "ReturnSelfToHand" or "CheapenDraw"
-            or "EndTurn" or "ExtraTurn" or "ScrapeDraw" or "TurnEndPlay";
+            or "EndTurn" or "ExtraTurn" or "ScrapeDraw" or "TurnEndPlay"
+            // V0.2.154：「播放音效」——它本身就是「此刻放一下」，没有「下回合再生效」的落点
+            //（延迟那条路是给「下回合的状态 / 延迟生成」用的，声音延迟没有意义）。
+            or "PlaySfx"
+            // V0.2.155：播放上传的音频文件同理（声音没有「下回合再生效」的落点）
+            or "PlaySoundFile";
 
     /// <summary>
     /// 这个效果种类**真的**支持「下回合生效」吗（单一判据：界面显隐 + 校验器都读它）。
@@ -2114,7 +2246,10 @@ public static class EffectCatalog
         // ===== 用户要求「遗物 / 状态 / 卡牌的触发时机合并成同一套」：把状态那边已经有、遗物缺的那些补齐 =====
         // （同一个概念两边用同一个显示名和同一个 id；生成端各自按「遗物 / 状态」的归属判据写守卫。
         //   带 choiceContext 的照旧直接用，没带的由生成端自己造一个 —— 见 CSharpCodeGen.BootstrapInCombat。）
-        new TriggerOption("CardPlayed",     "打出一张牌后",     "AfterCardPlayed(choiceContext, cardPlay)"),
+        // V0.2.157：「打出一张牌时」改成 BeforeCardPlayed（**这张牌还没结算**，所以「打出它才施加的状态」
+        // 不会被它自己触发）；原来那一档（打完 / 结算完）留成「一张牌结算完毕时」= AfterCardPlayedLate。
+        new TriggerOption("CardPlayed",     "打出一张牌时（这张牌还没生效）", "BeforeCardPlayed(cardPlay)"),
+        new TriggerOption("CardResolved",   "一张牌结算完毕时",     "AfterCardPlayedLate(choiceContext, cardPlay)"),
         new TriggerOption("CardExhausted",  "消耗一张牌后",     "AfterCardExhausted(choiceContext, card, causedByEthereal)"),
         new TriggerOption("CardDrawn",      "抽一张牌后",       "AfterCardDrawn(choiceContext, card, fromHandDraw)"),
         new TriggerOption("CardDiscarded",  "弃掉一张牌后",     "AfterCardDiscarded(choiceContext, card)"),

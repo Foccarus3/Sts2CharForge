@@ -10,8 +10,7 @@
         <local:MultiSelectModeConverter x:Key="MultiSelectMode"/>
         <local:OkToBrushConverter x:Key="OkToBrush"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
-        <!-- V0.2.137 效果栏折叠行：bool → 文字（ConverterParameter 写 "折叠文本|展开文本"） -->
-        <local:BoolToTextConverter x:Key="BoolToText"/>
+        <!-- V0.2.144：`BoolToText`（V0.2.137 给效果栏折叠行用）已随折叠行一起删除。 -->
         <!-- 「多选」开关：外观与其他按钮一致，按下（开启）时高亮，一眼能看出开没开 -->
         <Style x:Key="MultiToggle" TargetType="ToggleButton">
             <Setter Property="Padding" Value="8,4"/>
@@ -118,15 +117,19 @@
                                    ToolTip="写出「打出这张牌那一刻才算」的数字。留空 = 0（这条效果不显示也不执行）。"/>
                         <TextBox Grid.Column="1" Style="{StaticResource Field}"
                                  Text="{Binding AmountFormula, UpdateSourceTrigger=PropertyChanged}"
-                                 ToolTip="例：M*3（M 是「自定义参数 / 组」页里定义的参数）、max(1, N/2)、X（当前能量）。&#10;内置实时只读量（不用定义，直接写）：Turn 回合数 / HandCount·DrawCount·DiscardCount·ExhaustCount 各摞张数 / DiscardedThisTurn·ThisCombat 丢弃张数 / ExhaustedThisTurn·ThisCombat 消耗张数 / GeneratedThisTurn·ThisCombat 生成张数（含复制）/ EnergySpentThisTurn·ThisCombat 花掉的能量 / StarsGainedThisTurn·ThisCombat 获得的额外资源量 / EnergyGainedThisTurn·ThisCombat 获得的能量 / PowersOnMe 身上状态数。&#10;支持 + - * / ( ) 和 min / max / floor / ceil / round / abs，最前面可以写一个 =。&#10;留空 = 0（这条效果不显示也不执行）。"/>
+                                 ToolTip="例：M*3（M 是「自定义参数 / 组」页里定义的参数）、max(1, N/2)、X（当前能量）。&#10;⚠ 抽牌 / 生成卡牌 / 消耗这类「数值必须在生成时就定下来」的效果：这一栏只认**纯数字**（例：1、2+3 —— 等同于左边的固定数值，工具会自动折好）或者光秃秃一个 X。&#10;内置实时只读量（不用定义，直接写）：Turn 回合数 / HandCount·DrawCount·DiscardCount·ExhaustCount 各摞张数 / DeckCount 牌组张数 / DeckStatusCount 牌组里的状态牌数 / DiscardedThisTurn·ThisCombat 丢弃张数 / ExhaustedThisTurn·ThisCombat 消耗张数 / PlayedThisTurn·ThisCombat 打出的牌数 / GeneratedThisTurn·ThisCombat 生成张数（含复制）/ EnergySpentThisTurn·ThisCombat 花掉的能量 / StarsGainedThisTurn·ThisCombat 获得的额外资源量 / EnergyGainedThisTurn·ThisCombat 获得的能量 / PowersOnMe 身上状态数 / MyHp·MyMaxHp·MyBlock 自己 / EnemyCount 敌人数 / Floor 层数 …（共 80 条，完整清单见效果编辑器下面那个「可用量」小框）。&#10;支持 + - * / ( ) 和 min / max / floor / ceil / round / abs，最前面可以写一个 =。&#10;留空 = 0（这条效果不显示也不执行）。"/>
                     </Grid>
                     <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
                                Visibility="{Binding ShowAmountFormulaNormal, Converter={StaticResource BoolToVis}}"
                                Text="{Binding AmountFormulaHint}"/>
                 </StackPanel>
 
-                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用对象（本条效果对谁生效）" Style="{StaticResource Label}"/>
+                <!-- 作用对象（V0.2.150 起按种类显示：只有生成端真的会读它的种类才摆。
+                     判据见 EffectFieldPolicy.UsesTargetSide —— 机械测量出来的，见那个类的注释）。 -->
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="作用对象（本条效果对谁生效）" Style="{StaticResource Label}"
+                           Visibility="{Binding ShowTargetSideRow, Converter={StaticResource BoolToVis}}"/>
                 <ComboBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding ShowTargetSideRow, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding TargetSides, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedItem="{Binding TargetSide}"/>
 
@@ -230,8 +233,12 @@
                 <!-- ⚠ 行号说明（V0.2.132 卡牌链重排）：5、6 行现在是**卡牌链专用**的「概率」「下回合生效」
                      （见上面那两块），所以种-类专属的这两行往后挪到 7、8 行。对遗物 / 药水 / 自定义状态 /
                      锻造链来说 5、6 行是空的（Collapsed 的 Auto 行高度为 0）—— 排版位置与以前**完全一样**。 -->
-                <TextBlock Grid.Row="8" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"/>
+                <!-- 增益 / 减益（V0.2.150 起按种类显示：施加 / 翻倍 / 暴露 / 清除指定状态 / 临时增益 /
+                     给伙伴施加状态这 6 种才读它，其余种类一律不摆 —— 见 EffectFieldPolicy.UsesPower）。 -->
+                <TextBlock Grid.Row="8" Grid.Column="0" Text="增益 / 减益" Style="{StaticResource Label}"
+                           Visibility="{Binding ShowPowerRow, Converter={StaticResource BoolToVis}}"/>
                 <local:SearchComboBox Grid.Row="8" Grid.Column="1"
+                                      Visibility="{Binding ShowPowerRow, Converter={StaticResource BoolToVis}}"
                                       SearchPath="Display"
                                       ItemsSource="{Binding AllPowers, RelativeSource={RelativeSource AncestorType=Window}}"
                                       SelectedValuePath="Id" SelectedValue="{Binding PowerId}"
@@ -241,8 +248,10 @@
                     </local:SearchComboBox.ItemTemplate>
                 </local:SearchComboBox>
 
-                <TextBlock Grid.Row="9" Grid.Column="0" Text="目标卡（生成 / 变化 / 强化用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBlock Grid.Row="9" Grid.Column="0" Text="目标卡（生成 / 变化 / 强化用）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowTargetCardRow, Converter={StaticResource BoolToVis}}"/>
                 <local:SearchComboBox Grid.Row="9" Grid.Column="1"
+                                      Visibility="{Binding ShowTargetCardRow, Converter={StaticResource BoolToVis}}"
                                       SearchPath="Display"
                                       ItemsSource="{Binding AllCards, RelativeSource={RelativeSource AncestorType=Window}}"
                                       SelectedValuePath="Id" SelectedValue="{Binding SpawnCardId, Mode=TwoWay}"
@@ -262,16 +271,23 @@
                           DisplayMemberPath="Display" SelectedValuePath="Id"
                           SelectedValue="{Binding TempPowerReverse}"
                           ToolTip="默认「本回合结束时撤掉」；选「下回合开始时才撤掉」= 撑过这一回合和敌人的回合（例：获得临时 5 点力量 → 下回合开始时失去 5 点力量）。"/>
-                <TextBlock Grid.Row="12" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <TextBlock Grid.Row="12" Grid.Column="0" Text="生成到（生成卡牌用）" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowSpawnToRow, Converter={StaticResource BoolToVis}}"/>
                 <ComboBox Grid.Row="12" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding ShowSpawnToRow, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding SpawnTargets, RelativeSource={RelativeSource AncestorType=Window}}"
                           DisplayMemberPath="Display" SelectedValuePath="Id"
                           SelectedValue="{Binding SpawnTo}"/>
 
-                <TextBlock Grid.Row="13" Grid.Column="0" Text="选牌方式（消耗 / 变化 / 丢弃用）" Style="{StaticResource Label}" MinWidth="96"/>
+                <!-- V0.2.151：标签保持短（「消耗 / 变化 / 丢弃用」那句挪进 ToolTip）——
+                     效果栏第一列是 Auto 宽度，标签太长会把第二列那整列输入框挤成一条缝。 -->
+                <TextBlock Grid.Row="13" Grid.Column="0" Text="选牌方式" Style="{StaticResource Label}" MinWidth="96"
+                           Visibility="{Binding ShowCardPickRow, Converter={StaticResource BoolToVis}}"/>
                 <ComboBox Grid.Row="13" Grid.Column="1" Style="{StaticResource Pick}"
+                          Visibility="{Binding ShowCardPickRow, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding CardPickModes, RelativeSource={RelativeSource AncestorType=Window}}"
-                          SelectedItem="{Binding CardPick}"/>
+                          SelectedItem="{Binding CardPick}"
+                          ToolTip="「自己选」= 弹选牌界面让你挑（本体「净化 / 武装」那种）；「随机」= 从那一摞里随机抽（不问玩家）。&#10;要限定只对哪一类牌动手，用下面那一行「范围界定（哪些牌能选）」。&#10;用得到这一行的种类：消耗 / 丢弃 / 变化 / 升级 / 复制 / 重放 / 回合结束自动打出 / 放置卡牌 / 给予关键词 / 三种「全局牌组」效果。"/>
 
                 <!-- 「从哪里选牌」：手牌 / 抽牌堆 / 弃牌堆（本体「充能 / 全息影像 / 挖掘」那种）。
                      「丢弃卡牌」只有手牌 / 抽牌堆（候选由 EffectSpec.SelectPileChoices 按效果种类给），
@@ -315,9 +331,9 @@
                      ⚠ V0.2.132：卡牌链的「概率」「下回合生效」已经搬到上面的 5、6 行，
                      这里那两行的 Visibility 因此多了一个「非卡牌链」条件（其余四条链照旧）。 -->
                 <StackPanel Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
-                    <!-- 「取几张」：恰好 N / 最多 N（可以少选）/ 任意张（需求：「消耗任意张手牌」）。
-                         只对选牌类效果出现（消耗 / 丢弃 / 升级 / 从三摞拿牌）。 -->
-                    <Grid Visibility="{Binding UsesCountMode, Converter={StaticResource BoolToVis}}">
+                    <!-- 「取几张」（V0.2.150 起绑 ShowCountModeRow）：恰好 N / 最多 N（可以少选）/ 任意张。
+                         判据 = 机械测量出来的「生成端真的读 CountMode 的种类」（比旧的 UsesCountMode 多几种）。 -->
+                    <Grid Visibility="{Binding ShowCountModeRow, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
@@ -326,7 +342,7 @@
                                   ItemsSource="{Binding CountModeChoices, RelativeSource={RelativeSource AncestorType=Window}}"
                                   DisplayMemberPath="Display" SelectedValuePath="Id"
                                   SelectedValue="{Binding CountMode}"
-                                  ToolTip="恰好 N 张（默认）= 必须选满；最多 N 张 = 可以少选（本体「净化」那种，界面上会出现确认键）；任意张 = 想选几张都行（卡面不写数字）。"/>
+                                  ToolTip="恰好 N 张（默认）= 必须选满；最多 N 张 = 可以少选（本体「净化」那种，界面上会出现确认键）；任意张 = 想选几张都行（卡面不写数字）；全部 = **不弹选牌界面**，直接对所有符合条件的牌动手（本体「恶魔之焰」消耗所有手牌那种；这一档「选牌方式」不生效）。"/>
                     </Grid>
                     <!-- 「给予卡牌关键词」专用：紧跟「选牌方式」，因为数值 / 选牌方式 / 哪一摞牌都是给它的。
                          候选 = 本体那 7 个关键词 + 存档里的自定义关键词（KeywordChoices）。 -->
@@ -357,8 +373,10 @@
                                   DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding BoostStat}"
                                   ToolTip="像本体的「精准」那样给指定的那张卡加伤害，或者像「敏捷」那样加格挡。上面「目标卡」选的那张牌就是要强化的牌；「数值」= 加多少（本场战斗内一直有效，填负数就是削弱）。"/>
                     </Grid>
-                    <!-- 生成 / 变化卡牌：取卡方式 + 范围限定 + 「生成出来的卡」的附加处理（用户要求） -->
-                    <Grid Visibility="{Binding UsesSpawnOptions, Converter={StaticResource BoolToVis}}">
+                    <!-- 生成 / 变化卡牌：取卡方式 + 范围限定 + 「生成出来的卡」的附加处理（用户要求）。
+                         V0.2.150：「取卡方式」这一行绑 ShowSpawnPickRow（复制卡牌支持附加处理、
+                         但不读取卡方式 / 范围限定，所以那一行不再在它上面白摆）。 -->
+                    <Grid Visibility="{Binding ShowSpawnPickRow, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
@@ -411,7 +429,11 @@
                         <TextBox Width="70" Margin="0,0,0,0" Style="{StaticResource Field}"
                                  Text="{Binding SpawnChoice, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="张中选一张"/>
+                        <!-- V0.2.144：MaxWidth + 换行 —— 这段说明以前是**一行不换行**的超长文字，
+                             在窄一点的编辑器里会横向跑出面板（被裁掉、看不全；卡牌页一直如此，
+                             三页把编辑器常显之后自检也抓到了）。给一个宽度上限让它自己折行。 -->
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   MaxWidth="320" TextWrapping="Wrap"
                                    Text="（默认 1 = 直接生成；填 3 = 先抽 3 张候选让你挑 1 张，只生成选中的那一张 —— 这时「数值」里的张数不生效，它就是候选张数。本体「发现 Discovery」就是这个界面）"/>
                     </StackPanel>
                     <StackPanel Visibility="{Binding UsesSpawnOptions, Converter={StaticResource BoolToVis}}">
@@ -437,6 +459,46 @@
                                       ToolTip="生成 / 变化出来的那些卡会自动带上这个关键词（第一项「不加关键词」= 什么都不加，和以前的版本一样）。上面是本体的 7 个关键词，下面是你自己造的关键词（「自定义关键词」页里加的）。生成代码和「给予卡牌关键词」共用同一套实现：本体关键词走 AddKeyword，自定义关键词走本工具的关键词补丁（卡面金字 + 悬停说明）。"/>
                         </Grid>
                     </StackPanel>
+
+                    <!-- 播放音效（V0.2.154）：选一个本体 FMOD 事件（候选表是本体内真实用过的事件，
+                         也可以直接打字填任何 event:/… 路径）。「数值」那一栏在这一条上是**音量%**
+                         （留空 / 0 = 100%）。 -->
+                    <Grid Visibility="{Binding IsPlaySfx, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="音效" Style="{StaticResource Label}" MinWidth="96"/>
+                        <local:SearchComboBox Grid.Column="1"
+                                              SearchPath="Display"
+                                              ItemsSource="{Binding SfxChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              SelectedValuePath="Id" SelectedValue="{Binding Sfx, Mode=TwoWay}"
+                                              ToolTip="本体音效库里的一个事件（FMOD），生成出来就是一句 SfxCmd.Play(路径, 音量)。&#10;候选是本体内真实用过的事件（攻击 / 格挡 / 治疗 / 金币 / 卡牌 / 遗物 / 地图 / 音乐…）。&#10;想用别的：**直接打字**填路径也行（形如 event:/sfx/xxx），校验器只拦「不像事件路径」的。">
+                            <local:SearchComboBox.ItemTemplate>
+                                <DataTemplate><TextBlock Text="{Binding Display}"/></DataTemplate>
+                            </local:SearchComboBox.ItemTemplate>
+                        </local:SearchComboBox>
+                    </Grid>
+                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Visibility="{Binding IsPlaySfx, Converter={StaticResource BoolToVis}}"
+                               Text="「数值」那一栏在这一条上是**音量**：填 100 = 正常音量（留空 / 0 也是 100%），50 = 一半，200 = 两倍。"/>
+
+                    <!-- 播放音频文件（V0.2.155）：选一个你在「美术资源」页上传的音频（.ogg / .mp3 / .wav）。
+                         本体注册不了新的 FMOD 事件，所以这条绕开 FMOD：生成时把文件复制进工程 audio/，
+                         运行时用 Godot 的 AudioStreamPlayer 播。 -->
+                    <Grid Visibility="{Binding IsPlaySoundFile, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="音频文件" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding AudioAssetChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                  SelectedValue="{Binding Sfx, Mode=TwoWay}"
+                                  ToolTip="你在「美术资源」页「音效 / 音频」区上传的那些文件（.ogg / .mp3 / .wav）。&#10;生成时会被复制成工程里的 audio/&lt;文件名&gt; 并一起打进 PCK，运行时用 Godot 的 AudioStreamPlayer 播（不走 FMOD）。&#10;要加 / 删音频请到「美术资源」页。"/>
+                    </Grid>
+                    <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                               Visibility="{Binding IsPlaySoundFile, Converter={StaticResource BoolToVis}}"
+                               Text="「数值」那一栏在这一条上是**音量**（100 = 正常音量）。列表是空的？先去「美术资源」页的「音效 / 音频」区点「上传音频…」。"/>
 
                     <!-- 需求 ⑨：「获得药水」专用 —— 取药方式（指定 / 随机）+ 目标药水。
                          「目标药水」是一个**可搜索**的下拉，和「目标卡」完全同构（SearchComboBox，
@@ -477,6 +539,7 @@
                                  Text="{Binding Copies, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="份 / 张"/>
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   MaxWidth="320" TextWrapping="Wrap"
                                    Text="（「数值」= 从牌堆里选几张牌，这里 = 每一张复制几份。例：数值 1 + 份数 2 = 选一张牌复制两份。本体「二刀流 DualWield」就是「选 1 张、复制 N 份」）"/>
                     </StackPanel>
 
@@ -488,6 +551,7 @@
                                  Text="{Binding ReplayTimes, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="次 / 张"/>
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   MaxWidth="320" TextWrapping="Wrap"
                                    Text="（「数值」= 从牌堆里选几张牌，这里 = 每一张额外打出几次。重放 1 次 = 打出去时连着打 2 次，本体 CardModel.BaseReplayCount 就是这么算的。只能给别的牌加，对自己这张牌没用）"/>
                     </StackPanel>
 
@@ -495,7 +559,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
                                 Visibility="{Binding ShowTurnEndPlay, Converter={StaticResource BoolToVis}}">
                         <TextBlock VerticalAlignment="Center" FontWeight="Bold" MinWidth="96">回合结束时</TextBlock>
-                        <TextBlock VerticalAlignment="Center" Foreground="#444" FontSize="11" TextWrapping="Wrap"
+                        <TextBlock VerticalAlignment="Center" Foreground="#444" FontSize="11" TextWrapping="Wrap" MaxWidth="320"
                                    Text="数值 0 = 打出这张牌后，本回合结束时再自动打出它一次；填 1 以上 = 先按「选牌方式 / 从哪里选牌」挑好 N 张，本回合结束时逐张自动打出它们（不弹选牌界面）。注意：填 0 时只有卡牌能用「这张牌自己」"/>
                     </StackPanel>
 
@@ -528,7 +592,10 @@
                               IsChecked="{Binding NextTurn}"
                               Visibility="{Binding ShowPlainNextTurnRow, Converter={StaticResource BoolToVis}}"
                               ToolTip="只有这五种真的有延迟分支（格挡 / 抽牌 / 能量 / 额外资源量 / 施加扣除状态）：本体的下回合状态或工具生成的延迟状态。别的种类勾不上（这一行不显示）——「生成 / 变化 / 复制卡牌的 下回合生成」还在做。"/>
-                    <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"/>
+                    <!-- V0.2.150：「随机目标允许重复选中同一个敌人」只在「作用对象 = 随机敌人」时才摆
+                         （别的档它不参与生成 —— 见 EffectFieldPolicy.UsesAllowDuplicates）。 -->
+                    <CheckBox Content="随机目标允许重复选中同一个敌人" Style="{StaticResource Check}" IsChecked="{Binding AllowDuplicates}"
+                              Visibility="{Binding ShowAllowDuplicatesRow, Converter={StaticResource BoolToVis}}"/>
                     <!-- 概率生效：勾上以后这条效果只有这么多机会会真的执行（不满足就跳过这一条，别的效果照常）
                          ⚠ V0.2.132：卡牌链上这一行搬到了 Grid 第 6 行（和「概率公式」「是否独立」在同一行里），
                          所以这里的 Visibility 多一个「非卡牌链」条件；其余四条链与以前一模一样。 -->
@@ -563,6 +630,7 @@
                                  Text="{Binding SlowPercent, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" FontWeight="Bold" Text="%"/>
                         <TextBlock Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#888" FontSize="11"
+                                   MaxWidth="320" TextWrapping="Wrap"
                                    Text="（本体「缓慢」显示/生效的数字不是层数：它按「本回合每打出一张牌 +10%」算，施加多少层都看不到那个数字。填 30 = 敌人当场受到伤害 +30%，持续到它下一次回合开始。0 = 不设置）"/>
                     </StackPanel>
                     <!-- 「牺牲伙伴」专用：收益类型（格挡 / 伤害 / 获得增益·减益）+ 收益公式（固定 N / 最大生命 × 倍率 / 当前生命）。
@@ -839,8 +907,10 @@
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="升级增量" Style="{StaticResource Label}"/>
-                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding UpgradeAmount, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="升级增量" Style="{StaticResource Label}"
+                                   Visibility="{Binding ShowUpgradeAmountRow, Converter={StaticResource BoolToVis}}"/>
+                        <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding UpgradeAmount, UpdateSourceTrigger=PropertyChanged}"
+                                 Visibility="{Binding ShowUpgradeAmountRow, Converter={StaticResource BoolToVis}}"/>
                     </Grid>
                     <!-- 次数类公式（用户要求⑦：所有能填数值的地方都能写公式，次数类优先）。
                          只做在卡牌上，所以这一块长在「卡牌专用」的模板里（遗物 / 药水 / 状态看不到）。
@@ -881,13 +951,17 @@
 
         <!-- 遗物用：不能升级，没有「升级增量」
              ⚠ V0.2.137：模板拆成「外壳（滚动条）+ 内容」两层 —— 内容这一层单独一份
-             `EffectEditorPlainInner`，好让遗物 / 药水 / 额外资源量三页的效果栏
-             用 `EffectRowEditorTemplate`（DynamicResource）在**折叠行的展开区**里引它。
-             这样「点开那一行才展开完整编辑区」用的就是**现有这同一套编辑器**，一个字都没重写。
-             （外壳还留着：万一以后有别处要整块塞进列表行，直接引它就行。） -->
+             `EffectEditorPlainInner`，好让三页（遗物 / 药水 / 额外资源量）的效果栏
+             在**共享编辑区**里引到不含滚动条的那一层（外壳自己已经有 ScrollViewer）。
+             V0.2.144：三页右侧统一成卡牌页那种「上面一行摘要列表 + 下面一块共享编辑区」，
+             折叠行模板 EffectEditorCollapsible 已删；这块 Inner 现在被编辑区直接引用。 -->
         <DataTemplate x:Key="EffectEditorPlainInner">
             <StackPanel>
                 <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                <!-- 公式的「可用量」清单（V0.2.164：遗物 / 药水 / 自定义状态上那 5 种也能写公式了）。
+                     判据用 ShowAmountFormula —— 那 5 种之外它不显示（免得摆一个填了就报错的清单）。 -->
+                <ContentControl Content="{Binding}" ContentTemplate="{DynamicResource FormulaBuiltinList}"
+                                Visibility="{Binding ShowAmountFormula, Converter={StaticResource BoolToVis}}"/>
                 <!-- 「转化为先古卡」的配对表（只在遗物上、只在选了那个效果种类时出现）。
                      模板本体放在 MainWindow.xaml 的窗口资源里（AncientPairingEditor）——
                      App.xaml 里的模板里写 Click 会被解析成 App 的方法（CS1061），放窗口里才绑得到。 -->
@@ -946,7 +1020,7 @@
                               IsChecked="{Binding RepeatIsStack}"
                               ToolTip="只对「随机敌人」这类按次数挑目标的效果有意义：层数 = 挑几个目标。"/>
                     <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
-                               Text="注意：层数本身不会让效果多跑几遍 —— 想让层数决定强度就勾「数值 = 层数」，想让层数决定次数就勾「生效次数 = 层数」。"/>
+                               Text="注意：层数本身不会让效果多跑几遍 —— 想让层数决定强度就勾「数值 = 层数」，想让层数决定次数就勾「生效次数 = 层数」。&#10;⚠ 勾了「数值 = 本状态的层数」之后，下面效果里的「数值」框填什么都**不用**了（用的是触发那一刻的当前层数）—— 所以「生成卡牌」会按当时的层数生成那么多张、伤害也会按层数算。想用固定数字就把这个勾去掉。"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPower}"/>
                 </StackPanel>
@@ -955,8 +1029,9 @@
 
         <!-- 药水用：和遗物一样，但保留底下的说明文字。
              ⚠ V0.2.137：和 EffectEditorPlain 同一个拆法（外壳 + `EffectEditorPotionInner`）。
-             药水**不能升级**，所以它和遗物共用同一套折叠行模板 EffectEditorCollapsible，
-             只是 `EffectRowEditorTemplate` 指向 `EffectEditorPotionInner`。 -->
+             V0.2.144：三页版式统一成卡牌页那种「摘要列表 + 一块共享编辑区」，
+             所以 `EffectEditorPotionInner` 现在被药水页那块共享编辑区**直接**引用
+             （折叠行模板 EffectEditorCollapsible 已经删掉）。 -->
         <DataTemplate x:Key="EffectEditorPotionInner">
             <StackPanel>
                 <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
@@ -973,6 +1048,12 @@
                 </Grid>
                 <TextBlock Margin="6,6,0,0" TextWrapping="Wrap" Foreground="#888"
                            Text="作用对象：自己 = 给自己加增益 / 对自己造成伤害；单体敌人 = 选一个目标；全体敌人 = 直接全打。&#10;生效次数 = 整条效果重复执行几遍，填 1 就只执行一次。&#10;生成卡牌：数值 = 生成几张，目标卡 = 生成哪张；消耗 / 变化卡牌：数值 = 处理几张手牌。&#10;注意：药水**不支持**「召唤伙伴 / 伙伴攻击」（没有 choiceContext / 玩家选中的目标），校验器会报错拦住。"/>
+                <!-- 这一条效果自己的「条件选项」（V0.2.144）：
+                     以前药水页的条件只长在**右下角那一块独立框**里（那块现在撤掉了，因为整页版式
+                     改成了卡牌页那种「摘要列表 + 一块共享编辑区」，条件跟着这一条效果走）。
+                     候选表还是 PlainEffectConditions（ForRelic && ForPower）—— 和以前那块完全同一份；
+                     生成端 / 校验器一个字都没动（V0.2.127 起药水条件就是走遗物那一套 CondCtx.Potion）。 -->
+                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
             </StackPanel>
         </DataTemplate>
 

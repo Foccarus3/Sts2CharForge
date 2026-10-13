@@ -21,6 +21,10 @@ public static class ProfileValidator
         // 校验器读的是老字段（和生成端同一份），所以必须先同步，否则会「界面填了、校验还说没填」。
         ForgeEffectBridge.Normalize(p);
         foreach (var fg in ForgeEffectBridge.GraphsOf(p)) ForgeEffectBridge.SyncGraph(fg);
+        // V0.2.146：「数值公式」框里填了**纯常数**（例：1 / 2+3）的，先折进固定数值再校验 ——
+        // 用户会顺手把数字填进那个框，以前会被下面那条「不支持数值公式」直接拦住（用户实测报的）。
+        // 折完之后这里看到的只剩「真·运行时公式」（X / M*3 / HandCount…），照旧报错拦住。
+        ProfileFactory.FoldPlainConstantAmountFormulas(p);
 
         if (!Naming.IsValidIdentifier(p.ModId))
             issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）。"));
@@ -109,6 +113,8 @@ public static class ProfileValidator
                 + "然后点「构建 / 日志」页的「重新扫描效果库」。"));
 
         // 自定义状态（能力牌用的「你自己的状态」）
+        // 类名唯一：生成是「一个类名一个文件」（cs/Powers/&lt;类名&gt;.cs）—— 见下面那条检查。
+        var powerClassNames = new HashSet<string>(StringComparer.Ordinal);
         for (int ci = 0; ci < p.CustomPowers.Count; ci++)
         {
             var cp = p.CustomPowers[ci];
@@ -122,6 +128,17 @@ public static class ProfileValidator
 
             if (!string.IsNullOrWhiteSpace(cp.ClassName) && !Naming.IsValidIdentifier(cp.ClassName))
                 issues.Add(new("错误", $"{who} 的英文类名不合法：{cp.ClassName}（只能是英文/数字，且以字母开头）。"));
+            // 类名唯一（V0.2.157 补）：卡牌 / 遗物 / 药水 / 召唤物早就有这条检查，自定义状态一直没有。
+            // 为什么必须有：生成是**一个类名一个文件**（<c>cs/Powers/&lt;类名&gt;.cs</c>，见 ModGenerator），
+            // 两个状态同名时**后一个写的那次会把前一个整个覆盖掉** —— 前者在游戏里静默消失
+            //（触发时机 / 效果 / 描述全丢），而两个状态的本地化键也一模一样（状态栏名字分不开）。
+            // ⚠ 真事故：作者自己的 ShadowverseMod 存档里有两个状态都叫 DreizehnPower9。
+            string cpCls = CustomPowerGen.ClassNameOf(p, cp, ci);
+            if (!powerClassNames.Add(cpCls))
+                issues.Add(new("错误", $"{who} 的英文类名「{cpCls}」和前面另一个自定义状态**重复** —— "
+                    + "生成出来的代码是「一个类名一个文件」（cs/Powers/" + cpCls + ".cs），"
+                    + "同名时**后一个会把前一个覆盖掉**，前者在游戏里静默消失（触发时机 / 效果全丢）。"
+                    + "请到「自定义状态」页把它们改成两个不同的英文类名。"));
             if (cp.Type is not ("Buff" or "Debuff"))
                 issues.Add(new("错误", $"{who} 的类型只能是 Buff（增益）或 Debuff（减益）。"));
             if (!string.IsNullOrWhiteSpace(cp.AmountColor) && !CardColorSpec.IsHex(cp.AmountColor))
@@ -146,6 +163,52 @@ public static class ProfileValidator
                 issues.Add(new("警告", $"{who} 同时勾了「回合结束移除」和「每回合衰减」，衰减不会生效（直接移除）。"));
             if (cp.Triggers.Count == 0)
                 issues.Add(new("警告", $"{who} 没配任何触发时机：这个状态挂上去也不会做事。"));
+
+            // ===== V0.2.147：这个状态里用了「玩家侧」的东西 —— 只对**挂在玩家自己身上**有意义 =====
+            //
+            // 背景（用户问「状态挂在敌人身上时，状态的『自己』是不是敌人自己」）：
+            //   · 状态效果里的「自己」= **挂着这个状态的那个单位**（生成代码里就是 base.Owner）；
+            //   · 贴到敌人身上时「自己」就是那个敌人；而本体钩子传进来的 player 是**玩家** →
+            //     玩家侧触发时机那句 `player != base.Owner.Player` 护栏永远成立 → 那些时机永远不触发；
+            //   · 更要命的是「要拿玩家对象」的效果：本体 `Creature.Player` 对**怪物是 null**，
+            //     生成代码却直接把 base.Owner.Player 当参数传（抽牌 / 能量 / 生成卡牌 / 药水 / 改牌组…）
+            //     → null 传进本体接口 = 运行时异常 → **战斗卡住**（和「没有选牌提示语」同一类）。
+            //
+            // ⚠ <see cref="PlayerSidePowerEffectKinds"/> 这份清单是**机械扫出来的**，不是拍脑袋列的：
+            //   把每一种效果都按「最想弹选牌界面」的参数生成一个自定义状态，看生成源码里有没有
+            //   「没有空值保护」的 base.Owner.Player（`!= base.Owner.Player` 比较、`?.` / `??` 都不算）。
+            //   自检里有断言钉着这份清单与生成端一致（改效果种类时重跑那条扫描即可）。
+            var playerSideEffects = cp.Triggers.Where(t => t is not null)
+                .SelectMany(t => t.Effects ?? new System.Collections.ObjectModel.ObservableCollection<EffectSpec>())
+                .Where(e => e is not null && PlayerSidePowerEffectKinds.Contains(e.Kind, StringComparer.Ordinal))
+                .Select(e => EffectCatalog.FindKind(e.Kind).Display)
+                .Distinct().ToList();
+            var chanceEffects = cp.Triggers.Where(t => t is not null)
+                .SelectMany(t => t.Effects ?? new System.Collections.ObjectModel.ObservableCollection<EffectSpec>())
+                .Where(e => e is not null && (e.ChanceEnabled || !string.IsNullOrWhiteSpace(e.ChanceFormula)))
+                .Select(e => EffectCatalog.FindKind(e.Kind).Display)
+                .Distinct().ToList();
+            var playerSideTriggers = cp.Triggers.Where(t => t is not null).Select(t => t.Kind)
+                .Where(k => SelfScopedPowerTriggers.Contains(k, StringComparer.Ordinal))
+                .Select(SelfScopedPowerTriggerZh).Distinct().ToList();
+            if (playerSideTriggers.Count > 0 || playerSideEffects.Count > 0 || chanceEffects.Count > 0)
+                issues.Add(new("警告", $"{who} 里用了「玩家侧」的东西 —— 它们只对**挂在玩家自己身上**的状态有意义："
+                    + (playerSideTriggers.Count > 0
+                        ? $"触发时机（{string.Join(" / ", playerSideTriggers)}）盯的是「挂着它的那个单位」，"
+                          + "挂到敌人身上时这些时机**永远不会触发**；" : "")
+                    + (playerSideEffects.Count > 0
+                        ? $"效果（{string.Join(" / ", playerSideEffects)}）要拿**玩家对象**"
+                          + "（抽牌 / 能量 / 金币 / 生成卡牌 / 药水 / 改牌组…），"
+                          + "而敌人身上没有玩家（本体 Creature.Player 对怪物就是 null）→ "
+                          + "真挂到敌人身上会在运行时抛异常、**战斗卡住**；" : "")
+                    + (chanceEffects.Count > 0
+                        ? $"勾了「概率生效」的那些效果（{string.Join(" / ", chanceEffects)}）也一样："
+                          + "掷骰子要读 base.Owner.Player，敌人身上同样是 null → 同样会抛异常；" : "")
+                    + "要做「贴在敌人身上的减益 / 标记」，请只用不依赖玩家的效果（造成伤害 / 失去生命 / 获得格挡 / "
+                    + "施加或清除状态 / 击晕 / 翻倍层数 / 暴露 / 毒性爆发 / 禁止格挡或回复…）；"
+                    + "「为自己附魔」这类状态请把施加它的效果「作用对象」改成「自己」。"
+                    + "⚠ 另外：状态里的「敌人」指的是**玩家视角的敌方那一侧**，所以贴在敌人身上时"
+                    + "「单体 / 全体敌人」打的是**它自己和它的同伴**（不是「持有者的敌人」）。"));
             // 自定义状态上那块「节点图」生成端**还没接**（ForgeGraphGen 只处理卡牌 / 药水 / 遗物的布），
             // 所以布上画了什么都不会出现在生成的代码里 —— 这种「静默不生效」必须说出来。
             if (cp.ForgeGraph is { IsEmpty: false })
@@ -213,7 +276,10 @@ public static class ProfileValidator
                     var e = t.Effects[j];
                     // 「获得卡牌奖励」在「战斗胜利后」里走的是本体的战斗奖励（room.AddExtraReward），不需要 choiceContext
                     bool roomReward = e.Kind == "CardReward" && t.Kind == "CombatVictory";
-                    if (!CustomPowerGen.TriggerHasChoiceContext(t.Kind) && CustomPowerGen.NeedsChoiceContext(e.Kind) && !roomReward)
+                    // ⚠ 判据用 **EffectSpec 重载**（不是 e.Kind）：有些效果分档才算需要
+                    //（「生成卡牌」只有「多选1 / 自己挑一张」会弹选牌界面 → 才写 choiceContext），
+                    // 用 string 版会漏报这条「生成时会自己造一个，能用」的提示。
+                    if (!CustomPowerGen.TriggerHasChoiceContext(t.Kind) && CustomPowerGen.NeedsChoiceContext(e) && !roomReward)
                         issues.Add(new("提示", $"{who}「{when}」的第 {j + 1} 条是「{EffectCatalog.FindKind(e.Kind).Display}」，"
                             + "而这个触发时机的本体钩子本身不给 choiceContext（例：敌人回合开始时 AfterSideTurnStart）——"
                             + "生成时会照本体的做法自己造一个再跑，能用；如果游戏里没反应，看日志里这一条。"));
@@ -252,14 +318,13 @@ public static class ProfileValidator
                         issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
                             + "在**自定义状态**里用不了（它要「打出这张牌时选牌」的上下文）—— 生成时会被忽略，"
                             + "请把它放到卡牌 / 遗物 / 药水上。"));
-                    // 「数值公式」（需求：「另加一栏『数值公式』」）：自定义状态的触发器那条链没有
-                    // 「打出这张牌」的上下文（拿不到打出的那张牌 / 玩家选中的目标），
-                    // 所以这一版只做卡牌。填了就必须拦住 —— 不然生成端会静默用固定数值，用户看不出问题。
+                    // 「数值公式」：V0.2.164 起自定义状态链也支持（那 5 种走**全内联**求值，见
+                    // CSharpCodeGen.InlineAmountFormula）—— 这里改成统一走那一份校验：
+                    // 支持的 5 种放行（并提示「指定敌人」在这条链上取的是可打的第一个敌人），
+                    // 不支持的种类照旧报错拦住（不能静默用固定数值，用户看不出问题）。
                     if (!string.IsNullOrWhiteSpace(e.AmountFormula))
-                        issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」"
-                            + $"填了「数值公式」（{ForgeFormula.DisplayText(e.AmountFormula)}）："
-                            + "这一版公式只做在**卡牌**上 —— 自定义状态的触发器没有「打出这张牌」那一刻的上下文。"
-                            + "请清空公式，改用固定数值；或者把这条效果放到卡牌上。"));
+                        ValidateAmountFormula(issues, $"{who}「{when}」的第 {j + 1} 条", e,
+                            EffectCatalog.FindKind(e.Kind), "Power", p);
                     if (e.Condition is { Kind: "Fatal" })
                         issues.Add(new("错误", $"{who}「{when}」的第 {j + 1} 条用了「斩杀」条件，但它只能用在**卡牌**上 —— "
                             + "请把这条效果放到攻击牌上（判的是「这一次攻击有没有把目标打死」）。"));
@@ -315,6 +380,11 @@ public static class ProfileValidator
                     ValidateCondition(issues, $"{who}「{when}」第 {j + 1} 条", e.Condition, "Power");
                     if (e.Kind == "GenerateCard" && string.IsNullOrWhiteSpace(e.SpawnCardId))
                         issues.Add(new("警告", $"{who}「{when}」的「生成卡牌」没选目标卡，会生成小刀（Shiv）。"));
+                    // 「强化指定卡牌」在**状态**那条链上同样会生成 BoostPowers.cs 里的
+                    // `if (cardSource is not <目标卡类名>)` —— 目标卡认不出来一样是 CS0103，所以这里也要查。
+                    if (e.Kind == "BoostCard")
+                        ValidateBoostCardTarget(issues,
+                            $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」", p, e);
                     if (e.AmountIsStack && e.Amount == 0 && e.Kind is "Damage" or "Block")
                         issues.Add(new("警告", $"{who}「{when}」的第 {j + 1} 条数值 = 层数，层数可能为 0，这条效果会打 0。"));
                     // 「数值 = 本状态的层数」：用户报过「写了 30 层、游戏里只给 1 层」——
@@ -508,18 +578,111 @@ public static class ProfileValidator
             {
                 var upR = ForgeNumbers.ResolveCost(p, c.UpgradeCostFormula, "X", allowPlus: true, "升级后费用");
                 if (!upR.Ok)
-                    issues.Add(new("错误", $"卡牌「{c.Name}」的{upR.Error}"));
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的{upR.Error}"
+                        // V0.2.148：用户会把 Y 填到「升级后费用」这一栏（那是**能量**费用栏）——
+                        // 报错里顺手指一下右边的「升级后额外资源量费用」栏。
+                        + (c.UpgradeCostFormula.Contains('Y')
+                            ? "⚠ 这一栏是**能量费用**：如果你想改的是「升级后额外资源量费用」，请填在它右边那一栏（那边填 Y）。"
+                            : "")));
                 else if (upR.IsConstant && upR.Value < 0)
                     issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后费用」不能是负数：{upR.Value}。"));
                 else if (upR.IsX && !costIsX)
-                    issues.Add(new("警告", $"卡牌「{c.Name}」的「升级后费用」写的是 X+{upR.Plus}，"
-                        + "但这张牌现在的费用不是 X（费用框里也没写 X）：X 会被当成 0，这一段等于不生效。"));
+                {
+                    // V0.2.149（用户实测报的「原本 1 费、升级后 X 费，实际升级还是 1 费」）：
+                    // 本体**不支持**「升级时把数字费用变成 X 费」——
+                    //   · X 是 `CardEnergyCost.CostsX`，在**第一次读 `EnergyCost` 时**就由 `HasEnergyCostX` 捕获定死
+                    //     （`CardModel.EnergyCost` 里 `_energyCost ??= new CardEnergyCost(this, CanonicalEnergyCost, HasEnergyCostX)`），
+                    //     之后只认缓存的那个布尔值（打出 / 扣费 / ResolveEnergyXValue 全看它）；
+                    //   · 升级能改的只有**数字**：`EnergyCost.UpgradeBy(差值)`。
+                    // 所以这一档做不了，而且必须说清楚「不是工具没生成，是本体做不到」，并给出能做到的两种写法。
+                    string what = upR.Plus > 0 ? $"X+{upR.Plus}" : "X";
+                    issues.Add(new("警告", $"卡牌「{c.Name}」的「升级后费用」写的是 {what}，但这张牌现在的费用不是 X"
+                        + "（费用框里也没写 X）—— **本体做不到「升级后把数字费用变成 X 费」**："
+                        + "X 是卡牌构造时定死的一档（`CardEnergyCost.CostsX` 在第一次读 `EnergyCost` 时就捕获了，"
+                        + "之后打出 / 扣费 / 取值全看它），升级能改的只有数字（`EnergyCost.UpgradeBy`）。"
+                        + "所以这一段不会生效，升级后还是原来的费用。能做到的两种写法："
+                        + "① 想要「X 费」就把「费用」框一开始就填 X，再在「升级后费用」里写 X+1（= 升级后 X 多 1）；"
+                        + "② 想「升级后更便宜」就在这一栏填数字（例：1 费 → 升级后 0 费）。"));
+                }
             }
-            // 升级后额外资源量费用：写进去却解析不出来的原文留在了 UpgradeStarCostFormula 里
+            // V0.2.158（用户实测报的「次数填 Y（额外资源量）时只会触发一次」）：
+            // 本体是**先扣费、再跑效果**（PlayCardAction：`await _card.SpendResources()` → `OnPlayWrapper(...)`），
+            // 所以公式里的 X / Y 在效果跑的那一刻读到的是**扣完剩下的**。
+            //   · 「X 费」的牌 → X 读到 0；「Y 费」的牌 → Y 读到 0（次数会被夹到 1，就是用户看到的现象）。
+            // 想用「这张牌花掉的那部分」有现成的读数：XSpent / YSpent（本体 ResolveEnergyXValue / ResolveStarXValue）。
+            {
+                bool costIsXNow = c.CostIsXEffective;
+                bool starCostIsXNow = c.StarCostIsXEffective;
+                if (costIsXNow || starCostIsXNow)
+                {
+                    foreach (EffectSpec fx in c.Effects.Where(x => x is not null))
+                    {
+                        string allFormulas = (fx.AmountFormula ?? "") + " "
+                            + string.Join(" ", EffectSpec.CountFormulaKeys.Select(fx.CountFormula));
+                        if (starCostIsXNow && ContainsIdentifier(allFormulas, "Y"))
+                            issues.Add(new("警告", $"卡牌「{c.Name}」是「Y 费」（额外资源量费用 = X 那一档），"
+                                + "而它的效果里用了 Y —— 本体**先扣费再跑效果**，所以那一刻 Y 读到的是 0"
+                                + "（次数会被自动夹到 1）。想用「这张牌花掉的额外资源量」请填 **YSpent**"
+                                + "（= 本体 ResolveStarXValue()，就是这张牌花掉的那个数）。"));
+                        if (costIsXNow && ContainsIdentifier(allFormulas, "X"))
+                            issues.Add(new("警告", $"卡牌「{c.Name}」是「X 费」，而它的效果里用了 X ——"
+                                + "本体**先扣费再跑效果**，所以那一刻 X 读到的是 0（次数会被自动夹到 1）。"
+                                + "想用「这张牌花掉的能量」请填 **XSpent**（= 本体 ResolveEnergyXValue()）。"));
+                    }
+                }
+                // V0.2.159：XSpent / YSpent 在**不是那种费用**的牌上是 0（生成端做了判空三元）——
+                // 本体那两个方法是「不是 X 费就 throw InvalidOperationException」，不判就会在战斗中抛异常。
+                // 不会崩了，但读数恒为 0 = 白写，所以这里明说一句（用户要求「不要静默」）。
+                foreach (EffectSpec fx in c.Effects.Where(x => x is not null))
+                {
+                    string allFormulas = (fx.AmountFormula ?? "") + " "
+                        + string.Join(" ", EffectSpec.CountFormulaKeys.Select(fx.CountFormula));
+                    if (ContainsIdentifier(allFormulas, "XSpent") && !costIsXNow)
+                        issues.Add(new("警告", $"卡牌「{c.Name}」的效果里用了 **XSpent**，但这张牌的「费用」不是 X "
+                            + "（费用框里没写 X）—— 它不是「X 费」牌，所以 XSpent 读出来**恒为 0**（生成端不会崩，"
+                            + "但这条公式等于没写）。想让它有意义：把「费用」填成 X（花光全部能量）。"));
+                    if (ContainsIdentifier(allFormulas, "YSpent") && !starCostIsXNow)
+                        issues.Add(new("警告", $"卡牌「{c.Name}」的效果里用了 **YSpent**，但这张牌的「额外资源量费用」不是 Y "
+                            + "（那一栏没写 Y）—— 它不是「Y 费」牌，所以 YSpent 读出来**恒为 0**（生成端不会崩，"
+                            + "但这条公式等于没写）。想让它有意义：把「额外资源量费用」填成 Y（花光全部额外资源量）。"));
+                }
+            }
+            // 升级后额外资源量费用：写进去却解析不出来的原文留在 UpgradeStarCostFormula 里
+            // V0.2.148：`Y`（= 升级后还是 Y）是**合法**写法 —— 本体改不了 X 那一档，语义上就是「升级不改」，
+            // 生成端不会写任何 UpgradeStarCostBy，所以不当错误报（用户实测报「填不了 Y」）。
+            // 「升级后 Y+1」本体做不到：`UpgradeStarCostBy` 碰到 HasStarCostX 的牌**直接抛异常**，
+            // 所以那一档要报错，并把真正的原因写出来。
             if (!string.IsNullOrWhiteSpace(c.UpgradeStarCostFormula))
-                issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后额外资源量费用」看不懂：{c.UpgradeStarCostFormula}。"
-                    + "这一栏只支持整数（或生成期就算得出来的式子）—— 本体升级资源量费用走的是 "
-                    + "UpgradeStarCostBy(差值)，差值必须是生成时定下来的常量。"));
+            {
+                // 用 allowPlus: true 解一次 —— 只有这样才能分辨「`Y`（合法 = 不改）」和「`Y+1`（本体做不到）」
+                var starRaw = ForgeNumbers.ResolveCost(p, c.UpgradeStarCostFormula, "Y", allowPlus: true, "升级后额外资源量费用");
+                if (starRaw.Ok && starRaw.IsX && starRaw.Plus == 0)
+                {
+                    if (starIsX)
+                        issues.Add(new("提示", $"卡牌「{c.Name}」的「升级后额外资源量费用」写的是 Y（= 升级后还是 Y）："
+                            + "等于「升级不改资源量费用」，不会生成任何 UpgradeStarCostBy —— 想清空这一栏也可以。"));
+                    else
+                        issues.Add(new("警告", $"卡牌「{c.Name}」的「升级后额外资源量费用」写的是 Y，"
+                            + "但这张牌现在的「额外资源量费用」不是 Y —— **本体做不到「升级后把数字资源量费用变成 Y」**"
+                            + "（`HasStarCostX` 那一档不能靠升级改，本体只给了 `UpgradeStarCostBy(数字)`）。"
+                            + "所以这一段不会生效。想要「Y 费」请把「额外资源量费用」框一开始就填 Y。"));
+                }
+                else if (starRaw.Ok && starRaw.IsX)
+                {
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后额外资源量费用」填不了 Y+{starRaw.Plus}："
+                        + "本体 UpgradeStarCostBy 对「额外资源量费用 = X」的牌会**直接抛异常**"
+                        + "（UpgradeStarCostBy called on … which has star cost X.），所以「升级后资源量费用多 N 点」这一档做不了。"
+                        + "想「升级不改」请留空、或写一个 Y；想「升级后固定花 N 点」请先把「额外资源量费用」从 Y 改成固定数字，再填这一栏。"));
+                }
+                else
+                {
+                    var starRawStrict = ForgeNumbers.ResolveCost(p, c.UpgradeStarCostFormula, "Y", allowPlus: false, "升级后额外资源量费用");
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的「升级后额外资源量费用」看不懂：{c.UpgradeStarCostFormula}。"
+                        + (starRawStrict.Error is { Length: > 0 } ? starRawStrict.Error : "")
+                        + "这一栏只支持：① 整数（或生成期就算得出来的式子，例：1+1）；② 一个 Y（= 升级后还是 Y，等于不改）。"
+                        + "（本体升级资源量费用走的是 UpgradeStarCostBy(差值)，差值必须是生成时定下来的常量。）"));
+                }
+            }
             // 升级后费用：X 费牌改不了、负数费用会被夹到 0，提前说清楚
             if (c.UpgradeCost is { } upCost)
             {
@@ -1383,6 +1546,28 @@ public static class ProfileValidator
         "EnergySpent", "BlockGained", "PowerChanged", "EnemyDamaged", "EnemyKilled", "CombatStart",
     };
 
+    /// <summary>
+    /// 自定义状态链上**会去拿「玩家对象」**（<c>base.Owner.Player</c>）的效果种类（V0.2.147）。
+    ///
+    /// <para>为什么这张表存在：状态效果里的「自己」是**挂着它的那个单位**（<c>base.Owner</c>），
+    /// 而下面这些效果要的是**玩家**（抽牌 / 加能量 / 生成卡牌 / 药水 / 改牌组…）——
+    /// 状态一旦贴在敌人身上，<c>Creature.Player</c> 就是 <c>null</c>，生成代码把 null 传进本体接口
+    /// 会在运行时抛异常 → 战斗卡住。校验器用这张表提前警告（见那个「用了玩家侧的东西」警告）。</para>
+    ///
+    /// <para><b>这份清单是机械扫出来的</b>：把每种效果都按「最想弹选牌界面」的参数配一个自定义状态、
+    /// 生成源码，扫有没有「没有空值保护」的 <c>base.Owner.Player</c>
+    /// （<c>!= base.Owner.Player</c> 那种比较、<c>?.</c> / <c>??</c> 都不算）。
+    /// 另外「勾了概率生效」的任何效果也会读 <c>base.Owner.Player.RunState</c>（掷骰），
+    /// 所以那一档单独判（见警告那段）。自检里有断言钉着这张表与生成端一致。</para>
+    /// </summary>
+    public static readonly string[] PlayerSidePowerEffectKinds =
+    {
+        "Draw", "Energy", "Gold", "ExtraResource", "GenerateCard", "GainPotion",
+        "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal", "UpgradeCardGlobal",
+        "UpgradeCard", "ExhaustCard", "DiscardCard", "GiveKeyword",
+        "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust", "CardReward",
+    };
+
     private static string SelfScopedPowerTriggerZh(string kind)
         => PowerTriggers.Find(kind)?.Display ?? kind;
 
@@ -1914,6 +2099,77 @@ public static class ProfileValidator
     };
 
 
+    /// <summary>
+    /// 「强化指定卡牌」的**目标卡**必须是认得出的卡牌类名（V0.2.157 修）。
+    ///
+    /// <para>为什么必须拦：生成出来的是 <c>BoostPowers.cs</c> 里的
+    /// <c>if (cardSource is not &lt;目标卡类名&gt;) return 0m;</c> —— 这个类名不存在就是 **CS0103**
+    /// 「当前上下文中不存在名称 X」，构建在编译那一步才炸，报错信息完全看不出是配置问题。
+    /// 用户实测报过：存档是从别的机器拷过来的（<c>&lt;ModId&gt;.forge_classmap.json</c> 没跟着走），
+    /// 卡牌在存档里已经改号 / 删掉，而「目标卡」这一栏还留着旧类名。</para>
+    ///
+    /// <para>⚠ 认不出时分两档报：本机**读不到**本体卡牌表（没解包工程 / 没 pck）就只报**提示**
+    /// —— 这时候一张本体卡也会「认不出」，报错误全是误报（和「获得药水」那条同一个理由）。
+    /// 只有「本体卡牌表读得到、本存档里也没有」才是**错误**。</para>
+    /// </summary>
+    private static void ValidateBoostCardTarget(List<ValidationIssue> issues, string where, CharacterProfile? p, EffectSpec e)
+    {
+        // 没有存档就没有「我们自己的卡」可查（只有自检那种调用会传 null）→ 什么都不报，免得全是误报。
+        if (p is null) return;
+        if (string.IsNullOrWhiteSpace(e.SpawnCardId))
+        {
+            issues.Add(new("错误", $"{where}没选目标卡 —— 请在「目标卡」里选一张要强化的牌。"));
+            return;
+        }
+        string want = e.SpawnCardId!.Trim();
+        var (known, rightCase) = RecognizeCardClass(p, want);
+        if (known) return;
+        if (rightCase is not null)
+            issues.Add(new("错误", $"{where}的目标卡「{want}」和本存档里的卡**大小写对不上**："
+                + $"生成出来的代码是按类名精确匹配的（写的是「{want}」），本存档里那张卡叫「{rightCase}」—— "
+                + "请到「目标卡」里重新选一次（手打过这一栏才会这样）。"));
+        else if (EffectCatalog.Cards.Count == 0)
+            issues.Add(new("提示", $"{where}的目标卡「{want}」在本存档里找不到，而本机也读不到本体卡牌表"
+                + "（没配本体工程目录 / 游戏 pck）—— 如果它其实是一张**本体卡**，这条提示可以忽略；"
+                + "否则请重新选一张（那段按类名找牌的代码会编译不过）。"));
+        else
+            issues.Add(new("错误", $"{where}的目标卡「{want}」在本存档和本体卡牌表里都找不到"
+                + "（多半是这张卡被删掉 / 改了类名，或者这份存档是从别的机器拷来的、卡牌清单没跟着走）—— "
+                + "请到「目标卡」里重新选一张：生成出来的代码是按这个类名精确匹配的，名字不存在就是编译不过。"));
+    }
+
+    /// <summary>
+    /// 这个类名现在认不认得出来（「强化指定卡牌」的目标卡这类**按卡牌类名存的引用**）：
+    /// ① 本存档里的卡（含「本体卡」引用条目，走 <see cref="Naming.CardClassName"/> 算出来的**生成名**）
+    /// → 认得出来；② 本体卡牌表里查得到 → 认得出来。
+    ///
+    /// <para>顺带把「只差大小写」的那个正确写法带出来（<c>RightCase</c>）——
+    /// 生成端是按类名**精确**匹配的，只差大小写照样编译不过，调用方可以照着这条改。</para>
+    /// </summary>
+    private static (bool Known, string? RightCase) RecognizeCardClass(CharacterProfile? p, string want)
+    {
+        string s = (want ?? "").Trim();
+        if (s.Length == 0) return (false, null);
+        string? rightCase = null;
+        if (p is not null)
+        {
+            var n = Naming.From(p);
+            foreach (var c in p.AllCards)
+            {
+                if (c is null) continue;
+                string cls = n.CardClassName(p, c);
+                if (string.Equals(cls, s, StringComparison.Ordinal)) return (true, null);
+                if (rightCase is null && string.Equals(cls, s, StringComparison.OrdinalIgnoreCase)) rightCase = cls;
+            }
+        }
+        foreach (var v in EffectCatalog.Cards)
+        {
+            if (string.Equals(v.Id, s, StringComparison.Ordinal)) return (true, null);
+            if (rightCase is null && string.Equals(v.Id, s, StringComparison.OrdinalIgnoreCase)) rightCase = v.Id;
+        }
+        return (false, rightCase);
+    }
+
     private static void ValidateEffects(List<ValidationIssue> issues, string owner, IEnumerable<EffectSpec> effects,
         string? potionTargetType = null, string ctx = "Card", CharacterProfile? p = null)
     {
@@ -2160,6 +2416,12 @@ public static class ProfileValidator
             // 给予卡牌关键词：关键词必须选、而且必须存在（本体枚举名 或 已定义的自定义关键词）
             if (e.Kind == "GiveKeyword")
                 ValidateGiveKeyword(issues, owner, e, p, ctx);
+            // 播放音效（V0.2.154）：音效必须选，而且得是「像 FMOD 事件路径」的形状；不在候选表里给一句提示
+            if (e.Kind == "PlaySfx")
+                ValidatePlaySfx(issues, owner, e);
+            // 播放音频文件（V0.2.155）：必须选一条上传的音频，而且那条的文件得真的在
+            if (e.Kind == "PlaySoundFile")
+                ValidatePlaySoundFile(issues, owner, e, p);
             // 需求 ⑦：生成 / 变化出来的卡带上的关键词也必须存在（同一个判据，两处共用一个取值口径）
             if (e.UsesSpawnOptions && e.HasSpawnKeyword)
                 ValidateSpawnKeyword(issues, owner, e, p);
@@ -2234,10 +2496,20 @@ public static class ProfileValidator
                     + "但这个选项只有「消耗 / 丢弃 / 升级卡牌」和「从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌」用得到 —— 这条会被忽略。"));
             if (e.UsesCountMode && e.CountMode != CountModes.Exact)
             {
-                if (e.CardPick != "Chosen")
+                if (e.CountIsAll)
+                {
+                    // 「全部」（V0.2.163）：不弹选牌界面 —— 选牌方式（自己选 / 随机 / 牌顶）不生效，
+                    // 升级增量也没有落点（没有张数可显示）。两件事都要说，不许静默。
+                    if (e.SelectPile == "Top" || e.CardPick != "Chosen")
+                        issues.Add(new("提示", $"{owner} 的「{kind.Display}」是「取全部」：**不弹选牌界面**，"
+                            + "所以「选牌方式（自己选 / 随机 / 牌顶）」这一栏不生效（忽略）。"));
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」是「取全部」：卡面写「所有」、不声明张数变量，"
+                        + "所以「升级增量」对这条没有作用（想升级后多拿几张就选「最多 N 张」）。"));
+                }
+                else if (e.CardPick != "Chosen")
                     issues.Add(new("警告", $"{owner} 的「{kind.Display}」取牌方式是「随机」，但「取几张」选了"
                         + $"「{CountModes.Zh(e.CountMode)}」—— 随机那条路没有选牌界面，会按「恰好 {Math.Max(1, (int)e.Amount)} 张」处理。"
-                        + "想要「可以少选 / 任意张」请把取牌方式改成「自己选」。"));
+                        + "想要「可以少选 / 任意张 / 全部」请把取牌方式改成「自己选」（「全部」不看这一栏）。"));
                 else if (e.CountIsAny)
                     issues.Add(new("提示", $"{owner} 的「{kind.Display}」是「取任意张」：卡面写「任意张」、不声明张数变量，"
                         + "所以「升级增量」对这条没有作用（想升级后能多选就选「最多 N 张」）。"));
@@ -2254,7 +2526,7 @@ public static class ProfileValidator
             if (e.Kind is "TakeFromDraw" or "TakeFromDiscard")
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」会弹一个选牌界面，"
                     + $"从{(e.Kind == "TakeFromDraw" ? "抽牌堆" : "弃牌堆")}里自己挑 "
-                    + (e.CountIsAny ? "任意张" : $"{(e.CountMode == CountModes.UpTo ? "最多 " : "")}{Math.Max(1, (int)e.Amount)} 张")
+                    + (e.CountIsAll ? "**全部**（这一档不弹界面）" : e.CountIsAny ? "任意张" : $"{(e.CountMode == CountModes.UpTo ? "最多 " : "")}{Math.Max(1, (int)e.Amount)} 张")
                     + "拿到手牌"
                     + "（本体「搜寻 / 全息影像 / 挖掘」的做法，界面提示语会一起生成）；那一摞里没牌时什么都不做。"));
             if (!kind.NeedsTarget && e.TargetSide != "Self" && e.Kind != "Outbreak"
@@ -2659,8 +2931,11 @@ public static class ProfileValidator
             // —— 用户真正看到的那两条报错在 ValidateCustomPowers 里（同一个文件，现已一起撤掉）。
             if (e.Kind == "BoostCard")
             {
-                if (string.IsNullOrWhiteSpace(e.SpawnCardId))
-                    issues.Add(new("错误", $"{owner} 的「{kind.Display}」没选目标卡 —— 请在「目标卡」里选一张要强化的牌。"));
+                // 目标卡必须**认得出**（V0.2.157 修）：生成出来的 BoostPowers.cs 里写的是
+                // `if (cardSource is not <目标卡类名>) return 0m;` —— 类名不存在就是 CS0103
+                //「当前上下文中不存在名称 X」，构建在编译那一步才炸，报错信息完全看不出是配置问题
+                //（用户实测报过：存档从别的机器拷来，卡牌清单没跟着走）。见 ValidateBoostCardTarget。
+                ValidateBoostCardTarget(issues, $"{owner} 的「{kind.Display}」", p, e);
                 if (e.Amount == 0m)
                     issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 0 → 挂上一个 0 层的强化状态，等于没有效果。"));
             }
@@ -2804,19 +3079,12 @@ public static class ProfileValidator
             issues.Add(new("错误", $"{owner} 的「{kindZh}」不支持「数值公式」（现在填的是 {formula}）："
                 + "这个效果的数值必须在**生成的时候**就定下来 —— 抽几张 / 生成几张 / 消耗几张这类要提前分配"
                 + "动态变量、算好选牌上限，塞不进运行时表达式。"
-                + "卡牌上这一栏只有两种情况能用：① 那 5 种（造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益）"
-                + "支持完整公式；② 其余种类只支持光秃秃写一个 X（= 老勾选框「数值 = X」，"
-                + "等于打出这张牌那一刻消耗掉的能量 —— 费用框里也要填 X）。"
-                + "请清空「数值公式」，改用左边的固定数值。"));
-            return;
-        }
-        if (ctx is "Relic" or "Potion" or "Curse")
-        {
-            string where = ctx switch { "Relic" => "遗物", "Potion" => "药水", _ => "诅咒" };
-            issues.Add(new("错误", $"{owner} 的「{kindZh}」填了「数值公式」（{formula}）："
-                + $"这一版公式只做在**卡牌**上 —— {where}的代码链没有「打出这张牌」那一刻的上下文"
-                + "（那一侧只有「使用 / 触发」的时刻，取不到「打出的那张牌 / 玩家选中的目标」）。"
-                + "请清空公式；或者把这条效果放到卡牌上。"));
+                + "支持完整公式的只有这 5 种：造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益"
+                + "（**卡牌 / 遗物 / 药水 / 自定义状态的触发器上都能写**，V0.2.164 起）。"
+                + "卡牌上这一栏还有另外两种情况能用：① 一个**纯数字 / 能折成常数的式子**（例：1、2+3）—— 工具会把它"
+                + "当成左边的固定数值（打开存档 / 生成前自动折好，不用你手填两处）；② 光秃秃写一个 X"
+                + "（= 老勾选框「数值 = X」，等于打出这张牌那一刻消耗掉的能量 —— 费用框里也要填 X）。"
+                + "请把「数值公式」改成一个固定数字（或纯数字式子），或者直接把它填在左边的固定数值框里。"));
             return;
         }
         if (e.AmountIsXEffective)
@@ -2832,7 +3100,8 @@ public static class ProfileValidator
         if (p is not null)
             foreach (var cp in p.CustomParams)
                 if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
-        foreach (string id in ForgeFormula.Identifiers(root))
+        var knownIds = ForgeFormula.Identifiers(root).ToList();
+        foreach (string id in knownIds)
         {
             if (id is "X" or "Y") continue;
             // 内置只读量（用户要求：参数监听）：Turn / DiscardedThisTurn / PowersOnMe… 直接写就能用
@@ -2842,6 +3111,26 @@ public static class ProfileValidator
                 + $"到「自定义参数 / 组」页加一个 {id}=（并选好它从哪来），或者把公式改掉。"
                 + "X = 打出这张牌那一刻的当前能量，Y = 当前额外资源量，这两个不用定义；"
                 + $"内置只读量（不用定义、每次求值现算）：{FormulaBuiltins.HintList}。"));
+        }
+        // V0.2.164：公式铺到遗物 / 药水 / 自定义状态之后，这两条**口径**要说清 ——
+        // 不说的话，用户会以为 X / Y 还是「这张牌花掉的那点」、「指定敌人」还是玩家选中的那个。
+        if (ctx is "Relic" or "Potion" or "Power")
+        {
+            string where = ctx switch { "Relic" => "遗物", "Potion" => "药水", _ => "自定义状态" };
+            if (knownIds.Contains("X") || knownIds.Contains("Y"))
+                issues.Add(new("提示", $"{owner} 的「{kindZh}」公式里用了 {(knownIds.Contains("X") ? "X" : "Y")}："
+                    + $"{where}上没有「打出这张牌」那一刻，所以这里的 X / Y 读的是**当前**能量 / 额外资源量"
+                    + "（不是「这张牌花掉的那点」；想避开歧义可以改用 MyEnergy / MyStars 这类实时读数）。"));
+            if (p is not null)
+            {
+                var chosen = knownIds.Where(id => p.CustomParams.Any(cp => cp is not null
+                        && string.Equals(ParamNames.Normalize(cp.Name), id, StringComparison.Ordinal)
+                        && ParamTargets.Normalize(cp.Target) == ParamTargets.ChosenEnemy)).ToList();
+                if (chosen.Count > 0)
+                    issues.Add(new("提示", $"{owner} 的「{kindZh}」公式里用了「指定敌人」来源的参数"
+                        + $"（{string.Join(" / ", chosen)}）：{where}上没有「玩家选中的目标」，"
+                        + "这里取的是**可打的第一个敌人**（和这些链上「作用对象 = 单体敌人」的执行口径一致）。"));
+            }
         }
         if (e.UpgradeAmount != 0m)
             issues.Add(new("提示", $"{owner} 的「{kindZh}」填了「数值公式」（{formula}）："
@@ -2963,6 +3252,94 @@ public static class ProfileValidator
             issues.Add(new("提示", $"{owner} 的条件既填了负数（「填负数 = 反向 / 区间外」）又写了「数值公式」："
                 + "公式算出来的正负生成时不知道，所以**这一版一律按「正面」判断** —— 固定数值那个负号不生效。"
                 + "要反向请把负号写进公式本身（例：`0 - Turn`），或者清空公式用固定负值。"));
+    }
+
+    /// <summary>
+    /// 「播放音频文件（我上传的）」的校验（V0.2.155）：必须选一条上传的音频，
+    /// 而且那条记录的文件要真的在本机、扩展名得是 Godot 认的（.ogg / .mp3 / .wav）。
+    /// </summary>
+    private static void ValidatePlaySoundFile(List<ValidationIssue> issues, string owner, EffectSpec e, CharacterProfile? p)
+    {
+        string key = (e.Sfx ?? "").Trim();
+        if (key.Length == 0)
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音频文件」还没选音频 ——"
+                + "先到「美术资源」页的「音效 / 音频」区点「上传音频…」，再回到这里那一栏选中它。"));
+            return;
+        }
+        AudioAssetSpec? hit = p?.AudioAssets?.FirstOrDefault(a => a is not null
+            && string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (hit is null)
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音频文件」用的是「{key}」，"
+                + "但「美术资源」页里已经没有这一条了（被删了？）—— 重新选一个，或者把它重新上传。"));
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(hit.File) || !File.Exists(hit.File))
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音频文件」用的「{hit.Name}」在本机找不到了："
+                + $"{hit.File} —— 回到「美术资源」页重新选一下这个文件（生成时会跳过它）。"));
+        }
+        else if (!AudioAssetSpec.IsSupportedAudio(hit.File))
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音频文件」用的「{hit.Name}」扩展名是 "
+                + $"{Path.GetExtension(hit.File)}，Godot 不认 —— 请换成 .ogg / .mp3 / .wav。"));
+        }
+        if (e.Amount > 200m)
+            issues.Add(new("警告", $"{owner} 的「播放音频文件」音量填的是 {e.Amount:0.##}%（超过 200%）——"
+                + "会非常吵，而且可能爆音，建议 ≤ 200。"));
+        // 同一个文件被多条目共用是允许的（会复制成同一个 audio/<Key>），但**显示名撞了**就会撞文件名 ——
+        // 生成时后复制的那条会覆盖前一条（内容不同就播错声音了），所以这里说清楚。
+        if (p?.AudioAssets is { } all)
+        {
+            int sameKey = all.Count(a => a is not null && string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase));
+            if (sameKey > 1)
+                issues.Add(new("警告", $"{owner} 的「播放音频文件」用的「{key}」在「美术资源」页里有 {sameKey} 条"
+                    + "同名（生成出来的文件名一样，会互相覆盖）—— 把它们的名字改得不一样。"));
+        }
+    }
+
+    /// <summary>
+    /// 公式里是不是**真的用到了**这个单字母读数（X / Y，见 V0.2.158 那两条警告）。
+    /// 按**标识符边界**匹配：<c>Y</c> 要单独出现才算 —— <c>YSpent</c> / <c>Y2</c> 里的 Y 不算
+    /// （用正则的「前后不是字母数字下划线」做边界；<c>\b</c> 不行，它会把 <c>YSpent</c> 开头的 Y 也匹配上）。
+    /// </summary>
+    private static bool ContainsIdentifier(string? formula, string id)
+    {
+        if (string.IsNullOrWhiteSpace(formula)) return false;
+        return System.Text.RegularExpressions.Regex.IsMatch(formula,
+            $@"(?<![A-Za-z0-9_]){System.Text.RegularExpressions.Regex.Escape(id)}(?![A-Za-z0-9_])");
+    }
+
+    /// <summary>
+    /// 「播放音效」的校验（V0.2.154）：音效必须选，而且得是 <c>event:/…</c> 这种形状。
+    /// 不在候选表里只给**提示**（候选表只是「本体源码里真实用过的一批」，不是全集 ——
+    /// 手填别的本体事件完全合法；路径打错时最多是游戏里不放声音，不会崩）。
+    /// </summary>
+    private static void ValidatePlaySfx(List<ValidationIssue> issues, string owner, EffectSpec e)
+    {
+        string path = (e.Sfx ?? "").Trim();
+        if (path.Length == 0)
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音效」还没选音效（编辑器里「音效」那一栏）——"
+                + "生成出来会是一句注释，游戏里什么都不放。"));
+            return;
+        }
+        if (!EffectCatalog.LooksLikeSfxPath(path))
+        {
+            issues.Add(new("错误", $"{owner} 的「播放音效」填的是「{path}」："
+                + "本体音效是 FMOD 事件路径，必须形如 event:/sfx/xxx（例：event:/sfx/block_gain）。"));
+            return;
+        }
+        if (!EffectCatalog.IsKnownSfx(path))
+        {
+            issues.Add(new("提示", $"{owner} 的「播放音效」用的是「{path}」——"
+                + "它不在下拉候选里（候选只是本体源码里真实用过的一批）。确认路径没打错就行；"
+                + "路径不存在时游戏里只是不放声音（不会崩）。"));
+        }
+        if (e.Amount > 200m)
+            issues.Add(new("警告", $"{owner} 的「播放音效」音量填的是 {e.Amount:0.##}%（超过 200%）——"
+                + "会非常吵，而且本体可能爆音，建议 ≤ 200。"));
     }
 
     /// <summary>

@@ -202,6 +202,9 @@ public static class ProfileFactory
         // 老存档里那 5 种的**固定数值**在这里自动转成公式（例：伤害 6 → 公式 "6"），
         // 否则界面上看不到那个数字、用户会以为配置丢了（生成结果不变：同一个数值）。
         MigrateAmountsToFormulas(p);
+        // V0.2.146：反过来那一头 ——「非那 5 种」的效果里，公式框填了一个**纯常数**（例：1）的，
+        // 折进固定数值（用户会顺手把数字填进公式框，以前会直接被校验器拦下来）。
+        FoldPlainConstantAmountFormulas(p);
         return Normalize(p);
     }
 
@@ -314,6 +317,39 @@ public static class ProfileFactory
         basics = basics.OrderBy(Rank).ToList();
         foreach (var b in basics) p.Cards.Remove(b);
         for (int i = basics.Count - 1; i >= 0; i--) p.Cards.Insert(0, basics[i]);
+    }
+
+    /// <summary>
+    /// 把「数值公式」框里写的**纯常数**（例：<c>1</c> / <c>2+3</c> / <c>=1</c>）折进左边的固定数值、清空公式框。
+    ///
+    /// <para><b>为什么要有这一步</b>（用户报的）：「生成卡牌 / 抽牌 / 消耗…」这些种类的数值必须在**生成期**
+    /// 定下来，所以以前会直接报错拦住（「不支持『数值公式』……请清空公式、改用左边的固定数值」）。
+    /// 但用户会顺手把 <c>1</c> 填进公式框，看到那句报错只会觉得「填个 1 为什么不行」——
+    /// 纯常数本来就能在生成期折出来，于是现在**自动**折好：数值 = 那个常数，公式框清空
+    /// （等价于填在左边的固定数值框里，生成结果完全一样）。</para>
+    ///
+    /// <para>⚠ 只折「不支持完整公式的种类」（<see cref="EffectSpec.FormulaSupports"/> 为 false 的那些）：
+    /// 那 5 种在卡牌上**本来就把公式栏当正牌编辑器**（<c>"6"</c> 是常态），折了会和
+    /// <see cref="MigrateAmountsToFormulas"/> 来回打架。写 <c>X</c> / <c>M*3</c> / <c>HandCount</c> 的
+    /// 一律**原样留着**（那是运行时语义，由校验器按老口径报错拦住）。幂等。</para>
+    ///
+    /// <returns>折掉了几条（给日志 / 自检用）。</returns>
+    /// </summary>
+    public static int FoldPlainConstantAmountFormulas(CharacterProfile p)
+    {
+        int folded = 0;
+        foreach (var e in CSharpCodeGen.AllEffects(p))
+        {
+            if (e is null) continue;
+            if (EffectSpec.FormulaSupports(e.Kind)) continue;   // 那 5 种：公式栏是正牌编辑器，一个字都别动
+            if (e.AmountIsXEffective) continue;                 // 「数值 = X」：另一套语义
+            if (string.IsNullOrWhiteSpace(e.AmountFormula)) continue;
+            if (!ForgeNumbers.TryFormulaConst(p, e.AmountFormula, out decimal value)) continue;
+            e.AmountFormula = "";
+            e.Amount = value;
+            folded++;
+        }
+        return folded;
     }
 
     /// <summary>

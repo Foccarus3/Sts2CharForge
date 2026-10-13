@@ -1,5 +1,464 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 50 批需求（V0.2.165：**切到先古页后卡面预览还是卡牌页那张**，用户实测；**已本地发版**）
+
+> `--uicheck` 基线 = **3661 PASS / 0 FAIL**（Debug，V0.2.164）。
+> 用户原话：「点卡牌页查看卡牌，然后再点先古页查看先古牌，先古牌的卡面会消失，并且比例变成卡牌页的比例而不是竖图的比例」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **先量出来再改** | 新增 4 条自检复现用户那两步（卡牌页选普通卡 → 切「诅咒 / 先古 / 状态」页选先古卡），**修之前实测**：`当前预览卡=自检比例卡 / 1000×760 / Uniform`（= 预览还停在卡牌页那张）⇒ 框是横图比例、图按普通卡的 key 去找（先古卡面在另一个 key 上）⇒ 看起来「卡面消失」 | ✅ 已发 |
+| ② | **真因** | 三页共用同一套卡面预览（判据 `CardUiSelection ?? SpecialCardOf()`），而卡牌页那个列表镜像的语义是「点空槽行时**保持上一张**」（`SlotRowMirror.UiSelection`）；三栏互斥对诅咒 / 先古用的是 `ClearSelection()`（列表+镜像一起清），对**卡牌页**只写了 `CardList.SelectedItem = null` ⇒ 镜像不松手 | ✅ 已发 |
+| ③ | **两个方向都连镜像一起清** | `ClearCardPageSelectionForPortrait()`（选中诅咒/先古/状态卡时：清列表选中 + `_cardMirror.ClearSelection()` + 通知 `CardUiSelection`）、`ClearSpecialCardSelections()`（在卡牌页选中真卡时清那三栏 —— 反方向以前也没清）。修完：普通卡 1000×760/Uniform → 先古卡 **606×852/Fill** 且预览取的是先古卡 → 切回又变 1000×760 | ✅ 已发 |
+
+> **红线实测数字（第 50 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3665 PASS / 0 FAIL**；
+> ③ **反向验证**：修之前那 2 条断言 FAIL（明细就是 `自检比例卡 / 1000×760 / Uniform`），修完全绿；
+> ④ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只动界面选中逻辑）；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.165 -NoRelease -NoCommit -Yes`。
+
+## 第 49 批需求（V0.2.164：**「数值公式」铺到遗物 / 药水 / 自定义状态**，用户问「状态和遗物不能使用公式吗」；**已本地发版**）
+
+> `--uicheck` 基线 = **3647 PASS / 0 FAIL**（Debug，V0.2.163）。
+> 同批还补记了随 V0.2.162 / V0.2.163 一起发出去、没单独记的那条修复（见 ④）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **为什么以前不能** | 公式求值要「自己 / 玩家 / 目标」：卡牌链靠「打出前先算一批局部变量」（`__pM` / `__X` / `__fgPlayer`…），遗物 / 药水 / 自定义状态的执行点（触发器钩子 / `OnUse`）没有这套前置 ⇒ 校验器一概拦住。而**锻造节点图**一直能用公式 —— 它走的是**全内联求值**（`ForgeFormula.ConditionResolver`，参数就地展开、不要局部变量） | ✅ 已发 |
+| ② | **三条链接上内联求值** | `ForgeFormula.InlineResolver(p, playerExpr, selfExpr, targetExpr)`（`ConditionResolver` 改成它的薄包装，老输出逐字不变）；`CSharpCodeGen.InlineAmountFormula` + 三处取数点（遗物 `EmitRelicEffectOnce` / 药水 `EmitPotionEffectOnce` / 状态 `CustomPowerGen.EmitEffect`），格挡那条单独走 `blockAmt`。映射：遗物 / 药水 `__fgPlayer=base.Owner`、`__fgSelf=base.Owner.Creature`；状态 `__fgPlayer=base.Owner.Player`、`__fgSelf=base.Owner`；「指定敌人」来源的参数三条链都取**可打的第一个敌人** | ✅ 已发 |
+| ③ | **显示：照卡牌那套给数字** | 遗物 / 药水的描述是 `{Heal:diff()}`，读的是变量的 `PreviewValue`，而它们**没有**卡牌那种「显示前回调」⇒ 生成一个 `__RefreshFormulaPreview()`，挂在 `ExtraHoverTips`（本体取悬停说明必读）上现算（`HoverTipsOverride` 加 `refreshFormulaPreview` 参数，老路径仍是表达式体、逐字不变）。自定义状态是生成期写死的纯文本 ⇒ 描述里写**公式本身**。另外这两条链也要 `FormulaVars.cs`（`UsesFormulaVars` 扩到遗物 / 药水）与 `ForgeFormulaRuntime.cs`（新增 `AnyNonCardFormula`），不然 CS0246 | ✅ 已发 |
+| ④ | **补记：随 162 / 163 发出去的那条修复** | 「状态里监听某状态被移除时无法触发」：`PowerModel.RemoveInternal` 的通知补丁以前只通知**被移除那个状态所在的那一只生物** ⇒「挂自己身上、盯**敌人**身上的状态被移除」永远收不到通知（守卫里那个 `HittableEnemies.Contains` 分支是死代码）。改成通知**这一场战斗里的所有生物**（`CombatState.Creatures`），并加一行 `[模组调试] 状态被移除：…（通知了 N 个…）`（开调试日志时）。另外用真引擎 dll 实测过 Harmony **能**打上这个补丁（`GetPatchInfo` 非空）⇒ 问题确实在通知范围 | ✅ 已发（162/163 随包） |
+| ⑤ | **校验器改口径 + 界面** | 那 5 种在三条链上放行；不支持的种类照旧报错（文案改成不再说「只做在卡牌上」）；新增两条**提示**：用了 `X`/`Y`（= 当前能量 / 额外资源量）、用了「指定敌人」来源的参数（= 可打的第一个敌人）。界面：这三条链的效果编辑器也摆出「可用量」小框（判据同一个 `ShowAmountFormula`），说明文字按链分口径 | ✅ 已发 |
+
+> **红线实测数字（第 49 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；
+> ② `--uicheck` Debug **3661 PASS / 0 FAIL**（新增 14 条）；③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**；
+> ④ **真编译**：探针存档（遗物 `回复 M/2` + `造成 A+2`、药水 `格挡 M/4`、状态 `失去 M/10`）
+> `forge --profile … --out … --build` → 生成的模组工程 **0 错误**（抓出两个真问题：属性不能直接写方法体 CS8124；
+> 缺 `FormulaVars.cs` / `ForgeFormulaRuntime.cs` 会 CS0246）；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.164 -NoRelease -NoCommit -Yes`。
+
+## 第 48 批需求（V0.2.163：**「取几张」第四档「全部」（不弹选牌界面）**，用户要求；**已本地发版**）
+
+> `--uicheck` 基线 = **3600 PASS / 0 FAIL**（Debug，V0.2.162）。
+> 用户原话：「生成器是不是还不能选择所有手牌」→ 我答「能选任意张（弹界面），但还不能『不弹界面、全动』，
+> 要的话加第四档」→ 用户：「**要**」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **新增 `CountModes.All` 第四档** | 「全部（不弹选牌界面，直接对所有符合条件的牌动手）」；界面「取几张」下拉四档；`EffectSpec.CountIsAll` / `CountHasNoNumber`（原来只看 `CountIsAny` 的两处判据改成「任意张或全部」→ 不声明 `Cards` 变量、升级增量无落点） | ✅ 已发 |
+| ② | **15 种选牌类效果逐条实现 All 分支** | 消耗 / 丢弃 / 升级 / 复制 / 重放 / 变化 / 回合结束自动打出 / 放置 / 给予关键词 / 三处拿牌 / 三种全局牌组。写法照本体习惯：消耗 / 升级 / 删牌逐张调用，丢弃 / 放置 / 拿牌**整批**（`CardCmd.Discard(ctx, list)` / `CardPileCmd.Add(list, …)`），变化 / 复制 / 重放 / 给关键词先 `.ToList()` 拍快照（遍历中改集合会炸 —— 本体恶魔之焰也是这么写的） | ✅ 已发 |
+| ③ | **卡面文案 + 列表摘要** | 卡面「消耗 所有手牌。」（不带量词）；「全部」档把不生效的「自己选 / 随机 / 牌顶」从卡面与列表摘要里去掉（沿用 V0.2.161 那条规矩）；消耗 / 丢弃 / 升级 / 变化 / 复制 / 重放 / 回合结束 / 放置 / 给关键词 / 三处拿牌 / 全局三种，逐条写 All 说法 | ✅ 已发 |
+| ④ | **回读：新增 `CET:CountMode=` 标记** | 「全部」档代码里**根本没有选牌语句**（是 foreach 直接动手），逐行猜不出来 ⇒ 非默认档（最多 / 任意 / 全部）写一行 `// CET:CountMode=…`，回读按 pending 标记配给紧跟那条效果。顺手修掉老缺口：**「最多 / 任意」以前回读会退回「恰好 N 张」** | ✅ 已发 |
+| ⑤ | **回读跳段名单（踩了两个坑）** | All 档的实现行要进「自包含效果整段跳过」名单（只在 `skipSelfContainedBody` 里加、且写成 All 档**特有**的精确形状）：① 一开始写成宽条件 `foreach (CardModel c in ` → 把别的链上同形状的行也吞了（那条效果整条丢失）；② All 档沿用 `var toDiscard` / `var __taken` → 与「自己选」那支的识别行同名 ⇒ 多回读一条 ⇒ 改成 `__fgAllDiscard` / `__fgAllTaken`。**15 种逐条「生成→回读」自检**把这两个坑都钉住了 | ✅ 已发 |
+| ⑥ | **校验器（不静默）** | 「全部」档：「选牌方式不生效」+「升级增量对这条没有作用」两条提示；「随机 + 最多 / 任意」那条警告的文案补上「全部」 | ✅ 已发 |
+| ⑦ | **自检 47 条** | 四档在册 / 15 种都有这一栏 / 15 种逐条生成出 All 分支 / 15 种逐条带 `CET:CountMode=All` / 恶魔之焰原样写法（`foreach … await CardCmd.Exhaust` 且**不出现任何 CardSelectCmd**）/ 不声明 Cards 变量 / 卡面「消耗 所有手牌。」/ 校验器两条 / 三档（最多·任意·全部）**生成→回读**原样 + 0 条没认出来 | ✅ 已发 |
+
+> **红线实测数字（第 48 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；
+> ② `--uicheck` Debug **3647 PASS / 0 FAIL**；
+> ③ `--samplegen` 与 V0.2.143 基线 **113 个文件逐字节一致**（只差 `.sln` 随机 GUID；新档是可选选项，默认档文本零改动）；
+> ④ 探针：生成「全部档 15 种 + 80 条读数 + 参数页三种来源」的模组 → 真 Godot SDK 编译 **0 错误**；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.163 -NoRelease -NoCommit -Yes`。
+
+## 第 47 批需求（V0.2.162：**「挖掘游戏本体的所有参数」**，用户要求；**已本地发版**）
+
+> `--uicheck` 基线 = **3502 PASS / 0 FAIL**（Debug，V0.2.161）。
+> 用户原话：「挖掘一下游戏本体的所有参数，如本回合消耗的手牌，拥有的状态牌数之类」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **把本体读得到的运行时状态全过一遍** | 解包工程 `src/Core/**` 逐文件读（Combat / History / Entities / Models / Runs / Commands）+ 真 `sts2.dll` 元数据（9761 类型）双向核对：**19 种战斗历史条目**、`Creature` / `Player` / `PlayerCombatState` / `CardModel` / `CardPlay` / `ICombatState` / `IRunState` / `PlayerMapPointHistoryEntry` / `ScoreUtility` / `ExtraPlayerFields`。产出 **`docs/VANILLA_STATE_PARAMS.md`**（每条带 C# 表达式 + 文件:行号 + 粒度 + 是否已内置） | ✅ 已发 |
+| ② | **内置只读量 23 → 80 条** | 新增 57 条：牌组张数 / 牌组可升级数 / 手牌与牌组五类牌数（**`DeckStatusCount` = 用户点名的「拥有的状态牌数」**）/ 自己生命格挡资源 / 增益减益 / 伙伴球 / 活敌数与总生命 / 跑图层数幕数升华 / 本局累计伤害与减益 / 本回合与本场战斗的**打出·抽到·伤害·格挡·击杀·花掉的资源·召唤**（**`PlayedThisTurn` / `ExhaustedThisTurn` = 用户点名的「本回合消耗的手牌」**）。全部用本体现成 public API，不写补丁 | ✅ 已发 |
+| ③ | **新探针：拿游戏自己的 dll 编译每一条表达式** | `_probe\formulaprobe`：把 `FormulaBuiltins` 每条表达式吐成一个真 C# 工程 → 用真 `sts2.dll` + `GodotSharp.dll` 编译；再**真生成一次模组**（用到全部 80 条 + 参数页 3 种来源）→ 用真 Godot SDK 编译。**当场抓出两个「一用就编不过」的老 bug**（见 ④⑤） | ✅ 已发 |
+| ④ | **修 bug：`PowersOnMe` 一直编不过** | 写成 `.Powers.Count(谓词)`，而 `Creature.Powers` 是 `IReadOnlyList`（**自带 `Count` 属性**）→ `CS1955 不可调用的成员 Count`（V0.2.95 起就在，自检只看文本看不见）。改成 `.Where(谓词).Count()`，并加「所有内置量都不许出现 `集合.Count(谓词)`」的守卫断言 | ✅ 已发 |
+| ⑤ | **修 bug：参数页「能量数」生成的是编不过的表达式** | `ParamSources.Energy` 生成 `__fgPlayer?.Energy`，而**本体 `Player` 上没有 `Energy`**（在 `PlayerCombatState` 上）→ 用户一用就整个模组编不过。改 `((decimal)(__fgPlayer?.PlayerCombatState?.Energy ?? 0))`；`ParamExpr` 同时改成**先认 7 个固定来源再看实时读数** | ✅ 已发 |
+| ⑥ | **修 bug：`XSpent` / `YSpent` 用在伤害数值上编不过** | 卡面预览变量是 `static (card, target) => …` 的**静态匿名函数**，里面不许有 `base.`（CS8821）；预览表达式把剩下的 `base.` 换成 `(card).`（打出时那条照旧 `base.`） | ✅ 已发 |
+| ⑦ | **战斗外不再抛异常** | 四条老牌堆读数改成 `{p}?.PlayerCombatState?.Hand?.Cards.Count ?? 0`（本体 `PileType.GetPile` 战斗外直接抛）；老表达式进 `LegacyCSharp`，老工程回读照样认 | ✅ 已发 |
+| ⑧ | **自读量加 `My` 前缀 + 下拉改可搜索** | `MaxHp`/`Energy`/`Gold` 和参数页「取值来源」撞名（会出两个同名项、且按 Id 永远只命中前面那个 → 「指定敌人的最大生命」被换成自己的）⇒ 自读量叫 `MyHp`/`MyMaxHp`/`MyEnergy`/`MyGold`…；「取值来源」下拉换成 `SearchComboBox`（87 项，打字筛） | ✅ 已发 |
+| ⑨ | **自检 98 条** | 新增：80 条逐条在册（带中文说明）/ 集合谓词守卫 / 战斗外保护 / 老表达式兼容 / 参数页两条修好 / 命名不撞车 / 用户点名那两条的表达式与文案 / 生成端落码与「预览变量无 base.」/ 生成→回读三条公式原样 + 0 条没认出来；存量 4 条按新表达式更新 | ✅ 已发 |
+
+> **红线实测数字（第 47 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；
+> ② `--uicheck` Debug **3600 PASS / 0 FAIL**（发布版同）；
+> ③ `--samplegen` 与 V0.2.143 基线 **113 个文件逐字节一致**（只差 `ExampleMod.sln` 随机 GUID）；
+> ④ 探针：80 条表达式拿真 `sts2.dll` 编译 **0 错误**；生成的「全量读数探针模组」拿真 Godot SDK 编译 **0 错误**；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.162 -NoRelease -NoCommit -Yes`。
+> ⚠ 探针留下：`_probe\formulaprobe`（改任何读数表达式后必须跑一遍 —— 它抓的是「生成文本对、但编译不过」这类自检盲区）。
+
+## 第 46 批需求（V0.2.161：**「抽卡 / 获得能量的作用对象没了，却显示对敌人」**，用户实测；**已本地发版**）
+
+> `--uicheck` 基线 = **3496 PASS / 0 FAIL**（Debug，V0.2.160）。
+> 用户原话：「为什么抽卡，获得能量之类的效果种类的对象没了，但是显示的是对敌人」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **看清是「文案在说假话」** | 生成端确实**不读**这些种类的作用对象（V0.2.150 的机械测量早就证明了，所以那一行才被藏起来）；问题是 `EffectSpec._targetSide` 的**默认值就是 `"Enemy"`**，而**两处文案**照旧把它写出来：① 四页共用的列表行 `EffectSpec.Display` →「抽牌 1 **→ 单体敌人**」；② 自定义状态描述 `PowerTriggers.EffectText` →「抽 1 张牌**（对指定敌人）**」（那里写的是「`TargetSide == "Self"` 才省略」，默认值一漏就中） | ✅ 已发 |
+| ② | **同一份判据用两处** | 规矩补上另一半：**藏起来的栏位，文案里也不许写**。`Display`：`PetAction \|\| !EffectFieldPolicy.UsesTargetSide(Kind)` 才不写尾巴；`PowerTriggers.EffectText`：同一份判据（顺带替掉原来的 `PlaySfx/PlaySoundFile` 特例，那两个本来就不在允许清单里）。该显示的种类一个字没少（伤害 / 格挡 / 施加状态… 照旧） | ✅ 已发 |
+| ③ | **自检 6 条（含全量双条件）** | 67 种效果逐个建 `TargetSide="Enemy"` 探针，断言「行尾有 `→ 单体敌人`」**当且仅当**「作用对象那一行会显示」（宠物效果除外）→「67 种逐条对」；抽牌 / 获得能量的行不带、状态描述不带；两条**对照**（造成伤害照旧带）。**反向验证**：判据退回原样 → 3 条 FAIL / PASS 3499（失败明细直接印出「抽牌 1 → 单体敌人」），改回即 3502 / 0 | ✅ 已发 |
+
+> **红线实测数字（第 46 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3502 PASS / 0 FAIL**；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只改文案，生成端一字未动）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.161 -NoRelease -NoCommit -Yes`。
+
+## 第 45 批需求（V0.2.160：**角色页「角色显示名」被挤到窗口外面**，用户实测；**已本地发版**）
+
+> `--uicheck` 基线 = **3493 PASS / 0 FAIL**（Debug，V0.2.159）。用户原话：「角色页右侧的角色显示名怎么这么右边都看不到了」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **量尺寸找真因** | 先加断言量布局（不猜）：角色页那张 4 列表单修之前实测 **列宽 = 227 / 1366 / 147 / 1366**、表单右边 **3125**（可视区右边 1395）、「角色显示名」输入框右边 **3117** ⇒ 在窗口外面。真因：列宽写的是 `Auto / 320 / Auto / 320`，而同一张 Grid 里有 4 块**跨越 3~4 列且自动换行**的长说明（调试日志那一大段 / 初始卡组那段 / 召唤物那段）—— WPF 把跨列子元素「想要的宽度」摊到被跨越的列上，两个固定 320 被撑成各 1366；外层 `ScrollViewer` 横向滚动**默认 Disabled** ⇒ 看不到也点不到 | ✅ 已发 |
+| ② | **两条一起修** | ① 输入列 `320` → `*` + `MinWidth="220"`（按窗口伸缩）；② 长说明**搬出网格**（放到网格下面单独的 StackPanel，仍在同一个 ScrollViewer 里）。修好实测 **227 / 488 / 147 / 488**、表单右边 **1368** ≤ 1395、显示名输入框宽 **480** | ✅ 已发 |
+| ③ | **自检 3 条 + 顺手一个截图模式** | 断言：4 列表单找得到（打印列宽）/ 表单右边 ≤ 视口右边 / 「角色显示名」输入框右边 ≤ 视口右边且宽 ≥ 140（**修之前后两条 FAIL**，等于反向验证）。另加 `--roleshot`（按默认 1420×880 把角色页整窗渲染成 PNG，和 `--uishot` / `--forgeshot` 同一套，只给看、不写存档） | ✅ 已发 |
+| ④ | **给后续版式问题留一句铁律（文档）** | README：**Grid 里「自动换行的长文字」不能跨列**（跨列 = 把列宽摊出去），输入列一律 `*` + MinWidth，长说明一律放在网格外面 | ✅ 已发 |
+
+> **红线实测数字（第 45 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3496 PASS / 0 FAIL**；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（这次只动 XAML 版式，生成端一字未改）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.160 -NoRelease -NoCommit -Yes`。
+
+## 第 44 批需求（V0.2.159：**`XSpent` / `YSpent` 在非 X 费牌上会抛异常**，第 43 批的收尾自检发现；**已本地发版**）
+
+> `--uicheck` 基线 = **3490 PASS / 0 FAIL**（Debug，V0.2.158）。第 43 批刚打包完，复查生成代码时发现这个坑：
+> 本体 `CardModel.ResolveEnergyXValue()` 第一句就是 `if (!EnergyCost.CostsX) throw new InvalidOperationException(...)`、
+> `ResolveStarXValue()` 是 `if (!HasStarCostX) throw ...` —— 第 43 批发出去的是**直接调用**，
+> 所以普通牌上写一次 `YSpent` 一打出去就抛异常。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **先判再调** | 两个内置量的表达式改成三元：`(base.EnergyCost.CostsX ? (decimal)base.ResolveEnergyXValue() : 0m)` / `(base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)`（`EnergyCost.CostsX` 与 `HasStarCostX` 都是本体 `public` 成员）。同一个坑 V0.2.131 在「费用填 X」那条路上踩过，照同一条路修（自检里本来就有那条断言「费用不是 X 时不会生成会抛异常的 ResolveEnergyXValue()」） | ✅ 已发 |
+| ② | **不静默（补两条警告）** | 公式里用了 `XSpent` 但「费用」不是 `X` → 警告「它不是 X 费牌，读数**恒为 0**，想有意义就把费用填成 X」；`YSpent` 与「额外资源量费用 = Y」同理 | ✅ 已发 |
+| ③ | **自检 3 条** | 两个读数生成的是「先判再调」的三元（并断言卡牌源码里真的带 `base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m`）；`XSpent` / `YSpent` 各自用在非 X 费牌上确实报警告（含「恒为 0」） | ✅ 已发 |
+
+> **红线实测数字（第 44 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3493 PASS / 0 FAIL**；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（示例配置没用到这两个读数，生成端一字未动）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.159 -NoRelease -NoCommit -Yes`。
+
+## 第 43 批需求（V0.2.158：**「次数」填 `Y`（额外资源量）只会触发一次**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~43 批都还没提交）。`--uicheck` 基线 = **3486 PASS / 0 FAIL**（Debug，V0.2.157）。
+> 用户原话：「在次数填 Y（额外资源量）时，只会触发一次」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **查本体顺序（真因）** | 本体 `PlayCardAction` 是**先扣费、再跑效果**：`await _card.SpendResources()` → `OnPlayWrapper(...)`。所以效果跑的那一刻公式里的 `X` / `Y` 读到的是**扣完剩下的** —— 「Y 费」的牌读 `Y` = 0，生成端 `Math.Clamp(__Y, 1m, 20m)` 把它夹成 **1**，就是用户看到的「只触发一次」（`X` 费同理）。**不是生成端算错，是本体时序**，所以「让 `Y` 自己变成花掉的那个数」做不到 | ✅ 已发 |
+| ② | **给出能用的读数（修法）** | `FormulaBuiltins` 新增两个内置量：**`XSpent`**「这张牌花掉的能量」= `(decimal)base.ResolveEnergyXValue()`、**`YSpent`**「这张牌花掉的额外资源量」= `(decimal)base.ResolveStarXValue()`（本体自己缓存的「这张牌花掉的那个数」，扣费之后再读也不会变 0）。「可用量」蓝框里直接能看到，三个公式框都能用 | ✅ 已发 |
+| ③ | **写错时拦住（不要静默）** | `ProfileValidator`：卡牌是「X 费 / Y 费」（`CostIsXEffective` / `StarCostIsXEffective`）**且**效果公式里真的用了 `X` / `Y` → 给**警告**，写清「本体先扣费再跑效果 ⇒ 那一刻读到 0（次数被夹到 1）」并指向 `XSpent` / `YSpent`。判据是新写的 `ContainsIdentifier(formula, id)`（正则边界 `(?<![A-Za-z0-9_])Y(?![A-Za-z0-9_])`）—— 用 `ForgeFormula.Identifiers` 会把 `YSpent` 里的 `Y` 也算成用到 Y（踩过，改完自带正例仍报） | ✅ 已发 |
+| ④ | **自检 4 条** | ① 两个读数都在 `FormulaBuiltins` 里且表达式真的指向 `ResolveEnergyXValue` / `ResolveStarXValue`；② 次数公式填 `YSpent` → 生成出来的就是 `(decimal)base.ResolveStarXValue()`；③ 「Y 费 + 公式用 Y」确实报出那条警告（含「先扣费再跑效果」+「YSpent」）；④ 只用 `YSpent` 的正例**不再**报那条警告（探针卡名不能带 `YSpent` 三个字 —— 断言按消息文本匹配，卡名会误命中，踩过） | ✅ 已发 |
+
+> **红线实测数字（第 43 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3490 PASS / 0 FAIL**；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `ExampleMod.sln` 的随机 GUID）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.158 -NoRelease -NoCommit -Yes`。
+> ⚠ `--uicheck` 要用 `Start-Process <exe> -ArgumentList '--uicheck' -Wait` 跑：WPF 是 WinExe，`& exe` 立刻返回，
+> 读到的会是**上一次**的 `uicheck_result.txt`（踩过，白读一轮）。
+
+## 第 42 批需求（V0.2.157：**「打出一张牌时」实际是「打出一张牌后」**，用户实测 + godot 日志；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~42 批都还没提交）。`--uicheck` 基线 = **3468 PASS / 0 FAIL**（Debug，V0.2.156）。
+> 用户原话：「状态监听『打出一张牌时』这个时机，会监听施加这个状态的牌，即『打出一张牌时』的时机实际为
+> 『打出一张牌后』，触发时机靠后，与『一张牌结算完毕时』时机接近」。
+> 本批还一起带上了工作区里先前做好、尚未发版的 4 条修复（见 ⑤，自检里早就有断言，只是没打包）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **查本体顺序 + 改钩子** | 本体 `CardModel`：`Hook.BeforeCardPlayed(cardPlay)` → `OnPlay`（卡的效果，上状态在这步）→ … → `Hook.AfterCardPlayed`（内部先 `AfterCardPlayed` 再 `AfterCardPlayedLate`）。工具那一档原来生成的是 `AfterCardPlayed` ⇒ 同一张牌施加的状态立刻被自己触发。**改法**：`CardPlayed` → **`BeforeCardPlayed`**（结算前，不会自己触发自己）；老语义单独留成新时机 **`CardResolved`** → `AfterCardPlayedLate` | ✅ 已发 |
+| ② | **没有 choiceContext 怎么办** | `BeforeCardPlayed(CardPlay)` 本体**不给** choiceContext → 生成端按本体做法自己造 `HookPlayerChoiceContext`（复用已有的 `BootstrapInCombat` / `TriggerHasChoiceContext` 机制，和「花掉能量 / 自己失去生命」同一套）；只在该触发时机的效果**真的需要** context 时才造（自检探针一开始用了不需要 context 的效果，验不到那一行，换成「消耗卡牌（自己选）」才对） | ✅ 已发 |
+| ③ | **三处菜单 / 签名 / 守卫 / 回读一起同步** | 状态侧（`PowerTriggerCatalog`）、遗物侧（`EffectCatalog.RelicTriggers`）、锻造页遗物档（`ForgeTimings.For("Relic")` + `ForgeTriggerGuardLines`）三处加 `CardResolved`、改 `CardPlayed` 的显示名（「打出一张牌时（这张牌还没生效）」/「一张牌结算完毕时」）；`RelicTriggerSignature` / `HasContext` / `BootstrapInCombat` 跟着调；卡牌链两条时机**共用**抽出来的 `EmitCardPlayedItems`；`ProjectRecovery`：`BeforeCardPlayed→CardPlayed`、`AfterCardPlayed`/`AfterCardPlayedLate→CardResolved`，并把它加进 `RelicHookIsTrigger`、把 `CardResolved` 纳入 CardFilter / 分段回读 | ✅ 已发 |
+| ④ | **自检 5 条 + 存量断言更新** | 新增：状态里生成的是 `BeforeCardPlayed` 且**没有** `AfterCardPlayed` / 需要 context 时造了 `HookPlayerChoiceContext` / `CardResolved` 生成 `AfterCardPlayedLate` / 三处菜单显示名一致 / 遗物侧签名 + 归属守卫 + `HasContext`/`BootstrapInCombat` 口径。存量断言里 8 处写死了 `AfterCardPlayed` 或旧显示名 → 一并更新；`hookBootstrapIds` 加 `CardPlayed`、锻造守卫表加 `CardResolved`（27 条） | ✅ 已发 |
+| ⑤ | **一起带上的 4 条旧修复**（工作区里已做好、未发版） | ① 自动类名撞名避让（事故：校验器报「卡牌类名重复：`GunnerRainyCard37`」）；② 「强化指定卡牌」的目标卡不存在时**生成前**报错（不再 CS0103）；③ 同一钩子合并多条触发时机时各条各自包裸块（消 `CS0128`）；④「回合结束时」的效果真的生成出来（`TurnEnd` / `PlayerTurnEnd` 都算） | ✅ 已发 |
+
+> **红线实测数字（第 42 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3486 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.157 -NoRelease -NoCommit -Yes`。
+
+## 第 41 批需求（V0.2.156：**拖动卡牌后卡面变成其他卡**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~41 批都还没提交）。`--uicheck` 基线 = **3465 PASS / 0 FAIL**（Debug，V0.2.155）。
+> 用户原话：「在卡牌列表拖动卡牌后，卡面会变成其他卡」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **把三层 bug 全挖出来** | 卡面按**类名**存（`Art.CardPortraits`），自动类名按**行号**算 ⇒ 名字没跟卡走 = 图跟错人。三层：**(1) 时机**：拖动落点是 `Cards.Move → RefreshCardOrdinals() → SyncDetail()`，而 `RefreshCardOrdinals` 会把 `LastAutoOrdinal`（上次的号）就地改成新行号，可「旧名→新名」映射正是靠它算的 → 先覆盖就永远算不出映射（V0.2.153 我接的同步点在 `RefreshCardChoices`，**拖动这条路不走它**）；**(2) 重入**：搬迁改 `ClassName`/`LastAutoOrdinal`/`SpawnCardId` → PropertyChanged/CollectionChanged → `OnCardChanged`/`OnCardsChanged` 重入刷新 → 又搬一次；重入时号只改了一半 → 算出**部分映射**又搬一遍（实测一次拖动搬了 **4 遍、每次一张**，卡面互相覆盖）；**(3) 环**：往上拖会让名字成**环**（12→13、13→14、14→1），「顺序搬 + 目标已有就跳过」在环上会把先搬进去的图**删掉** | ✅ 已查证 |
+| ② | **修时机** | `RefreshCardOrdinals()` 的**第一件事**改成 `SyncCardClassReferences()`（在写 `LastAutoOrdinal` 之前）——拖动、增删、复制、撤回这些走它的路径全部覆盖 | ✅ 已发 |
+| ③ | **修重入** | `SyncCardClassReferences()` 加 `_syncingCardRefs` 重入保护（搬迁期间重入直接返回，由最外层一次性搬完）+ `Naming.RenumberCardClassNames` 改成**两趟**（先算完整张「旧名→新名」表、再动手改卡）——即使有重入也不会算出半张表。计数口径保持和以前完全一致（改名 +1；空类名那条只在 LAO 变化时 +1） | ✅ 已发 |
+| ④ | **修环** | `RepairCardClassReferences` 搬卡面改成**从零重建新表**（`key → renamed[key] ?? key`），不再「在拷贝上 Remove(旧键)/赋值(新键)」——后者在环上会把刚放进去的图删掉 | ✅ 已发 |
+| ⑤ | **自检（3 条，走真实路径）** | 用**真实**的 `RefreshCardOrdinals` + `Cards.Move`（不是另写模拟）：① 拖动后三张卡面各归各卡（不错位不丢）；② **反向说明**断言「旧名字现在属于另一张卡」（把你看到的现象钉死）；③ 往上拖形成**名字环**时也搬得对。**反向验证**：关掉重入保护 → 2 条 FAIL（`拖动探针1 拿到的是（没有卡面）`），打开即 0 FAIL。踩到的坑：探针卡要加在**真实 `_profile`** 上（拖动的入口是界面方法），所以自检里必须 try/finally 把卡和 `CardPortraits` 原样还回去 | ✅ 已发 |
+
+> **红线实测数字（第 41 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3468 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**；④ 反向验证 2 条 FAIL → 0 FAIL；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.156 -NoRelease -NoCommit -Yes`。
+
+## 第 40 批需求（V0.2.155：**上传自己的音频文件 + 「播放音频文件（我上传的）」效果**；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~40 批都还没提交）。`--uicheck` 基线 = **3447 PASS / 0 FAIL**（Debug，V0.2.154）。
+> 用户原话：「那做自己上传音频文件」（承接上一版我说明的「放自己的音频要另做一条链路」）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **为什么不能走 FMOD** | 本体声音全是 FMOD 事件，而**模组注册不了新事件**（bank 里只有事件 GUID，42MB 的 bank 全文扫过一个 `event:/` 都没有）⇒ 只能绕开 FMOD：Godot `AudioStreamPlayer` + `GD.Load<AudioStream>("res://audio/…")`，音频作为**普通资源**打进 PCK（导出预设本来就是 `export_filter="all_resources"`） | ✅ 已查证 |
+| ② | **素材链路（照卡面 PNG 那套）** | `AudioAssetSpec`（`Name` = 显示名兼生成的 Key、`File` = 用户本机绝对路径、`Key` = 名字去非法字符 + 原扩展名）+ `CharacterProfile.AudioAssets`；`ArtGenerator.Generate` 里把每条复制到 `<工程>/audio/<Key>`（文件不在本机就日志警告并跳过，扩展名不认也警告） | ✅ 已发 |
+| ③ | **新效果种类 + 生成** | `EffectKinds` 新增 `PlaySoundFile`「播放音频文件（我上传的）」（数值 = 音量%）；`CSharpCodeGen.EmitPlaySoundFile`：整段包在 `{ }` 里（同一方法里出现两次不撞名）→ `new AudioStreamPlayer()` + `GD.Load<AudioStream>("res://audio/<Key>")` + `VolumeDb = Mathf.LinearToDb(pct/100)` + `((SceneTree)Engine.GetMainLoop()).Root.AddChild(...)` + `Finished += QueueFree` + `Play()`；四条链（卡牌 / 遗物 / 药水 / 状态）各加一个 `case`；`NoDynamicVarKind` / `NextTurnMeaningless` / `UsesUpgradeAmount` 三份清单同步 | ✅ 已发 |
+| ④ | **文案 / 校验 / 回读** | 三处描述写「播放音频：<你起的名字>（音量 N%）」；校验：没选 = 错误、条目被删 = 错误、文件不在本机 = 错误、扩展名不认 = 错误（Key 会退回 .ogg）、同名两条互相覆盖 = 警告、>200% = 警告；回读认 `CET:SfxFile=` 标记（`__sfx` 那几行进「整段跳过」白名单），**并且从工程 `audio/` 目录把音频清单也认回来**（否则恢复出来的存档下次生成会丢文件） | ✅ 已发 |
+| ⑤ | **界面** | 「美术资源」页底部新增「音效 / 音频」区：列表（显示「名字 · 本机文件名 → audio/xxx」）+「上传音频…」（OpenFileDialog 过滤 ogg/oga/mp3/wav，重名自动加序号）+「删除」（只从存档去掉，不动本机文件）+ 底下小字说明；效果栏新增「音频文件」下拉（绑 `AudioAssetChoices`，`IsPlaySoundFile` 控制显隐）+ 音量说明 | ✅ 已发 |
+| ⑥ | **顺手修一条 V0.2.154 的老问题** | `PowerTriggers.SupportedEffectKinds`（状态触发器能用哪些种类的白名单）漏了 `PlaySfx` → 上一版「状态里放本体音效」**被校验器拦着用不了**（生成端其实实现了）。这一版把 `PlaySfx` 和 `PlaySoundFile` 都补进白名单 | ✅ 已发 |
+| ⑦ | **自检 18 条** | 种类与音量口径 / Key 规则 / 四条链都生成播放器那一段（含 `0.8f`）/ 没选音频只写注释 / 卡面与状态描述 / **真跑一次 `ModGenerator.Generate` 并断言 `audio/<Key>` 被复制进工程** / **`ProjectRecovery` 把效果与音频清单都认回来且 `HasUnparsed == 0`** / 校验器两条 / 扩展名口径（`.flac`/`.txt` 不认）/ 界面两处。踩到的坑：探针 profile **不能清空卡牌**（奖励池 < 3 张会生成失败 → 准备那步红，且 `ProjectRoot` 为空会让后续 `Path.Combine` 抛异常把自检整段中断）；`IsSupportedAudio` 必须看**原始**扩展名（按归一化后的名字判断会把 `.txt` 也当成支持） | ✅ 已发 |
+
+> **红线实测数字（第 40 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3465 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（没上传音频时生成结果零变化）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.155 -NoRelease -NoCommit -Yes`。
+
+## 第 39 批需求（V0.2.154：**新增效果种类「播放音效」**，用户要求；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~39 批都还没提交）。`--uicheck` 基线 = **3434 PASS / 0 FAIL**（Debug，V0.2.153）。
+> 用户原话：「能不能加一个播放音频的效果在效果种类里」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **查引擎怎么放声音** | 本体所有声音走 **FMOD**：`SfxCmd.Play(string sfx, float volume = 1f)`（`CreatureCmd` 里 block_gain / heal / PlayDamage… 都是这么放的）。⇒ 生成一句 `SfxCmd.Play("event:/…", 音量)` 就够，**不需要任何新素材** | ✅ 已查证 |
+| ② | **新种类 + 字段** | `EffectKinds` 新增 `PlaySfx`「播放音效（本体音效库）」（Unit = %音量，0~200）；`EffectSpec` 新增 `Sfx`（事件路径）+ `IsPlaySfx` / `SfxZh` / `SfxVolumePercent`（**留空 / 0 = 100%**）；`Kind` setter 补 `Raise`。⚠ 它是**唯一一个「0 有意义」**的种类，所以**不列进** `AmountIsStrength`（列进去「数值 0 = 不生效」会把整条丢掉），但要列进 `NoDynamicVarKind`（不声明动态变量，否则兜底的 `new DynamicVar("Value", …)` 会和别的效果撞名 → 开局崩）+ `NextTurnMeaningless`（没有「延迟放声音」这回事） | ✅ 已发 |
+| ③ | **候选表（55 条，带中文名）** | `EffectCatalog.SfxChoices`：本体源码里**真实调用过**的 362 个非模板事件里挑出常用的一批（攻击 / 格挡 / 治疗 / 增益 / 减益 / 能量 / 金币 / 卡牌打出与变化 / 遗物 / 附魔 / 宝箱 / 地图 / 界面 / 伙伴 / 各角色招牌音 / 4 首音乐）。**不列全 362 个**的原因：本体 `banks/desktop/*.bank` 里存的是事件 **GUID**（把 42MB 的 bank 全文扫过，一个 `event:/` 都没有），全清单只能从源码拿。界面用 SearchComboBox：**候选外可直接手填任意 `event:/…`** | ✅ 已发 |
+| ④ | **四条链都能放** | `CSharpCodeGen.EmitPlaySfx`（一份实现）：写标记 `// CET:Sfx=… CET:SfxVolume=…` + `SfxCmd.Play(路径, 音量f)`（默认 1f / 150% → 1.5f）。卡牌 / 遗物 / 药水三条链各加一个 `case "PlaySfx"`，自定义状态链（`CustomPowerGen`）复用同一个发射器 | ✅ 已发 |
+| ⑤ | **文案 + 校验 + 回读** | 三处描述（卡面 `LocalizationGen` / 状态 `PowerTriggers.EffectText` / 列表 `EffectSpec.Display`）写「播放音效：中文名（音量 N%）」；顺手修掉状态描述里跟着印的「（对指定敌人）」。校验器：没选 = 错误、不像 `event:/…` = 错误、不在候选表 = **提示**（不拦）、>200% = 警告。回读：`ProjectRecovery` 认 `CET:Sfx=` 标记（+ 把 `SfxCmd.Play(` 那一句归到「整段跳过」白名单） | ✅ 已发 |
+| ⑥ | **自检 13 条 + 全量重跑** | 种类 / 候选表（全 `event:/`、含 sfx+music）/ 0=100% 且 `IsInertZero` == false / 卡牌生成 `1f` 与 `1.5f` / 没选音效只写注释 / 卡面描述 / 状态触发 + 状态描述 / 遗物 / 药水 / 校验器三条 / 界面行显隐 / **完整「生成 → 回读」认出 `PlaySfx=event:/sfx/heal@150`**（挂在已有的复制探针卡上，不额外跑一次生成）。自检还逼出两处必须同步的清单：`EffectFieldPolicy.UsesUpgradeAmount`（播放音效没有可升级数值 → 第 24 种）和「下回合生效」那条从 8 种变 9 种 | ✅ 已发 |
+| ⑦ | **没做：放「你自己的音频文件」** | 自建 FMOD 事件需要 bank，而 bank 里只有 GUID、模组没法凭路径注册新事件 ⇒ 只能绕开 FMOD 用 Godot `AudioStreamPlayer` 加载 `res://` 音频，那要新加「上传音频素材 → 打进模组 → Godot 导入」一整套。**等用户拍板再做**（说清工程量） | ⏸ 待拍板 |
+
+> **红线实测数字（第 39 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3447 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `.sln` 随机 GUID）—— 新种类不掺进任何现存效果的生成路径；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.154 -NoRelease -NoCommit -Yes`。
+
+## 第 38 批需求（V0.2.153：**点构建后「目标卡」里的东西会变**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~38 批都还没提交）。`--uicheck` 基线 = **3431 PASS / 0 FAIL**（Debug，V0.2.152）。
+> 用户原话：「为什么我点击构建后，目标卡里的东西会变」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **查真因** | 自动英文类名是**按列表行号**算的（`<角色>Card3` = 普通卡列表第 3 张；诅咒 / 先古各自一套前缀各自数），而效果里「目标卡」`SpawnCardId`、「转化为先古卡」类名清单、上传卡面 `Art.CardPortraits`、锻造图【效果】字段存的都是**类名字符串**。用户先选目标卡 → 之后增删 / 拖动过卡牌 → 行号变、自动名集体改号 → **改号那一刻引用没搬** → 字符串落到同名的另一张卡身上（自检里复现：老名字 `SevenCard3` 的新主人是插进来的那张「挪卡2」）。构建时 `Freeze` 才把类名写实，那时旧名已经丢了 → 用户看到「目标卡变了」 | ✅ 已查证 |
+| ② | **界面里同步搬** | `RefreshCardChoices()`（每次重算候选表 = 增删 / 拖动 / 复制 / 撤回 / 改名之后都会走）开头新增 `SyncCardClassReferences()` → 调生成端那一步 `NameStabilizer.RenumberCardNames(_profile)`（幂等），搬过什么写进「构建 · 日志」（只有真搬了才写） | ✅ 已发 |
+| ③ | **构建时「先搬再冻」** | `NameStabilizer.Stabilize`：`RepairReferences`（按类名表认名字）→ **`RenumberCardNames`（先搬引用）** → `Freeze`（再写实类名）。顺序是 `RenumberCardNames` 自己的注释里就写着的「必须排在 Freeze 之前」，以前漏了这一步 | ✅ 已发 |
+| ④ | **补上「留空类名」那一支的旧名映射（关键）** | `Naming.RenumberCardClassNames`：以前对**没填类名**的卡只更新 `LastAutoOrdinal`（第几号），**不产出 `旧名 → 新名` 映射** → 最常见的这种卡一改号就搬不动。现在按 `LastAutoOrdinal`（上一次的号）拼出旧名，写进 `renamedOut`；`LastAutoOrdinal <= 0`（新建的卡）时跳过，不产生 `…Card0` 这种假映射。字段是 `[JsonIgnore]`，界面每次刷新候选表（含载入存档）都会被写实 → 开着存档改列表也准 | ✅ 已发 |
+| ⑤ | **自检（3 条，含反向）** | ① 3 张卡、目标卡指向第 3 张 → 中间插一张 → 引用必须搬到**同一张卡的新编号**上（`SevenCard3 → SevenCard4`）；② **反向**断言老名字现在属于另一张卡（把用户看到的现象钉死）；③ 构建那条路（`Stabilize` → `Freeze`）后引用与冻出来的类名一致。**反向验证**：临时关掉 ④ → 3 条 FAIL（引用停在 `SevenCard3`，主人变成「挪卡2」），打开即 0 FAIL | ✅ 已发 |
+
+> **红线实测数字（第 38 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3434 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `.sln` 随机 GUID）；
+> ④ **反向验证** 3 条 FAIL → 0 FAIL；⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.153 -NoRelease -NoCommit -Yes`。
+
+## 第 37 批需求（V0.2.152：**「某个状态层数到达 N 层时」的 N 界面上根本填不了**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~37 批都还没提交）。`--uicheck` 基线 = **3422 PASS / 0 FAIL**（Debug，V0.2.151）。
+> 用户原话：「为什么我状态层数达到了，却没生成卡牌 / 自定义状态的某个层数到达N时，在游戏中怎么也是N，
+> 而不是填的数」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **复现（读生成源码）** | 新增开发探针 `forge --powerprobe <out.cs>`：造「层数到达 N → 生成卡牌 + 造成伤害」的自定义状态，把生成出来的状态类源码 + 自动描述写出来。实测真因：`CSharpCodeGen.TriggerSupportsAmount` **漏了 `PowerReached`** → `ShowTriggerAmountField`/`ShowAmountField` 全 false → **界面没有 N 输入框** → `TriggerAmount` 永远是默认值 **1** → 生成的是「跨过 **1** 层那一下触发」（`power.Amount >= 1 && power.Amount - amount < 1`），用户想让它在 N 层触发就永远等不到（①）；描述里印的是下拉菜单那个**字母 N**（②）。另外生成守卫无条件带 `power != this` → 「盯自己这只状态」永远不成立 | ✅ 已查证 |
+| ② | **补上 N 输入框 + 说清语义** | `TriggerSupportsAmount` 加 `"PowerReached"`（**不算**计数族：`TriggerAmountNeedsScope` 用的是 `CountExpr`，所以不会误显示「本回合 / 本场战斗」）；两侧 `TriggerAmountLabel`/`AmountLabel` 都补「到达 N 层（层数跨过这一层那一下触发）」（遗物那边本来就有这条 case，是死代码）；`TriggerSpendHint`/`SpendHint` 补「填 N = 层数**跨过** N 那一下才触发 + 现在填的是几层」 | ✅ 已发 |
+| ③ | **描述里写出数字** | `PowerTriggers.TriggerLine`：`PowerReached` 不再用 `Find(kind).Display`（那个写死了字母 N），改成 `某个状态层数到达 {N} 层时`；并把「盯：自己的××状态」也一起写出来（和「层数变化后 / 被移除时」一个口径）。界面那一行与游戏里的状态描述共用它 | ✅ 已发 |
+| ④ | **「盯自己这只状态」放行** | `CustomPowerGen` 的 `PowerReached` 守卫：新增 `SelfClassName(p)`（按生成期的 `_powerOwner` 反查类名），**显式盯到自己**时去掉 `power != this`；留空（任意状态）/ 盯别人时照旧排除自己。死循环风险由「跨过 N 那一下」判据本身挡住（4 层时 4-1=3 不 < 3） | ✅ 已发 |
+| ⑤ | **顺手把「数值怎么变成层数了」讲清** | 自定义状态页那三个勾选框下面那行灰字补一句：勾了「数值 = 本状态的层数」之后，效果里的「数值」框填什么都不用（用触发那一刻的当前层数） | ✅ 已发 |
+| ⑥ | **自检（9 条）+ 修回归** | 断言：这一档有 N 框（两侧）/ 标题与说明写清「跨过」/ 描述里是「5 层」而不是「N 层」+ 带「盯：」/ 生成守卫 `power.Amount >= 5m && - amount < 5m` / 盯自己时无 `power != this` / 留空时仍有 / 守卫与回读正则对得上。**踩到的回归**：`TriggerSupportsAmount` 一改，遗物那条路会为 `PowerReached` 多写一行 `CET:TriggerAmount` → 多时机（全部满足 / 任一满足）的段落切分多切一条 → 自检「回读 All 那只 2 条时机」变 3 条。两处标记条件都改成 `… && id != "PowerReached"`（它的 N 由 `CET:PowerReach=` 记着）后恢复绿 | ✅ 已发 |
+
+> **红线实测数字（第 37 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3431 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `.sln` 随机 GUID）；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.152 -NoRelease -NoCommit -Yes`。
+
+## 第 36 批需求（V0.2.151：**效果栏第二列被挤成一条缝 / 次数公式不见了 / 放着卡牌没反应 / 先古卡选不了范围**，用户实测 + 截图；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~36 批都还没提交）。`--uicheck` 基线 = **3417 PASS / 0 FAIL**（Debug，V0.2.150）。
+> 用户原话：「次数公式怎么不见了 / 转变为先古卡和先古遗物怎么选不了范围 / 放置卡牌效果怎么没反应 /
+> 有一部分的UI有问题，会变得如图所示」（附截图：第二列只剩一条缝）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **先复现（不许猜）** | 新增开发用观感截图开关 `--uishot <dir>`（`MainWindow.ShotEffectEditors` + `App.xaml.cs`）：把 6 种代表性效果栏 + 两个先古编辑器渲染成 PNG（不参与生成、不写存档）。截图 + 自检实测版式确认：效果栏第一列是 `Width="Auto"` 的标签列、第二列是 `*` 的输入列；`SelectPileLabel` 那句 34 字的标签把**标签列撑到 570px、输入列剩 0px** → 整列输入框变一条缝 | ✅ 已查证 |
+| ② | **修版式（= 用户 ①③④ 三条的真因）** | `SelectPileLabel` / 「选牌方式」标签收短（「从哪里选牌」/「从哪里丢弃」/「从哪里升级」/「选牌方式」）；长说明**本来就**在那一行 ComboBox 的 ToolTip 里，一个字没丢。修后实测：标签列 108px / 输入列 275px | ✅ 已发 |
+| ③ | **修「转化为先古卡」的范围（用户 ②）** | 配对表左边的 `AncientGroupChoices` 以前是 `GroupOnlyFiltersFor`（**只列自定义「组」**）→ 没建组就是空下拉。生成端 `EmitAncientTranscend` 用的 `SpawnPoolCond` 本来就认「范围限定」那一整套 → 界面改成 `SpawnFiltersFor` 去掉「不限」（会全换掉，危险），于是内置 攻击 / 技能 / 能力 / 诅咒 / 状态 直接可选；`AncientRowHint` 文案同步 | ✅ 已发 |
+| ④ | **自检守卫（不许再回来）** | 新增 5 条：① 所有种类的 `SelectPileLabel` ≤ 8 字；②③ 卡牌页真的挂上效果栏后**实测**那个两列 Grid（找 `DataContext==效果 && 两列 && 17 行`）：标签列 ≤ 360、输入列 ≥ 140；④⑤ 先古卡范围下拉必须含内置五种类型、且不含「不限」。反向验证：长标签改回 → **2 条 FAIL（标签列=570 / 输入列=0）** | ✅ 已发 |
+
+> **红线实测数字（第 36 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3422 PASS / 0 FAIL**（发布版 / 部署版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `.sln` 随机 GUID）—— 本批只改界面文案 / 候选表，不动生成端；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.151 -NoRelease -NoCommit -Yes`。
+
+> **待用户确认**：「转化为先古遗物」的「要换掉哪个遗物」下拉在用户机器上是不是也是空的（候选来自本体遗物类名表，
+> 只有读不到解包工程 / 游戏目录时才会为空）—— 是的话把截图发来。
+
+## 第 35 批需求（V0.2.150：**卡牌页效果栏按种类裁剪**，用户点名「其他每一条效果都要问过我」；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~35 批都还没提交）。`--uicheck` 基线 = **3374 PASS / 0 FAIL**（Debug）。
+> 用户原话：「卡牌页右边的效果栏做的太差了，能不能优化一下，像造成伤害这个效果，只需要数值（公式），
+> 升级增量，作用对象，命中次数（公式），生效次数（公式），概率（公式），下回合生效，随机目标允许攻击同个敌人，
+> 其他的都可以隐藏掉。其他每一条效果你都需要询问我每一个需要保留什么」。
+> 分组问答：8 组（造成伤害 / 数值-状态 / 资源-牌堆 / 生成-变化 / 选牌处理 / 药水-奖励-卡牌独有 / 伙伴 / 刮削）
+> 用户**全部选「按推荐」**；实现时以**机械测量**为准（措辞是概略的，实测更细）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **把「用得上」量出来（不许猜）** | 新增 `Core/Effects/EffectFieldUsage.cs`：65 种效果 × 3 条链 × 47 个栏位，每栏「改成特征值 → 重新生成这条效果的代码 → 与基线逐字符比对」（`// CET:` 标记行整行删掉，否则每个栏位都算「读了」）。命令行入口 `forge --fieldmatrix <out.tsv>`。三个坑写进类注释：① 基线必须进得了正常分支（「给予关键词」不选关键词、「获得药水」不选药水会走早退分支 → 别的栏位全测不出来）；② 测「作用对象」要用 `Self` 而不是 `AllEnemies`（遗物链上这两档生成同一句，会误判成「没读」）；③ 附加处理那几栏的特征值不能顺手带上 `SpawnFilter`（差异会来自范围而不是那一栏） | ✅ 已发 |
+| ② | **允许清单（唯一一份）** | 新增 `Core/Effects/EffectFieldPolicy.cs`：作用对象 19 种 / 增益减益 6 种 / 目标卡 6 种（遗物链多一个「转化为先古遗物」的目标遗物，按链传 `plainChain`）/ 生成到 1 种 / 选牌方式 12 种 / 升级增量（23 种不读）/ 下回合生效（= `HonorsNextTurn`，不再写第二份）/ 生效次数（2 种不读）/ 取几张 15 种 / 取卡方式+范围限定+多选1+从范围里自己挑 4 种 / 随机允许重复（只看作用对象）。顺带把 `UseCardScopeFilter` 也收进这份清单（原来是写死在 Profile 里） | ✅ 已发 |
+| ③ | **接到界面上** | `EffectSpec` 新增 `ShowTargetSideRow` / `ShowPowerRow` / `ShowTargetCardRow` / `ShowSpawnToRow` / `ShowCardPickRow` / `ShowUpgradeAmountRow` / `ShowCountModeRow` / `ShowAllowDuplicatesRow`，并把 `ShowSpawnFilter` / `ShowSpawnPickHint` / `ShowSpawnChosen` / `ShowSpawnChoice` 从 `UsesSpawnOptions` 改挂到新的 `ShowSpawnPickRow`（复制卡牌支持附加处理、但不读取卡方式）；`Kind` / `TargetSide` setter 全部补 `Raise`（换种类时那一行要当场出现 / 收起）。App.xaml 给那 5 行以前**无条件显示**的行补 `Visibility` 绑定。**锻造链一律 `IsForgeChain \|\| 老判据`，一个字都不改** | ✅ 已发 |
+| ④ | **顺手修好「有用却摆不出来」** | 测量顺带发现三处「生成端在读、界面藏起来」：`取几张` 少摆 9 种（变化 / 复制 / 重放 / 回合结束自动打出 / 放置 / 给予关键词 / 三种全局牌组）、`多选1` 少摆 3 种（变化 / 全局加牌 / 全局变化）、`选牌方式` 少摆 3 种（三种全局牌组）→ 全部按测量摆出来；`CountIsAny` 跟着改成用 `ShowCountModeRow`（「任意张」的语义和界面一致） | ✅ 已发 |
+| ⑤ | **自检（把「显示 = 有用」钉死）** | 新增 46 条：① 「造成伤害」显示的**正好**是用户列的那几行 + 其余全收起 + 随机允许重复只看作用对象；② 卡牌链 65 种 × 13 栏「清单 == 测量」；③ 遗物 / 药水链「不许藏起来但生成端在读」；④ 界面那几行的 `Visibility` 真的绑在那些属性上。踩过的坑：探针效果**必须**挂在一张卡上并置 `IsCardChain = true`，否则「命中 / 生效 / 概率 / 下回合」全测成 false；`范围限定` 与 `范围界定` 共用 `SpawnFilter` 字段（两个入口要并起来算）；收集绑定时要收**所有** `FrameworkElement`（作用对象 / 生成到 / 选牌方式是 TextBlock+ComboBox，没有外层 Grid） | ✅ 已发 |
+| ⑥ | **文案 / 文档** | README / 使用说明 / RELEASE_NOTES_V0.2.150 写清「哪些栏位对哪些效果出现」与 `--fieldmatrix` 怎么复现 | ✅ 已发 |
+
+> **红线实测数字（第 35 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3417 PASS / 0 FAIL**（发布版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（只差 `.sln` 随机 GUID）—— 本批只改界面显隐与 Core 判据，不动生成端；
+> ④ **反向验证**：临时把 `Damage` 塞进「增益 / 减益」允许清单 → **2 条 FAIL**（「造成伤害其余栏位全收起」+
+> 「卡牌链『增益 / 减益』逐条对 → Damage(摆了但没用)」），改回即 0 FAIL（自检不是空转）；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.150 -NoRelease -NoCommit -Yes`，
+> 部署版 `--uicheck` **3417 PASS / 0 FAIL**、`Sts2CharForge.Core.dll` SHA256 与本地 Release 一致。
+
+## 第 34 批需求（V0.2.149：**「原本 1 费、升级后 X 费」没效果**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~34 批都还没提交）。`--uicheck` 基线 = **3374 PASS / 0 FAIL**（Debug）。
+> 用户原话：「但是升级后的费用怎么没效果了，比如原本1费，升级后X费，实际上升级还是1费」。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **查证：本体到底支持不支持** | 读本体源码确认：X 费不是数字，而是 `CardEnergyCost.CostsX`（打出去花光能量、效果按花掉的量算），它在**第一次读 `EnergyCost` 时**由 `HasEnergyCostX` 捕获**定死**（`_energyCost ??= new CardEnergyCost(this, CanonicalEnergyCost, HasEnergyCostX)`，且 `Canonical = CostsX ? 0 : canonicalCost`）；之后打出 / 扣费 / `ResolveEnergyXValue()` 全看缓存的布尔值。升级能改的只有数字（`EnergyCost.UpgradeBy(差值)`）。⇒ **「数字费用 ↔ X 费」在升级时改不了（两个方向都不行）**；能做的只有「数字 → 数字」与「一开始就 X + 升级后 X+N」。**不是工具这一版改坏的**（该分支一直是「不生成 + 警告」，只是措辞含糊） | ✅ 已查证 |
+| ② | **把警告改成说清原因 + 给出能做法的写法** | 「升级后费用」写 `X`（或 `X+N`）而当前费用不是 X 时：警告里点明「**本体做不到「升级后把数字费用变成 X 费」**：X 是卡牌构造时定死的一档（`CardEnergyCost.CostsX` 第一次读 `EnergyCost` 时捕获…），升级只能改数字（`EnergyCost.UpgradeBy`）」+ 两种能做到的写法（① 一开始就 X 费 + 升级后 `X+1`；② 这一栏填数字，例 1 费 → 0 费）。「升级后额外资源量费用」写 `Y` 而当前不是 Y 时同理（`HasStarCostX` 同一套） | ✅ 已发 |
+| ③ | **文案** | `CostBoxHint` 补一句「升级改不了『数字费用 ↔ X 费』这一档」 | ✅ 已发 |
+| ④ | **自检** | 新增 1 条：`1 费 + 升级后费用 X` → 警告必须含「本体做不到」+「EnergyCost.UpgradeBy」+「X+1」 | ✅ 已发 |
+
+> **红线实测数字（第 34 批）**：① `dotnet build` **0 错误**；② `--uicheck` Debug **3374 PASS / 0 FAIL**（发布版同样）；
+> ③ `--samplegen` 与 V0.2.143 基线 **112 个文件逐字节一致**（只差 `.sln` 随机 GUID）—— 本批只改文案 + 文档；
+> ④ 已打包发版：`tools\release_all.ps1 -Version V0.2.149 -NoRelease -NoCommit -Yes`。
+
+> **待用户拍板（本批没做）**：「升级后变 X 费」的**实验性**支持（条件覆写 `HasEnergyCostX => base.IsUpgraded`）。
+> 两个已知风险：① X 与否在**第一次读 `EnergyCost`** 时捕获 → 牌组 / 奖励界面先读过就定死成非 X（界面上可能仍显示原费用，
+> 战斗里的新实例有可能拿到 X）；② 效果里的 X 取值（`ResolveEnergyXValue()`）也要改成「升级后才读」，否则按 0 算。
+> 现在的默认行为是「不生成 + 警告」（宁可不生效，也不静默生成半截）。用户说做再做。
+
+## 第 33 批需求（V0.2.148：**「升级后费用」填不了 Y/X、清空后错误还在**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~33 批都还没提交）。`--uicheck` 基线 = **3373 PASS / 0 FAIL**（Debug）。
+> 用户原话：「升级后费用里面填不了 Y 和 X，但是填过之后什么都没有也会报错」（附截图：卡牌「新卡」的
+> 「升级后额外资源量费用」看不懂：X）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **「填不进去」的真因：框子不认原文** | `CardSpec.UpgradeStarCostText` 的 getter 以前只返回绝对数（`_upgradeStarCost`），填 `Y` / 填错时绝对数是 null → **框子显示成空**（看着像填不进去）。改成和「升级后费用」那一栏同款：原文非空就显示原文 | ✅ 已发 |
+| ② | **「清空后错误还在」的真因：清空不清原文** | 那个 setter 的 `text.Length == 0` 分支只清 `UpgradeStarCost`、**没清 `UpgradeStarCostFormula`** → 校验器那句「看不懂」永远消不掉；填数字的分支同样没清原文。两处都补上 | ✅ 已发 |
+| ③ | **`Y` 从「报错」改成「合法」** | 「升级后 Y」= 升级后还是 Y，而本体**改不了 X 那一档**（`UpgradeStarCostBy` 碰到 `HasStarCostX` 的牌**直接抛异常**）→ 等价于「升级不改」，生成端本来就不写任何东西。现在填 `Y`：状态是 Y 费牌 → 一句**提示**；不是 Y 费牌 → **警告**（Y 被当 0、不生效） | ✅ 已发 |
+| ④ | **`Y+1` 报错要说清原因** | 以前只报「看不懂」；现在报「**填不了 Y+N**：本体 UpgradeStarCostBy 对『额外资源量费用 = X』的牌会直接抛异常（UpgradeStarCostBy called on … which has star cost X.）」并给出替代做法（先把费用从 Y 改成数字） | ✅ 已发 |
+| ⑤ | **`Y` 填错栏的指路** | 把 `Y` 填进「升级后费用」（**能量**那一栏）时，报错末尾补一句「这一栏是能量费用，如果你想改的是『升级后额外资源量费用』，请填在右边那一栏」 | ✅ 已发 |
+| ⑥ | **文案** | 两个框的 ToolTip 重写（每栏分别能填什么）；`CostBoxHint` 补上「升级后费用：X = 不改 / X+N；升级后资源量费用：Y = 不改、Y+N 本体做不到」 | ✅ 已发 |
+| ⑦ | **自检** | 新增 9 条 `V0.2.148` 断言：填 `Y` 框里看得见 / 填 `Y` 不报错且不生成 `UpgradeStarCostBy` / **非法 → 清空后错误必须消失**（用户的 bug 本体）/ 非法 → 改数字后原文一起清掉 / `Y+1` 报错含本体原因 / X 费牌 `X` 与 `X+1` 都过且 X+1 生成里带 `IsUpgraded ? 1 : 0`（X 不带）/ 固定资源量费用的牌填数字照样生成 `UpgradeStarCostBy(2)` / `Y` 填错栏的提示 | ✅ 已发 |
+
+> **红线实测数字（第 33 批）**：① `dotnet build` **0 错误**；
+> ② `--uicheck` Debug **3373 PASS / 0 FAIL**（发布版同样 3373 / 0）；
+> ③ **红线①默认输出不变**：`--samplegen` 与 V0.2.143 基线 **112 个文件逐字节一致**（只差 `.sln` 随机 GUID）——
+> 本批只改「配置检查文案」+「那一栏的显示 / 清空」，没动任何老写法的生成路径；
+> ④ 探针实测（`_tmp\v02148`）：Y 费牌 + 升级后 Y → 生成通过、源码无 `UpgradeStarCostBy`；
+> 升级后 Y+1 → 报错（含本体异常原文）；`X` 费牌 + 升级后 `X+1` → 生成
+> `decimal __X = ForgeFormulaRuntime.Energy(base.Owner) + (base.IsUpgraded ? 1 : 0);`；
+> 固定资源量费用 1 → 升级后 3 → 生成 `UpgradeStarCostBy(2);`；
+> ⑤ 已按正式流程打包发版：`tools\release_all.ps1 -Version V0.2.148 -NoRelease -NoCommit -Yes`
+> （`4\程序文件` 更新、更新包 `Sts2CharForge_更新包_V0.2.148.zip`、没发 GitHub、没有 git 写操作）。
+
+## 第 32 批需求（V0.2.147：**「状态挂在敌人身上时，『自己』是不是敌人自己」**，用户提问；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~32 批都还没提交）。`--uicheck` 基线 = **3363 PASS / 0 FAIL**（Debug）。
+> 用户原话：「当状态挂在敌人身上时，状态的自己是不是敌人自己」。
+> 答案：**是** —— 状态效果里的「自己」= 挂着它的那个单位（`base.Owner`）；顺带查出一个**会在游戏里抛异常**的缺口。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **回答清楚「自己 / 敌人」是谁** | 本体证据：`PowerModel.Owner` 是 `Creature`（挂着它的单位）；`Creature.Player` **只由玩家单位的构造函数赋值**（怪物 = null）；`CombatState.HittableEnemies` = `Enemies.Where(IsHittable)`（**玩家视角的敌方那一侧**，不随持有者变）。所以贴在敌人身上时：「自己」=那个敌人、「全体敌人」=它自己和它的同伴；玩家侧时机永不触发（既有警告）。README + 使用说明各加一节表格 | ✅ 已发 |
+| ② | **新缺口：要拿玩家对象的效果在敌人身上会抛异常** | 状态里凡读 `base.Owner.Player` 的效果（抽牌 / 能量 / 金币 / 额外资源量 / 生成卡牌 / 药水 / 全局改牌组×4 / 升级·消耗·丢弃卡牌 / 给予关键词 / 三处拿牌 / 卡牌奖励 = **18 种**）以及**勾了「概率生效」的任何效果**（掷骰读 `base.Owner.Player.RunState`），贴到敌人身上时 null 传进本体接口 → 运行时异常 → **战斗卡住**（和 V0.2.145 同一类）。新增校验器**警告**（不是错误：状态可以只为自己用），逐条点名 + 给可替代做法 | ✅ 已发 |
+| ③ | **清单必须机械可证** | `ProfileValidator.PlayerSidePowerEffectKinds` 是**扫生成源码扫出来的**（每种效果按「最想弹选牌界面」的参数生成一个状态、找没有空值保护的 `base.Owner.Player`；`!=` 比较 / `?.` / `??` 都不算）。自检 7 条：清单内三种真的读 / 清单外三种不读 / 概率档会读 / **清单与生成端逐条一致**（写这条时当场抓出漏掉的 `GiveKeyword`）/ 不多写 / 警告会出现 / 不误报 | ✅ 已发 |
+
+> **红线实测数字（第 32 批）**：① `dotnet build` **0 错误**；
+> ② `--uicheck` Debug **3363 PASS / 0 FAIL**（发布版同样 3363 / 0）；
+> ③ **红线①默认输出不变**：本批只动「配置检查」+ 文档，生成端一行未改 ——
+> `--samplegen` 与 V0.2.143 基线 **112 个文件逐字节一致**（只差 `.sln` 随机 GUID）；
+> ④ 已按正式流程打包发版：`tools\release_all.ps1 -Version V0.2.147 -NoRelease -NoCommit -Yes`
+> （`4\程序文件` 更新、更新包 `Sts2CharForge_更新包_V0.2.147.zip`、没发 GitHub、没有 git 写操作）。
+
+## 第 31 批需求（V0.2.146：**「数值公式」框里填纯数字被拦住**，用户实测；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（第 29~31 批都还没提交）。`--uicheck` 基线 = **3356 PASS / 0 FAIL**（Debug）。
+> 用户原话：「数值公式就不能填纯数值吗」+ 截图：卡牌「新卡」的「生成卡牌」在「数值公式」里填了 `1`，
+> 被配置检查报错拦住 → **没法生成 / 构建**（正好卡住第 30 批那个卡死修复的验证）。
+> 用户侧不改一行配置也能走：把 `1` 清掉填进左边的「数值」框 —— 但显然该由工具来兜。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **纯常数自动折进固定数值** | 新增 `ProfileFactory.FoldPlainConstantAmountFormulas(p)`：非那 5 种效果（抽 / 生成 / 消耗…）的「数值公式」框里写**纯常数**（`1` / `2+3` / `=1` / `0.5`）→ `Amount = 折出来的值`、`AmountFormula` 清空。三个入口都折：**打开存档**（`Load` → 紧跟在那条「固定数值 → 公式」的反向迁移后面）、**配置检查**（`Validate` 开头，和 `ForgeEffectBridge.SyncGraph` 并排）、**生成**（`ModGenerator.Generate` 再兜一次）。幂等 | ✅ 已发 |
+| ② | **判据不另写一套** | 新增 `ForgeNumbers.TryFormulaConst(p, text, out value)`（不看种类，能不能折成常数）；`TryEffectFormulaConst` 改成调它，口径不变 | ✅ 已发 |
+| ③ | **不许动的两处** | ① 那 5 种（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）上的常数公式**一个字符都不动** —— 它们本来就把公式栏当正牌编辑器（`"6"` 是常态），折了会和 `MigrateAmountsToFormulas` 来回打架；② 「数值 = X」那套（`AmountIsX` / 光秃秃 `X`）也不动（X 是运行时语义，不是常数） | ✅ 已发 |
+| ④ | **文案** | 报错那句改成「三种情况」并把「纯数字 / 能折成常数的式子（例：1、2+3）—— 工具会自动折好」写进去；`EffectSpec.AmountFormulaHint`（编辑区底下那行灰字）与 App.xaml 的悬停提示同步 | ✅ 已发 |
+| ⑤ | **自检** | 新增 11 条 `V0.2.146` 断言：折成 1 / 不再报那句拦路错误 / **生成源码与「直接填固定数值」逐字节一致**（最硬的判据）/ 幂等 / `2+3` / `=1` / 运行时公式（`M*3`、`HandCount`、`X`）不折 / 那 5 种不动 / `X` 老写法不动 / **存档存读一轮之后已经折好且校验无错** | ✅ 已发 |
+
+> **红线实测数字（第 31 批）**：① `dotnet build` **0 错误**；
+> ② `--uicheck` Debug **3356 PASS / 0 FAIL**（发布版同样 3356 / 0）；
+> ③ **红线①默认输出不变**：`--samplegen` 与 V0.2.143 基线 **112 个文件逐字节一致**（只差 `.sln` 的随机 GUID）；
+> ④ 探针（一张卡写着「生成卡牌 + 数值公式 1」）：`--build` 配置检查无错、生成工程 `dotnet build` **0 错误**、
+> 生成出来的那一行是 `CardPileCmd.AddToCombatAndPreview<SevenSlash>(base.Owner.Creature, PileType.Hand, 1, base.Owner);`；
+> ⑤ 已按正式流程打包发版：`tools\release_all.ps1 -Version V0.2.146 -NoRelease -NoCommit -Yes`
+> （`4\程序文件` 更新、更新包 `Sts2CharForge_更新包_V0.2.146.zip`、没发 GitHub、没有 git 写操作）。
+
+> **顺带发现（本批没改）**：探针回读（`--recover`）时，**自定义状态链的「从某一摞拿牌到手牌」生成代码没被认出来**
+> （`CardSelectCmd.FromCombatPile(… new CardSelectorPrefs(CardSelectorPrefs.DiscardSelectionPrompt, …))` ——
+> `ProjectRecovery` 那条规则只认 `base.SelectionScreenPrompt` 形态，静态提示形态认不出来）。
+> 这是**既有**缺口（不是这两批引入的），影响「从工程恢复存档」时那几个效果会被丢。要不要单独修一版？
+
+## 第 30 批需求（V0.2.145：**自定义状态上「生成卡牌」会让战斗卡死**，用户实测 BUG；**已本地发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`（本批在第 29 批之后，未提交）。`--uicheck` 基线 = **3344 PASS / 0 FAIL**（Debug，含第 29 批）。
+> 用户原话：「自定义状态选择生成卡牌会卡死，看看日志和调试日志」。
+> **本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**。
+> 红线①照旧：不读 / 不复制 / 不使用用户存档；不写、也不盘点用户游戏安装目录；
+> 一切验证只用 `ProfileFactory.Sample()` + `_tmp` 自造探针（探针只用 `--build`，**绝不 `--install`**）。
+> 本批**只读了游戏日志**（`%APPDATA%\SlayTheSpire2\logs\godot.log`，用户明确要求「看看日志」），
+> 没有碰用户的存档 JSON 与游戏安装目录（安装目录只是用 `forge --detect` 拿到路径喂给探针）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **诊断（日志实锤）** | 游戏日志尾部：`[ERROR] Combat #1 turn loop died while its combat is in progress; the combat is stuck until the room is restarted: System.InvalidOperationException: No selection screen prompt for POWER.SPARKLE_POWER6.` → 调用栈 `PowerModel.get_SelectionScreenPrompt()` ← `SparklePower6.AfterPlayerTurnStart(...)`；`[模组调试]` 那几行显示这张状态是被卡牌 `SparkleCard43` 施加的（触发时机 = 玩家回合开始时）。真因：状态的「生成卡牌 + 按范围随机 + 多选1(>3) / 从范围里自己挑一张」生成出来的代码读 `base.SelectionScreenPrompt`，而本体 `PowerModel.SelectionScreenPrompt` **键不存在直接抛异常**（和 `CardModel` 同一份实现），工具只给卡牌 / 遗物 / 药水写了这条本地化、**自定义状态这条链从来没写** → 抛在战斗回合钩子里 → 本轮 turn loop 死掉、战斗卡住（只有重开房间能恢复） | ✅ 已定位 |
+| ② | **生成端修** | `LocalizationGen.PowersJson`：自定义状态的效果里只要有「要弹选牌界面」的就补一条 `<状态>.selectionScreenPrompt` | ✅ 待发 |
+| ③ | **补上漏掉的第二半** | `NeedsSelectPrompt` 加「生成卡牌 + **从范围里自己挑一张**」（候选 > 3 时走的也是那条网格界面，以前连名单都没进）；`SelectPromptText` 加对应提示语「选择要生成的牌」 | ✅ 待发 |
+| ④ | **顺带补锻造图** | 锻造卡 / 锻造药水 / 锻造遗物的效果在**节点图上**（`XxxSpec.Effects` 是空的）→ 新增 `LocalizationGen.GraphEffects(graph)`，三处判断都把图上的效果算进来（图上「从某一摞拿牌到手牌 / 预见」同样会卡死） | ✅ 待发 |
+| ⑤ | **自检** | 新增 10 条 `V0.2.145` 断言：状态两种档位（多选1=4 / 自己挑）都写出 `<状态>.selectionScreenPrompt` + 生成代码确实读 `base.SelectionScreenPrompt` + 提示语正确 + **对照**（不带选牌界面的状态一个字都不多写）+ 锻造卡图上「从弃牌堆拿牌」也写出 `<卡>.selectionScreenPrompt` | ✅ 待发 |
+| ⑥ | **第二遍「机械扫描」→ 又抓出一个漏网之鱼** | 用户第二次说「还是卡死」时复查：先把「会读 `base.SelectionScreenPrompt` 的效果种类」**按种类机械扫一遍**（每种效果都按「最想弹选牌界面」的参数配，分别生成**卡牌链 + 自定义状态链**源码，扫关键字）→ 断言「扫到的每一种 `NeedsSelectPrompt` 都必须认得」。这条断言当场抓出漏网的 **`PlaceCard`（放置卡牌 + 取牌方式 = 自己选）**——它在**卡牌链**上也会读 `base.SelectionScreenPrompt`（`SelectPrefsExpr`），漏了就是「打出这张牌 = 游戏卡死」。已补进 `NeedsSelectPrompt` + `SelectPromptText`（「选择要移动的牌」）。扫描共 12 处：`GenerateCard`×2 链、`CopyCard`、`ReplayCard`、`TurnEndPlay`、`Scry`、`TakeFromDraw/Discard/Exhaust`、`PlaceCard`、`GiveKeyword`×2 链 | ✅ 待发 |
+| ⑦ | **「还是卡死」的真因 = 上一轮没打包** | 复查游戏日志时间线 + 程序时间戳：用户跑的是 `D:\ds\s\4\程序文件\Sts2CharForge.exe`，时间戳 **10/10 23:31**（V0.2.143 那版），而我上一轮只改了仓库、**没有打包发版** → 他用旧程序重新生成的模组依旧缺那条键。本轮按正式流程打包：`tools\release_all.ps1 -Version V0.2.145 -NoRelease -NoCommit -Yes` → `4\程序文件` 更新成 **V0.2.145**（用户数据 1020 个文件原样放回、旧启动器删除）、更新包 `Sts2CharForge_更新包_V0.2.145.zip`（60.6 MB）、旧包按策略清理；**没发 GitHub、没有 git 写操作**（`-NoRelease -NoCommit`）。核对：部署进去的 `Sts2CharForge.Core.dll` 与本机 Release 构建 **SHA256 完全相同**，且 dll 里能搜到这次的修复字符串 | ✅ 已发（本地） |
+
+> **红线实测数字（第 30 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；
+> ② `--uicheck` Debug **3345 PASS / 0 FAIL**（含那条「机械扫描」断言）、发布版（正式 `dotnet publish -c Release -r win-x64`）**3345 PASS / 0 FAIL**；
+> ③ **红线①（默认输出不变）**：`--samplegen` 与 V0.2.143 的基线（`D:\ds\s\_tmp\v02143main\gen\ExampleMod`）对拍
+> **112 个文件逐文件 SHA256 一致，只差 `ExampleMod.sln` 的随机 GUID**；
+> ④ **反向验证**：把 `PowersJson` 那两行临时注释掉重跑 `--uicheck` → **3 条 FAIL**（正是新加的那三条），改回即 0 FAIL；
+> ⑤ **探针真编译**（`_tmp\v02145\probe.json`，三个状态：多选1=4 / 从范围自己挑 / 从某一摞拿牌）：
+> `forge --profile … --build` → 生成工程 `dotnet build` **0 错误**（PCK 那一步因为探针没填 Godot 路径而跳过，**没有安装任何东西**），
+> 生成的 `localization/zhs/powers.json` 三条 `selectionScreenPrompt` 都在、状态源码里读的正是 `base.SelectionScreenPrompt`；
+> ⑥ 文档同步：`README.md`（新增 V0.2.145 一节，含日志原文与真因；「生成卡牌」那一节改成「四条链都写提示语」）、
+> `tools\使用说明.template.txt`（多选1 那一节补上「状态链漏了会卡死、现已修」）。
+
+> **顺带发现（本批没改，等用户拍板）**：同一份日志里还有
+> `Missing sprite 'sparkle_power6' in power_atlas` + `Asset not cached: res://images/powers/missing_power.png` ——
+> 那个自定义状态**没上传图标**，所以状态栏里是本体那张 `missing_power` 紫色占位。
+> 现在生成器只在「上传了图标」时才写图集 `.tres` + `images/powers/<状态>.png` 回退图；
+> 要不要在没上传时也写一份回退（像「额外资源量」那只载体遗物用本体星星图标那样）？—— 等用户定。
+
+## 第 29 批需求（V0.2.144：**遗物 / 药水 / 额外资源量右侧效果栏改成卡牌页版式**；**未发版**）
+
+> 派活 HEAD = `13416d8 发版 V0.2.143`；`--uicheck` 基线 = **3339 PASS / 0 FAIL**（Debug，V0.2.143）。
+> 用户原话：「遗物药水右侧的效果栏能不能同步卡牌的」。我先列出四档让他拍板
+> （**A** 照卡牌页版式重做 / B 只把条件搬进每条效果 / C 反过来让卡牌页也折叠 / D 编辑器里的栏目也同步），
+> 用户选 **A**，并且选「**额外资源量页一起改**」。
+> **本轮不发版、不跑 `release_all.ps1`、没有任何 git 写操作**。
+> 红线①照旧：不读 / 不复制 / 不使用用户存档；不写、也不盘点用户游戏安装目录；
+> 一切验证只用 `ProfileFactory.Sample()` + `_tmp` 自造探针（探针只用 `--build`，**绝不 `--install`**）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **三页右侧 = 卡牌页版式** | 上面一行**摘要列表**（固定 140px，`DisplayMemberPath="DisplayPlain"` —— 这三页不能升级，摘要里不显示「（升级 +N）」）+ 中间 8px + 下面**一整块共享编辑区**（`DataContext="{Binding SelectedItem, ElementName=XXXEffectList}"`，模板还是 `EffectEditorPlain` / `EffectEditorPotion`，一个字没重写）；**单条效果自己的「条件选项」跟着效果长在编辑区里**（`EffectConditionPlain`，候选表仍是 `PlainEffectConditions`），右下角那块独立条件框撤掉；没选中效果时编辑区内容用 `NotEmptyToVisibility` 收起、位置换成一句指路文字 | ✅ 待发 |
+| ② | **删掉折叠行那一套** | `EffectEditorCollapsible` / `EffectRowEditorTemplate` / `OnToggleEffectRow` / `SelectEffectRowOf` / `ListBoxOwningEffect` / `CollectListBoxes` / `ToggleEffectRow` / `EffectSpec.IsExpanded` 全部删除 —— V0.2.143 那个「条件选完存不住」的结构性原因（整行是 Button 吃掉 ListBoxItem 的点击）**从根上没有了** | ✅ 待发 |
+| ③ | **顺手修掉改版暴露的两个老毛病** | (a) 编辑器里「多选1 / 复制的份数 / 重放次数 / 回合结束时 / 缓慢」五段提示原本**一行不换行**（实测宽 788~1027px、横向跑出面板被裁掉，卡牌页一直如此，只是没人量过）→ `MaxWidth="320"` + `TextWrapping="Wrap"` 折行；(b) `ContentTemplate` 遇上 `Content=null` **也会把模板实例化**，那些行内 `Visibility` 绑定解不出来就停在默认值 `Visible` → 界面上凭空冒出几行开关（自检抓到「遗物页看见了概率独立」，DataContext 是 null）→ 编辑区内容按选中项收起 | ✅ 待发 |
+| ④ | **自检** | 新增 / 改写 **44 条** `V0.2.144` 断言：三页各一组「点行（走 `ListBoxItem.IsSelected`，和鼠标同一条路）→ 选中 → 编辑区 DataContext 跟着换 → 在编辑区改「数值」真的写回模型 → 在编辑区选条件写回 `Condition.Kind` → 切走再切回还在」+「效果行里没有 Button」+「`EffectSpec.IsExpanded` 已删」+ 卡牌页回归（卡牌页本来就是这形状，不该被带到） | ✅ 待发 |
+
+> **红线实测数字（第 29 批）**：① 工具本体 `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；
+> ② `--uicheck` Debug **3334 PASS / 0 FAIL**、发布版（正式 `dotnet publish -c Release -r win-x64 --self-contained true` 的全新 exe）**3334 PASS / 0 FAIL**；
+> ③ 生成端 / 回读 / 校验器**一行都没改** —— `git diff --stat` 只有 `README.md`、`App.xaml`、`MainWindow.xaml`、
+> `MainWindow.xaml.cs`、`Profile.cs`（`Profile.cs` 只删了一个 `[JsonIgnore]` 的纯界面属性 `EffectSpec.IsExpanded`，
+> 全仓库 grep 确认没有任何生成端 / 回读代码读它）；
+> ④ 文档同步：`README.md`（「效果栏」那一节重写 + 新增 V0.2.144 一节 + V0.2.143 那一节标注「已被换代修法取代」）、
+> `tools\使用说明.template.txt`（效果栏 / 条件入口 / 「效果栏太长了」那三处措辞）。
+
 ## 第 28 批需求（V0.2.142：**生成调试日志开关**，用户明确要过：「用来排查其它运行期问题」；**未发版**）
 
 > 派活 HEAD = `f99d582 发版 V0.2.141`；`--uicheck` 基线 = **3297 PASS / 0 FAIL**（Debug）。

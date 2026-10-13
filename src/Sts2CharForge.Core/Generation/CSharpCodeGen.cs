@@ -1236,6 +1236,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string rng = $"{owner}.RunState.Rng.Niche";
         if (e.UsesSpawnOptions) w.Line(SpawnMarker(e));
+        CountModeMarker(w, e);
 
         switch (e.Kind)
         {
@@ -1265,6 +1266,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "RemoveCardGlobal":
+                if (e.CountIsAll)
+                {
+                    // 「全部」：整个牌组里能删的牌一次全删（不弹选牌界面）。
+                    w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+                    w.Line("// 全部：把牌组里能删的牌**全部**删掉（不弹选牌界面）");
+                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsRemovable).ToList()) await CardPileCmd.RemoveFromDeck(c);");
+                    break;
+                }
                 if (e.CardPick == "Chosen")
                 {
                     w.Line($"// 自己选 {n} 张牌从牌组里删掉（本体的「移除卡牌」界面）");
@@ -1286,6 +1295,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // CardSelectCmd.FromDeckForUpgrade（那个界面只列能升级的牌）+ CardCmd.Upgrade。
             // 和战斗里那个「升级卡牌」不是一回事：这个直接改玩家的牌组（写进存档、跨战斗）。
             case "UpgradeCardGlobal":
+                if (e.CountIsAll)
+                {
+                    // 「全部」：牌组里能升级的牌一次全升级（不弹选牌界面）。
+                    w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+                    w.Line("// 全部：把牌组里能升级的牌**全部**升级（不弹选牌界面）");
+                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsUpgradable).ToList()) CardCmd.Upgrade(c);");
+                    break;
+                }
                 if (e.CardPick == "Chosen")
                 {
                     w.Line($"// 自己选 {n} 张牌组里的牌升级（本体的「升级卡牌」界面）");
@@ -1306,6 +1323,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "TransformCardGlobal":
                 if (e.IsSpawnRandom)
                     w.Line($"var __transformPool = {SpawnPoolExpr(e, p, owner)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
+                if (e.CountIsAll)
+                {
+                    // 「全部」：整个牌组一次全变化（不弹选牌界面）。
+                    w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+                    w.Line("// 全部：把牌组里的牌**全部**变化（不弹选牌界面）");
+                    w.Open($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.ToList())");
+                    EmitTransformGlobalBody(w, e, owner, rng, "c", target, p);
+                    w.Close();
+                    break;
+                }
                 if (e.CardPick == "Chosen")
                 {
                     w.Line($"// 自己选 {n} 张牌组里的牌变化：{(e.IsSpawnRandom ? "按范围随机" : target ?? "随机变化")}");
@@ -1406,15 +1433,28 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return $"new CardSelectorPrefs({prompt}, {count})";
     }
 
-    /// <summary>「任意张」时没有数字可显示（卡面 / 校验都用它判断）。</summary>
+    /// <summary>「任意张 / 全部」时没有数字可显示（卡面 / 校验都用它判断）。</summary>
     internal static bool CountIsAny(EffectSpec e) => e.CountIsAny;
+
+    /// <summary>「全部」：不弹选牌界面，直接对那一摞里符合条件的每一张动手（本体「恶魔之焰」那种）。</summary>
+    internal static bool CountIsAll(EffectSpec e) => e.CountIsAll;
+
+    /// <summary>
+    /// 「取几张」不是默认档（最多 N / 任意张 / 全部）时写一行标记 —— 回读靠它还原
+    /// （V0.2.163 起；默认档「恰好 N 张」**一个字符都不写**，老工程的输出逐字不变）。
+    /// </summary>
+    internal static void CountModeMarker(CodeWriter w, EffectSpec e)
+    {
+        if (e.CountMode != CountModes.Exact) w.Line($"// CET:CountMode={e.CountMode}");
+    }
 
     /// <summary>「最多 N 张 / 任意张」时选牌界面的上限表达式（Any 用一个很大的数，本体自己也是这么写的）。</summary>
     internal static string RangeN(EffectSpec e, string n) =>
         e.CountMode == CountModes.Any ? CountModes.AnyMax.ToString() : n;
 
-    /// <summary>注释 / 卡面描述里那句「几张」（任意张 = 「任意」）。</summary>
-    internal static string CountZh(EffectSpec e, string n) => e.CountIsAny ? "任意" : n;
+    /// <summary>注释 / 卡面描述里那句「几张」（任意张 = 「任意」、全部 = 「所有」）。</summary>
+    internal static string CountZh(EffectSpec e, string n) =>
+        e.CountIsAll ? "所有" : e.CountIsAny ? "任意" : n;
 
     /// <summary>
     /// 「转化为先古卡」：照本体「古老牙齿 ArchaicTooth」的语义 ——
@@ -1643,7 +1683,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </param>
     internal static string HoverTipsOverride(IEnumerable<EffectSpec> effects, bool isPublic, bool isCard = false,
         IEnumerable<string>? extraTips = null, CharacterProfile? owner = null,
-        (List<string> Add, List<string> Del)? upgradedKeywordTips = null)
+        (List<string> Add, List<string> Del)? upgradedKeywordTips = null, bool refreshFormulaPreview = false)
     {
         var tips = new List<string>();
         if (extraTips is not null) tips.AddRange(extraTips);
@@ -1657,9 +1697,34 @@ public static class ExtraResourceEnergyCounterDiagPatch
         var upAdd = (upgradedKeywordTips?.Add ?? new List<string>()).Distinct(StringComparer.Ordinal).ToList();
         var upDel = (upgradedKeywordTips?.Del ?? new List<string>()).Distinct(StringComparer.Ordinal).ToList();
         bool anyUpgradeTips = upAdd.Count > 0 || upDel.Count > 0;
-        if (tips.Count == 0 && !anyUpgradeTips) return "";
+        // refreshFormulaPreview：遗物 / 药水用了「数值公式」时**必须**生成这个 override
+        //（哪怕一条状态提示都没有）—— 它是我们唯一的「显示前现算」挂点，见 FormulaPreviewRefreshMethod。
+        if (tips.Count == 0 && !anyUpgradeTips && !refreshFormulaPreview) return "";
 
         string access = isPublic ? "public override" : "protected override";
+
+        // V0.2.164：要现算就先跑一句再返回。⚠ 属性**不能**直接写方法体（`P { 语句; }` 不是合法 C#，
+        // 会报 CS8124「元组必须包含至少两个元素」——探针真编译抓出来的），必须写成 get 访问器。
+        if (refreshFormulaPreview && !anyUpgradeTips)
+        {
+            var w3 = new CodeWriter();
+            w3.Line();
+            w3.Line("    // 鼠标悬停描述里的状态时弹出的说明（文本来自本体 powers / static_hover_tips 表；本体状态被改写后就是新名字 + 新描述）");
+            w3.Line("    // （同一条属性顺带把「数值公式」的预览值现算一遍，见 __RefreshFormulaPreview）");
+            w3.Line($"    {access} IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip> ExtraHoverTips");
+            w3.Line("    {");
+            w3.Line("        get");
+            w3.Line("        {");
+            w3.Line("            __RefreshFormulaPreview();");
+            w3.Line("            return");
+            w3.Line("            [");
+            for (int i = 0; i < tips.Count; i++)
+                w3.Line($"                {tips[i]}{(i == tips.Count - 1 ? "" : ",")}");
+            w3.Line("            ];");
+            w3.Line("        }");
+            w3.Line("    }");
+            return w3.ToString();
+        }
 
         if (anyUpgradeTips)
         {
@@ -2793,33 +2858,56 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Open("public static void Notify(PowerModel power)")
          .Line("Creature? owner = power.Owner;   // 本体移除时只把自己从 Powers 里摘掉，Owner 还在")
          .Line("if (owner is null) return;")
-         .Line("// 1) 遗物侧：这个生物所属玩家身上带这条触发时机的遗物")
-         .Open("if (owner.Player is { } player)")
+         .Line("// 通知范围 = **这一场战斗里的所有生物**（不只「被移除那个状态所在的那只」）—— V0.2.162 修：")
+         .Line("// 老写法只遍历 power.Owner 身上的状态 / 它所属玩家的遗物，于是「挂在玩家身上、盯**敌人**身上")
+         .Line("// 的状态被移除」这种配置**永远收不到通知**（用户实测报的「状态里监听某状态移除时无法触发」），")
+         .Line("// 生成出来的守卫里那个「任意敌人」分支也就形同虚设。每条时机自己的守卫会筛掉不该管的通知，")
+         .Line("// 所以这里只管发全 —— 每只生物各发一次，不会重复触发。")
+         .Line("int __notified = 0;")
+         .Line("var __listeners = new List<Creature>();")
+         .Open("if (owner.CombatState is { } __cs)")
+         .Open("foreach (Creature __c0 in __cs.Creatures)")
+         .Line("if (__c0 is not null) __listeners.Add(__c0);")
+         .Close()
+         .Close()
+         .Line("if (!__listeners.Contains(owner)) __listeners.Add(owner);   // 拿不到战斗状态时至少还有它自己")
+         .Open("foreach (Creature __who in __listeners)")
+         .Line("// 1) 遗物侧：这只生物所属玩家身上带这条触发时机的遗物")
+         .Open("if (__who.Player is { } player)")
          .Open("foreach (RelicModel __relic in player.Relics.ToList())")
          .Open("switch (__relic)")
          .Line("// 每个「配了『某个状态被移除时』的遗物」各一行（生成时按存档决定）");
         foreach (var (r, idx) in RelicsWithPowerRemoved(p))
-            w.Line($"case {n.RelicClassName(r, idx)} __r: TaskHelper.RunSafely(__r.{PowerRemovedMethod}(power)); break;");
+            w.Line($"case {n.RelicClassName(r, idx)} __r: __notified++; TaskHelper.RunSafely(__r.{PowerRemovedMethod}(power)); break;");
         w.Line("default: break;")
          .Close()
          .Close()
          .Close()
-         .Line("// 2) 状态侧：这个生物身上**还留着**的自定义状态")
-         .Open("foreach (PowerModel __p in owner.Powers.ToList())")
+         .Line("// 2) 状态侧：这只生物身上**还留着**的自定义状态")
+         .Open("foreach (PowerModel __p in __who.Powers.ToList())")
          .Open("switch (__p)")
          .Line("// 每个「配了『某个状态被移除时』的自定义状态」各一行");
         foreach (string cls in PowersWithPowerRemoved(p))
-            w.Line($"case {cls} __c: TaskHelper.RunSafely(__c.{PowerRemovedMethod}(power)); break;");
+            w.Line($"case {cls} __c: __notified++; TaskHelper.RunSafely(__c.{PowerRemovedMethod}(power)); break;");
         w.Line("default: break;")
          .Close()
+         .Close()
+         // ⚠ 这里必须把 `foreach (Creature __who …)` 也关掉：第 3 段（「被移除的那个就是自己」）
+         // 只能在循环**外面**判一次，否则每只生物都会把同一条时机再触发一遍（V0.2.162 改这段时踩过）。
          .Close()
          .Line("// 3) 被移除的那个状态**自己**也配了这条时机时（它已经从 Powers 里摘掉了，所以单独判一次）")
          .Open("switch (power)")
          .Line("// 每个「自己就是被移除的那个」也各一行");
         foreach (string cls in PowersWithPowerRemoved(p))
-            w.Line($"case {cls} __me: TaskHelper.RunSafely(__me.{PowerRemovedMethod}(power)); break;");
+            w.Line($"case {cls} __me: __notified++; TaskHelper.RunSafely(__me.{PowerRemovedMethod}(power)); break;");
         w.Line("default: break;")
-         .Close()
+         .Close();
+        // 「生成调试日志」开着时，把这次通知也写一行进游戏日志（排查「这条时机没触发」用：
+        // 0 = 一个盯这条时机的遗物 / 状态都没通知到（存档里没配，或补丁文件压根没生成）；
+        // ≥1 = 通知到了，那问题在那条时机自己的守卫（「盯谁」那一栏）里）
+        if (p.DebugLog)
+            w.Line("Log.Info(\"[模组调试] 状态被移除：\" + power.GetType().Name + \"（通知了 \" + __notified + \" 个盯这条时机的遗物 / 状态）\");");
+        w.Close()
          .Close()
          .Close();
         return w.ToString();
@@ -2982,19 +3070,115 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 为什么用 <see cref="ForgeFormula.ConditionResolver"/>：它会把自定义参数**内联展开**
     ///（参数在 OnPlay 里是局部变量 __pM，变量子类里拿不到），并给出 <c>base.Owner</c> 版的表达式 ——
     /// 这里再把 <c>base.Owner</c> 换成 <c>(card.Owner)</c> 就行（先换长的那个）。
+    ///
+    /// ⚠ 这个表达式最终落在 <c>static (card, target) =&gt; …</c> 这个**静态匿名函数**里，
+    ///   静态匿名函数**不许出现 `base`**（CS8821「静态匿名函数不能包含对 this 或 base 的引用」）。
+    ///   而 <c>XSpent</c> / <c>YSpent</c> 这两条读数用的正是 <c>base.EnergyCost</c> /
+    ///   <c>base.ResolveEnergyXValue()</c> / <c>base.HasStarCostX</c> / <c>base.ResolveStarXValue()</c>
+    ///   —— 只换 <c>base.Owner</c> 换不到它们，于是「伤害填 XSpent」的卡会整个编不过（探针真编译抓出来的）。
+    ///   最后那一句把**剩下的所有 `base.`** 也换成 <c>(card).</c>（那四个成员在 CardModel 上都是公开的）。
     /// </summary>
     internal static string FormulaPreviewExpr(CharacterProfile p, EffectSpec e)
     {
         var resolver = ForgeFormula.ConditionResolver(p, "(target)");
         string expr = ForgeFormula.Emit(ForgeFormula.TryParse(e.AmountFormula, out _), resolver, out _) ?? "0m";
         return expr.Replace("base.Owner.Creature", "(card.Owner.Creature)", StringComparison.Ordinal)
-                   .Replace("base.Owner", "(card.Owner)", StringComparison.Ordinal);
+                   .Replace("base.Owner", "(card.Owner)", StringComparison.Ordinal)
+                   .Replace("base.", "(card).", StringComparison.Ordinal);   // XSpent / YSpent 那四个成员
     }
 
-    /// <summary>这份存档有没有用到「数值公式的卡面现算变量」（用到才生成 cs/FormulaVars.cs）。</summary>
+    /// <summary>
+    /// 这份存档有没有用到「数值公式的现算变量」（用到才生成 cs/FormulaVars.cs）。
+    /// V0.2.164：遗物 / 药水也能写「数值公式」了 —— 它们的 <c>CanonicalVars</c> 同样会声明
+    /// <c>ForgeFormulaDamageVar</c> 这类变量（见 <see cref="VarDeclaration"/>），所以这三条链也算数，
+    /// 不然生成出来的工程会 CS0246（找不到那个变量类）。
+    /// </summary>
     public static bool UsesFormulaVars(CharacterProfile p) =>
         p.Cards.Any(c => c is not null && c.Effects.Any(e => e is not null
-            && e.UsesAmountFormula && FormulaVarClassOf(e.Kind) is not null));
+            && e.UsesAmountFormula && FormulaVarClassOf(e.Kind) is not null))
+        || p.Relics.Any(r => r is not null && r.Effects.Any(HasFormulaVar))
+        || p.Potions.Any(s => s is not null && s.Effects.Any(HasFormulaVar));
+    // ⚠ 自定义状态**不列进来**：状态类不声明 CanonicalVars（它的数值直接内联进钩子里），
+    // 所以那三条链里只有遗物 / 药水会用到这些变量类。
+
+    /// <summary>这条效果会不会声明一个「数值公式」的现算变量（<see cref="FormulaVarClassOf"/> 认得出来的那 5 种）。</summary>
+    private static bool HasFormulaVar(EffectSpec? e) =>
+        e is not null && e.UsesAmountFormula && FormulaVarClassOf(e.Kind) is not null;
+
+    // ==================== V0.2.164：「数值公式」铺到遗物 / 药水 / 自定义状态 ====================
+
+    /// <summary>
+    /// 遗物 / 药水 / 自定义状态的「数值公式」→ **内联** C# 表达式（null = 没写公式 / 这种效果不支持公式）。
+    ///
+    /// 为什么这三条链走内联、卡牌走前置局部变量：卡牌每次打出（或卡牌时机钩子）之前会先跑
+    /// <see cref="ForgeGraphGen.EmitCardFormulaPrologue"/> 把 <c>__pM</c> / <c>__X</c> / <c>__Y</c> 算好；
+    /// 遗物 / 药水 / 状态的执行点（触发器钩子 / OnUse）**没有**那套前置 —— 而这三条链的
+    /// 「自己 / 玩家」就是 <c>base.Owner</c>（遗物 / 药水的 Owner 是 Player，状态的 Owner 是 Creature），
+    /// 直接内联展开即可（和锻造节点图那边同一套 <see cref="ForgeFormula.InlineResolver"/>）。
+    ///
+    /// 代价：公式如果在循环里会被求值多次 —— 公式是纯表达式（只读模型数据），没有副作用，安全。
+    /// </summary>
+    /// <param name="targetExpr">
+    /// 「指定敌人」那类参数在这条链上取谁。遗物 / 药水 / 状态没有「玩家选中的目标」，
+    /// 惯例是取**可打的第一个敌人**（和这些链上「作用对象 = 单体敌人」的执行口径一致）。
+    /// </param>
+    internal static string? InlineAmountFormula(CharacterProfile? p, EffectSpec e, string playerExpr, string selfExpr,
+        string? targetExpr = null)
+    {
+        if (p is null || e is null || !e.UsesAmountFormula) return null;
+        var root = ForgeFormula.TryParse(e.AmountFormula, out _);
+        if (root is null) return null;   // 解析不出来的由校验器报错，这里退回固定数值
+        return ForgeFormula.Emit(root, ForgeFormula.InlineResolver(p, playerExpr, selfExpr, targetExpr), out _);
+    }
+
+    /// <summary>「指定敌人」在遗物 / 药水 / 状态这三条链上取谁（可打的第一个敌人）。</summary>
+    internal static string FirstEnemyOf(string playerExpr) => $"ForgeFormulaRuntime.FirstEnemy({playerExpr})";
+
+    /// <summary>
+    /// 【V0.2.164】遗物 / 药水的「数值公式」**悬停时现算**那几行（没用到公式返回空列表）。
+    ///
+    /// 为什么需要：卡面 / 遗物描述里的 <c>{Heal:diff()}</c> 读的是动态变量的 <c>PreviewValue</c>，
+    /// 卡牌由本体在显示前调 <c>UpdateCardPreview</c> 刷新；**遗物 / 药水没有这个回调**，
+    /// 所以轮到我们自己在「取悬停说明」那一步刷新一次（挂在 <c>ExtraHoverTips</c> 上，
+    /// 本体 <c>HoverTips</c> 会读它，而说明文本是**渲染时**才格式化的 → 赶得上）。
+    /// 顺带把 <c>BaseValue</c> 也写上：本体 <c>ClearPreview()</c> 会把 PreviewValue 重置回 BaseValue。
+    /// </summary>
+    internal static List<string> FormulaPreviewRefreshLines(CharacterProfile? p, IEnumerable<EffectSpec> effects,
+        Dictionary<EffectSpec, string>? varMap, string playerExpr, string selfExpr)
+    {
+        var lines = new List<string>();
+        if (p is null) return lines;
+        string target = FirstEnemyOf(playerExpr);
+        foreach (var e in effects.Where(x => x is not null
+                     && x.UsesAmountFormula && FormulaVarClassOf(x.Kind) is not null))
+        {
+            string? expr = InlineAmountFormula(p, e, playerExpr, selfExpr, target);
+            if (expr is null) continue;
+            string name = Lit.Str(DisplayVarNameOf(e, varMap));
+            lines.Add($"base.DynamicVars[{name}].BaseValue = ({expr});");
+            lines.Add($"base.DynamicVars[{name}].PreviewValue = ({expr});");
+        }
+        return lines;
+    }
+
+    /// <summary>
+    /// 【V0.2.164】遗物 / 药水的 <c>__RefreshFormulaPreview()</c> 方法（没用到公式返回空字符串）。
+    /// 名字固定；调用点只有生成出来的 <c>ExtraHoverTips</c>（见 <see cref="HoverTipsOverride"/>）。
+    /// </summary>
+    internal static string FormulaPreviewRefreshMethod(CharacterProfile? p, IEnumerable<EffectSpec> effects,
+        Dictionary<EffectSpec, string>? varMap, string playerExpr, string selfExpr)
+    {
+        var lines = FormulaPreviewRefreshLines(p, effects, varMap, playerExpr, selfExpr);
+        if (lines.Count == 0) return "";
+        var w = new CodeWriter();
+        w.Line();
+        w.Line("    // 「数值公式」的悬停数字：遗物 / 药水的描述里 {Heal:diff()} 读的是变量的 PreviewValue，");
+        w.Line("    // 而它们不像卡牌那样有「显示前回调」—— 所以轮到我们自己在取悬停说明时现算一遍。");
+        w.Open("    private void __RefreshFormulaPreview()");
+        foreach (string line in lines) w.Line(line);
+        w.Close();
+        return w.ToString();
+    }
 
     /// <summary>
     /// 「数值公式」+「升级增量」合并成**打出时**用的表达式（用户实测：「升级增量怎么没效果了」）。
@@ -3144,7 +3328,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>这条触发时机有没有「数值」可填（决定界面上那一栏显不显示）。</summary>
     public static bool TriggerSupportsAmount(string kind) =>
         CountExpr(kind, "Turn", "x", "y", "z").Length > 0
-        || kind is "DamageReceived" or "DamageDealt" or "HpLost" or "BlockGained" or "EnemyDeath";
+        || kind is "DamageReceived" or "DamageDealt" or "HpLost" or "BlockGained" or "EnemyDeath"
+        // V0.2.152：「某个状态层数到达 N 层时」的 N。
+        // 以前这一档**不在名单里 → 界面上根本没有 N 输入框**：于是 N 永远停在默认值 1，
+        // 生成出来是「层数跨过 1 那一下触发」（用户想要的是到达他自己填的那一层），
+        // 状态描述里也只能印一个字母 N（用户报「我状态层数达到了却没生成卡牌」
+        // 「在游戏中怎么也是 N，而不是填的数」两条都是这个）。
+        // 注意它**不算**计数族（TriggerAmountNeedsScope 用的是 CountExpr，不会给它显示「本回合 / 本场战斗」）。
+        or "PowerReached";
 
     /// <summary>有数值可填但又需要「本回合 / 本场战斗」范围的（只有计数族需要）。</summary>
     public static bool TriggerAmountNeedsScope(string kind) =>
@@ -5237,6 +5428,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string toZh = EffectCatalog.PlacePileZh(e.PlaceTo);
         // 「自己搞定一整段」的标记行：这条效果的实现有好几行（选牌 / 循环 / Add），
         // 回读时逐行猜会认错（`CardPileCmd.Add` 到处都是）—— 标记行把数值 / 放到哪一摞 / 从哪拿 / 选牌方式全带上。
+        // ⚠ 「取几张」的非默认档标记（CET:CountMode）必须写在它**前面**：回读是「先攒着、等这条效果的
+        //   标记出现时配上去」，写在后面就配不到这条效果上了（踩过：PlaceCard 的「全部」回读后档位丢了）。
+        CountModeMarker(w, e);
         w.Line(SelfContainedMarker(e));
 
         // 数值 0 = 这张牌自己
@@ -5257,7 +5451,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string pileExpr = PileExpr(e, playerExpr);
         string? pred = CardScopePredicate(e, p);
-        if (e.CardPick == "Chosen" && !IsPileTop(e))
+        if (e.CountIsAll)
+        {
+            // 「全部」：把那一摞里符合条件的牌一次全放到目标那一摞（不弹选牌界面）。
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**放到{toZh}{ScopeZhSuffix(e)}（不弹选牌界面）");
+            w.Line($"var __place = {CardScopeFiltered(e, p, $"{pileExpr}.Cards")}.ToList();");
+            w.Line($"if (__place.Count > 0) await CardPileCmd.Add(__place, {toPile}, {pos});");
+        }
+        else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {nC} 张放到{toZh}{ScopeZhSuffix(e)}");
             string prefs = SelectPrefsExpr(e, "base.SelectionScreenPrompt", n);
@@ -5398,8 +5599,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         string? pred = CardScopePredicate(e, p);
-        if (e.CardPick == "Chosen" && !IsPileTop(e))
+        if (e.CountIsAll)
+        {
+            // 「全部」（V0.2.163，需求「选择所有手牌」）：**不弹选牌界面**，直接把那一摞里符合条件的
+            // 每一张消耗掉 —— 本体「恶魔之焰 FiendFire」就是这么写的（先把那摞 `.ToList()` 拍下来，
+            // 再逐张 CardCmd.Exhaust：不拍快照会在遍历中改集合）。
+            // 自包含标记：这一档没有选牌语句可认，回读只能靠它（别的档位不写，生成文本逐字不变）。
+            w.Line(SelfContainedMarker(e));
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**消耗{ScopeZhSuffix(e)}（不弹选牌界面，本体「恶魔之焰」那种）");
+            w.Line($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList()) await CardCmd.Exhaust(choiceContext, c);");
+        }
+        else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {CountZh(e, nC)} 张消耗{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
@@ -5456,8 +5668,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         string? pred = CardScopePredicate(e, p);
-        if (e.CardPick == "Chosen" && !IsPileTop(e))
+        if (e.CountIsAll)
+        {
+            // 「全部」：不弹选牌界面，把那一摞里符合条件的牌一次全丢进弃牌堆
+            //（本体「计算下注 CalculatedGamble」丢掉整只手牌就是这种；CardCmd.Discard 收整批）。
+            w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**丢弃{ScopeZhSuffix(e)}（不弹选牌界面）");
+            // ⚠ 变量名和「自己选」那支**故意不一样**（__fgAllDiscard 而不是 toDiscard）：
+            //   回读是按 `var toDiscard` 这行认「丢弃卡牌」的，同名会让「全部」档多回读一条。
+            w.Line($"var __fgAllDiscard = {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList();");
+            w.Line("await CardCmd.Discard(choiceContext, __fgAllDiscard);");
+        }
+        else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {CountZh(e, nC)} 张丢弃{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
@@ -5513,6 +5737,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         w.Line(SelfContainedMarker(e) + (timesIsFormula ? "" : $" CET:Replay={timesForMarker}"));
         // 选牌前先算「候选池」，并且**先筛掉不能重放的牌**（照本体「隐藏宝石 HiddenGem」的过滤条件）：
         //   · 打不出去的牌（Unplayable / 状态 / 诅咒）给它重放没有意义；
@@ -5528,6 +5753,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
             + $".Where(c => {replayCond})"
             + ".ToList();");
         w.Open($"if ({pool}.Count > 0)");
+        if (e.CountIsAll)
+        {
+            // 「全部」：候选池里（已经筛掉不能重放的）**全部**都给重放，不弹选牌界面。
+            w.Line($"// 全部：{pileZh}里还能重放的牌**全部**给上（不弹选牌界面）{ScopeZhSuffix(e)}");
+            w.Line($"var __replayPicked = {pool};");
+            w.Open("foreach (CardModel __replayCard in __replayPicked)");
+            w.Line($"__replayCard.BaseReplayCount += {timesExpr};");
+            w.Close();
+            w.Line("if (__replayPicked.Count > 0) CardCmd.Preview(__replayPicked);");
+            w.Close();
+            return;
+        }
         w.Line($"int __replayWant = Math.Min({n}, {pool}.Count);   // 池子不够就少拿几张，绝不多要");
         if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
@@ -5574,6 +5811,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string cls = Naming.From(p).TurnEndPlayPowerClass;
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         w.Line(SelfContainedMarker(e));
         if (e.Amount <= 0m && !e.AmountIsXEffective)
         {
@@ -5590,6 +5828,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? pred = CardScopePredicate(e, p);
+        if (e.CountIsAll)
+        {
+            // 「全部」：那一摞里符合条件的牌**全部**在回合结束时自动打出（不弹选牌界面）。
+            w.Line($"// 全部：{pileZh}里符合条件的牌**全部**在回合结束时自动打出{ScopeZhSuffix(e)}（现在不弹选牌界面）");
+            w.Line($"var __tePicks = {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList();");
+            w.Line($"if (__tePicks.Count > 0) await PowerCmd.Apply(choiceContext, {cls}.Create(__tePicks), base.Owner.Creature, 1m, base.Owner.Creature, {cardSource});");
+            return;
+        }
         w.Line($"// 现在先选好 {n} 张{pileZh}里的牌，本回合结束时自动打出它们{ScopeZhSuffix(e)}");
         if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
@@ -5667,11 +5913,25 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 为什么放在 SelfContainedMarker 之前：回读时它先把 pendingSpawn 存下来，
         // 下一行的 CET:Effect=CopyCard 造出那条效果时才会把这几个设置配上（见 ProjectRecovery 的 Done）。
         if (e.HasCardScope || e.HasSpawnModifier) w.Line(SpawnMarker(e, withKind: true));
+        CountModeMarker(w, e);
         w.Line(SelfContainedMarker(e));
         // 「仅本回合升级」要先把那个「回合结束降回来」的状态挂上（和生成卡牌同一套，只挂一次）
         string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
         if (tempUp is not null) EmitTempUpgradePowerApply(w, tempUp, sourceExpr, creatureExpr);
         string? pred = CardScopePredicate(e, p);
+        if (e.CountIsAll)
+        {
+            // 「全部」：那一摞里符合条件的牌**每一张**都复制「复制的份数」份（不弹选牌界面）。
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**每一张**都复制 {copiesExpr} 份，复制出来的放进手牌{ScopeZhSuffix(e)}（不弹选牌界面）");
+            w.Open($"foreach (CardModel __src in {CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards")}.ToList())");
+            w.Open($"for (int __copyIdx = 0; __copyIdx < {copiesExpr}; __copyIdx++)");
+            w.Line("CardModel __clone = __src.CreateClone();");
+            EmitSpawnModifiers(w, e, "__clone", tempUp, p, playerExpr, creatureExpr);
+            w.Line($"await CardPileCmd.AddGeneratedCardToCombat(__clone, PileType.Hand, {playerExpr});");
+            w.Close();
+            w.Close();
+            return;
+        }
         if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {nC} 张复制，每张 {copiesExpr} 份，复制出来的放进手牌{ScopeZhSuffix(e)}");
@@ -5720,10 +5980,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         w.Line(SelfContainedMarker(e));
         // 「只能升级的牌」是这条效果本来就有的过滤条件；范围界定有的话和它 && 起来（见 CombineCond）。
         string upgradableCond = CombineCond("c.IsUpgradable", CardScopeCond(e, p));
-        if (e.CardPick == "Chosen" && !IsPileTop(e))
+        if (e.CountIsAll)
+        {
+            // 「全部」：那一摞里**所有能升级的**牌一次全升级（不弹选牌界面）。
+            w.Line($"// 全部：把{pileZh}里所有还能升级的牌**全部**升级{ScopeZhSuffix(e)}（不弹选牌界面）");
+            w.Line($"foreach (CardModel c in {PileExpr(e)}.Cards.Where(c => {upgradableCond}).ToList()) CardCmd.Upgrade(c);");
+        }
+        else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {CountZh(e, nC)} 张升级（只列能升级的牌）{ScopeZhSuffix(e)}");
             if (e.SelectPile == "Hand")
@@ -5925,8 +6192,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // Apply<T>(ctx, IEnumerable<Creature>?, …) 那个重载，报「参数 2/参数 5」两条错，整个模组编译不过）。
         // 与 EmitGenerateCard 的 tempUpSource 是同一个约定。
         if (e.HasSpawnModifier) EmitTempUpgradePowerApply(w, tempUp, cardSource, creatureExpr);
+        CountModeMarker(w, e);
 
-        if (e.CardPick == "Chosen" && !IsPileTop(e))
+        if (e.CountIsAll)
+        {
+            // 「全部」：那一摞里符合条件的牌**每一张**都变化（不弹选牌界面）。
+            w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**变化（不弹选牌界面）");
+            w.Open($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards")}.ToList())");
+            EmitTransformBody(w, e, "c", target, randomSpawn, tempUp, p, playerExpr, creatureExpr, combatStateExpr);
+            w.Close();
+        }
+        else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             w.Line($"// 自己从{pileZh}选 {nC} 张变化");
             if (e.SelectPile == "Hand")
@@ -6003,7 +6280,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string expr = $"PileType.{pile}.GetPile(base.Owner)";
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
+        CountModeMarker(w, e);
         string? pred = CardScopePredicate(e, p);
+        if (e.CountIsAll)
+        {
+            // 「全部」：把那一摞里符合条件的牌一次全拿到手牌（不弹选牌界面）。
+            w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
+            w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**拿到手牌{ScopeZhSuffix(e)}（不弹选牌界面）");
+            // ⚠ 变量名和「自己选」那支**故意不一样**（__fgAllTaken 而不是 __taken）：回读是按 `var __taken`
+            //   认「从牌堆拿牌到手牌」的，同名会让「全部」档多回读一条。
+            w.Line($"var __fgAllTaken = {CardScopeFiltered(e, p, $"{expr}.Cards")}.ToList();");
+            w.Line("if (__fgAllTaken.Count > 0) await CardPileCmd.Add(__fgAllTaken, PileType.Hand);");
+            return;
+        }
         w.Line($"// 从{pileZh}里自己选 {CountZh(e, nC)} 张拿到手牌{ScopeZhSuffix(e)}");
         w.Line($"var __taken = (await CardSelectCmd.FromCombatPile(choiceContext, {expr}, base.Owner, {SelectPrefsExpr(e, "base.SelectionScreenPrompt", n)}{(pred is null ? "" : ", " + pred)})).ToList();");
         w.Line("if (__taken.Count > 0) await CardPileCmd.Add(__taken, PileType.Hand);");
@@ -6214,6 +6503,77 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 所以放在 <see cref="HasNoDynamicVar"/> 里 —— 两件事分开写（混在一起时踩过坑，见那边的注释）。
     /// </summary>
     /// <summary>
+    /// 「播放音效」（V0.2.154）：本体所有声音都走 FMOD，一句 <c>SfxCmd.Play(事件路径, 音量)</c> 就行
+    /// （本体自己也是这么放的：<c>CreatureCmd</c> 里的 block_gain / heal / PlayDamage…）。
+    ///
+    /// <para>音量 = 「数值」那一栏的百分比（留空 / 0 = 100%）→ 写成 <c>1f</c> / <c>1.5f</c>。</para>
+    ///
+    /// <para>⚠ 三条链（卡牌 / 遗物 / 药水）和自定义状态的触发时机**共用这一份**：
+    /// <c>SfxCmd</c> 是静态的、不需要 choiceContext / 目标，所以哪里有「效果」哪里就能放。</para>
+    /// </summary>
+    internal static void EmitPlaySfx(CodeWriter w, EffectSpec e)
+    {
+        string path = (e.Sfx ?? "").Trim();
+        if (path.Length == 0)
+        {
+            w.Line("// ⚠「播放音效」没选音效（「音效」那一栏是空的）：这条效果什么都不做（校验器也会提示）。");
+            return;
+        }
+        decimal pct = e.SfxVolumePercent;
+        string vol = (pct / 100m).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "f";
+        // 回读标记：路径和音量都认不出来（SfxCmd.Play 那一句虽然也能正则，但标记最稳）
+        w.Line($"// CET:Sfx={path} CET:SfxVolume={Lit.Dec(pct)}");
+        w.Line($"SfxCmd.Play({Lit.Str(path)}, {vol});   // 播放本体音效：{EffectCatalog.SfxDisplay(path)}"
+            + (pct == 100m ? "（默认音量）" : $"（音量 {pct:0.##}%）"));
+    }
+
+    /// <summary>
+    /// 「播放音频文件（我上传的）」（V0.2.155）：本体自己的声音全是 FMOD 事件，而模组**注册不了新的
+    /// FMOD 事件**（bank 里只有事件 GUID）。所以这条路绕开 FMOD，用 Godot 自己的播放器：
+    ///
+    /// <code>
+    /// {
+    ///     var __sfx = new AudioStreamPlayer();
+    ///     __sfx.Stream = GD.Load&lt;AudioStream&gt;("res://audio/xxx.ogg");
+    ///     __sfx.VolumeDb = Mathf.LinearToDb(1f);
+    ///     ((SceneTree)Engine.GetMainLoop()).Root.AddChild(__sfx);   // 模型不是 Node，挂到场景根上最稳
+    ///     __sfx.Finished += __sfx.QueueFree;                        // 放完自己回收，不会越攒越多
+    ///     __sfx.Play();
+    /// }
+    /// </code>
+    ///
+    /// <para>几点说明：① 整段包在 <c>{ }</c> 里 —— 同一条效果在一个方法里出现两次时局部变量名不会撞；
+    /// ② 音量 = 「数值」那一栏的百分比 → <c>Mathf.LinearToDb(pct/100)</c>（Godot 的分贝）；
+    /// ③ 文件是生成时复制进工程 <c>audio/</c> 的（<see cref="ArtGenerator"/> 负责复制），
+    /// 导出预设是 <c>all_resources</c>，所以会一起打进 PCK。</para>
+    /// </summary>
+    internal static void EmitPlaySoundFile(CodeWriter w, EffectSpec e)
+    {
+        string key = (e.Sfx ?? "").Trim().Replace('\\', '/');
+        if (key.Length == 0)
+        {
+            w.Line("// ⚠「播放音频文件」没选音频（「音频文件」那一栏是空的）：这条效果什么都不做"
+                + "（到「美术资源」页上传一个 .ogg / .mp3 / .wav，校验器也会提示）。");
+            return;
+        }
+        decimal pct = e.SfxVolumePercent;
+        string vol = (pct / 100m).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture) + "f";
+        w.Line($"// CET:SfxFile={key} CET:SfxVolume={Lit.Dec(pct)}");
+        w.Line($"// 播放上传的音频：{key}（音量 {pct:0.##}%）—— Godot AudioStreamPlayer，不走 FMOD");
+        w.Open("{");
+        w.Line($"var {SfxPlayerVar} = new AudioStreamPlayer();");
+        w.Line($"{SfxPlayerVar}.Stream = GD.Load<AudioStream>({Lit.Str("res://audio/" + key)});");
+        w.Line($"{SfxPlayerVar}.VolumeDb = Mathf.LinearToDb({vol});");
+        w.Line($"((SceneTree)Engine.GetMainLoop()).Root.AddChild({SfxPlayerVar});   // 模型不是 Node，挂场景根上");
+        w.Line($"{SfxPlayerVar}.Finished += {SfxPlayerVar}.QueueFree;   // 放完自己回收");
+        w.Line($"{SfxPlayerVar}.Play();");
+        w.Close("}");
+    }
+
+    /// <summary>播放自定义音频那个局部变量名（固定一个就行：整段包在 <c>{ }</c> 作用域里）。</summary>
+    private const string SfxPlayerVar = "__sfx";
+
+    /// <summary>
     /// 这个种类**没有可以升级的数值**吗（<c>OnUpgrade</c> 里不会给它写 <c>UpgradeValueBy</c>）？
     /// 校验器用它来提醒「升级增量填了但不会生效」（以前是静默忽略的 —— 用户问过
     /// 「升级卡牌的升级增量没用吗」：战斗内的「升级卡牌」有用，但带「（全局）」的那些没有）。
@@ -6250,6 +6610,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
     or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs" or "ForbidBlock"
         // 击晕：没有数值，也不用声明动态变量
         or "Stun"
+        // 播放音效（V0.2.154）：音量写在 SfxCmd.Play 那一句里，不声明动态变量
+        //（**必须列在这里**，否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)，
+        //  和别的「没有数值的效果」撞名 → 本体 DynamicVarSet 抛 duplicate key）
+        or "PlaySfx"
+        // 播放上传的音频文件（V0.2.155）：同理，音量写死在 AudioStreamPlayer 那个块里
+        or "PlaySoundFile"
         // 「伙伴替主人承伤」开 / 关：只挂 / 摘一个状态，没有数值 —— **必须列在这里**，
         // 否则 VarDeclaration 的兜底会多写一个 new DynamicVar("Value", 0m)（两条就撞名 → 开新局崩）
         or "PetGuardOn" or "PetGuardOff"
@@ -6291,9 +6657,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「全部召唤物」+「按生命值算收益」：改用内联计算（每只各自算），没有动态变量可声明，
         // 升级增量也直接写在表达式里（见 IsAllPetsInlineCalc）。
         || IsAllPetsInlineCalc(e)
-        // 「取任意张」：没有张数这个数字可显示（卡面写「任意张」），所以不声明变量。
+        // 「取任意张 / 全部」：没有张数这个数字可显示（卡面写「任意张」「所有」），所以不声明变量。
         // **必须列在这里**：否则 OnUpgrade 会去写一个没声明的 Cards → 本体抛 KeyNotFoundException。
-        || e.CountIsAny
+        || e.CountHasNoNumber
         // 「数值 0 = 这张牌自己」（丢弃卡牌）：这一档没有「张数」，不声明 Cards 变量 ——
         // 否则 OnUpgrade / 卡面占位符会去找一个不存在的数字（和「取任意张」同一个坑）。
         || AmountZeroIsSelf(e);
@@ -6720,6 +7086,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 绝大多数「本回合费用变 0」的写法一致（SetThisTurn 只留给「同一回合内多次打出也要免费」那几张）。
             case "CheapenSelf":
                 w.Line("base.SetToFreeThisTurn();   // 本回合这张牌自己费用变 0（本体 CardModel.SetToFreeThisTurn：能量费 + 额外资源量费一起）");
+                break;
+
+            // 播放音效（V0.2.154）：一句 SfxCmd.Play 就完事（三条链共用同一个发射器）
+            case "PlaySfx":
+                EmitPlaySfx(w, e);
+                break;
+
+            // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer（不走 FMOD —— 模组注册不了 FMOD 事件）
+            case "PlaySoundFile":
+                EmitPlaySoundFile(w, e);
                 break;
 
             // 增加额外资源量上限值（用户要求）：给那个隐藏状态加层数，上限 = 基础上限 + 层数。
@@ -8663,7 +9039,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line("];");
 
         // 鼠标悬停遗物描述里的状态 → 弹出那条说明（自定义状态 / 被改写的本体状态都有）
-        w.Raw(HoverTipsOverride(relicAllEffects, isPublic: false, owner: p));
+        // V0.2.164：遗物上写了「数值公式」时，顺带把悬停数字的现算挂上去（见 FormulaPreviewRefreshMethod）
+        bool relicFormulaPreview = relicAllEffects.Any(x => x is not null
+            && x.UsesAmountFormula && FormulaVarClassOf(x.Kind) is not null);
+        w.Raw(FormulaPreviewRefreshMethod(p, relicAllEffects, relicVars, "base.Owner", "base.Owner.Creature"));
+        w.Raw(HoverTipsOverride(relicAllEffects, isPublic: false, owner: p, refreshFormulaPreview: relicFormulaPreview));
 
         // 条件选项：「每场战斗只触发一次」需要一个标记（本体「百年积木」的做法）
         bool hasCond = r.Condition is not null && !r.Condition.IsNone;
@@ -8705,7 +9085,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      CombatCountersClass(p)))
             w.Line(amountLine);
         // 数值也写一行标记（回读用：守卫那几行的写法以后改了就丢配置）
-        if (r.TriggerAmount > 0m && (TriggerSupportsAmount(trigger.Id) || PerPointTrigger(trigger.Id)))
+        // ⚠ V0.2.152：`PowerReached`（到达 N 层）**故意不写这一行** —— 它的 N 由上面那行
+        // `// CET:PowerWatch=… CET:PowerReach=N` 记着，回读也按它 + 守卫正则还原；
+        // 多写一行 `CET:TriggerAmount` 会让「多时机（全部满足 / 任一满足）」那条路的段落切分
+        // 多切出一条时机（自检实测：2 条变 3 条）。
+        if (r.TriggerAmount > 0m && ((TriggerSupportsAmount(trigger.Id) && trigger.Id != "PowerReached") || PerPointTrigger(trigger.Id)))
             w.Line("// CET:TriggerAmount=" + TriggerAmountForMarker(r.TriggerAmount) + " CET:TriggerScope=" + r.TriggerScope);
 
         if (needCtx)
@@ -8886,8 +9270,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
                 break;
             case "CardPlayed":
+            case "CardResolved":
                 // 遗物页那份还多一层「只对哪类牌生效」（RelicSpec.TriggerCardFilter，第 9 批 ④ 前半段）——
                 // 那是**遗物自己**的字段；锻造节点图上要筛牌请用【条件】模块，所以这里只有归属这一条。
+                // V0.2.157：两条时机（结算前 / 结算完）共用同一条归属守卫。
                 lines.Add("if (cardPlay.Player != base.Owner) return;   // 只认自己打出的牌");
                 break;
             case "CardExhausted":
@@ -9087,8 +9473,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // ===== 用户要求「遗物 / 状态触发时机合并成同一套」后补上的这批 =====
             // 守卫都按**遗物**的归属判据写（状态那条链的 base.Owner 是 Creature，遗物这边是 Player →
             // 一律比 base.Owner.Creature），本体给的钩子签名两边完全一样。
+            // V0.2.157：「打出一张牌时」与「一张牌结算完毕时」**共用这一段守卫**（区别只在钩子：
+            // BeforeCardPlayed = 结算前 / AfterCardPlayedLate = 结算完）。本体这两个钩子都是
+            // 「任意一方打出牌都会调」→ 先只认「自己打的」。
             case "CardPlayed":
-                // 本体 AfterCardPlayed：任意一方打出牌都会调 → 只认「自己打的」
+            case "CardResolved":
                 lines.Add("if (cardPlay.Player != base.Owner) return;   // 只认自己打出的牌");
                 // 「只对哪类牌生效」（用户要求：遗物侧也要有范围，和状态侧同一套 —— 第 9 批 ④）：
                 // 老四档（攻击 / 技能 / 能力）生成的判据和状态侧**逐字同款**；新增的
@@ -9257,7 +9646,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             {
                 // 数值那一行标记要跟着数值行走（回读全靠它）——见 ctor 里 RelicTriggerPlan 的说明
                 prelude.RemoveAt(amountStart);
-                if (t.Amount > 0m && (TriggerSupportsAmount(t.Kind) || PerPointTrigger(t.Kind)))
+                // ⚠ V0.2.152：`PowerReached` 同上面那处（多写一行会让多时机那条路多切出一条时机）
+                if (t.Amount > 0m && ((TriggerSupportsAmount(t.Kind) && t.Kind != "PowerReached") || PerPointTrigger(t.Kind)))
                     prelude.Insert(amountStart,
                         "// CET:TriggerAmount=" + TriggerAmountForMarker(t.Amount) + " CET:TriggerScope=" + t.Scope);
             }
@@ -9305,7 +9695,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         foreach (var e in allEffects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, relicVars, p)},");
         w.Line("];");
 
-        w.Raw(HoverTipsOverride(allEffects, isPublic: false, owner: p));
+        // V0.2.164：遗物上写了「数值公式」时，悬停数字要在取说明那一步现算（见 FormulaPreviewRefreshMethod）
+        bool multiFormulaPreview = allEffects.Any(x => x is not null
+            && x.UsesAmountFormula && FormulaVarClassOf(x.Kind) is not null);
+        w.Raw(FormulaPreviewRefreshMethod(p, allEffects, relicVars, "base.Owner", "base.Owner.Creature"));
+        w.Raw(HoverTipsOverride(allEffects, isPublic: false, owner: p, refreshFormulaPreview: multiFormulaPreview));
 
         bool hasCond = r.Condition is not null && !r.Condition.IsNone;
         var relicEffectConds = allEffects.Where(x => x.Condition is not null && !x.Condition.IsNone).ToList();
@@ -9739,7 +10133,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 某个状态层数到达 N 层时（用户要求）：本体 AfterPowerAmountChanged —— 带 choiceContext
         "PowerReached" => "public override async Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource)",
         // ===== 用户要求「遗物 / 状态触发时机合并成同一套」：补齐状态那边有、遗物缺的那些 =====
-        "CardPlayed" => "public override async Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)",
+        // V0.2.157：「打出一张牌时」= BeforeCardPlayed（**这张牌还没结算**，所以「打出它才施加的状态」
+        // 不会被它自己触发）；「一张牌结算完毕时」= AfterCardPlayedLate（旧版的打出一张牌后）。
+        "CardPlayed" => "public override async Task BeforeCardPlayed(CardPlay cardPlay)",
+        "CardResolved" => "public override async Task AfterCardPlayedLate(PlayerChoiceContext choiceContext, CardPlay cardPlay)",
         "CardExhausted" => "public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)",
         "CardDrawn" => "public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)",
         "CardDiscarded" => "public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)",
@@ -9774,8 +10171,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>该触发时机的钩子是否带 choiceContext。</summary>
     public static bool HasContext(string triggerId) =>        triggerId is "CombatStart" or "PlayerTurnStart" or "PlayerTurnEnd" or "DamageReceived" or "Shuffle" or "Attacked" or "DamageDealt" or "PowerReached"
         // 用户要求合并触发时机后补上的这批（带 choiceContext 的那些）
-        or "CardPlayed" or "CardExhausted" or "CardDrawn" or "CardDiscarded" or "EnemyDeath"
-        or "EnemyTurnEnd" or "EnemyDamaged" or "EnemyDealtDamage" or "PowerChanged";
+        or "CardExhausted" or "CardDrawn" or "CardDiscarded" or "EnemyDeath"
+        or "EnemyTurnEnd" or "EnemyDamaged" or "EnemyDealtDamage" or "PowerChanged"
+        // V0.2.157：「打出一张牌时」的钩子 BeforeCardPlayed **不带** choiceContext，所以要造一个；
+        // 「一张牌结算完毕时」（AfterCardPlayedLate）带 ✓
+        or "CardResolved";
 
     /// <summary>
     /// 这一条触发时机的钩子**在战斗里但没有 choiceContext**，需要时生成端按本体 <c>Hook.cs</c> 的做法
@@ -9787,6 +10187,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         triggerId is "EnergySpent" or "StarsSpent" or "CardGenerated"
         // 合并触发时机后补上的这批（本体同样没给 choiceContext）
         or "HpLost" or "BlockGained" or "EnemyTurnStart" or "EnemyBlockGained"
+        // V0.2.157：「打出一张牌时」= BeforeCardPlayed(CardPlay)，本体签名里没有 choiceContext
+        or "CardPlayed"
         // 「某个状态被移除时」是工具补丁调过来的，也没有 choiceContext（战斗里 → HookPlayerChoiceContext）
         or "PowerRemoved";
 
@@ -9826,6 +10228,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         int relicEffectIndex = 0)
     {
         if (IsInertZero(e)) return;   // 数值 0：整条丢掉（用户要求：不显示、也不执行）
+        // V0.2.164：遗物上也能写「数值公式」了 —— 同样写一行标记，「从工程恢复存档」按它认回来
+        if (e.UsesAmountFormula) w.Line($"// CET:AmountFormula={EscapeMarker(e.AmountFormula)}");
         EmitRepeated(w, e, x => EmitRelicEffectOnce(x, p, e, hasContext, varMap, roomVar, petAllGroup, relicEffectIndex));
     }
 
@@ -9839,7 +10243,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
             EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
             return;
         }
-        string amt = VarAccess(e, varMap);
+        // V0.2.164：「数值公式」在这条链上是**全内联**求值（遗物的 Owner 是 Player，
+        // 「自己」= base.Owner.Creature；没有「玩家选中的目标」→「指定敌人」取可打的第一个敌人）
+        string amt = InlineAmountFormula(p, e, "base.Owner", "base.Owner.Creature", FirstEnemyOf("base.Owner"))
+                     ?? VarAccess(e, varMap);
+        string blockAmt = InlineAmountFormula(p, e, "base.Owner", "base.Owner.Creature", FirstEnemyOf("base.Owner"))
+                          ?? BlockValueAccess(varMap, e);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用），amount 为 0 时本体直接不挂状态
         if (IsSlowPercentEffect(e)) amt = "1m";
         switch (e.Kind)
@@ -9852,6 +10261,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "ExtraTurn":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，额外回合无法实现）"); break; }
                 w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
+                break;
+
+            // 播放音效（V0.2.154）：SfxCmd 是静态的，不需要 choiceContext / 目标，遗物上直接放
+            case "PlaySfx":
+                EmitPlaySfx(w, e);
+                break;
+
+            // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer，同样不需要 choiceContext / 目标
+            case "PlaySoundFile":
+                EmitPlaySoundFile(w, e);
                 break;
 
             case "GenerateCard":
@@ -10037,7 +10456,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "Block":
                 // 「生成调试日志」（V0.2.142，默认关）：目标 + 实际用的格挡值
                 DebugLogGen.Target(w, e, RelicAttackTargetExpr(e),
-                    IsNegativeAmount(e, useX: false) ? AbsExpr(amt) : BlockValueAccess(varMap, e), inLoop: IsMultiTargetSide(e));
+                    IsNegativeAmount(e, useX: false) ? AbsExpr(amt) : blockAmt, inLoop: IsMultiTargetSide(e));
                 if (IsNegativeAmount(e, useX: false))
                     // 负数 = 失去 N 点格挡（本体 GainBlock 对非正数什么都不做，得走 LoseBlock；
                     // remover 传我们这边，本体用它记「谁削掉的」）
@@ -10052,7 +10471,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     // Anchor 的写法：不带 context 也能给格挡
                     EmitPerCreature(w, e, useX: false, "base.Owner.Creature", null, "base.Owner.Creature.CombatState.HittableEnemies",
-                        c => $"await CreatureCmd.GainBlock({c}, {BlockValueAccess(varMap, e)}, ValueProp.Move, null);");
+                        c => $"await CreatureCmd.GainBlock({c}, {blockAmt}, ValueProp.Move, null);");
                 }
                 break;
 
@@ -10303,7 +10722,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line();
 
         // 鼠标悬停药水描述里的状态 → 弹出那条说明（药水的 ExtraHoverTips 基类是 public）
-        w.Raw(HoverTipsOverride(s.Effects, isPublic: true, owner: p));
+        // V0.2.164：药水上写了「数值公式」时，顺带把悬停数字的现算挂上去（见 FormulaPreviewRefreshMethod）
+        bool potionFormulaPreview = s.Effects.Any(x => x is not null
+            && x.UsesAmountFormula && FormulaVarClassOf(x.Kind) is not null);
+        w.Raw(FormulaPreviewRefreshMethod(p, s.Effects, potionVars, "base.Owner", "base.Owner.Creature"));
+        w.Raw(HoverTipsOverride(s.Effects, isPublic: true, owner: p, refreshFormulaPreview: potionFormulaPreview));
 
         // OnUse 只能有一个 override：
         //   · 节点图里有「药水被使用时」那一支 → 由 ForgeGraphGen.PotionHooks 生成 OnUse
@@ -10434,6 +10857,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「范围界定」的标记行要写在它**前面**（回读是「先攒着、等这条效果的标记出现时配上去」）
         string? scopeMark = CardScopeMarker(e);
         if (scopeMark is not null) w.Line(scopeMark);
+        // 「取几张」非默认档的标记要写在下面那行 CET:GiveKeyword **前面**（回读先攒着、等效果出现时配上）
+        CountModeMarker(w, e);
         w.Line($"// CET:GiveKeyword={(customKw ? "custom:" + customKey : kwEnum)} CET:GiveKeywordTemp={(e.TempKeyword ? "1" : "0")}");
         if (customKw && customKey.Length == 0)
         {
@@ -10459,6 +10884,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // PileExpr 会把 Top 映射成抽牌堆，别的值生成的文本和以前逐字一致。
         string pileExpr = PileExpr(e, playerExpr);
         string? pred = CardScopePredicate(e, p);
+        CountModeMarker(w, e);
+        if (e.CountIsAll)
+        {
+            // 「全部」：那一摞里符合条件的牌**每一张**都加上关键词（不弹选牌界面）。
+            w.Line($"// 全部：给{EffectCatalog.SelectPileZh(e.SelectPile)}里符合条件的牌**全部**加上关键词{ScopeZhSuffix(e)}（不弹选牌界面）");
+            w.Open($"foreach (CardModel __kwCard in {CardScopeFiltered(e, p, $"{pileExpr}.Cards")}.ToList())");
+            EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
+            w.Close();
+            return;
+        }
         if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
             if (e.SelectPile == "Hand")
@@ -11126,6 +11561,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         Dictionary<EffectSpec, string>? varMap = null)
     {
         if (IsInertZero(e)) return;   // 数值 0：整条丢掉（用户要求：不显示、也不执行）
+        // V0.2.164：药水上也能写「数值公式」了 —— 同样写一行标记，「从工程恢复存档」按它认回来
+        if (e.UsesAmountFormula) w.Line($"// CET:AmountFormula={EscapeMarker(e.AmountFormula)}");
         // 每条效果自己的条件（用户要求第 6 条：药水页右下角也能选「单条效果的条件」，照遗物页那套）：
         // 不满足时只跳过这一条，别的效果照常执行。
         //
@@ -11173,7 +11610,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
             return;
         }
-        string amt = VarAccess(e, varMap);
+        // V0.2.164：「数值公式」在这条链上同样是全内联（药水的 Owner 是 Player，和遗物同一套写法）
+        string amt = InlineAmountFormula(p, e, "base.Owner", "base.Owner.Creature", FirstEnemyOf("base.Owner"))
+                     ?? VarAccess(e, varMap);
+        string blockAmt = InlineAmountFormula(p, e, "base.Owner", "base.Owner.Creature", FirstEnemyOf("base.Owner"))
+                          ?? BlockValueAccess(varMap, e);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用）
         if (IsSlowPercentEffect(e)) amt = "1m";
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";
@@ -11191,6 +11632,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             case "ExtraTurn":
                 w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, null);");
+                break;
+
+            // 播放音效（V0.2.154）：药水上也能放（SfxCmd 静态，不需要 choiceContext / 目标）
+            case "PlaySfx":
+                EmitPlaySfx(w, e);
+                break;
+
+            // 播放上传的音频文件（V0.2.155）：药水上也能放
+            case "PlaySoundFile":
+                EmitPlaySoundFile(w, e);
                 break;
 
             case "GenerateCard":
@@ -11283,12 +11734,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             case "Block":
                 DebugLogGen.Target(w, e, PotionAttackTargetExpr(potionTarget, allEnemies),
-                    IsNegativeAmount(e, useX: false) ? AbsExpr(amt) : BlockValueAccess(varMap, e),
+                    IsNegativeAmount(e, useX: false) ? AbsExpr(amt) : blockAmt,
                     inLoop: potionTarget == "AllEnemies");
                 EmitPotionPerCreature(w, potionTarget, allEnemies,
                     c => IsNegativeAmount(e, useX: false)
                         ? $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡"
-                        : $"await CreatureCmd.GainBlock({c}, {BlockValueAccess(varMap, e)}, ValueProp.Move, null);");
+                        : $"await CreatureCmd.GainBlock({c}, {blockAmt}, ValueProp.Move, null);");
                 break;
             case "Draw":
                 w.Line($"await CardPileCmd.Draw(choiceContext, {amt}, base.Owner);");

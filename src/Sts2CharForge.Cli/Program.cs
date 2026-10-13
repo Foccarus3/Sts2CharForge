@@ -18,7 +18,7 @@ using Sts2CharForge.Core.Profile;
 //   存档里写着的游戏 mods 目录（V0.2.135 / V0.2.137 各发生过一次，用户明确要求「以后不需要处理我的存档 /
 //   也不要动我的游戏目录」）。现在改成：**`--install` 指哪装哪、没给就一个文件都不装**。
 
-string? profilePath = null, outDir = null, installDir = null, recoverDir = null, sampleGenDir = null, becCheckGodotExe = null;
+string? profilePath = null, outDir = null, installDir = null, recoverDir = null, sampleGenDir = null, becCheckGodotExe = null, fieldMatrixOut = null, powerProbeOut = null, countProbeOut = null, remProbeOut = null, formulaProbeOut = null;
 bool doBuild = false, demo = false, check = false, detect = false, buildCheck = false;
 
 for (int i = 0; i < args.Length; i++)
@@ -30,6 +30,11 @@ for (int i = 0; i < args.Length; i++)
         case "--install": installDir = Next(args, ref i); break;
         case "--recover": recoverDir = Next(args, ref i); break;
         case "--samplegen": sampleGenDir = Next(args, ref i); break;
+        case "--fieldmatrix": fieldMatrixOut = Next(args, ref i); break;
+        case "--powerprobe": powerProbeOut = Next(args, ref i); break;
+        case "--countprobe": countProbeOut = Next(args, ref i); break;
+        case "--remprobe": remProbeOut = Next(args, ref i); break;
+        case "--formulaprobe": formulaProbeOut = Next(args, ref i); break;
         case "--build": doBuild = true; break;
         case "--buildcheck": buildCheck = true; break;
         case "--godot": becCheckGodotExe = Next(args, ref i); break;
@@ -107,6 +112,242 @@ if (recoverDir is not null)
         Console.WriteLine("[X] 恢复失败：" + e.Message);
         return 1;
     }
+}
+
+// --fieldmatrix <out.tsv>：【开发用】量「每一种效果到底读哪些栏位」。
+// 真正的测量在 Core（Sts2CharForge.Core.Effects.EffectFieldUsage）里，和 --uicheck 那条
+// 「显示的栏位都被用到、藏起来的都没用到」的断言**共用同一份实现**（不会两处漂移）。
+// 输出 TSV：chain / kind / field / read。
+if (fieldMatrixOut is not null)
+{
+    CharacterProfile probeProfile = EffectFieldUsage.CreateScratch();
+    if (string.IsNullOrWhiteSpace(probeProfile.Paths.VanillaProject))
+        probeProfile.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? probeGame = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(probeGame)) probeGame = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(probeGame) && string.IsNullOrWhiteSpace(probeProfile.Paths.GameDataDir))
+        probeProfile.Paths.GameDataDir = Path.Combine(probeGame, "data_sts2_windows_x86_64");
+    EffectCatalog.Initialize(probeProfile.Paths.VanillaProject, probeProfile.Paths.GameDataDir);
+
+    const string probeCard = "SevenSlash";
+    string probePotion = EffectCatalog.Potions.Count > 0 ? EffectCatalog.Potions[0].Id : "FirePotion";
+    var matrixLines = new List<string> { "chain\tkind\tfield\tread" };
+    var matrixSummary = new List<string>();
+    foreach (string chain in new[] { EffectFieldUsage.CardChain, EffectFieldUsage.RelicChain, EffectFieldUsage.PotionChain })
+    {
+        foreach (EffectKindOption option in EffectCatalog.EffectKinds)
+        {
+            IReadOnlyList<(EffectFieldProbe Probe, bool Read)> measured =
+                EffectFieldUsage.Measure(probeProfile, chain, option.Kind, probeCard, probePotion, out string? baselineError);
+            foreach ((EffectFieldProbe probe, bool read) in measured)
+                matrixLines.Add($"{chain}\t{option.Kind}\t{probe.Name}\t{(read ? 1 : 0)}");
+            matrixSummary.Add($"[{chain}] {option.Kind}\t"
+                + (baselineError is not null
+                    ? "基线生成失败: " + baselineError
+                    : string.Join(",", measured.Where(m => m.Read).Select(m => m.Probe.Name))));
+        }
+    }
+
+    File.WriteAllLines(fieldMatrixOut, matrixLines, new System.Text.UTF8Encoding(false));
+    Console.WriteLine("== 每种效果真正读到的栏位 ==");
+    foreach (string line in matrixSummary) Console.WriteLine(line);
+    Console.WriteLine("明细（chain/kind/field/read）已写入：" + fieldMatrixOut);
+    return 0;
+}
+
+// --powerprobe <out.cs>：【开发用】造一个「自定义状态 + 层数到达 N 触发 + 生成卡牌」的探针，
+// 把它生成出来的状态类源码写到文件（查「层数到了却没生成卡牌 / 数值怎么变成层数了」这类问题时用）。
+if (powerProbeOut is not null)
+{
+    CharacterProfile probe = ProfileFactory.Sample();
+    if (string.IsNullOrWhiteSpace(probe.Paths.VanillaProject))
+        probe.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? pg = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(pg)) pg = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(pg) && string.IsNullOrWhiteSpace(probe.Paths.GameDataDir))
+        probe.Paths.GameDataDir = Path.Combine(pg, "data_sts2_windows_x86_64");
+    EffectCatalog.Initialize(probe.Paths.VanillaProject, probe.Paths.GameDataDir);
+
+    var probePower = new CustomPowerSpec { Name = "探针层数状态", Enabled = true };
+    // ⚠ 故意**不设** TriggerAmount（用户那条「层数到达 N」在界面上根本没有 N 输入框，
+    // 所以跑到生成端时它就是默认值）—— 看生成出来的守卫会是什么样。
+    var probeTrigger = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self", PowerId = "ProbeStack" };
+    probeTrigger.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "SevenSlash" });
+    probeTrigger.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 7m, TargetSide = "Enemy" });
+    probePower.Triggers.Add(probeTrigger);
+
+    // 另造一条：盯**自己这个状态**（用户最可能的意图）——看生成的守卫放不放行
+    var probeSelf = new CustomPowerSpec { Name = "探针盯自己", ClassName = "ProbeSelfStack", Enabled = true };
+    var selfTrigger = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self", PowerId = "ProbeSelfStack", TriggerAmount = 3m };
+    selfTrigger.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "SevenSlash" });
+    probeSelf.Triggers.Add(selfTrigger);
+
+    probe.CustomPowers.Clear();
+    probe.CustomPowers.Add(probePower);
+    probe.CustomPowers.Add(probeSelf);
+    probe.CustomPowers.Add(new CustomPowerSpec
+    {
+        Name = "探针条件", Enabled = true,
+        Triggers =
+        {
+            new PowerTriggerSpec
+            {
+                Kind = "PowerChanged", PowerTarget = "Self",
+                Effects =
+                {
+                    new EffectSpec
+                    {
+                        Kind = "GenerateCard", Amount = 2m, SpawnCardId = "SevenSlash",
+                        Condition = new ConditionSpec { Kind = "PowerJustReached", Amount = 4m, PowerId = "ProbeStack", WhenUnmet = "Skip" },
+                    },
+                },
+            },
+        },
+    });
+
+    var probeLines = new List<string>();
+    probeLines.Add("// ===== 自动描述（游戏里状态悬停那段文字）=====");
+    foreach (CustomPowerSpec cp in probe.CustomPowers)
+        probeLines.Add("// " + cp.Name + " → " + PowerTriggers.AutoDescription(cp).Replace("\n", " ⏎ "));
+    for (int i = 0; i < probe.CustomPowers.Count; i++)
+    {
+        probeLines.Add("");
+        probeLines.Add("// ===== " + probe.CustomPowers[i].Name + " 的生成源码 =====");
+        probeLines.Add(CustomPowerGen.Source(probe, probe.CustomPowers[i], i));
+    }
+    File.WriteAllLines(powerProbeOut, probeLines, new System.Text.UTF8Encoding(false));
+    Console.WriteLine("探针状态类源码已写入：" + powerProbeOut);
+    return 0;
+}
+
+// --countprobe <out.cs>：【开发用】看「次数 / 概率 / 数值（公式）」生成出来算什么
+//（排查「次数填 Y（额外资源量）只触发一次」这类问题）。
+if (countProbeOut is not null)
+{
+    CharacterProfile probe = ProfileFactory.Sample();
+    if (string.IsNullOrWhiteSpace(probe.Paths.VanillaProject))
+        probe.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? pg2 = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(pg2)) pg2 = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(pg2) && string.IsNullOrWhiteSpace(probe.Paths.GameDataDir))
+        probe.Paths.GameDataDir = Path.Combine(pg2, "data_sts2_windows_x86_64");
+    EffectCatalog.Initialize(probe.Paths.VanillaProject, probe.Paths.GameDataDir);
+
+    var probeLines = new List<string>();
+    var cases = new (string Name, EffectSpec Fx)[]
+    {
+        ("生效次数（公式）= Y", new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self", TimesFormula = "Y" }),
+        ("命中次数（公式）= Y", new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", RepeatFormula = "Y" }),
+        ("概率（公式）= Y",     new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self", ChanceEnabled = true, ChanceFormula = "Y" }),
+        ("数值（公式）= Y",     new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self", AmountFormula = "Y" }),
+    };
+    int ci = 0;
+    foreach ((string name, EffectSpec fx) in cases)
+    {
+        var card = new CardSpec { Name = "次数探针" + (++ci), ClassName = "CountProbe" + ci, CardType = "Skill", Rarity = "Common", Cost = 1 };
+        card.Effects.Add(fx);
+        probe.Cards.Add(card);
+        probeLines.Add("// ================= " + name + " =================");
+        probeLines.Add(CSharpCodeGen.CardSource(probe, card, probe.Cards.Count - 1));
+        probeLines.Add("");
+    }
+    File.WriteAllLines(countProbeOut, probeLines, new System.Text.UTF8Encoding(false));
+    Console.WriteLine("次数探针已写入：" + countProbeOut);
+    return 0;
+}
+
+// --remprobe <out.cs>：【开发用】看「某个状态被移除时」这条触发时机生成出来是什么
+//（排查「状态里监听某状态被移除时无法触发」这类问题）。
+if (remProbeOut is not null)
+{
+    CharacterProfile probe = ProfileFactory.Sample();
+    if (string.IsNullOrWhiteSpace(probe.Paths.VanillaProject))
+        probe.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? pg3 = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(pg3)) pg3 = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(pg3) && string.IsNullOrWhiteSpace(probe.Paths.GameDataDir))
+        probe.Paths.GameDataDir = Path.Combine(pg3, "data_sts2_windows_x86_64");
+    EffectCatalog.Initialize(probe.Paths.VanillaProject, probe.Paths.GameDataDir);
+
+    var remLines = new List<string>();
+    var probes = new (string Name, string Target, string PowerId)[]
+    {
+        ("盯自己身上任意状态", "Self", ""),
+        ("盯自己身上的虚弱", "Self", "VulnerablePower"),
+        ("盯敌人身上的虚弱", "AnyEnemy", "VulnerablePower"),
+    };
+    foreach ((string name, string target, string powerId) in probes)
+    {
+        var cp = new CustomPowerSpec { Name = "移除探针" + name, ClassName = "RemProbe" + probe.CustomPowers.Count, Enabled = true };
+        var trig = new PowerTriggerSpec { Kind = "PowerRemoved", PowerTarget = target, PowerId = powerId };
+        trig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+        cp.Triggers.Add(trig);
+        probe.CustomPowers.Add(cp);
+        remLines.Add("// ================= " + name + "（状态侧） =================");
+        remLines.Add(CustomPowerGen.Source(probe, cp, probe.CustomPowers.Count - 1));
+        remLines.Add("");
+    }
+    var remRelic = new RelicSpec { Name = "移除探针遗物", ClassName = "RemProbeRelic", Rarity = "Common", Trigger = "PowerRemoved", TriggerPowerId = "VulnerablePower" };
+    remRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+    probe.Relics.Add(remRelic);
+    remLines.Add("// ================= 遗物侧 =================");
+    remLines.Add(CSharpCodeGen.RelicSource(probe, remRelic, probe.Relics.Count - 1));
+    remLines.Add("");
+    remLines.Add("// ================= 补丁（PowerRemoval.cs） =================");
+    remLines.Add(CSharpCodeGen.PowerRemovalSource(probe));
+    File.WriteAllLines(remProbeOut, remLines, new System.Text.UTF8Encoding(false));
+    Console.WriteLine("移除探针已写入：" + remProbeOut);
+    return 0;
+}
+
+// --formulaprobe <out.cs>：【开发用】看「数值公式」在遗物 / 药水 / 自定义状态上生成出来是什么。
+if (formulaProbeOut is not null)
+{
+    CharacterProfile probe = ProfileFactory.Sample();
+    if (string.IsNullOrWhiteSpace(probe.Paths.VanillaProject))
+        probe.Paths.VanillaProject = Environment.GetEnvironmentVariable("FORGE_VANILLA") ?? PathAutoDetect.FindVanillaProject() ?? "";
+    string? pg4 = Environment.GetEnvironmentVariable("FORGE_GAME");
+    if (string.IsNullOrWhiteSpace(pg4)) pg4 = PathAutoDetect.FindGameDir();
+    if (!string.IsNullOrWhiteSpace(pg4) && string.IsNullOrWhiteSpace(probe.Paths.GameDataDir))
+        probe.Paths.GameDataDir = Path.Combine(pg4, "data_sts2_windows_x86_64");
+    EffectCatalog.Initialize(probe.Paths.VanillaProject, probe.Paths.GameDataDir);
+    probe.CustomParams.Clear();
+    probe.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.MaxHp, Target = ParamTargets.Self });
+    probe.CustomParams.Add(new ParamSpec { Name = "A", Source = ParamSources.Power, Target = ParamTargets.ChosenEnemy, PowerId = "VulnerablePower" });
+
+    var fl = new List<string>();
+    var rel = new RelicSpec { Name = "公式探针遗物", ClassName = "FormulaProbeRelic", Rarity = "Common", Trigger = "PlayerTurnStart" };
+    rel.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 3m, TargetSide = "Self", AmountFormula = "M/2" });
+    rel.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Enemy", AmountFormula = "A+2" });
+    probe.Relics.Add(rel);
+    fl.Add("// ================= 遗物（回复生命 = M/2、伤害 = A+2） =================");
+    fl.Add(CSharpCodeGen.RelicSource(probe, rel, probe.Relics.Count - 1));
+    fl.Add("");
+    var pot = new PotionSpec { Name = "公式探针药水", ClassName = "FormulaProbePotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self" };
+    pot.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self", AmountFormula = "M/4" });
+    probe.Potions.Add(pot);
+    fl.Add("// ================= 药水（格挡 = M/4） =================");
+    fl.Add(CSharpCodeGen.PotionSource(probe, pot, probe.Potions.Count - 1));
+    fl.Add("");
+    var pw = new CustomPowerSpec { Name = "公式探针状态", ClassName = "FormulaProbePower", Enabled = true };
+    var pwTrig = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+    pwTrig.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 3m, TargetSide = "Self", AmountFormula = "M/10" });
+    pw.Triggers.Add(pwTrig);
+    probe.CustomPowers.Add(pw);
+    fl.Add("// ================= 自定义状态（失去生命 = M/10） =================");
+    fl.Add(CustomPowerGen.Source(probe, pw, probe.CustomPowers.Count - 1));
+    fl.Add("// ================= 状态描述 =================");
+    fl.Add(PowerTriggers.AutoDescription(pw));
+    fl.Add("// ================= 遗物 / 药水描述（本地化 JSON） =================");
+    fl.Add(LocalizationGen.RelicsJson(probe));
+    fl.Add(LocalizationGen.PotionsJson(probe));
+    File.WriteAllLines(formulaProbeOut, fl, new System.Text.UTF8Encoding(false));
+    Console.WriteLine("公式探针已写入：" + formulaProbeOut);
+    // 顺带把这份探针存档也存下来（开发用：拿它跑 `forge --profile <它> --out <dir> --build` 验编译）
+    string probeJson = Path.ChangeExtension(formulaProbeOut, ".json");
+    ProfileFactory.Save(probe, probeJson);
+    Console.WriteLine("（顺带）探针存档：" + probeJson);
+    return 0;
 }
 
 if (detect)
@@ -297,6 +538,7 @@ Sts2CharForge 命令行
   forge --buildcheck --godot "D:\...\Godot_..._console.exe"
                                                     连「给了 --install 就真装一次」那一档一起验（要本机有 Godot）
   forge --recover "D:\...\生成的工程目录"           从工程反推回配置存档（存档被误覆盖时的救命功能）
+  forge --fieldmatrix "D:\out.tsv"                  【开发用】量「65 种效果各读哪些栏位」（卡牌 / 遗物 / 药水三条链）
 
 ⚠ **要装到游戏里必须显式给 `--install <mods 目录>`**（V0.2.137 起）：
    不给 `--install` 时只生成 + 编译 + 导出 PCK，**一个文件都不会装** —— 存档里的 `Paths.InstallDir`

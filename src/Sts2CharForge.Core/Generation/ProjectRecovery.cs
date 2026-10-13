@@ -67,6 +67,25 @@ public static class ProjectRecovery
         p.KeywordRenames.Clear();
         // 召唤物：模板里只借了「第一只的图片路径」当底，这里清掉重读（否则会和工程里读出来的叠成两份）
         p.Summons.Clear();
+        // V0.2.155：上传的音频清单 —— 工程里 audio/ 下有哪些文件就认回来哪些
+        //（「播放音频文件」那个效果存的是文件名，不把清单一起认回来，下次生成就没有源文件可复制了）。
+        p.AudioAssets.Clear();
+        try
+        {
+            string audioDir = Path.Combine(projectDir, "audio");
+            if (Directory.Exists(audioDir))
+            {
+                foreach (string f in Directory.GetFiles(audioDir).OrderBy(x => x, StringComparer.Ordinal))
+                {
+                    string key = Path.GetFileName(f);
+                    p.AudioAssets.Add(new AudioAssetSpec { Name = Path.GetFileNameWithoutExtension(key), File = f });
+                }
+            }
+        }
+        catch
+        {
+            // 认不回来不影响其它内容（效果里存的文件名还在，校验器会提示「这条音频在本机找不到」）
+        }
 
         string cs = Path.Combine(projectDir, "cs");
         if (!Directory.Exists(cs)) throw new DirectoryNotFoundException("工程里没有 cs 目录，可能选错目录了：" + projectDir);
@@ -349,6 +368,12 @@ public static class ProjectRecovery
             + "（备注 / 给予量这几栏代码里没有，用旧存档当模板恢复时才带得过来）");
     }
 
+    /// <summary>
+    /// 自检用：把一个「参数取值表达式」按回读那套判据认一遍，返回认出来的**来源 Id**（认不出来返回 null）。
+    /// 生成端写哪些表达式、回读就得认回哪些 —— 探针能直接对着一串表达式问「这会认成什么」。
+    /// </summary>
+    public static string? RecoverParamSourceForCheck(string expr) => ParamFromExpr("M", expr)?.Source;
+
     /// <summary>把一行 <c>decimal __pM = &lt;表达式&gt;;</c> 里的表达式还原成一条参数配置。</summary>
     private static ParamSpec? ParamFromExpr(string letter, string expr)
     {
@@ -367,7 +392,9 @@ public static class ProjectRecovery
         else if (expr.Contains("MaxEnergy", StringComparison.Ordinal)) spec.Source = ParamSources.MaxEnergy;
         else if (expr.Contains("?.Energy", StringComparison.Ordinal)) spec.Source = ParamSources.Energy;
         else if (FormulaBuiltins.All.FirstOrDefault(b =>
-                     string.Equals(b.Expr("__fgPlayer", "__fgSelf"), expr.Trim(), StringComparison.Ordinal)) is { } live)
+                     // 逐字对（含**以前版本**生成过的老表达式，见 FormulaBuiltin.LegacyCSharp）——
+                     // 有些读数的表达式后来加过战斗外保护，只认新版会让老工程里那个参数变成「认不出来」。
+                     b.AllExprs("__fgPlayer", "__fgSelf").Any(e => string.Equals(e, expr.Trim(), StringComparison.Ordinal))) is { } live)
         {
             // 用户要求：参数页也能选那些「实时读数」（回合数 / 丢弃·消耗·生成·复制张数 / 资源量 / 状态数…）——
             // 它们的表达式就是内置量那张表里的原文，对得上就认回来（不用另加标记）。
@@ -945,11 +972,22 @@ public static class ProjectRecovery
         // 为什么不包一层假 if：钩子体里有 EmitRepeated 产生的裸 `{`/`}`，`}` 会把假 if 的栈帧弹掉。
         string? timingCond = null;
 
+        // 「取几张」不是默认档（最多 N / 任意张 / 全部，V0.2.163）时生成端写一行
+        // `// CET:CountMode=<模式>` —— 选牌语句里看不出「最多 / 任意 / 全部」（全部那一档根本没有选牌语句），
+        // 所以由紧跟着的那条效果认领（默认档不写标记，老工程一个字都不变）。
+        string? pendingCountMode = null;
+
         // 收尾：把「每条效果自己的条件」带上（生成器是用一层 if 包的）
         void Done(EffectSpec e)
         {
             e.Condition = CondTop()
                 ?? (timingCond is null ? new ConditionSpec() : new ConditionSpec { Kind = "CardTiming", Timing = timingCond });
+            // 「取几张」的非默认档（最多 / 任意 / 全部）：紧跟在标记后面的那条效果认领它
+            if (pendingCountMode is not null)
+            {
+                e.CountMode = pendingCountMode;
+                pendingCountMode = null;
+            }
             // 「数值公式」：紧跟在标记后面的那条效果认领它（见上面的 pendingFormula）。
             // 必须在别的分支之前认领 —— Done 后面有 early return（全部召唤物的同组第 2..N 份），
             // 那条路径上也不能把这个待领的标记漏给下一条效果。
@@ -1247,6 +1285,37 @@ public static class ProjectRecovery
                     Done(gk);
                     skipGivenKeywordBody = true;
                 }
+                // 「播放音效」（V0.2.154）：生成时写一行
+                // `// CET:Sfx=event:/… CET:SfxVolume=100`，后面那一句 SfxCmd.Play 是它的实现（整段跳过）。
+                // 为什么不靠 SfxCmd.Play 那一句反推：音量和路径虽然都在，但标记行最稳（以后改写法也不丢）。
+                string? sfxRaw = Match(line, @"CET:Sfx=(\S+)");
+                if (sfxRaw is not null)
+                {
+                    Done(new EffectSpec
+                    {
+                        Kind = "PlaySfx",
+                        Sfx = sfxRaw,
+                        Amount = Dec(line, @"CET:SfxVolume=(-?[\d.]+)", 100m),
+                    });
+                    skipSelfContainedBody = true;
+                    selfContainedKind = "PlaySfx";
+                    continue;
+                }
+                // 「播放音频文件（我上传的）」（V0.2.155）：生成时写一行
+                // `// CET:SfxFile=<audio 文件名> CET:SfxVolume=100`，后面那一段 AudioStreamPlayer 是它的实现。
+                string? sfxFileRaw = Match(line, @"CET:SfxFile=(\S+)");
+                if (sfxFileRaw is not null)
+                {
+                    Done(new EffectSpec
+                    {
+                        Kind = "PlaySoundFile",
+                        Sfx = sfxFileRaw,
+                        Amount = Dec(line, @"CET:SfxVolume=(-?[\d.]+)", 100m),
+                    });
+                    skipSelfContainedBody = true;
+                    selfContainedKind = "PlaySoundFile";
+                    continue;
+                }
                 // 「自己搞定一整段」的新效果（毒性爆发 / 预见 / 升级卡牌 / 大限已至）：
                 // 标记那一行就带着全部信息（种类 / 数值 / 选牌方式 / 哪一摞），后面那几行是它的实现，整段跳过。
                 string? scRaw = Match(line, @"CET:Effect=(\w+)");
@@ -1322,6 +1391,15 @@ public static class ProjectRecovery
                     pendingAllyNoPets = line.Contains("CET:AllyNoPets=1", StringComparison.Ordinal);
                     continue;
                 }
+                // 「取几张」的非默认档（最多 N / 任意张 / 全部，V0.2.163）：先存着，等紧跟着那条效果认领。
+                // 为什么必须有这个标记：选牌语句里只看得出「恰好 / 最多 / 任意」三档的一部分，
+                // 而**「全部」那一档根本没有选牌语句**（是 foreach 直接动手），逐行猜不出来。
+                string? cmRaw = Match(line, @"CET:CountMode=(\w+)");
+                if (cmRaw is not null)
+                {
+                    pendingCountMode = cmRaw;
+                    continue;
+                }
                 // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：
                 // 标记那一行先存成一份「只填了这几个字段」的效果，等真正那条效果出现时再配上（见 ApplySpawnOpts）。
                 string? spawnPick = Match(line, @"CET:SpawnPick=(\w+)");
@@ -1350,7 +1428,17 @@ public static class ProjectRecovery
                 continue;
             }
 
-            if (line == "{") continue;
+            if (line == "{")
+            {
+                // 生成器给「多条触发时机共用一个钩子」时，每条触发时机外面包了一层**裸块**
+                //（见 CustomPowerGen.EmitEffects 的 ownScope）。这里必须也记一帧：
+                // 下面那个 `}` 是**无条件弹帧**的，不记的话裸块的 `}` 会把真正的「循环 / 条件」帧弹掉，
+                // 回读出来的条件 / 生效次数就整体错位。
+                // 裸帧 IsLoop=false / Cond=null → 所有查询（LastOrDefault(f => f.IsLoop)、f.Cond is not null、
+                // frames.Any(f => f.IsLoop)）都看不见它，所以它不影响任何判据。
+                frames.Add(new Block(false, "", null));
+                continue;
+            }
             if (line.EndsWith("{"))
             {
                 string head = line[..^1].Trim();
@@ -1419,8 +1507,7 @@ public static class ProjectRecovery
             // 这些行都是生成器为这四种效果固定写出来的（循环 / 施加 / 触发 / 选牌 / 丢掉 / 攻击链）。
             if (skipSelfContainedBody)
             {
-                bool scBody = line.StartsWith("var __scryTop", StringComparison.Ordinal)
-                    || line.StartsWith("if (__scryTop.Count", StringComparison.Ordinal)
+                bool scBody = line.StartsWith("var __scryTop", StringComparison.Ordinal)                    || line.StartsWith("if (__scryTop.Count", StringComparison.Ordinal)
                     || line.StartsWith("var __scryDiscard", StringComparison.Ordinal)
                     || line.StartsWith("if (__scryDiscard.Count", StringComparison.Ordinal)
                     || line.StartsWith("await CardCmd.Discard(choiceContext, __scryDiscard)", StringComparison.Ordinal)
@@ -1476,6 +1563,20 @@ public static class ProjectRecovery
                     || line.Contains("__replayWant", StringComparison.Ordinal)
                     || line.Contains("__replayPicked", StringComparison.Ordinal)
                     || line.Contains("__tePicks", StringComparison.Ordinal)
+                    // 「取几张 = 全部」（V0.2.163）：这一档是**一句 foreach 直接动手**（不弹选牌界面），
+                    // 效果本身已经由 CET:Effect=… 标记收尾了 —— 下面这几行都是它的实现，整段跳过。
+                    // ⚠ 只在 skipSelfContainedBody 里加（非「全部」档的选牌语句还要靠它们认种类），
+                    //   而且刻意写成**「全部」档特有的那几种精确形状**，不要写成 `foreach (CardModel c in ` 这种宽条件
+                    //   （踩过：宽条件会把别的链上那句同形状的行也吞掉 → 那条效果整条丢失 + 多一条没范围的效果）。
+                    || line.Contains("全部：", StringComparison.Ordinal)
+                    || line.Contains(".ToList()) await CardCmd.Exhaust(choiceContext, c);", StringComparison.Ordinal)
+                    || line.Contains(".ToList()) CardCmd.Upgrade(c);", StringComparison.Ordinal)
+                    || line.Contains(".ToList()) await CardPileCmd.RemoveFromDeck(c);", StringComparison.Ordinal)
+                    || line.StartsWith("foreach (CardModel c in PileType.", StringComparison.Ordinal)
+                    || line.StartsWith("foreach (CardModel c in CardPile.", StringComparison.Ordinal)
+                    || line.Contains("__fgAllDiscard", StringComparison.Ordinal)
+                    || line.Contains("__fgAllTaken", StringComparison.Ordinal)
+                    || line.StartsWith("await CardCmd.Transform", StringComparison.Ordinal)
                     // 负数 = 反向：扣层数（PowerCmd.ModifyAmount + __negPower）与失去格挡（LoseBlock）
                     || line.Contains("__negPower", StringComparison.Ordinal)
                     || line.Contains("__dblPower", StringComparison.Ordinal)
@@ -1501,11 +1602,14 @@ public static class ProjectRecovery
                     || (selfContainedKind == "CheapenDraw" && line.Contains("ForgeDrawCostPower", StringComparison.Ordinal))
                     // 「禁止生命回复」：同样是一句 PowerCmd.Apply<角色>ForgeNoHealPower
                     || (selfContainedKind == "ForbidHeal" && line.Contains("ForgeNoHealPower", StringComparison.Ordinal))
+                    // 「播放音效」（V0.2.154）：标记行已经把效果收尾了，后面那一句 SfxCmd.Play 是它的实现
+                    || (selfContainedKind == "PlaySfx" && line.StartsWith("SfxCmd.Play(", StringComparison.Ordinal))
+                    // 「播放音频文件」（V0.2.155）：整段 AudioStreamPlayer 都是它的实现（局部变量统一叫 __sfx）
+                    || (selfContainedKind == "PlaySoundFile" && line.Contains("__sfx", StringComparison.Ordinal))
                     // 「获得药水」（需求 ⑨）：标记行已经把效果收尾了，后面这几行是它的实现 ——
                     // 固定档是一句 TryToProcure<T>（瓶数 > 1 时外面还有一层 for），
                     // 随机档是 PotionFactory 那三行 + TryToProcure。
-                    || (selfContainedKind == "GainPotion"
-                        && (line.Contains("__potionIdx", StringComparison.Ordinal)
+                    || (selfContainedKind == "GainPotion"                        && (line.Contains("__potionIdx", StringComparison.Ordinal)
                             || line.Contains("__randPotion", StringComparison.Ordinal)
                             || line.Contains("PotionCmd.TryToProcure", StringComparison.Ordinal)
                             || line.Contains("PotionFactory.CreateRandomPotion", StringComparison.Ordinal)));
@@ -3509,6 +3613,8 @@ public static class ProjectRecovery
         hook is "AfterObtained" or "BeforeSideTurnStart" or "AfterPlayerTurnStart" or "AfterCombatVictory"
             or "AfterCombatEnd" or "AfterAttack" or "AfterGoldGained" or "AfterShuffle"
             or "AfterEnergySpent" or "AfterStarsSpent" or "AfterCardGeneratedForCombat" or "AfterCardPlayed"
+            // V0.2.157：「打出一张牌时」= BeforeCardPlayed、「一张牌结算完毕时」= AfterCardPlayedLate
+            or "BeforeCardPlayed" or "AfterCardPlayedLate"
             or "AfterCardExhausted" or "AfterCardDrawn" or "AfterCardDiscarded" or "AfterDeath"
             or "AfterSideTurnStart" or "AfterCurrentHpChanged" or "AfterDamageReceived" or "AfterDamageGiven"
             or "AfterBlockGained" or "BeforeSideTurnEnd" or "AfterPowerAmountChanged" or "OnForgePowerRemovedAsync";
@@ -3960,14 +4066,14 @@ public static class ProjectRecovery
             if (PowerTriggers.Find(kind) is null) continue;
             if (kind == "PlayerTurnEnd" && power.Triggers.Any(t => t.Kind == "PlayerTurnEnd")) continue;
             var trigger = new PowerTriggerSpec { Kind = kind };
-            if (kind == "CardPlayed" && text.Contains("cardPlay.Card.Type == CardType."))
+            if (kind is "CardPlayed" or "CardResolved" && text.Contains("cardPlay.Card.Type == CardType."))
             {
                 string? filter = Match(text, @"cardPlay\.Card\.Type == CardType\.(\w+)");
                 if (filter is not null) trigger.CardFilter = filter;
             }
             // 「只对哪类牌生效」新加的那几档（诅咒 / 状态 / 关键词组 / 组，V0.2.118）靠标记行还原 ——
             // 它们的判据是「这一组有哪些牌」展开出来的 ModelId 比较，从代码反推不回来。
-            if (kind == "CardPlayed" && Match(text, @"// CET:CardFilter=([^\r\n]+)") is { } cfRaw)
+            if (kind is "CardPlayed" or "CardResolved" && Match(text, @"// CET:CardFilter=([^\r\n]+)") is { } cfRaw)
                 trigger.CardFilter = cfRaw.Trim();
             // 「某个状态层数变化后 / 到达 N 层时 / 被移除时」盯的是哪个状态
             //（生成时是 if (power is StrengthPower)）+ 到达 N 层的 N
@@ -4011,7 +4117,7 @@ public static class ProjectRecovery
             // 「打出一张牌后」一个方法里可能有好几条（**不同筛选各一条**，V0.2.118 起筛选档还更多了）——
             // 这时按「筛选判据」把方法体切开、每段各自成一条触发时机；不切的话回读只认第一条，
             // 后面几条会**悄悄丢掉**（用户最烦这种「配置不见了」）。
-            var cpSegments = kind == "CardPlayed" ? SplitCardPlayedBody(body) : new List<(string Filter, string Body)>();
+            var cpSegments = kind is "CardPlayed" or "CardResolved" ? SplitCardPlayedBody(body) : new List<(string Filter, string Body)>();
             if (cpSegments.Count > 0)
             {
                 power.Triggers.Remove(trigger);   // 上面那条只当「模板」用（挂着公共字段），下面按段重建
@@ -4554,7 +4660,11 @@ public static class ProjectRecovery
             ["AfterEnergySpent"] = "EnergySpent",
             ["AfterStarsSpent"] = "StarsSpent",
             ["AfterCardGeneratedForCombat"] = "CardGenerated",
-            ["AfterCardPlayed"] = "CardPlayed",
+            // V0.2.157：「打出一张牌时」改成 BeforeCardPlayed（结算前）；老的 AfterCardPlayed 与
+            // AfterCardPlayedLate 都回读成「一张牌结算完毕时」（旧工程回读出来的语义和它当时一致）。
+            ["BeforeCardPlayed"] = "CardPlayed",
+            ["AfterCardPlayed"] = "CardResolved",
+            ["AfterCardPlayedLate"] = "CardResolved",
             ["AfterCardExhausted"] = "CardExhausted",
             ["AfterCardDrawn"] = "CardDrawn",
             ["AfterCardDiscarded"] = "CardDiscarded",
@@ -4590,7 +4700,9 @@ public static class ProjectRecovery
         "AfterGoldGained" => "GoldGained",
         // 抽牌堆打乱洗牌时（本体先古遗物「大～抱抱 BiiigHug」那条钩子）
         "AfterShuffle" => "Shuffle",
-        "AfterCardPlayed" => "CardPlayed",
+        "AfterCardPlayed" => "CardResolved",
+        "AfterCardPlayedLate" => "CardResolved",
+        "BeforeCardPlayed" => "CardPlayed",
         "AfterCardExhausted" => "CardExhausted",
         "AfterCardDrawn" => "CardDrawn",
         "AfterCardDiscarded" => "CardDiscarded",

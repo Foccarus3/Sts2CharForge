@@ -1479,6 +1479,18 @@ public static class ForgeGraphGen
                 || c.Condition?.UsesAnyFormula == true));
 
     /// <summary>
+    /// V0.2.164：「数值公式」铺到遗物 / 药水 / 自定义状态之后，这三条链也要用到同一个
+    /// <c>ForgeFormulaRuntime.cs</c>（内联表达式里有 Div / PowerAmount / FirstEnemy 这些辅助）。
+    /// 判据只看**这一条效果会不会被生成成公式**（<c>UsesAmountFormula</c> 与链无关）。
+    /// </summary>
+    public static bool AnyNonCardFormula(CharacterProfile p) =>
+        p.Relics.Any(r => r is not null && r.Effects.Any(IsFormulaEffect))
+        || p.Potions.Any(s => s is not null && s.Effects.Any(IsFormulaEffect))
+        || p.CustomPowers.Any(cp => cp is not null && cp.Triggers.Any(t => t is not null && t.Effects.Any(IsFormulaEffect)));
+
+    private static bool IsFormulaEffect(EffectSpec? e) => e is not null && e.UsesAmountFormula;
+
+    /// <summary>
     /// 一条卡牌效果的「数值公式」对应的 C# 表达式（null = 这条效果没用公式，调用方照旧用固定数值）。
     ///
     /// 返回的表达式里会引用 <c>__X</c> / <c>__Y</c> / <c>__p&lt;字母&gt;</c> 这些局部变量，

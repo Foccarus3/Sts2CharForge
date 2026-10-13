@@ -175,6 +175,28 @@
 「丢弃卡牌」的 0 档是这一版按你的要求加的（生成 `await CardCmd.Discard(choiceContext, this);`），
 那一档界面上会把「选牌方式 / 从哪里丢弃 / 范围界定」那几行藏起来（它根本不挑牌）。
 
+### 「取几张」四档：恰好 N / 最多 N / 任意张 / **全部**（不弹选牌界面）
+
+选牌类效果（消耗 / 丢弃 / 升级 / 复制 / 重放 / 变化 / 回合结束自动打出 / 放置 / 给予关键词 /
+从三摞拿牌 / 三种全局牌组 —— 共 15 种）的效果编辑器里都有一栏 **「取几张」**：
+
+| 取几张 | 生成的东西 | 表现 |
+|---|---|---|
+| 恰好 N 张（默认，老存档行为） | `new CardSelectorPrefs(prompt, N)` | 必须选满 N 张 |
+| 最多 N 张（本体「净化 Purity」那种） | `new CardSelectorPrefs(prompt, minCount: 0, maxCount: N)` | 可以少选（界面上要确认） |
+| 任意张 | `new CardSelectorPrefs(prompt, 0, 999999999)` | 想选几张都行（含全选 / 一张不选） |
+| **全部** | **不弹选牌界面**：`foreach (CardModel c in <那一摞>.Cards.Where(范围).ToList()) <动手>` | 直接对那一摞里符合条件的**每一张**动手 —— 本体「恶魔之焰 FiendFire」消耗所有手牌那种 |
+
+- **「全部」是唯一不弹界面的那一档**：本体恶魔之焰的写法就是 `PileType.Hand.GetPile(base.Owner).Cards.ToList()`
+  然后逐张 `CardCmd.Exhaust`（先拍快照再动手，遍历中改集合会炸）；卡面写「消耗 **所有**手牌。」。
+  弃掉整只手牌（本体「计算下注」那种）就用「丢弃卡牌 + 全部」。
+- 「全部」这一档**选牌方式（自己选 / 随机 / 牌顶）不生效**（既没有界面、也不是随机）—— 界面上那一栏会提示，
+  校验器也会说一句，不会静默忽略；同理**升级增量**对它没有落点（没有张数可显示），也有一条提示。
+- 「最多 / 任意 / 全部」不声明 `Cards` 变量（卡面不写数字），生成时会写一行 `// CET:CountMode=…` 标记 ——
+  「全部」那一档代码里根本没有选牌语句，回读（从已有工程恢复存档）只能靠这行标记还原。
+- 卡面描述跟着档位走：「消耗 {Cards:diff()} 张手牌。」「消耗 最多 … 张手牌。」「消耗 任意张手牌。」
+  「消耗 所有手牌。」；选择不生效的词（自己选 / 随机）在「全部」档里一个字都不写。
+
 ### 丢弃卡牌（丢进弃牌堆，不是消耗）
 
 
@@ -233,7 +255,8 @@
   候选 ≤ 3 走本体「发现 Discovery」那个界面（`CardSelectCmd.FromChooseACardScreen`，
   本体**超过 3 张会直接抛 `ArgumentException`**）；候选 > 3 走简单网格选牌
   （`FromSimpleGrid` + `new CardSelectorPrefs(base.SelectionScreenPrompt, 1)`，本体「抉择悖论 ChoicesParadox」那种），
-  所以这种卡必须一起生成 `<卡>.selectionScreenPrompt`（`NeedsSelectPrompt` 管这件事）。
+  所以这条效果所在的**卡片 / 遗物 / 药水 / 自定义状态**都必须一起生成 `<ENTRY>.selectionScreenPrompt`
+  （`NeedsSelectPrompt` 管这件事；V0.2.145 起**四条链**都写，含「从范围里自己挑一张」那一档与锻造图上的效果）。
   候选一张都没有时整条效果**安全跳过**（本体在这一步是 `ReportSoftlock()` = 卡死）。
 - **复制卡牌**（效果种类里那一条）：**数值 = 从牌堆里选几张**，效果底下的**「复制的份数」= 每一张复制几份**，
   复制出来的进**手牌**。自己选 / 随机、手牌 / 抽牌堆 / 弃牌堆都能选。
@@ -264,6 +287,71 @@
   默认档（指定卡、不加任何附加处理）生成出来的文本与旧版逐字一致（仍是一行 `AddToCombatAndPreview`，标记行也不写）。
 - 带附加处理时生成器会自己 `CreateCard` 再逐张处理（`AddToCombatAndPreview` 内部拿不到那些卡实例），
   最后仍然走 `CardPileCmd.AddGeneratedCardToCombat` 进牌堆。
+
+### 播放音效（V0.2.154，新效果种类）
+
+效果种类里多了一条「**播放音效（本体音效库）**」：
+
+- **实现**：本体所有声音都走 FMOD —— `SfxCmd.Play(string sfx, float volume = 1f)`
+  （`CreatureCmd` 里的 `block_gain` / `heal` / `PlayDamage`… 全是这么放的），所以生成的就一句
+  `SfxCmd.Play("event:/sfx/block_gain", 1f);`。**四条链共用**（卡牌 / 遗物 / 药水 / 自定义状态触发时机）——
+  `SfxCmd` 是静态的，不需要 choiceContext、也不需要玩家选目标，所以哪里有「效果」哪里就能放。
+- **「音效」栏**：`EffectCatalog.SfxChoices` —— 本体源码里**真实调用过**的 362 个非模板事件里挑出的
+  55 条常用项（攻击 / 格挡 / 治疗 / 增益 / 减益 / 能量 / 金币 / 卡牌 / 遗物 / 附魔 / 宝箱 / 地图 /
+  界面 / 伙伴 / 各角色招牌音 / 4 首音乐），都配中文名；界面是 `SearchComboBox`，
+  候选外**可直接手填任意 `event:/…`**。
+  ⚠ 为什么不是「全部 362 条」：本体 `banks/desktop/*.bank` 里存的是事件 **GUID**
+  （实测把 42MB 的 bank 全文扫了一遍，一个 `event:/` 字符串都没有），完整清单只能从源码里拿。
+- **音量**：**「数值」那一栏在这条效果上 = 音量%**（留空 / 0 = 100%）。
+  它是**唯一一个「0 有意义」**的种类，所以：**不列进** `AmountIsStrength`
+  （列进去「数值 0 = 不生效」会把整条丢掉、用户永远放不出默认音量），
+  但**要列进** `NoDynamicVarKind`（不声明动态变量，否则兜底的 `new DynamicVar("Value", …)`
+  会和别的效果撞名 → `DynamicVarSet contains duplicate key` 开局崩）和 `NextTurnMeaningless`
+  （没有「延迟放声音」这回事）。
+- **文案**：卡面 / 状态描述 / 列表摘要都写「播放音效：中文名（音量 N%）」；
+  顺手修掉状态描述里跟着印出来的「（对指定敌人）」（那是从别的效果借来的尾巴）。
+- **校验**：没选 = 错误；不像 `event:/…` = 错误；不在候选表里 = **提示**（不拦 —— 候选只是
+  「本体用过的一批」，路径不存在时游戏里只是不放声音）；音量 > 200% = 警告。
+- **回读**：生成时写 `// CET:Sfx=路径 CET:SfxVolume=音量`，`ProjectRecovery` 按它认回来
+  （`SfxCmd.Play(` 那一句归到「整段跳过」白名单）；自检里跑了一遍完整「生成 → 回读」。
+- ⏸ **没做**：放**你自己上传的音频文件**。本体声音必须走 FMOD，而自建 FMOD 事件需要 bank
+  （模组注册不了新事件），只能绕开 FMOD 用 Godot `AudioStreamPlayer` 加载 `res://` 音频 ——
+  那要新加「上传音频素材 → 打进模组 → Godot 导入」一整套链路。用户要就做。
+
+### 播放音频文件（我上传的）（V0.2.155）
+
+用户拍板要做「放自己的音频」。做法**绕开 FMOD** —— 本体自己的声音全是 FMOD 事件，而模组**注册不了
+新的 FMOD 事件**（事件编译进 `banks/desktop/*.bank`，bank 里存的还是事件 GUID：把 42MB 的 bank
+全文扫过一遍，一个 `event:/` 字符串都没有）。所以：
+
+- **素材**：`AudioAssetSpec`（`Name` = 显示名兼生成用的 Key、`File` = 用户本机绝对路径、
+  `Key` = 名字去非法字符 + 原扩展名）+ `CharacterProfile.AudioAssets`；
+  「美术资源」页底部新增「**音效 / 音频**」区（列表 + 上传 / 删除），上传只是**记住本机路径**，
+  生成时由 `ArtGenerator.Generate` 复制到 `<工程>/audio/<Key>`（文件不在本机 / 扩展名不认都只警告并跳过）。
+  导出预设本来就是 `export_filter="all_resources"`，所以 `audio/` 下的东西会一起打进 PCK。
+- **效果种类**：`PlaySoundFile`「播放音频文件（我上传的）」（数值 = 音量%），
+  `CSharpCodeGen.EmitPlaySoundFile` 生成（整段包在 `{ }` 里 → 同一方法里出现两次不撞名）：
+
+  ```csharp
+  {
+      var __sfx = new AudioStreamPlayer();
+      __sfx.Stream = GD.Load<AudioStream>("res://audio/my_voice.ogg");
+      __sfx.VolumeDb = Mathf.LinearToDb(1.0f);
+      ((SceneTree)Engine.GetMainLoop()).Root.AddChild(__sfx);   // 模型不是 Node，挂场景根上最稳
+      __sfx.Finished += __sfx.QueueFree;                        // 放完自己回收
+      __sfx.Play();
+  }
+  ```
+
+  四条链（卡牌 / 遗物 / 药水 / 状态）共用；`NoDynamicVarKind` / `NextTurnMeaningless` /
+  `EffectFieldPolicy.UsesUpgradeAmount` 三份清单同步。
+- **校验**：没选 / 条目被删 / 文件不在本机 / 扩展名不认（`.ogg .oga .mp3 .wav` 才认，
+  别的按 `.ogg` 命名并报错）/ 同名两条互相覆盖（警告）/ 音量 > 200%（警告）。
+- **回读**：认 `// CET:SfxFile=<文件名> CET:SfxVolume=<音量>` 标记，
+  **并且从工程 `audio/` 目录把音频清单也认回来**（否则恢复出来的存档下次生成会丢文件）。
+- ⚠ 顺手修掉 V0.2.154 的一个漏洞：`PowerTriggers.SupportedEffectKinds`（状态触发器白名单）
+  漏了 `PlaySfx` → 「状态里放本体音效」被校验器拦着**根本用不了**（生成端其实已实现）。
+  这一版把 `PlaySfx` / `PlaySoundFile` 都补进去了。
 
 ### 获得指定 / 随机药水
 
@@ -386,15 +474,22 @@
 遗物 / 药水给 `{Damage}`（它们不能升级）。一个候选直接插入，多个就弹菜单让你挑，
 插到光标处（选中一段就替换那段）。
 
-#### 遗物 / 药水 / 额外资源量右栏的**效果栏**：默认折叠成一行
+#### 遗物 / 药水 / 额外资源量右栏的**效果栏**：和卡牌页同一个版式（V0.2.144）
 
-V0.2.137 起，这三页右侧效果栏的每条效果**默认只显示一行摘要**（效果种类 + 数值 / 升级增量 /
-作用对象 / 条件…），左边一个小三角 `▶`、右边写着「展开」。
+用户原话：「遗物药水右侧的效果栏能不能同步卡牌的」→ 拍板 A：**三页右侧照卡牌页版式重做**。
 
-- **点那一行就展开**完整编辑区（再点一下收起）——展开区里用的还是原来那套编辑器，改值照旧。
-- 加 / 删效果之后新加的那条也是**折叠态**，想改就先点开它。
-- 折叠 / 展开只是**界面状态**（不写进存档），所以对生成结果、对老存档都没有任何影响。
-- ⚠ 卡牌页 / 诅咒页 / 先古卡页的效果编辑器**没有**这个折叠（用户没提，保持原样）。
+- **上面 = 一行摘要列表**（固定高度 140px）：每一行就是这条效果的「效果种类 + 数值 / 升级增量 /
+  作用对象 / 条件…」（`EffectSpec.Display`，和卡牌页同一个写法）；
+- **下面 = 一整块共享编辑区**：点上面任意一条 → 下面立刻变成它的完整编辑区（用的还是原来那套
+  编辑器模板，一个字都没重写）；**单条效果自己的「条件」就在这块编辑区里**（以前是右下角单独一块，
+  现在撤掉了 —— 和卡牌页一样，条件跟着每条效果走）；
+- **加 / 删效果**：点「添加效果」加出来的那条会**自动选中**，下面那块编辑区直接就是它，可以马上改；
+- ⚠ **V0.2.137 那套「每条效果折叠成一行摘要、点开才展开」已经撤掉**（`EffectSpec.IsExpanded`
+  这个纯界面标记也一并从模型里删了）：它虽然精简，但版式和卡牌页不一样，而且「整行是一颗 Button」
+  会把 `ListBoxItem` 的点击吃掉（V0.2.143 那个「条件选完存不住」的真因）—— 改成现在这个版式之后，
+  行的点击是原生行为，那个坑**从结构上没有了**；
+- ⚠ 卡牌页 / 诅咒页 / 先古卡页本来就是「一行摘要列表 + 一块共享编辑区」，这次**一个字都没动**；
+- 版式改动**不碰**存档 / 生成端 / 回读：摘要是 `EffectSpec.Display`（一直就有），点的还是同一条效果。
 
 #### 卡牌：**「自动填入」** 和 **「升级后的自定义描述」**
 
@@ -1026,7 +1121,7 @@ V0.2.128 起，回读还会把**生成出来的「锻造节点图」那几段方
 | 【关系符】 | 右值 |
 
 可用量和【数值】模块**完全同一套**（`X` = 当前所有能量、`Y` = 当前所有额外资源量、一个字母的自定义参数、
-21 条内置只读量），语法也一样（`+ - * / % ( )` 和 `min/max/floor/ceil/round/abs`）。三种写法：
+80 条内置只读量），语法也一样（`+ - * / % ( )` 和 `min/max/floor/ceil/round/abs`）。三种写法：
 
 | 你填的 | 生成出来 |
 |---|---|
@@ -1084,7 +1179,7 @@ V0.2.128 起，回读还会把**生成出来的「锻造节点图」那几段方
   `PetGuardOn` / `PetGuardOff`）**在节点图里选了会被报错拦住**，报错里写清「换成节点图支持的种类」或者
   「把这一项从锻造页移出去（不勾「锻造」）之后到「卡牌 / 药水 / 遗物」页的效果列表里配（那边支持全部 65 种）」。
 - 编辑器上有、但节点图这一版**不生成**的栏位也报错说清（例如生成卡牌的「按范围随机 / 范围限定 / 多选1 /
-  附加处理 / 加关键词」、「取几张 = 最多 N / 任意张」、「从哪里选牌 = 抽牌堆 / 弃牌堆」、
+  附加处理 / 加关键词」、「取几张 = 最多 N / 任意张 / 全部」、「从哪里选牌 = 抽牌堆 / 弃牌堆」、
   「复制的份数」、「直接把缓慢设成 N%」、非「格挡 / 抽牌 / 施加状态」的「下回合生效」、
   以及卡牌专属的「升级增量 / = X / = 本状态层数 / 条件选项」）。
   —— 也就是说「选了却生成不出来」这一类静默坑，现在一定会在「配置检查」里看到一条错误。
@@ -1494,7 +1589,8 @@ else
 
 | 触发时机 | 本体钩子 | 遗物侧守卫 |
 |---|---|---|
-| 打出一张牌后 | `AfterCardPlayed` | `cardPlay.Player != base.Owner` → 返回 |
+| 打出一张牌时（这张牌还没生效） | `BeforeCardPlayed`（**V0.2.157 改的**，见下） | `cardPlay.Player != base.Owner` → 返回 |
+| 一张牌结算完毕时 | `AfterCardPlayedLate`（旧版的「打出一张牌后」） | 同上 |
 | 消耗 / 抽到 / 弃掉一张牌后 | `AfterCardExhausted` / `AfterCardDrawn` / `AfterCardDiscarded` | `card?.Owner?.Creature != base.Owner.Creature` → 返回 |
 | 自己失去生命时（每一下） | `AfterCurrentHpChanged` | 只认自己 + `delta < 0`（回血不算）；钩子没给 context → 自己造 |
 | 自己获得格挡后 / 敌人获得格挡后 | `AfterBlockGained` | 只认自己 / 只认敌人；自己造 context |
@@ -1542,6 +1638,34 @@ else
 | 生成卡牌时 | `AfterCardGeneratedForCombat(CardModel card, Player? creator)` | 遗物 + 自定义状态 | 每生成一张触发一次 |
 | 某个状态层数到达 N 层时 | `AfterPowerAmountChanged(choiceContext, power, amount, applier, cardSource)` | 遗物 | 层数**跨过 N** 那一下（见下） |
 
+### ⚠ V0.2.157：「打出一张牌时」必须是**结算前**（`BeforeCardPlayed`）
+
+用户报：「状态监听『打出一张牌时』会监听**施加这个状态的牌** —— 那一档实际是『打出一张牌后』，
+和『一张牌结算完毕时』几乎一样」。
+
+本体打一张牌的顺序（`CardModel`）：
+
+```
+Hook.BeforeCardPlayed(cardPlay)   ← 打出的那一刻，这张牌还没结算
+   ↓ OnPlay(...)                  ← 卡自己的效果（「施加状态」就在这一步）
+   ↓ Hook.AfterCardPlayed(...)    ← 结算完才回调：内部先 AfterCardPlayed 再 AfterCardPlayedLate
+```
+
+工具那一档原来生成的是 `AfterCardPlayed` ⇒ 同一张牌施加的状态在它自己身上立刻触发了一次。
+**改法**：`CardPlayed` → **`BeforeCardPlayed`**（结算前 ⇒ 它自己施加的状态还不存在 ⇒ 不会自己触发自己），
+老语义留成新时机 **`CardResolved`** → `AfterCardPlayedLate`（旧工程回读也落到这一档，语义不变）。
+
+- ⚠ `BeforeCardPlayed(CardPlay)` 本体**不给** `choiceContext` → 生成端按本体做法自己造
+  `HookPlayerChoiceContext`（复用 `BootstrapInCombat` / `TriggerHasChoiceContext`，和「花掉能量 /
+  自己失去生命」同一套）；只有该时机的效果**真的需要** context 时才造。
+- 状态侧 / 遗物侧 / 锻造页遗物档**三处菜单、签名、归属守卫**同步；回读：
+  `BeforeCardPlayed → CardPlayed`、`AfterCardPlayed`/`AfterCardPlayedLate → CardResolved`
+  （并加进 `RelicHookIsTrigger`、纳入 CardFilter 与分段回读）。
+- 卡牌链两条时机共用抽出来的 `EmitCardPlayedItems`（免得两处漂移）。
+- 自检 5 条钉住（生成的是 `BeforeCardPlayed` 且没有 `AfterCardPlayed` / 需要 context 时造了 bootstrap /
+  `CardResolved` 生成 `AfterCardPlayedLate` / 三处菜单显示名一致 / 遗物侧签名 + `HasContext` +
+  `BootstrapInCombat` 口径）。
+
 ### 「某个状态层数到达 N 层时」
 
 选了这条时机，遗物详情里会多出两栏：「**盯哪个状态**」和「**到达 N 层**」。
@@ -1560,6 +1684,23 @@ else
   `// CET:PowerWatch=<状态类名> CET:PowerReach=<N>m`（守卫语句以后改写法也不会丢配置）。
 - 校验器：N ≤ 0 报错；没选状态给提示（说清「任何状态都触发」）；**没选这个时机却填了这两个值**也会提示
   「不生效」（不静默）。
+- ⚠ **V0.2.152 修的两个坑**（用户实测报的，两件事同一个病根）：
+  1. `CSharpCodeGen.TriggerSupportsAmount` 漏了 `PowerReached` → **界面上根本没有 N 输入框**
+     （`ShowTriggerAmountField` / relic 的 `ShowAmountField` 全 false）→ N 永远停在默认值 **1**，
+     生成出来是「跨过 **1** 层那一下触发」：用户按 1→2→3 涨上去只在第一层触发过一次，**到 N 层时不再触发**
+     （「我状态层数达到了却没生成卡牌」）；状态描述里印的是下拉菜单那个**字母 N**
+     （「在游戏中怎么也是 N，而不是填的数」）。现在这一档补进名单（**不算**计数族 ——
+     `TriggerAmountNeedsScope` 用的是 `CountExpr`，所以不会误显示「本回合 / 本场战斗」），
+     两侧标题都写「到达 N 层（层数跨过这一层那一下触发）」。
+     ⚠ 这一改会让遗物那条路为 `PowerReached` 多写一行 `// CET:TriggerAmount=` →
+     **多时机（全部满足 / 任一满足）的段落切分会多切出一条时机**（自检实测 2 条变 3 条），
+     所以两处标记条件都加了 `&& id != "PowerReached"`（它的 N 由 `CET:PowerReach=` 记着，不会丢）。
+  2. 生成守卫以前**无条件**写 `power != this`（排除这只状态自己）→ 自定义状态「盯**自己**这只状态」
+     永远不成立。现在**显式盯到自己**时去掉它（`CustomPowerGen.SelfClassName` 按生成期的 `_powerOwner`
+     反查类名）；留空 = 任意状态 / 盯别人时照旧排除自己。自己触发自己不会死循环：
+     「跨过 N 那一下」这个判据本身就挡住（4 层时 `4-1=3` 不 `< 3`）。
+- `PowerTriggers.TriggerLine` 现在把 N 直接写进文字（「某个状态层数到达 3 层时（盯：自己的××状态）」），
+  界面那一行与游戏里的状态描述共用它；开发探针 `forge --powerprobe D:\out.cs` 可以直接看生成源码 + 自动描述。
 
 ### 「某个状态被移除时」（遗物 + 状态两边）—— 这条要自己打补丁
 
@@ -1578,6 +1719,19 @@ else
 1. 该生物所属**玩家身上的遗物**里配了这条时机的那些；
 2. 该生物身上**还留着**的自定义状态里配了这条时机的那些；
 3. **被移除的那个状态自己**（它已经从 `Powers` 里摘掉了，所以单独判一次 —— 「我这个状态被移除时」也能用）。
+
+> ⚠ **通知范围 = 这一场战斗里的所有生物**（V0.2.164 修，用户实测报的「状态里监听某状态被移除时无法触发」）：
+> 老写法只遍历 `power.Owner` **那一只**身上的状态 / 它所属玩家的遗物 ⇒
+> 「挂在你自己身上、盯**敌人**身上的状态被移除」的配置**永远收不到通知** ——
+> 而 UI 允许「盯：任意敌人」，生成出来的守卫里也真写着
+> `power.Owner != base.Owner && …HittableEnemies.Contains(power.Owner)`，那一支就是**死代码**。
+> 现在遍历 `CombatState.Creatures`（拿不到战斗状态就退回它自己），每条时机**自己的守卫**照旧筛
+> （每只生物只发一次，不会重复触发；「被移除的那个就是自己」那一段留在循环**外面**）。
+> 另外：当时还用真引擎 dll 实测过 Harmony **能**打上这个补丁（`[HarmonyPatch(typeof(PowerModel), "RemoveInternal")]`
+> 打完后 `GetPatchInfo` 非空）—— 所以问题不在补丁本身，而在通知范围。
+> 排查用：打开「生成调试日志」后，补丁会往游戏日志写一行
+> `[模组调试] 状态被移除：XxxPower（通知了 N 个盯这条时机的遗物 / 状态）` ——
+> `0` = 一个都没通知到（存档里没配 / 补丁文件没生成），`≥1` = 通知到了、问题在那条时机自己的守卫里。
 
 转发的方法是个普通方法（不是 `override`）：
 
@@ -1637,7 +1791,8 @@ public async Task OnForgePowerRemovedAsync(PowerModel power) {
 
 - **留空 / 填 0 = 老行为**（每次都触发）；填 N 就是上面表里的意思。输入框下面那行灰色小字随时告诉你
   现在是什么状态（例：`现在每累计 3 次触发一次，范围 = 本回合。`）。
-- 这栏只能填**数字**（公式只做在卡牌上）；遗物和状态两边是**同一套**。
+- 这栏（**触发时机上的数值**）只能填**数字** —— 它和效果里的「数值公式」是两回事；
+  遗物和状态两边是**同一套**（V0.2.164 起效果里的「数值公式」三条链都能写，见「数值公式」那一节）。
 - **状态页**可以给同一个状态配好几条时机，**每条各有自己的一份数值**。
 - 界面上的坑（V0.2.107 修）：以前在编辑器里把触发时机换掉之后，这一栏**不会当场出现**，
   得重新在左边列表里点一次遗物 / 状态才看得到 —— 现在换完时机它立刻出现（自检里有真的去动那个下拉的用例守着）。
@@ -1814,20 +1969,46 @@ CombatManager.EndCombatInternal 的顺序：
 > （只做在卡牌上 —— 遗物 / 药水 / 诅咒 / 自定义状态的编辑器里不显示这块清单，填了也会被校验器拦住。）
 
 这些是**运行时的实时读数**（每次求值都不一样），所以不像参数那样要先在「自定义参数 / 组」页定义 ——
-直接把它们当变量写进公式就行（大小写不敏感）。数据来源几乎全是本体现成的 API，**只有最后一条需要工具自己打补丁**：
+直接把它们当变量写进公式就行（大小写不敏感）。数据来源**几乎全**是本体现成的 API，**只有「获得的能量」那两条需要工具自己打补丁**。
+完整清单（每条带中文说明）以界面上那个「可用量」小框为准（= `FormulaBuiltins.All`，V0.2.162 起共 **80 条**），
+**逐条出处 / 表达式 / 口径**列在 `docs/VANILLA_STATE_PARAMS.md`（那次「挖掘本体所有参数」的结果表）。
 
 | 名字 | 是什么 | 底层 |
 |---|---|---|
-| `Turn` | 自己这一侧的第几回合 | `PlayerCombatState.TurnNumber` |
+| `Turn` | 自己这一侧的第几回合（额外回合 +1；「第一回合」只能判它） | `PlayerCombatState.TurnNumber` |
 | `Round` | 当前战斗轮数（所有单位各走一次算一轮） | `ICombatState.RoundNumber` |
-| `HandCount` / `DrawCount` / `DiscardCount` / `ExhaustCount` | 手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆的张数 | `CardPile.GetCards` / `PileType.X.GetPile(...)` |
-| `DiscardedThisTurn` / `DiscardedThisCombat` | 本回合 / 本场战斗**丢弃**的牌数 | `CombatHistory` 的 `CardDiscardedEntry` |
-| `ExhaustedThisTurn` / `ExhaustedThisCombat` | 本回合 / 本场战斗**消耗**的牌数 | `CardExhaustedEntry` |
-| `GeneratedThisTurn` / `GeneratedThisCombat` | 本回合 / 本场战斗**生成**的牌数（**复制出来的也算**） | `CardGeneratedEntry` |
-| `EnergySpentThisTurn` / `EnergySpentThisCombat` | 本回合 / 本场战斗**花掉的能量** | `EnergySpentEntry` |
-| `StarsGainedThisTurn` / `StarsGainedThisCombat` | 本回合 / 本场战斗**获得的额外资源量** | `StarsModifiedEntry`（只数正数） |
-| `EnergyGainedThisTurn` / `EnergyGainedThisCombat` | 本回合 / 本场战斗**获得的能量**（回合开始把能量补满的那部分**不算**） | 工具自己打补丁记（见下） |
-| `PowersOnMe` | 自己身上的状态数量（不含本体内部状态） | `Creature.Powers` 里 `IsVisible` 的那些 |
+| `HandCount` / `DrawCount` / `DiscardCount` / `ExhaustCount` | 手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆的张数（**战斗外读成 0**） | `PlayerCombatState.Hand/DrawPile/DiscardPile/ExhaustPile` |
+| `DeckCount` / `DeckUpgradableCount` | **牌组**张数 / 牌组里还能升级的张数（跨战斗，不是战斗里的牌堆） | `Player.Deck` |
+| `Hand*Count` / `Deck*Count` | 手牌 / 牌组里**某一类**牌的张数（`Attack` / `Skill` / `Power` / **`Status`** / `Curse` 五种写法，例：`DeckStatusCount` = 拥有的状态牌数） | `…Cards.Where(c => c.Type == CardType.X).Count()` |
+| `MyHp` / `MyMaxHp` / `MyHpMissing` / `MyBlock` | 自己当前生命 / 最大生命 / 已损失的生命 / 当前格挡（`My` 前缀是为了不和参数页那几个**可指定目标**的来源重名） | `Creature.CurrentHp/MaxHp/Block` |
+| `MyEnergy` / `MyEnergyMax` / `MyStars` / `MyGold` | 当前能量 / 能量上限（含加成） / 额外资源量 / 金币 | `PlayerCombatState.Energy/MaxEnergy/Stars`、`Player.Gold` |
+| `RelicCount` / `PotionCount` / `PetCount` / `OrbCount` | 遗物 / 药水 / 伙伴 / 充能球的数量 | `Player.Relics`、`Player.Potions`、`PlayerCombatState.Pets`、`OrbQueue.Orbs` |
+| `PowersOnMe` / `BuffsOnMe` / `DebuffsOnMe` | 自己身上状态 / 增益 / 减益的数量（只数会对玩家显示的；增益减益按**当前层数**判定） | `Creature.Powers` + `IsVisible` / `TypeForCurrentAmount` |
+| `EnemyCount` / `HittableEnemyCount` / `EnemyTotalHp` | 活着的敌人数 / 可被攻击的敌人数 / 敌人总生命 | `CombatState.Enemies/HittableEnemies` |
+| `Floor` / `ActFloor` / `ActNumber` / `Ascension` | 总层数 / 本幕层数 / 第几幕（从 1 数） / 升华等级 | `IRunState.TotalFloor/ActFloor/CurrentActIndex/AscensionLevel` |
+| `DamageDealtTotal` / `DebuffsAppliedTotal` | **本局累计**造成的伤害 / 施加的减益次数（跨战斗） | `Player.ExtraFields` |
+| `PlayedThisTurn` / `PlayedThisCombat` | 本回合 / 本场战斗**打出的牌数**（`CardPlaysStarted` 口径：**含正在打出的这一张**；重放各算一次） | `History.CardPlaysStarted` |
+| `Attacks/Skills/PowersPlayedThisTurn`·`ThisCombat` | 打出的攻击 / 技能 / 能力牌数 | 同上 + `CardType` 过滤 |
+| `DrawnThisTurn` / `DrawnThisCombat` | 抽到的牌数 | `CardDrawnEntry` |
+| `DiscardedThisTurn` / `DiscardedThisCombat` | **丢弃**的牌数 | `CardDiscardedEntry` |
+| `ExhaustedThisTurn` / `ExhaustedThisCombat` | **消耗**的牌数（= 你说的「本回合消耗的手牌」） | `CardExhaustedEntry` |
+| `GeneratedThisTurn` / `GeneratedThisCombat` | **生成**的牌数（**复制出来的也算**） | `CardGeneratedEntry` |
+| `CopiedThisTurn` / `CopiedThisCombat` | 复制的牌数（本体把复制记成「生成」，所以和上面同值） | 同上 |
+| `DamageDealtThisTurn` / `DamageDealtThisCombat` | 造成的伤害（**只算没被格挡的**，排除自伤） | `DamageReceivedEntry.Result.UnblockedDamage` |
+| `DamageTakenThisTurn` / `DamageTakenThisCombat` | 受到的伤害（只算没被格挡的） | 同上（按 `Receiver` 数） |
+| `BlockGainedThisTurn` / `BlockGainedThisCombat` | 获得的格挡 | `BlockGainedEntry` |
+| `EnemiesKilledThisTurn` / `EnemiesKilledThisCombat` | 被自己打死的敌人数（按**致死的那一下**记） | `DamageReceivedEntry.Result.WasTargetKilled` |
+| `EnergySpentThisTurn` / `EnergySpentThisCombat` | 花掉的能量 | `EnergySpentEntry` |
+| `StarsGainedThisTurn` / `StarsGainedThisCombat` | 获得的额外资源量 | `StarsModifiedEntry`（只数正数） |
+| `StarsSpentThisTurn` / `StarsSpentThisCombat` | 花掉的额外资源量 | 同上（只数负数） |
+| `SummonedThisTurn` / `SummonedThisCombat` | 召唤量 | `SummonedEntry` |
+| `EnergyGainedThisTurn` / `EnergyGainedThisCombat` | 获得的能量（回合开始把能量补满的那部分**不算**） | 工具自己打补丁记（见下） |
+| `XSpent` / `YSpent` | 这张牌**花掉的**能量 / 额外资源量（V0.2.158；**不是那种费用 = 0**，V0.2.159 加的先判再调）—— 和 `X` / `Y`（当前值）不是一回事，见下 | `CardModel.ResolveEnergyXValue` / `ResolveStarXValue`（⚠ 本体这两个方法**不是 X 费就抛异常**，所以生成时必须先判 `EnergyCost.CostsX` / `HasStarCostX`） |
+
+> ⚠ `X`（当前能量）/ `Y`（当前额外资源量）读的是**打出这张牌那一刻剩下的** —— 本体**先扣费再跑效果**
+> （`PlayCardAction`：`await SpendResources()` → `OnPlay`），所以「X 费 / Y 费」的牌在效果里读 `X` / `Y`
+> 会读到 **0**（次数被 `Math.Clamp(…, 1, 20)` 夹成 1）。要「这张牌花掉的那个数」必须用 `XSpent` / `YSpent`；
+> 写错时校验器会给警告（详细来龙去脉见「次数类数值也能写公式（卡牌上）」那一节）。
 
 - **「获得的能量」为什么要自己记**：本体只在 `PlayerCombatState.Energy` 上放一个当前值（外加一个
   `EnergyChanged` 事件），战斗历史里也只有「花掉能量」（`EnergySpentEntry`），**没有「获得了多少」**。
@@ -1862,6 +2043,17 @@ CombatManager.EndCombatInternal 的顺序：
 校验器会给一句提示说清这一点。
 
 - 写法、参数、内置只读量和「数值公式」**完全一样**（`M`/`N`、`X`/`Y`、`Turn`/`HandCount`/`DiscardedThisTurn`…）；
+- ⚠ **「这张牌花掉的」要用 `XSpent` / `YSpent`，不能用 `X` / `Y`**（V0.2.158）：本体打一张牌是
+  **先扣费、再跑效果**（`PlayCardAction`：`await _card.SpendResources()` → `OnPlayWrapper`），
+  所以效果跑的那一刻 `X` / `Y` 读到的是**扣完剩下的** —— 「Y 费」的牌读 `Y` = 0，
+  `Math.Clamp(…, 1, 20)` 把它夹成 **1**（用户实测原话：「在次数填 Y（额外资源量）时，只会触发一次」）。
+  想用「这张牌**花掉**的」就填 `XSpent`（= 本体 `ResolveEnergyXValue()`）/ `YSpent`（= `ResolveStarXValue()`），
+  例：Y 费牌「生效次数 = `YSpent`」= 花掉几点额外资源量就重复几遍。
+  ⚠ 生成的是**先判再调**的三元（`base.HasStarCostX ? … : 0m` / `base.EnergyCost.CostsX ? … : 0m`）：
+  本体这两个方法**不是 X 费就抛异常**，不判就会在战斗中崩（V0.2.159 修）；不是那种费用的牌上读出来是 0。
+  校验器对「X 费 / Y 费 + 公式里真的用到 `X` / `Y`」的牌给**警告**（判据按标识符边界，
+  `YSpent` 里的 `Y` 不算 —— 用现成的标识符表会误判，踩过）；对「用了 `XSpent` / `YSpent` 但牌不是那种费用」
+  也给警告（读数恒为 0）；
 - 算出来的次数一律**夹到 1 ~ 20**（和固定值那条同样的上限，免得公式算出 999 把一局卡死）；
 - 卡面印的是**公式本身**（「重复 Turn 次」「对随机敌人 2 + HandCount 次」）；
 - **命中次数公式在三种作用对象上都会生效**（V0.2.110 修的坑）：
@@ -1877,8 +2069,12 @@ CombatManager.EndCombatInternal 的顺序：
 > （用户要求《卡牌页优化.md》右侧③）。X 这个能力**没丢**，改在这几个公式框里写：
 > 「数值（公式）」写 `X`、「次数公式 · 生效次数」写 `X`、「次数公式 · 命中次数 / 对群数」写 `X`。
 > 老存档里勾过那三个开关（`AmountIsX` / `TimesIsX` / `RepeatIsX`）的字段一个都没删，照旧读得回来、照旧生成。
-> 对不是那 5 种公式效果的种类（抽牌 / 生成 / 消耗…），「数值（公式）」栏**只认光秃秃一个 `X`**
-> （= 原来的「数值 = X」，生成出来的代码与老勾选框**逐字相同**）；写别的式子「配置检查」会报错拦住。
+> 对不是那 5 种公式效果的种类（抽牌 / 生成 / 消耗…），「数值（公式）」栏**只认两种写法**：
+> ① 一个**纯数字 / 能折成常数的式子**（例：`1`、`2+3`、`=1`）—— 它就是左边的固定数值，
+> 工具在**打开存档 / 校验 / 生成之前自动折好**（V0.2.146 起；以前这种写法被直接报错拦住，
+> 用户实测报过「数值公式就不能填纯数值吗」）；
+> ② 光秃秃一个 `X`（= 原来的「数值 = X」，生成出来的代码与老勾选框**逐字相同**）。
+> 写别的式子（`M*3` / `HandCount`…）「配置检查」会报错拦住。
 - 和「= X / = 层数」那几个开关**不能同时用**（都是「改用算出来的值」），校验器会报错；
 - **只做在卡牌上**：遗物 / 药水 / 诅咒 / 自定义状态的触发时机里，代码链上没有那两个「自己 / 玩家」的局部变量，
   所以填了会**报错拦住**（和「数值公式」同一条规矩）；
@@ -1953,6 +2149,68 @@ decimal __pM = __fgSelf?.MaxHp ?? 0;   // M= 自己的最大生命
 await DamageCmd.Attack((__pM * (3m))).FromCard(this, cardPlay).Targeting(cardPlay.Target)…
 ```
 
+## 公式里的 `X` / `Y` 读的是「剩下的」，要「花掉的」用 `XSpent` / `YSpent`（V0.2.158）
+
+用户实测报的：「**在次数填 Y（额外资源量）时，只会触发一次**」。
+
+- 本体打一张牌的顺序（`PlayCardAction`）是 **`await _card.SpendResources()` → `OnPlayWrapper(...)`** ——
+  也就是**先扣费、再跑效果**。公式是在效果里现算的，所以那一刻：
+  - `Y`（当前额外资源量）= **扣完剩下的**，「Y 费」的牌就是 **0**；
+  - `X`（当前能量）= 同理（「X 费」的牌是 0）。
+- 次数公式算出来 0 之后会被生成端的 `Math.Clamp(__Y, 1m, 20m)` **夹到 1** ⇒ 表现就是「只触发一次」。
+  **不是生成端算错**，是本体时序 —— 所以「让 `Y` 自己变成花掉的那个数」做不到。
+- **修法**：新增两个内置量（「可用量」蓝框里能看到，三个公式框都能用）：
+
+  | 写法 | 意思 | 生成出来是 |
+  |---|---|---|
+  | `XSpent` | 这张牌**花掉的能量** | `(base.EnergyCost.CostsX ? (decimal)base.ResolveEnergyXValue() : 0m)` |
+  | `YSpent` | 这张牌**花掉的额外资源量** | `(base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)` |
+
+  这两个读的是本体**自己缓存的**「这张牌花掉了多少」（扣费时记下的），扣费之后再读也不会变 0。
+  例：Y 费牌「生效次数（公式）」填 `YSpent` ⇒ 花掉几点额外资源量就重复几遍。
+  ⚠ **必须先判再调**（表达式里那个三元）：本体这两个方法**不是 X 费就直接抛异常**
+  （`CardModel` 第一句就是 `if (!EnergyCost.CostsX) throw new InvalidOperationException(...)` /
+  `if (!HasStarCostX) throw ...`）—— 不判的话，普通牌上写一次 `YSpent` 就会在战斗中抛
+  `InvalidOperationException`（V0.2.159 修的；同一个坑 V0.2.131 在「费用填 X」那条路上踩过一次）。
+  所以在**不是那种费用**的牌上，它们读出来是 **0**（不是崩），校验器也会给一句警告说清「这条公式等于没写」。
+- **写错不再静默**：卡牌是「X 费 / Y 费」（费用框里写了 `X`）**且**效果公式里真的用了 `X` / `Y` →
+  校验器给**警告**，写清「本体先扣费再跑效果 ⇒ 那一刻读到 0（次数被夹到 1）」并指向 `XSpent` / `YSpent`；
+  反过来，用了 `XSpent` / `YSpent` 但这张牌**不是** X 费 / Y 费 → 也给警告（读数恒为 0）。
+  判据用**标识符边界**（`YSpent` 里的 `Y` 不算用到 `Y`）：
+  一开始直接用现成的标识符表，结果 `YSpent` 也被当成「用到 Y」，自己写的正例仍然报警告（踩过）。
+
+## 遗物 / 药水 / 自定义状态上也能写「数值公式」（V0.2.164）
+
+用户问的「状态和遗物不能使用公式吗」——以前不能（校验器直接拦住），现在能了。
+
+**为什么以前不能**：公式求值要「自己 / 玩家 / 目标」。卡牌链的做法是「打出这张牌之前先算一批局部变量」
+（`__pM` / `__X` / `__Y` / `__fgPlayer` / `__fgSelf`，见 `ForgeGraphGen.EmitCardFormulaPrologue`），
+而遗物 / 药水 / 自定义状态的执行点（触发器钩子 / `OnUse`）**没有**这套前置。
+但**锻造节点图**（遗物 / 药水那一档）一直能用公式 —— 它走的是**全内联求值**
+（`ForgeFormula.ConditionResolver`：参数就地展开成 `base.Owner…`，不需要任何局部变量）。
+
+于是这一版把三条链接上同一个内联求值（`ForgeFormula.InlineResolver` + `CSharpCodeGen.InlineAmountFormula`）：
+
+| 链 | 「玩家」 | 「自己」 | 「指定敌人」类参数取谁 |
+|---|---|---|---|
+| 遗物 / 药水（`base.Owner` 是 Player） | `base.Owner` | `base.Owner.Creature` | **可打的第一个敌人** |
+| 自定义状态（`base.Owner` 是 Creature） | `base.Owner.Player` | `base.Owner` | **可打的第一个敌人** |
+| 卡牌（不变） | `__fgPlayer` | `__fgSelf` | 玩家选中的那个目标 |
+
+- 支持的种类还是那 5 种（造成伤害 / 获得格挡 / 失去生命 / 回复生命 / 施加增益减益）；
+  其余种类在这三条链上照旧**报错拦住**（数值必须在生成时就定下来）。
+- **显示**：遗物 / 药水的描述是 `{Heal:diff()}`，读的是动态变量的 `PreviewValue`，而它们**没有**
+  卡牌那种「显示前回调」⇒ 生成一个 `__RefreshFormulaPreview()` 挂在 `ExtraHoverTips` 上
+  （本体取悬停说明时一定会读它）现算一遍，悬停看到的就是真实数字；自定义状态的说明是**生成期写死的纯文本**，
+  现算不了 ⇒ 那里**直接印公式本身**（例：「玩家回合开始时：失去 `M/10` 点生命。」）。
+- **回读**：三条链都写一行 `// CET:AmountFormula=<公式>`，`--recover` 原样认回来。
+- **「可用量」小框**：这三条链的效果编辑器里也摆出来了（判据同一个 `ShowAmountFormula`），
+  说明文字按链分口径（`X` / `Y` = **当前**能量 / 额外资源量；「指定敌人」= 可打的第一个敌人）。
+- 坑（真编译抓出来的两个）：① 属性**不能**直接写方法体（`P { 语句; }` 不是合法 C#，报 CS8124），
+  必须写成 `get` 访问器；② 这两条链也要用到 `cs/FormulaVars.cs`（那 5 种的现算变量类）与
+  `cs/ForgeFormulaRuntime.cs`（`Div` / `PowerAmount` / `FirstEnemy` 这些辅助）——
+  漏了就是 CS0246（`UsesFormulaVars` 已扩到遗物 / 药水，另加 `ForgeGraphGen.AnyNonCardFormula`）。
+
 ## 回合结束时自动打出
 
 效果种类里的「**回合结束时自动打出**」：
@@ -2023,6 +2281,55 @@ if (shouldTriggerFatal && attackCommand.Results.SelectMany(r => r).Any(r => r.Wa
    以后再加 / 删 / 拖动别的条目，已经固定的那些名字都不会再变。
 
 > 想手工看一眼「上次构建时这些名字都是谁」，直接打开那个 `.forge_classmap.json` 即可。
+
+### ⚠ V0.2.153：改号和引用必须**在同一拍**里搬（用户报「点构建后目标卡里的东西会变」）
+
+自动类名是**按列表行号**算的（`<角色>Card3` = 普通卡列表第 3 张；诅咒 / 先古各自一套前缀各自数），
+而效果里那些「指着某张卡」的地方存的都是**这个字符串**（`SpawnCardId` 目标卡、
+`AncientRows.AncientCards` 先古卡清单、`Art.CardPortraits` 上传的卡面、锻造图节点的 `SpawnCardId`）。
+
+于是：**先选目标卡 → 之后增删 / 拖动过卡牌 → 行号变、自动名集体改号 → 引用没搬 → 那个字符串
+落到了「同名的另一张卡」身上**。构建时才 `Freeze`（把留空类名按当前行号写实）已经太晚：
+引用里存的旧名字早就不指向原来那张卡了 —— 用户看到的就是「目标卡里的东西变了」。
+
+三处接上（都用生成端同一套 `NameStabilizer.RenumberCardNames` → `RepairCardClassReferences`）：
+
+1. **界面每次重算候选表**（`RefreshCardChoices` → `SyncCardClassReferences`：增删 / 拖动 / 复制 /
+   撤回 / 改名之后都会走）先搬一次，所以界面上**不用等到构建**，目标卡始终是同一张卡；
+2. **构建**（`NameStabilizer.Stabilize`）里顺序固定为 `RepairReferences`（按类名表认名字）→
+   **`RenumberCardNames`（搬引用）** → `Freeze`（写实类名）——`RenumberCardNames` 自己的注释
+   就写着「必须排在 Freeze 之前」，以前漏了；
+3. `Naming.RenumberCardClassNames` 补上**「没填类名」那一支**的旧名映射：以前只更新
+   `LastAutoOrdinal`（第几号）不产出 `旧名 → 新名`，而这一类卡最常见 —— 一改号就搬不动。
+   现在按 `LastAutoOrdinal` 拼出旧名写进 `renamedOut`（`<= 0` 的新卡跳过，不产生 `…Card0` 假映射）。
+   `LastAutoOrdinal` 是 `[JsonIgnore]`，界面每次刷新候选表（含载入存档）都会被写实，所以开着存档改列表也准。
+
+自检 3 条钉住（含反向）：插一张卡后引用搬到同一张卡的新编号；**反向**断言老名字现在属于另一张卡
+（把用户看到的现象钉死）；构建那条路冻出来的类名与引用一致。
+反向验证：临时关掉第 3 处 → 3 条 FAIL（引用停在 `SevenCard3`，主人变成「挪卡2」），打开即 0 FAIL。
+
+### ⚠ V0.2.156：**拖动**卡牌这条路上，卡面（按类名存）会跟错人 —— 三层 bug
+
+用户报「在卡牌列表拖动卡牌后，卡面会变成其他卡」。卡面存在 `Art.CardPortraits[类名]`，
+而自动类名按**行号**算 ⇒ 名字没跟卡走 = 图跟错人。三层叠在一起：
+
+1. **时机**：拖动的落点是 `Cards.Move → RefreshCardOrdinals() → SyncDetail()`，而
+   `RefreshCardOrdinals` 会把 `LastAutoOrdinal`（= 上次的号）就地改成**新**行号 ——
+   可「旧名 → 新名」映射正是靠它算的（见上一节第 3 点）⇒ 先覆盖就永远算不出映射。
+   V0.2.153 把同步点接在 `RefreshCardChoices`，**拖动这条路不走它**。
+   → 现在 `RefreshCardOrdinals()` 的**第一件事**就是 `SyncCardClassReferences()`。
+2. **重入**：搬迁会改 `ClassName` / `LastAutoOrdinal` / `SpawnCardId` → `PropertyChanged` /
+   `CollectionChanged` → `OnCardChanged` / `OnCardsChanged` **重入**刷新 → 又搬一次；
+   重入时号只改了一半 → 算出**部分映射**又搬一遍（实测量到：一次拖动搬了 **4 遍、每次一张**）。
+   → `SyncCardClassReferences` 加 `_syncingCardRefs` 重入保护（搬迁期间重入直接返回），
+   并且 `Naming.RenumberCardClassNames` 改成**两趟**（先算完整张映射表、再动手改卡）——
+   即便有重入也算不出半张表。
+3. **环**：把牌往上拖会让名字成**环**（`[A,B,C]→[C,A,B]`：12→13、13→14、14→1）。
+   「顺序搬 + 目标已有图就跳过」在环上会把刚搬进去的那张图**删掉**（原 12 的图整个丢）。
+   → 搬卡面改成**从零重建新表**（`key → renamed[key] ?? key`），对环天然正确。
+
+自检 3 条走**真实**的 `RefreshCardOrdinals` + `Cards.Move`（不是另写模拟）：拖动后三张卡面各归各卡、
+反向说明「旧名字现在属于另一张卡」、以及**名字成环**时也对。反向验证：关掉重入保护 → 2 条 FAIL。
 
 另外修掉了一个会让「一键构建」**必然失败**的老 bug：宠物效果里的 `<宠物>Cmd` 在生成时是个占位符，
 以前只有普通卡那条路会替换它，**诅咒 / 先古卡 / 遗物 / 药水**的 `CanonicalVars` 会把
@@ -2161,6 +2468,153 @@ public override int MaxUpgradeLevel => int.MaxValue;
 升级增量**有用**（升级后多升级一张）；**全局**那个（改牌组）张数是写死的循环次数，升级增量没用。
 锻造卡（节点图）的【效果】模块**没有「升级增量」栏** —— 「升级后变强」靠把「升级后」那块布单独画一遍。
 
+## 状态挂在谁身上：「自己」就是挂着它的那个单位（V0.2.147）
+
+用户问的：「当状态挂在敌人身上时，状态的自己是不是敌人自己」→ **是**。
+
+| 概念 | 实际是谁（生成的代码里） |
+|---|---|
+| 状态效果里的 **「自己」** | **挂着这个状态的那个单位**（`base.Owner`）。贴在敌人身上时 = **那个敌人** |
+| 状态效果里的 **「单体敌人 / 全体敌人」** | 本体 `CombatState.HittableEnemies` = **玩家视角的敌方那一侧**（绝对的一侧，不随持有者变）。所以贴在敌人身上时，它打的是**它自己和它的同伴** |
+| 「自己受到伤害后 / 自己获得格挡后 / 自己失去生命时」这类时机 | 盯的是**持有者**（挂在敌人身上就盯那个敌人）✓ 能用 |
+| 「玩家回合开始时 / 打出牌后 / 抽到牌后 / 花能量 / 获得金币 / 洗牌…」这类时机 | 钩子传进来的是**玩家**，护栏是 `player != base.Owner.Player` —— 挂在敌人身上时（`Player` 为 null）**永远不触发** |
+| 「敌人回合开始时 / 敌人受伤后 / 敌人死亡后…」这类时机 | 盯的是**敌方那一侧** ✓ 贴在敌人身上能用 |
+
+### 挂在敌人身上会「抛异常、战斗卡住」的效果（校验器会给警告）
+
+自定义状态里凡是**要拿玩家对象**的效果，生成代码都会直接读 `base.Owner.Player`，而本体
+`Creature.Player` **对怪物就是 null**（只有玩家单位那个构造函数会赋值）→ null 传进本体接口 =
+运行时异常 → 战斗卡住（和「没有选牌提示语」同一类问题）。目前是这些（**机械扫生成源码扫出来的**，
+见 `ProfileValidator.PlayerSidePowerEffectKinds`；自检里有一条断言钉着这份清单与生成端一致）：
+
+- 抽牌 / 获得能量 / 获得金币 / 获得额外资源量 / **生成卡牌** / 获得药水；
+- 获得卡牌（全局）/ 变化卡牌（全局）/ 删除卡牌（全局）/ 升级卡牌（全局）；
+- 升级卡牌 / 消耗卡牌 / 丢弃卡牌 / **给予卡牌关键词**；
+- 从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌到手牌、获得卡牌奖励；
+- ⚠ **任何效果只要勾了「概率生效」**也会读 `base.Owner.Player`（掷骰子）→ 同样会抛异常。
+
+**能做「贴在敌人身上的减益 / 标记」的效果**（只跟持有者 / 敌方那一侧有关）：
+造成伤害、失去生命、获得格挡、施加或清除状态、击晕、翻倍层数、暴露、毒性爆发、禁止格挡 / 禁止回复生命、
+临时增益、强化指定卡牌、结束回合、额外回合、召唤伙伴那几种…
+
+要做「为自己附魔」这类状态，请把**施加它的那个效果**的「作用对象」改成「自己」（让状态挂在自己身上）。
+
+## 自定义状态上「生成卡牌」会让战斗卡死（V0.2.145）
+
+**用户原话**：「自定义状态选择生成卡牌会卡死，看看日志和调试日志」。
+
+**日志里的原文**（`%APPDATA%\SlayTheSpire2\logs\godot.log`）：
+
+```
+[ERROR] Combat #1 turn loop died while its combat is in progress; the combat is stuck
+        until the room is restarted:
+        System.InvalidOperationException: No selection screen prompt for POWER.SPARKLE_POWER6.
+   at MegaCrit.Sts2.Core.Models.PowerModel.get_SelectionScreenPrompt()
+   at SparkleMod.SparklePower6.AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)
+   ...
+```
+
+**真因（生成端漏了一条本地化）**：状态的「生成卡牌 + 按范围随机 + 多选1（候选 > 3）/ 从范围里自己挑一张」
+生成出来的代码走的是本体那张**网格选牌界面**：
+
+```csharp
+CardModel? __picked = (await CardSelectCmd.FromSimpleGrid(choiceContext, __candidates, base.Owner.Player,
+        new CardSelectorPrefs(base.SelectionScreenPrompt, 1))).FirstOrDefault();
+```
+
+而本体的 `PowerModel.SelectionScreenPrompt` 和 `CardModel` 是**同一份实现** ——
+读 `powers` 表里的 `<Id.Entry>.selectionScreenPrompt`，**键不存在就直接抛异常**
+（`throw new InvalidOperationException($"No selection screen prompt for {Id}.")`）。
+工具给**卡牌 / 遗物 / 药水**三条链都写了这一条（`LocalizationGen` 里那三处 `NeedsSelectPrompt`），
+**只有自定义状态这条链从来没写**（`PowersJson` 只写 title / description / smartDescription）→
+抛在战斗回合钩子里 → 本轮 turn loop 直接死掉 → **战斗卡住**（只有重开房间才能恢复）。
+
+**修法**（生成端，两处）：
+
+1. `LocalizationGen.PowersJson`：自定义状态的效果里只要有「要弹选牌界面」的，就补一条
+   `<状态>.selectionScreenPrompt`（提示语按效果种类给：多选1 → 「从 N 张中选一张」、
+   自己挑 → 「选择要生成的牌」）；
+2. `NeedsSelectPrompt` 补上「生成卡牌 + **从范围里自己挑一张**」这一档 ——
+   它的候选 > 3 时走的也是那条网格界面，以前连名单都没进（这是同一个卡死的另一半）；
+   同一条规矩对**「放置卡牌 + 取牌方式 = 自己选」**也成立（`SelectPrefsExpr(e, "base.SelectionScreenPrompt", …)`），
+   所以一起补上 —— **卡牌上用这一档同样会卡死**（V0.2.145 第二遍才扫出来）；
+3. 顺带补上**锻造图**：锻造卡 / 锻造药水 / 锻造遗物的效果在**节点图上**（`XxxSpec.Effects` 是空的），
+   以前判断「要不要选牌提示语」时看不到图上的效果 —— 图上放「从某一摞拿牌到手牌 / 预见」同样会卡死。
+   新增 `LocalizationGen.GraphEffects(graph)` 把图上的效果一起算进来。
+
+**自检加了一条「机械扫描」**（`--uicheck` 里那条「凡是生成代码里会读 base.SelectionScreenPrompt 的效果种类…」）：
+把**每一种**效果都按「最想弹选牌界面」的参数（自己选 / 手牌 / 多选1=4 / 从范围自己挑）配一遍，
+分别塞进**卡牌链**和**自定义状态链**、生成源码，只要源码里出现 `base.SelectionScreenPrompt`，
+`NeedsSelectPrompt` 就必须认得它 —— 认不出来当场 FAIL。
+实测扫到 12 处（`GenerateCard`×2 条链、`CopyCard`、`ReplayCard`、`TurnEndPlay`、`Scry`、
+`TakeFromDraw/Discard/Exhaust`、`PlaceCard`、`GiveKeyword`×2 条链），
+写完这条断言它当场抓出漏网的 `PlaceCard(卡牌链)` —— 所以以后谁再加一条这种效果，漏了会立刻红。
+
+**红线①（默认输出不变）**：判据只在真的需要时才加键 —— `--samplegen` 与 V0.2.143 的基线对拍
+**112 个文件逐字节一致**（只差 `ExampleMod.sln` 的随机 GUID）。
+
+**反向验证**：把 `PowersJson` 那两行临时注释掉重跑 `--uicheck` → **3 条 FAIL**
+（就是「状态写出了 selectionScreenPrompt」那三条），改回即 0 FAIL。
+
+**发版（V0.2.145，本地打包，没发 GitHub）**：用户「还是卡死」的原因是**他手上跑的还是 V0.2.143 那版程序** ——
+上一次我只改了仓库、没有打包，所以他用旧程序重新生成的模组依旧缺那条键
+（`D:\ds\s\4\程序文件\Sts2CharForge.Core.dll` 的时间戳停在 10/10 23:30）。
+这一版用 `tools\release_all.ps1 -Version V0.2.145 -NoRelease -NoCommit -Yes` 走了正式打包：
+`4\程序文件` 已更新成 V0.2.145（用户数据 1020 个文件原样放回、旧启动器删掉）、
+更新包 `Sts2CharForge_更新包_V0.2.145.zip`（60.6 MB）已产出，
+并且核对过「部署进去的 `Sts2CharForge.Core.dll` 与本机 Release 构建 **SHA256 完全相同**」——
+所以新程序里确实带着这次的修复。
+
+**探针真编译**（`_tmp` 自造存档、只 `--build` 不 `--install`）：三个状态
+（多选1=4 / 从范围自己挑 / 从某一摞拿牌）生成出来的工程 `dotnet build` **0 错误**，
+`localization/zhs/powers.json` 里三条 `selectionScreenPrompt` 都在，状态源码里读的正是 `base.SelectionScreenPrompt`。
+
+> ⚠ 日志里另外两条（`Missing sprite 'sparkle_power6' in power_atlas`、
+> `Asset not cached: res://images/powers/missing_power.png`）是**另一件事**：这个状态没上传图标。
+> 生成器只在「上传了图标」时才写图集 `.tres` + `images/powers/<状态>.png` 回退图
+> （见「状态 / 遗物图标的『本体回退路径』」那一节），所以没上传就是本体那张 `missing_power` 紫色占位 ——
+> 不影响战斗，想换掉就上传一张状态图标（建议 256×256 方图）。
+
+## 遗物 / 药水 / 额外资源量右侧效果栏：改成和卡牌页同一个版式（V0.2.144）
+
+**用户原话**：「遗物药水右侧的效果栏能不能同步卡牌的」→ 拍板 **A：照卡牌页版式重做**（三页一起改）。
+
+**改成了什么**（现在这四页右侧**形状完全一致**）：
+
+| | 以前（V0.2.137~143） | 现在（V0.2.144） |
+|---|---|---|
+| 列表 | 每条效果一行摘要（▶ + 摘要 + 「展开 / 收起」），点开才在**行内**展开编辑器 | **一行摘要列表**（固定 140px）：每行就是 `EffectSpec.DisplayPlain`（遗物 / 药水不能升级，不显示「（升级 +N）」） |
+| 编辑器 | 摊在列表行里（折叠 / 展开） | 列表**下面一整块共享编辑区**，绑「列表当前选中的那条效果」（和卡牌页同一套：卡牌 `Display` / 这三页 `DisplayPlain`） |
+| 单条效果的条件 | **右下角单独一块**（绑 `SelectedItem`，和列表选择联动） | **跟着这条效果长在编辑区里**（`EffectConditionPlain`，候选表还是 `PlainEffectConditions` 那一份） |
+| 没选中效果时 | 折叠着看不见 | 编辑区里显示一句「点上面一条效果 → 就在这块里改它」（不会凭空冒出一堆开关） |
+| 折叠标记 | `EffectSpec.IsExpanded`（`[JsonIgnore]` 的界面状态） | **已从模型删掉**（这套交互不存在了） |
+
+**为什么这次是「改版式」而不是再修一次补丁**：V0.2.143 修的「条件选完存不住」真因是
+**整行是一颗 `Button`**（点开 / 收起），Button 在冒泡阶段吃掉 `MouseLeftButtonDown` →
+外层 `ListBoxItem` 永远收不到点击 → `SelectedItem` 恒为 null → 靠它取数据的条件框写进空对象。
+现在行换回**普通 `ListBoxItem`**（点一条 = 原生选中），那个结构性原因**从根上没有了** ——
+`OnToggleEffectRow` / `SelectEffectRowOf` / `ListBoxOwningEffect` / `ToggleEffectRow` 整块删掉。
+
+**顺手修掉两处被这次改版暴露出来的老毛病**（都不是这次新引入的，只是以前藏起来了）：
+
+1. **编辑器里的长说明文字横向跑出面板**：`多选1 / 复制的份数 / 重放次数 / 回合结束时 / 缓慢` 那几段
+   提示原本是「一行不换行的超长文字」（卡牌页一直如此，只是没人量过）——现在三页编辑器常显，
+   自检当场抓到（实测宽 788~1027px）。给它们 `MaxWidth="320"` + `TextWrapping="Wrap"` 折行；
+2. **`ContentTemplate` 遇上 `Content=null` 也会把模板实例化**：没选中效果时那些行内 `Visibility`
+   绑定解不出来、停在默认值 `Visible` → 界面上凭空冒出几行开关（自检抓到「遗物页看见了概率独立」，
+   它的 `DataContext` 是 null）。现在三页的编辑区内容用 `NotEmptyToVisibility` 收起，
+   空白位置换成一句指路文字。
+
+**版式改动不碰存档 / 生成端 / 回读**：摘要是 `Display` / `DisplayPlain`（本来就有），
+点的还是同一条效果，`--samplegen` 逐字节不变。
+
+**自检**：`V0.2.144` 相关断言 **44 条**（三页各一组「点行 → 选中 → 编辑区跟着换 → 在编辑区改值真的写回模型 →
+改条件写回模型 → 切走切回还在」+ 「行里没有 Button」+「`IsExpanded` 已删」+ 卡牌页回归），
+Debug `--uicheck` **3334 PASS / 0 FAIL**、发布版（正式 publish 的 exe）**3334 PASS / 0 FAIL**。
+
+> 卡牌页 / 诅咒页 / 先古卡页**没有动**：它们本来就是「一行摘要列表 + 一块共享编辑区」，
+> 这次只是让另外三页跟上来（卡牌页那一条列表用的还是 `DisplayMemberPath="Display"`，因为它能升级）。
+
 ## 遗物 / 药水 / 额外资源量页右下角「单条效果的触发条件」修好了（V0.2.143）
 
 **用户原话**：「遗物的条件选项怎么用不了了」→ 精确化之后是：中间那块「条件选项（整只遗物）」正常，
@@ -2196,6 +2650,10 @@ WPF 里 `Button` 在**冒泡阶段**先处理 `MouseLeftButtonDown` 并置 `e.Ha
 `EffectSpec.Condition.Kind` → 切走再切回**条件还在**（遗物 / 药水 / 额外资源量各一组），
 外加卡牌页回归（卡牌页不误改）与「两处同一个对象」。
 **反向验证**：把新加的那句「选中」注释掉 → `--uicheck` **11 条 FAIL**（3309 → PASS 3328 / FAIL 11）；改回即 PASS 3339 / FAIL 0。
+
+> **V0.2.144 起这一段已经过期**：三页右侧改成了卡牌页那种版式（行不再是 Button、右下角那块条件框也撤了），
+> 所以 `OnToggleEffectRow` / `SelectEffectRowOf` 连同折叠行一起删掉了 —— 同一个毛病从结构上不会再出现。
+> 下面这段留作历史记录（真因分析与当时的修法）。详见上面「V0.2.144」那一节。
 
 ## 生成调试日志（V0.2.142，排查运行期问题用）
 
@@ -2636,8 +3094,16 @@ V0.2.112 起，卡牌上的固定数值在打开存档时会自动**迁成公式
 |---|---|---|
 | **费用**（消耗能量） | `2` / `1+1` / `A+3`（A 是「数值（固定数字）」参数）/ `X` | `base(N, …)`；写 `X` → `HasEnergyCostX => true` + 构造函数写 0 + `ResolveEnergyXValue()` |
 | **额外资源量费用**（费用框右边） | `2` / `1+1` / `Y`；**留空 = 老规矩**（按效果里的负数「花费额外资源量」算） | `CanonicalStarCost => N`；写 `Y` → `HasStarCostX => true` |
-| **升级后费用**（下一行） | 留空 / `0` / `1` / `2`（绝对费用）/ `X+1` | `OnUpgrade()` 里的 `base.EnergyCost.UpgradeBy(差值)`；写 `X+1` → `x = ResolveEnergyXValue() + (base.IsUpgraded ? 1 : 0)`（原来「升级后 X +1」勾选框的等价写法） |
-| **升级后额外资源量费用** | 留空 / 绝对数 | `OnUpgrade()` 里的 `UpgradeStarCostBy(差值)` —— 本体依据：`sts2.dll` 里 `CardModel` 有 `protected void UpgradeStarCostBy(int addend)`（和 `OnUpgrade()` 同一个可见性），另有 `BaseStarCost` / `CurrentStarCost` / `WasStarCostJustUpgraded` 那套机制 |
+| **升级后费用**（下一行） | 留空 / `0` / `1` / `2`（绝对费用）/ `1+1` 这类常量式子 / `X`（= 升级后还是 X，等于不改）/ `X+1` | `OnUpgrade()` 里的 `base.EnergyCost.UpgradeBy(差值)`；写 `X+N` → `x = ResolveEnergyXValue() + (base.IsUpgraded ? N : 0)`（原来「升级后 X +1」勾选框的等价写法） |
+| **升级后额外资源量费用** | 留空 / 绝对数（或常量式子）/ `Y`（= 升级后还是 Y，等于不改） | 填数字 → `OnUpgrade()` 里的 `UpgradeStarCostBy(差值)`（本体依据：`sts2.dll` 里 `CardModel` 有 `protected void UpgradeStarCostBy(int addend)`（和 `OnUpgrade()` 同一个可见性），另有 `BaseStarCost` / `CurrentStarCost` / `WasStarCostJustUpgraded` 那套机制）；填 `Y` → 什么都不生成（本体改不了 X 那一档）；**`Y+N` 做不了**：本体 `UpgradeStarCostBy` 碰到 `HasStarCostX` 的牌会**直接抛异常**，所以那一档由配置检查拦下来说清 |
+
+> **V0.2.148**（用户报的「升级后费用里面填不了 Y 和 X，但是填过之后什么都没有也会报错」）：
+> ① 「升级后额外资源量费用」那一栏以前**只显示绝对数**（填了 `Y` / 填错时绝对数是 null → 框子显示成空，
+> 看着像「填不进去」），而且**清空时没清掉留存的原文**（`UpgradeStarCostFormula`）→ 校验器那句「看不懂」
+> 永远消不掉。现在 getter 认原文、清空/填数字都把原文一起清掉。
+> ② `Y`（= 升级后还是 Y）从「报错」改成**合法**（等价于留空，生成端本来就不写任何东西）；
+> `Y+N` 仍然是错误但换成了说清原因的文案（本体 `UpgradeStarCostBy` 对资源量 X 的牌直接抛异常）。
+> ③ 把 `Y` 填进「升级后费用」（能量那一栏）时，报错里会提示「这一栏是能量费用，Y 请填右边那一栏」。
 
 - **本体 `base(cost, …)` 要的是编译期常量**，所以费用栏只收「数字 / 生成期算得出来的式子 / `X`」；
   读血量、读状态那种**运行时表达式会被「配置检查」明确报错拦住**（说清是哪一张牌的哪一栏）——
@@ -2679,8 +3145,9 @@ V0.2.112 起，卡牌上的固定数值在打开存档时会自动**迁成公式
 - **在「额外资源量」页看得见**（V0.2.127 起；V0.2.124 搬过来之前它在遗物页左上角）：
   那一页左栏底部那块「额外资源量遗物（自动生成的隐藏起始遗物）」里会写明它的类名 + 稀有度，
   并注明它**不在遗物列表里**（那张表只列你自己配的遗物）；
-- **它挂的效果在那一页右栏的「效果栏」**（V0.2.127 新增，用户要求「在右侧增加效果栏」）：
-  效果列表里每条效果直接在列表行里编辑，右下角能选「单条效果自己的条件」，
+- **它挂的效果在那一页右栏的「效果栏」**（V0.2.127 新增，用户要求「在右侧增加效果栏」；
+  V0.2.144 起**版式和卡牌页一样**：上面一行摘要列表，下面一整块共享编辑区点一条就编辑它，
+  这一条效果自己的「条件」也在编辑区里），
   触发时机固定是「战斗开始时」。**只有这一份效果数据**（`Profile.ExtraResource.Effects`），
   里面没有第二份镜像；
 - **「在游戏中隐藏（不显示在遗物栏里）」勾选框**（V0.2.113 新增，V0.2.112 及以前它一直占着遗物栏一格）：
@@ -3069,6 +3536,58 @@ await DamageCmd.Attack(6m)
 - **遗物 / 药水 / 自定义状态 / 锻造链的编辑器外观与绑定没有变**：新摆的那几行对它们恒为收起
   （Auto 行高度 0），它们仍然用原来那两行控件 —— 对拍实测生成文本与 V0.2.131 逐字节一致。
 
+### 三点五、按种类裁剪栏位（V0.2.150）
+
+用户原文：「卡牌页右边的效果栏做的太差了…**造成伤害只需要**数值（公式）/ 升级增量 / 作用对象 /
+命中次数（公式）/ 生效次数（公式）/ 概率（公式）/ 下回合生效 / 随机目标允许攻击同个敌人，
+**其他的都可以隐藏掉**」。
+
+以前有 5 行是**无条件显示**的（增益 / 减益、目标卡、生成到、选牌方式、随机目标允许重复），
+加上「作用对象」对所有种类都摆着 —— 这就是「太差」的来源。现在**每一行都按种类决定**，
+判据是**机械测量**出来的：
+
+| 东西 | 在哪 | 干什么 |
+|---|---|---|
+| 允许清单 | `Core/Effects/EffectFieldPolicy.cs` | 唯一一份「哪种效果显示哪些栏」；**只写允许的**，新效果默认什么都不显示（漏更新会被自检抓住） |
+| 测量器 | `Core/Effects/EffectFieldUsage.cs` | 65 种 × 3 条链 × 47 栏：把某一栏改成特征值 → 重新生成这条效果的代码 → 与基线逐字符比对；`// CET:` 标记行整行删掉（它只是回读记录，不算「读了」） |
+| 命令行 | `forge --fieldmatrix "D:\out.tsv"` | 自己复现这张「哪一栏被读了」的矩阵 |
+
+规矩是**显示的栏位生成端一定读、藏起来的生成端一定不读**，`--uicheck` 对 65 种 × 13 栏
+（卡牌链逐条相等、遗物 / 药水链只许更宽）全量验一遍。这次测量还顺带发现三处
+「生成端在读、界面却藏起来」（等于做不出来），一并摆出来了：「取几张」多 9 种、
+「多选1」多 3 种、「选牌方式」多 3 种（三种全局牌组）。**锻造节点图不受影响**（那边显隐是它自己那套）。
+
+⚠ **同一条规矩的下一半（V0.2.161）**：**藏起来的栏位，文案里也不许写它**。
+用户实测报的「为什么抽卡、获得能量之类的效果种类的对象没了，但是显示的是对敌人」就是漏了这一半：
+`EffectSpec._targetSide` 的**默认值就是 `"Enemy"`**，V0.2.150 把「作用对象」那一行按种类藏了，
+可**列表行行尾**还印着「抽牌 1 **→ 单体敌人**」、**自定义状态描述**里还印着「抽 N 张牌**（对指定敌人）**」——
+显示在说假话，用户自然以为坏了。现在两处都走**同一份判据** `EffectFieldPolicy.UsesTargetSide`：
+- `EffectSpec.Display` 只在该判据为真（且不是宠物效果）时追加 `→ 谁`；
+- `PowerTriggers.EffectText`（状态描述）同理，不再用「`TargetSide == "Self"` 就省略」那种局部写法。
+自检是**全量双条件**：67 种效果逐个建一条 `TargetSide = "Enemy"` 的探针，断言
+「行尾出现 `→ 单体敌人`」**当且仅当**「那一行会显示」。反向验证：把判据退回原样 → 3 条 FAIL
+（`Draw(显示=True/应=False)`、`Energy`、`OverdraftEnergy`、`Gold`… 一长串种类又印出「→ 单体敌人」）。
+
+⚠ **版式上也有一条铁律**（V0.2.151 血的教训）：效果栏第一列是 `Width="Auto"` 的**标签列**、
+第二列才是 `*` 的输入列 —— **标签文字有多长，输入列就被挤掉多少**。
+「从哪里选牌（消耗 / 变化 / 复制…；选「牌顶」= 抽牌堆最上面那张，不用挑）」这 34 个字曾经把标签列撑到
+**570px、输入列剩 0px**（整列下拉变成点不动的细条，「生效次数（公式）」被挤出可视区）。
+所以：**标签一律短**，长说明进 ToolTip；自检里实测那个两列 Grid（标签列 ≤ 360、输入列 ≥ 140）+
+所有标签长度 ≤ 8 字，两条守卫钉着。
+想肉眼核对版式：`Sts2CharForge.exe --uishot D:\out`（把 6 种代表性效果栏 + 两个先古编辑器渲染成 PNG，
+不参与生成、不写存档）；要看整页：`--forgeshot`（锻造页）、`--roleshot`（角色页，V0.2.160 加的 ——
+查「角色显示名被挤到窗口外面」就是靠它），都写到 exe 旁边。
+
+⚠ **另一条版式铁律**（V0.2.160 的教训）：**Grid 里「自动换行的长文字」不能跨列**。
+角色页那张 4 列表单（`Auto / 320 / Auto / 320`）里有 4 块跨越 3~4 列的长说明（调试日志那一大段、
+初始卡组 / 召唤物的两段），WPF 会把它们的「想要的宽度」摊到被跨越的列上 ⇒ 两个固定 320 的输入列
+被撑成**各 1366px**，表单右边跑到 3125（可视区右边才 1395），第 4 列「角色显示名」直接被裁掉
+（外层 `ScrollViewer` 的横向滚动**默认是关的** ⇒ 看不见也点不到）。修法两条一起上：
+① 输入列改成 `Width="*"` + `MinWidth`（按窗口伸缩，不再固定宽）；
+② 长说明**搬出网格**（放到网格下面单独的 StackPanel 里），再怎么长也挤不到表单列。
+自检里量三样：表单右边 ≤ 视口右边、「角色显示名」输入框右边 ≤ 视口右边、输入框宽 ≥ 140
+（修之前实测 表单右边=3125 / 可视区右边=1395，两条 FAIL）。
+
 ### 四、「命中次数」和「对群数」
 
 - 界面上**没有**单独的「对群数」栏位：从前就只有 `RepeatCount` 一个字段，
@@ -3207,6 +3726,17 @@ await DamageCmd.Attack(6m)
 上传按钮写「建议 606×852 竖图」，比例说明也改说「会被拉变形」而不是「留黑边」；
 生成占位图时先古卡也走竖图（勾「用本体素材占位」用本体的 `ancient_beta.png`，
 不勾则生成 606×852 的中性占位图）。普通卡 / 诅咒不受影响，还是 1000×760 横图。
+
+> ⚠ **切页时预览要跟着换**（V0.2.165 修，用户实测：「点卡牌页查看卡牌，再点先古页查看先古牌，
+> 先古牌的卡面会消失，比例还变成卡牌页的横图比例」）：
+> 三个卡牌列表页（卡牌 / 诅咒 / 先古卡）**共用同一套卡面预览属性**，取「当前这张」的判据是
+> `CardUiSelection ?? SpecialCardOf()`；而卡牌页那个列表镜像的语义是「点空槽行时**保持上一张**」
+> （`SlotRowMirror.UiSelection`）—— 于是三栏互斥时只把 `CardList.SelectedItem = null` **不够**，
+> 镜像不会松手，切到先古页后预览拿到的还是卡牌页那张：**框还是 1000×760 横图、图也按那张卡的 key 去取
+> （先古卡的卡面存在另一个 key 上，取不到 = 看起来「卡面消失」）**。
+> 修法：互斥的两个方向都连**镜像**一起清 —— `ClearCardPageSelectionForPortrait()`（选到诅咒 / 先古 / 状态卡时
+> 清卡牌页）+ `ClearSpecialCardSelections()`（在卡牌页选中真卡时清那三栏）。自检钉住 4 条
+> （先量 1000×760 → 切先古页必须变 606×852 竖框 + Fill + 预览取的是先古卡那张 → 再切回来变回 1000×760）。
 
 上传文件按**原尺寸直接使用**（程序不做缩放），请按下列尺寸准备：
 

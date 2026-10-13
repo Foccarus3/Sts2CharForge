@@ -203,47 +203,26 @@
             </GroupBox>
         </DataTemplate>
 
-        <!-- ===== 效果栏的「一条 = 一行摘要，点开才展开」（V0.2.137 用户第 ④ 条，拍板 A）=====
-             用户原话：「遗物右侧效果栏怎么变那么奇怪，没有可以精简的效果栏吗，药水也是」——
-             以前每条效果都把**整块编辑器**（App.xaml 的 EffectEditorPlain / EffectEditorPotion）
-             塞进列表行里 → 一行好几百像素、一眼看不完。
+        <!-- ===== 效果栏版式（V0.2.144：遗物 / 药水 / 额外资源量三页右侧 = 卡牌页那一种）=====
+             用户原话：「遗物药水右侧的效果栏能不能同步卡牌的」→ 拍板 A：照卡牌页版式重做。
 
-             形状：折叠态 = 一个小三角 + 一行摘要（EffectSpec.Display：效果种类 + 数值 / 升级增量 /
-             作用对象 / 条件…**关键参数都在里面**，不用另算一份文案）+「展开 / 收起」提示。
-             点这一行（Button，整行可点；用 Button 而不是 ToggleButton 是为了**自检里能真的点**）
-             → EffectSpec.IsExpanded 取反 → 下面的完整编辑区显隐（Visibility 绑 IsExpanded）。
+             形状（三个页面右侧，与卡牌页同一个形状）：
+               上面 = 一条固定高度（140px）的**一行摘要列表**
+                      （卡牌页 `DisplayMemberPath="Display"`；这三页用 `DisplayPlain` ——
+                       它们不能升级，摘要里不显示「（升级 +N）」那种括号）；
+               中间 = 8px 间隔；
+               下面 = 一整块**共享编辑区**（`DataContext="{Binding SelectedItem, ElementName=XXXEffectList}"`，
+                      没选中任何效果时整块收起、只留一句指路文字），
+                      里面引的就是原来那套编辑器模板（EffectEditorPlain / EffectEditorPotion），一个字都没重写。
+                      **单条效果自己的「条件选项」就在这块编辑区里**（以前三页是右下角单独一块，已撤）。
 
-             ⚠ 展开态用的是**现有那套编辑器模板**（EffectEditorPlain / EffectEditorPotion），
-               一个字都没重写 —— 所以「展开后能不能正常改值」这件事天然和以前一样。
-             ⚠ 为什么模板放在**窗口资源**里而不是 App.xaml：里面要写 Click="…"，
-               App.xaml 里的模板会把事件解析成 App 的方法（CS1061，V0.2.129 踩过）。
-             ⚠ 本模板只用在**遗物页 / 药水页 / 额外资源量页**的效果栏；卡牌页 / 诅咒页 / 先古卡页
-               的编辑器**不动**（用户没提）。 -->
-        <DataTemplate x:Key="EffectEditorCollapsible">
-            <Border BorderBrush="#E5E5E5" BorderThickness="0,0,0,1" Padding="0,1,0,1">
-                <StackPanel>
-                    <Button Click="OnToggleEffectRow" HorizontalContentAlignment="Stretch"
-                            Background="Transparent" BorderThickness="0" Padding="2,3" Cursor="Hand"
-                            ToolTip="点这一行展开 / 收起这条效果的完整编辑区（默认收起，只显示一行摘要）。">
-                        <DockPanel>
-                            <TextBlock x:Name="EffectRowTriangle" DockPanel.Dock="Left" Width="14" FontSize="10"
-                                       VerticalAlignment="Center" Foreground="#1F4E79"
-                                       Text="{Binding IsExpanded, Converter={StaticResource BoolToText}, ConverterParameter=▶/▼}"/>
-                            <TextBlock x:Name="EffectRowToggle" DockPanel.Dock="Right" Margin="8,0,0,0" FontSize="10"
-                                       VerticalAlignment="Center" Foreground="#888"
-                                       Text="{Binding IsExpanded, Converter={StaticResource BoolToText}, ConverterParameter=展开/收起}"/>
-                            <TextBlock x:Name="EffectRowSummary" Text="{Binding Display}" TextWrapping="Wrap"
-                                       VerticalAlignment="Center" ToolTip="{Binding Display}"/>
-                        </DockPanel>
-                    </Button>
-                    <Grid x:Name="EffectRowDetails" Margin="16,2,0,4"
-                          Visibility="{Binding IsExpanded, Converter={StaticResource BoolToVis}}">
-                        <ContentControl Content="{Binding}"
-                                        ContentTemplate="{DynamicResource EffectRowEditorTemplate}"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
-        </DataTemplate>
+             ⚠ 为什么不再用「折叠行（整行是 Button、点开才展开）」那一套（V0.2.137 的做法，已删）：
+               ① 版式和卡牌页不一致（用户这一轮就是要求一致）；
+               ② 整行是一颗 Button 会在冒泡阶段吃掉 MouseLeftButtonDown → 外层 ListBoxItem 选不中
+                  → 绑 SelectedItem 的条件编辑器写进空对象、静默丢失（V0.2.143 修过一次；
+                  现在行就是普通 ListBoxItem，这个坑从结构上不会再出现）；
+               ③ 「单条效果的条件」以前单独摆在右下角一块里，现在跟着每条效果长在编辑区里（和卡牌页一样）。
+               于是 OnToggleEffectRow / SelectEffectRowOf / ToggleEffectRow / EffectSpec.IsExpanded 全删了。 -->
     </Window.Resources>
     <DockPanel>
 
@@ -280,19 +259,25 @@
 
             <!-- ============ 角色 ============ -->
             <TabItem x:Name="RoleTab" Header="角色">
+                <!-- V0.2.160：表单网格 + 下面那几块长说明**分成两层**。
+                     以前长说明就在网格里（`ColumnSpan="3"` / `"4"` + 自动换行），它们「想要整幅宽度」，
+                     WPF 的 Grid 会把这份宽度摊到被跨越的列上 ⇒ 两个输入列被撑成**各 1366px**，
+                     第 4 列「角色显示名」被推到窗口外面（表单右边 3125 / 可视区右边 1395）；
+                     而外层 ScrollViewer 的横向滚动默认是**关**的 ⇒ 看不见也点不到（用户实测报的就是这个）。
+                     现在：网格只放「标签 + 输入框」，列宽改成 `Auto / *`（星号列按窗口伸缩、有下限），
+                     长说明挪到网格**外面**的 StackPanel 里 —— 再怎么长都挤不到表单列。 -->
                 <ScrollViewer>
-                    <Grid Margin="10">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="320"/>
-                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="320"/>
-                        </Grid.ColumnDefinitions>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
+                    <StackPanel Margin="10">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*" MinWidth="220"/>
+                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*" MinWidth="220"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="模组 ID" Style="{StaticResource Label}"/>
                         <TextBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.ModId, UpdateSourceTrigger=PropertyChanged}"/>
@@ -302,7 +287,7 @@
                         <TextBlock Grid.Row="1" Grid.Column="0" Text="角色英文类名" Style="{StaticResource Label}"/>
                         <TextBox Grid.Row="1" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.CharacterClass, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Grid.Row="1" Grid.Column="2" Text="角色显示名" Style="{StaticResource Label}"/>
-                        <TextBox Grid.Row="1" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding Profile.DisplayName, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBox x:Name="RoleDisplayNameBox" Grid.Row="1" Grid.Column="3" Style="{StaticResource Field}" Text="{Binding Profile.DisplayName, UpdateSourceTrigger=PropertyChanged}"/>
 
                         <TextBlock Grid.Row="2" Grid.Column="0" Text="初始生命" Style="{StaticResource Label}"/>
                         <TextBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Profile.StartingHp, UpdateSourceTrigger=PropertyChanged}"/>
@@ -341,22 +326,22 @@
                         <TextBlock Grid.Row="8" Grid.Column="0" Text="（和先古之民/建筑师的对话）" Style="{StaticResource Label}" VerticalAlignment="Top"/>
                         <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="#888" Margin="4,0,0,0"
                                    Text="已移到「先古之民」页：左边选先古之民（建筑师的对话也在那里），右边一段一段写。"/>
+                        </Grid>
 
-                        <TextBlock Grid.Row="9" Grid.Column="0" Text="生成调试日志" Style="{StaticResource Label}" VerticalAlignment="Top"/>
-                        <StackPanel Grid.Row="9" Grid.Column="1" Grid.ColumnSpan="3" Margin="0,4,0,0">
-                            <CheckBox Style="{StaticResource Check}" IsChecked="{Binding Profile.DebugLog}"
-                                      Content="打开「生成调试日志」（排查用：只影响日志，不影响游戏行为；排查完请关掉）"/>
-                            <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,4,0,0"
-                                       Text="默认关着。打开后重新生成，模组会在每条效果执行的地方往游戏日志里多打几行 [模组调试] …（游戏日志里是 [INFO] [模组调试] …）：写明「谁在跑（哪张牌 / 遗物 / 药水 / 状态 + 类名）、效果种类、目标是谁（名字 + 是不是自己）、执行前 / 执行后的数值」，其中「施加状态」会把**执行前**与**执行后**的层数各打一行 —— 目标身上本来没有这个状态时记「-」并标「本来没有这个状态」，已经有了就记真实层数（排查「填了 -2 层却不生效」这类问题就看这两行）。⚠ 加的都是「读一下、打一行」，不改任何游戏行为；但日志会变多，排查完请把这个勾去掉再重新生成一次。"/>
-                        </StackPanel>
+                        <!-- 下面这几块是「长说明」：必须留在网格外面（见本页顶部的注释） -->
+                        <TextBlock Text="生成调试日志" Style="{StaticResource Label}" Margin="0,10,0,0"/>
+                        <CheckBox Style="{StaticResource Check}" IsChecked="{Binding Profile.DebugLog}"
+                                  Content="打开「生成调试日志」（排查用：只影响日志，不影响游戏行为；排查完请关掉）"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,4,0,0"
+                                   Text="默认关着。打开后重新生成，模组会在每条效果执行的地方往游戏日志里多打几行 [模组调试] …（游戏日志里是 [INFO] [模组调试] …）：写明「谁在跑（哪张牌 / 遗物 / 药水 / 状态 + 类名）、效果种类、目标是谁（名字 + 是不是自己）、执行前 / 执行后的数值」，其中「施加状态」会把**执行前**与**执行后**的层数各打一行 —— 目标身上本来没有这个状态时记「-」并标「本来没有这个状态」，已经有了就记真实层数（排查「填了 -2 层却不生效」这类问题就看这两行）。⚠ 加的都是「读一下、打一行」，不改任何游戏行为；但日志会变多，排查完请把这个勾去掉再重新生成一次。"/>
 
-                        <TextBlock Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
+                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
                                    Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
 
                         <!-- 召唤物已经整组搬到「召唤物」选项卡（紧跟「角色」之后）—— 那里是列表 + 右侧详情 -->
-                        <TextBlock Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="4" TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
+                        <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
                                    Text="「召唤伙伴 / 伙伴攻击」的配置已经搬到「召唤物」选项卡（紧跟本页之后）：左边是召唤物列表，右边配名字 / 生命 / 站位距离 / 替主人承伤 / 图片。卡牌和遗物的效果里选「召唤伙伴」或「伙伴攻击」时，会多一个「召唤物（哪一只）」下拉。"/>
-                    </Grid>
+                    </StackPanel>
                 </ScrollViewer>
             </TabItem>
 
@@ -538,11 +523,9 @@
                     </StackPanel>
                     </ScrollViewer>
 
-                        <!-- ============ 右 = 效果栏（用户要求第 1 条：「在右侧增加效果栏」，照遗物页那套）============
-                             上：效果列表（每条效果**默认折叠成一行摘要，点开才展开完整编辑区** —— V0.2.137 用户第 ④ 条，
-                                  行模板 = 窗口资源 EffectEditorCollapsible；展开区里那份编辑器就是遗物页那一套
-                                  EffectEditorPlainInner，一个字都没重写）
-                             下：单条效果自己的「条件」（面板最底下那一块，和遗物页右下角那块一一对应）
+                        <!-- ============ 右 = 效果栏（用户要求第 1 条：「在右侧增加效果栏」）============
+                             V0.2.144：照卡牌页版式 —— 上面一行摘要列表（140px）+ 下面一整块共享编辑区。
+                             单条效果自己的「条件」跟着那条效果长在编辑区里（以前是右下角单独一块，已撤）。
                              最底：添加效果 / 删除效果 / 撤回删除
                              数据还是**同一份** Profile.ExtraResource.Effects（列表没选中任何遗物时，遗物页右边那块
                              也会借这一份显示 —— 靠选择互斥，见 OnExtraResourceEffectSelectionChanged）。 -->
@@ -556,27 +539,43 @@
                         </WrapPanel>
                         <Grid>
                             <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
-                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="140"/>
+                                <RowDefinition Height="8"/>
+                                <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
                             <TextBlock Grid.Row="0" Text="效果栏：额外资源量遗物的效果（触发时机固定「战斗开始时」）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                            <!-- 一行摘要列表：每行就是 EffectSpec.DisplayPlain（和卡牌页同一套写法，
+                                 只是这里用 DisplayPlain —— 额外资源量遗物上的效果不能升级，列表里不显示
+                                 「（升级 +N）」那种括号，和遗物 / 药水页同一个口径）。
+                                 选中一条 → 下面那块共享编辑区立刻就是它（含它自己的「条件选项」）。
+                                 ⚠ 以前每一行自己塞一整块编辑器，要靠 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 压住那个 8260px 的老坑；现在编辑器在下面那块共享区里，这个坑从结构上没有了 ——
+                                 但「Disabled + Stretch + 摘要换行」这套还是留着：长摘要要在列表宽度里换行，
+                                 不许横向跑出面板（V0.2.124 那条红线，自检里有断言）。 -->
                             <ListBox x:Name="ExtraResourceEffectList" Grid.Row="1"
-                                     ItemsSource="{Binding Effects}" DisplayMemberPath="{x:Null}"
+                                     ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
                                      SelectionChanged="OnExtraResourceEffectSelectionChanged"
                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                      HorizontalContentAlignment="Stretch"
-                                     ItemTemplate="{StaticResource EffectEditorCollapsible}"
-                                     ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。每条效果默认折叠成一行摘要，点那一行展开编辑；单条效果的条件在最下面那块。">
+                                     ToolTip="挂在这只隐藏起始遗物上的效果（触发时机固定「战斗开始时」）。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。">
                                 <ListBox.Resources>
-                                    <DataTemplate x:Key="EffectRowEditorTemplate" x:Shared="False">
-                                        <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlainInner}"/>
-                                    </DataTemplate>
+                                    <!-- DisplayMemberPath 生成的那个 TextBlock 没有显式 Style，所以这条隐式样式管得到它
+                                         （长摘要就会在列表宽度里自动换行，而不是撑出一条横向滚动条）。 -->
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="TextWrapping" Value="Wrap"/>
+                                    </Style>
                                 </ListBox.Resources>
                             </ListBox>
-                            <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                            <Border Grid.Row="3" x:Name="ExtraResourceEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
+                            <TextBlock Grid.Row="3" Margin="10,4" Foreground="#999" FontSize="12" TextWrapping="Wrap"
+                                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Text="点上面一条效果 → 就在这块里改它（含这一条效果自己的「条件选项」）"
+                                       Visibility="{Binding SelectedItem, ElementName=ExtraResourceEffectList, Converter={StaticResource EmptyToVisibility}}"/>
+                            <Border Grid.Row="3" x:Name="ExtraResourceEffectEditorBox" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                     DataContext="{Binding SelectedItem, ElementName=ExtraResourceEffectList}">
-                                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                                <!-- ⚠ 没选中任何效果时把内容收起来（见遗物页那一处同样的说明）。 -->
+                                <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlain}"
+                                                Visibility="{Binding SelectedItem, ElementName=ExtraResourceEffectList, Converter={StaticResource NotEmptyToVisibility}}"/>
                             </Border>
                         </Grid>
                     </DockPanel>
@@ -775,10 +774,10 @@
                                     <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding UpgradeCostText, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="升级后这张牌花几点能量：留空 = 升级不改费用；填 0 / 1 / 2 就是绝对费用；填 X+1 = 还是 X 费、升级后 X 多 1（原来那个「升级后 X +1」勾选框的等价写法）。"/>
+                                         ToolTip="升级后这张牌花几点能量：&#10;· 留空 = 升级不改费用；&#10;· 数字 0 / 1 / 2 = 升级后的**绝对**费用；&#10;· 生成期常量式子（1+1、A+3）= 同上；&#10;· X = 升级后还是 X（等于不改）；&#10;· X+1 = 还是 X 费、升级后 X 多 1（原来那个「升级后 X +1」勾选框的等价写法）。&#10;⚠ 这一栏是**能量**费用；要改「升级后额外资源量费用」请填右边那一栏（那边写 Y）。"/>
                                 <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
                                 <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding UpgradeStarCostText, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="升级后这张牌要花多少额外资源量（绝对数，留空 = 升级不改）。生成时写在本体的 OnUpgrade() 里：UpgradeStarCostBy(差值)。"/>
+                                         ToolTip="升级后这张牌要花多少额外资源量：&#10;· 留空 = 升级不改；&#10;· 数字（或生成期常量式子）= 升级后的**绝对**资源量费用（生成 OnUpgrade 里的 UpgradeStarCostBy(差值)）；&#10;· Y = 升级后还是 Y（等于不改，不会生成任何 UpgradeStarCostBy）。&#10;⚠ 本体做不到「升级后 Y+N」：UpgradeStarCostBy 碰到「资源量费用 = X」的牌会直接抛异常，所以那一档会被配置检查拦住（想固定花 N 点请先把费用从 Y 改成数字）。"/>
                             </Grid>
                             <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
                                        Text="{Binding CardCostHint}"/>
@@ -1059,9 +1058,14 @@
                                                Text="{Binding ParamNameWarnText, RelativeSource={RelativeSource AncestorType=Window}}"/>
 
                                     <TextBlock Text="取值来源" Style="{StaticResource Label}"/>
-                                    <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Display" SelectedValuePath="Id"
-                                              ItemsSource="{Binding ParamSourceOptions, RelativeSource={RelativeSource AncestorType=Window}}"
-                                              SelectedValue="{Binding Source}"/>
+                                    <!-- 可搜索下拉（和「增益 / 减益」那个同一个控件）：V0.2.162 起这里有 7 个固定来源
+                                         + 80 条实时读数，普通下拉点起来太长 —— 打字（「状态牌」/「能量」/「回合」）就能筛。
+                                         注意不能套 ComboBox 那套 Style / DisplayMemberPath（控件类型不同）。 -->
+                                    <local:SearchComboBox Margin="0,3,8,3"
+                                                          SearchPath="Display"
+                                                          ItemsSource="{Binding ParamSourceOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                          SelectedValuePath="Id" SelectedValue="{Binding Source, Mode=TwoWay}"
+                                                          ToolTip="可以打字搜索（比如输入「状态牌」/「本回合打出」）。前 7 项是固定数值来源，后面都是「实时读数」（每次取值现算）。"/>
                                     <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"
                                                Text="{Binding SourceHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
 
@@ -1579,12 +1583,10 @@
                         </StackPanel>
                         </ScrollViewer>
                         <!-- ============ 右侧 = 效果栏（用户要求第 5 条）============
-                             上：**整只遗物那一份**效果列表（V0.2.137 用户第 ④ 条：每条效果默认**折叠成一行摘要**，
-                                点那一行才展开完整编辑区 —— 行模板 = 窗口资源 EffectEditorCollapsible，
-                                展开区里那份编辑器 = EffectEditorPlainInner，一个字都没重写）
-                             下：单条效果自己的「条件」（EffectConditionPlain —— 用户要求的
-                                 「右下角能选单条效果的触发条件」就是这一块；以前它跟在大列表行里、被 160px 高的
-                                 视口切掉，滚不到也点不着，所以这里给它一个独立的、看得见的位置）
+                             V0.2.144（用户原话「遗物药水右侧的效果栏能不能同步卡牌的」）：照卡牌页版式 ——
+                             上面**一行摘要列表**（140px），下面**一整块共享编辑区**（绑列表里选中的那条效果；
+                             编辑器 = EffectEditorPlain，里面含这条效果自己的「条件选项」）。
+                             以前的「折叠行（点开才展开）」和右下角那块独立条件框都撤掉了。
                              最底：添加效果 / 删除效果 / 撤回删除 -->
                         <DockPanel Grid.Column="2">
                             <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
@@ -1595,35 +1597,47 @@
                             </WrapPanel>
                             <Grid>
                                 <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="140"/>
+                                    <RowDefinition Height="8"/>
+                                    <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Text="效果栏：这只遗物的效果（触发时机满足后跑的就是这一份）" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
                                 <!-- 遗物效果列表（V0.2.126）：绑的是**整只遗物那一份**效果（RelicSpec.Effects）——
                                      触发时机只管「什么时候触发」，所以换选中哪条时机都不换绑。
-                                     每条效果直接在列表里编辑（第 10 批改成 ItemTemplate）。
-                                     ⚠ ScrollViewer.HorizontalScrollBarVisibility="Disabled" 是修「效果编辑器被排成 8260px 宽」那个 bug 的关键：
-                                     ListBox 默认允许横向滚动 → 虚拟化面板按**无限宽度**量每一行 →
-                                     行里那个 ScrollViewer 就把内容排成它的自然宽度（实测 8260px！）→
-                                     弹出一条横向滚动条、每行高达 507px 而视口只有 160px，
-                                     效果编辑器和「条件」全被切掉、点不着。禁掉横向滚动，行宽才会被夹回列表宽度。 -->
+                                     V0.2.144 起每行只显示一行摘要（EffectSpec.DisplayPlain —— 遗物不能升级，
+                                     列表里不显示「（升级 +N）」那种括号），点一条 → 下面那块共享编辑区改它。
+                                     ⚠ 以前每一行自己塞一整块编辑器（V0.2.122~137），要靠
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" 压住那个 8260px 的老坑；
+                                     现在行里只有一行摘要、编辑器在下面那块共享区里，这个坑从结构上没有了 ——
+                                     但「Disabled + Stretch + 摘要换行」这套还是留着：长摘要要在列表宽度里换行，
+                                     不许横向跑出面板（V0.2.124 那条红线，自检里有断言）。 -->
                                 <ListBox x:Name="RelicEffectList" Grid.Row="1"
                                          SelectionMode="{Binding MultiSelectRelics, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
                                          ItemsSource="{Binding Effects}"
-                                         DisplayMemberPath="{x:Null}"
+                                         DisplayMemberPath="DisplayPlain"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          HorizontalContentAlignment="Stretch"
-                                         ItemTemplate="{StaticResource EffectEditorCollapsible}">
+                                         ToolTip="这只遗物的效果（触发时机满足后跑的就是这一份）。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。">
                                     <ListBox.Resources>
-                                        <DataTemplate x:Key="EffectRowEditorTemplate" x:Shared="False">
-                                            <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlainInner}"/>
-                                        </DataTemplate>
+                                        <!-- DisplayMemberPath 生成的那个 TextBlock 没有显式 Style，所以这条隐式样式管得到它
+                                             （长摘要就会在列表宽度里自动换行，而不是撑出一条横向滚动条）。 -->
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                        </Style>
                                     </ListBox.Resources>
                                 </ListBox>
-                                <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                                <Border Grid.Row="3" x:Name="RelicEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
+                                <TextBlock Grid.Row="3" Margin="10,4" Foreground="#999" FontSize="12" TextWrapping="Wrap"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Text="点上面一条效果 → 就在这块里改它（含这一条效果自己的「条件选项」）"
+                                           Visibility="{Binding SelectedItem, ElementName=RelicEffectList, Converter={StaticResource EmptyToVisibility}}"/>
+                                <Border Grid.Row="3" x:Name="RelicEffectEditorBox" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=RelicEffectList}">
-                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                                    <!-- ⚠ 没选中任何效果时把内容收起来（NotEmptyToVisibility）：ContentTemplate 遇上
+                                         Content=null 也会把模板实例化出来，那些 Visibility 绑定解不出来就停在默认值
+                                         （Visible）→ 界面上会凭空冒出几行开关（自检抓过「遗物页看见了概率独立」）。 -->
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPlain}"
+                                                    Visibility="{Binding SelectedItem, ElementName=RelicEffectList, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 </Border>
                             </Grid>
                         </DockPanel>
@@ -1731,12 +1745,11 @@
                                        Text="提示：选「任意时机」时不要用造成伤害/抽牌/挂减益这类需要战斗的效果，生成时会被忽略。&#10;药水实际打谁由上面的「作用目标」决定，卡面描述会按它生成（效果里的「作用对象」对药水不起作用）。"/>
                         </StackPanel>
                         </ScrollViewer>
-                        <!-- ============ 右 = 效果栏 + 自定义描述（照遗物页那套：用户要求第 6 条「药水方面参考遗物的优化方案」）============
-                             上：效果列表（V0.2.137 用户第 ④ 条：每条效果默认**折叠成一行摘要**，点那一行才展开完整编辑区；
-                                和遗物页**同一个**行模板 EffectEditorCollapsible，展开区里是药水那一份
-                                EffectEditorPotionInner —— 药水的说明文字一个字都没少）
-                             下：单条效果自己的「条件」（右下角那一块 —— 药水没有「触发时机」，
-                                 所以只剩「条件」这一块，和遗物页右下角那块一一对应）
+                        <!-- ============ 右 = 效果栏 + 自定义描述（用户要求第 6 条「药水方面参考遗物的优化方案」）============
+                             V0.2.144（用户原话「遗物药水右侧的效果栏能不能同步卡牌的」）：和遗物页一样改成
+                             卡牌页那种版式 —— 上面**一行摘要列表**（140px），下面**一整块共享编辑区**
+                             （绑列表里选中的那条效果；编辑器 = EffectEditorPotion，药水的说明文字一个字都没少）。
+                             单条效果自己的「条件」跟着那条效果长在编辑区里（以前是右下角单独一块，已撤）。
                              最底：添加效果 / 删除效果 / 撤回删除
                              之后：药水自定义描述（保留原样） -->
                         <DockPanel Grid.Column="2">
@@ -1748,31 +1761,44 @@
                             </WrapPanel>
                             <Grid>
                                 <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
-                                    <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="140"/>
+                                    <RowDefinition Height="8"/>
+                                    <RowDefinition Height="*"/>
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
                                 <TextBlock Grid.Row="0" Text="效果栏：这瓶药水的效果" FontWeight="Bold" Margin="0,0,0,4" TextWrapping="Wrap"/>
-                                <!-- ⚠ ScrollViewer.HorizontalScrollBarVisibility="Disabled" 是**必须**的（照遗物页那条真坑）：
-                                     ListBox 默认允许横向滚动 → 虚拟化面板按无限宽度量每一行 → 行里那个
-                                     ScrollViewer 会把内容排成自然宽度（实测 8260px）→ 每行 507px 高、视口只有一百多像素，
-                                     编辑器（含「条件」）全被切掉、点不着。禁掉横向滚动，行宽才会被夹回列表宽度。 -->
+                                <!-- 一行摘要列表（和卡牌页 / 遗物页同一套写法）：每行就是 EffectSpec.DisplayPlain
+                                     （药水不能升级，列表里不显示「（升级 +N）」那种括号）。
+                                     选中一条 → 下面那块共享编辑区立刻就是它（含它自己的「条件选项」）。
+                                     ⚠ 以前每一行自己塞一整块编辑器（V0.2.122~137），要靠
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled" 压住那个 8260px 的老坑；
+                                     现在行里只有一行摘要、编辑器在下面那块共享区里，这个坑从结构上没有了 ——
+                                     但「Disabled + Stretch + 摘要换行」这套还是留着：长摘要要在列表宽度里换行，
+                                     不许横向跑出面板（V0.2.124 那条红线，自检里有断言）。 -->
                                 <ListBox x:Name="PotionEffectList" Grid.Row="1"
                                          SelectionMode="{Binding MultiSelectPotions, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource MultiSelectMode}}"
-                                         ItemsSource="{Binding Effects}" DisplayMemberPath="{x:Null}"
+                                         ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          HorizontalContentAlignment="Stretch"
-                                         ItemTemplate="{StaticResource EffectEditorCollapsible}">
+                                         ToolTip="这瓶药水的效果。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。">
                                     <ListBox.Resources>
-                                        <DataTemplate x:Key="EffectRowEditorTemplate" x:Shared="False">
-                                            <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotionInner}"/>
-                                        </DataTemplate>
+                                        <!-- DisplayMemberPath 生成的那个 TextBlock 没有显式 Style，所以这条隐式样式管得到它
+                                             （长摘要就会在列表宽度里自动换行，而不是撑出一条横向滚动条）。 -->
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="TextWrapping" Value="Wrap"/>
+                                        </Style>
                                     </ListBox.Resources>
                                 </ListBox>
-                                <TextBlock Grid.Row="2" Text="单条效果的触发条件（只对上面选中的那条效果生效）" FontWeight="Bold" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                                <Border Grid.Row="3" x:Name="PotionEffectConditionBox" BorderBrush="#DDD" BorderThickness="1" Padding="6" Margin="0,4,0,0"
+                                <TextBlock Grid.Row="3" Margin="10,4" Foreground="#999" FontSize="12" TextWrapping="Wrap"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Text="点上面一条效果 → 就在这块里改它（含这一条效果自己的「条件选项」）"
+                                           Visibility="{Binding SelectedItem, ElementName=PotionEffectList, Converter={StaticResource EmptyToVisibility}}"/>
+                                <Border Grid.Row="3" x:Name="PotionEffectEditorBox" BorderBrush="#DDD" BorderThickness="1" Padding="6"
                                         DataContext="{Binding SelectedItem, ElementName=PotionEffectList}">
-                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPlain}"/>
+                                    <!-- ⚠ 没选中任何效果时把内容收起来（见遗物页那一处同样的说明）。 -->
+                                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectEditorPotion}"
+                                                    Visibility="{Binding SelectedItem, ElementName=PotionEffectList, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 </Border>
                                 <!-- 药水自定义描述（用户要求：药水也能自己写描述） -->
                                 <GroupBox Grid.Row="4" Header="自定义描述（留空 = 用上面效果自动生成的那段）" Margin="0,8,0,0">
@@ -2803,6 +2829,25 @@
                             </DockPanel>
                             <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
                                        Text="例如 2A2A2A 或 #2A2A2A。填了就按这个颜色自动生成描边图（取头像的透明通道做剪影），不会再让你传描边 PNG。"/>
+                        </StackPanel>
+                        <!-- ===== 音效 / 音频（V0.2.155）=====
+                             上传的音频给「播放音频文件（我上传的）」这个效果种类用。本体注册不了新的 FMOD 事件，
+                             所以这条绕开 FMOD：生成时把文件复制进工程 audio/（导出预设 all_resources，会打进 PCK），
+                             运行时用 Godot 的 AudioStreamPlayer 播。 -->
+                        <StackPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+                            <TextBlock Text="音效 / 音频（给「播放音频文件（我上传的）」用）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                            <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                       Text="支持 .ogg / .mp3 / .wav。上传只是记住你本机的那个文件，生成时才会复制进工程（一起打进 PCK）。名字会变成生成出来的文件名，改名字请在这里改。"/>
+                            <ListBox x:Name="AudioAssetList" Height="110" Margin="0,4,0,0"
+                                     ItemsSource="{Binding Profile.AudioAssets}"
+                                     SelectedItem="{Binding SelectedAudioAsset, Mode=TwoWay}"
+                                     DisplayMemberPath="Display"/>
+                            <WrapPanel Margin="0,4,0,0">
+                                <Button Content="上传音频…" Padding="10,3" Click="OnAddAudioAsset"/>
+                                <Button Content="删除" Padding="10,3" Margin="6,0,0,0" Click="OnRemoveAudioAsset"/>
+                                <TextBlock Margin="8,4,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                           MaxWidth="300" Text="{Binding AudioAssetHint}"/>
+                            </WrapPanel>
                         </StackPanel>
                         <!-- 多人联机宝箱房那句催促文本：手势在上面那几个槽位里传，这一句在下面填。
                              本体那句是 gameplay_ui.TREASURE_FIGHT_TEXT（「开抢！！！」），

@@ -54,6 +54,29 @@ public static class ArtGenerator
         var n = Naming.From(p);
         int copied = 0, uploaded = 0, missing = 0, neutral = 0;
 
+        // ===== V0.2.155：用户上传的音频 → 工程里的 audio/ =====
+        // 「播放音频文件（我上传的）」那个效果种类靠这里把文件搬进工程：
+        //   ① 效果里存的是 AudioAssetSpec.Key（= 显示名去非法字符 + 原扩展名）；
+        //   ② 导出预设是 export_filter="all_resources"，所以 audio/ 下的东西会一起打进 PCK；
+        //   ③ 运行时由生成的代码 GD.Load<AudioStream>("res://audio/<Key>") 播（不走 FMOD）。
+        foreach (AudioAssetSpec asset in p.AudioAssets.Where(a => a is not null))
+        {
+            string key = asset.Key;
+            if (string.IsNullOrWhiteSpace(asset.File) || !File.Exists(asset.File))
+            {
+                log?.Invoke("  [警告] 上传的音频文件不存在，已跳过：" + (string.IsNullOrWhiteSpace(asset.File) ? asset.Name : asset.File));
+                continue;
+            }
+            if (!AudioAssetSpec.IsSupportedAudio(asset.File))
+                log?.Invoke($"  [警告] 音频「{asset.Name}」的扩展名 Godot 不认（{Path.GetExtension(asset.File)}）——"
+                    + "只支持 .ogg / .mp3 / .wav，这一条可能加载不出来。");
+            string audioDst = Path.Combine(projectRoot, "audio", key);
+            Directory.CreateDirectory(Path.GetDirectoryName(audioDst)!);
+            FsSafe.Copy(asset.File, audioDst, overwrite: true);
+            ++uploaded;
+            log?.Invoke($"  音频：{Path.GetFileName(asset.File)} → audio/{key}（{asset.Name}）");
+        }
+
         // 场景文件里引用的是本体图片路径 → 改写成我们自己的文件，否则上传的图不会生效
         var rewrite = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (srcTemplate, dstTemplate, _) in AssetMap())

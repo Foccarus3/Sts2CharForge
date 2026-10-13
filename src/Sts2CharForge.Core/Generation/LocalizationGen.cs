@@ -78,9 +78,15 @@ public static class LocalizationGen
             if (c.IsVanillaCard) continue;
             string entry = Naming.EntryOf(n.CardClassName(p, c));
             dict[$"{entry}.title"] = c.Name;
-            // 「从牌堆拿牌到手牌」的选牌界面提示语（生成代码里用 base.SelectionScreenPrompt 读它）
-            if (NeedsSelectPrompt(c.Effects))
-                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(c.Effects);
+            // 「从牌堆拿牌到手牌 / 预见 / 多选1」的选牌界面提示语（生成代码里用 base.SelectionScreenPrompt 读它）
+            // V0.2.145：**锻造卡的效果在节点图上**（`c.Effects` 是空的）→ 两块布上的效果也要一起看，
+            // 否则图上那种「从某一摞拿牌到手牌」会让本体在打出这张牌时抛异常（游戏卡死）。
+            var cardPromptEffects = c.Effects.Where(e => e is not null)
+                .Concat(GraphEffects(c.ForgeGraph))
+                .Concat(GraphEffects(c.UpgradedForgeGraph))
+                .ToList();
+            if (NeedsSelectPrompt(cardPromptEffects))
+                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(cardPromptEffects);
             // 自定义关键词：和本体关键词一样拼在描述最前面（本体是「[gold]消耗[/gold]。」+ 换行 + 效果描述）
             // V0.2.136：「升级后获得 / 失去的自定义关键词」让这两段可以**不一样** ——
             // 获得 = 升级后那段才有那一行，失去 = 没升级那段才有（见 KeywordGen.CardTextBoth）。
@@ -487,7 +493,10 @@ public static class LocalizationGen
             string entry = Naming.EntryOf(n.RelicClassName(r, i));
             dict[$"{entry}.title"] = r.Name;
             // V0.2.126：效果是**整只遗物唯一那一份** → 选牌提示文案只看它（不再遍历各条时机的效果）
-            var relicAllEffects = r.Effects.Where(e => e is not null).ToList();
+            // V0.2.145：锻造遗物的效果在节点图上 → 图上的效果也要一起看（同一个坑，见 GraphEffects）。
+            var relicAllEffects = r.Effects.Where(e => e is not null)
+                .Concat(GraphEffects(r.ForgeGraph))
+                .ToList();
             if (NeedsSelectPrompt(relicAllEffects))
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(relicAllEffects);
             // 遗物自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
@@ -584,6 +593,28 @@ public static class LocalizationGen
     }
 
     /// <summary>
+    /// 一份锻造节点图里所有【效果】模块的 <see cref="EffectSpec"/>（V0.2.145）。
+    ///
+    /// <para>为什么要它：锻造卡 / 锻造药水 / 锻造遗物的效果都在**节点图上**，`XxxSpec.Effects` 是空的 ——
+    /// 只按 `Effects` 判断「要不要选牌提示语」时，图上那种「从某一摞拿牌到手牌 / 预见」就被漏掉，
+    /// 而生成代码照样读 <c>base.SelectionScreenPrompt</c> → 本体直接抛异常、游戏卡死
+    /// （和 V0.2.145 修的自定义状态那条是同一个坑）。</para>
+    ///
+    /// <para>节点上的 spec 平时由 <see cref="ForgeEffectBridge.SyncGraph"/> 保证存在；这里再兜一次
+    /// <see cref="ForgeEffectBridge.Ensure"/>（幂等：只按老字段建 spec，不回写老字段）——
+    /// 这样单独调 <c>CardsJson</c> 的自检也拿得到。</para>
+    /// </summary>
+    public static IEnumerable<EffectSpec> GraphEffects(ForgeGraphSpec? graph)
+    {
+        if (graph?.Nodes is null) yield break;
+        foreach (var node in graph.Nodes)
+        {
+            if (!ForgeEffectBridge.IsEffectNode(node)) continue;
+            yield return node!.EffectSpec ?? ForgeEffectBridge.Ensure(node!);
+        }
+    }
+
+    /// <summary>
     /// 这组效果里有没有会弹出**自己的**选牌界面的（那种必须有 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c> 这一条本地化）。
     ///
     /// 为什么要盯死这件事：本体的 <c>CardModel.SelectionScreenPrompt</c> 在键不存在时**直接抛异常**
@@ -591,13 +622,27 @@ public static class LocalizationGen
     /// 而生成的代码是在打出那张牌的时候读它的 —— 抛在效果中间 = 这张牌永远打不完，游戏卡死。
     /// 用户实测：预见的卡「无法丢弃、游戏卡死」就是这么来的（预见当时漏在这条名单外）。
     /// 所以凡是生成代码里出现 <c>base.SelectionScreenPrompt</c> 的效果种类，都必须列在这里。
+    ///
+    /// <para>⚠ 同一条规矩对**四条链**都成立（卡牌 / 遗物 / 药水 / 自定义状态）：
+    /// 本体 <c>PowerModel.SelectionScreenPrompt</c> 是同一份实现（同样的键名、同样"没有就抛"）。
+    /// V0.2.145 修的就是「自定义状态上「生成卡牌 + 多选1」漏了这一条」——
+    /// 游戏日志里 <c>InvalidOperationException: No selection screen prompt for POWER.XXX</c>
+    /// 抛在战斗回合钩子里 → 本轮 turn loop 直接死掉 → **战斗卡住**（用户实测的卡死）。</para>
     /// </summary>
     public static bool NeedsSelectPrompt(IEnumerable<EffectSpec> effects) =>
         effects.Any(e => e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry"
             || (e.Kind == "GiveKeyword" && e.Amount > 0 && !e.AmountIsXEffective && e.CardPick == "Chosen")
             // 「生成卡牌 + 按范围随机 + 多选1（候选 > 3 张时走网格选牌界面）」会读 base.SelectionScreenPrompt；
+            // V0.2.145 补上**「从范围里自己挑一张」**：它的候选 > 3 时走的也是那条网格选牌界面
+            //（生成端 `EmitGenerateCard` 里 `if (e.SpawnChosen)` 那一支，条件写的是同一个 base.SelectionScreenPrompt）
+            // —— 以前漏了它，正好是「自定义状态选生成卡牌会卡死」的另一半。
+            || (e.Kind == "GenerateCard" && e.IsSpawnRandom && (e.SpawnChoice > 1m || e.SpawnChosen))
+            // 「放置卡牌 + 取牌方式 = 自己选」（且不是「牌顶」那一档）：生成代码读的也是 base.SelectionScreenPrompt
+            //（CSharpCodeGen 里 `SelectPrefsExpr(e, "base.SelectionScreenPrompt", n)` 那条）。
+            // ⚠ V0.2.145 第二遍「机械扫描」抓出来的漏网之鱼（见 --uicheck 里那条按种类扫关键字的断言）——
+            //   漏了它就是同一种「打出这张牌 = 游戏卡死」。
+            || (e.Kind == "PlaceCard" && e.CardPick == "Chosen" && !CSharpCodeGen.IsPileTop(e))
             // 另外「复制卡牌」自己选牌也要（CardSelectCmd.FromHand 那条）。
-            || (e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m)
             || (e.Kind == "CopyCard" && e.CardPick == "Chosen")
             // 「重放」自己选牌也一样（走 CardSelectCmd.FromHand / FromCombatPile）
             || (e.Kind == "ReplayCard" && e.CardPick == "Chosen")
@@ -612,6 +657,11 @@ public static class LocalizationGen
         if (list.Any(e => e.Kind == "CopyCard" && e.CardPick == "Chosen")) return "选择要复制的牌";
         if (list.Any(e => e.Kind == "ReplayCard" && e.CardPick == "Chosen")) return "选择要重放的牌";
         if (list.Any(e => e.Kind == "TurnEndPlay" && e.Amount > 0 && e.CardPick == "Chosen")) return "选择回合结束时自动打出的牌";
+        // 「从范围里自己挑一张」：候选就是这一组范围里的全部卡（V0.2.145 补上，以前会落到最后那句
+        // 「选择要拿到手牌的牌」—— 措辞对不上这条效果）
+        if (list.Any(e => e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChosen)) return "选择要生成的牌";
+        // 「放置卡牌 + 自己选」：从这一摞挑 N 张放到另一摞（V0.2.145 补上，同一个道理）
+        if (list.Any(e => e.Kind == "PlaceCard" && e.CardPick == "Chosen" && !CSharpCodeGen.IsPileTop(e))) return "选择要移动的牌";
         // 多选1 的提示要跟着候选张数走（「在 3 张中选一张」）
         var choice = list.FirstOrDefault(e => e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChoice > 1m);
         if (choice is not null)
@@ -680,6 +730,11 @@ public static class LocalizationGen
         if (e.Amount <= 0) return $"{when}这张牌获得[gold]{kw}[/gold]{temp}。";
         string n = e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString();
         string pile = e.SelectPile switch { "Draw" => "抽牌堆", "Discard" => "弃牌堆", "Exhaust" => "消耗牌堆", _ => "手牌" };
+        // 「取几张 = 全部」（V0.2.163）：不弹选牌界面、也不是随机 —— 不写「自己选 / 随机」，也不写张数
+        if (e.CountIsAll)
+            return e.SelectPile is "Draw" or "Discard" or "Exhaust"
+                ? $"{repeat}{pile}里的所有牌获得[gold]{kw}[/gold]{temp}{CardScopeNote(p, e)}。"
+                : $"{repeat}所有手牌获得[gold]{kw}[/gold]{temp}{CardScopeNote(p, e)}。";
         string pick = e.CardPick == "Chosen" ? "自己选" : "随机";
         return $"{repeat}{pick} {n} 张{pile}里的牌获得[gold]{kw}[/gold]{temp}{CardScopeNote(p, e)}。";
     }
@@ -856,8 +911,12 @@ public static class LocalizationGen
             dict[$"{entry}.title"] = s.Name;
             // 药水的实际作用目标是「药水属性」里的 TargetType（生成的代码按它执行），
             // 所以描述也必须按它写，否则会出现「描述说打单体、实际打了全体」这种不一致。
-            if (NeedsSelectPrompt(s.Effects))
-                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(s.Effects);
+            // V0.2.145：锻造药水的效果在节点图上 → 图上的效果也要一起看（同一个坑，见 GraphEffects）。
+            var potionPromptEffects = s.Effects.Where(e => e is not null)
+                .Concat(GraphEffects(s.ForgeGraph))
+                .ToList();
+            if (NeedsSelectPrompt(potionPromptEffects))
+                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(potionPromptEffects);
             // 药水自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
             string potionBody = Describe(s.Effects, p, PotionTargetPhrase(s.TargetType));
             string potionCustom = (s.CustomDescription ?? "").Trim();
@@ -1009,6 +1068,22 @@ public static class LocalizationGen
             dict[$"{entry}.title"] = cp.Name.Trim();
             dict[$"{entry}.description"] = desc;
             dict[$"{entry}.smartDescription"] = desc;   // 战斗里的悬停提示优先用它
+            // V0.2.145（用户实测的「自定义状态选生成卡牌会卡死」）：
+            // 状态的效果里如果有「要弹选牌界面」的（生成卡牌 + 按范围随机 + 多选1 > 3 / 从范围里自己挑、
+            // 从某一摞拿牌到手牌、复制卡牌自己选、重放自己选…），就必须补这一条本地化 ——
+            // 本体 **PowerModel.SelectionScreenPrompt 与 CardModel 是同一份实现**：键不存在时
+            // 直接抛 `InvalidOperationException: No selection screen prompt for POWER.XXX.`；
+            // 抛在战斗回合钩子（例：玩家回合开始时）里 = 本轮 turn loop 直接死掉 → **战斗卡住**。
+            // 卡牌 / 遗物 / 药水三条链早就有这一条，只有自定义状态这条漏了（V0.2.145 补上）。
+            // ⚠ 判据用的是**通用那一份** NeedsSelectPrompt —— 它把「从某一摞拿牌到手牌」也算进来，
+            // 而状态链上那几种走的是**静态**提示（CardSelectorPrefs.DiscardSelectionPrompt 之类）、用不到这条键
+            // → 会多写一条没人读的本地化。这是**故意**的：多一条空键毫无副作用，漏一条就是「本体抛异常、战斗卡住」。
+            var powerEffects = cp.Triggers.Where(t => t is not null).SelectMany(t => t.Effects)
+                .Where(e => e is not null)
+                .Concat(GraphEffects(cp.ForgeGraph))
+                .ToList();
+            if (NeedsSelectPrompt(powerEffects))
+                dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(powerEffects);
         }
         return LocJson(dict);
     }
@@ -1227,11 +1302,16 @@ public static class LocalizationGen
         string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;
         string var = varOverride
             ?? (e.AmountIsXEffective && isCard ? "X" : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}");
-        // 「取任意张 / 最多 N 张」（需求：「消耗任意张手牌」）：任意 = 不写数字；最多 = 前面加「最多」
-        if (e.CountIsAny) var = "任意";
+        // 「取任意张 / 最多 N 张 / 全部」（需求：「消耗任意张手牌」+「选择所有手牌」）：
+        // 任意 = 不写数字；最多 = 前面加「最多」；全部 = 写「所有」（**不弹选牌界面**，本体「恶魔之焰」那种）。
+        if (e.CountIsAll) var = "所有";
+        else if (e.CountIsAny) var = "任意";
         else if (e.CountMode == "UpTo") var = "最多 " + var;
-        // 「任意」时别再补量词（不然出来是「任意 张牌」）；数字时才补
-        string amountPhrase = e.CountIsAny ? "任意张" : var + " 张";
+        // 「任意」= 任意张；「全部」= 所有（不补量词，「所有 张」不通）；数字才补「张」
+        string amountPhrase = e.CountIsAll ? "所有" : e.CountIsAny ? "任意张" : var + " 张";
+        // 「全部」那一档不写「自己选 / 随机 / 牌顶」——那一档没有选牌界面、也不是随机（和 V0.2.161 同一条规矩：
+        // 不生效 / 藏起来的栏位，文案里也不许写）。
+        string pickWord = e.CountIsAll ? "" : EffectCatalog.CardPickZh(e.CardPick);
         string when = e.NextTurn ? "下回合开始时，" : "";
         int times = Math.Max(1, e.Times);
         // 「生效次数」写了公式（用户要求⑦）：卡面印公式本身（和「数值公式」同一套观感），
@@ -1295,6 +1375,12 @@ public static class LocalizationGen
             // 刮削（本体卡「刮削 Scrape」）：抽 N 张，然后对其中符合条件的牌做选定的操作。
             // 默认那一档必须与旧版逐字一致（「丢弃其中所有非 0 费牌」）—— 卡面描述的回归由 --uicheck 钉死。
             "ScrapeDraw" => $"{repeat}{when}抽 {var} 张牌，{ScrapeTailZh(p, e)}。",
+            // V0.2.154：播放音效（数值那一栏 = 音量%；默认音量时卡面不写音量）
+            "PlaySfx" => $"{repeat}{when}播放音效：{EffectCatalog.SfxDisplay(e.Sfx)}"
+                + (e.SfxVolumePercent == 100m ? "" : $"（音量 {e.SfxVolumePercent:0.##}%）") + "。",
+            // V0.2.155：播放上传的音频文件（音效名 = 它在你「美术资源」页里的名字）
+            "PlaySoundFile" => $"{repeat}{when}播放音频：{EffectCatalog.AudioAssetName(p?.AudioAssets, e.Sfx)}"
+                + (e.SfxVolumePercent == 100m ? "" : $"（音量 {e.SfxVolumePercent:0.##}%）") + "。",
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
             // 负数 = 失去（生成的是 LoseEnergy：本体 GainEnergy 对非正数直接返回）
@@ -1348,20 +1434,20 @@ public static class LocalizationGen
             // 「从哪里选牌」不是手牌时不再写「手牌」（以前写死「N 张手牌」，选了弃牌堆就描述不对了）
             // 范围界定（需求 ③）：范围非空时在句尾补一句「（只限攻击牌）」（空则不加，描述与旧版一致）
             "ExhaustCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}消耗 {amountPhrase}手牌{CardScopeNote(p, e)}。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {amountPhrase}牌{CardScopeNote(p, e)}。",
+                ? $"{pickWord}消耗 {amountPhrase}手牌{CardScopeNote(p, e)}。"
+                : $"{pickWord}从{EffectCatalog.SelectPileZh(e.SelectPile)}消耗 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 丢弃卡牌：丢进弃牌堆（不是消耗，洗牌后会回来）。丢哪一摞写在描述里：
             // 手牌 = 「丢弃 N 张手牌」；抽牌堆 = 「从抽牌堆里丢弃 N 张牌」。
             // 数值 0 = 这张牌自己（用户要求）：写「丢弃这张牌自己」，不写张数（这一档没有数字）。
             "DiscardCard" => CSharpCodeGen.AmountZeroIsSelf(e)
                 ? "丢弃这张牌自己。"
                 : e.SelectPile == "Hand"
-                    ? $"{EffectCatalog.CardPickZh(e.CardPick)}丢弃 {amountPhrase}手牌{CardScopeNote(p, e)}。"
-                    : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {amountPhrase}牌{CardScopeNote(p, e)}。",
+                    ? $"{pickWord}丢弃 {amountPhrase}手牌{CardScopeNote(p, e)}。"
+                    : $"{pickWord}从{EffectCatalog.SelectPileZh(e.SelectPile)}里丢弃 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 升级卡牌：从哪一摞选、自己选还是随机（本体「武装」那种）
             "UpgradeCard" => e.SelectPile == "Hand"
-                ? $"{EffectCatalog.CardPickZh(e.CardPick)}升级 {amountPhrase}手牌（升级不了的牌不会出现在选择里）{CardScopeNote(p, e)}。"
-                : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {amountPhrase}牌{CardScopeNote(p, e)}。",
+                ? $"{pickWord}升级 {amountPhrase}手牌（升级不了的牌不会出现在选择里）{CardScopeNote(p, e)}。"
+                : $"{pickWord}从{EffectCatalog.SelectPileZh(e.SelectPile)}里升级 {amountPhrase}牌{CardScopeNote(p, e)}。",
             // 预见（一代观者的 Scry）：看抽牌堆顶 N 张，想丢的丢进弃牌堆（可以一张都不丢）
             // 范围界定作用于「看的那几张」：只把符合范围的牌列进选择里
             "Scry" => $"预见 {var}：看抽牌堆顶的 {var} 张牌，把其中任意张丢进弃牌堆（也可以一张都不丢）{CardScopeNote(p, e)}。",
@@ -1373,16 +1459,21 @@ public static class LocalizationGen
                 : $"{repeat}{when}在 {(int)e.Amount} 回合内，每抽到一张牌，那张牌本场战斗的费用 -1。",
             // 复制卡牌（本体「二刀流 DualWield」那种）：选 / 随机拿 N 张，每张复制 M 份到手牌。
             // 份数 = 1 时按本体的说法写「复制一份」而不是「复制 1 份」（卡面更顺）。
-            "CopyCard" => (e.SelectPile == "Hand"
-                    ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
-                    : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
+            // 「全部」那一档不写数字 / 不写「自己选」—— 直接把那一摞符合条件的全复制（V0.2.163）。
+            "CopyCard" => (e.CountIsAll
+                    ? (e.SelectPile == "Hand" ? "复制所有手牌" : $"复制{EffectCatalog.SelectPileZh(e.SelectPile)}里的所有牌")
+                    : e.SelectPile == "Hand"
+                        ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {var} 张手牌复制"
+                        : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌复制")
                 + (!string.IsNullOrWhiteSpace(e.CopiesFormula)
                     ? $"（每张复制 {ForgeFormula.DisplayText(e.CopiesFormula)} 份到手牌）{CardScopeNote(p, e)}。"
                     : Math.Max(1, e.Copies) == 1 ? $"（每张复制一份到手牌）{CardScopeNote(p, e)}。" : $"（每张复制 {Math.Max(1, e.Copies)} 份到手牌）{CardScopeNote(p, e)}。"),
             // 重放卡牌：本体 CardModel.BaseReplayCount（重放 1 = 打出去时连着打 2 次）
-            "ReplayCard" => (e.SelectPile == "Hand"
-                    ? $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的 {var} 张手牌"
-                    : $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌")
+            "ReplayCard" => (e.CountIsAll
+                    ? (e.SelectPile == "Hand" ? "让手牌里的所有牌" : $"让{EffectCatalog.SelectPileZh(e.SelectPile)}里的所有牌")
+                    : e.SelectPile == "Hand"
+                        ? $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的 {var} 张手牌"
+                        : $"让{(e.CardPick == "Chosen" ? "你选" : "随机")}的{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {var} 张牌")
                 + (!string.IsNullOrWhiteSpace(e.ReplayFormula)
                     ? $"本场战斗内额外打出 {ForgeFormula.DisplayText(e.ReplayFormula)} 次{CardScopeNote(p, e)}。"
                     : Math.Max(1, e.ReplayTimes) == 1
@@ -1393,24 +1484,39 @@ public static class LocalizationGen
             // （数值 0 有特殊含义，不能当成「0 = 不生效」），写成占位符的话游戏里替换不出来。
             "TurnEndPlay" => e.Amount <= 0m && !e.AmountIsXEffective
                 ? "回合结束时自动打出这张牌。"
+                : e.CountIsAll
+                    ? (e.SelectPile == "Hand"
+                        ? $"手牌里的所有牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"
+                        : $"{EffectCatalog.SelectPileZh(e.SelectPile)}里的所有牌，回合结束时自动打出它们{CardScopeNote(p, e)}。")
                 : (e.SelectPile == "Hand"
                     ? $"{(e.CardPick == "Chosen" ? "自己选" : "随机")} {(e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张手牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"
                     : $"{(e.CardPick == "Chosen" ? "自己选" : "随机")}{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {(e.AmountIsXEffective ? "X" : Math.Max(1, (int)e.Amount).ToString())} 张牌，回合结束时自动打出它们{CardScopeNote(p, e)}。"),
             // 毒性爆发 / 大限已至：照本体两张牌的原文写
             "Outbreak" => $"给予所有敌人 {var} 层[gold]中毒[/gold]，并立即触发[gold]中毒[/gold]。",
             "TimesUp" => $"造成等于该敌人身上[gold]灾厄[/gold]层数的伤害。",
-            "TransformCard" => (e.SelectPile == "Hand"
-                    ? $"{EffectCatalog.CardPickZh(e.CardPick)}将 {amountPhrase}手牌变化为"
-                    : $"{EffectCatalog.CardPickZh(e.CardPick)}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {amountPhrase}牌变化为")
+            "TransformCard" => (e.CountIsAll
+                    ? $"把所有{(e.SelectPile == "Hand" ? "手牌" : EffectCatalog.SelectPileZh(e.SelectPile) + "里的牌")}变化为"
+                    : e.SelectPile == "Hand"
+                        ? $"{pickWord}将 {amountPhrase}手牌变化为"
+                        : $"{pickWord}将{EffectCatalog.SelectPileZh(e.SelectPile)}里的 {amountPhrase}牌变化为")
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
             // 本体「搜寻 / 全息影像 / 挖掘」那种：从牌堆里挑牌拿到手牌
-            "TakeFromDraw" => $"从抽牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
-            "TakeFromDiscard" => $"从弃牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
-            "TakeFromExhaust" => $"从消耗牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            // 「全部」那一档没有选牌界面 —— 直接写「把那一摞里符合条件的牌全拿到手牌」。
+            "TakeFromDraw" => e.CountIsAll
+                ? $"把抽牌堆里符合条件的牌全部拿到手牌{CardScopeNote(p, e)}。"
+                : $"从抽牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromDiscard" => e.CountIsAll
+                ? $"把弃牌堆里符合条件的牌全部拿到手牌{CardScopeNote(p, e)}。"
+                : $"从弃牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
+            "TakeFromExhaust" => e.CountIsAll
+                ? $"把消耗牌堆里符合条件的牌全部拿到手牌{CardScopeNote(p, e)}。"
+                : $"从消耗牌堆里选 {amountPhrase}牌拿到手牌{CardScopeNote(p, e)}。",
             // 放置卡牌（V0.2.116）：数值 0 = 这张牌自己；≥ 1 = 从某一摞（含牌顶）挑 N 张放到「放到哪一摞」
             "PlaceCard" => (e.Amount <= 0m && !e.AmountIsXEffective
                     ? $"把这张牌放到{e.PlaceToZh}。"
-                    : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}拿 {amountPhrase}牌放到{e.PlaceToZh}{CardScopeNote(p, e)}。"),
+                    : e.CountIsAll
+                        ? $"把{EffectCatalog.SelectPileZh(e.SelectPile)}里符合条件的牌全部放到{e.PlaceToZh}{CardScopeNote(p, e)}。"
+                        : $"{EffectCatalog.CardPickZh(e.CardPick)}从{EffectCatalog.SelectPileZh(e.SelectPile)}拿 {amountPhrase}牌放到{e.PlaceToZh}{CardScopeNote(p, e)}。"),
             // 「直接把「缓慢」设成 N%」时层数没有意义（生成时就按本体做法施加 1 层），所以只写百分比
             // 负数 = 扣除层数（生成的是 PowerCmd.ModifyAmount(-N)：本体 Apply 对负数会新建一个负层数的状态）
             // 暴露 / 清除状态（没有动态变量，数值直接写死）
@@ -1458,16 +1564,21 @@ public static class LocalizationGen
             "AddCardGlobal" => $"获得 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张{CardNameOf(p, e.SpawnCardId)}（加入牌组）。",
             // 挂「战斗胜利后」时是结算界面多一条奖励；挂在战斗中就是当场弹选牌界面（见 CSharpCodeGen.EmitCardReward）
             "CardReward" => $"获得卡牌奖励（{(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 选一，选中的加入牌组）。",
-            "RemoveCardGlobal" => e.CardPick == "Chosen"
-                ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌删除。"
-                : $"从牌组中随机删除 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
-            "TransformCardGlobal" => (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
-                + $"{(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为"
+            "RemoveCardGlobal" => e.CountIsAll
+                ? "从牌组中把能删的牌全部删除。"
+                : e.CardPick == "Chosen"
+                    ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌删除。"
+                    : $"从牌组中随机删除 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+            "TransformCardGlobal" => (e.CountIsAll ? "将牌组中的所有牌变化为"
+                    : (e.CardPick == "Chosen" ? "将牌组中自己选的 " : "将牌组中随机 ")
+                        + $"{(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌变化为")
                 + (string.IsNullOrWhiteSpace(e.SpawnCardId) ? "随机卡牌。" : CardNameOf(p, e.SpawnCardId) + "。"),
             // 升级牌组里的牌（永久、跨战斗）：本体「香盒 Pomander」那种
-            "UpgradeCardGlobal" => e.CardPick == "Chosen"
-                ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌升级。"
-                : $"从牌组中随机升级 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
+            "UpgradeCardGlobal" => e.CountIsAll
+                ? "从牌组中把能升级的牌全部升级。"
+                : e.CardPick == "Chosen"
+                    ? $"从牌组中自己选 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌升级。"
+                    : $"从牌组中随机升级 {(e.AmountIsXEffective && isCard ? "X" : ((int)e.Amount).ToString())} 张牌。",
             // ===== 召唤伙伴（本体的通用宠物 API，不需要补丁）=====
             // 数值 0 = 用「召唤物」页里配置的血量，这时不写具体数字（避免卡面写「召唤伙伴 0 点生命」误导人）
             "SummonPet" => (e.AmountIsXEffective && isCard)
