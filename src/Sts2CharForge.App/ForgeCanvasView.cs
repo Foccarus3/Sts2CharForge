@@ -67,16 +67,18 @@ public sealed class ForgeCanvasView : Grid
     private readonly List<ForgeNodeSpec> _selectedNodes = new();
 
     /// <summary>
-    /// 【能量】和【触发时机】都是**固定模块**：删不掉，也**不参与全选 / 框选**（不会被「全选 + 删除」带走）。
+    /// 【能量】和**第一块**【触发时机】都是**固定模块**：删不掉，也**不参与全选 / 框选**（不会被「全选 + 删除」带走）。
     ///
     ///   · 【能量】—— 固定模块（左上角那一块，送上「能量 / 额外资源量」两个数），用户要求「无法被选中和删除」。
     ///     它比【触发时机】更严：连选中 / 拖动都不给（见 <see cref="IsPinned"/>）。
-    ///   · 【触发时机】—— 用户要求（V0.2.128）：**不可被删除**。一块布只有一个触发时机，
-    ///     而整张图没有它就不生成（<c>ForgeGraphGen.Plan</c> 返回 null）。它还照常可以选中 / 拖动
-    ///     （它就在布上，位置是用户自己摆的），删它时会像【能量】一样说明一句。
+    ///   · 【触发时机】—— 用户要求（V0.2.128）：**第一块不可被删除**（整张图没有触发时机就不生成）。
+    ///     它还照常可以选中 / 拖动（位置是用户自己摆的），删它时会像【能量】一样说明一句。
+    ///     V0.2.168：**第二块起是普通模块**（能删能选）—— 一块布可以有多块【触发时机】，
+    ///     每块配自己后面那一条链（见 <see cref="Core.Generation.ForgeGraphGen"/> 里的 Plans）。
     /// </summary>
-    private static bool IsLocked(ForgeNodeSpec? n) =>
-        n is not null && n.Kind is "Energy" or "Trigger";
+    private bool IsLocked(ForgeNodeSpec? n) =>
+        n is not null && (string.Equals(n.Kind, "Energy", StringComparison.Ordinal)
+            || (string.Equals(n.Kind, "Trigger", StringComparison.Ordinal) && ReferenceEquals(n, _graph?.TriggerNode)));
 
     /// <summary>比「锁」更严的固定模块（<see cref="IsLocked"/> 的真子集）：不可选中、不可拖动。</summary>
     private static bool IsPinned(ForgeNodeSpec? n) =>
@@ -87,10 +89,11 @@ public sealed class ForgeCanvasView : Grid
         "【能量】是固定模块（左上角那一块）：它只负责把「当前能量 / 当前额外资源量」送出去给别的模块用，"
         + "所以不能选中、也不能删除 —— 要改就在它自己身上那两栏里改（打出时消耗多少能量 / 额外资源量）。";
 
-    /// <summary>想删【触发时机】时给的那句话（用户要求：这一块不可删除）。</summary>
+    /// <summary>想删**第一块**【触发时机】时给的那句话（用户要求：这一块不可删除）。</summary>
     private const string TriggerLockedNote =
-        "【触发时机】是固定模块：一块布只能有一个触发时机，整张图也靠它决定什么时候执行 ——"
-        + "所以**删不掉**，也不会被「全选」带走。要换时机就在它自己身上那个下拉里换（可以照常拖动位置）。";
+        "【触发时机】第一块是固定模块：整张图靠它决定什么时候执行，所以**删不掉**，也不会被「全选」带走。"
+        + "要换时机就在它自己身上那个下拉里换（可以照常拖动位置）；要**再加一个**别的时机，"
+        + "就从上面那个下拉里再选一次【触发时机】加一块（第二块起可以随便删）。";
 
     /// <summary>这个固定模块对应的说明（删它 / 点它时显示）。</summary>
     private static string LockedNote(ForgeNodeSpec? n) => IsPinned(n) ? EnergyLockedNote : TriggerLockedNote;
@@ -382,7 +385,8 @@ public sealed class ForgeCanvasView : Grid
         _kindPick.Items.Clear();
         foreach (var k in ForgeGraphCatalog.All)
         {
-            if (string.Equals(k.Id, "Trigger", StringComparison.Ordinal) && _graph?.TriggerNode is not null) continue;   // 一块布一个触发时机
+            // V0.2.168：一块布可以有**多块**【触发时机】（每块配自己后面那一条链），
+            // 所以这里不再跳过 —— 第一块仍然是固定模块（删不掉），第二块起是普通模块。
             if (string.Equals(k.Id, "Energy", StringComparison.Ordinal) && _graph?.Nodes.Any(n => n.Kind == "Energy") == true) continue;
             _kindPick.Items.Add(k.Display);
         }
@@ -402,12 +406,29 @@ public sealed class ForgeCanvasView : Grid
         var (x, y) = ForgeGraphCatalog.DefaultPosition(kind.Id, _graph.Nodes.Count);
         var node = new ForgeNodeSpec { Kind = kind.Id, X = x, Y = y };
         if (kind.Id == "Trigger")
-            node.SetField("Timing", ForgeTimings.For(_scope).FirstOrDefault()?.Id ?? ForgeTimings.CardPlayed);
+        {
+            // V0.2.168：一块布可以有多块【触发时机】。默认挑一个**这块布上还没被占用**的时机 ——
+            // 否则再点一次会加出一块和第一块同一个本体钩子的时机（生成端只会写第一块，
+            // 校验器也会报「同一个时刻」的错），用户还得自己改下拉。
+            var usedHooks = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var n in _graph.Nodes)
+            {
+                if (n is null || !string.Equals(n.Kind, "Trigger", StringComparison.Ordinal)) continue;
+                var o = ForgeTimings.Find(n.Get("Timing", ForgeTimings.CardPlayed), _scope);
+                if (o is not null) usedHooks.Add(o.Hook);
+            }
+            var options = ForgeTimings.For(_scope);
+            var pick = options.FirstOrDefault(t => !usedHooks.Contains(t.Hook)) ?? options.FirstOrDefault();
+            node.SetField("Timing", pick?.Id ?? ForgeTimings.CardPlayed);
+        }
         if (kind.Id == "Effect")
             node.SetField("Effect", "Damage");
         _graph.Nodes.Add(node);
         Rebuild();
-        Touch($"已加一个【{kind.Display}】模块 —— 拖动标题栏可以移动，点右边的圆点再点左边的圆点就能连线。");
+        Touch(kind.Id == "Trigger"
+            ? $"已加一块【{kind.Display}】（默认挑了这块布上还没用过的「{ForgeTimings.Zh(node.Get("Timing"))}」）—— "
+              + "每块【触发时机】配自己右边那一条链：第一块是固定模块（删不掉），第二块起可以随便删。"
+            : $"已加一个【{kind.Display}】模块 —— 拖动标题栏可以移动，点右边的圆点再点左边的圆点就能连线。");
     }
 
     private void RemoveSelected()
@@ -1370,6 +1391,17 @@ public sealed class ForgeCanvasView : Grid
             if (found is not null) return found;
         }
         return null;
+    }
+
+    /// <summary>自检用：上面那个「模块」下拉里现在有哪些项（验「【触发时机】能不能再加一块」）。</summary>
+    public IReadOnlyList<string> KindPickItemsForCheck => _kindPick.Items.OfType<object>().Select(x => x?.ToString() ?? "").ToList();
+
+    /// <summary>自检用：等价于用户在下拉里选中某项再点「加一个」。</summary>
+    public void AddKindForCheck(string display)
+    {
+        if (string.IsNullOrWhiteSpace(display)) return;
+        _kindPick.SelectedItem = display;
+        AddSelectedKind();
     }
 
     /// <summary>「全部可见」/ 工具条上那个百分比按钮：把缩放调回 100%。</summary>

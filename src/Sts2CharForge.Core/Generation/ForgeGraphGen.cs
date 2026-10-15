@@ -69,14 +69,35 @@ public static class ForgeGraphGen
     ///   · <c>None</c>     —— 造不出来（战斗胜利 / 战斗结束 / 获得金币 / 遗物被点击）：
     ///                       需要 context 的效果会传 <c>null!</c>，校验器对这种组合**报错**拦住（不静默生成坏代码）。
     /// </param>
+    /// <param name="NoHookParams">
+    /// V0.2.169：这一块【触发时机】**嵌进卡牌自己的钩子**里（和遗物那条链同一个坑）—— 生成的是
+    /// <c>public async Task ForgeGraphOnXxx(PlayerChoiceContext choiceContext)</c> 这个**普通方法**，
+    /// 拿不到目标钩子那套参数（<c>card</c> / <c>player</c> / <c>retainedCards</c>…），
+    /// 所以：进门守卫不写（外层那个钩子里已经判过同一条）、<c>cardPlay</c> 用占位 null。
+    /// </param>
     private sealed record EmitCtx(string Scope, string CardPlayExpr, string CardSelfExpr, bool Upgraded = false,
-        string CtxFrom = "Param", bool AllowCardReward = false, bool HasRoom = false)
+        string CtxFrom = "Param", bool AllowCardReward = false, bool HasRoom = false, int PlanIdx = 0,
+        bool NoHookParams = false)
     {
         /// <summary>效果代码里要传的那个选择上下文：没有上下文（None）时写 <c>null!</c>（运行时本体自己会拦）。</summary>
         public string ChoiceVar => CtxFrom == "None" ? "null!" : "choiceContext";
 
         /// <summary>要不要在这个方法体里自己造一个 choiceContext（Blocking / Hook）。</summary>
         public bool NeedsCtxBootstrap => CtxFrom is "Blocking" or "Hook";
+
+        /// <summary>
+        /// 「仅生效 N 次」那个计数字段名。V0.2.168：一块布上有**多块**【触发时机】时，每块各有一个计数器
+        /// （名字加 <c>P2 / P3…</c> 后缀），第一块保持老名字 —— 老图（只有一块）生成的文本一个字符都不变。
+        /// </summary>
+        public string UsesVar => "__fgUses" + (PlanIdx > 0 ? "P" + (PlanIdx + 1) : "") + (Upgraded ? "Up" : "");
+
+        /// <summary>
+        /// V0.2.170：这个执行点真的拿得到 <c>cardPlay</c> 参数吗（= <see cref="ForgeGraphGen.EmitHook"/>
+        /// 里算出来的 <c>hookHasPlay</c>）。「斩杀」条件的赋值要用「打出时选中的那个目标」，
+        /// 拿不到 cardPlay 的时机只能写 false（占位 <c>CardPlay? cardPlay = null;</c> 上取 Target 会 CS8602，
+        /// 而且斩杀会误成立）。
+        /// </summary>
+        public bool RealCardPlay { get; init; } = true;
     }
 
     /// <summary>这个执行点的钩子签名里是不是带着 <c>CombatRoom room</c>（只有「战斗胜利时」）。</summary>
@@ -348,16 +369,61 @@ public static class ForgeGraphGen
     /// <paramref name="scope"/> = Card / Potion / Relic：**必须传**，因为合并菜单之后
     /// <c>CardPlayed / CardExhausted / CardDrawn / CardDiscarded</c> 四条在卡牌档和遗物档里
     /// 同名（这是「同一套菜单」的本意），不按 scope 查就会把卡牌那条（Hook = OnPlay）当成遗物图的时机。
+    ///
+    /// V0.2.168 起一块布可以有多块【触发时机】，这里只取**第一块**（<see cref="Plans"/> 才是全部）。
     /// </summary>
-    private static HookPlan? Plan(ForgeGraphSpec? g, string scope)
+    private static HookPlan? Plan(ForgeGraphSpec? g, string scope) => Plans(g, scope).FirstOrDefault();
+
+    /// <summary>
+    /// 把一张图整理成**所有**执行点（V0.2.168：一块布可以有**多块**【触发时机】，每块各带自己后面那一条链）。
+    /// 空列表 = 这张图是空的 / 一块【触发时机】都没有。
+    ///
+    /// <paramref name="scope"/> 的含义同 <see cref="Plan"/>。
+    /// </summary>
+    private static List<HookPlan> Plans(ForgeGraphSpec? g, string scope)
     {
-        if (g is null || g.IsEmpty) return null;
-        var trigger = g.TriggerNode;
-        if (trigger is null) return null;
-        var timing = ForgeTimings.Find(trigger.Get("Timing", ForgeTimings.CardPlayed), scope)
-                     ?? ForgeTimings.Find(ForgeTimings.CardPlayed, scope)
-                     ?? ForgeTimings.Find(ForgeTimings.CardPlayed)!;
-        return new HookPlan(trigger, timing);
+        var list = new List<HookPlan>();
+        if (g is null || g.IsEmpty) return list;
+        foreach (var trigger in g.TriggerNodes)
+        {
+            var timing = ForgeTimings.Find(trigger.Get("Timing", ForgeTimings.CardPlayed), scope)
+                         ?? ForgeTimings.Find(ForgeTimings.CardPlayed, scope)
+                         ?? ForgeTimings.Find(ForgeTimings.CardPlayed)!;
+            list.Add(new HookPlan(trigger, timing));
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// 多块【触发时机】里，**落在同一个本体钩子上**的那几块只留第一块（其余进 <c>Skipped</c>）。
+    ///
+    /// 为什么必须留：两块都生成会在同一个类里写出两个签名一样的 override —— CS0111，整个模组编译不过。
+    /// 校验器（<see cref="Issues"/>）对这种情况**报错**拦住，这里是兜底（老存档 / 命令行绕过界面时也不出坏代码）。
+    /// </summary>
+    private static (List<HookPlan> Keep, List<HookPlan> Skipped) SplitByHook(List<HookPlan> plans)
+    {
+        var keep = new List<HookPlan>();
+        var skipped = new List<HookPlan>();
+        var hooks = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var pl in plans)
+        {
+            // Timing.Hook 正是 Signature 用的那个键，重复 = 同一个 override 写两遍
+            if (hooks.Add(pl.Timing.Hook)) keep.Add(pl);
+            else skipped.Add(pl);
+        }
+        return (keep, skipped);
+    }
+
+    /// <summary>被跳过的那些【触发时机】写一段注释（说清为什么没生成 + 怎么办）。</summary>
+    private static void AppendSkippedNotes(StringBuilder sb, List<HookPlan> skipped)
+    {
+        foreach (var pl in skipped)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"    // ⚠ 这块布上还有一块【触发时机】=「{pl.Timing.Display}」：它和前面那块落在**同一个本体钩子**上，");
+            sb.AppendLine("    //    这一版只生成前面那一块（两块都生成 = 同一个类里两个同名 override，整个模组编译不过）。");
+            sb.AppendLine("    //    校验器会拦住这条：请把两块合成一块（要区分用【条件】模块），或者把这一块换成别的时机。");
+        }
     }
 
     /// <summary>一条锻造条目属于哪一类布（查时机要用它）。</summary>
@@ -377,19 +443,93 @@ public static class ForgeGraphGen
     public static string CardHooks(CharacterProfile p, CardSpec card, bool isUpgraded)
     {
         var g = GraphOf(card, isUpgraded);
-        var plan = Plan(g, "Card");
-        if (plan is null || g is null) return "";
-        // 【触发时机】= 卡牌被打出时：不能自己 override OnPlay（会盖掉用户手填的那套效果），
-        // 改成生成一个私有方法，由 OnPlay 末尾调用它。
-        // **升级前 / 升级后两块布各用一个方法名** —— 两块布都设成「打出时」时，
-        // 用同一个名字会生成两个签名一样的方法（CS0111，整个模组编译不过）。
-        string? method = plan.Timing.Hook == "OnPlay" ? PlayMethodName(isUpgraded) : null;
-
+        var all = Plans(g, "Card");
+        if (all.Count == 0 || g is null) return "";
+        var (plans, skipped) = SplitByHook(all);
+        var nested = NestedCardHooks(card);
         var sb = new StringBuilder();
-        sb.AppendLine();
-        sb.AppendLine($"    // ===== 锻造节点图（{(isUpgraded ? "升级后" : "升级前")}）：{plan.Timing.Display} =====");
-        EmitHook(sb, p, g, plan, new EmitCtx("Card", "cardPlay", "this", isUpgraded), method);        return sb.ToString();
+        for (int i = 0; i < plans.Count; i++)
+        {
+            var plan = plans[i];
+            // 【触发时机】= 卡牌被打出时：不能自己 override OnPlay（会盖掉用户手填的那套效果），
+            // 改成生成一个私有方法，由 OnPlay 末尾调用它。
+            // **升级前 / 升级后两块布各用一个方法名** —— 两块布都设成「打出时」时，
+            // 用同一个名字会生成两个签名一样的方法（CS0111，整个模组编译不过）。
+            //
+            // V0.2.169：图里这块【触发时机】和**这张牌自己的钩子**撞上时（被消耗 / 被丢弃 / 被保留 /
+            // 被抽到）同理 —— 也不能自己 override（那一个类里就有两个同名 override 了，CS0111，
+            // 用户实测报过 AinardiCard8.cs 那种）。改成私有方法，由那个钩子调用它
+            //（遗物那条链早就是这么做的，见 RelicGraphNestsInTrigger）。
+            string? method = plan.Timing.Hook == "OnPlay" ? PlayMethodName(isUpgraded)
+                : nested.Contains(plan.Timing.Hook) ? CardNestedMethod(plan.Timing.Hook, isUpgraded)
+                : null;
+
+            sb.AppendLine();
+            sb.AppendLine(plans.Count == 1
+                ? $"    // ===== 锻造节点图（{(isUpgraded ? "升级后" : "升级前")}）：{plan.Timing.Display} ====="
+                : $"    // ===== 锻造节点图（{(isUpgraded ? "升级后" : "升级前")}）第 {i + 1} 块【触发时机】：{plan.Timing.Display} =====");
+            EmitHook(sb, p, g, plan,
+                new EmitCtx("Card", "cardPlay", "this", isUpgraded, PlanIdx: i,
+                    NoHookParams: method is not null && plan.Timing.Hook != "OnPlay"),
+                method);
+        }
+        AppendSkippedNotes(sb, skipped);
+        return sb.ToString();
     }
+
+    /// <summary>
+    /// 图上这几块【触发时机】会和**这张牌自己的钩子**撞同一个方法名，必须嵌进去（不能自己 override）。
+    ///
+    /// 两种来源：
+    ///   · 普通效果的「卡牌时机」（被消耗 / 被丢弃 / 被保留 → <c>CSharpCodeGen.EmitCardTimingHooks</c> 那几个 override）；
+    ///   · 卡牌自带的「抽到这张牌时本场战斗费用 -N」（→ <c>CSharpCodeGen.EmitSelfDrawHook</c> 的 AfterCardDrawn）。
+    ///
+    /// 判据里的钩子名**都从生成端那一份推**（不在这里另抄一张表）—— 抄一份就会漂，
+    /// 加了新子时机忘了同步就又是一个类里两个同名 override（CS0111）。
+    /// </summary>
+    public static List<string> NestedCardHooks(CardSpec card)
+    {
+        var mine = CardOwnHookNames(card);
+        var found = new List<string>();
+        foreach (bool up in new[] { false, true })
+        {
+            var g = GraphOf(card, up);
+            if (g is null) continue;
+            var (plans, _) = SplitByHook(Plans(g, "Card"));
+            foreach (var pl in plans)
+                if (pl.Timing.Hook != "OnPlay" && mine.Contains(pl.Timing.Hook) && !found.Contains(pl.Timing.Hook))
+                    found.Add(pl.Timing.Hook);
+        }
+        return found;
+    }
+
+    /// <summary>这张牌自己会生成哪些钩子方法（图里那块撞上它就得嵌进去）。</summary>
+    private static HashSet<string> CardOwnHookNames(CardSpec card)
+    {
+        var hooks = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var e in card.Effects)
+            if (CSharpCodeGen.IsCardTiming(e.Condition))
+                hooks.Add(CSharpCodeGen.CardTimingMethodName(e.Condition!.Timing ?? ""));
+        // 「抽到这张牌时它本场战斗的费用 -N」：卡自己的 AfterCardDrawn（本体 KinglyKick 那种）
+        if (CSharpCodeGen.HasSelfDrawHook(card.Effects)) hooks.Add("AfterCardDrawn");
+        return hooks;
+    }
+
+    /// <summary>这张牌的图里有没有被嵌进来的这一支（生成端据此决定写不写那句调用）。</summary>
+    public static bool CardGraphNestsInHook(CardSpec card, string hook) =>
+        NestedCardHooks(card).Contains(hook);
+
+    /// <summary>某一块布上有没有这个钩子的【触发时机】（决定调用处要不要按升级与否二选一）。</summary>
+    public static bool GraphHasHook(ForgeGraphSpec? g, string hook) =>
+        Plans(g, "Card").Any(pl => string.Equals(pl.Timing.Hook, hook, StringComparison.Ordinal));
+
+    /// <summary>
+    /// 图嵌进卡牌钩子时那个私有方法的名字（调用方 = <c>CSharpCodeGen.EmitCardTimingHooks</c> /
+    /// <c>EmitSelfDrawHook</c>）。照 <see cref="PlayMethodName"/> 那个规矩：升级前 / 升级后两块布
+    /// 各一个名字，否则两块布都撞同一个钩子时又变成 CS0111。
+    /// </summary>
+    public static string CardNestedMethod(string hook, bool upgraded) =>
+        "ForgeGraphOn" + hook + (upgraded ? "Upgraded" : "");
 
     /// <summary>
     /// 卡牌「打出时」那一支生成的方法名。
@@ -404,12 +544,9 @@ public static class ForgeGraphGen
         HasPlayTimingIn(card.ForgeGraph)
         || (card.UpgradedForgeGraph is { IsEmpty: false } && HasPlayTimingIn(card.UpgradedForgeGraph));
 
-    /// <summary>某一块布上有没有「卡牌被打出时」这一支。</summary>
-    public static bool HasPlayTimingIn(ForgeGraphSpec? g)
-    {
-        var plan = Plan(g, "Card");
-        return plan is not null && plan.Timing.Hook == "OnPlay";
-    }
+    /// <summary>某一块布上有没有「卡牌被打出时」这一支（V0.2.168：这块布上**任何**一块【触发时机】都算）。</summary>
+    public static bool HasPlayTimingIn(ForgeGraphSpec? g) =>
+        Plans(g, "Card").Any(pl => string.Equals(pl.Timing.Hook, "OnPlay", StringComparison.Ordinal));
 
     /// <summary>
     /// 这瓶药的节点图里有没有「药水被使用时」这一支。
@@ -420,40 +557,80 @@ public static class ForgeGraphGen
     /// </summary>
     public static bool HasUseTiming(PotionSpec potion) => HasUseTimingIn(potion.ForgeGraph);
 
-    /// <summary>某一块布上有没有「药水被使用时」这一支。</summary>
-    public static bool HasUseTimingIn(ForgeGraphSpec? g)
-    {
-        var plan = Plan(g, "Potion");
-        return plan is not null && plan.Timing.Hook == "Use";
-    }
+    /// <summary>某一块布上有没有「药水被使用时」这一支（V0.2.168：这块布上**任何**一块【触发时机】都算）。</summary>
+    public static bool HasUseTimingIn(ForgeGraphSpec? g) =>
+        Plans(g, "Potion").Any(pl => string.Equals(pl.Timing.Hook, "Use", StringComparison.Ordinal));
 
     /// <summary>药水的钩子代码。</summary>
     public static string PotionHooks(CharacterProfile p, PotionSpec potion)
     {
         var g = potion.ForgeGraph;
-        var plan = Plan(g, "Potion");
-        if (plan is null || g is null) return "";
+        var all = Plans(g, "Potion");
+        if (all.Count == 0 || g is null) return "";
+        var (plans, skipped) = SplitByHook(all);
         var sb = new StringBuilder();
-        sb.AppendLine();
-        sb.AppendLine($"    // ===== 锻造节点图：{plan.Timing.Display} =====");
-        EmitHook(sb, p, g, plan, new EmitCtx("Potion", "null", "null"));
+        for (int i = 0; i < plans.Count; i++)
+        {
+            var plan = plans[i];
+            sb.AppendLine();
+            sb.AppendLine(plans.Count == 1
+                ? $"    // ===== 锻造节点图：{plan.Timing.Display} ====="
+                : $"    // ===== 锻造节点图第 {i + 1} 块【触发时机】：{plan.Timing.Display} =====");
+            EmitHook(sb, p, g, plan, new EmitCtx("Potion", "null", "null", PlanIdx: i));
+        }
+        AppendSkippedNotes(sb, skipped);
         return sb.ToString();
     }
 
     /// <summary>
     /// 这只遗物的节点图会不会被**嵌进它自己的触发钩子**里（而不是另加一个 override）。
-    /// 判据：图的【触发时机】和遗物的「触发时机」下拉是同一个钩子 —— 那时两边会生成两个签名
+    /// 判据：图上**任何一块**【触发时机】和遗物的某条「触发时机」是同一个钩子 —— 那时两边会生成两个签名
     /// 完全一样的 override，编译直接 CS0111。
     /// </summary>
-    public static bool RelicGraphNestsInTrigger(RelicSpec relic, string relicTriggerId)
+    public static bool RelicGraphNestsInTrigger(RelicSpec relic, string relicTriggerId) =>
+        NestedRelicTriggerIds(relic).Any(id => string.Equals(id, relicTriggerId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// 图嵌进遗物触发钩子时那个私有方法的名字（调用方 = <c>CSharpCodeGen.RelicSource</c>）。
+    ///
+    /// 只有一块嵌入时就是老的 <c>ForgeGraphOnTrigger</c>（老存档生成的文本一个字都不变）；
+    /// 一块布上有**多块**嵌入的【触发时机】时按顺序编号 <c>ForgeGraphOnTrigger2 / 3…</c> ——
+    /// 都叫同一个名字会 CS0111。
+    /// </summary>
+    public static string RelicGraphNestedMethod(RelicSpec relic, string relicTriggerId)
     {
-        var plan = Plan(relic.ForgeGraph, "Relic");
-        if (plan is null) return false;
-        string graphHook = plan.Timing.Hook;
-        // 遗物触发时机的钩子名从**签名那一份**推（CSharpCodeGen.RelicTriggerSignature 是唯一事实来源）——
-        // 免得这里再抄一张「时机 → 钩子」的表，加了新时机忘了同步就会一个类里出两个同名 override（CS0111）。
-        string relicHook = CSharpCodeGen.RelicHookNameOf(relicTriggerId);
-        return relicHook.Length > 0 && string.Equals(graphHook, relicHook, StringComparison.Ordinal);
+        var ids = NestedRelicTriggerIds(relic);
+        int idx = ids.FindIndex(x => string.Equals(x, relicTriggerId, StringComparison.Ordinal));
+        return idx <= 0 ? CSharpCodeGen.ForgeRelicGraphMethod : CSharpCodeGen.ForgeRelicGraphMethod + (idx + 1);
+    }
+
+    /// <summary>
+    /// 图上「会被嵌进遗物自己的触发钩子」的那几块【触发时机】对应的**遗物时机 id**（按图的顺序）。
+    /// </summary>
+    private static List<string> NestedRelicTriggerIds(RelicSpec relic)
+    {
+        var ids = new List<string>();
+        var (plans, _) = SplitByHook(Plans(relic.ForgeGraph, "Relic"));
+        foreach (var pl in plans)
+        {
+            string? hit = NestedRelicTriggerId(relic, pl);
+            if (hit is not null) ids.Add(hit);
+        }
+        return ids;
+    }
+
+    /// <summary>这块【触发时机】嵌进了遗物的哪一条触发时机（没有 = null，那时图另加一个 override）。</summary>
+    private static string? NestedRelicTriggerId(RelicSpec relic, HookPlan plan)
+    {
+        foreach (var t in relic.Triggers)
+        {
+            if (t is null || string.IsNullOrWhiteSpace(t.Kind)) continue;
+            // 遗物触发时机的钩子名从**签名那一份**推（CSharpCodeGen.RelicTriggerSignature 是唯一事实来源）——
+            // 免得这里再抄一张「时机 → 钩子」的表，加了新时机忘了同步就会一个类里出两个同名 override（CS0111）。
+            if (string.Equals(CSharpCodeGen.RelicHookNameOf(t.Kind), plan.Timing.Hook, StringComparison.Ordinal))
+                return t.Kind;
+        }
+        return null;
     }
 
     /// <summary>
@@ -506,18 +683,27 @@ public static class ForgeGraphGen
     public static string RelicHooks(CharacterProfile p, RelicSpec relic)
     {
         var g = relic.ForgeGraph;
-        var plan = Plan(g, "Relic");
-        if (plan is null || g is null) return "";
-        // 「当遗物被点击时」不是本体的虚方法：生成一个普通方法，由补丁按类型转发；
-        // 图里的时机和遗物触发时机是同一个钩子时，也生成一个普通方法（由那个钩子调用）。
-        bool nest = RelicGraphNestsInTrigger(relic, relic.Trigger);
-        string? method = nest ? CSharpCodeGen.ForgeRelicGraphMethod
-            : string.Equals(plan.Timing.Hook, "ForgeOnRelicClicked", StringComparison.Ordinal) ? "ForgeOnRelicClicked"
-            : null;
+        var all = Plans(g, "Relic");
+        if (all.Count == 0 || g is null) return "";
+        var (plans, skipped) = SplitByHook(all);
         var sb = new StringBuilder();
-        sb.AppendLine();
-        sb.AppendLine($"    // ===== 锻造节点图：{plan.Timing.Display} =====");
-        EmitHook(sb, p, g, plan, new EmitCtx("Relic", "null", "null", CtxFrom: RelicCtxFrom(plan, nest)), method);
+        for (int i = 0; i < plans.Count; i++)
+        {
+            var plan = plans[i];
+            // 「当遗物被点击时」不是本体的虚方法：生成一个普通方法，由补丁按类型转发；
+            // 图里的时机和遗物触发时机是同一个钩子时，也生成一个普通方法（由那个钩子调用）。
+            string? nestTrigger = NestedRelicTriggerId(relic, plan);
+            bool nest = nestTrigger is not null;
+            string? method = nest ? RelicGraphNestedMethod(relic, nestTrigger!)
+                : string.Equals(plan.Timing.Hook, "ForgeOnRelicClicked", StringComparison.Ordinal) ? "ForgeOnRelicClicked"
+                : null;
+            sb.AppendLine();
+            sb.AppendLine(plans.Count == 1
+                ? $"    // ===== 锻造节点图：{plan.Timing.Display} ====="
+                : $"    // ===== 锻造节点图第 {i + 1} 块【触发时机】：{plan.Timing.Display} =====");
+            EmitHook(sb, p, g, plan, new EmitCtx("Relic", "null", "null", CtxFrom: RelicCtxFrom(plan, nest), PlanIdx: i), method);
+        }
+        AppendSkippedNotes(sb, skipped);
         return sb.ToString();
     }
 
@@ -669,55 +855,71 @@ public static class ForgeGraphGen
     private static string TimingFieldsCore(CharacterProfile p, object owner, bool upgraded = false)
     {
         var g = GraphOf(owner, upgraded);
-        var plan = Plan(g, ScopeOf(owner));
-        if (plan is null) return "";
+        var (plans, _) = SplitByHook(Plans(g, ScopeOf(owner)));
+        if (plans.Count == 0) return "";
 
-        var trig = plan.Trigger;
-        var lim = ForgeNumbers.Resolve(p, trig, "CountLimit", 0);
-        // 「仅生效 N 次」那一栏现在也能填公式（V0.2.128）：
-        //   · 填 0 = 无限次（老行为）：计数字段 / 复位钩子都不生成；
-        //   · 常数（含 2*3 这种折叠成常数的公式）：老行为；
-        //   · 运行时公式：**按「有限次」生成**（算出来是多少就是多少；算出来是 0 / 负数时
-        //     那一支一次都不会跑 —— 校验器会给一条提示）。
-        bool runtimeLimit = lim.Runtime;
-        int limit = runtimeLimit ? 0 : (int)Math.Round((double)lim.Value);
-        if (!runtimeLimit && limit <= 0) return "";
-
-        string uses = "__fgUses" + (upgraded ? "Up" : "");
         var sb = new StringBuilder();
-        string scope = trig.Get("CountScope", "Combat");
-        string comment = runtimeLimit
-            ? $"生效次数按公式算（{lim.Text}）"
-            : ForgeTimings.CountZh(limit, scope);
+        // 复位钩子要按「本回合 / 本场战斗」**合起来写一个**（每块时机各写一个 = 同一个类里两个同名
+        // override，CS0111）—— 所以先把每个作用域要清零的变量收集起来，最后统一生成。
+        var resets = new List<(string Hook, string Var)>();
+        var allHooks = new HashSet<string>(plans.Select(x => x.Timing.Hook), StringComparer.Ordinal);
 
-        sb.AppendLine();
-        // 用 plan 里那条时机自己的中文名（同名时机在卡牌档 / 遗物档显示名不一样，别用全局 Find 猜）
-        sb.AppendLine($"    // ===== 锻造节点图【触发时机】{plan.Timing.Display}：{comment} =====");
-        sb.AppendLine($"    private int {uses};");
-
-        // 作用域复位：本回合 / 本场战斗开始时清零（「本次游玩」不清零 —— 那正是它的意思）
-        if (!string.Equals(scope, "Run", StringComparison.Ordinal))
+        for (int i = 0; i < plans.Count; i++)
         {
+            var plan = plans[i];
+            var trig = plan.Trigger;
+            var lim = ForgeNumbers.Resolve(p, trig, "CountLimit", 0);
+            // 「仅生效 N 次」那一栏现在也能填公式（V0.2.128）：
+            //   · 填 0 = 无限次（老行为）：计数字段 / 复位钩子都不生成；
+            //   · 常数（含 2*3 这种折叠成常数的公式）：老行为；
+            //   · 运行时公式：**按「有限次」生成**（算出来是多少就是多少；算出来是 0 / 负数时
+            //     那一支一次都不会跑 —— 校验器会给一条提示）。
+            bool runtimeLimit = lim.Runtime;
+            int limit = runtimeLimit ? 0 : (int)Math.Round((double)lim.Value);
+            if (!runtimeLimit && limit <= 0) continue;
+
+            // 多块【触发时机】时每块各有一个计数器（第一块保持老名字，老图生成文本一个字符不变）
+            string uses = "__fgUses" + (i > 0 ? "P" + (i + 1) : "") + (upgraded ? "Up" : "");
+            string scope = trig.Get("CountScope", "Combat");
+            string comment = runtimeLimit
+                ? $"生效次数按公式算（{lim.Text}）"
+                : ForgeTimings.CountZh(limit, scope);
+
+            sb.AppendLine();
+            // 用 plan 里那条时机自己的中文名（同名时机在卡牌档 / 遗物档显示名不一样，别用全局 Find 猜）
+            sb.AppendLine($"    // ===== 锻造节点图【触发时机】{plan.Timing.Display}：{comment} =====");
+            sb.AppendLine($"    private int {uses};");
+
+            // 作用域复位：本回合 / 本场战斗开始时清零（「本次游玩」不清零 —— 那正是它的意思）
+            if (string.Equals(scope, "Run", StringComparison.Ordinal)) continue;
             bool turn = string.Equals(scope, "Turn", StringComparison.Ordinal);
             // 「本回合」用 AfterPlayerTurnStart 清零；「本场战斗」用 AfterCombatVictory 清零
             // （这一场打完之后重置，下一场就是满次数；比用 BeforeSideTurnStart 干净 ——
             //   那个钩子会被「战斗开始时」这个触发时机用掉，同一个类里写两个会 CS0111 重复定义）。
             string hook = turn ? "AfterPlayerTurnStart" : "AfterCombatVictory";
+            resets.Add((hook, uses));
+        }
+        if (resets.Count == 0) return sb.ToString();
+
+        foreach (string hook in resets.Select(x => x.Hook).Distinct(StringComparer.Ordinal))
+        {
+            var vars = resets.Where(x => string.Equals(x.Hook, hook, StringComparison.Ordinal))
+                             .Select(x => x.Var).ToList();
+            bool turn = string.Equals(hook, "AfterPlayerTurnStart", StringComparison.Ordinal);
+            // 复位钩子如果正好是**某一支的触发时机**（比如有块【触发时机】就是「每回合开始时」），
+            // 就不再另写一遍（同一个类里两个同名 override = CS0111）—— 那一支的计数不会清零，
+            // 校验器（Issues）会给一条提示，不静默。
+            if (allHooks.Contains(hook)) continue;
             string resetSig = turn
                 ? "public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)"
                 : "public override async Task AfterCombatVictory(CombatRoom room)";
-            // 主钩子如果正好是同一个（比如触发时机就是「战斗胜利时」），就不再写一遍
-            bool clash = plan.Timing.Hook == hook;
-            if (!clash)
-            {
-                sb.AppendLine();
-                sb.AppendLine($"    /// <summary>「{(turn ? "本回合" : "本场战斗")}仅生效 N 次」：{(turn ? "每回合" : "每场战斗结束后")}清零。</summary>");
-                sb.AppendLine($"    {resetSig}");
-                sb.AppendLine("    {");
-                sb.AppendLine($"        {uses} = 0;");
-                sb.AppendLine("        await Task.CompletedTask;");
-                sb.AppendLine("    }");
-            }
+            sb.AppendLine();
+            sb.AppendLine($"    /// <summary>「{(turn ? "本回合" : "本场战斗")}仅生效 N 次」：{(turn ? "每回合" : "每场战斗结束后")}清零。</summary>");
+            sb.AppendLine($"    {resetSig}");
+            sb.AppendLine("    {");
+            foreach (string v in vars) sb.AppendLine($"        {v} = 0;");
+            sb.AppendLine("        await Task.CompletedTask;");
+            sb.AppendLine("    }");
         }
         return sb.ToString();
     }
@@ -738,10 +940,16 @@ public static class ForgeGraphGen
     private static string Signature(ForgeTimings.TimingOption t, EmitCtx ctx, string? methodName = null)
     {
         if (methodName is not null)
+        {
+            // V0.2.169：嵌进卡牌自己钩子的那种 —— 参数照**调用方**来（只有一个 choiceContext，
+            // 钩子那套参数在这儿不存在）。见 EmitCtx.NoHookParams 的说明。
+            if (ctx.Scope == "Card" && ctx.NoHookParams)
+                return $"public async Task {methodName}(PlayerChoiceContext choiceContext)";
             return ctx.Scope == "Card"
                 ? $"public async Task {methodName}(PlayerChoiceContext choiceContext, CardPlay cardPlay)"
                 : HasRoomHook(ctx) ? $"public async Task {methodName}(CombatRoom room)"
                 : $"public async Task {methodName}()";
+        }
         if (string.Equals(ctx.Scope, "Relic", StringComparison.Ordinal)
             && !string.Equals(t.Id, ForgeTimings.RelicClicked, StringComparison.Ordinal)
             && !string.Equals(t.Id, ForgeTimings.HpBelow, StringComparison.Ordinal))
@@ -763,10 +971,19 @@ public static class ForgeGraphGen
             "AfterObtained" => "public override async Task AfterObtained()",
             "BeforeSideTurnStart" => "public override async Task BeforeSideTurnStart(PlayerChoiceContext choiceContext, CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)",
             "AfterPlayerTurnStart" => "public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)",
+            // V0.2.179（用户要求「触发时机加一个回合开始后」）：回合开始那三个时刻是**三个不同**的钩子方法
+            //（本体 Hook.AfterPlayerTurnStart 里连着派发三次，见 Hook.cs:894-917）—— 遗物档会走上面
+            // RelicTriggerSignature 那条（三条都在那份 switch 里），这里补的是**没走遗物档**时的兜底。
+            "AfterPlayerTurnStartEarly" => "public override async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)",
+            "AfterPlayerTurnStartLate" => "public override async Task AfterPlayerTurnStartLate(PlayerChoiceContext choiceContext, Player player)",
             "AfterSideTurnEnd" => "public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)",
             "AfterCombatVictory" => "public override async Task AfterCombatVictory(CombatRoom room)",
             "AfterDamageReceived" => "public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)",
-            "AfterAttack" => "public override async Task AfterAttack(PlayerChoiceContext choiceContext, AttackCommand command)",
+            // ⚠ AttackCommand 必须写**全名**：它在 MegaCrit.Sts2.Core.Commands.Builders，
+            // 而生成的工程 GlobalUsings 里没有这个命名空间 → 写 `AttackCommand` 会 CS0246
+            //（用户实测报过：PlatonicGirlRelic2.cs(19,79) 找不到类型 AttackCommand）。
+            // 卡牌那条链（CSharpCodeGen 的 RelicTriggerSignature）和状态那条链（CustomPowerGen:503）都是全名。
+            "AfterAttack" => "public override async Task AfterAttack(PlayerChoiceContext choiceContext, MegaCrit.Sts2.Core.Commands.Builders.AttackCommand command)",
             "AfterGoldGained" => "public override async Task AfterGoldGained(Player player)",
             "AfterShuffle" => "public override async Task AfterShuffle(PlayerChoiceContext choiceContext, Player shuffler)",
             "AfterCurrentHpChanged" => "public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)",
@@ -781,7 +998,11 @@ public static class ForgeGraphGen
         EmitCtx ctx, string? methodName = null)
     {
         // 【卡牌奖励】只能挂在「战斗胜利时」那一支上（那一支的钩子签名里带 CombatRoom room）
-        var (_, hasCardReward) = WalkChain(g, plan.Trigger);
+        var (chainEffects, hasCardReward) = WalkChain(g, plan.Trigger);
+        // V0.2.176：「转化为先古卡」要在**这个方法末尾**弹一次本体那个预览界面 ——
+        // 所以先看这条链上有没有它（收集列表的声明也按这个判）。
+        bool ancientPreview = chainEffects.Any(n => n?.EffectSpec?.Kind == "AncientTranscend"
+            || (n is not null && string.Equals(n.Get("Effect"), "AncientTranscend", StringComparison.Ordinal)));
         bool canReward = hasCardReward && string.Equals(plan.Timing.Hook, "AfterCombatVictory", StringComparison.Ordinal);
         // 「战斗结束时（房间结算之前）」的钩子签名里同样带 CombatRoom room（本体 AfterCombatEnd(room)）——
         // 第 9 批 ④ 把这条补进遗物档菜单后，图嵌进那个钩子时也必须带上 room（不然调用处传 room 会 CS1501）。
@@ -794,12 +1015,26 @@ public static class ForgeGraphGen
 
         sb.AppendLine($"    {Signature(plan.Timing, ctx, methodName)}");
         sb.AppendLine("    {");
+        // V0.2.176：「转化为先古卡」的预览收集列表（这条链上用到它才声明）
+        if (ancientPreview)
+        {
+            var decl = new CodeWriter();
+            CSharpCodeGen.EmitAncientPreviewDecl(decl);
+            foreach (string line in decl.ToString().Replace("\r\n", "\n").Split('\n'))
+                if (line.Trim().Length > 0) sb.AppendLine("        " + line);
+        }
         // 方法体起点：卡牌档挂在**没有 cardPlay 参数**的钩子上时（被消耗 / 被丢弃 / 被抽到 / 被保留），
         // 最后要按「生成出来的文本有没有引用 cardPlay」决定往这里插一句 `CardPlay? cardPlay = null;`
         //（和 CSharpCodeGen.EmitCardPlayPlaceholder 同一套做法，见那里的说明）。插回去而不是重写一遍，
         // 是为了让默认档（有 cardPlay 的那些时机）的输出**一个字符都不变**。
         int bodyMark = sb.Length;
-        bool hookHasPlay = HookHasCardPlay(plan.Timing);
+        // 嵌进卡牌自己钩子里的那种（NoHookParams）拿不到 cardPlay 参数 → 和「钩子本来就没有 cardPlay」
+        // 那几档走**同一条**路（占位 `CardPlay? cardPlay = null;` + `cardPlay?.Target`）。
+        bool hookHasPlay = HookHasCardPlay(plan.Timing) && !ctx.NoHookParams;
+        // V0.2.170：「斩杀」条件的赋值要用「打出时选中的那个目标」——只有这个执行点真的拿得到
+        // cardPlay 参数时才那么写；拿不到的那几档（被消耗 / 被丢弃 / 嵌进卡牌钩子）只能是 false，
+        // 不然 `cardPlay.Target` 会落在占位 `CardPlay? cardPlay = null;` 上（CS8602，而且斩杀会误成立）。
+        ctx = ctx with { RealCardPlay = hookHasPlay };
 
         // ---- 0.0) 归属守卫（第 9 批 ④）：遗物档的图走**和遗物页同一套**判据 ----
         // 为什么必须补：锻造页以前一条守卫都没有 —— 敌人打我 / 敌人打牌 / 别人掉血
@@ -826,8 +1061,12 @@ public static class ForgeGraphGen
         // 「被保留」不是本体的虚方法（本体没有 AfterCardRetained），挂在 AfterFlush 上，
         // 所以方法体最前面要先判「这张牌真的被保留了」——判据和卡牌页那份逐字相同
         //（CSharpCodeGen.EmitCardTimingHooks 的 case "Retained"：retainedCards.Contains(this)）。
-        foreach (string line in TimingEntryGuardLines(plan.Timing))
-            sb.AppendLine("        " + line);
+        // 嵌进卡牌自己的钩子时**不写**：外层那个钩子（CSharpCodeGen.EmitCardTimingHooks /
+        // EmitSelfDrawHook）里已经判过同一条，而且这里根本没有 card / player / retainedCards 那几个参数，
+        // 写了就是 CS0103（和上面遗物嵌进触发钩子那一段同一个理由）。
+        if (!ctx.NoHookParams)
+            foreach (string line in TimingEntryGuardLines(plan.Timing, ctx.Scope))
+                sb.AppendLine("        " + line);
 
         // ---- 0) 血量阈值 / 生效次数（遗物的「当遗物被点击时」「血量低于 N」用得到）----
         // 注意：这一段在「自己 / 目标」那两个变量之前，所以里面只用 base.Owner 推算，
@@ -877,6 +1116,17 @@ public static class ForgeGraphGen
         if (string.Equals(ctx.CtxFrom, "None", StringComparison.Ordinal))
         {
             sb.AppendLine("        // 注意：这个执行点的钩子本体没给 choiceContext，也造不出来 —— 需要它的效果会传 null!");
+        }
+
+        // V0.2.170：「斩杀」条件（用户点的第 3 条）—— 图里用到它时，在这个执行点的序幕里声明
+        // 「上一条攻击」那两个局部变量（和卡牌页 OnPlay 开头那份逐字相同），
+        // 赋值在「造成伤害」那一条效果上（见 EmitEffect 的 fatalCap）。
+        // 只有卡牌档 + 拿得到 cardPlay 的时机才声明得了；别的组合由校验器报错拦住。
+        if (ctx.Scope == "Card" && GraphUsesFatal(g))
+        {
+            sb.AppendLine("        // 斩杀（本体 Fatal）：__lastAttack = 上一条攻击的结果；__fatalOk = 打之前记下的「目标允许触发斩杀」");
+            sb.AppendLine("        MegaCrit.Sts2.Core.Commands.Builders.AttackCommand? __lastAttack = null;");
+            sb.AppendLine("        bool __fatalOk = false;");
         }
 
         foreach (var param in UsedParams(p, g))
@@ -937,7 +1187,7 @@ public static class ForgeGraphGen
         // CreatureCmd.GainBlock 的来源卡参数…）：补一句 `CardPlay? cardPlay = null;`
         //（本体那几条 API 允许传 null；真会解引用 cardPlay.Target 的用法校验器会拦，见 ProfileValidator）。
         // 判据是**生成出来的文本**，不是「按效果种类猜」——猜错会平白多一个用不上的局部变量（CS0219）。
-        if (methodName is null && string.Equals(ctx.Scope, "Card", StringComparison.Ordinal) && !hookHasPlay
+        if ((methodName is null || ctx.NoHookParams) && string.Equals(ctx.Scope, "Card", StringComparison.Ordinal) && !hookHasPlay
             && sb.ToString(bodyMark, sb.Length - bodyMark).Contains("cardPlay", StringComparison.Ordinal))
         {
             var ins = new StringBuilder();
@@ -945,6 +1195,15 @@ public static class ForgeGraphGen
             ins.AppendLine("        // 用 ?. 取「打出的目标」；真会解引用 cardPlay.Target 的用法由校验器拦住。");
             ins.AppendLine("        CardPlay? cardPlay = null;");
             sb.Insert(bodyMark, ins.ToString());
+        }
+
+        // V0.2.176：「转化为先古卡」的预览界面 —— 这条链的效果都跑完了才弹（收集列表在上面声明过）
+        if (ancientPreview)
+        {
+            var show = new CodeWriter();
+            CSharpCodeGen.EmitAncientPreviewShow(show);
+            foreach (string line in show.ToString().Replace("\r\n", "\n").Split('\n'))
+                if (line.Trim().Length > 0) sb.AppendLine("        " + line);
         }
 
         sb.AppendLine("    }");
@@ -961,13 +1220,29 @@ public static class ForgeGraphGen
     /// <summary>
     /// 【触发时机】自己的进门守卫（V0.2.128：「卡牌被保留时」用得到）。
     /// 默认（没有守卫的时机）返回空 = 生成文本一个字符都不变。
+    ///
+    /// V0.2.168 补：卡牌档那几条**本体广播给场上所有模型**的钩子（被消耗 / 被丢弃 / 被抽到）也要先判
+    /// 「广播过来的这张牌就是**我**」—— 以前只有遗物档有归属守卫，卡牌档没有，于是「这张牌被消耗时」
+    /// 会在**任何**一张牌被消耗时触发（用户配了「被消耗时抽 1 张」就会变成每消耗一张牌都抽）。
+    /// 判据和卡牌页「卡牌时机」那一份（<c>CSharpCodeGen.EmitCardTimingHooks</c>）**逐字相同**。
     /// </summary>
-    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t) => t.Hook switch
+    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t, string scope) => t.Hook switch
     {
+        "AfterCardExhausted" or "AfterCardDiscarded" when string.Equals(scope, "Card", StringComparison.Ordinal) => new[]
+        {
+            "// 本体这个钩子会广播给场上**所有**模型（不只是被消耗 / 被丢弃的那张牌），所以先判就是我",
+            "if (card != this || base.CombatState is null) return;",
+        },
+        "AfterCardDrawn" when string.Equals(scope, "Card", StringComparison.Ordinal) => new[]
+        {
+            "// 抽牌同样广播给所有模型：只认被抽到的那张就是我",
+            "if (card != this || base.CombatState is null) return;",
+        },
         "AfterFlush" => new[]
         {
             "// 「这张牌被保留时」：本体没有 AfterCardRetained 钩子，用 AfterFlush 交出来的 retainedCards 判自己",
             "//（判据 = 本体 CombatManager.FlushPlayerHand 把这张牌归进 retainedCards：有保留关键词 / 这回合被单回合保留 / 整手牌都不丢）",
+            "if (player != base.Owner || base.CombatState is null) return;",
             "if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）",
         },
         _ => Array.Empty<string>(),
@@ -1372,7 +1647,8 @@ public static class ForgeGraphGen
     private static void EmitTimingGate(StringBuilder sb, HookPlan plan, EmitCtx ctx, CharacterProfile p)
     {
         var trig = plan.Trigger;
-        string uses = "__fgUses" + (ctx.Upgraded ? "Up" : "");
+        // 计数字段名在 EmitCtx.UsesVar 那一份里（多块【触发时机】时每块各一个，末尾按块编号）
+        string uses = ctx.UsesVar;
 
         if (string.Equals(plan.Timing.Id, ForgeTimings.CardAutoPlayed, StringComparison.Ordinal))
         {
@@ -1519,7 +1795,7 @@ public static class ForgeGraphGen
     /// 不给 <c>__X</c> 加就等于「升级后费用填 X+1」对那些用公式的效果静默失效。
     /// </summary>
     public static void EmitCardFormulaPrologue(CodeWriter w, CharacterProfile p, IEnumerable<EffectSpec> effects,
-        string targetExpr = "cardPlay?.Target", int xPlus = 0)
+        string targetExpr = "cardPlay?.Target", int xPlus = 0, bool costIsX = false, bool starCostIsX = false)
     {
         // 「数值公式」+「次数类公式」（用户要求⑦）都要在这里先把值算出来
         var list = effects.Where(e => e is not null && (e.UsesAmountFormula || e.UsesAnyCountFormula)).ToList();
@@ -1574,10 +1850,21 @@ public static class ForgeGraphGen
         if (needPlayer) w.Line("Player __fgPlayer = base.Owner;");
         if (needSelf) w.Line("Creature __fgSelf = base.Owner.Creature;");
         if (needTarget) w.Line($"Creature? __fgTarget = {targetExpr};");
-        if (needX) w.Line("decimal __X = ForgeFormulaRuntime.Energy(base.Owner)"
-            + (xPlus > 0 ? $" + (base.IsUpgraded ? {xPlus} : 0)" : "")
-            + ";   // X = 打出这张牌那一刻的当前能量" + (xPlus > 0 ? $"（升级后 X + {xPlus}）" : ""));
-        if (needY) w.Line("decimal __Y = ForgeFormulaRuntime.Stars(base.Owner);   // Y = 当前额外资源量");
+        // ⚠ V0.2.168：这张牌自己是**这张资源费的 X 档**（费用框里写 X / Y）时，__X / __Y 直接取
+        // **这张牌花掉的那部分**，而不是「当前还剩多少」——
+        // 本体是**先扣费、再跑效果**（PlayCardAction：`await _card.SpendResources()` → OnPlay），
+        // 所以效果跑的那一刻「当前额外资源量」已经是扣完剩下的：一张「Y 费」的牌读到 **0**
+        //（用户实测：「次数填 Y 只生效一次」—— 0 被 Math.Clamp(…, 1, 20) 夹成 1）。
+        // 本体本来就为 X 费牌准备了这两个方法：ResolveEnergyXValue() / ResolveStarXValue()（= 这次花掉的）。
+        // 用法的口径和「= X」那一条效果（见 CSharpCodeGen 里那个 `int x = Resolve…XValue() + …`）**一致**。
+        string plus = xPlus > 0 ? $" + (base.IsUpgraded ? {xPlus} : 0)" : "";
+        if (needX) w.Line((costIsX
+            ? $"decimal __X = (decimal)base.ResolveEnergyXValue(){plus};   // X = 这张牌花掉的能量（X 费牌：本体先扣费再跑效果，读「当前能量」会是扣完剩下的）"
+            : $"decimal __X = ForgeFormulaRuntime.Energy(base.Owner){plus};   // X = 打出这张牌那一刻的当前能量")
+            + (xPlus > 0 ? $"（升级后 X + {xPlus}）" : ""));
+        if (needY) w.Line(starCostIsX
+            ? "decimal __Y = (decimal)base.ResolveStarXValue();   // Y = 这张牌花掉的额外资源量（Y 费牌：本体先扣费再跑效果，读「当前值」会是 0）"
+            : "decimal __Y = ForgeFormulaRuntime.Stars(base.Owner);   // Y = 当前额外资源量");
         foreach (string decl in paramDecls) w.Line(decl);
         w.Line();
     }
@@ -1973,14 +2260,66 @@ public static class ForgeGraphGen
             sb.AppendLine(indent + $"int {chanceExpr} = (int)({chanceN.Expr});   // fg:{node.Id}【效果】概率生效（公式：{chanceN.Text}）");
         }
         bool nextTurn = node.GetFlag("NextTurn");
-        if (nextTurn && kind is not ("Block" or "Draw" or "ApplyPower"))
+        if (nextTurn && !EffectCatalog.HonorsNextTurn(kind))
         {
-            sb.AppendLine(indent + "// ⚠「下回合生效」在节点图里暂时只支持「获得格挡 / 抽牌」，这一条按立即生效生成。");
+            sb.AppendLine(indent + "// ⚠「下回合生效」这一档在节点图里做不了（本体没有对应的延迟落点），这一条按立即生效生成。");
             if (kind == "TempPower")
                 sb.AppendLine(indent + "//（「临时增益」想要『撑过这一回合、下回合开始时才撤』请用下面那栏「什么时候撤掉」选「下回合开始时才撤掉」，"
                     + "不要勾这个「下回合生效」。）");
             nextTurn = false;
         }
+        // V0.2.170：「下回合生效」铺到**全部做得了的种类**（用户点的第 2 条）。
+        // 以前这里只放「获得格挡 / 抽牌 / 施加状态」三种（别的种类一律退成立即生效）——
+        // 现在除「获得格挡 / 抽牌」（这两条本来就有本体现成的 BlockNextTurnPower / DrawCardsNextTurnPower）之外，
+        // 其余**所有** EffectCatalog.HonorsNextTurn 的种类一律复用卡牌页那套「挂一个延迟状态，
+        // 下回合开始时跑同一套发射器」（见 CSharpCodeGen.EmitDelayedPowerApply / DelayedPowersSource）。
+        // ⚠ 那些延迟状态类是**用到才生成**的（CSharpCodeGen.CollectDelayedEffects 已把节点图的效果也收进去）。
+        if (nextTurn && kind is not ("Block" or "Draw"))
+        {
+            // 「获得能量 / 额外资源量」这两条在卡牌页用的是**本体现成的** EnergyNextTurnPower /
+            // StarNextTurnPower（不是通用延迟状态），节点图照同一份口径走（见 CSharpCodeGen 的
+            // case "Energy" / "ExtraResource"）—— 不然会去引用一个根本不会生成的延迟类（CS0246，探针实测）。
+            bool negAmount = !amountN.Runtime && amountN.Value < 0m;
+            if (kind == "Energy")
+            {
+                ViaCodeWriterAppend(sb, indent, w => w.Line(negAmount
+                    ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>({ctx.ChoiceVar}, __fgSelf, {Lit((double)Math.Abs(amountN.Value))}m, __fgSelf, {ctx.CardSelfExpr});   // 下回合少 {Math.Abs(amountN.Value):0.##} 点能量"
+                    : $"await PowerCmd.Apply<EnergyNextTurnPower>({ctx.ChoiceVar}, __fgSelf, {amount}, __fgSelf, {ctx.CardSelfExpr});"));
+                return;
+            }
+            if (kind == "ExtraResource" && !negAmount)
+            {
+                ViaCodeWriterAppend(sb, indent, w => w.Line(
+                    $"await PowerCmd.Apply<StarNextTurnPower>({ctx.ChoiceVar}, __fgSelf, {amount}, __fgSelf, {ctx.CardSelfExpr});   // 下回合开始时获得额外资源量"));
+                return;
+            }
+            if (kind == "ExtraResource")
+            {
+                sb.AppendLine(indent + "// ⚠「下回合生效」+ 负数的额外资源量：本体 StarNextTurnPower 只会加不会减，这一条按立即生效生成。");
+            }
+            else
+            {
+                ViaCodeWriterAppend(sb, indent, w =>
+                    CSharpCodeGen.EmitDelayedPowerApply(w, p, EffectFromNode(node), "__fgSelf", "__fgSelf", ctx.ChoiceVar));
+                return;
+            }
+        }
+
+        // V0.2.170：「斩杀」条件（用户点的第 3 条）—— 它判的是「上一条攻击」的结果，生成出来引用
+        // __lastAttack / __fatalOk 两个局部变量（和卡牌页同一份写法，见 CSharpCodeGen 的 usesFatal 那一段）。
+        // 所以：图里用了这个条件时，在**这个执行点的序幕**里声明它们，「造成伤害」那一条把结果记进去。
+        // 只有卡牌档 + 拿得到 cardPlay 的时机才做得了（遗物 / 药水 / 嵌进钩子的那几条没有攻击上下文），
+        // 做不了的组合由校验器报错拦住（不静默生成 CS0103）。
+        bool fatalDecl = ctx.Scope == "Card" && GraphUsesFatal(g);
+        bool fatalCap = fatalDecl && ctx.RealCardPlay;
+        string fatalPre = fatalCap
+            ? "__fatalOk = cardPlay.Target is null || cardPlay.Target.Powers.All(pm => pm.ShouldOwnerDeathTriggerFatal()); "
+            // 拿不到「打出时选中的目标」的时机（被消耗 / 被丢弃 / 嵌进卡牌钩子）：判据只能是 false
+            //（校验器会给一条警告说清「要挪到『打出一张牌时』那一段」）。
+            : fatalDecl
+                ? "__fatalOk = false;   // 这个时机拿不到「打出时选中的目标」，斩杀条件不会成立 "
+                : "";
+        string fatalAsg = fatalDecl ? "__lastAttack = " : "";
 
         // 选牌类效果（消耗 / 丢弃 / 升级 / 从某一摞拿牌）要弹本体的选牌界面，提示语是 LocString，
         // 只能内联生成（静态辅助类里没有 base）。这几句自己写进 sb，写完直接收工。
@@ -1997,9 +2336,22 @@ public static class ForgeGraphGen
                 "TakeFromDiscard" => "PileType.Discard",
                 _ => "PileType.Exhaust",
             };
+            // V0.2.170：「取几张」四档（用户点的第 2 条）。「全部」不弹界面，直接那一摞全拿。
+            var tfE = ForgeEffectBridge.Ensure(node);
+            CountModeMarker(sb, indent, tfE);
+            if (tfE.CountIsAll)
+            {
+                EmitRepeatLoop(sb, indent, timesExpr, __ind =>
+                {
+                    sb.AppendLine(__ind + $"foreach (CardModel __fgTake in CardPile.GetCards(__fgPlayer, {pile}).ToList())");
+                    sb.AppendLine(__ind + "    await CardPileCmd.Add(__fgTake, PileType.Hand);");
+                });
+                return;
+            }
+            string tfPrefs = CSharpCodeGen.SelectPrefsExpr(tfE, "base.SelectionScreenPrompt", $"(int)({amount})");
             EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
-                sb.AppendLine(__ind + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})))).ToList())");
+                sb.AppendLine(__ind + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, {tfPrefs})).ToList())");
                 sb.AppendLine(__ind + "    await CardPileCmd.Add(__fgTake, PileType.Hand);");
             });
             return;
@@ -2007,26 +2359,96 @@ public static class ForgeGraphGen
         // 变化 / 复制（本体「下去 / 二刀流」那两套写法）
         if (kind is "TransformCard" or "CopyCard")
         {
+            var cvSpec = GraphSpec(node);
+            // V0.2.170：「取卡方式」四档（用户点的第 1 条）—— 选了「按范围随机 / 多选1 / 从范围里自己挑一张」
+            // 时「变成什么」由这一栏决定，而卡牌页那份实现（CSharpCodeGen.EmitTransformCard）已经把这四档
+            // 全写全了（含「从哪里选牌」「取几张」「附加处理」「加关键词」），所以整段复用，不再抄第二遍。
+            if (kind == "TransformCard" && cvSpec is { IsSpawnRandom: true })
+            {
+                ViaCodeWriterAppend(sb, indent, w => CSharpCodeGen.EmitTransformCardPublic(w, cvSpec!, p,
+                    cardSource: ctx.CardSelfExpr, countExpr: $"(int)({amount})", playerExpr: "__fgPlayer",
+                    creatureExpr: "__fgSelf", sourceExpr: ctx.CardSelfExpr, combatStateExpr: combatState,
+                    choiceExpr: ctx.ChoiceVar));
+                return;
+            }
             bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
             // 变量名按模块 Id 取，**每条效果一套** —— 同一条链上有两个同种效果时不会撞名（编译期就报 CS0128）
             string selVar = UniqueVar(node, "__fgSel");
+            string? cvTempUp = GraphTempUpVar(node, cvSpec);
+            int copies = kind == "CopyCard" ? Math.Max(1, cvSpec?.Copies ?? 1) : 1;
+            bool cvMods = NeedsGraphSpawnModifiers(cvSpec) || copies > 1;
+            // V0.2.170：「取几张」四档（用户点的第 2 条）—— 「全部」= 那一摞每一张都来一遍，不弹界面。
+            var cvE = ForgeEffectBridge.Ensure(node);
+            CountModeMarker(sb, indent, cvE);
+            bool cvAll = cvE.CountIsAll;
+            string cvPrefs = CSharpCodeGen.SelectPrefsExpr(cvE, "base.SelectionScreenPrompt", $"(int)({amount})");
             EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
-                if (chosen)
-                    sb.AppendLine(__ind + $"var {selVar} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: new CardSelectorPrefs(base.SelectionScreenPrompt, (int)({amount})), filter: null, source: {ctx.CardSelfExpr})).ToList();");
+                if (cvAll)
+                    sb.AppendLine(__ind + $"var {selVar} = ({GraphAllPickExpr(cvSpec)}).ToList();");
+                else if (chosen)
+                    sb.AppendLine(__ind + (IsHandPick(cvSpec)
+                        ? $"var {selVar} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: {cvPrefs}, filter: null, source: {ctx.CardSelfExpr})).ToList();"
+                        : $"var {selVar} = (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {GraphPileExpr(cvSpec)}, __fgPlayer, {cvPrefs})).ToList();"));
                 else
-                    sb.AppendLine(__ind + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : CardPile.GetCards(__fgPlayer, PileType.Hand).OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList());");
+                    sb.AppendLine(__ind + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(cvSpec, CSharpCodeGen.RangeN(cvE, $"(int)({amount})"))});");
                 if (kind == "CopyCard")
                 {
-                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardPileCmd.AddGeneratedCardToCombat({selVar}C.CreateClone(), PileType.Hand, __fgPlayer);");
+                    // V0.2.167：勾了「复制的份数」（> 1）/ 附加处理 / 加关键词时，要拿得到复制出来的那张实例
+                    if (!cvMods)
+                    {
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardPileCmd.AddGeneratedCardToCombat({selVar}C.CreateClone(), PileType.Hand, __fgPlayer);");
+                    }
+                    else
+                    {
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
+                        sb.AppendLine(__ind + "{");
+                        sb.AppendLine(__ind + $"    for (int __fgCopy = 0; __fgCopy < {copies}; __fgCopy++)");
+                        sb.AppendLine(__ind + "    {");
+                        sb.AppendLine(__ind + $"        CardModel __clone = {selVar}C.CreateClone();");
+                        EmitGraphSpawnModifiers(sb, p, cvSpec, __ind + "        ", "__clone", cvTempUp);
+                        sb.AppendLine(__ind + $"        await CardPileCmd.AddGeneratedCardToCombat(__clone, PileType.Hand, __fgPlayer);");
+                        sb.AppendLine(__ind + "    }");
+                        sb.AppendLine(__ind + "}");
+                    }
                 }
                 else if (spawnCardClass is null)
                 {
-                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
+                    if (!cvMods)
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
+                    else
+                    {
+                        // 变化是**新建一张再把原卡移掉**，只有返回值里的 cardAdded 才是变出来的那张（卡牌那条链同款写法）
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
+                        sb.AppendLine(__ind + "{");
+                        sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
+                        sb.AppendLine(__ind + $"    CardModel? {selVar}New = {selVar}Tr.cardAdded;");
+                        sb.AppendLine(__ind + $"    if ({selVar}New is not null)");
+                        sb.AppendLine(__ind + "    {");
+                        EmitGraphSpawnModifiers(sb, p, cvSpec, __ind + "        ", $"{selVar}New", cvTempUp);
+                        sb.AppendLine(__ind + "    }");
+                        sb.AppendLine(__ind + "}");
+                    }
                 }
                 else
                 {
-                    sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{spawnCardClass}>(), __fgPlayer));");
+                    if (!cvMods)
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{spawnCardClass}>(), __fgPlayer));");
+                    else
+                    {
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
+                        sb.AppendLine(__ind + "{");
+                        sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{spawnCardClass}>(), __fgPlayer));");
+                        sb.AppendLine(__ind + $"    CardModel? {selVar}New = {selVar}Tr?.cardAdded;");
+                        sb.AppendLine(__ind + $"    if ({selVar}New is not null)");
+                        sb.AppendLine(__ind + "    {");
+                        EmitGraphSpawnModifiers(sb, p, cvSpec, __ind + "        ", $"{selVar}New", cvTempUp);
+                        sb.AppendLine(__ind + "    }");
+                        sb.AppendLine(__ind + "}");
+                    }
                 }
             });
             return;
@@ -2089,6 +2511,38 @@ public static class ForgeGraphGen
             return;
         }
 
+        // V0.2.170：「取卡方式」四档（用户点的第 1 条）—— 只要选了「按范围随机 / 多选1 / 从范围里自己挑一张」
+        //（这三档在数据里都是 IsSpawnRandom；见 EffectFieldUsage），就**复用卡牌页那份实现**
+        //（CSharpCodeGen.EmitGenerateCard）：范围池、候选、选牌界面、附加处理、加关键词它全写全了，
+        // 只是「上下文表达式」不同（playerExpr / creatureExpr / playerArg / choiceExpr 都开成了参数）。
+        if (kind == "GenerateCard" && GraphSpec(node) is { IsSpawnRandom: true } genRandom)
+        {
+            ViaCodeWriterAppend(sb, indent, w => CSharpCodeGen.EmitGenerateCard(w, p, genRandom,
+                countExpr: $"(int)({amount})", tempUpSource: ctx.CardSelfExpr,
+                playerExpr: "__fgPlayer", creatureExpr: "__fgSelf", playerArg: "__fgPlayer", choiceExpr: ctx.ChoiceVar));
+            return;
+        }
+
+        // V0.2.167：「生成卡牌」勾了「附加处理 / 加关键词」时要**自己 CreateCard**（拿得到实例才改得动），
+        // 所以单独在 switch 之前处理；没勾时走 switch 里那条一句写完的老路径（老图生成文本逐字不变）。
+        var genSpec = GraphSpec(node);
+        if (kind == "GenerateCard" && spawnCardClass is not null && NeedsGraphSpawnModifiers(genSpec))
+        {
+            string genPile = node.Get("SpawnTo", "Hand");
+            string? genTempUp = GraphTempUpVar(node, genSpec);
+            EmitRepeatLoop(sb, indent, timesExpr, __ind2 =>
+            {
+                EmitGraphTempUpgradeApply(sb, p, genSpec, ctx, __ind2);
+                sb.AppendLine(__ind2 + $"for (int __fgN = 0; __fgN < (int)({amount}); __fgN++)");
+                sb.AppendLine(__ind2 + "{");
+                sb.AppendLine(__ind2 + $"    CardModel __gen = {combatState}.CreateCard<{spawnCardClass}>(__fgPlayer);");
+                EmitGraphSpawnModifiers(sb, p, genSpec, __ind2 + "    ", "__gen", genTempUp);
+                sb.AppendLine(__ind2 + $"    await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{genPile}, __fgPlayer);");
+                sb.AppendLine(__ind2 + "}");
+            });
+            return;
+        }
+
         // 按「逐个动手」写的那几种（对每个目标循环一次）
         // 【给伙伴施加状态】：目标是**召唤物**，所以单独算一份（见下面 switch 里的 PetApplyPower）。
         // 空 = 没选状态（那就什么都不生成，校验器会报一条「没选状态」）。
@@ -2121,23 +2575,45 @@ public static class ForgeGraphGen
             // 【随机敌人】仍然逐个动手：随机挑一个 → 挑中的那个打 N 下（那是「随机 N 下」的本体语义）。
             "Damage" when !unit.PerFoe =>
                 DebugLogGen.TargetInline(ApplyPowerEffectOf(node), $"{foes}.FirstOrDefault()", amount)
+                + fatalPre
                 + (hitsMulti
-                    ? $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar});"
-                    : $"await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).Execute({ctx.ChoiceVar});"),
-            "Damage" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                + (hitsMulti
-                    ? $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar}); }}"
-                    : $"foreach (Creature __fgFoe in {foes}) {{ await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).Execute({ctx.ChoiceVar}); }}"),
-            "Block" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                + (nextTurn
-                    ? $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<BlockNextTurnPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});"
-                    : $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainBlock(__fgFoe, {amount}, ValueProp.Move, {ctx.CardPlayExpr});"),
-            "Heal" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Heal(__fgFoe, {amount});",
-            "HpLoss" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Damage({ctx.ChoiceVar}, __fgFoe, {amount}, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, {ctx.CardSelfExpr}, {ctx.CardPlayExpr});",
-            "MaxHp" => DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                + $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.GainMaxHp(__fgFoe, {amount});",
+                    ? $"{fatalAsg}await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar});"
+                    : $"{fatalAsg}await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).TargetingAllOpponents({combatState}).Execute({ctx.ChoiceVar});"),
+            "Damage" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true) + fatalPre,
+                hitsMulti
+                    ? $"{fatalAsg}await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).WithHitCount({hitsExpr}).Execute({ctx.ChoiceVar});"
+                    : $"{fatalAsg}await DamageCmd.Attack({amount}).FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr}).Targeting(__fgFoe).Execute({ctx.ChoiceVar});",
+                alwaysBraces: true),
+            // ⚠ V0.2.174（用户实测报的「格挡怎么不能失去」）：**负数 = 失去格挡**这一档以前在节点图上漏了。
+            // 卡牌页那条链一直是对的（CSharpCodeGen 的 case "Block"：负数走 `CreatureCmd.LoseBlock`），
+            // 但节点图这里直接写 `CreatureCmd.GainBlock(__fgFoe, (‑5m), …)` —— 而本体 `GainBlock` 对
+            // **非正数什么都不做**（直接返回），所以图上填负数额挡「一点都没少」，而且没有任何报错。
+            // 判据和卡牌页同一套：**数值是常数且 < 0** 才当「失去格挡」（运行时公式算出来的正负生成期不知道，
+            // 照旧按 GainBlock 生成 —— 和卡牌页 `IsNegativeAmount` 对 X / 公式的处理口径一致）。
+            // 「失去格挡」时忽略「下回合生效」（本体没有"下回合失去格挡"的落点；卡牌页那条负数额也是立即生效）。
+            "Block" when !amountN.Runtime && amountN.Value < 0m => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                $"await CreatureCmd.LoseBlock({ctx.ChoiceVar}, __fgFoe, {Lit(Math.Abs((double)amountN.Value))}m, __fgSelf);   // 负数 = 失去格挡（本体 GainBlock 对非正数什么都不做）",
+                alwaysBraces: false),
+            "Block" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                nextTurn
+                    ? $"await PowerCmd.Apply<BlockNextTurnPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});"
+                    : $"await CreatureCmd.GainBlock(__fgFoe, {amount}, ValueProp.Move, {ctx.CardPlayExpr});",
+                alwaysBraces: false),
+            "Heal" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                $"await CreatureCmd.Heal(__fgFoe, {amount});",
+                alwaysBraces: false),
+            "HpLoss" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                $"await CreatureCmd.Damage({ctx.ChoiceVar}, __fgFoe, {amount}, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move, {ctx.CardSelfExpr}, {ctx.CardPlayExpr});",
+                alwaysBraces: false),
+            "MaxHp" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                $"await CreatureCmd.GainMaxHp(__fgFoe, {amount});",
+                alwaysBraces: false),
             "ApplyPower" => powerId.Length == 0
                 ? null
                 // 负数**不再自己写一套**（V0.2.139）：以前这里内联的是
@@ -2147,8 +2623,8 @@ public static class ForgeGraphGen
                 // 现在统一走 CSharpCodeGen.ApplyPowerLine（唯一事实来源，和卡牌/遗物/药水/状态四条链同一份），
                 // 正负两档与「允许负层数的 5 个状态」名单都由它判；上下文变量名传这一档自己的
                 // （ctx.ChoiceVar：造不出来时是 null!，写死 choiceContext 会 CS0103）。
-                : DebugLogApplyPower(ApplyPowerEffectOf(node), "__fgFoe", powerId, amount,
-                    $"foreach (Creature __fgFoe in {foes}) " + CSharpCodeGen.ApplyPowerLine(
+                : FoeLoopApplyPower(foes, ApplyPowerEffectOf(node), powerId, amount,
+                    CSharpCodeGen.ApplyPowerLine(
                         ApplyPowerEffectOf(node), useX: false, powerId, "__fgFoe", amount, "__fgSelf",
                         ctx.CardSelfExpr, ctxVar: ctx.ChoiceVar)),
             // 临时增益 / 临时减益：**不能**直接施加真状态（那就是永久的了）——
@@ -2157,8 +2633,10 @@ public static class ForgeGraphGen
             // 数值是正还是负由那个类自己处理（负数档扣层数 / 施加负层数，见 TempPowersSource）。
             "TempPower" => powerId.Length == 0
                 ? null
-                : DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true)
-                  + $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<{CSharpCodeGen.TempPowerClassName(TempPowerEffectOf(node), p)}>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
+                : FoeLoop(foes,
+                    DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                    $"await PowerCmd.Apply<{CSharpCodeGen.TempPowerClassName(TempPowerEffectOf(node), p)}>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
+                    alwaysBraces: false),
             "DoublePower" => powerId.Length == 0
                 ? null
                 : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __dbl = __fgFoe.GetPower<{powerId}>(); if (__dbl is not null) await PowerCmd.ModifyAmount({ctx.ChoiceVar}, __dbl, __dbl.Amount * (({amount}) - 1m), __fgSelf, {ctx.CardSelfExpr}); }}",
@@ -2190,6 +2668,159 @@ public static class ForgeGraphGen
             "GenerateCard" => spawnCardClass is null
                 ? null
                 : $"for (int __fgN = 0; __fgN < (int)({amount}); __fgN++) {{ CardModel __gen = {combatState}.CreateCard<{spawnCardClass}>(__fgPlayer); await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{node.Get("SpawnTo", "Hand")}, __fgPlayer); }}",
+            // ---------- V0.2.168：卡牌页 / 状态页早就支持、节点图以前没接的这几种 ----------
+            // 用户截图报的「删除卡牌（全局：从牌组删牌）」就是第一组里的一条。
+            // 它们全都**不需要「打出这张牌」的上下文**，只要一个玩家（+ 选牌时一个 choiceContext）——
+            // 而这些发射器卡牌页 / 状态页已经有一份（见 CSharpCodeGen.EmitGlobalCardEffectPublic /
+            // EmitPlaySfx / EmitPlaySoundFile / EmitOutbreak），所以这里走 ViaCodeWriter **复用同一份**，
+            // 不再抄第二遍（抄的第二遍必然慢慢长歪）。
+            "AddCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "UpgradeCardGlobal" =>
+                ViaCodeWriterScoped(w => CSharpCodeGen.EmitGlobalCardEffectPublic(w, EffectFromNode(node), "__fgPlayer",
+                    EffectFromNode(node).AmountIsStack, p, ctx.ChoiceVar)),
+            // ---------- V0.2.170：要「打出这张牌」那一刻上下文的几种（用户点的第 3 条）----------
+            // 「重放卡牌」：给牌堆里的牌加本场战斗的重放次数。它只需要「玩家 / 哪一摞 / 选牌上下文」，
+            // 所以三种布都能生成（和卡牌页共用同一份实现，见 CSharpCodeGen.EmitReplayCardPublic）。
+            "ReplayCard" => ViaCodeWriterScoped(w => CSharpCodeGen.EmitReplayCardPublic(w, EffectFromNode(node), p,
+                $"(int)({amount})", "__fgPlayer", ctx.ChoiceVar, ctx.CardSelfExpr)),
+            // 「回合结束时自动打出」：把选好的牌交给生成的 ForgeTurnEndPlayPower。
+            // 数值 0 = 「这张牌自己」——只有卡牌档才有「自己」，别的布传 null（发射器自己会写一行说明）。
+            "TurnEndPlay" => ViaCodeWriterScoped(w => CSharpCodeGen.EmitTurnEndPlayPublic(w, EffectFromNode(node), p,
+                selfExpr: ctx.Scope == "Card" && !ctx.NoHookParams ? ctx.CardSelfExpr : null,
+                cardSource: ctx.CardSelfExpr, playerExpr: "__fgPlayer", creatureExpr: "__fgSelf",
+                choiceExpr: ctx.ChoiceVar, sourceExpr: ctx.CardSelfExpr, countExpr: $"(int)({amount})")),
+            // 「将此牌放回手牌」：**inline 写**（不是钩子）——所以必须挂在「这张牌结算完毕时」那种
+            // 「牌已经不在手牌里」的时机上才有效；挂在 OnPlay（打出时）上时这张牌还在手牌里，什么都不会发生
+            //（本体是打完牌之后才把它放进弃牌堆：PlayCardAction）。校验器对别的时机会给一条警告说清。
+            "ReturnSelfToHand" => ctx.Scope == "Card" && !ctx.NoHookParams
+                ? $"if (base.Pile is not null && base.Pile.Type != PileType.Hand) await CardPileCmd.Add({ctx.CardSelfExpr}, PileType.Hand);"
+                : null,
+            "PlaySfx" => ViaCodeWriter(w => CSharpCodeGen.EmitPlaySfx(w, EffectFromNode(node))),
+            "PlaySoundFile" => ViaCodeWriter(w => CSharpCodeGen.EmitPlaySoundFile(w, EffectFromNode(node))),
+            "Outbreak" => ViaCodeWriter(w => CSharpCodeGen.EmitOutbreak(w, EffectFromNode(node), amount,
+                enemies: $"{combatState}.HittableEnemies", applier: "__fgSelf", cardSource: ctx.CardSelfExpr)),
+            // 「强化指定卡牌」（V0.2.168，用户问「强化指定卡牌怎么不能做」）：给**这张牌的主人**挂那张强化 Power，
+            // 和状态页那份写法逐字一致（见 CustomPowerGen 的 case "BoostCard"），只是「自己」= __fgSelf。
+            // ⚠ 那张 Power 类由 CSharpCodeGen.BoostPowersSource 生成 —— 它的「用到才生成」判断
+            //（CollectBoostEffects）也一起补上了节点图的效果，不然会 CS0246。
+            "BoostCard" => ViaCodeWriter(w =>
+            {
+                w.Line(CSharpCodeGen.BoostMarker(EffectFromNode(node)));
+                w.Line($"await PowerCmd.Apply<{Naming.AmbientBoostPowerClass(EffectFromNode(node))}>({ctx.ChoiceVar}, __fgSelf, {amount}, __fgSelf, {ctx.CardSelfExpr});");
+            }),
+
+            // ========== V0.2.176：把「卡牌页支持、节点图以前没接」的那批补上 ==========
+            // 共同口径：能用图上的上下文（__fgPlayer / __fgSelf / __fgTarget / foes / ctx.ChoiceVar）表达的，
+            // 就**复用卡牌页那份发射器**（把上下文表达式当参数传进去）；只有卡牌页那份写死了 `cardPlay` /
+            // `base.DynamicVars` 的少数几条，才在图上内联一份等价写法。
+            //
+            // 「放置卡牌」：数值 0 = 这张牌自己（只有卡牌档有「自己」）→ 和 TurnEndPlay 同款，
+            // 非卡牌档传 null（发射器自己会写一行说明，不静默）。
+            "PlaceCard" => ViaCodeWriterScoped(w => CSharpCodeGen.EmitPlaceCardPublic(w, EffectFromNode(node), p,
+                useX: false, countExpr: $"(int)({amount})",
+                selfExpr: ctx.Scope == "Card" && !ctx.NoHookParams ? ctx.CardSelfExpr : null,
+                playerExpr: "__fgPlayer", cardSource: ctx.CardSelfExpr)),
+
+            // 「给予卡牌关键词」：数值 0 = 这张牌自己（同上）；「取几张 / 从哪里选牌 / 自己选还是随机」
+            // 全在卡牌页那份实现里，直接复用。⚠ 它自己选那一档会读提示语（见 NeedsSelectPrompt）。
+            // ⚠ 用 ViaCodeWriter（不是 Scoped）：这个发射器会自己 Warn（把说明写成注释）——
+            //   包在 `{ … }` 里的话那个 `}` 会被注释吞掉 → CS1513（真编译实测抓到过 6 处）。
+            "GiveKeyword" => ViaCodeWriter(w => CSharpCodeGen.EmitGiveKeyword(w, p, EffectFromNode(node),
+                useX: false, playerExpr: "__fgPlayer", creatureExpr: "__fgSelf",
+                sourceExpr: ctx.CardSelfExpr, selfAllowed: ctx.Scope == "Card" && !ctx.NoHookParams,
+                promptExpr: "base.SelectionScreenPrompt")),
+
+            // 「刮削」：抽 N 张 → 对其中符合条件的牌执行选定的操作。只需要「玩家 + 选牌上下文」。
+            "ScrapeDraw" => ViaCodeWriter(w => CSharpCodeGen.EmitScrapeDrawPublic(w, p, EffectFromNode(node),
+                $"(int)({amount})", playerExpr: "__fgPlayer", choiceExpr: ctx.ChoiceVar)),
+
+            // 「用目标卡填满手牌」（本体迫降）：只需要「玩家 + 战斗状态」。
+            "FillHand" => ViaCodeWriter(w => CSharpCodeGen.EmitFillHandPublic(w, EffectFromNode(node),
+                playerExpr: "__fgPlayer", combatStateExpr: combatState)),
+
+            // 「禁止目标回复生命」：给每个目标挂本模组生成的 NoHealPower（层数 = 回合数）。
+            // ⚠ 用 ViaCodeWriter（不是 Scoped）：这些发射器的行尾都带 `//` 注释，
+            //   包进 `{ … }` 里那个 `}` 会被注释吞掉 → CS1513（真编译实测抓到 5 处）。
+            "ForbidHeal" => ViaCodeWriter(w => w.Line(FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                $"await PowerCmd.Apply<{Naming.From(p).NoHealPowerClass}>({ctx.ChoiceVar}, __fgFoe, System.Math.Abs({amount}), __fgSelf, {ctx.CardSelfExpr});   // 禁止生命回复",
+                alwaysBraces: false))),
+
+            // 「暴露」（本体 Expose）：清空格挡 + 移除人工制品 + 再施加 N 层状态（状态在「增益 / 减益」栏选）。
+            "Expose" => ViaCodeWriter(w => w.Line(powerId.Length == 0
+                ? $"// ⚠【效果】暴露：没选「增益 / 减益」—— 这一条什么都不做（到上面那栏选一个状态）"
+                : FoeLoop(foes,
+                    DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                    $"{{ Creature __fgExp = __fgFoe; await CreatureCmd.LoseBlock({ctx.ChoiceVar}, __fgExp, __fgExp.Block, __fgSelf);"
+                    + $" if (__fgExp.HasPower<ArtifactPower>()) await PowerCmd.Remove<ArtifactPower>(__fgExp);"
+                    + $" await PowerCmd.Apply<{powerId}>({ctx.ChoiceVar}, __fgExp, {amount}, __fgSelf, {ctx.CardSelfExpr}); }}   // 暴露：清格挡 + 去人工制品 + 施加状态",
+                    alwaysBraces: false))),
+
+            // ---- V0.2.176 第二批：消耗「本场战斗级」辅助类的几种 ----
+            // 「额外获得一回合」：施加本模组生成的 ExtraTurnPower（和卡牌页同一个类）。
+            "ExtraTurn" => ViaCodeWriterScoped(w =>
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).ExtraTurnPowerClass}>({ctx.ChoiceVar}, __fgSelf, 1m, __fgSelf, {ctx.CardSelfExpr});")),
+
+            // 「抽到就减费」：给自己挂本模组生成的 DrawCostPower（层数 = 持续回合数）。
+            // ⚠ 用 ViaCodeWriter（行尾带 `//` 注释，包 `{ }` 会 CS1513 —— 见上面 ForbidHeal 那段说明）。
+            "CheapenDraw" => ViaCodeWriter(w =>
+            {
+                w.Line(CSharpCodeGen.SelfContainedMarker(EffectFromNode(node)));
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).DrawCostPowerClass}>({ctx.ChoiceVar}, __fgSelf, System.Math.Abs({amount}), __fgSelf, {ctx.CardSelfExpr});");   // 抽到就减费（层数 = 持续回合数）
+            }),
+
+            // 「增加额外资源量上限值」：给「上限」那个隐藏状态加层数（上限 = 基础上限 + 层数）。
+            "RaiseResourceCap" => ViaCodeWriter(w =>
+                w.Line($"await PowerCmd.Apply<{CSharpCodeGen.StarCapPowerClass(p)}>({ctx.ChoiceVar}, __fgSelf, {amount}, __fgSelf, {ctx.CardSelfExpr});")),
+
+            // 「透支能量（下回合少）」：施加本模组生成的负债 Power（它施加时立刻给能量、下回合扣回）。
+            "OverdraftEnergy" => ViaCodeWriter(w =>
+                w.Line($"await PowerCmd.Apply<{Naming.From(p).EnergyDebtPowerClass}>({ctx.ChoiceVar}, __fgSelf, {amount}, __fgSelf, {ctx.CardSelfExpr});")),
+
+            // ========== V0.2.176 第三批：伙伴组（用户点的最高优先级）==========
+            // 卡牌页那批宠物发射器已经全部参数化（V0.2.176），这里只负责：
+            //   ① 图上查「这只伙伴」的局部变量（照抄延迟状态那条链的写法）；
+            //   ② 包一层 `if (变量 is not null)`（宠物不在场 → 整条静默跳过，本体也是这个语义）；
+            //   ③ 把图上的上下文表达式（__fgPlayer / __fgSelf / ctx.ChoiceVar / ctx.CardPlayExpr）传进去。
+            "SummonPet" => ViaCodeWriter(w =>
+            {
+                var sumSpec = EffectFromNode(node);
+                if (PetGen.IsAll(sumSpec.PetSummon))
+                {
+                    var sumDefs = PetGen.ResolveMany(p, sumSpec.PetSummon);
+                    if (sumDefs.Count == 0) { CSharpCodeGen.EmitSummonPetPublic(w, sumSpec, p, amount, "__fgPlayer"); return; }
+                    w.Line($"// 【全部召唤物】这一条对 {sumDefs.Count} 只各来一遍：" + string.Join("、", sumDefs.Select(d => d.DisplayName)));
+                    foreach (var d in sumDefs)
+                        CSharpCodeGen.EmitSummonPetPublic(w, sumSpec, p, amount, "__fgPlayer");
+                    return;
+                }
+                CSharpCodeGen.EmitSummonPetPublic(w, sumSpec, p, amount, "__fgPlayer");
+            }),
+            "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+                or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice"
+                or "PetApplyPower" or "PetGuardOn" or "PetGuardOff" =>
+                ViaCodeWriter(w => EmitGraphPetEffect(w, p, node, kind, amount, combatState, ctx)),
+
+            // 「大限已至」：伤害 = 目标身上的灾厄层数 × 这条效果填的数值（本体 Time's Up 的语义）。
+            // 图上没有卡牌的 CalculatedDamage 计算变量 → 内联算（同口径，只是不走卡面变量）。
+            // 只能打在「单个指定敌人」上（本体也是 AnyEnemy）；没有目标就跳过（不抛异常把链打断）。
+            "TimesUp" => ViaCodeWriter(w =>
+            {
+                // `single` = 这条链上「指向对象」解析出来的单个目标（卡牌档就是打出时选的那个敌人）
+                w.Open($"if ({single} is not null)");
+                CSharpCodeGen.EmitTimesUp(w, EffectFromNode(node),
+                    targetExpr: single,
+                    inlineDamageExpr: $"((decimal){single}.GetPowerAmount<DoomPower>() * {amount})",
+                    cardExpr: ctx.CardSelfExpr, cardPlayExpr: ctx.CardPlayExpr, choiceExpr: ctx.ChoiceVar);
+                w.Close();
+            }),
+
+            // ---- V0.2.176 第四批：先古转化「转化为先古卡」----
+            // 按效果里的「配对表」把牌组里的牌换成先古卡，各不相同；
+            // 变出来的牌收进预览列表，方法末尾由 EmitHook 统一弹本体那个预览界面
+            //（列表的声明也在 EmitHook 里，用同一个常量名 AncientPreviewVar）。
+            "AncientTranscend" => ViaCodeWriter(w => CSharpCodeGen.EmitAncientTranscend(
+                w, p, EffectFromNode(node), 0, playerExpr: "__fgPlayer")),
+
             _ => null,
         };
 
@@ -2201,7 +2832,9 @@ public static class ForgeGraphGen
             // 以前一律写「还没接上这个种类」—— 用户填漏了字段时会被这句话带偏。
             sb.AppendLine(SupportedEffectKinds.Contains(kind)
                 ? $"{indent}// ⚠【效果】{def.Display}：这条效果**缺必填的东西**（状态 / 目标卡…），生成时被跳过了 —— 见「配置检查」里那条错误。"
-                : $"{indent}// ⚠【效果】{def.Display}：节点图这一阶段还没接上这个种类（下一阶段补上）—— 请改用「卡牌」页的「效果」列表，那边支持全部种类。");
+                : CardOnlyEffectKinds.Contains(kind)
+                    ? $"{indent}// ⚠【效果】{def.Display}：这一档是**卡牌自己的行为**（挂在这张牌自己身上），节点图的【效果】模块没有「牌自己」可以挂 —— 请改用「卡牌」页的「效果」列表。"
+                    : $"{indent}// ⚠【效果】{def.Display}：节点图这一阶段还没接上这个种类（下一阶段补上）—— 请改用「卡牌」页的「效果」列表，那边支持全部种类。");
             return;
         }
 
@@ -2232,6 +2865,119 @@ public static class ForgeGraphGen
         return DebugLogGen.PowerBefore(e, targetExpr, powerType, amount)
             + core
             + DebugLogGen.PowerAfter(e, targetExpr, powerType);
+    }
+
+    /// <summary>
+    /// V0.2.176：节点图上的**伙伴效果**（伙伴攻击 ×4 / 治疗 / 失去生命 / 最大生命 / 牺牲 /
+    /// 给伙伴施加状态 / 替主人承伤开关）。
+    ///
+    /// 形状（和卡牌页一致，只是变量与上下文换成图上的写法）：
+    /// <code>
+    /// Creature? __zouPet1 = __fgPlayer.PlayerCombatState?.Pets.FirstOrDefault(c =&gt; c.Monster is ZouPet1);
+    /// if (__zouPet1 is not null)
+    /// {
+    ///     … 把卡牌页那份发射器生成的代码原样放进来 …
+    /// }
+    /// </code>
+    ///
+    /// 为什么变量名按宠物类名取（<c>__zouPet1</c>）：同一张图上两条「伙伴攻击」引用**不同**的伙伴时，
+    /// 用固定的 <c>__pet</c> 会撞名 → CS0128；按类名取名天然互不干扰（和卡牌页 <c>PetAttackVarName</c> 同一规矩）。
+    ///
+    /// 「伙伴不在场」时整条**静默跳过**：本体自己的宠物效果就是这个语义（卡牌页也包同一层判空）。
+    /// </summary>
+    private static void EmitGraphPetEffect(CodeWriter w, CharacterProfile p, ForgeNodeSpec node, string kind,
+        string amount, string combatState, EmitCtx ctx)
+    {
+        var spec = EffectFromNode(node);
+        var def = PetGen.Resolve(p, spec.PetSummon);
+        if (def is null)
+        {
+            w.Line($"// ⚠【效果】{EffectCatalog.FindKind(kind).Display}：没有可用的召唤物"
+                + (string.IsNullOrWhiteSpace(spec.PetSummon) ? "（还没选召唤物）" : $"（找不到召唤物「{spec.PetSummon!.Trim()}」）")
+                + "：到「召唤物」页添加一只并勾上「启用」");
+            return;
+        }
+
+        string petVar = CSharpCodeGen.PetAttackVarName(def.ClassName) + UniqueVar(node, "");
+        // 图上的「选中的目标」= 这张牌 / 这条链打出时的目标（卡牌档就是玩家选的那个敌人）；
+        // 没有它（遗物 / 药水 / 状态档）时 TargetOrFirst 会退回「可打的第一个敌人」，不会 NRE。
+        string targetExpr = $"ForgeFormulaRuntime.TargetOrFirst({ctx.CardPlayExpr}?.Target, __fgPlayer).FirstOrDefault()";
+
+        // ⚠ `w.Open` 自己会在行尾补 ` {` 并把缩进 +1 —— 这里**不要**再写一个 `{`（写了会多出一个空块）。
+        w.Open($"Creature? {petVar} = __fgPlayer.PlayerCombatState?.Pets.FirstOrDefault(c => c.Monster is {def.ClassName});");
+        // ⚠ 一定要用 `if (… is not null) { … }` 包起来，**不能**写 `if (… is null) return;` ——
+        // 这个发射器的输出是**内联**在打出方法体里的，那个 return 会把这条链**后面的效果整段吞掉**
+        //（卡牌页是在 OnPlay 的循环里包 if，那边没有这个问题）。
+        w.Open($"if ({petVar} is not null)");
+        switch (kind)
+        {
+            case "PetAttack":
+                CSharpCodeGen.EmitPetAttack(w, spec, p, petVar, amount, useX: false, def,
+                    combatState, ctx.ChoiceVar, ctx.CardSelfExpr, ctx.CardPlayExpr);
+                break;
+            case "PetDamageByMaxHp":
+            case "PetDamageByCurHp":
+            case "PetDamageByMissingHp":
+                // 图上没有卡牌的 CalculatedDamage 计算变量 → 强制走「按这只自己的生命值算」那一支
+                CSharpCodeGen.EmitPetCalculatedAttack(w, spec, p, petVar, useX: false, def,
+                    forceInlineDamage: true, combatState, ctx.ChoiceVar, ctx.CardSelfExpr, ctx.CardPlayExpr);
+                break;
+            case "PetHeal":
+                CSharpCodeGen.EmitPetHeal(w, spec, petVar, amount, amount);
+                break;
+            case "PetLoseHp":
+                CSharpCodeGen.EmitPetLoseHp(w, spec, petVar, amount, amount, "__fgSelf", ctx.ChoiceVar, ctx.CardSelfExpr, ctx.CardPlayExpr);
+                break;
+            case "PetGainMaxHp":
+                CSharpCodeGen.EmitPetGainMaxHp(w, spec, petVar, amount, amount);
+                break;
+            case "PetSacrifice":
+                CSharpCodeGen.EmitPetSacrificePublic(w, spec, p, petVar, petDef: def,
+                    ownerCreatureExpr: "__fgSelf", fixedGainExpr: amount, choiceExpr: ctx.ChoiceVar,
+                    cardExpr: ctx.CardSelfExpr, cardPlayExpr: ctx.CardPlayExpr, targetExpr: targetExpr, inlineCalc: true);
+                break;
+            case "PetApplyPower":
+                CSharpCodeGen.EmitPetApplyPower(w, p, spec, petVar, amount, null, amount,
+                    "__fgSelf", ctx.ChoiceVar, ctx.CardSelfExpr);
+                break;
+            case "PetGuardOn":
+                CSharpCodeGen.EmitPetGuard(w, p, petVar, on: true, ctx.ChoiceVar);
+                break;
+            case "PetGuardOff":
+                CSharpCodeGen.EmitPetGuard(w, p, petVar, on: false, ctx.ChoiceVar);
+                break;
+        }
+        w.Close();   // if (pet is not null)
+        w.Close();   // 宠物变量声明那个块
+    }
+
+    /// <summary>
+    /// 「逐个敌人动手」那几条效果的外壳（V0.2.167 修 CS0103）。
+    ///
+    /// <para>为什么要它：这几档的调试日志（<see cref="DebugLogGen.TargetInline"/> 传 <c>inLoop: true</c>）
+    /// 会把**目标表达式 `__fgFoe` 拼进日志原文**，而日志行原来拼在
+    /// <c>foreach (Creature __fgFoe in …)</c> 的**前面** —— 那是在声明它的作用域之外引用循环变量，
+    /// 编译器直接 <c>CS0103 当前上下文中不存在名称"__fgFoe"</c>（用户实测报过：<c>Fulan.cs</c> 里 4 处，
+    /// 前提是存档开着「生成调试日志」）。现在统一把日志写进循环体：日志关着时
+    /// <paramref name="dbgPrefix"/> 是空串、输出与以前**逐字节相同**（红线①）。</para>
+    /// </summary>
+    /// <param name="alwaysBraces">原来就带花括号的那一档（【造成伤害】）传 true，保证关日志时文本不变。</param>
+    private static string FoeLoop(string foes, string dbgPrefix, string body, bool alwaysBraces)
+    {
+        string head = $"foreach (Creature __fgFoe in {foes})";
+        if (dbgPrefix.Length == 0) return alwaysBraces ? $"{head} {{ {body} }}" : $"{head} {body}";
+        return $"{head} {{ {dbgPrefix}{body} }}";
+    }
+
+    /// <summary>
+    /// 同上，但这一档的日志是「执行前 / 执行后各一行」（<see cref="DebugLogApplyPower"/>）——
+    /// 那两行也引用 `__fgFoe`，所以整段要一起放进循环体（日志关着时输出与以前逐字节相同）。
+    /// </summary>
+    private static string FoeLoopApplyPower(string foes, EffectSpec e, string powerType, string amount, string core)
+    {
+        string head = $"foreach (Creature __fgFoe in {foes})";
+        if (!DebugLogGen.On) return $"{head} {core}";
+        return $"{head} {{ {DebugLogGen.PowerBefore(e, "__fgFoe", powerType, amount)}{core}{DebugLogGen.PowerAfter(e, "__fgFoe", powerType)} }}";
     }
 
     /// <summary>
@@ -2287,12 +3033,142 @@ public static class ForgeGraphGen
         prefix + ForgeNodeSpec.StableSuffix(node.Id);
 
     /// <summary>
+    /// V0.2.167：节点图里【效果】那条效果自己的 <see cref="EffectSpec"/>（和卡牌页共用同一份编辑器）。
+    /// 生成端以前只读老字段（`node.Get(...)`），而「生成 / 变化出来的卡」的附加处理（升级 / 免费 /
+    /// 仅本回合免费 / 仅本回合升级）、「加关键词」、「复制的份数」**没有老字段**
+    /// （见 <see cref="ForgeEffectBridge.MirrorToFields"/> 只回写一部分）—— 所以以前只能报错拦住。
+    /// 现在这几项直接读 spec（<see cref="ForgeEffectBridge.Ensure"/> 会把老模块按老字段迁出来，
+    /// 所以老图照样有 spec）。
+    /// </summary>
+    private static EffectSpec? GraphSpec(ForgeNodeSpec node) => ForgeEffectBridge.Ensure(node);
+
+    /// <summary>
+    /// 把【效果】模块读成一份 <see cref="EffectSpec"/>（V0.2.168）。
+    ///
+    /// 为什么要有它：新接的那几种效果（改牌组的四种全局效果 / 声音 / 毒性爆发 / 强化卡牌）复用的是
+    /// 卡牌页 / 状态页**同一份**发射器，而那些发射器收的是 <see cref="EffectSpec"/> ——
+    /// <see cref="GraphSpec"/> 正常都会给出一份（<c>Ensure</c> 会把老模块迁出来），拿不到时兜一个空壳。
+    /// </summary>
+    private static EffectSpec EffectFromNode(ForgeNodeSpec node) =>
+        GraphSpec(node) ?? new EffectSpec { Kind = node.Get("Effect", "Damage") };
+
+    /// <summary>
+    /// 用 <see cref="CodeWriter"/> 写一段、拿回文本（V0.2.168）。
+    /// 复用的那几份发射器（改牌组 / 声音 / 毒性爆发）写的都是 CodeWriter，而节点图这边拼的是
+    /// <see cref="StringBuilder"/> —— 这个桥让两边共用同一份实现，不用抄第二遍。
+    /// </summary>
+    private static string ViaCodeWriter(Action<CodeWriter> emit)
+    {
+        var w = new CodeWriter();
+        emit(w);
+        return w.ToString().TrimEnd('\r', '\n');
+    }
+
+    /// <summary>
+    /// 同上，但**逐行**写进 <paramref name="sb"/> 并把缩进对齐到 <paramref name="indent"/>（V0.2.170）。
+    /// 上面那个 <see cref="ViaCodeWriter"/> 是当「一行 switch 结果」用的（多行时只有第一行有缩进，能编译但难看）；
+    /// 「取卡方式 / 下回合生效」这几档是**提前 return** 的多行代码，所以单开这一个把每行都缩进对齐。
+    /// </summary>
+    private static void ViaCodeWriterAppend(StringBuilder sb, string indent, Action<CodeWriter> emit)
+    {
+        // ⚠ 整段包一层 `{ }`（V0.2.170）：卡牌页那几份发射器用的是**固定的**局部变量名
+        //（`__transformPool` / `__genPool` / `__replayPool` / `__tePicks`…），同一条链上放两个同类效果
+        //（例：一个「变化卡牌」+ 一个「变化卡牌（全局）」）会在同一个方法里重复声明 → CS0128（探针实测）。
+        // 包一层块作用域，各效果自己的局部变量互不干扰，每个效果仍是同一份实现、文本只多两行花括号。
+        sb.AppendLine(indent + "{");
+        foreach (string line in ViaCodeWriter(emit).Replace("\r\n", "\n").Split('\n'))
+            sb.AppendLine(line.Length == 0 ? "" : indent + "    " + line);
+        sb.AppendLine(indent + "}");
+    }
+
+    /// <summary>
+    /// 同上，但拿回**一段包在块里的文本**（给「一行 switch 结果」那种用；见 <see cref="ViaCodeWriterAppend"/> 里
+    /// 为什么必须包块）。
+    /// </summary>
+    private static string ViaCodeWriterScoped(Action<CodeWriter> emit) => "{ " + ViaCodeWriter(emit) + " }";
+
+    /// <summary>
+    /// 这张图里有没有用「斩杀」条件（【条件】模块选「斩杀」）—— V0.2.170（用户点的第 3 条）。
+    /// 用到了就要在序幕里声明 <c>__lastAttack</c> / <c>__fatalOk</c>、并在「造成伤害」那一条上赋值，
+    /// 否则生成出来的条件判据引用两个不存在的名字（CS0103，整个模组编译不过）。
+    /// </summary>
+    public static bool GraphUsesFatal(ForgeGraphSpec? g) =>
+        g?.Nodes is not null && g.Nodes.Any(n => n is not null && n.Kind == "Condition"
+            && string.Equals(n.Get("Cond", "None"), "Fatal", StringComparison.Ordinal));
+
+    /// <summary>这条【效果】要不要「先 CreateCard 再改」（勾了附加处理 / 加关键词时）。</summary>
+    private static bool NeedsGraphSpawnModifiers(EffectSpec? s) =>
+        s is not null && (s.HasSpawnModifier || s.HasSpawnKeyword);
+
+    /// <summary>「仅本回合升级」那个临时 Power 的变量名（勾了才生成那一行 Apply）。</summary>
+    private static string? GraphTempUpVar(ForgeNodeSpec node, EffectSpec? s) =>
+        s is not null && s.SpawnUpgradedThisTurn ? UniqueVar(node, "__fgTempUp") : null;
+
+    /// <summary>
+    /// 把「生成 / 变化出来的卡」的附加处理写进 <paramref name="sb"/>：
+    /// 直接复用卡牌那条链的 <see cref="CSharpCodeGen.EmitSpawnModifiers"/>（它已经把链的
+    /// 「玩家 / 自己」参数化了），所以两条链的语义和文案不会漂。
+    /// </summary>
+    private static void EmitGraphSpawnModifiers(StringBuilder sb, CharacterProfile p, EffectSpec? spec,
+        string indent, string cardVar, string? tempUpVar)
+    {
+        if (!NeedsGraphSpawnModifiers(spec)) return;
+        var w = new CodeWriter();
+        CSharpCodeGen.EmitSpawnModifiers(w, spec!, cardVar, tempUpVar, p, "__fgPlayer", "__fgSelf");
+        foreach (string line in w.ToString().Replace("\r\n", "\n").Split('\n'))
+        {
+            string t = line.Trim();
+            if (t.Length > 0) sb.AppendLine(indent + t);
+        }
+    }
+
+    /// <summary>
+    /// 「仅本回合升级」：先挂一个「回合结束把它们降回来」的状态（和卡牌那条链同一份实现）。
+    /// <paramref name="ctx"/> 的 <c>CardSelfExpr</c> = 这张牌自己（遗物 / 药水图上是 <c>null</c>）——
+    /// 和 <see cref="CSharpCodeGen.EmitGenerateCard"/> 的 <c>tempUpSource</c> 是同一个约定。
+    /// </summary>
+    private static void EmitGraphTempUpgradeApply(StringBuilder sb, CharacterProfile p, EffectSpec? spec,
+        EmitCtx ctx, string indent)
+    {
+        if (spec is not { SpawnUpgradedThisTurn: true }) return;
+        var w = new CodeWriter();
+        CSharpCodeGen.EmitTempUpgradePowerApply(w, "__fgTempUp", ctx.CardSelfExpr, "__fgSelf");
+        foreach (string line in w.ToString().Replace("\r\n", "\n").Split('\n'))
+        {
+            string t = line.Trim();
+            if (t.Length > 0) sb.AppendLine(indent + t);
+        }
+    }
+
+    /// <summary>
     /// 「消耗 / 丢弃 / 升级手牌里的 N 张」——选牌类效果。
     /// 提示语是本体 <c>CardSelectorPrefs</c> 上的 LocString 常量，所以这几句内联生成
     /// （静态辅助类里没有 base），和「卡牌」页那套写法一致。
     /// </summary>
+    /// <summary>
+    /// 【效果】模块的「从哪里选牌」在节点图里对应的那一摞牌（本体写法 <c>PileType.X.GetPile(player)</c>）。
+    ///
+    /// V0.2.168：以前节点图的选牌类效果**只从手牌里挑**，别的三摞一律报错拦住
+    ///（别人实测截图报的：「变化卡牌」的「从哪里选牌」在锻造节点图里不生效）。现在四摞都支持：
+    /// 手牌走 <c>CardSelectCmd.FromHand</c>（老文本一个字不变），别的三摞走 <c>CardSelectCmd.FromCombatPile</c>
+    /// ——和卡牌页那条链（<see cref="CSharpCodeGen"/> 的 PileExpr）同一套写法。
+    /// 「牌顶」= 抽牌堆最上面那张（本体抽牌堆的 Cards 是「顶在前」）。
+    /// </summary>
+    private static string GraphPileExpr(EffectSpec? s, string player = "__fgPlayer") => s?.SelectPile switch
+    {
+        "Draw" or "Top" => $"PileType.Draw.GetPile({player})",
+        "Discard" => $"PileType.Discard.GetPile({player})",
+        "Exhaust" => $"PileType.Exhaust.GetPile({player})",
+        _ => $"PileType.Hand.GetPile({player})",
+    };
+
+    /// <summary>这个效果是不是「从手牌里挑」（没设 / 手牌 → 老写法；别的三摞 → FromCombatPile）。</summary>
+    private static bool IsHandPick(EffectSpec? s) =>
+        s is null || string.IsNullOrWhiteSpace(s.SelectPile) || string.Equals(s.SelectPile, "Hand", StringComparison.OrdinalIgnoreCase);
+
     private static void EmitCardPick(StringBuilder sb, EmitCtx ctx, ForgeNodeSpec node, string kind, string amount, string indent)
     {
+        var spec = GraphSpec(node);
         bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
         string var = UniqueVar(node, "__fgPick");
         string act = kind switch
@@ -2307,11 +3183,51 @@ public static class ForgeGraphGen
             "DiscardCard" => "CardSelectorPrefs.DiscardSelectionPrompt",
             _ => "CardSelectorPrefs.UpgradeSelectionPrompt",
         };
+        // V0.2.170：「取几张」四档（用户点的第 2 条）。以前这一栏在节点图里被报错拦住。
+        //   · 恰好 N 张 → `new CardSelectorPrefs(prompt, N)`（老文本逐字不变）；
+        //   · 最多 N 张 / 任意张 → 本体的 `(prompt, 0, N)` 写法（见 CSharpCodeGen.SelectPrefsExpr）；
+        //   · 全部 → 不弹选牌界面，那一摞里符合条件的每一张都动手（本体「恶魔之焰」那种）。
+        var e = ForgeEffectBridge.Ensure(node);
+        CountModeMarker(sb, indent, e);
+        if (e.CountIsAll)
+        {
+            sb.AppendLine(indent + $"foreach (CardModel __fgCard in ({GraphAllPickExpr(spec)}).ToList()) {act}");
+            return;
+        }
+        string prefs = CSharpCodeGen.SelectPrefsExpr(e, prompt, $"(int)({amount})");
         if (chosen)
-            sb.AppendLine(indent + $"var {var} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: new CardSelectorPrefs({prompt}, (int)({amount})), filter: null, source: {ctx.CardSelfExpr})).ToList();");
+            sb.AppendLine(indent + (IsHandPick(spec)
+                ? $"var {var} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: {prefs}, filter: null, source: {ctx.CardSelfExpr})).ToList();"
+                : $"var {var} = (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {GraphPileExpr(spec)}, __fgPlayer, {prefs})).ToList();"));
         else
-            sb.AppendLine(indent + $"var {var} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : CardPile.GetCards(__fgPlayer, PileType.Hand).OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList());");
+            sb.AppendLine(indent + $"var {var} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(spec, CSharpCodeGen.RangeN(e, $"(int)({amount})"))});");
         sb.AppendLine(indent + $"foreach (CardModel __fgCard in {var}) {act}");
+    }
+
+    /// <summary>「取几张 = 全部」那一摞的全部牌（不弹选牌界面；手牌 / 别的三摞都是这个写法）。</summary>
+    private static string GraphAllPickExpr(EffectSpec? s) =>
+        $"CardPile.GetCards(__fgPlayer, {(IsHandPick(s) ? "PileType.Hand" : GraphPileExpr(s))})";
+
+    /// <summary>
+    /// 「取几张」不是默认档（最多 N / 任意张 / 全部）时写一行标记 —— 回读靠它还原
+    /// （和卡牌链的 <c>CSharpCodeGen.CountModeMarker</c> 同一个标记；默认档一个字符都不写）。
+    /// </summary>
+    private static void CountModeMarker(StringBuilder sb, string indent, EffectSpec e)
+    {
+        if (e.CountMode != CountModes.Exact) sb.AppendLine(indent + $"// CET:CountMode={e.CountMode}");
+    }
+
+    /// <summary>
+    /// 「从某一摞随机拿 N 张」的表达式（节点图用）。
+    /// 手牌 → 老写法（<c>CardPile.GetCards(...Hand)</c> + 战斗随机 + Take）；别的三摞同理只是换那一摞；
+    /// 「牌顶」→ 不随机、直接拿最上面那张（本体抽牌堆顶在前）。
+    /// </summary>
+    private static string GraphRandomPickExpr(EffectSpec? s, string amount)
+    {
+        if (s is not null && string.Equals(s.SelectPile, "Top", StringComparison.OrdinalIgnoreCase))
+            return $"{GraphPileExpr(s)}.Cards.Take((int)({amount})).ToList()";
+        return $"CardPile.GetCards(__fgPlayer, {(IsHandPick(s) ? "PileType.Hand" : GraphPileExpr(s))})"
+             + $".OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList()";
     }
 
     // ==================================================================================
@@ -2339,17 +3255,57 @@ public static class ForgeGraphGen
         "TempPower", "EndTurn",
         // ---------- 牌堆 / 选牌类 ----------
         "GenerateCard", "GainPotion", "ExhaustCard", "DiscardCard", "TransformCard", "UpgradeCard",
+        // V0.2.168：卡牌页 / 状态页早就支持、节点图以前没接的这几档（用户截图报的「删除卡牌（全局：从牌组删牌）」）
+        "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal", "UpgradeCardGlobal",
+        "Outbreak", "PlaySfx", "PlaySoundFile", "BoostCard",
         "CopyCard", "Scry", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
+        // V0.2.170：要「打出这张牌」那一刻上下文的几种（用户点的第 3 条）——
+        // 重放卡牌 / 回合结束时自动打出 / 将此牌放回手牌（和卡牌页共用同一份发射器）。
+        "ReplayCard", "TurnEndPlay", "ReturnSelfToHand",
         // ---------- 召唤物 ----------
         "PetApplyPower",
+        // V0.2.176：把「卡牌页支持、节点图以前没接」的那批补上（用户要求「全做」）——
+        // 这一批是「图上就能表达」的：放置卡牌 / 给予关键词 / 刮削 / 填满手牌 / 禁止回复生命 / 暴露。
+        "PlaceCard", "GiveKeyword", "ScrapeDraw", "FillHand", "ForbidHeal", "Expose",
+        // V0.2.176 第二批：消耗「本场战斗级」辅助类的几种（辅助类的「用到才生成」已由
+        // CSharpCodeGen.AllEffects 统一收上节点图的效果，不会 CS0246）。
+        "ExtraTurn", "CheapenDraw", "RaiseResourceCap", "OverdraftEnergy",
+        // V0.2.176 第三批：伙伴组（召唤 + 攻击 ×4 + 治疗 / 失去生命 / 最大生命 / 牺牲 / 施加状态 / 承伤开关）
+        "SummonPet",
+        "PetAttack", "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp",
+        "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetSacrifice", "PetGuardOn", "PetGuardOff",
+        // V0.2.176：大限已至（伤害 = 目标的灾厄层数 × 数值）
+        "TimesUp",
+        // V0.2.176 第四批：先古转化「转化为先古卡」（卡牌链 + 节点图都接上了）
+        // ⚠「转化为先古遗物」**故意不在节点图上做**：它要选「换成哪只遗物」，
+        // 而节点的「效果」模块是按卡牌页那套字段存的（没有遗物下拉）→ 用户选不到正确的值，
+        // 生成出来会引用一张卡当遗物类（CS0311）。它仍然只在**遗物 / 药水**的效果列表里可用。
+        "AncientTranscend",
         // 卡牌奖励：只在【触发时机】=「战斗胜利时」那一支上才生成（见 EmitEffect 里那段），
         // 所以它在别的时机上「没有代码」是**故意的**，那一条由它自己的提示负责，不算「没接」。
         "CardReward",
     };
 
-    /// <summary>【效果】模块上「必须选一个状态」的种类（没选就一行代码都不生成，不能让用户猜）。</summary>
+    /// <summary>
+    /// 【效果】模块上「只有**卡牌**才有意义」的那几种（V0.2.176）。
+    ///
+    /// 它们在本体里不是「一条效果」，而是**这张牌自己的行为**：
+    ///   · <c>CheapenSelf</c>（本回合这张牌自己费用变 0）→ 生成的是 <c>base.SetToFreeThisTurn()</c>，
+    ///     <c>base</c> 必须是那张 CardModel；
+    ///   · <c>CheapenSelfOnDraw</c>（抽到这张牌时它本场战斗费用 -N）→ 生成的是卡自己的
+    ///     <c>AfterCardDrawn</c> 钩子（见 <c>CSharpCodeGen.EmitSelfDrawHook</c>），
+    ///     节点图的【效果】模块**没有「牌自己」这个概念**可以挂。
+    /// 所以节点图上选到它们时，写一行**说清楚**的注释（而不是笼统的「还没接上」）。
+    /// </summary>
+    private static readonly HashSet<string> CardOnlyEffectKinds = new(StringComparer.Ordinal)
+    {
+        "CheapenSelf", "CheapenSelfOnDraw",
+    };
+
+    /// <summary>
+    /// 【效果】模块上「必须选一个状态」的种类（没选就一行代码都不生成，不能让用户猜）。</summary>
     private static readonly string[] NeedsPowerField =
-        { "ApplyPower", "TempPower", "DoublePower", "ClearPowerOne", "PetApplyPower" };
+        { "ApplyPower", "TempPower", "DoublePower", "ClearPowerOne", "PetApplyPower", "Expose" };
 
     /// <summary>
     /// 【效果】模块上「编辑器里能填、但节点图这一版**不生成**」的栏位（返回中文说明，空 = 都支持）。
@@ -2382,26 +3338,48 @@ public static class ForgeGraphGen
             Add("条件选项", "节点图里用【条件】模块 + 【if】/【且】/【或】/【关系符】表达（【效果】模块自己不带条件）。");
         if (e.SlowPercent > 0m)
             Add("直接把「缓慢」设成 N%", "节点图只按层数施加状态（要用那一档请到「卡牌 / 遗物 / 药水」页的效果列表里配）。");
-        if (e.IsSpawnRandom || e.HasSpawnChoice || e.SpawnChosen)
-            Add("取卡方式 = 按范围随机 / 范围限定 / 多选1 / 从范围里自己挑一张",
-                "节点图的「生成卡牌 / 变化卡牌」只能生成（变化成）「目标卡」那一栏指定的那张卡。");
-        if (e.SpawnUpgraded || e.SpawnFree || e.SpawnFreeThisTurn || e.SpawnUpgradedThisTurn)
-            Add("生成 / 变化出来的卡的附加处理（直接升级 / 免费 / 仅本回合免费 / 仅本回合升级）",
-                "节点图把生成出来的卡按原样放进牌堆。");
-        if (e.HasSpawnKeyword)
-            Add("生成 / 变化出来的卡：加上关键词", "节点图不支持给生成出来的卡挂关键词。");
-        if (e.ShowCopies && e.Copies != 1)
-            Add("复制的份数", "节点图的「复制卡牌」每张复制 1 份（「数值」= 选几张牌）。");
-        if (e.UsesCountMode && e.CountMode.Length > 0)
-            Add("取几张（最多 N / 任意张）", "节点图按「恰好 N 张」选牌。");
-        if (e.UsesSelectPile && !string.Equals(e.SelectPile, "Hand", StringComparison.OrdinalIgnoreCase))
-            Add("从哪里选牌", "节点图的选牌类效果**只从手牌里挑**（要从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌请到「卡牌」页的效果列表里配）。");
-        if (e.IsPetEffect && !string.IsNullOrWhiteSpace(e.PetSummon))
-            Add("召唤物（哪一只）", "节点图里由【对象】模块决定哪一只召唤物（选「指定召唤物」+ 填召唤物名称）。");
-        if (e.NextTurn && !string.Equals(e.Kind, "Block", StringComparison.Ordinal)
-            && !string.Equals(e.Kind, "Draw", StringComparison.Ordinal)
-            && !string.Equals(e.Kind, "ApplyPower", StringComparison.Ordinal))
-            Warn("下回合生效", "节点图这一版只有「获得格挡 / 抽牌 / 施加增益减益」有延迟分支（别的种类会被当成立即生效生成）。");
+        // V0.2.170：「取卡方式」四档（用户点的第 1 条）**已经支持了** —— 生成端走
+        // CSharpCodeGen.EmitGenerateCard / EmitTransformCardPublic / EmitGlobalCardEffectPublic
+        // （范围池 / 候选 / 选牌界面 / 附加处理全都复用卡牌页那一份），所以不再报错。
+        // 只剩一个理论上点不出来的组合（「自己挑 / 多选1」却不带「按范围随机」——界面上那两个勾选框
+        // 只在「按范围随机」档才显示）照样报错，说清怎么改。
+        if (!e.IsSpawnRandom && (e.SpawnChosen || e.HasSpawnChoice))
+            Add("取卡方式 = 多选1 / 从范围里自己挑一张（但「取卡方式」那一栏不是「按范围随机」）",
+                "这两档要先有「范围」：请把「取卡方式」改成「按范围随机」，再勾「多选1」或「从范围里自己挑一张」。");
+        // V0.2.167：下面这三项**已经支持了**（生成端直接读 spec，见 EmitGraphSpawnModifiers /
+        // EmitGraphTempUpgradeApply / 复制那一段），所以不再报错：
+        //   · 生成 / 变化出来的卡的附加处理（升级 / 免费 / 仅本回合免费 / 仅本回合升级）；
+        //   · 生成 / 变化出来的卡：加上关键词；
+        //   · 复制的份数（节点图的「复制卡牌」现在按份数复制）。
+        // V0.2.168：「从哪里选牌」**已经支持了**（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 / 牌顶，
+        // 见 EmitCardPick / GraphPileExpr / GraphRandomPickExpr）—— 以前这一栏在节点图里会被报错拦住
+        //（别人实测截图报的：「变化卡牌」的「从哪里选牌」在锻造节点图里不生效）。
+        // V0.2.170：「取几张」四档（恰好 / 最多 N / 任意张 / 全部）**已经支持了** ——
+        // 生成端读 e.CountMode / e.CountIsAll，见 EmitCardPick / TakeFrom* / 变化·复制那三段，
+        // 并写 `// CET:CountMode=` 标记供回读（用户点的第 2 条），所以不再报错。
+        // V0.2.176：「召唤物（哪一只）」**节点图现在支持了** —— 伙伴组的发射器（见 EmitGraphPetEffect）
+        // 就是按 `spec.PetSummon` 查那只伙伴的（变量名也按它的类名取），和卡牌页同一份数据。
+        // 以前这里报错说「由【对象】模块决定哪一只」，但发射器并没有读对象模块那一档 —— 报错与实际不符，
+        // 而且会把「伙伴攻击 / 治疗伙伴」这些**刚接上**的种类整条拦下来（生成前就中止）。
+        // 所以这一栏不再报错（下面 `e.IsPetEffect` 那一套检查照旧管别的栏位）。
+        // V0.2.170：「下回合生效」已经铺到**全部做得了的种类**（用户点的第 2 条，见 EmitEffect 里
+        // 那个 EmitDelayedPowerApply 分支）—— 只有本体没有延迟落点的那 8 种（EffectCatalog.NextTurnMeaningless）
+        // 才警告；警告（不报错）是因为老存档里勾过这个勾选框、当时也只是生成一行注释，报错会突然生不出来。
+        if (e.NextTurn && !EffectCatalog.HonorsNextTurn(e.Kind))
+            Warn("下回合生效", "这个种类本体没有「下回合再生效」的落点（声音 / 结束回合 / 自己变便宜之类），"
+                + "节点图会按**立即生效**生成。");
+        // V0.2.170：「将此牌放回手牌」在节点图里是**内联**的（不是卡牌页那种钩子），所以要挂在
+        // 「牌已经不在手牌里」的时机上（被消耗 / 被丢弃）—— 挂在「打出一张牌时」上时这张牌还在手牌里，
+        // 而且本体是打完牌之后才把它放进弃牌堆的（PlayCardAction），搬回去会被那一步覆盖。
+        if (string.Equals(e.Kind, "ReturnSelfToHand", StringComparison.Ordinal) && g is not null)
+        {
+            bool lateEnough = g.TriggerNodes.Any(t => ForgeTimings.Find(t.Get("Timing", ForgeTimings.CardPlayed), "Card")?.Hook
+                is "AfterCardExhausted" or "AfterCardDiscarded");
+            if (!lateEnough)
+                Warn("将此牌放回手牌", "节点图里它是**内联**生成的：要挂在【触发时机】=「这张牌被消耗时 / 这张牌被丢弃时」这类"
+                    + "「牌已经不在手牌里」的时机上才生效 —— 挂在「打出一张牌时」上时这张牌还在手牌里"
+                    + "（本体是打完牌之后才把它放进弃牌堆的），这一步会被随后的入堆动作覆盖（看不出效果）。");
+        }
         // 「作用对象」这一栏是支持的（TargetSideCustom），但**显式接线的【对象】优先**：
         // 用户可能在两边都设了，说清谁说了算（只是提示，不挡住生成）。
         if (e.TargetSideCustom && g is not null && IncomingNode(g, node, 2) is not null)
@@ -2428,22 +3406,87 @@ public static class ForgeGraphGen
             list.Add(("警告", "这张布上没有【触发时机】模块 —— 整张图不会执行（新建一条锻造条目时会自动放一个）。"));
             return list;
         }
-        var opt = ForgeTimings.Find(trigger.Get("Timing", ForgeTimings.CardPlayed), scope);
-        if (opt is null)
-            list.Add(("错误", $"【触发时机】选的「{trigger.Get("Timing")}」认不出来，请重新选一次。"));
-        else if (!string.Equals(opt.Scope, scope, StringComparison.Ordinal))
-            list.Add(("错误", $"【触发时机】选的「{opt.Display}」是给{ScopeZh(opt.Scope)}用的，这块布是{ScopeZh(scope)}的。"));
-        else if (string.Equals(scope, "Relic", StringComparison.Ordinal) && GraphNeedsChoiceContext(g))
+        // V0.2.168：一块布可以有**多块**【触发时机】—— 每块都按同一套规则核一遍（时机认不认得、是不是这类物品的、
+        // 遗物档这个钩子造不造得出 choiceContext）。
+        var triggerNodes = g.TriggerNodes.ToList();
+        // V0.2.170：「斩杀」条件（用户点的第 3 条）—— 它判的是「这张牌**打出时**那一次攻击」的结果，
+        // 只有卡牌档做得了；遗物 / 药水档没有「打出这张牌」这件事（生成出来引用不到 __lastAttack / __fatalOk）。
+        // 挂在拿不到 cardPlay 的时机上（被消耗 / 被丢弃 / 被抽到…）只**警告**：代码能编译，但条件不会成立。
+        if (GraphUsesFatal(g))
         {
-            // 第 9 批 ④：遗物档那几条时机里，本体的钩子**没有** choiceContext、也造不出来的
-            //（战斗胜利 / 战斗结束 / 获得金币 / 遗物被点击）—— 图里真要 context 时只能传 null!，
-            // 运行时会炸。宁可在这里报错说清，也不静默生成坏代码。
-            string ctxFrom = RelicCtxFrom(new HookPlan(trigger, opt), nested: false);
-            if (string.Equals(ctxFrom, "None", StringComparison.Ordinal))
-                list.Add(("错误", $"【触发时机】选的「{opt.Display}」：本体的这个钩子**没有** choiceContext，"
-                    + "而且造不出来（战斗胜利 / 战斗结束 / 获得金币 / 遗物被点击这几个时刻没有可用的选择上下文）——"
-                    + "图里「抽牌 / 造成伤害 / 施加状态 / 选牌」这类**需要玩家选择**的效果会传 null! 在运行时炸。"
-                    + "请把这些效果挪到别的触发时机上（战斗中的那些时机都行）。"));
+            if (!string.Equals(scope, "Card", StringComparison.Ordinal))
+                list.Add(("错误", "这张图里用了「斩杀」条件 —— 它判的是「这张牌刚打出的那一次攻击」的结果，"
+                    + $"只有**卡牌**档做得了（这块布是{ScopeZh(scope)}的，没有「打出这张牌」这件事）⇒ "
+                    + "生成出来会引用不存在的变量（CS0103，整个模组编译不过）。请把「斩杀」挪到卡牌上，或者把条件换成别的。"));
+            else if (!Plans(g, "Card").Any(pl => string.Equals(pl.Timing.Hook, "OnPlay", StringComparison.Ordinal)))
+                list.Add(("警告", "这张图里用了「斩杀」条件，但它的【触发时机】不是「打出一张牌时」—— "
+                    + "那个条件判的是「这张牌刚打出的那一次攻击」的结果，别的时机上拿不到「打出时选中的目标」，"
+                    + "生成出来的条件**不会成立**（代码能编译）。请把带「斩杀」的那条链挪到「打出一张牌时」这块【触发时机】上。"));
+        }        var triggerOptions = new List<ForgeTimings.TimingOption?>();
+        foreach (var trg in triggerNodes)
+        {
+            var o = ForgeTimings.Find(trg.Get("Timing", ForgeTimings.CardPlayed), scope);
+            string where = triggerNodes.Count > 1
+                ? $"第 {triggerNodes.IndexOf(trg) + 1} 块【触发时机】" : "【触发时机】";
+            if (o is null)
+                list.Add(("错误", $"{where}选的「{trg.Get("Timing")}」认不出来，请重新选一次。"));
+            else if (!string.Equals(o.Scope, scope, StringComparison.Ordinal))
+                list.Add(("错误", $"{where}选的「{o.Display}」是给{ScopeZh(o.Scope)}用的，这块布是{ScopeZh(scope)}的。"));
+            else if (string.Equals(scope, "Relic", StringComparison.Ordinal) && GraphNeedsChoiceContext(g))
+            {
+                // 第 9 批 ④：遗物档那几条时机里，本体的钩子**没有** choiceContext、也造不出来的
+                //（战斗胜利 / 战斗结束 / 获得金币 / 遗物被点击）—— 图里真要 context 时只能传 null!，
+                // 运行时会炸。宁可在这里报错说清，也不静默生成坏代码。
+                string ctxFrom = RelicCtxFrom(new HookPlan(trg, o), nested: false);
+                if (string.Equals(ctxFrom, "None", StringComparison.Ordinal))
+                    list.Add(("错误", $"{where}选的「{o.Display}」：本体的这个钩子**没有** choiceContext，"
+                        + "而且造不出来（战斗胜利 / 战斗结束 / 获得金币 / 遗物被点击这几个时刻没有可用的选择上下文）——"
+                        + "图里「抽牌 / 造成伤害 / 施加状态 / 选牌」这类**需要玩家选择**的效果会传 null! 在运行时炸。"
+                        + "请把这些效果挪到别的触发时机上（战斗中的那些时机都行）。"));
+            }
+            triggerOptions.Add(o);
+        }
+        // 两块【触发时机】落在**同一个本体钩子**上：生成出来是同一个类里两个签名一样的 override
+        //（CS0111，整个模组编译不过）—— 生成端只写第一块（见 SplitByHook），这里必须报错说清怎么办。
+        {
+            var byHook = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (int i = 0; i < triggerOptions.Count; i++)
+            {
+                var o = triggerOptions[i];
+                if (o is null) continue;
+                if (byHook.TryGetValue(o.Hook, out int first))
+                {
+                    string hookZh = ForgeTimings.For(scope).FirstOrDefault(x => string.Equals(x.Hook, o.Hook, StringComparison.Ordinal))?.Display ?? o.Display;
+                    list.Add(("错误", $"这块布上第 {first + 1} 块和第 {i + 1} 块【触发时机】落在**同一个本体钩子**上"
+                        + $"（「{hookZh}」和「{o.Display}」其实是同一个时刻）——"
+                        + "生成出来会是同一个类里两个签名一样的方法（整个模组编译不过），所以**只会生成第 "
+                        + $"{first + 1} 块**，第 {i + 1} 块白配了。"
+                        + "要两件事都做：把它们合成一块（用【条件】/【if】区分），或者把这一块换成别的触发时机。"));
+                }
+                else byHook[o.Hook] = i;
+            }
+        }
+        // 「仅生效 N 次（本回合 / 本场战斗）」的复位钩子正好被某一块【触发时机】占用了：
+        // 复位方法不能再写一遍（CS0111），那一支的计数这一次不会清零 —— 说清，不静默。
+        for (int i = 0; i < triggerNodes.Count; i++)
+        {
+            var trg = triggerNodes[i];
+            var o = triggerOptions[i];
+            if (o is null) continue;
+            string cntScope = trg.Get("CountScope", "Combat");
+            var lim = ForgeNumbers.Resolve(p, trg, "CountLimit", 0);
+            if (!lim.Runtime && (int)Math.Round((double)lim.Value) <= 0) continue;
+            if (string.Equals(cntScope, "Run", StringComparison.Ordinal)) continue;
+            string resetHook = string.Equals(cntScope, "Turn", StringComparison.Ordinal)
+                ? "AfterPlayerTurnStart" : "AfterCombatVictory";
+            bool clash = triggerNodes.Where((_, j) => j != i)
+                .Any(x => string.Equals(ForgeTimings.Find(x.Get("Timing", ForgeTimings.CardPlayed), scope)?.Hook, resetHook, StringComparison.Ordinal));
+            if (clash)
+                list.Add(("提示", $"【触发时机】「{o.Display}」填了「仅生效 N 次（{(string.Equals(cntScope, "Turn", StringComparison.Ordinal) ? "本回合" : "本场战斗")}）」："
+                    + "清零用的那个钩子（"
+                    + (string.Equals(cntScope, "Turn", StringComparison.Ordinal) ? "每回合开始时" : "战斗胜利时")
+                    + "）已经被这块布上**另一块【触发时机】**占用了 —— 同一个方法不能写两遍（编译不过），"
+                    + "所以这一支的计数**不会清零**（用满 N 次之后就不再触发）。要清零请把那一块换成别的时机。"));
         }
 
         foreach (var n in g.Nodes)
@@ -2586,8 +3629,12 @@ public static class ForgeGraphGen
             // ② 必填的东西没填（状态 / 目标卡）：也是「一行代码都不生成」，但原因完全不同
             if (NeedsPowerField.Contains(kind, StringComparer.Ordinal) && string.IsNullOrWhiteSpace(n.Get("PowerId")))
                 list.Add(("错误", $"【效果】「{display}」还没选「状态」（模块上的「状态」那一栏）—— 没选的话这一块不会生成任何代码。"));
-            if (kind == "GenerateCard" && string.IsNullOrWhiteSpace(n.Get("SpawnCardId")))
-                list.Add(("错误", $"【效果】「{display}」还没选「目标卡」（模块上的「目标卡」那一栏）—— 没选的话这一块不会生成任何代码。"));
+            // 「目标卡」只在「取卡方式 = 指定卡」那一档才是必填的：V0.2.170 起「按范围随机 / 多选1 /
+            // 从范围里自己挑一张」用的是「范围限定」，不需要「目标卡」（以前这里一律要求，选随机也报错）。
+            if (kind == "GenerateCard" && string.IsNullOrWhiteSpace(n.Get("SpawnCardId"))
+                && !ForgeEffectBridge.Ensure(n).IsSpawnRandom)
+                list.Add(("错误", $"【效果】「{display}」还没选「目标卡」（模块上的「目标卡」那一栏）—— 没选的话这一块不会生成任何代码；"
+                    + "想按范围随机生成请把「取卡方式」改成「按范围随机」并选一个「范围限定」。"));
             // ③ V0.2.129：编辑器合并之后，卡牌页有的栏位【效果】模块上都有 ——
             //    但节点图的发射器只覆盖其中一部分。**填了不生效的栏位一律报错**（不许静默生成一半）。
             foreach (var (level, msg) in UnsupportedEffectSettings(g, n))

@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -268,8 +268,10 @@ public static class VanillaPowerGen
         {
             internal sealed class Rename
             {
-                internal bool Name;
-                internal bool Desc;
+                // `= false` 只是为了让生成的代码不报 CS0649（「从未对字段赋值」）——
+                // 这两栏的语义本来就是「没写 = 不改」，值不变（用户报过这条警告太吵）。
+                internal bool Name = false;
+                internal bool Desc = false;
                 internal string Prefix = "";
             }
 

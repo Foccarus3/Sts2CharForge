@@ -12,6 +12,13 @@ public sealed class CodeWriter
     public CodeWriter Line(string text = "")
     {
         if (text.Length == 0) { _sb.AppendLine(); return this; }
+        // ⚠ 兜底（V0.2.168，用户实测「描述栏里打回车换行会报错」）：用户文本里可能带 **CRLF / 单独的 \r**
+        //（WPF 的 TextBox 打回车就是 CRLF）。C# 把单独的 \r 也当换行，直接写进 `//` / `///` 注释会把注释
+        // 截断、后半截变成代码 → 整个工程编译不过。所以这里统一收拾：
+        //   · CRLF → LF（保留调用方真的要换行的意图）；
+        //   · 单独的 \r → 空格（它永远不是有意为之）。
+        // 需要「压成一行」的注释文本，调用方该用 CustomPowerGen.OneLine（那才是正解）。
+        text = text.Replace("\r\n", "\n").Replace('\r', ' ');
         _sb.Append(new string(' ', _indent * 4)).AppendLine(text);
         return this;
     }
@@ -46,7 +53,7 @@ public static class Lit
     public static string Str(string? value) =>
         "\"" + (value ?? string.Empty)
             .Replace("\\", "\\\\").Replace("\"", "\\\"")
-            .Replace("\r\n", "\\n").Replace("\n", "\\n").Replace("\t", "\\t") + "\"";
+            .Replace("\r\n", "\\n").Replace("\n", "\\n").Replace("\r", "\\n").Replace("\t", "\\t") + "\"";
 
     public static string Dec(decimal value) => value.ToString("0.##", CultureInfo.InvariantCulture) + "m";
     public static string Int(decimal value) => ((int)Math.Round(value, MidpointRounding.AwayFromZero)).ToString(CultureInfo.InvariantCulture);

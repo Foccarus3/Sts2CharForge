@@ -18,6 +18,16 @@ public static class LocalizationGen
     /// </summary>
     public const string DefaultCharacterDescription = "一个自定义角色。";
 
+    /// <summary>
+    /// 联机 ping（右下角那个 <b>Ping</b> 按钮按下去冒出的那句「催促」台词）的**生成端默认值**。
+    /// 这一句从 V0.0.x 起就写死在生成端（V0.2.173 之前没有任何配置项），所以：
+    ///   · 生成时用户没填 → 写这一句（老存档 / <c>--samplegen</c> 结果逐字不变）；
+    ///   · 从工程恢复时读到这一句 → 当作「没填」（否则恢复出来的存档会无中生有多出一句，
+    ///     再生成一次 characters.json 就跟第一次不一样 —— 和
+    ///     <see cref="DefaultCharacterDescription"/> 同一个坑）。
+    /// </summary>
+    public const string DefaultEndTurnPingText = "……继续。";
+
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         WriteIndented = true,
@@ -61,7 +71,10 @@ public static class LocalizationGen
             [$"{n.CharEntry}.eventDeathPrevention"] = string.IsNullOrWhiteSpace(p.DeathText) ? "……还不到时候。" : p.DeathText,
             [$"{n.CharEntry}.bestiaryQuote"] = "……记住这个数字就够了。",
             [$"{n.CharEntry}.goldMonologue"] = "钱？也只是数字。",
-            [$"{n.CharEntry}.banter.alive.endTurnPing"] = "……继续。",
+            // V0.2.173：这一句以前**写死**成「……继续。」—— 现在由角色页那栏「多人催促文本」决定。
+            // 留空时仍然写「……继续。」：老存档 / --samplegen 生成的结果逐字不变（硬红线）。
+            [$"{n.CharEntry}.banter.alive.endTurnPing"] =
+                string.IsNullOrWhiteSpace(p.EndTurnPingText) ? DefaultEndTurnPingText : p.EndTurnPingText.Trim(),
             [$"{n.CharEntry}.banter.dead.endTurnPing"] = string.IsNullOrWhiteSpace(p.DeadBanterText) ? "……" : p.DeadBanterText,
             [$"{n.CharEntry}.unlockText"] = "完成 {Prerequisite} 的条件后解锁。",
         };
@@ -204,13 +217,18 @@ public static class LocalizationGen
     /// </summary>
     public static string GraphCardText(CharacterProfile p, ForgeGraphSpec g)
     {
-        var trig = g.TriggerNode;
-        if (trig is null) return "";
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        string body = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, trig, 0), "ChosenEnemy", seen, 0);
-        if (body.Length == 0) return "";
-        string head = TriggerText(trig);
-        return head.Length == 0 ? body : head + "\n" + body;
+        // V0.2.168：一块布上可以有多块【触发时机】—— 每一块各写一段（各带自己的时机抬头），
+        // 一块都没有时才算空图。每块用自己的 seen 集合（两块共用一个模块时两段都要写出来）。
+        var parts = new List<string>();
+        foreach (var trig in g.TriggerNodes)
+        {
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            string body = ChainText(p, g, ForgeGraphGen.NodeAtOutgoing(g, trig, 0), "ChosenEnemy", seen, 0);
+            if (body.Length == 0) continue;
+            string head = TriggerText(trig);
+            parts.Add(head.Length == 0 ? body : head + "\n" + body);
+        }
+        return string.Join("\n", parts);
     }
 
     /// <summary>触发时机的抬头：默认的「卡牌被打出时」不写（和效果列表那条路一样）；别的时机写出来。</summary>
@@ -644,10 +662,34 @@ public static class LocalizationGen
             || (e.Kind == "PlaceCard" && e.CardPick == "Chosen" && !CSharpCodeGen.IsPileTop(e))
             // 另外「复制卡牌」自己选牌也要（CardSelectCmd.FromHand 那条）。
             || (e.Kind == "CopyCard" && e.CardPick == "Chosen")
+            // ⚠ V0.2.173（用户实测：锻造卡「你去！」打出后抛 `No selection screen prompt for CARD.XXX`
+            // ⇒ 那张牌的效果**一条都不跑**、牌「挂在手上」）：**「变化卡牌 + 取牌方式 = 自己选」**这一档
+            // 还有一条**节点图专用**的读取点，上面那几条都盖不到它：
+            //   ForgeGraphGen.EmitEffect 里 `chosen` 是按**图上字段**判的
+            //   （`bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random")`），
+            //   然后走 `CardSelectCmd.FromHand / FromCombatPile(… new CardSelectorPrefs(base.SelectionScreenPrompt, …))`；
+            //   而 `TransformCard` 的**卡牌页**那条链只在 `IsSpawnRandom && (SpawnChoice > 1 || SpawnChosen)` 时读
+            //   —— 图上这个节点是「固定卡 + Pick=Chosen」，`IsSpawnRandom` 为 false、`SpawnChosen` 也是 false，
+            //   于是判据说「不用写键」，代码却在打出时读了 → 本体抛异常。
+            // 这是同一类坑第三次复发（V0.2.145 自定义状态 / V0.2.170 四档 / 这次图上 Pick），所以一并算进来：
+            // 多写一条没人读的键无害，漏一条就是「打出这张牌 = 卡住」。
+            || (e.Kind is "TransformCard" or "CopyCard" && e.CardPick == "Chosen")
             // 「重放」自己选牌也一样（走 CardSelectCmd.FromHand / FromCombatPile）
             || (e.Kind == "ReplayCard" && e.CardPick == "Chosen")
             // 「回合结束时自动打出」填了 1 以上 + 自己选：选牌是**打出这张牌时**做的，读的是它的提示语
-            || (e.Kind == "TurnEndPlay" && e.Amount > 0 && !e.AmountIsXEffective && e.CardPick == "Chosen"));
+            || (e.Kind == "TurnEndPlay" && e.Amount > 0 && !e.AmountIsXEffective && e.CardPick == "Chosen")
+            // 「给予卡牌关键词」+ 取牌方式 = 自己选（数值 ≥ 1）：生成代码读的也是 base.SelectionScreenPrompt
+            //（CSharpCodeGen.EmitGiveKeyword 里 `new CardSelectorPrefs(base.SelectionScreenPrompt, n)` 那两句）。
+            // V0.2.176：把「数值是公式 / X」也算进来（那种也走自己选那一支、也读提示语），
+            // 但「全部」（CountIsAll 走 foreach、不弹界面）和「数值 0 = 这张牌自己」（直接对 this 动手）
+            // 这两档**不读**，所以排除掉 —— 判据和发射器逐条对齐：多写一条键无害，漏一条就是牌卡住。
+            || (e.Kind == "GiveKeyword" && e.CardPick == "Chosen" && !e.CountIsAll && !(e.Amount <= 0m && !e.AmountIsXEffective))
+            // V0.2.170：**「取卡方式 = 多选1 / 从范围里自己挑一张」**这一档，四条链（生成 / 变化 /
+            // 全局加牌 / 全局变化）走的都是 `CardSelectCmd.FromSimpleGrid(..., new CardSelectorPrefs(base.SelectionScreenPrompt, 1))`
+            //（候选 > 3 时；见 CSharpCodeGen.EmitGenerateCard / EmitTransformCard / EmitGlobalCardEffect 里
+            //  EmitSpawnPickChoose 那段）—— 漏一个就是「打出这张牌 = 本体抛 No selection screen prompt ⇒ 游戏卡死」。
+            || (((e.Kind is "GenerateCard" or "TransformCard" or "AddCardGlobal" or "TransformCardGlobal")
+                 && e.IsSpawnRandom && (e.SpawnChoice > 1m || e.SpawnChosen))));
 
     /// <summary>选牌界面上那句提示（本体的 <c>&lt;ENTRY&gt;.selectionScreenPrompt</c>，生成代码里读 base.SelectionScreenPrompt）。</summary>
     public static string SelectPromptText(IEnumerable<EffectSpec> effects)
@@ -655,11 +697,19 @@ public static class LocalizationGen
         var list = effects as IList<EffectSpec> ?? effects.ToList();
         if (list.Any(e => e.Kind == "Scry")) return "选择要丢进弃牌堆的牌";
         if (list.Any(e => e.Kind == "CopyCard" && e.CardPick == "Chosen")) return "选择要复制的牌";
+        // V0.2.173：图上「变化卡牌 + 自己选」也要一句（这段话用在哪条效果上都读得通）
+        if (list.Any(e => e.Kind == "TransformCard" && e.CardPick == "Chosen")) return "选择要变化的牌";
         if (list.Any(e => e.Kind == "ReplayCard" && e.CardPick == "Chosen")) return "选择要重放的牌";
+        // V0.2.176：图上「给予关键词 + 自己选」也要一句
+        if (list.Any(e => e.Kind == "GiveKeyword" && e.CardPick == "Chosen" && !e.CountIsAll && !(e.Amount <= 0m && !e.AmountIsXEffective))) return "选择要给予关键词的牌";
         if (list.Any(e => e.Kind == "TurnEndPlay" && e.Amount > 0 && e.CardPick == "Chosen")) return "选择回合结束时自动打出的牌";
         // 「从范围里自己挑一张」：候选就是这一组范围里的全部卡（V0.2.145 补上，以前会落到最后那句
         // 「选择要拿到手牌的牌」—— 措辞对不上这条效果）
         if (list.Any(e => e.Kind == "GenerateCard" && e.IsSpawnRandom && e.SpawnChosen)) return "选择要生成的牌";
+        // V0.2.170：「变化 / 加进牌组 / 牌组变化」的「多选1 / 自己挑一张」也读同一份提示语
+        if (list.Any(e => e.Kind == "TransformCard" && e.IsSpawnRandom && (e.SpawnChosen || e.SpawnChoice > 1m))) return "选择要变化成的牌";
+        if (list.Any(e => e.Kind == "AddCardGlobal" && e.IsSpawnRandom && (e.SpawnChosen || e.SpawnChoice > 1m))) return "选择要加进牌组的牌";
+        if (list.Any(e => e.Kind == "TransformCardGlobal" && e.IsSpawnRandom && (e.SpawnChosen || e.SpawnChoice > 1m))) return "选择要变化成的牌";
         // 「放置卡牌 + 自己选」：从这一摞挑 N 张放到另一摞（V0.2.145 补上，同一个道理）
         if (list.Any(e => e.Kind == "PlaceCard" && e.CardPick == "Chosen" && !CSharpCodeGen.IsPileTop(e))) return "选择要移动的牌";
         // 多选1 的提示要跟着候选张数走（「在 3 张中选一张」）

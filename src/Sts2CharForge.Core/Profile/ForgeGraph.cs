@@ -258,6 +258,17 @@ public sealed class ForgeGraphSpec : SpecBase
     public ForgeNodeSpec? TriggerNode =>
         _nodes.FirstOrDefault(n => n is not null && string.Equals(n.Kind, "Trigger", StringComparison.Ordinal));
 
+    /// <summary>
+    /// 这张布上**所有**触发时机模块（按模块顺序）。
+    ///
+    /// <para>V0.2.168：一块布现在可以有**多块**【触发时机】—— 每块配自己的一条链，
+    /// 落在同一个本体钩子上的那几块由校验器拦住（要求合成一块），别的各自生成一个钩子。</para>
+    /// <para><see cref="TriggerNode"/> 仍然是「第一块」（老代码 / 老图的行为不变）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<ForgeNodeSpec> TriggerNodes =>
+        _nodes.Where(n => n is not null && string.Equals(n.Kind, "Trigger", StringComparison.Ordinal)).ToList();
+
     /// <summary>这块布是不是空的（没有模块）。</summary>
     [JsonIgnore] public bool IsEmpty => _nodes.Count == 0;
 

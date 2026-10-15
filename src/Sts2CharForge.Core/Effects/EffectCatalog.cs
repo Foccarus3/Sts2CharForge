@@ -2207,6 +2207,17 @@ public static class EffectCatalog
         new TriggerOption("Obtained",       "获得时",       "AfterObtained()"),
         new TriggerOption("CombatStart",    "战斗开始时",   "BeforeSideTurnStart(choiceContext, side, participants, combatState)"),
         new TriggerOption("PlayerTurnStart","玩家回合开始时", "AfterPlayerTurnStart(choiceContext, player)"),
+        // 回合开始那三个时刻（用户要求「触发时机加一个回合开始后」）：
+        // 本体 Hook.AfterPlayerTurnStart 一个函数里**连着派发三次**（见 Hook.cs:894-917）——
+        //   ① AfterPlayerTurnStartEarly → ② AfterPlayerTurnStart → ③ AfterPlayerTurnStartLate
+        // 而 CombatManager.SetupPlayerTurn 里它是**最后一步**（回能量 → 抽牌 → 然后才调它，见 CombatManager.cs:880-926）。
+        // 所以三个的含义是：
+        //   Early  = 抽牌**之前**（想改这回合抽几张 / 抽牌前先上状态就用它）
+        //   After  = 抽牌**之后**（最常用的一档：这回合的手牌已经到手了）
+        //   Late   = 同一时刻的最后一轮（本体「血瓶 BloodVial」用的就是它）
+        // 三者是**三个不同的钩子方法**，同一个类里可以同时覆写，不会撞签名。
+        new TriggerOption("PlayerTurnStartEarly", "回合开始后（抽牌前）", "AfterPlayerTurnStartEarly(choiceContext, player)"),
+        new TriggerOption("PlayerTurnStartLate",  "回合开始后（最晚）",   "AfterPlayerTurnStartLate(choiceContext, player)"),
         new TriggerOption("PlayerTurnEnd",  "玩家回合结束时", "AfterSideTurnEnd(choiceContext, side, participants)"),
         new TriggerOption("CombatVictory",  "战斗胜利后",   "AfterCombatVictory(room)"),
         // 战斗结束时（用户要求）：本体 AfterCombatEnd —— 它跑在**房间结算之前**

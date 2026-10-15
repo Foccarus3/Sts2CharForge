@@ -173,6 +173,10 @@ public static class KeywordGen
     /// <para>普通自定义关键词（<see cref="CustomKeywordList"/>）升级前后都显示；
     /// 「升级后获得的」只在升级后那段、「升级后失去的」只在没升级那段。</para>
     ///
+    /// <para>⚠ 同一条既在「一直在」又在「升级后失去」时，**以「失去」为准** —— 升级后那段不写它。
+    /// 这和生成端 <c>ExtraHoverTips</c> 的过滤口径必须一致，否则会出现「卡面上那行字没了、
+    /// 鼠标一悬停说明还在」这种自相矛盾的显示（V0.2.177 用户报的就是这个）。</para>
+    ///
     /// <para>两边算出来**完全相同**时（没填这两栏就是这种情况）调用方直接按老路径走 ——
     /// 生成出来的 <c>cards.json</c> 一个字符都不变（红线①）。</para>
     /// </summary>
@@ -183,7 +187,8 @@ public static class KeywordGen
         var del = c?.UpgradeRemovedCustomKeywords ?? new List<string>();
         // 顺序 = 普通关键词（升级前后都在）→ 升级后获得的 → 升级后失去的（各自去重、保持用户填的顺序）
         string baseText = CardTextFor(p, Dedup(now.Concat(del)));
-        string upText = CardTextFor(p, Dedup(now.Concat(add)));
+        var upNow = Dedup(now).Where(x => !del.Contains(x, StringComparer.OrdinalIgnoreCase));
+        string upText = CardTextFor(p, Dedup(upNow.Concat(add)));
         return (baseText, upText);
     }
 

@@ -77,6 +77,43 @@ public static class Sts2Metadata
     public static IReadOnlyList<Sts2TypeInfo> DerivedFrom(string? dllPath, string baseName) =>
         Filter(ReadTypes(dllPath), baseName);
 
+    /// <summary>
+    /// 这个类型上有没有「方法名 + 形参个数」都对得上的方法（V0.2.167：构建前核对生成端**硬编码**的签名）。
+    ///
+    /// <para>为什么需要它：生成端有几处把本体方法的签名写死了（例：攻击牌一律写
+    /// <c>DamageCmd.Attack(…).FromCard(this, cardPlay)</c>）。游戏一更新、签名变了，生成出来的代码就在
+    /// **编译期**炸（用户实测报过 <c>CS1501 FromCard 方法没有采用 2 个参数的重载</c>、
+    /// <c>CS0535/CS0115 ITemporaryPower</c> 那一批）—— 报错信息完全看不出是「游戏版本不对」。</para>
+    ///
+    /// <para>⚠ 返回三态：<c>true</c> = 有；<c>false</c> = **类型在、方法或重载不在**（明确的漂移）；<c>null</c> =
+    /// dll 读不到 / 类型都没找到（不下结论，调用方别据此报错）。只读元数据，不加载程序集。</para>
+    /// </summary>
+    public static bool? HasMethod(string? dllPath, string typeSimpleName, string methodName, int paramCount)
+    {
+        if (string.IsNullOrWhiteSpace(dllPath) || !File.Exists(dllPath)) return null;
+        try
+        {
+            using var fs = File.OpenRead(dllPath);
+            using var pe = new System.Reflection.PortableExecutable.PEReader(fs);
+            var md = pe.GetMetadataReader();
+            foreach (var th in md.TypeDefinitions)
+            {
+                var td = md.GetTypeDefinition(th);
+                if (!string.Equals(md.GetString(td.Name), typeSimpleName, StringComparison.Ordinal)) continue;
+                foreach (var mh in td.GetMethods())
+                {
+                    var m = md.GetMethodDefinition(mh);
+                    if (!string.Equals(md.GetString(m.Name), methodName, StringComparison.Ordinal)) continue;
+                    // 形参数 = 参数表的行数（不用解码签名，够用了）
+                    if (m.GetParameters().Count == paramCount) return true;
+                }
+                return false;      // 类型在、方法/重载不在 → 明确的漂移
+            }
+        }
+        catch { /* 读不出来就当「不知道」 */ }
+        return null;
+    }
+
     public static IReadOnlyList<Sts2TypeInfo> Powers(string? dllPath) => DerivedFrom(dllPath, PowerBase);
     public static IReadOnlyList<Sts2TypeInfo> Cards(string? dllPath) => DerivedFrom(dllPath, CardBase);
     public static IReadOnlyList<Sts2TypeInfo> Potions(string? dllPath) => DerivedFrom(dllPath, PotionBase);

@@ -87,12 +87,45 @@ public sealed class CharacterProfile
     public string Description { get; set; } = "";
     public int StartingHp { get; set; } = 80;
     public int StartingGold { get; set; } = 99;
+
+    /// <summary>
+    /// 角色**每回合的能量上限**（V0.2.172，用户要求「增加角色最大能量」）。**默认 3 = 本体默认**。
+    ///
+    /// <para><b>引擎依据</b>：本体 <c>CharacterModel.MaxEnergy => 3</c>（虚属性，见
+    /// <c>Core/Models/CharacterModel.cs:97</c>）；<c>Player</c> 建号时取 <c>character.MaxEnergy</c>，
+    /// 之后 <c>PlayerCombatState.MaxEnergy => Hook.ModifyMaxEnergy(..., _player.MaxEnergy)</c>、
+    /// 每回合 <c>ResetEnergy()</c> 按它回满。所以生成的角色类里写一句
+    /// <c>public override int MaxEnergy => N;</c> 就是「这个角色每回合的能量上限 = N」——
+    /// **不需要任何补丁**。</para>
+    ///
+    /// <para>⚠ <b>硬红线</b>：等于 3（本体默认）时生成端**一个字都不写** —— 老存档 / <c>--samplegen</c>
+    /// 基线必须逐字不变（见 <c>CSharpCodeGen.CharacterSource</c> 里那段条件发射）。</para>
+    /// </summary>
+    public int MaxEnergy { get; set; } = 3;
     /// <summary>Neutral / Feminine / Masculine</summary>
     public string Gender { get; set; } = "Masculine";
     /// <summary>死亡描述文本（本地化 eventDeathPrevention）</summary>
     public string DeathText { get; set; } = "";
     /// <summary>阵亡后回合结束台词（banter.dead.endTurnPing）</summary>
     public string DeadBanterText { get; set; } = "";
+    /// <summary>
+    /// 多人联机「催促」台词 = 战斗里对方还没结束回合时、右下角那个 <b>Ping</b> 按钮按下后
+    /// 冒出的对话气泡（本体键：<c>characters</c> 表的 <c>&lt;角色&gt;.banter.alive.endTurnPing</c>）。
+    ///
+    /// <para>机制（对着本体源码确认过）：本体的 <c>NPingButton</c> 会在我方**结束回合之后**
+    /// 从屏幕右下角滑出来（只在「还有别人没结束回合」时），按一下就走
+    /// <c>RunManager.Instance.FlavorSynchronizer.SendEndTurnPing()</c> → 广播
+    /// <c>EndTurnPingMessage</c> → 每个客户端在**那个玩家头上**冒 1.5 秒的对话气泡，
+    /// 文案取自他自己那个角色的 <c>banter.alive.endTurnPing</c>（阵亡的人取 <c>.dead.</c> 那一档）。
+    /// 本体每个角色都有一句（铁甲战士 <c>Make haste.</c> / 静默猎手 <c>…</c> / 故障机器人一串 jitter 乱码…）。</para>
+    ///
+    /// <para>留空 = 沿用工具一直以来的那句「……继续。」（老存档 / <c>--samplegen</c> 生成结果逐字不变）。
+    /// 这一项**不需要任何补丁** —— 它就是我们自己角色的本地化表里的一行。</para>
+    ///
+    /// <remarks>⚠ 别和 <see cref="ArtSpec.TreasureFightText"/> 搞混：那一句是**宝箱房抢遗物**时
+    /// 屏幕中间那行「开抢！！！」（本体键 <c>gameplay_ui.TREASURE_FIGHT_TEXT</c>），和 ping 完全无关。</remarks>
+    /// </summary>
+    public string EndTurnPingText { get; set; } = "";
     /// <summary>与最终 Boss「建筑师」的结算对话（每行一句）</summary>
     public string ArchitectDialogue { get; set; } = "";
     public string? UnlockAfter { get; set; }
@@ -406,6 +439,9 @@ public sealed class EffectSpec : SpecBase
                 // 「转化为先古卡」的配对表按它显示（换个效果种类就该收起来）
                 Raise(nameof(IsAncientTranscend));
                 Raise(nameof(IsAncientRelicSwap));
+                // V0.2.171：换种类时把这一种类**用不到**的「命中次数 / 对群数」清掉 —— 那一栏已经收起，
+                // 留着只会在生成时被拦住（用户实测：换到「播放音频文件」后，看不见的「命中次数公式 Y」把生成挡了）。
+                ClearStaleRepeatFields();
                 // 「取几张」那一栏按效果种类显示；「任意张 / 全部」还会影响要不要声明 Cards 变量
                 Raise(nameof(UsesCountMode));
                 Raise(nameof(CountIsAny));
@@ -1197,7 +1233,7 @@ public sealed class EffectSpec : SpecBase
     public bool ShowsCountFormula(string key) => key switch
     {
         "Times" => EffectFieldPolicy.UsesTimes(Kind) && !TimesIsX && !TimesIsStack,   // 生效次数：那 2 种挂在卡自己钩子上的不显示
-        "Repeat" => UsesRepeatCount && !RepeatIsX && !RepeatIsStack,   // 命中次数：只对真的会用到它的种类显示
+        "Repeat" => UsesRepeatCount && !RepeatIsX && !RepeatIsStack,   // 命中次数：只对真的会用到它的种类显示（生成端判据；界面那一行见 ShowRepeatCountInput）
         "Copies" => ShowCopies,
         "Replay" => ShowReplayTimes,
         "Chance" => ChanceEnabled,                    // 概率：勾了「概率生效」才能填
@@ -1223,7 +1259,32 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>界面用：「对群数 / 命中次数」那一行要不要显示（用不到就不摆一个填了没反应的框）。</summary>
     [JsonIgnore]
-    public bool ShowRepeatCountInput => UsesRepeatCount;
+    public bool ShowRepeatCountInput => UsesRepeatCount || HasStaleRepeatFields;
+
+    /// <summary>
+    /// V0.2.171：这一条效果**用不到**「命中次数 / 对群数」，可里面**还留着值**（多半是换效果种类之前填的）。
+    ///
+    /// <para>用户实测报的：「我并没有填 Y 怎么还这样」—— 卡牌「新卡」第 1 条「播放音频文件（我上传的）」
+    /// 上留着 <c>RepeatFormula = "Y"</c>。按种类这一栏是**收起**的（<see cref="UsesRepeatCount"/> = false），
+    /// 于是校验器拿它挡住生成，用户却根本找不到在哪里改。所以这一档必须把那一行**露出来**让人清掉
+    ///（<see cref="ShowRepeatCountInput"/> 里带上它）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public bool HasStaleRepeatFields => !UsesRepeatCount
+        && (RepeatCount > 1 || RepeatIsX || RepeatIsStack || !string.IsNullOrWhiteSpace(RepeatFormula));
+
+    /// <summary>
+    /// 把这一条效果用不到的「命中次数 / 对群数」清掉（换效果种类时调一次）。
+    /// 生成端本来就不读它们，但留着会被校验拦住 —— 换种类引起的、用户看不见的残留不该留在配置里。
+    /// </summary>
+    public void ClearStaleRepeatFields()
+    {
+        if (UsesRepeatCount) return;
+        RepeatCount = 1;
+        RepeatFormula = "";
+        RepeatIsX = false;
+        RepeatIsStack = false;
+    }
 
     /// <summary>这个次数类字段设了公式没有（界面显隐 / 生成端判据）。</summary>
     public bool UsesCountFormula(string key) =>
@@ -1236,7 +1297,7 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>界面用：次数类公式的四行各自要不要显示（XAML 不能给绑定传参数，所以逐个列出来）。</summary>
     [JsonIgnore] public bool ShowTimesFormulaBox => ShowsCountFormula("Times");
-    [JsonIgnore] public bool ShowRepeatFormulaBox => ShowsCountFormula("Repeat");
+    [JsonIgnore] public bool ShowRepeatFormulaBox => ShowRepeatCountInput && !RepeatIsX && !RepeatIsStack;
     [JsonIgnore] public bool ShowCopiesFormulaBox => ShowsCountFormula("Copies");
     [JsonIgnore] public bool ShowReplayFormulaBox => ShowsCountFormula("Replay");
     [JsonIgnore] public bool ShowChanceFormulaBox => ShowsCountFormula("Chance");
@@ -1258,6 +1319,7 @@ public sealed class EffectSpec : SpecBase
         // 「命中次数 / 对群数」那一行本身（换种类 / 换作用对象时要跟着出现或收起）
         Raise(nameof(UsesRepeatCount));
         Raise(nameof(ShowRepeatCountInput));
+        Raise(nameof(HasStaleRepeatFields));
         // V0.2.132：卡牌链上「命中次数」那一行是横排（固定框 + 公式框），让位关系也要一起通知
         Raise(nameof(ShowCardRepeatRow));
         Raise(nameof(ShowPlainFixedRepeatBox));
@@ -3527,9 +3589,11 @@ public sealed class RelicTriggerSpec : SpecBase
     [JsonIgnore]
     public bool ShowPowerFields => Kind is "PowerReached" or "PowerChanged" or "PowerRemoved";
 
-    /// <summary>界面用：「只对哪类牌生效」只在「打出一张牌后」时显示。</summary>
+    /// <summary>界面用：「只对哪类牌生效」只在「打出一张牌时 / 一张牌结算完毕时」时显示。
+    /// ⚠ V0.2.173：这一栏以前只认 <c>CardPlayed</c> —— 「一张牌结算完毕时」（旧版的「打出一张牌后」）
+    /// 明明也有牌型筛选（生成端一直在写 <c>cardPlay.Card.Type</c> 那句守卫），界面上却看不到、改不了。</summary>
     [JsonIgnore]
-    public bool ShowCardFilterField => string.Equals(_kind, "CardPlayed", StringComparison.Ordinal);
+    public bool ShowCardFilterField => Kind is "CardPlayed" or "CardResolved";
 
     /// <summary>界面用：「花掉 N 点 + 本回合 / 本场战斗」那两行只在 花掉能量 / 花掉额外资源量 时显示。</summary>
     [JsonIgnore]

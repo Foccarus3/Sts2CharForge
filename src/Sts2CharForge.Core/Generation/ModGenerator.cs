@@ -429,8 +429,12 @@ public static class ModGenerator
         }
 
         // 额外资源量：外观补丁（配了名字 / 图标才需要）——上限那套单独判，见下面
+        // ⚠ V0.2.176：`HasExtraResourceUi` 的前置条件里有 `ExtraResource.Enabled` —— 而
+        // 「增加额外资源量上限值」在节点图上用到时也会引用 `SevenForgeStarCapPower`，
+        // 那个类要在**这里**生成，否则 CS0246（真编译实测抓到）。
         bool starCap = CSharpCodeGen.NeedsStarCap(profile);
-        if (CSharpCodeGen.HasExtraResourceUi(profile) || starCap)
+        if (CSharpCodeGen.HasExtraResourceUi(profile) || starCap
+            || CSharpCodeGen.UsesRaiseResourceCap(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraResourceUi.cs"), CSharpCodeGen.ExtraResourceUiSource(profile));
             if (CSharpCodeGen.HasExtraResourceUi(profile))
@@ -441,11 +445,18 @@ public static class ModGenerator
         }
 
         // 数量上限：夹数量的 Harmony 前缀 + 承载「上限加成」的隐藏状态
+        // ⚠ V0.2.176：**「增加额外资源量上限值」用到时这个类必须存在**（节点图上也能用这一条）——
+        // 所以这里单独再判一次，不看 `ExtraResource.Enabled`：
+        // 那种配置下上限机制本身没开，但效果代码会 `PowerCmd.Apply<XxxForgeStarCapPower>` → 不生成就 CS0246。
+        bool needStarCapPower = starCap || CSharpCodeGen.UsesRaiseResourceCap(profile);
+        if (needStarCapPower)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Powers", CSharpCodeGen.StarCapPowerClass(profile) + ".cs"),
+                CSharpCodeGen.StarCapPowerSource(profile));
+        }
         if (starCap)
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "StarCapPatch.cs"), CSharpCodeGen.StarCapPatchSource(profile));
-            ProjectFilesGen.WriteText(Path.Combine(cs, "Powers", CSharpCodeGen.StarCapPowerClass(profile) + ".cs"),
-                CSharpCodeGen.StarCapPowerSource(profile));
             int cap = Math.Max(0, profile.ExtraResource.Max);
             Log(cap > 0
                 ? $"  已生成额外资源量数量上限（上限 {cap}；「增加额外资源量上限值」那个效果可以把上限再抬高）"
@@ -682,6 +693,15 @@ public static class ModGenerator
         return parts.Count == 0 ? "（只有后面重新抽到/获得的牌，开局是空的）" : string.Join(" + ", parts);
     }
 
+    /// <summary>
+    /// 角色 README 摘要里的「· 能量 N」（V0.2.172）。
+    ///
+    /// <para><b>为什么只在不是 3 的时候印</b>：3 是本体 <c>CharacterModel.MaxEnergy</c> 的默认值，
+    /// 等于 3 时生成的角色类里**一个 MaxEnergy override 都不写**（硬红线：默认配置的生成结果必须和
+    /// 老基线逐字一致）。README 跟着同一口径 —— 默认角色那份 README 也和基线逐字一致。</para>
+    /// </summary>
+    private static string EnergySummary(CharacterProfile p) => p.MaxEnergy == 3 ? "" : $" · 能量 {p.MaxEnergy}";
+
     private static string Readme(CharacterProfile p, Naming n) => $"""
 # {n.ModId} —— 自定义角色「{p.DisplayName}」
 
@@ -689,7 +709,7 @@ public static class ModGenerator
 
 ## 角色
 - 类名 / 模型 ID：`{n.CharClass}` / `{n.CharEntry}`
-- 生命 {p.StartingHp} · 金币 {p.StartingGold} · 性别 {p.Gender}
+- 生命 {p.StartingHp} · 金币 {p.StartingGold}{EnergySummary(p)} · 性别 {p.Gender}
 - 初始卡组：{InitialDeckSummary(p)}
 - 初始遗物：{(p.Relics.Any(r => r.IsStartingRelic) ? "自定义遗物" : (p.ExtraResource.Enabled ? "隐藏的资源量遗物（额外资源量用）" : "无（开局不带遗物）"))}
 

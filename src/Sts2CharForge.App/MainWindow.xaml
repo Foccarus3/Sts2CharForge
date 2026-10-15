@@ -277,6 +277,9 @@
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                <!-- V0.2.172：第 10 行（角色最大能量）—— 只加一行，已有 0~8 行一个都没动 -->
+                                <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
                         <TextBlock Grid.Row="0" Grid.Column="0" Text="模组 ID" Style="{StaticResource Label}"/>
@@ -323,9 +326,17 @@
                                  Style="{StaticResource Field}" Text="{Binding Profile.DeadBanterText, UpdateSourceTrigger=PropertyChanged}"
                                  ToolTip="自己阵亡的那一刻冒出的对话气泡（3 秒）。本体原本只有「角色名.banter.dead.endTurnPing」这个键，而它只在联机「回合结束 ping」时才会显示 —— 单人游戏永远看不到，所以工具额外在阵亡瞬间用它冒一个气泡。"/>
 
-                        <TextBlock Grid.Row="8" Grid.Column="0" Text="（和先古之民/建筑师的对话）" Style="{StaticResource Label}" VerticalAlignment="Top"/>
-                        <TextBlock Grid.Row="8" Grid.Column="1" Grid.ColumnSpan="3" TextWrapping="Wrap" Foreground="#888" Margin="4,0,0,0"
-                                   Text="已移到「先古之民」页：左边选先古之民（建筑师的对话也在那里），右边一段一段写。"/>
+                        <!-- V0.2.173（用户要求）：删掉「（和先古之民/建筑师的对话）→ 已移到「先古之民」页」
+                             那两行占位说明（那栏早就不在这里了，留着只是噪音）。 -->
+                        <!-- V0.2.172（用户要求「增加角色最大能量」）：每回合的能量上限。
+                             本体 CharacterModel.MaxEnergy 默认 3；这里不是 3 时生成端才写 override，
+                             是 3 的时候一个字都不写（老存档 / 基线逐字不变）。 -->
+                        <TextBlock Grid.Row="8" Grid.Column="0" Text="角色最大能量" Style="{StaticResource Label}"/>
+                        <TextBox x:Name="MaxEnergyBox" Grid.Row="8" Grid.Column="1" Style="{StaticResource Field}"
+                                 Text="{Binding Profile.MaxEnergy, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="每回合的能量上限，本体默认 3。生成的角色类里只在不是 3 的时候写 public override int MaxEnergy => N;（本体 Player 建号时取的就是它，不需要任何补丁）。"/>
+                        <TextBlock Grid.Row="8" Grid.Column="2" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,0,0,0"
+                                   Text="每回合的能量上限，本体默认 3；留 3 = 不覆盖（生成结果和以前逐字一样）。改大 / 改小都会明显改难度。"/>
                         </Grid>
 
                         <!-- 下面这几块是「长说明」：必须留在网格外面（见本页顶部的注释） -->
@@ -338,9 +349,19 @@
                         <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="6,10,0,0"
                                    Text="初始卡组里的「打击 ×5 + 防御 ×5」是「卡牌」页最上面那两条**你自己的卡**（英文类名固定成 Strike / Defend，因为本体没有这两个裸类名、不会撞 ID）：数值、升级、效果、卡面随便改，默认照抄本体（打击 1 费 6 伤害、防御 1 费 5 格挡，升级都 +3）。它们标了本体卡标签 Strike / Defend，所以本体那些「升级你的初始打击 / 防御」的遗物能认出它们；也不会进奖励 / 商店。"/>
 
-                        <!-- 召唤物已经整组搬到「召唤物」选项卡（紧跟「角色」之后）—— 那里是列表 + 右侧详情 -->
-                        <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,14,0,0"
-                                   Text="「召唤伙伴 / 伙伴攻击」的配置已经搬到「召唤物」选项卡（紧跟本页之后）：左边是召唤物列表，右边配名字 / 生命 / 站位距离 / 替主人承伤 / 图片。卡牌和遗物的效果里选「召唤伙伴」或「伙伴攻击」时，会多一个「召唤物（哪一只）」下拉。"/>
+                        <!-- V0.2.173（用户要求）：删掉「召唤伙伴 / 伙伴攻击的配置已经搬到「召唤物」选项卡」
+                             那段占位说明（早就搬完了，留着只是噪音）。 -->
+                        <!-- V0.2.172 加了这一栏，但**绑错了数据**（绑到了宝箱房那句「开抢！！！」）。
+                              V0.2.173 按用户澄清改正：「多人催促文本」= 联机时右下角那个 Ping 按钮按下去
+                             冒出的对话气泡（本体键 characters.<角色>.banter.alive.endTurnPing）
+                             —— 和宝箱房那句毫无关系，现在绑 Profile.EndTurnPingText；
+                             宝箱房那句仍然在「美术」页那个框（Profile.Art.TreasureFightText）。 -->
+                        <TextBlock Text="多人催促文本（联机时右下角「Ping」按钮按下去冒出的那句）" Style="{StaticResource Label}" Margin="0,10,0,0"/>
+                        <TextBox x:Name="RoleEndTurnPingTextBox" Height="44" AcceptsReturn="True" TextWrapping="Wrap"
+                                 Style="{StaticResource Field}" Text="{Binding Profile.EndTurnPingText, UpdateSourceTrigger=PropertyChanged}"
+                                 ToolTip="联机战斗里，你结束回合之后只要还有别人没结束回合，屏幕右下角就会滑出一个「Ping」按钮；按一下，所有玩家都会在你头上看到一句 1.5 秒的对话气泡 —— 那句话就是这里填的（本体键：characters 表的 &lt;你的角色&gt;.banter.alive.endTurnPing；每个本体角色都有一句：铁甲战士「Make haste.」/ 静默猎手「...」）。留空 = 沿用工具默认的「……继续。」。这一栏不需要任何补丁，就是我们自己角色本地化表里的一行。⚠ 它和「美术」页那句宝箱房「开抢！！！」不是一回事。"/>
+                        <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,4,0,0"
+                                   Text="联机时右下角「Ping」按钮按下去，别人会在你头上看到这句（1.5 秒的对话气泡）。留空 = 沿用默认那句「……继续。」；宝箱房抢遗物那句「开抢！！！」在「美术」页那个框里，两者互不相干。"/>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
@@ -449,8 +470,9 @@
 
                         <CheckBox Margin="0,12,0,0" Style="{StaticResource Check}"
                                   Content="跨战斗继承（下一场开场数量 = 初始数量 + 上一场结束时剩下的）"
+                                  ToolTip="只在**当前这一局**里继承：下一局重新开始时归零。&#10;存的是这只载体遗物的一个 [SavedProperty] 属性（本体自己的存档 + 联机同步机制），所以多人联机时每个玩家各算各的、不会互相串。"
                                   IsChecked="{Binding CarryOver}"/>
-                        <TextBlock Margin="24,2,0,0" Text="不勾选：每场战斗开始都固定发放初始数量，战斗结束清空" Foreground="#888"/>
+                        <TextBlock Margin="24,2,0,0" Text="不勾选：每场战斗开始都固定发放初始数量，战斗结束清空。勾选时也只在**这一局**内继承（换一局归零）" Foreground="#888"/>
 
                         <CheckBox Margin="0,12,0,0" Style="{StaticResource Check}"
                                   Content="始终显示计数器（不勾选时只在数量大于 0 时显示）"

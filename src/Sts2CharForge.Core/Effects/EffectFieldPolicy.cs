@@ -37,12 +37,15 @@ public static class EffectFieldPolicy
     /// 「目标卡」那一栏。
     ///
     /// <para><b>为什么带一个 <paramref name="plainChain"/></b>：遗物链上「转化为先古遗物」的
-    /// **目标遗物**也走这一栏（那一页有自己的编辑器，见 <c>AncientRelicSwapEditor</c>），
-    /// 而卡牌链上这个效果根本不用「目标卡」。两条链共用同一个显隐判据，所以只能按链分开问。</para>
+    /// **目标遗物**也走这一栏（那一页有自己的编辑器，见 <c>AncientRelicSwapEditor</c>）。
+    /// V0.2.176 起卡牌链也能用「转化为先古遗物」了（生成端读同一个 <c>SpawnCardId</c>），
+    /// 所以两条链都显示这一栏。</para>
     /// </summary>
     public static bool UsesTargetCard(string? kind, bool plainChain = false) =>
         kind is "BoostCard" or "GenerateCard" or "TransformCard" or "FillHand"
             or "AddCardGlobal" or "TransformCardGlobal"
+        // 「转化为先古遗物」的**目标遗物**也走这一栏 —— 只有遗物 / 药水链有它自己的编辑器
+        //（V0.2.176：卡牌页没法选「换成品体哪只遗物」，所以这一档**只做遗物 / 药水链**）
         || (plainChain && kind is "AncientRelicSwap");
 
     /// <summary>「生成到」那一栏（生成出来的卡进哪一摞）。只有「生成卡牌」用得到。</summary>

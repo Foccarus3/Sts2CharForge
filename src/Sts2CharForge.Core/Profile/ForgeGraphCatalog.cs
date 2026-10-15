@@ -27,6 +27,10 @@ public static class ForgeTimings
     public const string Obtained = "Obtained";
     public const string CombatStart = "CombatStart";
     public const string PlayerTurnStart = "PlayerTurnStart";
+    /// <summary>V0.2.179（用户要求「触发时机加一个回合开始后」）：回合开始那个派发点的第一轮（抽牌**之前**）。</summary>
+    public const string PlayerTurnStartEarly = "PlayerTurnStartEarly";
+    /// <summary>V0.2.179：回合开始那个派发点的最后一轮（本体「血瓶 BloodVial」用的钩子）。</summary>
+    public const string PlayerTurnStartLate = "PlayerTurnStartLate";
     public const string PlayerTurnEnd = "PlayerTurnEnd";
     public const string CombatVictory = "CombatVictory";
     public const string DamageReceived = "DamageReceived";
@@ -91,6 +95,16 @@ public static class ForgeTimings
         new TimingOption(Obtained, "获得时", "Relic", "AfterObtained", "拾取这只遗物的那一刻（本体 YummyCookie / Whetstone 那种）。"),
         new TimingOption(CombatStart, "战斗开始时", "Relic", "BeforeSideTurnStart", "每一场战斗开场。"),
         new TimingOption(PlayerTurnStart, "每回合开始时", "Relic", "AfterPlayerTurnStart", "你自己的每个回合开始。"),
+        // V0.2.179（用户要求「触发时机加一个回合开始后」）：本体 Hook.AfterPlayerTurnStart 一个函数里
+        // **连着派发三次**（Hook.cs:894-917）：Early → After → Late，而它是 SetupPlayerTurn 的**最后一步**
+        //（回能量 → 抽牌 → 然后才调它，见 CombatManager.cs:880-926）。三条落在**三个不同的钩子方法**上，
+        // 所以同一只遗物上可以各配一块【触发时机】，不会撞签名（不是「同一个时刻」那条校验拦的对象）。
+        // Id / Display 逐字照抄遗物页 EffectCatalog.RelicTriggers 里的同名条目（自检有双向相等 + 逐字对照）。
+        new TimingOption(PlayerTurnStartEarly, "回合开始后（抽牌前）", "Relic", "AfterPlayerTurnStartEarly",
+            "和「回合开始后（抽牌后）」同一个派发点的**第一轮** —— 这时这回合的牌**还没抽**"
+            + "（要改抽几张 / 抽牌前先上状态就用它）。"),
+        new TimingOption(PlayerTurnStartLate, "回合开始后（最晚）", "Relic", "AfterPlayerTurnStartLate",
+            "同一个派发点的**最后一轮**（本体「血瓶 BloodVial」用的就是它）—— 所有「回合开始时」的事都跑完了。"),
         new TimingOption(PlayerTurnEnd, "每回合结束时", "Relic", "AfterSideTurnEnd", "你自己的每个回合结束。"),
         new TimingOption(CombatVictory, "战斗胜利时", "Relic", "AfterCombatVictory", "打赢这一场才走。"),
         new TimingOption(DamageReceived, "受到伤害时（每一下）", "Relic", "AfterDamageReceived", "多次连击每一下都会触发一次。"),
@@ -205,6 +219,10 @@ public static class ForgeTimings
             "药水被使用时" => "被使用时",
             "受到伤害时（每一下）" => "受伤时",
             "受到攻击后（连击只算一次）" => "受击后",
+            // V0.2.179：回合开始那三档在布上的标题短一点（完整说法在下拉里）
+            "每回合开始时" => "回合开始时",
+            "回合开始后（抽牌前）" => "回合开始·抽牌前",
+            "回合开始后（最晚）" => "回合开始·最晚",
             _ => opt.Display,
         };
     }

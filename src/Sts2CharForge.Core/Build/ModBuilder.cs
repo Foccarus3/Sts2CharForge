@@ -27,7 +27,7 @@ public static class ModBuilder
     /// 命令行必须把 <c>--install</c> 直接透传，没给就传 null。</para>
     /// </summary>
     public static BuildResult Build(string projectRoot, string modId, string godotExe, string? installDir,
-        Action<string>? log = null, string? dotnetExe = null)
+        Action<string>? log = null, string? dotnetExe = null, string? gameDataDir = null)
     {
         var steps = new List<BuildStepResult>();
         string buildDir = Path.Combine(projectRoot, "build");
@@ -68,6 +68,18 @@ public static class ModBuilder
         }
         steps.Add(new BuildStepResult("导出 PCK", pckExists, Tail(allOutput, 60)));
         if (!pckExists) return new BuildResult(false, steps, null);
+
+        // 3.5) 校验 pck 的**包格式版本**（V0.2.167）：用哪份 Godot 导出是用户在「路径」页自己指的，
+        // 用了比游戏引擎更新的 Godot 时导出的包**本体直接拒收** —— 游戏日志里是
+        // `ERROR: Pack version unsupported: 4.` + `Godot errored while loading PCK file X`，
+        // 表现是「模组装了、游戏照常进主菜单、但内容一个都没有」（Loaded 0 mods）。
+        // 这里当场拦下来：参照物 = 本体自己的 SlayTheSpire2.pck 的包格式版本。
+        string? packIssue = CheckPackFormat(pck, gameDataDir);
+        if (packIssue is not null)
+        {
+            steps.Add(new BuildStepResult("校验 PCK 包格式", false, packIssue));
+            return new BuildResult(false, steps, null);
+        }
 
         // 4) 安装（**只在 installDir 非空时**做 —— 见 Build 的注释：调用方不许拿存档里的 InstallDir 兜底）
         string? installedTo = null;
@@ -117,6 +129,43 @@ public static class ModBuilder
     /// 路径里的中文（如「自定义角色」）会变成乱码传给 Godot，导致
     /// "Invalid project path specified ... aborting"。
     /// </summary>
+    /// <summary>
+    /// 导出的 pck 和本体自带的 pck **包格式版本**对不对得上（对不上就返回一句人话；对得上 / 没有参照物返回 null）。
+    ///
+    /// <para>为什么：Godot 各大版本会改 pck 里的 pack 格式版本号（<c>0x04</c> 那 4 个字节，布局见
+    /// <see cref="GamePckReader"/> 头部注释）。游戏引擎按自己的常量校验，不匹配就
+    /// <c>ERROR: Pack version unsupported: N.</c> 直接拒收整个包 —— 模组**静默失效**：
+    /// dll 照常加载、pck 被丢，游戏照常进主菜单，用户看到的是「装了什么都没发生」。
+    /// 用户实测报过：用比游戏新的 Godot 导出 → 两个模组都没加载（`Loaded 0 mods (2 total)`）。</para>
+    /// </summary>
+    private static string? CheckPackFormat(string pck, string? gameDataDir)
+    {
+        try
+        {
+            uint mine = ReadPackFormatVersion(pck);
+            if (mine == 0) return null;                        // 读不出来（文件怪）就不下结论
+            string? gamePck = GamePckReader.FindPck(gameDataDir);
+            if (gamePck is null) return null;                  // 找不到本体包 = 没有参照物
+            uint game = ReadPackFormatVersion(gamePck);
+            if (game == 0 || game == mine) return null;
+            return $"导出的 pck 包格式版本是 {mine}，而本体游戏自带的包是 {game} —— **游戏读不了这个包**"
+                + $"（游戏日志里是 `Pack version unsupported: {mine}` + `Godot errored while loading PCK file …`；"
+                + "装上去以后这个模组整个不加载，游戏里什么都不会出现）。\n"
+                + "  → 多半是「路径」页里的 Godot 比游戏引擎新（例如 4.6+）：换回整合包自带的那份 Godot（4.5.1）重新构建即可。";
+        }
+        catch { return null; }
+    }
+
+    /// <summary>读 Godot pck 头里的包格式版本（<c>0x00 "GDPC" | 0x04 pack_version</c>）。读不出来返回 0。</summary>
+    private static uint ReadPackFormatVersion(string pck)
+    {
+        using var fs = File.OpenRead(pck);
+        var head = new byte[8];
+        if (fs.Read(head, 0, head.Length) < head.Length) return 0;
+        if (Encoding.ASCII.GetString(head, 0, 4) != "GDPC") return 0;
+        return BitConverter.ToUInt32(head, 4);
+    }
+
     private static (bool Success, string Output) Run(string command, string workingDir, Action<string>? log,
         string? dotnetRoot = null)
     {

@@ -40,9 +40,25 @@ public static class CustomPowerGen
     public static string? IconResPath(CharacterProfile p, CustomPowerSpec power, int index) =>
         string.IsNullOrWhiteSpace(power.Icon) ? null : "res://" + IconRelPath(p, power, index);
 
-    /// <summary>描述（没填就按触发器自动生成一句）。</summary>
+    /// <summary>
+    /// 描述（没填就按触发器自动生成一句）。
+    ///
+    /// ⚠ 多行描述**原样保留换行**（本地化表是 JSON，换行会被正确转义；游戏里的悬停提示本来就支持多行）。
+    /// 需要「压成一行」的地方（C# 注释之类）请用 <see cref="OneLine"/>。
+    /// </summary>
     public static string DescriptionOf(CustomPowerSpec power) =>
         string.IsNullOrWhiteSpace(power.Description) ? PowerTriggers.AutoDescription(power) : power.Description.Trim();
+
+    /// <summary>
+    /// 把一段用户文本压成**一行**（CRLF / CR / LF 全换成空格）。
+    ///
+    /// 为什么要它：用户会直接在描述栏里**打回车换行**（V0.2.168 用户实测报的
+    /// 「自定义状态的描述栏中 如果用回车换行会有报错」）—— WPF 的 TextBox 打出来的是 **CRLF**，
+    /// 而生成端往 C# 注释里塞这段文本时只把 <c>\n</c> 换成了空格、**留下了 <c>\r</c>**，
+    /// C# 把单独的 <c>\r</c> 也当换行 ⇒ 注释被截断，后半截（<c> 第二行</c> 之类）变成代码 → 整个工程编译不过。
+    /// </summary>
+    public static string OneLine(string? text) =>
+        (text ?? "").Replace("\r\n", " ").Replace('\r', ' ').Replace('\n', ' ').Trim();
 
     /// <summary>生成一个自定义状态的 PowerModel 子类。</summary>
     public static string Source(CharacterProfile profile, CustomPowerSpec power, int index)
@@ -62,7 +78,7 @@ public static class CustomPowerGen
             w.Line($"// CET:HpBarColor={hpBarHex} CET:HpBarSide={HpBarSides.Normalize(power.HpBarSide)}");
         w.Line($"namespace {n.Namespace};");
         w.Line();
-        w.Line($"/// <summary>{power.Name}：{DescriptionOf(power).Replace("\n", " ")}</summary>");
+        w.Line($"/// <summary>{OneLine(power.Name)}：{OneLine(DescriptionOf(power))}</summary>");
         w.Open($"public sealed class {cls} : PowerModel");
         w.Line($"public override PowerType Type => PowerType.{(debuff ? "Debuff" : "Buff")};");
         w.Line();
@@ -86,6 +102,29 @@ public static class CustomPowerGen
         {
             w.Line();
             w.Line("// 没配触发时机：这个状态只会挂着（加个触发时机才会真的做事）");
+        }
+
+        // 「每累计 N 次触发一次」的基准值（见 EmitItemsWithAmountGate）：**每个状态实例自己一份**，
+        // -1 = 还没记过（记的时候 = 「刚上这个状态时本体历史里已经有多少次」）。
+        {
+            var countTriggers = power.Triggers
+                .Where(t => t is not null && t.TriggerAmount > 0m
+                    && (CSharpCodeGen.TriggerAmountNeedsScope(PowerTriggers.Canonical(t.Kind))
+                        || string.Equals(PowerTriggers.Canonical(t.Kind), "EnemyDeath", StringComparison.Ordinal)))
+                .ToList();
+            if (countTriggers.Count > 0)
+            {
+                var fields = countTriggers.Select(t => CountBaseField(PowerTriggers.Canonical(t.Kind), t.TriggerScope))
+                    .Distinct(StringComparer.Ordinal).ToList();
+                w.Line();
+                w.Line("/// <summary>");
+                w.Line("/// 「每累计 N 次触发一次」的基准值：**刚上这个状态时**本体历史里已经有多少次（-1 = 还没记过）。");
+                w.Line("/// 为什么要有它（V0.2.168 用户实测报的）：本体历史是整个回合 / 整场战斗的累计 ——");
+                w.Line("/// 直接拿「累计 % N」判，会把**上状态之前**发生过的事也数进去（「要打 4 张牌」在上状态前");
+                w.Line("/// 已经打了 3 张时，上状态后只要再打 1 张就触发了）。只数基准之后的事件才对。");
+                w.Line("/// </summary>");
+                w.Line("private int " + string.Join(", ", fields.Select(f => f + " = -1")) + ";");
+            }
         }
 
         // 「要和其他时机同时成立」（用户要求）：≥ 2 条时机勾了它才有意义 —— 每条一个成立标记，
@@ -156,8 +195,11 @@ public static class CustomPowerGen
 
     /// <summary>
     /// 一种触发时机最终落在哪个**本体钩子方法**上。同名 = 只能生成一个覆写（否则 CS0111）。
-    /// 现在只有回合结束这一对会撞（TurnEnd / EnemyTurnEnd 都是 BeforeSideTurnEnd），
-    /// 但这里按「钩子名」而不是「时机名」分组，以后再加时机也不会再踩同一个坑。
+    ///
+    /// ⚠ 这份清单是**手写**的，漏一对就会生成两个同名同参方法（用户实测报过两次：
+    /// 最早只给「回合结束」做了合并 → TurnEnd + EnemyTurnEnd 撞 BeforeSideTurnEnd；
+    /// V0.2.167 又补上「状态层数变化 / 到达」「受到伤害（自己/敌人）」「造成伤害（自己/敌人）」
+    /// 「获得格挡（自己/敌人）」这 4 对）。**新增触发时机时，先看它的原型钩子签名和谁重复**。
     /// </summary>
     private static string HookOf(string kind) => kind switch
     {
@@ -165,6 +207,12 @@ public static class CustomPowerGen
         // 「战斗结束时（房间结算之前）」和「战斗胜利后」是**同一个本体钩子**（AfterCombatEnd）——
         // 归到同一组，只写一个方法（不然两个 override 同名同参数 = CS0111）。
         "CombatEnd" => "CombatVictory",
+        // 下面 4 对都是「同一个钩子方法、两种时机」—— 合并成一组后由 TryEmitMergedHook
+        // 写成一个方法 + 每条时机各自的守卫（items.Count >= 2 时才走那条路）。
+        "PowerChanged" or "PowerReached" => "PowerChanged",              // AfterPowerAmountChanged
+        "DamageReceived" or "EnemyDamaged" => "DamageReceived",          // AfterDamageReceived
+        "DamageDealt" or "EnemyDealtDamage" => "DamageDealt",            // AfterDamageGiven
+        "BlockGained" or "EnemyBlockGained" => "BlockGained",            // AfterBlockGained
         _ => kind,
     };
 
@@ -231,19 +279,44 @@ public static class CustomPowerGen
         foreach (var t in list)
         {
             string kind = PowerTriggers.Canonical(t.Kind);
-            // 敌人死亡：本体历史里没有死亡记录 → 先自己数一个（BumpEnemyDeath），再判「每 N 个」
-            if (kind == "EnemyDeath" && t.TriggerAmount > 0m)
+            // ===== 「每累计 N 次触发一次」：**从这个状态被施加那一刻开始数** =====
+            // 用户实测报的（V0.2.168）：「状态会直接统计整个回合（战斗）的计数，然后哪怕那时候还没上状态，
+            // 也会计数……要打 4 张牌触发，但在上状态之前就打了 3 张，上状态之后只需要打 1 张就行了」。
+            // 真因：本体历史（CombatManager.History）是整个回合 / 整场战斗的累计，老写法直接拿
+            // `累计 % N == 0` 判 —— 上状态之前发生的事也算在里面了。
+            // 修法：每个状态实例自己记一个**基准值**（刚上状态时历史里已经有多少次），只数基准之后的事件；
+            // 「本回合」范围靠 `__cnt <= 基准` 自动重置（换回合后累计值会变小 → 重新记基准）。
+            bool counting = t.TriggerAmount > 0m
+                && (CSharpCodeGen.TriggerAmountNeedsScope(kind) || string.Equals(kind, "EnemyDeath", StringComparison.Ordinal));
+            if (counting)
             {
-                w.Line($"int __deaths = {CSharpCodeGen.CombatCountersClass(p)}.BumpEnemyDeath(base.Owner.CombatState);   // 本场战斗第几个敌人死亡（工具自己记的）");
-                w.Line($"// 每 {t.TriggerAmount:0.##} 个敌人死亡触发一次");
-                w.Open($"if (__deaths % {CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount).TrimEnd('m')} == 0)");
+                string field = CountBaseField(kind, t.TriggerScope);
+                string countExpr = string.Equals(kind, "EnemyDeath", StringComparison.Ordinal)
+                    // 敌人死亡：本体历史里没有死亡记录 → 由工具自己记一个（见 CombatCountersSource）
+                    ? $"{CSharpCodeGen.CombatCountersClass(p)}.BumpEnemyDeath(base.Owner.CombatState)"
+                    : CSharpCodeGen.CountExpr(kind, t.TriggerScope, "base.Owner", "base.Owner.CombatState", "base.Owner.Player",
+                        t.CardFilter);
+                string step = CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount).TrimEnd('m');
+                w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}");
+                w.Open("");   // 裸块：__cnt 这个局部变量不和别条时机 / 外层撞名
+                w.Line($"int __cnt = {countExpr};   // 本体历史里到现在为止一共有多少次（含这一次）");
+                w.Line($"if ({field} < 0 || __cnt <= {field}) {field} = __cnt - 1;   // 本状态刚上 / 换了新回合：从现在开始数");
+                // V0.2.173：外加 `__cnt > {field}` —— **施加这个状态的那一张牌不算**。
+                // 「打出一张牌时」（BeforeCardPlayed）跑的时候本体**还没**记这张牌，而计数用的是
+                // CardPlaysStarted（含正在打出的这一张），所以上状态的那一张已经算进 __cnt 了；
+                // 不挡掉它的话「施加时正好凑够 N 张」就会当场触发一次（上状态前打了 3 张 = 一上就响）。
+                w.Open($"if (__cnt > {field} && (__cnt - {field}) % {step} == 0)");
+                w.Line($"// 每累计 {t.TriggerAmount:0.##} 次触发一次（范围：{(t.TriggerScope == "Combat" ? "本场战斗" : "本回合")}，"
+                     + "**从这个状态被施加那一刻**起数）");
                 if (!TryWrapRequireAll(w, t, () => EmitEffects(w, t, foeFrom: foeFrom, p: p)))
                     EmitEffects(w, t, foeFrom: foeFrom, p: p);
+                w.Close();
                 w.Close();
                 continue;
             }
             string? cond = CSharpCodeGen.TriggerAmountCond(kind, t.TriggerAmount, t.TriggerScope,
-                "base.Owner", "base.Owner.CombatState", "base.Owner.Player", CSharpCodeGen.TriggerValueExpr(kind));
+                "base.Owner", "base.Owner.CombatState", "base.Owner.Player", CSharpCodeGen.TriggerValueExpr(kind),
+                t.CardFilter);
             if (cond is null)
             {
                 // ⚠ 这一支**不套 if**：多条触发时机合并时，这里就是那个「帮助变量会撞车」的地方 → 必须各自包裸块。
@@ -258,6 +331,13 @@ public static class CustomPowerGen
             w.Close();
         }
     }
+
+    /// <summary>
+    /// 「每累计 N 次触发一次」在本状态实例上的**基准值字段**名（-1 = 还没记过，见 <see cref="EmitItemsWithAmountGate"/>）。
+    /// 名字里带时机 + 范围：同一只状态上两条不同时机 / 不同范围的计数互不影响。
+    /// </summary>
+    private static string CountBaseField(string kind, string scope) =>
+        "__cnt" + kind + (string.Equals(scope, "Combat", StringComparison.Ordinal) ? "Combat" : "Turn");
 
     /// <summary>
     /// 这个自定义状态的触发时机要不要那个「生命真的少了」的**重入闸**。
@@ -393,6 +473,169 @@ public static class CustomPowerGen
         return idx < 0 ? "" : ClassNameOf(p, _powerOwner, idx);
     }
 
+    /// <summary>
+    /// 同一个本体钩子上合并了 ≥2 条触发时机时用的发射器（V0.2.167 修 CS0111）。
+    ///
+    /// <para>为什么要它：本体一个类里**同名同参的方法只能有一个**，而这几对时机各自落在同一个签名上 ——
+    /// 两条一起配时旧代码会写出两个 override →
+    /// <c>CS0111 已定义了一个名为"X"的具有相同参数类型的成员</c>（用户实测报过：
+    /// <c>Hakking.cs(47,32) AfterPowerAmountChanged</c>；`HookOf` 那份手写并组清单只并了
+    /// 「回合结束三兄弟」和「战斗胜利/结束」两对，漏了这里这 4 对）。</para>
+    ///
+    /// <para>守卫写成**正向条件**（<c>if (…) { … }</c>）而不是原来的 <c>if (…) return;</c>：
+    /// 一个方法里有多条时机时，`return` 会把排在后面的时机一起跳过。</para>
+    ///
+    /// <para>⚠ 单条触发时机**不走这里**（那份带 `return` 的守卫文本逐字不变）—— 那些守卫同时是
+    /// 「从工程反推存档」认时机用的（<see cref="ProjectRecovery"/> 按钩子签名 + 守卫认），改了会破坏回读。
+    /// 合并这条路以前生成出来**编译不过**（CS0111），所以不存在「老工程是这条路生成的」。</para>
+    /// </summary>
+    private static bool TryEmitMergedHook(CodeWriter w, string kind, List<PowerTriggerSpec> items,
+        CharacterProfile? p, bool hpLossGuard)
+    {
+        if (items.Count < 2) return false;
+        switch (HookOf(kind))
+        {
+            // 「自己受到伤害后」+「敌人受到伤害后」→ AfterDamageReceived
+            case "DamageReceived":
+                w.Open("public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)");
+                EmitChoiceContextBootstrap(w, kind, items);
+                foreach (var t in items)
+                {
+                    if (t.Kind == "EnemyDamaged")
+                    {
+                        w.Line("// 触发时机：敌人受到伤害后 —— 受伤的是敌人（自己不算）");
+                        w.Open("if (target != base.Owner && target.IsAlive)");
+                        EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "target");
+                        w.Close();
+                    }
+                    else
+                    {
+                        // 三条正向条件 = 原来那三句 `return`：只认自己 / 「失去生命」不算受伤 / 全被格挡不算 / 自己没死
+                        w.Line("// 触发时机：自己受到伤害后 —— 只认自己（「失去生命」不算受伤；全被格挡那一下也不算；自己死了不再跑）");
+                        w.Open("if (target == base.Owner"
+                             + " && !(props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered))"
+                             + " && result.UnblockedDamage > 0 && !base.Owner.IsDead)");
+                        if (hpLossGuard) EmitHpLossGuardOpen(w);
+                        EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "dealer");
+                        if (hpLossGuard) EmitHpLossGuardClose(w);
+                        w.Close();
+                    }
+                }
+                w.Close();
+                return true;
+
+            // 「自己造成伤害后」+「敌人造成伤害后」→ AfterDamageGiven
+            case "DamageDealt":
+                w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
+                EmitChoiceContextBootstrap(w, kind, items);
+                foreach (var t in items)
+                {
+                    if (t.Kind == "EnemyDealtDamage")
+                    {
+                        w.Line("// 触发时机：敌人造成伤害后 —— 打人的是敌人（自己不算）");
+                        w.Open("if (dealer is not null && dealer != base.Owner)");
+                        EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "dealer");
+                        w.Close();
+                    }
+                    else
+                    {
+                        w.Line("// 触发时机：自己造成伤害后 —— 「失去生命」不算造成伤害");
+                        w.Open("if (dealer == base.Owner"
+                             + " && !(props.HasFlag(ValueProp.Unblockable) && props.HasFlag(ValueProp.Unpowered)))");
+                        EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "target");
+                        w.Close();
+                    }
+                }
+                w.Close();
+                return true;
+
+            // 「自己获得格挡后」+「敌人获得格挡后」→ AfterBlockGained
+            case "BlockGained":
+                w.Open("public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)");
+                EmitChoiceContextBootstrap(w, kind, items);
+                foreach (var t in items)
+                {
+                    bool enemy = t.Kind == "EnemyBlockGained";
+                    w.Line(enemy
+                        ? "// 触发时机：敌人获得格挡后 —— 拿格挡的是敌人（自己不算）"
+                        : "// 触发时机：自己获得格挡后 —— 只认自己");
+                    w.Open(enemy ? "if (creature != base.Owner)" : "if (creature == base.Owner)");
+                    if (enemy) EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "creature");
+                    else EmitItemsWithAmountGate(w, new[] { t }, p);
+                    w.Close();
+                }
+                w.Close();
+                return true;
+
+            // 「某个状态层数变化后」+「某个状态层数到达 N 层时」→ AfterPowerAmountChanged
+            case "PowerChanged":
+                w.Open("public override async Task AfterPowerAmountChanged(PlayerChoiceContext choiceContext, PowerModel power, decimal amount, Creature? applier, CardModel? cardSource)");
+                EmitChoiceContextBootstrap(w, kind, items);
+                foreach (var t in items)
+                {
+                    // 每条各自判断「盯谁 + 盯哪个状态」：不能写成函数开头的统一 return ——
+                    // 那样两种对象（自己 / 任意敌人）会互相把对方挡掉（实测生成出来敌人那条永远不跑）。
+                    string ownerGuard = PowerWatchGuard(t, p, excludeSelf: true);
+                    string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
+                    if (t.Kind == "PowerReached")
+                    {
+                        string reach = Lit.Dec(Math.Max(0m, t.TriggerAmount));
+                        w.Open($"if ({ownerGuard}{(want is null ? "" : $" && power is {Lit.Identifier(want, "VulnerablePower")}")}"
+                             + $" && power.Amount >= {reach} && power.Amount - amount < {reach})");
+                        w.Line($"// 层数跨过 {Math.Max(0m, t.TriggerAmount):0.##} 那一下才触发");
+                        EmitEffects(w, t, p: p);
+                        w.Close();
+                    }
+                    else
+                    {
+                        string guard = want is null ? ownerGuard : $"({ownerGuard}) && (power is {want})";
+                        string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
+                        w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}");
+                        w.Open($"if ({guard})");
+                        EmitEffects(w, t, p: p);
+                        w.Close();
+                    }
+                }
+                w.Close();
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// 「某个状态层数变化后 / 到达 N 层时 / 被移除时」这三条**盯某个状态**的时机，共用的「盯谁」守卫。
+    ///
+    /// <para>为什么要抽这一份：四个调用点（合并钩子里的变化 / 到达、单条的变化、单条的到达、单条的移除）
+    /// 以前各写一遍，于是「盯任意敌人」那一支慢慢漂了 —— V0.2.168 用户实测报的
+    /// 「状态页上配『某个状态被移除时』（盯任意敌人、盯的就是它自己）**完全没反应**」就是这个坑：
+    /// 那一支写着 <c>power.Owner != base.Owner</c>，等于要求「发生事的那份状态在**别的**生物身上」，
+    /// 而用户要的是「**这份状态自己**（挂在谁身上就盯谁）被移除时」——
+    /// 状态自己那一份被移除时 <c>power.Owner == base.Owner</c>，被这条挡得死死的，
+    /// 生成、编译、进游戏全都不报错，就是什么都不做。</para>
+    ///
+    /// <para>规则：<b>盯的就是它自己这个状态</b>（「盯哪个状态」填的正是这只状态自己的类名）时，
+    /// 不管「盯谁」选的是「自己」还是「任意敌人」，都按「**这份状态自己**」算 ——
+    /// 自己这一份发生的事就在自己这里触发（「任意敌人」＝「哪个敌人身上这份状态出事都算，
+    /// 包括我自己挂着的这份」）。盯的是**别的**状态时，「任意敌人」照旧要求那份状态挂在别的生物身上
+    /// （那才是「盯敌人身上的易伤」的意思）。</para>
+    /// </summary>
+    /// <param name="excludeSelf">不是「盯自己」时要不要排掉自己（「层数变化 / 到达」要排 —— 免得自己给自己叠层自己触发自己；
+    /// 「被移除」不排 —— 「我这个状态自己被移除」正是那条时机要覆盖的场景）。</param>
+    private static string PowerWatchGuard(PowerTriggerSpec t, CharacterProfile? p, bool excludeSelf)
+    {
+        string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
+        string selfClass = SelfClassName(p);
+        bool watchesSelf = want is not null && string.Equals(want, selfClass, StringComparison.Ordinal);
+        // 盯的就是它自己这个状态：不挑「在谁身上」——这份状态挂在谁身上，就在谁那里触发
+        if (watchesSelf) return "power.Owner == base.Owner";
+        if (t.PowerTarget == "AnyEnemy")
+            return "power.Owner is not null && power.Owner != base.Owner && power.Owner.IsAlive"
+                + " && base.Owner.CombatState is not null && base.Owner.CombatState.HittableEnemies.Contains(power.Owner)";
+        return excludeSelf ? "power != this && power.Owner == base.Owner" : "power.Owner == base.Owner";
+    }
+
     private static void EmitTriggerMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items,
         CharacterProfile? p = null)
     {
@@ -404,10 +647,31 @@ public static class CustomPowerGen
         w.Line();
         w.Line($"// ===== 触发时机：{when} =====");
 
+        // 同一个本体钩子上合并了 ≥2 条触发时机时，只写**一个** override（各条自己带正向守卫）——
+        // 两条各写一个同名同参方法 = CS0111（见 TryEmitMergedHook）。单条时一个字符都不变。
+        if (TryEmitMergedHook(w, kind, items, p, hpLossGuard)) return;
+
         switch (kind)
         {
             case "PlayerTurnStart":
                 w.Open("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)");
+                w.Line("if (player != base.Owner.Player) return;");
+                EmitItemsWithAmountGate(w, items, p);
+                w.Close();
+                break;
+
+            // V0.2.179（用户要求「触发时机加一个回合开始后」）：回合开始那三个时刻是**三个不同**的钩子方法
+            //（本体 Hook.AfterPlayerTurnStart 里连着派发三次，见 Hook.cs:894-917），所以各写各的 override，
+            // 不会撞签名。归属判据和上面那条一样：只有自己的回合开始了才跑。
+            case "PlayerTurnStartEarly":
+                w.Open("public override async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)");
+                w.Line("if (player != base.Owner.Player) return;");
+                EmitItemsWithAmountGate(w, items, p);
+                w.Close();
+                break;
+
+            case "PlayerTurnStartLate":
+                w.Open("public override async Task AfterPlayerTurnStartLate(PlayerChoiceContext choiceContext, Player player)");
                 w.Line("if (player != base.Owner.Player) return;");
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
@@ -659,18 +923,12 @@ public static class CustomPowerGen
                 //（免得自己给自己叠层 → 自己触发自己）。
                 // 自己触发自己会不会死循环：「跨过 N 那一下」这个判据本身就挡住了 ——
                 // 触发里再加层只会越过去（4 层时 4-1=3 不 < 3），不会重复触发。
-                string selfClass = SelfClassName(p);
+                // V0.2.168：「盯谁 + 盯哪个状态」那一段抽到 PowerWatchGuard（四个调用点共用一份，
+                // 免得「盯任意敌人」那一支再漂掉）。
                 foreach (var t in items)
                 {
-                    string ownerGuard = t.PowerTarget == "AnyEnemy"
-                        ? "power.Owner is not null && power.Owner != base.Owner && power.Owner.IsAlive"
-                          + " && base.Owner.CombatState is not null && base.Owner.CombatState.HittableEnemies.Contains(power.Owner)"
-                        : "power != this && power.Owner == base.Owner";
+                    string ownerGuard = PowerWatchGuard(t, p, excludeSelf: true);
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
-                    bool watchesSelf = want is not null && want.Length > 0
-                        && string.Equals(want, selfClass, StringComparison.Ordinal);
-                    if (watchesSelf)
-                        ownerGuard = ownerGuard.Replace("power != this && ", "", StringComparison.Ordinal);
                     string reach = Lit.Dec(Math.Max(0m, t.TriggerAmount));
                     w.Open($"if ({ownerGuard}{(want is null ? "" : $" && power is {Lit.Identifier(want, "VulnerablePower")}")}"
                          + $" && power.Amount >= {reach} && power.Amount - amount < {reach})");
@@ -753,11 +1011,7 @@ public static class CustomPowerGen
                 // 那样两种对象（自己 / 任意敌人）会互相把对方挡掉（实测生成出来敌人那条永远不跑）。
                 foreach (var t in items)
                 {
-                    bool enemy = t.PowerTarget == "AnyEnemy";
-                    string ownerGuard = enemy
-                        ? "power.Owner is not null && power.Owner != base.Owner && power.Owner.IsAlive"
-                          + " && base.Owner.CombatState is not null && base.Owner.CombatState.HittableEnemies.Contains(power.Owner)"
-                        : "power != this && power.Owner == base.Owner";
+                    string ownerGuard = PowerWatchGuard(t, p, excludeSelf: true);
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
                     string guard = want is null ? ownerGuard : $"({ownerGuard}) && (power is {want})";
                     string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
@@ -780,11 +1034,11 @@ public static class CustomPowerGen
                 EmitChoiceContextBootstrap(w, "PowerRemoved", items);
                 foreach (var t in items)
                 {
-                    bool enemy = t.PowerTarget == "AnyEnemy";
-                    string ownerGuard = enemy
-                        ? "power.Owner is not null && power.Owner != base.Owner && power.Owner.IsAlive"
-                          + " && base.Owner.CombatState is not null && base.Owner.CombatState.HittableEnemies.Contains(power.Owner)"
-                        : "power.Owner == base.Owner";
+                    // V0.2.168：「盯任意敌人」+ 盯的就是它自己这个状态 → 按「**这份状态自己**」算
+                    // （见 PowerWatchGuard 的说明）—— 修用户实测报的「配了完全没反应」。
+                    // 「被移除」这一条**不排除自己**（不像「层数变化」那样 power != this）：
+                    // 「我这个状态自己被移除」正是这条时机要覆盖的场景之一。
+                    string ownerGuard = PowerWatchGuard(t, p, excludeSelf: false);
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
                     string guard = want is null ? ownerGuard : $"({ownerGuard}) && (power is {want})";
                     string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
@@ -981,7 +1235,18 @@ public static class CustomPowerGen
             // 升级卡牌也要（选牌界面走 choiceContext）—— 漏了的话「敌人回合开始时升级一张牌」会 CS0103
             or "UpgradeCard"
             // 消耗 / 丢弃卡牌同理（都要弹选牌界面）
-            or "ExhaustCard" or "DiscardCard";
+            or "ExhaustCard" or "DiscardCard"
+            // V0.2.167：「强化指定卡牌」也要 —— 状态链里它写的是
+            // `PowerCmd.Apply<…Boost…Power>(choiceContext, …)`（见下面 case "BoostCard"），
+            // 漏了这份清单 → 落在不带上下文的钩子上时「用了但没声明」→ CS0103（用户实测报过：
+            // TenguPower1.cs(20,80) 等 5 处）。
+            or "BoostCard"
+            // 同理：「从某一摞挑 N 张拿到手牌」用的是 `CardSelectCmd.FromCombatPile(choiceContext, …)`
+            //（见下面 case "TakeFromDraw" / "TakeFromDiscard" / "TakeFromExhaust"）。
+            or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust"
+            // V0.2.168：「召唤伙伴」—— 生成的 `XxxCmd.Summon(choiceContext, player, hp)` 第一个参数就是它
+            //（用户实测报的：状态「生成卡牌时 → 召唤伙伴」生成出来 CS0103 choiceContext）。
+            or "SummonPet";
 
     /// <summary>同 <see cref="NeedsChoiceContext(string)"/>，但能按效果本身细化。</summary>
     public static bool NeedsChoiceContext(EffectSpec e) => e.Kind switch
@@ -1206,6 +1471,14 @@ public static class CustomPowerGen
                 break;
             }
 
+            // 召唤伙伴（V0.2.168，用户报的用例：自定义状态「生成卡牌时 → 召唤伙伴」）：
+            // 生成端照卡牌那条链同一份 EmitSummonPet（所以「数值 0 = 用召唤物页里配的血量」、
+            // 「已经在场就加最大生命不重复召唤」这些行为完全一致），只有召唤者不同 ——
+            // 状态钩子里 base.Owner 是 Creature，而生成的 XxxCmd.Summon 收的是 Player。
+            case "SummonPet":
+                CSharpCodeGen.EmitSummonPetPublic(w, e, p, amt);
+                break;
+
             // 复制卡牌 / 重放卡牌 / 回合结束时自动打出：状态里不支持
             //（这几个都要「打出这张牌时选牌」的上下文，本体的状态钩子里没有）
             case "CopyCard":
@@ -1318,9 +1591,11 @@ public static class CustomPowerGen
                 break;
 
             // 击晕：状态触发器里也能用（CreatureCmd.Stun 不需要 choiceContext）
+            // ⚠ selfExpr 必须传 `base.Owner`（状态钩子里 Owner 本身就是 Creature）—— 传 .Creature 会 CS1061
             case "Stun":
                 CSharpCodeGen.EmitStunPublic(w, e, useX: false, cardTargetExpr: null,
-                    enemiesExpr: "base.Owner.CombatState.HittableEnemies", playerExpr: "base.Owner.Player");
+                    enemiesExpr: "base.Owner.CombatState.HittableEnemies", playerExpr: "base.Owner.Player",
+                    selfExpr: "base.Owner");
                 break;
 
             // 给予卡牌关键词：状态触发器里也能给（数值 0 = 「这张牌自己」在状态里没有意义）

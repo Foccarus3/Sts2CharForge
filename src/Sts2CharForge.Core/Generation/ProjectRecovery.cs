@@ -123,6 +123,8 @@ public static class ProjectRecovery
         p.Gender = Match(charText, @"CharacterGender\.(\w+)") ?? "Masculine";
         p.StartingHp = Int(text: charText, pattern: @"StartingHp => (\d+)", fallback: 80);
         p.StartingGold = Int(text: charText, pattern: @"StartingGold => (\d+)", fallback: 99);
+        // V0.2.172：角色最大能量（等于 3 = 本体默认时生成端不写这一句 → 认不到就回退 3）
+        p.MaxEnergy = Int(text: charText, pattern: @"MaxEnergy => (\d+)", fallback: 3);
         p.AttackAnimDelay = (double)Dec(charText, @"AttackAnimDelay => ([\d.]+)f", 0.15m);
         p.CastAnimDelay = (double)Dec(charText, @"CastAnimDelay => ([\d.]+)f", 0.25m);
         string charEntry = EffectCatalog.SlugFor(charClass);
@@ -137,7 +139,13 @@ public static class ProjectRecovery
             p.Description = "";
         p.DeathText = loc.Get($"{charEntry}.eventDeathPrevention", "……还不到时候。");
         p.DeadBanterText = loc.Get($"{charEntry}.banter.dead.endTurnPing", "……");
-        result.Notes.Add($"角色：{p.DisplayName}（{charClass}）HP {p.StartingHp} / 金币 {p.StartingGold}");
+        // V0.2.173：联机 ping（催促）那句。生成端在留空时写的是兜底「……继续。」——
+        // 认出来是那一句就当作「没填」，否则恢复出来的存档会「无中生有」多出一句
+        // （和上面 Description 那条同一个道理：再生成一次 mod 里那份 characters.json 就与第一次不同）。
+        string pingText = loc.Get($"{charEntry}.banter.alive.endTurnPing", LocalizationGen.DefaultEndTurnPingText);
+        p.EndTurnPingText = string.Equals(pingText, LocalizationGen.DefaultEndTurnPingText, StringComparison.Ordinal)
+            ? "" : pingText;
+        result.Notes.Add($"角色：{p.DisplayName}（{charClass}）HP {p.StartingHp} / 金币 {p.StartingGold} / 能量 {p.MaxEnergy}");
 
         // ---- 卡池：配色 + 是否入池 ----
         var removedFromPool = new HashSet<string>(StringComparer.Ordinal);
@@ -1183,6 +1191,10 @@ public static class ProjectRecovery
             //   · `...ForgeGivenKeywordTiming.Notify(...)`：把「被给予自定义关键词」转给卡自己的钩子那一步。
             if (line.StartsWith("await Task.CompletedTask;", StringComparison.Ordinal)) continue;
             if (line.Contains("CET:GivenKeywordNotify", StringComparison.Ordinal)) continue;
+            // V0.2.169：卡牌钩子末尾那句「调用锻造节点图里同一支【触发时机】」的胶水代码 ——
+            // 图本身是从 `// CET:ForgeGraph=<Base64>` 那个标记整份恢复的，这一句不带任何信息，整行跳过
+            //（不跳的话它会被当成「没认出来的语句」，`HasUnparsed` 会报出来）。
+            if (line.Contains("CET:ForgeNested", StringComparison.Ordinal)) continue;
             // V0.2.142「生成调试日志」：开关打开时生成端会**另加**几行
             //   `Godot.GD.Print("…");   // CET:DebugLog`（原本那几条效果语句一个字符都不改）。
             // 它们不是效果，回读整行跳过 —— 开关默认关着时生成物里一行都没有，
@@ -1659,6 +1671,8 @@ public static class ProjectRecovery
                 continue;
 
             // 召唤伙伴：生成的是 `<X>Cmd.Summon(choiceContext, base.Owner, <血量>); // CET:PetHp=…`
+            //（自定义状态那条链是 `base.Owner.Player` —— 状态钩子里 base.Owner 是 Creature，
+            //  而 Summon 收的是 Player；两种写法都要认，V0.2.168）
             //
             // 两种情况：① 数值留空 → 直接写「角色」页配置的血量常量，标记是 CET:PetHp=configured，
             //             恢复成数值 0（保真：用户在界面上看到的就是留空）；
@@ -1666,7 +1680,8 @@ public static class ProjectRecovery
             //             这样升级增量也能跟着回来。
             // 为什么要那个注释标记：两种情况的调用长得一模一样（配置血量是多少就写多少 m），
             // 不标记就分不清「留空用配置」和「填了同样的数字」。
-            if (line.Contains("Cmd.Summon(choiceContext, base.Owner,"))
+            if (line.Contains("Cmd.Summon(choiceContext, base.Owner,", StringComparison.Ordinal)
+                || line.Contains("Cmd.Summon(choiceContext, base.Owner.Player,", StringComparison.Ordinal))
             {
                 var e = new EffectSpec { Kind = "SummonPet", TargetSide = "Self" };
                 // 是哪一只：调用里的 `<X>Cmd.Summon` 那个 X 就是宠物类名（= 稳定标识）
@@ -2807,7 +2822,8 @@ public static class ProjectRecovery
             {
                 string l = raw.Trim();
                 if (l.Length == 0 || l.StartsWith("//")) continue;
-                if (!l.Contains("Cmd.Summon(choiceContext, base.Owner,")) continue;
+                if (!l.Contains("Cmd.Summon(choiceContext, base.Owner,", StringComparison.Ordinal)
+                    && !l.Contains("Cmd.Summon(choiceContext, base.Owner.Player,", StringComparison.Ordinal)) continue;
                 // 上面那段（逐行扫 effect 体）已经认出来的就别重复加：召唤物是**列表**，
                 // 一张牌上可以召唤多只，所以这里按「哪一只（+ 数值语义）」去重，不能只按 Kind 去重。
                 string? cls2 = Match(l, @"(\w+)Cmd\.Summon\(choiceContext");
@@ -3006,6 +3022,21 @@ public static class ProjectRecovery
     private static void FillExpr(EffectSpec e, string expr)
     {
         expr = expr.Trim();
+        // V0.2.168：「可被无限升级」的牌写的是 `(公式 + 增量m * base.CurrentUpgradeLevel)`
+        //（见 CSharpCodeGen.UpgradeAwareAmount）—— 增量要认出来，否则回读会丢升级增量。
+        var inf = Regex.Match(expr, @"^\((?<body>.+?) \+ (?<inc>-?[\d.]+)m \* base\.CurrentUpgradeLevel\)$");
+        if (inf.Success)
+        {
+            e.UpgradeAmount = decimal.Parse(inf.Groups["inc"].Value, CultureInfo.InvariantCulture);
+            e.UpgradeFromTernary = true;   // OnUpgrade 里那句 UpgradeValueBy 是同一个数，别再累加一遍
+            string body = inf.Groups["body"].Value.Trim();
+            // 常数公式（`5m`）直接落成数值；真·现算公式（`(M*2)`）落进公式栏
+            if (Regex.IsMatch(body, @"^-?[\d.]+m?$"))
+                e.Amount = decimal.Parse(body.TrimEnd('m'), CultureInfo.InvariantCulture);
+            else
+                e.AmountFormula = body.Trim('(', ')');
+            return;
+        }
         var up = Regex.Match(expr, @"\(base\.IsUpgraded \? ([\d.]+)m? : ([\d.]+)m?\)");
         if (up.Success)
         {
@@ -3391,11 +3422,13 @@ public static class ProjectRecovery
         if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = Num(hp.Groups[1].Value) };
         hp = Regex.Match(e, @"CurrentHp \* 100 >= .*MaxHp \* ([\d.]+)");
         if (hp.Success) return new ConditionSpec { Kind = "HpBelowPercent", Amount = -Num(hp.Groups[1].Value) };
-        // 生成的是 `…CardPlaysFinished.Count(e => e.Actor == … && e.HappenedThisTurn(base.CombatState)) >= N`，
+        // 生成的是 `…CardPlaysStarted.Count(e => e.Actor == … && e.HappenedThisTurn(base.CombatState)) >= N`，
         // 里面**套着括号**，所以不能写 [^)]*（那样只能匹配到内层那个右括号 → 整条条件认不出来）。
-        var played = Regex.Match(e, @"CardPlaysFinished\.Count\(.*?\)\s*>=\s*([\d.]+)");
+        // ⚠ V0.2.173：打出计数从 CardPlaysFinished 换成了 CardPlaysStarted（含正在打出的这一张，见
+        // CSharpCodeGen.CountExpr），老工程里仍是 Finished —— 两个都要认，否则老工程回读会丢这条条件。
+        var played = Regex.Match(e, @"CardPlays(?:Started|Finished)\.Count\(.*?\)\s*>=\s*([\d.]+)");
         if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = Num(played.Groups[1].Value) };
-        played = Regex.Match(e, @"CardPlaysFinished\.Count\(.*?\)\s*<\s*([\d.]+)");
+        played = Regex.Match(e, @"CardPlays(?:Started|Finished)\.Count\(.*?\)\s*<\s*([\d.]+)");
         if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = -Num(played.Groups[1].Value) };
         if (e.Contains("CardPlaysFinished.Any") && e.Contains("== this")) return new ConditionSpec { Kind = "NotPlayedThisCombat" };
         var turn = Regex.Match(e, @"TurnNumber % ([\d.]+) == 0");
@@ -4652,6 +4685,11 @@ public static class ProjectRecovery
             ["AfterObtained"] = "Obtained",
             ["BeforeSideTurnStart"] = "CombatStart",
             ["AfterPlayerTurnStart"] = "PlayerTurnStart",
+            // V0.2.179（用户要求「触发时机加一个回合开始后」）：回合开始那三档各占一个钩子方法。
+            // ⚠ 这里**不能**把 Early / Late 都并回 PlayerTurnStart —— 三条生成的是三个不同的 override，
+            // 并回去会让「升级后再回读 → 再生成」把三块【触发时机】压成同一块（幂等就破了）。
+            ["AfterPlayerTurnStartEarly"] = "PlayerTurnStartEarly",
+            ["AfterPlayerTurnStartLate"] = "PlayerTurnStartLate",
             ["AfterCombatVictory"] = "CombatVictory",
             ["AfterCombatEnd"] = "CombatEnd",
             ["AfterAttack"] = "Attacked",
@@ -4688,6 +4726,10 @@ public static class ProjectRecovery
         "AfterObtained" => "Obtained",
         "BeforeSideTurnStart" => "CombatStart",
         "AfterPlayerTurnStart" => "PlayerTurnStart",
+        // V0.2.179（用户要求「触发时机加一个回合开始后」）：回合开始那三档各占一个钩子方法，
+        // 名字对得上一一映射（不是含糊的那一类），回读时不用靠注释兜底。
+        "AfterPlayerTurnStartEarly" => "PlayerTurnStartEarly",
+        "AfterPlayerTurnStartLate" => "PlayerTurnStartLate",
         "BeforeSideTurnEnd" => "TurnEnd",
         "AfterCombatVictory" => "CombatVictory",
         // 自定义状态的「战斗胜利后」现在生成的是 AfterCombatEnd（本体发战斗奖励的钩子就是它）

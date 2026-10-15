@@ -85,6 +85,20 @@ public static class ProfileValidator
                     .Any(x => string.Equals(x, r, StringComparison.OrdinalIgnoreCase)))
                     issues.Add(new("警告", $"卡牌「{card.Name}」把同一条自定义关键词「{r}」同时填进了「升级后获得」和"
                         + "「升级后失去」—— 两栏互相抵消，实际效果是升级前后都不显示它。"));
+            // V0.2.177：同一条既在「一直在」（卡牌页那栏勾了它）又在「升级后失去」里 —— **不是矛盾**，
+            // 而是一种「升级后拿掉」的写法：升级前显示、升级后不显示（生成端两处都以「失去」为准）。
+            // 但生成端是**拿掉了**它（升级后不再显示），用户在卡牌页上会看到这个词既在「一直在」那栏、
+            // 又在「失去」那栏，容易以为设置没生效 —— 所以这里把实际行为说清楚。
+            foreach (string r in card.UpgradeRemovedCustomKeywords ?? new List<string>())
+            {
+                bool alsoAlwaysOn = (card.CustomKeywordList ?? new List<string>())
+                    .Any(x => string.Equals(KeywordGen.KeyOfReference(p, x), KeywordGen.KeyOfReference(p, r),
+                        StringComparison.OrdinalIgnoreCase));
+                if (alsoAlwaysOn)
+                    issues.Add(new("提示", $"卡牌「{card.Name}」的自定义关键词「{r}」既勾在「一直在」里、又填进了"
+                        + "「升级后失去」—— 实际行为是**升级前显示、升级后不显示**（「失去」那栏优先）。"
+                        + "如果你本来就想要这个效果，可以不去管它；想升级前后都显示就把它从「升级后失去」里去掉。"));
+            }
         }
 
         // 本体关键词改名：id 必须是那 7 个之一、名字不能带富文本标记、不能和别的本体关键词撞名
@@ -105,6 +119,8 @@ public static class ProfileValidator
         // 必须保住「遗物栏节点列表长度 = Player.Relics 长度」这条不变量 —— 一破就是越界卡死
         //（V0.2.113~V0.2.137 的真实事故）。这里把它的前提条件钉死（见方法注释）。
         ValidateHideCarrierRelic(issues, p, n);
+        // 「获得时」+ 战斗内效果：开局那一刻还没有战斗 → 生成出来必 NRE（见方法注释）
+        ValidateObtainedCombatEffects(issues, p);
 
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
@@ -234,6 +250,40 @@ public static class ProfileValidator
                     && EffectCatalog.FindPower(t.PowerId) is null)
                     issues.Add(new("警告", $"{who}「{when}」盯的状态找不到：{t.PowerId}"
                         + "（可以选本体的状态类名，或「自定义状态」页里自己造的那个；留空 = 除自己以外任意状态变层数都触发）。"));
+                // ===== V0.2.166：用户实测报的「击晕值达到 100 却没击晕敌人」的真因 =====
+                // 「某个状态层数到达 N 层时」这类**盯某个层数**的时机：如果「盯」选的是「任意敌人」、
+                // 而盯的那个状态**就是这条时机所在的状态自己**，老代码生成出来的守卫写着
+                // `power.Owner != base.Owner && …HittableEnemies.Contains(power.Owner)`
+                // —— 它要求「被盯的那份状态在**别的**生物身上」，于是「这个状态自己涨到 N 那一下」
+                // **永远不会触发**（用户就是这么配的：一个贴在敌人身上的减益「击晕值」，盯「任意敌人」的它自己，N=100）。
+                //
+                // V0.2.168：**改成自动按「这份状态自己」生成**（见 CustomPowerGen.PowerWatchGuard）——
+                // 「盯的就是它自己这个状态」时，「盯自己 / 任意敌人」两种档都按「这份状态挂在谁身上就在谁那里触发」算。
+                // 所以这里不再是「不会触发」的警告，只留一条说明，免得用户以为「任意敌人」＝「别人身上的才算」。
+                if (t.Kind is "PowerReached" or "PowerChanged" or "PowerRemoved"
+                    && string.Equals(t.PowerTarget, "AnyEnemy", StringComparison.Ordinal)
+                    && !string.IsNullOrWhiteSpace(t.PowerId)
+                    && string.Equals(t.PowerId.Trim(), CustomPowerGen.ClassNameOf(p, cp, ci), StringComparison.Ordinal))
+                {
+                    issues.Add(new("提示", $"{who}「{when}」的「盯」选的是「任意敌人」，而盯的那个状态就是**这个状态自己**"
+                        + $"（{t.PowerId.Trim()}）—— 按「**这份状态自己**」生成（这份状态挂在谁身上，"
+                        + "它自己那件事就在谁那里触发；包括贴在敌人身上的那份自己）。"
+                        + "要「只有别的生物身上那份同名状态出事才触发」，请把「盯哪个状态」换成一个**别的**状态。"));
+                }
+                // V0.2.166：「击晕」在**挂在敌人身上**的状态里：作用对象选「指定敌人」= 玩家视角敌方那一侧里
+                // 第一个可打的敌人（本体 CombatState.HittableEnemies），**不一定是身上带着这个状态的那只**。
+                // 用户要的「击晕值满了就晕那只怪」应该用「作用对象 = 自己」（状态挂在敌人身上时「自己」就是它）。
+                if (cp.Type == "Debuff")
+                {
+                    var stunByEnemyTarget = t.Effects.Where((EffectSpec x) => x is not null && x.Kind == "Stun"
+                        && x.TargetSide is "Enemy" or "AllEnemies" or "RandomEnemies").ToList();
+                    if (stunByEnemyTarget.Count > 0)
+                        issues.Add(new("提示", $"{who}「{when}」里的「击晕」作用对象是"
+                            + $"「{EffectCatalog.TargetSideZh(stunByEnemyTarget[0].TargetSide)}」：这是个**减益**（一般贴在敌人身上），"
+                            + "而状态里的「敌人」指的是**玩家视角的敌方那一侧** —— 「指定敌人」取的是那一侧里**第一个可打的敌人**，"
+                            + "**不一定是身上带着这个状态的那只**（场上多只敌人时就会晕错）。"
+                            + "想「击晕带着这个状态的那只」请把作用对象改成**自己**（状态挂在敌人身上时「自己」就是它）。"));
+                }
                 // 「只对哪类牌生效」（V0.2.118 增加选择范围）：关键词组 / 自定义组里一张牌都没有时，
                 // 生成出来的判据是 `if (false)` —— 这条时机永远不会触发，必须**拦住并说清**（不静默）。
                 if (t.Kind == "CardPlayed" && (EffectCatalog.IsKeywordFilter(t.CardFilter) || EffectCatalog.IsCardGroupFilter(t.CardFilter)))
@@ -619,15 +669,25 @@ public static class ProfileValidator
                     {
                         string allFormulas = (fx.AmountFormula ?? "") + " "
                             + string.Join(" ", EffectSpec.CountFormulaKeys.Select(fx.CountFormula));
+                        // V0.2.168：**不再是警告**了 —— 生成端现在对「X 费 / Y 费」的牌**直接按花掉的那部分**生成
+                        //（__X / __Y 取 ResolveEnergyXValue() / ResolveStarXValue()，见 ForgeGraphGen.EmitCardFormulaPrologue），
+                        // 所以「次数填 Y」在这种牌上本来就是对的，用户不用改成 YSpent。留一条提示说清口径，
+                        // 免得他以为 Y 还是「当前剩下的」。
                         if (starCostIsXNow && ContainsIdentifier(allFormulas, "Y"))
-                            issues.Add(new("警告", $"卡牌「{c.Name}」是「Y 费」（额外资源量费用 = X 那一档），"
-                                + "而它的效果里用了 Y —— 本体**先扣费再跑效果**，所以那一刻 Y 读到的是 0"
-                                + "（次数会被自动夹到 1）。想用「这张牌花掉的额外资源量」请填 **YSpent**"
-                                + "（= 本体 ResolveStarXValue()，就是这张牌花掉的那个数）。"));
+                            issues.Add(new("提示", $"卡牌「{c.Name}」是「Y 费」（额外资源量费用 = X 那一档），"
+                                + "效果里用的 Y **已按「这张牌花掉的额外资源量」生成**（本体先扣费再跑效果，"
+                                + "读「当前值」会是 0、次数会被夹到 1）。要「当前还剩多少」请改用内置量里的"
+                                + "「这张牌花掉 / 当前值」以外的写法，或者填 YSpent（两者在这种牌上现在等价）。"));
+                        // 用户实测（「次数填 Y 或者 X 次都只生效一次」）：这一档界面上叫「额外资源量费用 = X」，
+                        // 于是很容易以为公式里也该写 X —— 但内置量里 **X 永远是「能量」**、额外资源量是 **Y**。
+                        // 他写 X 时读到的是当前能量（和费用无关），当然也不是「花掉的资源量」。说清这一条。
+                        if (starCostIsXNow && ContainsIdentifier(allFormulas, "X"))
+                            issues.Add(new("提示", $"卡牌「{c.Name}」的「额外资源量费用」是**「X」那一档**，"
+                                + "但效果公式里写的 **X 是「当前能量」**（内置量：X = 能量、Y = 额外资源量）——"
+                                + "想「花掉几点额外资源量就几次 / 就多少点」请写 **Y**（这张牌上 Y 已按「花掉的那部分」生成）。"));
                         if (costIsXNow && ContainsIdentifier(allFormulas, "X"))
-                            issues.Add(new("警告", $"卡牌「{c.Name}」是「X 费」，而它的效果里用了 X ——"
-                                + "本体**先扣费再跑效果**，所以那一刻 X 读到的是 0（次数会被自动夹到 1）。"
-                                + "想用「这张牌花掉的能量」请填 **XSpent**（= 本体 ResolveEnergyXValue()）。"));
+                            issues.Add(new("提示", $"卡牌「{c.Name}」是「X 费」，效果里用的 X **已按「这张牌花掉的能量」生成**"
+                                + "（本体先扣费再跑效果，读「当前能量」会是扣完剩下的）。"));
                     }
                 }
                 // V0.2.159：XSpent / YSpent 在**不是那种费用**的牌上是 0（生成端做了判空三元）——
@@ -795,6 +855,12 @@ public static class ProfileValidator
             issues.Add(new("错误", $"初始生命 {p.StartingHp} 不合理（建议 1~999）。"));
         if (p.StartingGold < 0 || p.StartingGold > 9999)
             issues.Add(new("错误", $"初始金币 {p.StartingGold} 不合理（建议 0~9999）。"));
+        // V0.2.172：角色最大能量（本体默认 3；生成端一个 override 就够，见 CSharpCodeGen.CharacterSource）
+        if (p.MaxEnergy < 1 || p.MaxEnergy > 99)
+            issues.Add(new("错误", $"角色最大能量 {p.MaxEnergy} 不合理（建议 1~99；本体默认 3）。"));
+        else if (p.MaxEnergy != 3)
+            issues.Add(new("提示", $"角色最大能量 = {p.MaxEnergy}（本体默认 3）：这是每回合的能量上限，"
+                + "改大 / 改小都会明显改变难度。生成时只在不是 3 的时候覆盖 CharacterModel.MaxEnergy。"));
         if (!new[] { "Neutral", "Feminine", "Masculine" }.Contains(p.Gender))
             issues.Add(new("错误", $"性别 {p.Gender} 非法（Neutral / Feminine / Masculine）。"));
         if (!string.IsNullOrWhiteSpace(p.UnlockAfter) && !Naming.IsValidIdentifier(p.UnlockAfter))
@@ -892,6 +958,13 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"卡牌「{c.Name}」的英文类名「{cls}」没带角色前缀「{n.CharClass}」—— "
                     + "多人联机时所有人的模组会装在同一台机器上，**两份模组有同名类**会让游戏加载模型库直接抛异常"
                     + "（本体的模型 ID 只按类名算，不含命名空间）。建议改成 " + n.CharClass + cls + "。"));
+            // 纯小写类名 → C# 会报 CS8981（「类型名称仅包含小写 ascii 字符…可能会成为该语言的保留值」）。
+            // 编译能过，只是刷警告；但以后真跟保留字撞上就是编译不过，所以提醒一句（用户实测报过一堆）。
+            if (!string.IsNullOrWhiteSpace(c.ClassName) && Naming.IsValidIdentifier(c.ClassName)
+                && cls.All(ch => !char.IsUpper(ch)) && cls.Any(char.IsLetter))
+                issues.Add(new("提示", $"卡牌「{c.Name}」的英文类名「{cls}」全是小写：C# 会报 CS8981 警告"
+                    + "（「类型名称仅包含小写 ascii 字符…可能会成为该语言的保留值」），编译能过但建议改成首字母大写"
+                    + $"（例：{char.ToUpperInvariant(cls[0])}{cls.Substring(1)}）。"));
             // 类名不能和本体卡重名：本体的模型 ID 只按类名算（忽略命名空间），
             // 自己定义一个 StrikeIronclad 会和本体撞 ID，模组加载时抛 DuplicateModelException。
             if (EffectCatalog.Cards.Any(x => string.Equals(x.Id, cls, StringComparison.OrdinalIgnoreCase)))
@@ -983,6 +1056,8 @@ public static class ProfileValidator
             // → 那个参数永远是 0，公式静默失效。用户实测报过：「设 A 为敌人的虚弱、伤害写 A+3、作用对象全体敌人」
             // 生成出来是 `PowerAmount(cardPlay?.Target, …)`，而全体敌人的牌 `cardPlay.Target` 是 null → 伤害恒为 3。
             if (!c.IsCurseCard) ValidateFormulaTargets(issues, c, p);
+            // 「斩杀」条件只能用在**打出时**那一段效果上（V0.2.169，见方法注释）
+            ValidateFatalPlacement(issues, c);
             // 锻造节点图（升级前 / 升级后两块布）：图里的问题以前**一个都没报给用户**
             //（ForgeGraphGen.Problems 是死代码，没人调）—— 最要命的是「【效果】选了节点图没接上的种类」：
             // 生成、编译、进游戏全都不报错，就是没反应（别人实测报的「给召唤物 buff 不生效」就是这个）。
@@ -1223,6 +1298,38 @@ public static class ProfileValidator
             issues.Add(new("错误", $"游戏 data 目录里找不到 sts2.dll：{p.Paths.GameDataDir}"));
         if (!File.Exists(p.Paths.GodotExe))
             issues.Add(new("警告", $"Godot 可执行文件不存在：{p.Paths.GodotExe}（只影响导出 PCK）"));
+
+        // 本体签名漂移核对（V0.2.167）：生成端有几处把本体的方法签名**写死**了，游戏更新后签名一变，
+        // 生成出来的代码就在编译期炸（用户实测报过 CS1501「FromCard 方法没有采用 2 个参数的重载」，
+        // 报错信息完全看不出是「游戏版本和工具假设的不一样」）。这里抽查最关键的一处，明确说出来。
+        // ⚠ 只在「类型找得到、但那个重载没有」时报（读不出来 / 找不到类型都不报）。
+        try
+        {
+            string sts2 = Path.Combine(p.Paths.GameDataDir ?? "", "sts2.dll");
+            if (File.Exists(sts2) && Sts2Metadata.HasMethod(sts2, "AttackCommand", "FromCard", 2) == false)
+                issues.Add(new("错误", "本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)` 这个重载"
+                    + "（工具生成的所有攻击牌都按这个签名写）—— **你这份游戏的版本和本工具假设的不一样**："
+                    + "生成出来的代码会在编译期报 `CS1501 FromCard 方法没有采用 2 个参数的重载`。"
+                    + "请换用与本工具匹配的游戏版本，或把 `data_sts2_*\\sts2.dll` 发给工具作者适配。"));
+        }
+        catch { /* 只是核对，读不出来就算了 */ }
+
+        // 生成 / 存档目录落在游戏的 mods\ 里面（V0.2.167）：本体是按目录扫 *.json 找模组清单的，
+        // 存档（和 _备份 里的副本）会被当成模组去加载 → 日志里一串
+        // 「Mod manifest for mod X declares that it should load a dll/pck, but no … was found!」+
+        // 「Neither a DLL nor a PCK was loaded for mod X」（用户实测报过，还套了三层 _备份）。
+        try
+        {
+            string modsDir = PathAutoDetect.FindModsDir(p.Paths.InstallDir) ?? "";
+            string outDir = string.IsNullOrWhiteSpace(p.Paths.OutputDir) ? "" : Path.GetFullPath(p.Paths.OutputDir);
+            if (modsDir.Length > 0 && outDir.Length > 0
+                && outDir.StartsWith(Path.GetFullPath(modsDir).TrimEnd('\\', '/') + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                issues.Add(new("警告", $"生成 / 存档目录在游戏的 mods 目录**里面**（{p.Paths.OutputDir}）—— "
+                    + "本体是按目录扫 *.json 当模组清单的，会把存档（以及 `_备份` 里的副本）也当成模组去加载，"
+                    + "游戏日志里会出现「声明要加载 dll / pck，但那个路径下没有」那几条错误。"
+                    + "建议把「输出目录」挪到 mods 外面（例如 我的文档\\Sts2CharForge）。"));
+        }
+        catch { /* 路径怪就算了：这条只是提醒 */ }
 
         // 多个模组装在一起会不会撞车（本体的模型 ID 只按类名算 —— 撞了游戏直接起不来）。
         // 这一步要读磁盘上别的存档工程，任何意外（路径怪、文件被占、读取失败）都绝不能影响正常校验。
@@ -1862,6 +1969,19 @@ public static class ProfileValidator
                     + "—— 这一档的宠物效果只做在卡牌上（遗物只支持「召唤伙伴」）。"));
         }
         foreach (var s in p.Potions) if (s is not null) Scan($"药水「{s.Name}」", s.Effects, forPotion: true);
+        // V0.2.168：自定义状态**触发时机**里的宠物效果也要扫 —— 用户报的用例「状态：生成卡牌时 → 召唤伙伴」。
+        // 只扫**状态链支持**的那几档（目前是「召唤伙伴」和「牺牲伙伴」）：这样
+        //   · 那只召唤物必须启用 / 类名找得到（不然生成出来会引用不存在的类）；
+        //   · 「没启用任何召唤物」那条错误也靠它把 hasSummonEffect 置上。
+        // 状态链**不支持**的宠物效果（伙伴攻击 / 按生命值算…）由 PowerTriggers.SupportedEffectKinds 那条报错，别在这里重复报。
+        foreach (var cp in p.CustomPowers)
+        {
+            if (cp is null) continue;
+            var cpPetFx = cp.Triggers.Where(t => t is not null).SelectMany(t => t.Effects)
+                .Where(e => e is not null && EffectCatalog.IsPetKind(e.Kind) && PowerTriggers.Supports(e.Kind)).ToList();
+            if (cpPetFx.Count == 0) continue;
+            Scan($"自定义状态「{cp.Name}」", cpPetFx, forPotion: false);
+        }
 
         if (enabled.Count == 0)
         {
@@ -1954,11 +2074,15 @@ public static class ProfileValidator
 
         // 召唤了但没地方召唤：不算错，只是提醒（有些人先配宠物、后加卡）
         // V0.2.126：效果挂在整只遗物上（时机只说明「什么时候触发」）→ 看遗物那份效果
+        // V0.2.168：自定义状态**触发时机**里的「召唤伙伴」也算一处（用户报的用例）
         bool anyCardOrRelicSummons = p.AllCards.Any(c => c.Effects.Any(e => e.Kind == "SummonPet"))
-            || p.Relics.Any(r => r.Effects.Any(e => e is not null && e.Kind == "SummonPet"));
+            || p.Relics.Any(r => r.Effects.Any(e => e is not null && e.Kind == "SummonPet"))
+            || p.CustomPowers.Any(cp => cp is not null && cp.Triggers.Any(t => t is not null
+                && t.Effects.Any(e => e is not null && e.Kind == "SummonPet")));
         if (!anyCardOrRelicSummons)
-            issues.Add(new("提示", $"召唤物已启用（{enabled.Count} 只），但没有任何卡牌 / 遗物在「召唤」它们"
-                + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」）—— 游戏里永远不会上场。"));
+            issues.Add(new("提示", $"召唤物已启用（{enabled.Count} 只），但没有任何卡牌 / 遗物 / 自定义状态在「召唤」它们"
+                + "（卡牌效果里选「召唤伙伴」，或给遗物加一条「召唤伙伴」+ 触发时机「战斗开始时」，"
+                + "或给自定义状态的某条触发时机加一条「召唤伙伴」）—— 游戏里永远不会上场。"));
         var summonRelicsWithoutCtx = p.Relics
             .Where(r => r.Effects.Any(e => e is not null && e.Kind == "SummonPet")
                         && r.Triggers.Any(t => t is not null && RelicTriggerLacksContext(t.Kind)))
@@ -2139,6 +2263,76 @@ public static class ProfileValidator
     }
 
     /// <summary>
+    /// 「目标卡」这一类**按卡牌类名存的引用**必须认得出（V0.2.167 扩到生成 / 变化 / 全局加牌 / 填满手牌）。
+    ///
+    /// <para>为什么必须拦：生成出来的代码是按**类名**找牌的（<c>ModelDb.Card&lt;类名&gt;()</c> 那种），
+    /// 类名不存在就是编译期 <c>CS0246 未能找到类型或命名空间名</c> —— 用户实测报过
+    /// <c>StellePotion3.cs(24,91) StelleCard5</c>：药水里的「生成卡牌」还指着一张早就被删 / 改了手填类名的自动名。
+    /// 生成前那次「按类名表修引用」（<see cref="NameStabilizer.RepairReferences"/>）只有在**类名表还在、
+    /// 而且那张卡还在**时才修得回来（换机器只拷存档 = 类名表没跟过来），所以修不回来的必须在这里报出来。</para>
+    ///
+    /// <para>⚠ 分两档：本机读不到本体卡牌表（没解包工程 / 没 pck）时只报**提示**（这时候一张本体卡也会「认不出」）；
+    /// 只差大小写时报错并给出正确写法（生成端按类名精确匹配）。</para>
+    /// </summary>
+    private static void ValidateCardTargetExists(List<ValidationIssue> issues, string where, CharacterProfile? p, EffectSpec e)
+    {
+        if (p is null || string.IsNullOrWhiteSpace(e.SpawnCardId)) return;
+        string want = e.SpawnCardId!.Trim();
+        var (known, rightCase) = RecognizeCardClass(p, want);
+        if (known) return;
+        if (rightCase is not null)
+            issues.Add(new("错误", $"{where}的「目标卡」填的是「{want}」，和本存档里那张卡的**大小写对不上**"
+                + $"（本存档里叫「{rightCase}」）—— 生成出来的代码按类名精确匹配，请重新选一次。"));
+        else if (EffectCatalog.Cards.Count == 0)
+            issues.Add(new("提示", $"{where}的「目标卡」「{want}」在本存档里找不到，而本机也读不到本体卡牌表"
+                + "（没配本体工程目录 / 游戏 pck）—— 如果它其实是一张**本体卡**这条可以忽略；否则请重新选一张。"));
+        else
+            issues.Add(new("错误", $"{where}的「目标卡」「{want}」在本存档和本体卡牌表里都找不到"
+                + "（多半是那张卡被删了 / 改成了手填的类名 / 位置变了，或者这份存档是从别的机器拷来的、类名表没跟过来）—— "
+                + "请到「目标卡」里重新选一张；名字不存在会让生成出来的代码编译不过（CS0246）。"));
+    }
+
+    /// <summary>
+    /// 「获得时」触发时机 + **要看战斗状态 / 敌人列表**的效果 = 开局必炸（V0.2.167）。
+    ///
+    /// <para>本体 <c>RunManager.FinalizeStartingRelics()</c>（<c>RunManager.cs:725-738</c>）在**开局那一刻**
+    /// 对玩家身上每只遗物调 <c>await relic.AfterObtained()</c> —— 那时还没进任何房间 / 战斗，而
+    /// <c>Creature.CombatState</c> 的注释写着「Never null for monsters. <b>Will be null for players when
+    /// outside of combat.</b>」→ 生成出来的「对所有敌人造成伤害」这类效果直接 NRE，开局流程中断。</para>
+    ///
+    /// <para>用户实测报过：<c>Exception starting singleplayer run : NullReferenceException at
+    /// ReyMod.ReyRelic1.AfterObtained()</c>，表现是**黑屏卡在「出发」那一步**（游戏照常起来，但那一局开不了）。</para>
+    ///
+    /// <para>判据只收「一定要读战斗状态 / 敌人列表」的那些种类（打敌人的伤害 / 击晕 / 翻倍·清除状态 /
+    /// 禁止格挡·回复 / 召唤伙伴…）—— 其余（抽牌 / 能量 / 金币 / 生成卡牌 / 卡牌奖励 / 升级卡牌…）
+    /// 在「获得时」是合法用法（本体「好吃饼干 / 爪子」就是拾取时选牌），不拦。</para>
+    /// </summary>
+    private static void ValidateObtainedCombatEffects(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        static bool EnemySide(string? side) => side is "Enemy" or "AllEnemies" or "RandomEnemies" or "AllUnits";
+        for (int i = 0; i < p.Relics.Count; i++)
+        {
+            var r = p.Relics[i];
+            if (r is null || r.IsForged) continue;      // 锻造图那条链自己管（普通方法，不走 AfterObtained）
+            bool obtained = r.Triggers.Any(t => t is not null && t.Kind == "Obtained")
+                            || string.Equals(r.Trigger, "Obtained", StringComparison.Ordinal);
+            if (!obtained) continue;
+            var bad = r.Effects.Where(e => e is not null && (
+                e.Kind is "Stun" or "DoublePower" or "ClearPowerOne" or "ClearPowerDebuffs"
+                        or "ForbidBlock" or "ForbidHeal" or "Outbreak" or "TimesUp"
+                        or "SummonPet" or "SummonPetAll"
+                || (e.Kind is "Damage" or "ApplyPower" or "TempPower" && EnemySide(e.TargetSide))
+                || (e.Kind == "Damage" && string.IsNullOrWhiteSpace(e.TargetSide)))).ToList();
+            if (bad.Count == 0) continue;
+            string kinds = string.Join(" / ", bad.Select(e => EffectCatalog.FindKind(e.Kind).Display).Distinct());
+            issues.Add(new("错误", $"遗物「{r.Name}」的触发时机是「获得时」，但效果里有**战斗内**的东西（{kinds}）—— "
+                + "「获得时」发生在**开局那一刻**（本体 RunManager.FinalizeStartingRelics），那时场上还没有战斗，"
+                + "玩家 Creature 的 CombatState 是 null → 生成出来的代码会在这里抛 NullReferenceException，"
+                + "**开局直接失败（黑屏卡在「出发」）**。要「开局就对敌人动手」请把触发时机改成「战斗开始时」。"));
+        }
+    }
+
+    /// <summary>
     /// 这个类名现在认不认得出来（「强化指定卡牌」的目标卡这类**按卡牌类名存的引用**）：
     /// ① 本存档里的卡（含「本体卡」引用条目，走 <see cref="Naming.CardClassName"/> 算出来的**生成名**）
     /// → 认得出来；② 本体卡牌表里查得到 → 认得出来。
@@ -2210,10 +2404,11 @@ public static class ProfileValidator
             if (!e.UsesRepeatCount)
             {
                 if (!string.IsNullOrWhiteSpace(e.RepeatFormula))
-                    issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」填了「命中次数 / 对群数」的**公式**"
+                    issues.Add(new("警告", $"{owner} 第 {index} 条「{kind.Display}」的「命中次数 / 对群数」里还留着公式"
                         + $"（{ForgeFormula.DisplayText(e.RepeatFormula)}），但这一条效果不会用到它 —— "
-                        + "只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到这个数字。"
-                        + "想「整条效果重复几遍」请用「生效次数」的公式；否则请清空这一栏。"));
+                        + "只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到这个数字，所以它不生效。"
+                        + "这一栏按种类本来是收起的，因为里面还有值才显示出来（多半是换效果种类之前填的）："
+                        + "想「整条效果重复几遍」请用「生效次数」的公式，否则把它清空就行 —— **不挡住生成**。"));
                 else if (e.RepeatCount > 1)
                     issues.Add(new("警告", $"{owner} 第 {index} 条「{kind.Display}」的「命中次数 / 对群数」填了 {e.RepeatCount}，"
                         + "但这一条效果不会用到它（只有「造成伤害」「作用对象 = 随机敌人」和几种「伙伴攻击」会用到）—— "
@@ -2940,6 +3135,14 @@ public static class ProfileValidator
                     issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值是 0 → 挂上一个 0 层的强化状态，等于没有效果。"));
             }
 
+            // 「目标卡」存的是**卡牌类名**，填了就必须认得出（V0.2.167 扩面）——
+            // 生成出来的代码是按类名找牌的（`ModelDb.Card<类名>()` 那种），类名不存在 = 编译期 CS0246。
+            // 用户实测报过：药水里的「生成卡牌」还指着一张早就改名 / 删掉的自动名（StellePotion3.cs(24,91) StelleCard5）。
+            // ⚠ 只在**指定卡**那一档查：随机 / 范围限定那几档根本不看这一栏。
+            if (!e.IsSpawnRandom && !string.IsNullOrWhiteSpace(e.SpawnCardId)
+                && e.Kind is "GenerateCard" or "TransformCard" or "TransformCardGlobal" or "AddCardGlobal" or "FillHand")
+                ValidateCardTargetExists(issues, $"{owner} 的「{kind.Display}」", p, e);
+
             // 药水：实际打谁由药水的「作用目标」决定，效果里的对象只影响描述，容易配出不一致
             if (potionTargetType is not null)
             {
@@ -3011,6 +3214,40 @@ public static class ProfileValidator
     {
         foreach (var (level, message) in ForgeGraphGen.Issues(g, p, scope, cardTargetType))
             issues.Add(new(level, $"{owner}：{message}"));
+    }
+
+    /// <summary>
+    /// 「斩杀」条件只能挂在**打出时**那一段效果上（V0.2.169）。
+    ///
+    /// 它判的是「上一条攻击有没有把目标打死」，生成出来引用的是卡牌 OnPlay 开头声明的两个局部变量
+    /// <c>__lastAttack</c> / <c>__fatalOk</c>（见 CSharpCodeGen 里 usesFatal 那一段）。
+    /// 有两条效果**不在 OnPlay 里发射**、而是各自写进别的钩子：
+    ///   · 「抽到这张牌时它本场战斗的费用 -N」→ <c>AfterCardDrawn</c>；
+    ///   · 「将此牌放回手牌」→ <c>AfterCardPlayedLate</c>。
+    /// 那两处既没有声明、也没有「上一条攻击」（captureFatal 是 false），所以带「斩杀」条件时生成出来就是
+    /// <c>if (__lastAttack is not null &amp;&amp; __fatalOk &amp;&amp; …)</c> 引用两个不存在的名字 ⇒
+    /// <c>CS0103</c>，整个模组编译不过（用户实测报过 <c>AinardiCard13.cs(28,13) CS0103</c>）。
+    ///
+    /// 语义上也没救 —— 那两个钩子里根本不存在「这张牌刚打出的那一次攻击」，所以这里**报错**让他挪走，
+    /// 而不是悄悄生成一个永远不触发的条件（那正是本工具最忌讳的「静默不生效」）。
+    /// </summary>
+    private static void ValidateFatalPlacement(List<ValidationIssue> issues, CardSpec c)
+    {
+        foreach (var e in c.Effects)
+        {
+            if (e.Condition is not { Kind: "Fatal" }) continue;
+            string? where = CSharpCodeGen.IsSelfDrawCost(e)
+                    ? "「抽到这张牌时它本场战斗的费用 -N」的效果（实现在 AfterCardDrawn 钩子里）"
+                : CSharpCodeGen.IsSelfReturn(e)
+                    ? "「将此牌放回手牌」的效果（实现在 AfterCardPlayedLate 钩子里）"
+                : null;
+            if (where is null) continue;
+            issues.Add(new("错误", $"卡牌「{c.Name}」这条 {where} 用了「斩杀」条件 —— "
+                + "那个条件判的是**上一条攻击**的结果（生成出来引用 __lastAttack / __fatalOk），"
+                + "而那两个变量只在「打出时」那一段里有声明，这个钩子里既没有声明、也不会有上一条攻击 ⇒ "
+                + "生成出来是 CS0103（整个模组编译不过）。请把「斩杀」挪到一条**打出时**的『造成伤害』效果"
+                + "后面（本体「狂暴 / 贪婪之手」都是这么写的），或者把这条效果的条件换成别的。"));
+        }
     }
 
     /// <summary>
@@ -3550,6 +3787,7 @@ public static class ProfileValidator
         Check("角色描述", p.Description);
         Check("死亡描述文本", p.DeathText);
         Check("阵亡后台词", p.DeadBanterText);
+        Check("多人催促文本（联机 Ping 那句）", p.EndTurnPingText);
         Check($"额外资源量「{p.ExtraResource.Name}」的名字", p.ExtraResource.Name);
         foreach (var c in p.AllCards)
         {

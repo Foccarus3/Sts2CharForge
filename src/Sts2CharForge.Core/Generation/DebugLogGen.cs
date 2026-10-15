@@ -118,14 +118,32 @@ internal static class DebugLogGen
         sb.Append(kindZh).Append('「').Append(display).Append("」(").Append(className).Append(") → ");
         sb.Append(effectText);
         if (!string.IsNullOrWhiteSpace(amountExpr)) sb.Append("；数值=").Append(amountExpr);
-        if (!string.IsNullOrWhiteSpace(targetExpr))
+        // ⚠ 「逐个动手」（inLoop）时这一段**不写进日志原文**：那时目标名要按运行时打
+        //（`"…目标=[" + ((__fgFoe)?.Name ?? "?") + "]"`），拼在字符串里会被 Lit.Str 转义成
+        // 一串字面量代码（用户实测的日志里打出来就是 `目标=[' + ((x)?.Name ?? \"?\") + ']`）。
+        // 调用方（Target / TargetInline）会把 LoopTargetCode 拼在后面。
+        if (!string.IsNullOrWhiteSpace(targetExpr) && !inLoop)
         {
-            sb.Append("；目标=[").Append(inLoop ? "' + ((" + targetExpr + ")?.Name ?? \"?\") + '" : targetExpr + "?.Name ?? \"?\"");
-            if (!inLoop) sb.Append(string.Equals(targetExpr, selfExpr, StringComparison.Ordinal) ? "]（自己）" : "]（不是自己）");
-            else sb.Append(']');
+            sb.Append("；目标=[").Append(targetExpr).Append("?.Name ?? \"?\"");
+            sb.Append(string.Equals(targetExpr, selfExpr, StringComparison.Ordinal) ? "]（自己）" : "]（不是自己）");
         }
         if (beforeLine.Length > 0) sb.Append(beforeLine);
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// 「；目标=[运行时名字]」那一段 —— **C# 代码**（不是日志原文的一部分）。
+    ///
+    /// 给「逐个动手」（foreach / for 里那几个目标）用：那时目标是谁只有运行时才知道，所以这段要拼在
+    /// <c>Lit.Str(日志原文)</c> **后面**一起交给 <c>Godot.GD.Print(...)</c>，
+    /// **不能**塞进日志原文里（塞进去会被 Lit.Str 转义成一串字面量代码：用户实测的日志里
+    /// 打出来就是 <c>目标=[' + ((x)?.Name ?? \"?\") + ']</c>，看不到真正打到谁）。
+    /// </summary>
+    private static string TargetCode(string targetExpr, string selfExpr)
+    {
+        string name = "((" + targetExpr + ")?.Name ?? \"?\")";
+        string suffix = string.Equals(targetExpr, selfExpr, StringComparison.Ordinal) ? "（自己）" : "（不是自己）";
+        return "\"；目标=[\" + " + name + " + \"]" + suffix + "\"";
     }
 
     /// <summary>
@@ -160,17 +178,37 @@ internal static class DebugLogGen
     internal static void Target(CodeWriter w, EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false)
     {
         if (!On) return;
-        w.Line($"Godot.GD.Print({Lit.Str(TextOf(e, amountExpr, targetExpr, inLoop))});   // {Marker}");
+        w.Line(PrintStatement(e, targetExpr, amountExpr, inLoop) + $"   // {Marker}");
     }
 
     /// <summary>
     /// 同上，但返回**一段可以直接拼在别的语句前面**的文本 —— 给那些「只能拼表达式、拿不到 CodeWriter」
     /// 的发射器用（例：CustomPowerGen 里 EmitFoeBlock 的 lambda）。关着时返回空串。
+    ///
+    /// ⚠ **末尾必须带一个换行**（V0.2.168 修，用户实测）：这一段是以行尾注释 <c>// CET:DebugLog</c> 收尾的，
+    /// 紧跟着拼下一条语句时，那行注释会把**后面整条语句**（乃至 <c>foreach</c> 收尾的 <c>}</c>）
+    /// 一起吃成注释 —— 用户那张卡就是这么变成
+    /// <c>CS8641 "else" 不能用在语句的开头</c> + <c>CS1513 应输入 }</c> 的（整个工程编译不过）。
+    /// 换成带换行的写法后：日志自己占一行（「从工程反推存档」按行跳过，见 <see cref="PowerBefore"/> 的说明），
+    /// 后面那条语句照旧原样执行。
     /// </summary>
     internal static string TargetInline(EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false)
     {
         if (!On) return "";
-        return $"Godot.GD.Print({Lit.Str(TextOf(e, amountExpr, targetExpr, inLoop))});   // {Marker} ";
+        return PrintStatement(e, targetExpr, amountExpr, inLoop) + $"   // {Marker}\n";
+    }
+
+    /// <summary>
+    /// 一条完整的 <c>Godot.GD.Print(…);</c> 语句（**不含**行尾的 <c>// CET:DebugLog</c> 标记）。
+    ///
+    /// 「逐个动手」（<paramref name="inLoop"/>）时目标名拼在字符串**后面**按运行时打
+    /// （<see cref="LoopTargetCode"/>）—— 塞进日志原文里会被 Lit.Str 转义成一串字面量代码。
+    /// </summary>
+    private static string PrintStatement(EffectSpec e, string targetExpr, string amountExpr, bool inLoop)
+    {
+        string head = Lit.Str(TextOf(e, amountExpr, targetExpr, inLoop: true));
+        if (!inLoop || string.IsNullOrWhiteSpace(targetExpr)) return $"Godot.GD.Print({head});";
+        return $"Godot.GD.Print({head} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")});";
     }
 
     // ======================================================================
@@ -196,12 +234,13 @@ internal static class DebugLogGen
         string amtVar = "__dbgAmt" + id;
         string fixVar = "__dbgFix" + id;
         string p = "(" + targetExpr + ")";
-        // 「数值=」那一段留空：真正的施加量由下面那个临时变量打（这样日志里不会出现 __dbgAmt1 这种内部名）
-        string text = TextOf(e, "", targetExpr, inLoop: false, beforeLine: "；执行前层数=");
+        // 「数值=」那一段留空：真正的施加量由下面那个临时变量打（这样日志里不会出现 __dbgAmt1 这种内部名）。
+        // 目标名拼在字符串**外面**（TargetCode）—— 逐个动手时它只有运行时才知道（见那里的说明）。
+        string text = TextOf(e, "", targetExpr, inLoop: true, beforeLine: "");
         return
             $"{{ decimal {amtVar} = {amtExpr}; " +
             $"PowerModel? {fixVar} = {p}.GetPower<{powerType}>(); " +
-            $"Godot.GD.Print({Lit.Str(text)} + ({fixVar} is null ? \"-\" : {fixVar}.Amount.ToString()) + \"（\" + ({fixVar} is null ? \"本来没有这个状态\" : \"已经有了这个状态\") + \"）；施加量=\" + {amtVar}.ToString()); }}   // {Marker}\n";
+            $"Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；执行前层数=\" + ({fixVar} is null ? \"-\" : {fixVar}.Amount.ToString()) + \"（\" + ({fixVar} is null ? \"本来没有这个状态\" : \"已经有了这个状态\") + \"）；施加量=\" + {amtVar}.ToString()); }}   // {Marker}\n";
     }
 
     /// <summary>
@@ -213,9 +252,9 @@ internal static class DebugLogGen
         if (!On) return "";
         int id = _seq;                       // 紧跟在 PowerBefore 后面调用，用同一个序号
         string p = "(" + targetExpr + ")";
-        string text = TextOf(e, "", targetExpr, inLoop: false, beforeLine: "；执行后层数=");
+        string text = TextOf(e, "", targetExpr, inLoop: true, beforeLine: "");
         return
             $"\n{{ PowerModel? __dbgAfter{id} = {p}.GetPower<{powerType}>(); " +
-            $"Godot.GD.Print({Lit.Str(text)} + (__dbgAfter{id} is null ? \"-\" : __dbgAfter{id}.Amount.ToString()) + \"（\" + (__dbgAfter{id} is null ? \"现在还是没有\" : \"现在有了\") + \"）\"); }}   // {Marker}";
+            $"Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；执行后层数=\" + (__dbgAfter{id} is null ? \"-\" : __dbgAfter{id}.Amount.ToString()) + \"（\" + (__dbgAfter{id} is null ? \"现在还是没有\" : \"现在有了\") + \"）\"); }}   // {Marker}\n";
     }
 }

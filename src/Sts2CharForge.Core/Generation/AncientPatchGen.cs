@@ -199,7 +199,7 @@ public static class AncientDialoguePatch
             if (calls.Count == 0) continue;
 
             patches.Add($$"""
-    /// <summary>{{ancient.Epithet}}（{{talk.AncientId}}）：把他原本会给的某个遗物换成你配的遗物。</summary>
+    /// <summary>{{CustomPowerGen.OneLine(ancient.Epithet)}}（{{talk.AncientId}}）：把他原本会给的某个遗物换成你配的遗物。</summary>
     [HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Models.Events.{{cls}}), "GenerateInitialOptions")]
     public static class Forge{{cls}}RelicReplacePatch
     {

@@ -1,5 +1,505 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 65 批需求（V0.2.179：**额外资源量的「跨战斗保存」跨局 + 多人不同步** —— 已修，已发版）
+> 用户原话：「额外资源，跨战斗保存，怎么会跨局保存，导致多人会不同步」。
+>
+> **真因：上一版把跨战斗余量放在 `private static int _carried;` 里。** static 属于**整个进程**，
+> 跟「哪一局 / 哪个玩家」没关系，于是两个症状都出来了：
+> * **跨局残留**：退出到主菜单 static 还在 → 新开一局（哪怕又是同一个角色）开场拿到上一局剩下的数；
+> * **多人不同步**：本地多人两个玩家**共用**同一个 static；联机时房主与客机**各自跑一遍钩子**，
+>   而 static 的值来自**自己这台机器上**上一次战斗结束时的余量（客机没跑过那场 → 0）→ 两边算出来不一样。
+>   而 `SerializableRelic.Props` 本来就是本体联机包的一部分 —— 用 static 等于把这笔状态放在同步机制**之外**。
+>
+> **修法：改成本体自己的做法**（全项目唯一一份「模组状态存档 + 联机同步」扩展点，见本体
+> `GalacticDust` 的 `[SavedProperty] public int StarsSpent`）：
+> ```csharp
+> [MegaCrit.Sts2.Core.Saves.Runs.SavedProperty]
+> public int CarriedAmount { get; set; }     // 替代 static int _carried
+> ```
+> 为什么这样就对（都核过源码）：属性 → **每个玩家一份**（起始遗物是每玩家各一份的模型实例）、
+> **进存档**、**随 SerializableRelic.Props 走联机同步**（`ModelIdSerializationCache.Init` 会把
+> `ModelDb.AllRelics` 里的模型——含模组遗物——上带 `[SavedProperty]` 的属性登记进同步表）、
+> 新的一局重新造遗物时**天然归零**。
+> ⚠ **反面教训（写进注释了）**：**跨战斗 = 存「跨战斗的东西」**（遗物上的存档属性），
+> 不能存「每场战斗的东西」（`PlayerCombatState.Stars`——它是每场新造的对象，本体连存档都不存它），
+> 更不能存「整个程序的东西」（`static`）。
+>
+> **顺手做的**：① 「额外资源量」页那个勾选框加了悬停说明 + 底下小字，写明「只在**这一局**内继承，
+> 换一局归零」+ 为什么联机不会串；② `tools\使用说明.template.txt` 同一处说明；
+> ③ 自检新增 2 条断言钉死形状 —— 「余量是 `[SavedProperty]` 实例属性（不是 static 字段）」+
+> 「这份生成代码里**一个 static 成员都没有**」，以后再写 static 会直接 FAIL。
+>
+> **验证**：真生成一份「额外资源量 + 跨战斗继承」的存档 → `dotnet build` **0 错误**（属性编译通过，
+> 本体那个命名空间不用加 using，全限定名可解析）；`--uicheck` **3786 PASS / 0 FAIL**；
+> `--samplegen` 对 V0.2.143 基线仍只有 `.sln` + `SevenGuard.cs` 两处不同，**没有扩大**
+>（示例存档没开额外资源量 → 连 ExtraResource.cs 都不生成）。
+>
+> 同时带上第 64 批的「触发时机加回合开始后」（两条一起发的版）。详见 `docs/RELEASE_NOTES_V0.2.179.md`。
+> 已发版：`D:\ds\s\4\程序文件` = V0.2.179、更新包 `D:\ds\s\Sts2CharForge_更新包_V0.2.179.zip`（60.7 MB，397 个文件）。
+
+## 第 64 批需求（V0.2.179：**触发时机加「回合开始后」** —— 已修，已发版；版本号落在 V0.2.179）
+> 用户原话：「触发时机加一个回合开始后」。
+>
+> **做法**：本体 `Hook.AfterPlayerTurnStart` 一个函数里连着派发**三次**
+>（`Hook.cs:894-917`：Early → 主 → Late），而它是 `CombatManager.SetupPlayerTurn` 的**最后一步**
+>（回能量 → 抽牌 → 才调它，`CombatManager.cs:880-926`）。所以三个时刻的真实含义是
+> 「抽牌前 / 抽牌后 / 最晚」——用户要的那一条 = 中间那个（原来那一档「玩家回合开始时」，
+> id 仍是 `PlayerTurnStart`、钩子仍是 `AfterPlayerTurnStart`，旧存档零改动）。
+> 新加两条 id：`PlayerTurnStartEarly` / `PlayerTurnStartLate`（**三个不同方法名** → 同一只遗物上可以各挂一块）。
+>
+> **三个页面一起接**：遗物页（`EffectCatalog.RelicTriggers`）、锻造节点图
+>（`ForgeTimings` + `ForgeGraphCatalog`）、自定义状态页（`PowerTriggers`），id / 显示名两侧逐字对齐
+>（`PlayerTurnStart` 的老中文名两边各自保留 —— 自检里列成显式例外）。
+> 守卫三条一样：`if (player != base.Owner) return;`（遗物/图）/ `!= base.Owner.Player`（状态）。
+>
+> **顺手抓到一个真 bug 并修掉**：新 id 一开始没登记进 `CSharpCodeGen.HasContext` → 锻造图上
+> 「回合开始后（抽牌前）」配**抽牌**效果时，生成的是 `await CardPileCmd.Draw(choiceContext, …)`
+> 却**没有** `choiceContext` 参数（会落到「这个钩子没给 context 也造不出来 → 传 null!」那条注释上，
+> 运行时会炸）。那个钩子**是带** choiceContext 的，登记进 `HasContext` 就正常了。
+> **教训：加触发时机时，「它的钩子带不带 choiceContext / 要怎么造」必须和 ①②签名 一起改三处**
+>（`HasContext` / `BootstrapInCombat` / `CanBootstrapContext`）。
+>
+> **验证**：真存档（4 只遗物 = 1 条遗物页链 + 3 只锻造各一时刻；3 只自定义状态各一时刻）
+> → 真生成 + 真 `dotnet build` **0 错误**；逐条核对三个钩子名 + 守卫；
+> `--uicheck` **3784 PASS / 0 FAIL**（V0.2.177 是 3778，新增 6 条，含一条
+> 「自检清单和 `ForgeTimings.For("Relic")` 一一对应」的兜底 —— 以后往目录加时机忘加进自检清单会直接 FAIL）；
+> `--samplegen` 对 V0.2.143 基线仍只有 `.sln` + `SevenGuard.cs` 两处不同，**没有扩大**。
+> 详见 `docs/RELEASE_NOTES_V0.2.178.md`。已发版：`D:\ds\s\4\程序文件` = V0.2.178、
+> 更新包 `D:\ds\s\Sts2CharForge_更新包_V0.2.178.zip`（60.7 MB，397 个文件）。
+
+## 第 63 批需求（V0.2.177：**「升级后失去关键词」不生效** —— 已修，已发版）
+> 用户原话：「升级后失去关键词不生效」+ 卡牌页关键词那两栏的截图。
+>
+> **真因：`upDel` 是死代码。** `CSharpCodeGen.HoverTipsOverride` 里「升级后失去」的那组提示算出来了
+> （`upDel`），但生成代码时只把 `upAdd` 并进 `base.IsUpgraded` 那个条件分支，`upDel` **一个字都没用**
+>（从 V0.2.136 加进去那天起就是这样 —— 查了 `源码_20261011_234717` 起的 **30 份备份快照，全都是 2 处 `upDel`**）。
+> 现场表现：「自定义关键词」是显示等价物，分卡面那行字和 `ExtraHoverTips` 两块 ——
+> **升级后卡面那行字确实消失了**（描述那半截的 `{IfUpgraded:show:…|…}` 一直是对的），
+> 但**鼠标一悬停说明还在**，所以看起来就是「失去没生效」。附带：失去的那个词在升级后那段里**被列了两遍**
+>（一次 `upDel` 那组、一次「一直在」那组）。
+>
+> **修法**（两半一起对齐，都在同一个「按 `base.IsUpgraded` 分两组」的写法里）：
+> * 升级后那段 = `tips` 里**剔掉** `upDel` 的那些，再并上 `upAdd`；
+> * 没升级那段 = `tips` 并上 `upDel`。
+>   第②条是顺手补齐的：以前「失去」的那个词**连没升级时都没有悬停说明**（`upDel` 谁都没用），
+>   等于这两栏的「失去」方向整个不起作用。现在「没升级时有、升级后没有」才是完整的「失去」。
+> * 判据用**提示的完整 C# 表达式逐字相等**（`new LocString("card_keywords", "<键>.title")`），
+>   和描述那半截的去重口径一致，不会漂移。
+> * **顺手对齐一处自相矛盾**：同一个词既勾在「一直在」又填进「升级后失去」时，描述以「失去」为准、
+>   悬停说明以前以「一直在」为准 → 现在 `KeywordGen.CardTextBoth` 也统一以「失去」为准，
+>   校验器加一条**提示**（不是警告、不拦生成）把实际行为说清楚。
+>
+> **验证**：探针真生成 + 真 `dotnet build` **0 错误**（含边界档「升级后那段一条说明都不剩 → `Array.Empty<…>`」）；
+> `--uicheck` **3778 PASS / 0 FAIL**（V0.2.176 是 3774，新增 4 条）。自检夹具也一起改了 ——
+> 以前 VOID 只写在「失去」栏，**升级后要不要丢掉它根本没有断言盯着**，这正是它能漏到现在的原因。
+> `--samplegen` 对 V0.2.143 基线：113 个文件里仍只有 `.sln` + `SevenGuard.cs` 两处不同（V0.2.170 起的既知差异），**没有扩大**。
+> 详见 `docs/RELEASE_NOTES_V0.2.177.md`。已发版：`D:\ds\s\4\程序文件` = V0.2.177、
+> 更新包 `D:\ds\s\Sts2CharForge_更新包_V0.2.177.zip`（60.7 MB，397 个文件）。
+
+## 第 62 批需求（V0.2.176：**节点图效果种类 41 → 62 种**（用户「全做」）—— 已修，未发版）
+> 用户原话：「锻造的效果种类支持以下吗」+ 一张 30 多条的清单 + 追加「全做」。
+> 我先把「种类存在」和「节点图能生成」分开实测了一遍（逐个种类造成一个节点真生成），
+> 得出缺口 **26 种**，然后分四批做完 **23 种**（节点图 41 → 64 种）：
+>
+> * **批次 A（6）**：放置卡牌 / 给予卡牌关键词 / 刮削 / 填满手牌 / 禁止回复生命 / 暴露
+> * **批次 B（4）**：额外获得一回合 / 抽到就减费 / 增加额外资源量上限值 / 透支能量
+> * **批次 C（12，用户点的最高优先级）**：召唤伙伴 + 伙伴攻击 ×4 + 治疗 / 失去生命 / 最大生命 /
+>   牺牲 / 给伙伴施加状态 / 替主人承伤开·关
+>   · 图上形状：按伙伴类名查局部变量 + `if (… is not null) { … }` 包住（**不能**写
+>     `if (… is null) return;` —— 输出是内联在打出方法里的，那个 return 会把后面效果整段吞掉）；
+>   · 伤害走 `.FromPetAttacker(变量)`，按生命值算的三种在图上**内联**算（图上没有 CalculatedDamage）；
+>   · 「伙伴攻击」的目标 = 图上「指向对象」解析出的那一个。
+> * **批次 D（2）**：大限已至（伤害 = 目标灾厄层数 × 数值，图上内联）；转化为先古卡（改生成方法的头尾做预览缓冲）
+>
+> **顺手修掉的结构性坑**（比补种类更要紧）：
+> ① `CSharpCodeGen.AllEffects`（所有「用到才生成」的判据）**以前一条节点图效果都不收** →
+>    图上用到辅助类就 CS0246；V0.2.168 是给 BoostCard 单独打补丁（逐个补，加种类就漏）。
+>    改成一处收全（`ForgeEffectBridge.GraphsOf` 四类布全收）。
+> ② `PetGen.UsesAttackExtension` 只看卡牌 / 状态列表 → 图上伙伴攻击让 `PetAttackExtensions.cs`
+>    不生成（CS1061）；改成走统一 `UsesKind`。
+> ③ 「资源上限」Power 只在「开了额外资源量 + 填了上限」时生成 → 只在图上用这一条时 CS0246；单独判。
+>
+> **剩下 3 种没做**（不是漏，已分类说清 + 校验器拦住）：
+> 「本回合这张牌自己费用变 0」「抽到这张牌时费用 -N」= **卡牌自己的行为**（`SetToFreeThisTurn` /
+> 卡自己的 `AfterCardDrawn` 钩子），节点图的【效果】模块没有「牌自己」可挂；
+> 「转化为先古遗物」= 要选「换成哪只遗物」，而节点的效果模块按卡牌页字段存（没有遗物下拉）→ 选不到正确的值（CS0311）；它仍在「遗物 / 药水」的效果列表里可用；
+> 「生成卡牌」那种其实**早就支持**（探针误报）。
+> 新增 `ForgeGraphGen.CardOnlyEffectKinds` 让生成代码与校验器**分类说清**（卡牌专属 vs 还没接）。
+>
+> **验证**：全部 64 种各做一张卡 → 真生成 + **真编译 0 错误**（抓出 2 处 CS0246 + 6 处 CS1513，
+> 都已修）；伙伴组单独再验 12 张 → 0 错误；`--uicheck` 3774 PASS / 0 FAIL。
+> 详见 `docs/RELEASE_NOTES_V0.2.176.md`。
+>
+> ⚠ **事故记录**（本批发生）：我用 PowerShell 的 `(Get-Content -Raw).Replace(...) | Set-Content -Encoding UTF8`
+> 批量改 `CSharpCodeGen.cs`，PowerShell 5.1 按本机 ANSI 重写 → **整个文件中文乱码、引号被打断**
+> （12,325 → 12,450 行）。处置：从 `_备份\源码\源码_20261014_190310` 恢复 + **逐条重放**本次会话在该文件的
+> 全部改动（计数族修复 / AllEffects / 6 个发射器参数化 / 宠物发射器 ×8），并用 `--uicheck` 3774 PASS 对齐验证。
+> **教训：代码文件只准用 edit / write 工具改，不准用 shell 做文本替换。**
+
+## 第 61 批需求（V0.2.175：**节点图上「格挡填负数」失去不了格挡** —— 已修，未发版）
+> 用户原话：「格挡怎么不能失去」→ 追问确认：**锻造节点图**上【效果】=格挡、**数值填负数**、目标=**自己**。
+>
+> **真因**：卡牌页那条链一直是对的（`CSharpCodeGen` 的 `case "Block"`：`IsNegativeAmount` → `CreatureCmd.LoseBlock`），
+> 但**节点图**那条链（`ForgeGraphGen.EmitEffect` 的 `"Block"` 分支）**没有负数处理**，只写
+> `CreatureCmd.GainBlock(__fgFoe, (-5m), …)` —— 而本体 `GainBlock` 对**非正数直接返回**（不报错、不扣），
+> 所以图上填负数「格挡一点没少、也没有任何提示」。
+>
+> **修法**：节点图加一条 `"Block" when !amountN.Runtime && amountN.Value < 0m` → 生成
+> `CreatureCmd.LoseBlock(choiceContext, __fgFoe, Nm, __fgSelf)`（口径和卡牌页 `IsNegativeAmount` 一致：
+> 常数负数才走；运行时公式算出来的正负生成期不知道，照旧 GainBlock；「下回合生效」+ 负数按立即生效，
+> 本体没有「下回合失去格挡」的落点）。正数 / 下回合正数**一个字符都没变**。自检新增一条钉死。
+> 探针实测：卡牌页 −5 / 节点图 −5 都生成 LoseBlock，+5 仍 GainBlock。`--uicheck` 3774 PASS / 0 FAIL。
+> 详见 `docs/RELEASE_NOTES_V0.2.175.md`。
+>
+> **还没做的**：同一份存档里**别的「图上负数」效果**没一起查（用户只报了格挡）——
+> 「获得能量」那条图上有专门处理（`EnergyNextTurnDebtPower`），但**「回复生命 / 最大生命」等填负数**
+> 还没逐个确认，等用户点名再按同一口径过一遍。
+
+## 第 60 批需求（V0.2.174：**锻造卡「变化其他牌」打出后卡住** —— 已发版）
+> 用户原话：「变化其他牌的卡会一直挂在这，什么效果都不会触发」（游戏日志：
+> `System.InvalidOperationException: No selection screen prompt for CARD.BUGKILLER_CARD35.`）。
+> **V0.2.173 没修好** —— 用户发来 `BugkillerMod.json` 才把真因钉死。
+>
+> **真因**：那张卡（「你去！」`BugkillerCard35`）的节点图上只有一条效果
+> `Effect=TransformCard, Pick=Chosen, SpawnCardId=BugkillerCard20, SpawnTo=Draw`。生成出来的
+> `ForgeGraphOnPlay` 里有
+> `CardSelectCmd.FromCombatPile(… new CardSelectorPrefs(base.SelectionScreenPrompt, …))` —— **会读提示语**；
+> 而决定「写不写那条本地化键」的 `LocalizationGen.NeedsSelectPrompt` 那张**手写名单**里，
+> 四档那条要求 `e.IsSpawnRandom && (SpawnChoice > 1 || SpawnChosen)`，而这一档 **`IsSpawnRandom` 是 false**
+> （变成哪张卡是指定的，只有「挑哪张来变」由玩家选）→ 判据说「不用写键」→ 键没写 → 本体抛异常 →
+> **异常抛在效果链中间 ⇒ 这张牌后面的效果一条都不跑**（「一直挂在那儿」）。
+> ⚠ 节点图发射器 `ForgeGraphGen.EmitEffect` 判的是**图上另一个字段**（`node.Get("Pick") != "Random"`），
+> 两张名单不同步 —— 同一类坑**第三次**（V0.2.145 自定义状态 / V0.2.170 四档 / 这次图上 Pick）。
+>
+> **修法**：①`NeedsSelectPrompt` 补 `(e.Kind is "TransformCard" or "CopyCard" && e.CardPick == "Chosen")`
+> ②`SelectPromptText` 加「选择要变化的牌」③自检钉两条（生成代码出现 `base.SelectionScreenPrompt` 就必须有键 /
+> 判据必须认这一档）。
+>
+> **验证**（用用户那份存档真跑）：54 张卡扫一遍 —— 会读提示语的 3 张（卡片 13/23/35）**缺键 0**；
+> 卡片 35 现在有 `"BUGKILLER_CARD35.selectionScreenPrompt": "选择要变化的牌"`；
+> 真生成 + 真编译 **0 错误**；生成工程全量校验（读提示语的源码文件 3 个，缺键 0）；
+> `--uicheck` 3773 PASS / 0 FAIL。详见 `docs/RELEASE_NOTES_V0.2.174.md`。
+>
+> **还没做的**：这张「两张手写名单必须同步」的结构性隐患还在（我建议过改成「生成源码里读到提示语就补键」的保底，
+> 用户还没定）；`Keyword:` / `Group:` 牌型筛选仍未拼进「每累计 N 次」的计数表达式。
+
+## 第 59 批需求（V0.2.173：**「每打出 N 张技能/攻击牌」永远不触发** ＋ **「多人催促文本」绑错了数据** —— 已发版）
+> 用户原话 ①：「每打出 3 张技能 3 张攻击获得增益，但实际没生效」（附遗物页截图：两条「打出一张牌时」，
+> 其中一条 = 技能牌 + 每累计 3 次 + 效果【增益/减益：BugkillerPower 1 → 自己 / ThornsPower 1 → 自己】）。
+> 用户原话 ②（澄清）：「**多人催促文本不是宝箱房的，是多人联机时右下角的 ping**」。
+>
+> **① 的真因**（不是用户配置的问题，生成出来的判据本身错了）：本体 `CardModel.OnPlayWrapper` 的顺序是
+> `Hook.BeforeCardPlayed` → `History.CardPlayStarted` → `OnPlay` → `History.CardPlayFinished`
+> → `Hook.AfterCardPlayed(Late)` —— 而「打出一张牌时」挂的是 **BeforeCardPlayed**，那一刻这一张牌
+> **还没进 `CardPlaysFinished`**，所以 `CardPlaysFinished.Count % N != 0` 永远差一张：
+> 打第 3 张时读到 2、第 4 张读到 3（而第 4 张往往过不了牌型守卫）→ **填 ≥ 2 之后一次都不触发**
+> （填 1 时 `0 % 1 == 0` 恒成立，所以一直没暴露）。另外牌型筛选只写在守卫里（只筛当前这一张），
+> 计数器仍在数**所有**打出的牌 →「每 3 张技能牌」实际是「第 3 张牌且它是技能牌时」。
+>
+> 修法：①「打出一张牌时」改用 `CardPlaysStarted`（含正在打出的这一张，和内置读数 `PlayedThisTurn` 同口径）
+> ②「只对哪类牌生效」拼进计数表达式 ③`CountExpr` 补 `CardResolved`（「一张牌结算完毕时」填了次数
+> **一个字符都不生成**，静默失效）④状态侧 `__cnt > 基准`（换成 Started 后施加状态的那一张牌会被算进基准
+> → 一上状态就当场响一次）⑤`ShowCardFilterField` 也认 `CardResolved`（生成端一直写那句守卫，
+> 界面却不显示这一栏）⑥`--recover` 的「至少打出 N 张牌」正则两个写法都认（不然老工程回读静默丢条件）。
+>
+> **② 的真因**：V0.2.172 加的那一栏**绑错了属性**（绑到了 `Profile.Art.TreasureFightText` = 宝箱房
+> `gameplay_ui.TREASURE_FIGHT_TEXT`「开抢！！！」）。真正的「催促」是本体 `NPingButton` →
+> `FlavorSynchronizer.SendEndTurnPing()` → `EndTurnPingMessage` → 在每个玩家头上冒 1.5 秒对话气泡，
+> 文案取 `characters` 表的 `<角色>.banter.alive.endTurnPing`（阵亡取 `.dead.`）。
+> 修法：新增 `Profile.EndTurnPingText` + 角色页那一栏改绑它（标题/说明都改成「Ping 按钮那句」）+
+> `characters.json` 那一行不再写死（留空仍写「……继续。」→ 老存档 / `--samplegen` 逐字不变）+
+> 宝箱房那句照旧留在美术页（两栏从此是两份数据）+ `--recover` 把默认值当作「没填」。
+> 这一项**不需要补丁**，存档格式不变（老存档没有这个字段 → 空 → 默认那句）。
+>
+> 详细见 `docs/RELEASE_NOTES_V0.2.173.md`；`--uicheck` 3771 PASS / 0 FAIL；生成→回读往返一致。
+
+**还没做的**（下一批候选）：--recover 对「状态链里从某一摞拿牌到手牌」的还原、「升级后变 X 费」实验档、
+自定义状态自动图标兜底；节点图「将此牌放回手牌」的时机限制、「斩杀」只在卡牌档（校验器都会说清）；
+`Keyword:` / `Group:` 牌型筛选**还没**拼进「每累计 N 次」的计数表达式（老四档攻击/技能/能力/诅咒/状态
+已经拼了；自定义关键词要靠角色配置展开，`CountExpr` 拿不到 profile —— 现在的行为 = 与 V0.2.172 相同）。
+
+## 第 58 批需求（V0.2.172：**角色页底部加多人催促文本** ＋ **角色最大能量** —— **已发版**）
+> 用户原话：「在角色页底下增加多人催促文本，增加角色最大能量」。
+> ①催促文本本来就在（美术页槽位列表下面），这次**在角色页底部再摆一个框**，绑**同一个**
+> Profile.Art.TreasureFightText（两边同步、存档不变、美术页那个不删）。
+> ②新增 Profile.MaxEnergy（默认 3 = 本体默认）：本体 CharacterModel.MaxEnergy 是虚属性，
+> 生成的角色类里一个 public override int MaxEnergy => N; 就够，**不需要补丁**；
+> ⚠ 等于 3 时**一个字都不写**（老存档 / --samplegen 基线逐字不变）；README 摘要里「能量 N」也只在不是 3 时印。
+
+**还没做的**（下一批候选）：--recover 对「状态链里从某一摞拿牌到手牌」的还原、「升级后变 X 费」实验档、
+自定义状态自动图标兜底；节点图「将此牌放回手牌」的时机限制、「斩杀」只在卡牌档（校验器都会说清）。
+
+## 第 57 批需求（V0.2.171：**"我并没有填 Y 怎么还这样"** ＋ 「播放音频文件」CS1513 —— **已发版**）
+> 用户截图报「生成被拦住了」：卡牌「新卡」第 1 条「播放音频文件」被校验器拦住，理由写着填了
+> 「命中次数 / 对群数」的公式（Y），可他说**没填过**。查存档证实：RepeatFormula='Y' 是**换效果种类
+> 之前**的残留，而那一栏按种类已收起 —— 用户看不见、也清不掉，却被它挡住生成。
+> 改法：①有残留就把那一行**露出来**（可清）②换种类**自动清**用不到的它 ③这条降成**警告**，不挡生成。
+>
+> 上面这条不再拦之后，立刻露出**真的编译不过**：SparkleCard43.cs CS1513 应输入 } ——
+> EmitPlaySoundFile 里 w.Open("{") 生成成 { {（CodeWriter.Open 自己还会补 " {"）= 开两个块只关一个。
+> 从 V0.2.155 就存在、一直被别的报错挡着。已修（w.Line(注释) + w.Open("")），用户存档 --build OK。
+
+**还没做的**（下一批候选）：--recover 对「状态链里从某一摞拿牌到手牌」的还原、「升级后变 X 费」实验档、
+自定义状态自动图标兜底；节点图「将此牌放回手牌」的时机限制、「斩杀」只在卡牌档（校验器都会说清）。
+
+## 第 56 批需求（V0.2.169：**版本号终于往前挪了一格** ＋ 节点图补 4 类栏位 / 7 档效果 —— **已发版**）
+> **V0.2.170 已发版**：本批里「没做完的那 4 条栏位级缺口」在 V0.2.170 全部做完（见下面那一节）。
+> 用户原话：「把这些也做了，**并且版本号怎么不加了**」。
+> 坦白：V0.2.168 一个号被反复覆盖了七八次，每次都改了东西却还叫 V0.2.168 —— 是我偷懒，
+> 以后**每批必须换号**。这一版号叫 V0.2.169，第 55 批（卡牌链 CS0111 + 斩杀 CS0103）的修复
+> 也在同一棵树里，所以**这一版已经把它一起带上**了，不需要再单独发一次 169。
+
+**这一版实际装进包里的**（详细逐条见 `docs/RELEASE_NOTES_V0.2.169.md`）：
+* 第 55 批：锻图【触发时机】和卡牌自己的钩子撞方法名 CS0111；斩杀条件挂钩子上 CS0103；
+* 状态页盯敌人不触发 / 卡牌档缺归属守卫 / 调试日志编译不过 / 次数填 X Y 只生效一次 /
+  描述栏回车报错 / 每累计 N 次算到上状态之前 / 透镜不认格挡牌 / 无限升级不加数值 /
+  遗物两条时机「全部满足」要触发两次；
+* 新增：状态里能召唤伙伴；节点图「从哪里选牌」四摞；节点图补 7 档卡牌页效果
+  （删除卡牌（全局）/ 加牌入组 / 变化卡牌（全局）/ 升级卡牌（全局）/ 毒性爆发 / 播放音效 /
+  播放上传音频）；节点图能用「强化指定卡牌」。
+
+**V0.2.170 把上面这 4 条栏位级缺口全做完了**（详细见 `docs/RELEASE_NOTES_V0.2.170.md`）：
+* ✅「取卡方式」四档：按范围随机 / 范围限定 / 多选 1 / 从范围里自己挑一张 —— **生成卡牌 / 变化卡牌 /
+  加牌进牌组（全局）/ 变化卡牌（全局）** 四种都能用（复用卡牌页那几份发射器，接上节点图的
+  `__fgPlayer` / `__fgSelf` / `ctx.ChoiceVar` 上下文表达式）；
+* ✅「取几张」四档（恰好 / 最多 N / 任意张 / 全部）—— 上一批写的，本版一起发；
+* ✅「下回合生效」铺到**全部做得了的种类**（除本体没有延迟落点的 8 种：播放音效 / 结束回合 /
+  自己变便宜之类）—— 节点图现在和卡牌页共用同一套延迟状态（生成卡牌 / 施加状态 / 造成伤害 /
+  重放 / 回合结束自动打出…都能下回合生效）；
+* ✅ 要「打出这张牌」那一刻上下文的：**重放卡牌 / 回合结束时自动打出 / 将此牌放回手牌 / 斩杀条件**。
+  · 「将此牌放回手牌」在节点图里是**内联**的 → 只有挂在「这张牌被消耗时 / 被丢弃时」这类
+    「牌已经不在手牌里」的时机上才生效（挂错了校验器会警告说清，不静默）；
+  · 「斩杀」条件只有**卡牌**档 + 拿得到 `cardPlay` 的时机才成立（遗物 / 药水档报错拦住；
+    挂在拿不到 cardPlay 的卡牌时机上给警告）。
+* 这一批真编译抓出来并修掉的 4 个坑（都写进发版说明了）：
+  ① 两个同类效果在同一方法里重复声明固定变量名（`__transformPool`）→ CS0128 ⇒ 每段效果包一层块作用域；
+  ② 延迟状态的 Apply 实参传了 Player（要 Creature）→ CS1503；
+  ③ 节点图「获得能量 + 下回合生效」去引用一个根本不会生成的延迟类 → CS0246 ⇒ 走本体现成的
+     `EnergyNextTurnPower` / 星币同理；
+  ④ 节点图里的「回合结束时自动打出」漏在「用到才生成」名单外 → `TurnEndPlayPower` CS0246。
+
+**仍然没做的（下一批候选）**：`--recover` 对「状态链里从某一摞拿牌到手牌」的还原；
+「升级后变 X 费」这种实验性档；自定义状态的自动图标兜底。
+
+## 第 55 批需求（V0.2.169：**卡牌链 CS0111**（锻造图的【触发时机】和「这张牌自己的钩子」撞同一个方法名）
+＋ **「斩杀」条件挂在钩子效果上会 CS0103（`__lastAttack` / `__fatalOk` 引用不到）** —— 已修，待发版）
+> 版本标签 V0.2.169：V0.2.168 是第 54 批（多块【触发时机】+ 状态页盯敌人不生效 + 卡牌档归属守卫）已经发掉了。
+
+**现象**：用户那张 `AinardiCard8` 反复重建十几次都卡在同一条构建错误上 —— 一个类里**两个签名一样的
+`AfterCardExhausted` override** ⇒ `CS0111`，整个模组编译不过。他确认了原因：那张牌上**同时**有
+①锻造图上的一块【触发时机 =「这张牌被消耗时」】和 ②一条普通效果的「卡牌时机 = 被消耗」。
+
+**真因**：遗物那条链早就用「把图**嵌进**遗物自己的触发钩子」绕开了这个坑
+（`ForgeGraphGen.RelicGraphNestsInTrigger` / `RelicGraphNestedMethod`），**卡牌这条链一直没做** ——
+`CardHooks` 只把「打出时」那一支改成私有方法（`ForgeGraphOnPlay`），别的时机照样自己
+`public override async Task …`；而「卡牌时机」那几条效果也会生成同一个 override
+（`CSharpCodeGen.EmitCardTimingHooks`）→ 两边各写一个。
+
+**修法（照遗物那套，一个字符都不多写）**：
+1. `ForgeGraphGen`：新增 `NestedCardHooks(card)` / `CardGraphNestsInHook(card, hook)` / `GraphHasHook` /
+   `CardNestedMethod(hook, upgraded)`；`CardHooks` 对**撞上的**那一块改成生成私有方法
+   `ForgeGraphOn<钩子名>[Upgraded](PlayerChoiceContext choiceContext)`。判据里的「这张牌自己有哪些钩子」
+   **从生成端那一份推**（`CSharpCodeGen.CardTimingMethodName` + 新增的 `HasSelfDrawHook`），不另抄一张表。
+   嵌进去的方法拿不到目标钩子那套参数（`card` / `player` / `retainedCards`…）→ `EmitCtx` 新增
+   `NoHookParams`：进门守卫交给外层钩子、`cardPlay` 走既有的 `CardPlay? cardPlay = null;` 占位。
+2. `CSharpCodeGen`：`EmitCardTimingHooks` 收 `CardSpec`，被消耗 / 被丢弃 / 被保留三档在效果体之后调用
+   `EmitNestedForgeGraphCall`；`EmitSelfDrawHook`（卡自带 `AfterCardDrawn`）同理，只有真撞上时才把
+   `public override Task` 改成 `async Task`。两块布都撞上同一个钩子时按 `base.IsUpgraded` 二选一
+   （`…Upgraded` 后缀，和 `ForgeGraphOnPlay` 同一个规矩）。
+3. 那句调用是胶水代码 → 行尾写 `CET:ForgeNested`，`ProjectRecovery` 整行跳过（图本身是从
+   `// CET:ForgeGraph=<Base64>` 整份恢复的）。**顺手修**：`CardTimingMethodName` 以前漏了 `HpLost`
+   → 会走兜底变成 `AfterCardExhausted`，和 `EmitCardTimingHooks` 里那个 switch 口径不一致，已补成
+   `AfterCurrentHpChanged`。
+
+**红线实测**：
+* 探针 `_probe\cardnest`（新）：27 条断言全 PASS；**修前**同一个探针 12 条 FAIL（`实际 2` 个
+  `AfterCardExhausted`）。四种撞法（被消耗 / 被丢弃 / 被保留 / 被抽到）+ 两块布都撞 + 只有图 + 打出时各一组。
+* **逐字节红线**：`out` 与修前逐文件对拍（忽略随机节点 GUID）—— `00_sample_all_cards` / `01_graph_only_exhausted` /
+  `07_play_timing` **SAME**，只有那 5 个撞车用例 DIFF（本来就是编译不过的档，改动是修它）。
+* `dotnet build` Core / App / CLI **0 错误**；`--uicheck` **3720 PASS / 0 FAIL**（新增 14 条：三张撞车卡各
+  「同名 override 只有一个」+ 回读 `HasUnparsed == false` + 卡牌时机条件认得回来 + 「失去生命时」回读
+  + 斩杀那三条）。探针：`_probe\cardnest` 27 条、`_probe\fatalcheck` 14 条，全 PASS。
+* 自检里也钉了「回读」那一条：撞车卡生成完 → `ProjectRecovery.FromProject` → 没认出来的语句 0 条。
+* **顺手修掉一条假红**：`--uicheck` 里 V0.2.166 那条「盯『任意敌人』+ 盯的就是这个状态自己 → **警告**说清
+  自己涨到 N 不会触发」在 V0.2.168 把行为改成「按这份状态自己算」（校验器那条也从**警告**改成**提示**）之后
+  就永远 FAIL 了（老文案的断言没跟着改；V0.2.168 自己那 6 条断言在 26118~26151 行、是 PASS 的）。
+  现在这条断言按新口径写：`i.Level == "提示" && i.Message.Contains("这份状态自己")`。
+
+**同族，这一批里也一起修了**：
+* `AinardiCard13.cs(28,13) CS0103 __lastAttack / __fatalOk`（**已修**）：那两个变量只在卡牌 OnPlay 开头声明
+  （`CSharpCodeGen.cs:4341-4343`），而「斩杀」那个条件的表达式在 `CSharpCodeGen.cs:1123-1124`。
+  新探针 `_probe\fatalcheck` 把**真正会炸的两条路**钉出来了 —— 有两条效果**不在 OnPlay 里发射**、各自
+  写进别的钩子：**「抽到这张牌时费用 -N」→ `AfterCardDrawn`**、**「将此牌放回手牌」→ `AfterCardPlayedLate`**；
+  那两处既没有声明、也没有「上一条攻击」（`captureFatal: false`）⇒ 带「斩杀」条件时生成出来就是
+  `if (__lastAttack is not null && __fatalOk && …)` 引用两个不存在的名字。
+  ⚠ 关键点：**前面先有一条「造成伤害」**时，既有的「斩杀前面没伤害」那条校验**不会**报 —— 正好漏过去；
+  探针里专挑 `伤害 + 斩杀挂在钩子效果上` 这个形状复现（B2 / C2）。
+  修法：校验器新增 `ProfileValidator.ValidateFatalPlacement` —— 报**错误**并点明「实现在 AfterCardDrawn /
+  AfterCardPlayedLate 钩子里、那里没有上一条攻击」，让他把「斩杀」挪到一条打出时的造成伤害后面。
+  顺带实测**排除**了另外两条猜想：诅咒的 `OnTurnEndInHand`、以及「斩杀 + 下回合生效」**都不会**引用那两个
+  变量（不是 CS0103，探针里已注明，别再按猜想改）。
+* `AinardiCard4.cs(39,2) CS1513 应输入 }`（**未修**）：一次性的花括号不平（多半是手改生成物）。生成端这边
+  `_probe\cardnest` 已加了「花括号配平 + 同类里同名 override 不重复」两条通用断言，可以当体检用。
+
+## 第 54 批需求（V0.2.168：**一块布上多块【触发时机】** + 「某个状态被移除时」盯敌人不生效 + 卡牌档时机缺归属守卫 + 开着调试日志锻造图编译不过 + **「次数填 X/Y 只生效一次」** + **「描述栏打回车换行会报错」** + **「状态把上状态之前的计数也算进去」** + **「无限升级不加数值」** + **「状态里放召唤伙伴被拦住」** + **「遗物全部满足要触发两次」** + **「节点图『从哪里选牌』被拦住」** + **「节点图补 7 档效果」** + **「节点图强化指定卡牌」**；**已本地发版**）
+
+用户两句话，各是一件事（后来又追加了第三件）：
+
+* 「多个触发时机能用了吗」→「要，现在就加」：**锻造节点图支持一块布上多块【触发时机】**，每块配自己右后那一条链。
+* 「某个状态被移除时，好像无法正常生效」（追问后确认：**状态页**上配的、盯**敌人**身上的状态）：
+  生成端的守卫写着 `power.Owner != base.Owner`，等于要求「发生事的那份状态在**别的**生物身上」——
+  而「盯哪个状态」填的正是**这只状态自己**（击晕值就贴在敌人身上）时，用户要的是
+  「这份状态挂在谁身上，它自己那份出事就在谁那里触发」，被这条挡得死死的：生成、编译、进游戏全不报错，就是什么都不做。
+* 「次数填写 Y 或者 X 次还是只生效一次」（他让我看游戏日志 → `godot.log` 里
+  `卡牌「新卡」(SparkleCard43) → 造成伤害`，那张牌是「额外资源量费用 = X」）：
+  本体**先扣费再跑效果** ⇒ 效果跑的那一刻「当前额外资源量」= **0** ⇒ `Math.Clamp(0,1,20)` 夹成 **1 下**。
+  修法：X 费 / Y 费的牌里 `X` / `Y` **直接按「这张牌花掉的那部分」生成**
+  （`ResolveEnergyXValue()` / `ResolveStarXValue()`，和「= X」那一条效果同一个值）；
+  普通牌里 X / Y 照旧是「当前值」（不回归）。校验器那条「Y 读到 0」的警告改成提示。
+* 「自定义状态的描述栏中 如果用回车换行会有报错」：WPF 输入框打回车存的是 **CRLF**，
+  生成端把描述塞进 `/// <summary>…</summary>` 时只把 `\n` 换成空格、**留下了 `\r`** ——
+  C# 把单独 `\r` 也当换行 ⇒ 注释被截断、后半截变成代码 ⇒ **整个工程编译不过**。
+  修法：新增 `CustomPowerGen.OneLine`（CRLF/CR/LF → 空格）用在文档注释处；
+  `CodeWriter.Line` 兜底（CRLF→LF、单独 `\r`→空格）、`CodeWriter.Str` 把单独 `\r` 也转义成 `\n`。
+  多行描述本身照旧支持（本地化表是 JSON，换行正确转义）。新增探针 `--descprobe` 钉住。
+* 「状态会直接统计整个回合（战斗）的计数，然后哪怕那时候还没上状态，也会计数……要打 4 张牌触发，但在上状态之前就打了 3 张，上状态之后只需要打 1 张就行了」：
+  真因 = 状态页「每累计 N 次触发一次」用的是本体战斗历史里**整个回合 / 整场战斗**的累计数（直接判 `累计 % N == 0`），
+  把上状态之前的事也数进去了。修法：每个状态**实例**自己记一个基准值（`__cnt<时机><范围> = -1` = 还没记过），
+  只数基准之后的事件；「本回合」范围靠「换回合后累计值变小」自动重新记基准，不需要额外重置钩子。
+  遗物那条链没动（要改成「从拿到遗物那一刻起数」再说）。
+
+### 改了什么
+
+1. **多块【触发时机】**（`ForgeGraphSpec.TriggerNodes` / `ForgeGraphGen.Plans`）：
+   * 数据：`TriggerNode`（第一块，老代码 / 老图语义不变）之外新增 `TriggerNodes`（全部，按模块顺序）；
+   * 生成：卡牌（`CardHooks`）、药水（`PotionHooks`）、遗物（`RelicHooks`）都按**每一块**各生成一个钩子 ——
+     「卡牌被打出时」那一块照旧走私有方法 `ForgeGraphOnPlay`（由 OnPlay 末尾调用），别的时机各写自己的 override；
+     遗物档嵌进遗物自己钩子的那几块按顺序编号 `ForgeGraphOnTrigger` / `ForgeGraphOnTrigger2`（都叫同名会 CS0111）；
+   * **同一个本体钩子只写第一块**（`SplitByHook`）：两块都落在 `OnPlay` / `AfterCardExhausted` 上时，
+     生成端只写第一块 + 一段注释；校验器（`ForgeGraphGen.Issues`）对这种配置**报错**说清怎么办
+     （否则是同一个类里两个同名 override，整个模组编译不过）；
+   * 别的配套：`TimingFieldsCore` 每块各一个「生效次数」计数器（`__fgUses` / `__fgUsesP2`…，
+     复位钩子按「本回合 / 本场战斗」**合起来写一个**）、`LocalizationGen.GraphCardText` 每块各写一段卡面文字、
+     `RelicsWithPowerRemoved` 扫**所有**触发模块、`HasPlayTimingIn` / `HasUseTimingIn` 扫全部；
+   * 界面：模块下拉里**不再**加过一块就把【触发时机】删掉；**第一块**仍是固定模块（删不掉、不被全选带走），
+     第二块起是普通模块；新加的那块默认挑「这块布上还没用过」的时机（不会一加就撞车）。
+2. **「某个状态被移除时 / 层数变化后 / 到达 N 层时」的「盯谁」守卫抽成一份 `CustomPowerGen.PowerWatchGuard`**：
+   四个调用点（合并钩子的变化 / 到达、单条变化、单条到达、单条移除）共用；
+   **盯的就是它自己这个状态**（「盯哪个状态」= 这只状态自己的类名）时，不管「盯谁」选自己还是任意敌人，
+   一律按「**这份状态自己**」生成（`power.Owner == base.Owner`）；盯**别的**状态时行为一个字节都不变。
+   校验器那条「自己涨到 N 那一下不会触发」的**警告**随之改成**提示**（说清按「这份状态自己」生成）。
+3. **卡牌档那几条「本体广播给全场」的时机的归属守卫**（顺带修的老坑）：
+   锻造图上「这张牌被消耗时 / 被丢弃时 / 被抽到时」以前**没有** `card != this` 守卫 ——
+   任何一张牌被消耗都会跑这张图的链；现在补上（判据和卡牌页「卡牌时机」那一份逐字相同），
+   「被保留时」也补上本体那两句（`player != base.Owner` + `retainedCards.Contains(this)`）。
+4. **开着「生成调试日志」时锻造图那张卡编译不过**（用户第二次实测报的：
+   `SparkleCard41.cs(45,10) CS8641` + `SparkleCard42.cs(54,6) CS1513`，整个工程编译不过）：
+   真因 = 日志那一行以行尾注释 `// CET:DebugLog` 收尾，而锻造图那几档生成的是
+   「`foreach (…) { <日志行><语句> }`」**拼在一行**的形状 —— 那行注释把**后面整条语句 + `foreach` 收尾的 `}`**
+   一起吃成注释 ⇒ 花括号不平、`else` 掉到语句开头。
+   修法：`DebugLogGen.TargetInline` 返回的文本**自带换行**（日志自己占一行）、`PowerAfter` 也补换行；
+   顺带把日志里的目标名从「转义后的字面量代码」改成**运行时求值**（以前日志里打出来是
+   `目标=[' + ((x)?.Name ?? \"?\") + ']`，看不到真正打到谁）。
+   新增探针 `--dbgprobe`（调试日志开着的锻造图卡：造成伤害 / 获得格挡 / 失去生命 / 施加状态 / 抽牌）钉住这条。
+
+* 「能不能加一个格挡的本体卡标签，不然透镜触发不了」：先查本体怎么筛的 ——
+  `Nimble.CanEnchant(card) = base.CanEnchant(card) && card.GainsBlock`（透镜 FresnelLens 给牌附魔 Nimble，
+  本体注释里专门写了 **Don't convert this into a CardTag**：带 `CardTag.Defend` 的只有初始那几张防御）。
+  修法：生成的卡**按效果自动**声明 `public override bool GainsBlock => true;`（判据 = 打出时立刻获得格挡：
+  正数格挡 ✅；负数 / 下回合生效 / 只挂在「卡牌时机」钩子上的 ❌；锻造图上的【效果】也算 ✅；
+  老行为「勾了 Defend 标签」照旧 ✅）。顺带这张牌会自动带上「格挡」的悬停提示。
+  新增探针 `--gainprobe` 钉住这四档。**红线变化**：`--samplegen` 里 `cs/Cards/SevenGuard.cs` 多了一行
+  `GainsBlock => true`（其余 111 个文件逐字节相同）—— 这是这次故意要改的东西。
+
+* 「无限升级怎么升级后不加数值了」：打了「数值公式」的牌打出时用的是公式算出来的值，而升级增量并进表达式的写法是
+  「升没升过」两档 `(base.IsUpgraded ? 9m : 6m)` —— 「可被无限升级」的牌第 2、3、4… 次升级全落进「升过了」那一支，
+  数值再也不涨（`OnUpgrade` 里的 `UpgradeValueBy` 加的是变量，打出时不读变量）。
+  修法：这种牌（`InfinitelyUpgradable`，生成期用 `_cardOwner` 认）改成 `(公式 + 增量 * base.CurrentUpgradeLevel)`；
+  卡面预览变量（`FormulaVars.cs`）也按 `card.MaxUpgradeLevel > 1 ? _upgrade * card.CurrentUpgradeLevel : (IsUpgraded ? …)`。
+  普通牌逐字不变；`ProjectRecovery.FillExpr` 也认新写法（回读不丢增量）。新增探针 `--infupgradeprobe` 钉住。
+
+* 「自定义状态『生成卡牌时』里想放『召唤伙伴』，生成被拦住了」（截图报的）：状态那条链以前没实现「召唤伙伴」。
+  修法：复用卡牌那条链**同一份** `EmitSummonPet`，召唤者传 `base.Owner.Player`（状态钩子里 base.Owner 是 Creature）；
+  钩子本体不给 choiceContext 时照本体做法造一个（不然 CS0103 —— 探针真编译抓到过）；
+  那只召唤物没启用照样报错拦住；状态描述也补上「召唤伙伴（N 点生命）」/「牺牲伙伴，换取…」
+  （以前会把英文种类名原样印在状态说明里）；「从工程反推存档」两种召唤者写法都认。
+  新增探针 `--petprobe` 钉住（生成 + 真编译 0 错误）。
+
+* 「遗物的两个触发时机同时满足需要两次触发」（别人实测报的）：All（全部满足）模式以前写成「**只有最后那条**时机检查 `__andHit` 标记」，
+  于是「最后那条先触发、别的时机后触发」时，凑齐的那一刻没人检查 → 必须等最后那条**再触发一次**才跑。
+  修法：All 模式改成**每一段都检查**（`__andHit` 全为真就跑 + 立刻清标记），谁凑齐谁当场跑、与顺序无关，一个窗口仍只跑一次。
+  Any 模式逐字不变（`--samplegen` 112 个文件里仍只有 `SevenGuard.cs` 那一行 GainsBlock 是故意改的）。
+
+* 「节点图里『变化卡牌』的『从哪里选牌』不生效，生成被拦住」（截图报的）：节点图的选牌类效果以前**只从手牌里挑**。
+  修法：四摞都支持（手牌照旧 `FromHand`，老文本逐字不变；别的三摞走 `CardSelectCmd.FromCombatPile(… PileType.X.GetPile(__fgPlayer) …)`，
+  随机档也换成对应的那一摞，「牌顶」= 拿抽牌堆最上面那张），覆盖 变化 / 复制 / 消耗 / 丢弃 / 升级卡牌；
+  校验器里那条错误随之删掉。探针 `--petprobe` 里加了「变化卡牌（抽牌堆）+ 复制卡牌（弃牌堆）」两张，生成 + 真编译 **0 错误**。
+
+* 「是不是还有一些效果只能在卡牌页做、锻造节点图做不了」→ 用户截图点名「删除卡牌（全局：从牌组删牌）」被拦住。
+  修法：节点图补上 RemoveCardGlobal / AddCardGlobal / TransformCardGlobal / UpgradeCardGlobal /
+  Outbreak / PlaySfx / PlaySoundFile 七档（都只要玩家 + 可选 choiceContext），实现上加了一个
+  ViaCodeWriter(...) 桥，**复用**卡牌页 / 状态页那几份现成发射器（不再抄第二遍）。
+  仍然没接、会照旧报错说清：BoostCard（强化指定卡牌，要额外生成强化 Power，节点图这条链还没验）、
+  要「打出这张牌」上下文的（复制 / 重放 / 回合结束自动打出…）等。探针 --petprobe 里加了这几种，生成 + 真编译 **0 错误**。
+
+* 「强化指定卡牌怎么不能做」：它要额外生成一张强化 Power，而那个「用到才生成」的判断（CollectBoostEffects）
+  只扫卡牌 / 遗物 / 药水 / 状态、**不扫锻造图** —— 真在节点图里放开就会 CS0246，所以以前是故意拦着。
+  修法：CollectBoostEffects 也扫锻造图上的【效果】模块，节点图里这一档正式接上
+  （生成写法与状态页逐字一致，只是「自己」= __fgSelf；强化 Power 仍按「目标卡 + 强化什么」去重生成一个）。
+  探针 --petprobe 里加了它（目标卡 SevenSlash + 强化伤害 2），生成 + 真编译 **0 错误**。
+
+### 验收（红线）
+
+> **红线实测数字（第 54 批）**：① `dotnet build`（App / Cli）**0 错误**；
+> ② `--uicheck` Debug **3749 PASS / 0 FAIL**（新增：多块【触发时机】界面 + 生成端 + 撞钩子报错 + 盯谁守卫四档 + 调试日志两条 + X/Y 按「花掉的那部分」三条 + 多行描述三条 + 计数基准四条）；
+> ③ `--samplegen` **112 个文件逐字节相同**（只差 `ExampleMod.sln` 里的随机 GUID）；
+> ④ 真实编译：`--multiprobe`（双时机卡 + 双时机遗物）、`--remprobe`（4 个「盯谁」探针 + 遗物）、
+> **`--dbgprobe`（调试日志开着的锻造图卡）**、**`--descprobe`（多行描述：状态描述 + 卡牌自定义描述都用 CRLF）**、
+> **`--remprobe` 里新增的三个计数探针**、**`--petprobe`（状态里放召唤伙伴）** 各 `forge --profile … --build` **0 错误**；
+> ⑤ **用户存档 `SparkleMod.json` 原样重跑** `forge --profile … --out <临时目录> --build`：**编译 DLL OK / 0 错误**，
+> `SparkleCard43.cs` 里 `Y` = `(decimal)base.ResolveStarXValue()`（只读，未动他的存档）
+> （PCK 导出那一步照旧因为没有 Godot 路径而失败，与生成无关）。
+
+## 第 52 批需求（V0.2.167：**锻造节点图支持「生成 / 变化出来的卡的附加处理 / 加关键词 / 复制份数」**，用户实测截图 + 提问「是不是好多效果在锻造中都用不了」；**已本地发版**）
+
+> `--uicheck` 基线 = **3670 PASS / 0 FAIL**（Debug，V0.2.166）。
+> 用户的卡（Da Capo / 第一~四乐章，升级后）用了「生成卡牌」的附加处理，构建时被
+> 「「生成 / 变化出来的卡的附加处理…」在锻造节点图里不生效」**报错拦住**（生成被拦住 = 没法构建）。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **看清为什么节点图读不到** | 这几栏**只存在新编辑器那份 `EffectSpec` 上**，而 `ForgeEffectBridge.MirrorToFields` 只回写老字段（种类 / 数值 / 次数 / 概率 / 目标卡 / 生成到 / 药水 / 反向 / 下回合），**不回写**附加处理 / 关键词 / 复制份数 ⇒ 老的发射器读 `node.Get(...)` 读不到，只能报错拦住（`UnsupportedEffectSettings`） | ✅ 已发 |
+| ② | **生成端改成直接读 spec + 复用卡牌那条链** | `ForgeGraphGen.GraphSpec(node)`（`ForgeEffectBridge.Ensure`）+ `EmitGraphSpawnModifiers` / `EmitGraphTempUpgradeApply`（把 `CSharpCodeGen.EmitSpawnModifiers` / `EmitTempUpgradePowerApply` 吐出来的行按缩进追加 —— 那两份早就按「链」参数化，传 `__fgPlayer` / `__fgSelf`）。生成卡牌 / 变化卡牌（接住本体返回的 `cardAdded`）/ 复制卡牌（按份数循环）三条路都接上 | ✅ 已发 |
+| ③ | **「用到才生成」的文件** | 图里用「仅本回合升级」也要生成 `TempUpgradePower.cs`：`CSharpCodeGen.UsesTempUpgrade` 扩到**锻造图上的 EffectSpec**（新增 `GraphEffectSpecs(p)`，用 `LocalizationGen.GraphEffects`），漏了就是 CS0246 | ✅ 已发 |
+| ④ | **不再报错 + 自检 6 条** | `UnsupportedEffectSettings` 去掉这三项（其余缺口照旧报错拦住）；自检：三项都生成出来 / 不再被拦 / 仅本回合升级挂 Track / TempUpgradePower 会生成 / 复制份数按份数循环 / **对照**（没勾的老图逐字还是那一句 `CreateCard + AddGeneratedCardToCombat`）。另加 CLI 探针 `--graphmodprobe`（造这样一份存档）用于真编译 | ✅ 已发 |
+| ⑤ | **同批带上的另一批修复**（工作区里已做好、未发版） | `PowerRemoval.cs` 花括号配平（CS1022）；同一钩子多个时机只生成一个 override（CS0111：PowerChanged+PowerReached / DamageReceived+EnemyDamaged / DamageDealt+EnemyDealtDamage / BlockGained+EnemyBlockGained）；BoostCard / 从弃牌堆拿牌 在敌人回合开始时自己造 choiceContext（CS0103）；生成卡牌目标卡不存在提前报错（CS0246）；「获得时」+打敌人 报错拦住（开局 NRE）；纯小写类名 CS8981 提示；输出目录在游戏 mods\ 里警告；sts2.dll 版本漂移检测；锻造图「逐个敌人」开调试日志时 `__fgFoe` 作用域 | ✅ 已发 |
+
+> **红线实测数字（第 52 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3692 PASS / 0 FAIL**（新增 6 条）；
+> ③ **真编译**：`--graphmodprobe` 造的存档（锻造卡：生成卡牌 + 直接升级/本回合免费/加关键词；复制卡牌 + 份数 3 + 附加处理）
+> `forge --profile … --out … --build` → **生成的模组工程 0 错误**；
+> ④ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**（没勾这几项的老图逐字不变）；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.167 -NoRelease -NoCommit -Yes`。
+
+## 第 51 批需求（V0.2.166：**「晕眩值到 100 却不击晕敌人」**，用户实测 + 我读了他的存档；**已本地发版**）
+
+> `--uicheck` 基线 = **3665 PASS / 0 FAIL**（Debug，V0.2.165）。
+> 用户原话：「看看我的游戏日志，为什么晕眩值达到100后不会击晕敌人」。
+> 没有日志可查（最近那份只是启停日志）→ 直接读了他的存档 `D:\ds\s\4\自定义角色存档\WendaoMod.json`
+> 与生成工程 `…\WendaoMod\cs\Powers\WendaoPower1.cs`，一眼定位。
+
+| # | 需求 | 做法要点 | 状态 |
+|---|---|---|---|
+| ① | **真因（配置，不是引擎）** | 他造了个贴在敌人身上的减益「击晕值」，触发时机 =「某个状态层数到达 N 层时」(N=100)、**盯「任意敌人」+ 盯的就是它自己**、效果 = 击晕「指定敌人」。生成出来的守卫是 `power.Owner != base.Owner && …HittableEnemies.Contains(power.Owner) && power is WendaoPower1` —— 状态里的「自己」就是挂着它的那个单位，「击晕值」自己涨到 100 时 `power.Owner == base.Owner` ⇒ **这个条件永远不成立**，整条 if 一次都进不去（只有别的敌人身上那份同名状态跨过 100 才会） | ✅ 已发 |
+| ② | **顺带一条口径** | 状态里的「敌人」= **玩家视角的敌方那一侧** ⇒「作用对象 = 指定敌人」取的是那一侧里**第一个可打的敌人**，不一定是身上带着这个状态的那只（多只敌人时会晕错）。正解：盯 = 自己、作用对象 = 自己（状态挂在敌人身上时「自己」就是它） | ✅ 已发 |
+| ③ | **修 CS1061：状态链上「击晕自己」生成 `base.Owner.Creature`** | `EmitStun` 的 `default`（对自己）分支以前写死 `CreatureCmd.Stun(base.Owner.Creature)` —— 卡牌 / 遗物 / 药水的 `base.Owner` 是 Player 所以对，**自定义状态的 `base.Owner` 本身就是 Creature**（`Creature` 上没有 `Creature` 属性）⇒ 用户按 ② 改成「自己」就会**编译不过**。给 `EmitStun` 加 `selfExpr` 参数（三条老链照旧传 `base.Owner.Creature`，生成结果逐字不变；状态链传 `base.Owner`） | ✅ 已发 |
+| ④ | **配置检查新增两条（防复发）** | **警告**：盯「任意敌人」而盯的那个状态**就是这条时机所在的状态自己** → 说清「自己涨到 N 那一下不会触发」+ 指路「盯：自己」；**提示**：**减益**状态里的「击晕」作用对象 = 指定 / 全体 / 随机敌人 → 说清取的是「玩家视角敌方那一侧第一个可打的敌人」 | ✅ 已发 |
+
+> **红线实测数字（第 51 批）**：① `dotnet build Sts2CharForge.sln -c Debug` **0 错误**；② `--uicheck` Debug **3670 PASS / 0 FAIL**（新增 5 条）；
+> ③ **真存档验证**：把 `WendaoMod.json` 复制一份、只把那两处改成「自己」→ `forge --profile … --out … --build` **0 错误**，
+> 守卫变成 `power.Owner == base.Owner && power is WendaoPower1 && power.Amount >= 100m …`、击晕变成 `CreatureCmd.Stun(base.Owner)`；
+> ④ `--samplegen` 与 V0.2.143 基线 **111 个文件逐字节一致**；
+> ⑤ 已打包发版：`tools\release_all.ps1 -Version V0.2.166 -NoRelease -NoCommit -Yes`。
+
 ## 第 50 批需求（V0.2.165：**切到先古页后卡面预览还是卡牌页那张**，用户实测；**已本地发版**）
 
 > `--uicheck` 基线 = **3661 PASS / 0 FAIL**（Debug，V0.2.164）。
@@ -1697,3 +2197,6 @@ README / 使用说明 / `RELEASE_NOTES_V0.2.92.md` + 自检 8 条断言（含生
   不触发 Click（实测），要真的走 Click 就用 `RaiseEvent`。
   红线：`--samplegen` 113 个文件逐字节不变（只差 `ExampleMod.sln` 的随机 GUID；`README.md` 只差 CRLF/LF）／
   `dotnet build` 0 错误／`--uicheck` Debug 与发布版都 0 FAIL／探针 `--build` 0 错误 + 导出 PCK OK + `--recover` 0 条「没认出来」。
+
+
+

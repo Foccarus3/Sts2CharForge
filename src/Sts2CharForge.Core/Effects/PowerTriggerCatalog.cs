@@ -27,7 +27,12 @@ public static class PowerTriggers
     /// </summary>
     public static IReadOnlyList<PowerTriggerOption> All { get; } = new[]
     {
-        new PowerTriggerOption("PlayerTurnStart", "玩家回合开始时",   "AfterPlayerTurnStart：本体恶魔形态就是挂这个（老存档里的 TurnStart 也认）"),
+        new PowerTriggerOption("PlayerTurnStart", "玩家回合开始时",   "AfterPlayerTurnStart：本体恶魔形态就是挂这个（老存档里的 TurnStart 也认）。钩子跑在**这回合的牌已经抽完**之后"),
+        // 回合开始那三个时刻（用户要求「触发时机加一个回合开始后」）：本体 Hook.AfterPlayerTurnStart 一个函数里
+        // **连着派发三次**（Hook.cs:894-917）：Early → After → Late，而它是 SetupPlayerTurn 的**最后一步**
+        // （回能量 → 抽牌 → 然后才调它，见 CombatManager.cs:880-926）。遗物 / 锻造页三档同名同义。
+        new PowerTriggerOption("PlayerTurnStartEarly", "回合开始后（抽牌前）", "AfterPlayerTurnStartEarly：和「回合开始后（抽牌后）」同一个派发点的第一轮，这时手牌还没抽"),
+        new PowerTriggerOption("PlayerTurnStartLate",  "回合开始后（最晚）",   "AfterPlayerTurnStartLate：同一个派发点的最后一轮（本体「血瓶 BloodVial」用的就是它）"),
         new PowerTriggerOption("PlayerTurnEnd",  "玩家回合结束时",   "BeforeSideTurnEnd：本体缠身/战斗回合结算时用（老存档里的 TurnEnd 也认）"),
         // V0.2.157：这一档以前用的是 AfterCardPlayed（= **结算完**才回调），于是「打这张牌才施加的这个状态」
         // 会在**同一张牌**上立刻触发一次（用户实测报的：实际变成了「打出一张牌后」，和「一张牌结算完毕时」
@@ -219,6 +224,12 @@ public static class PowerTriggers
         // 「获得增益 / 减益」那一档本来就只挂状态、不碰 cardPlay，原样可用。
         // 「找那只宠物」也不是问题：本体就是 `XxxCmd.Get(base.Owner)` 一行，状态钩子里 base.Owner 也是 Creature。
         "PetSacrifice",
+        // 召唤伙伴（V0.2.168，用户报的用例：状态「生成卡牌时 → 召唤伙伴」被拦住了）。
+        // 以前不在清单里、生成端也没实现 —— 但这件事其实不需要卡牌上下文：生成的
+        // `XxxCmd.Summon(choiceContext, player, hp)` 只要一个 choiceContext + 玩家，
+        // 而状态那条链两样都有（没有 choiceContext 的钩子由 EmitChoiceContextBootstrap 照本体做法造一个；
+        // 玩家 = base.Owner.Player）。生成端现在复用了卡牌那条链的同一个 EmitSummonPet。
+        "SummonPet",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>
@@ -366,6 +377,19 @@ public static class PowerTriggers
             "TimesUp" => "造成等于目标身上灾厄层数的伤害",
             "UpgradeCardGlobal" => $"{EffectCatalog.CardPickZh(e.CardPick)}升级牌组里的 [blue]{n}[/blue] 张牌",
             "ExtraTurn" => "额外获得一个回合",
+            // 召唤伙伴（V0.2.168）：状态那条链也能用了 —— 名字拿不到（这个函数没有 profile 参数），
+            // 所以写「召唤伙伴」+ 血量；数值 0 = 用「召唤物」页里配置的血量，那时不印数字。
+            "SummonPet" => e.Amount > 0 && !e.AmountIsStack
+                ? $"召唤伙伴（[blue]{n}[/blue] 点生命）"
+                : "召唤伙伴（按「召唤物」页里配置的血量）",
+            // 牺牲伙伴（状态里早就支持了，但描述一直漏了它 → 界面 / 卡面会印出英文种类名）
+            "PetSacrifice" => "牺牲伙伴，换取"
+                + (e.PetSacrificeGain switch
+                {
+                    "Block" => "格挡",
+                    "Damage" => "伤害",
+                    _ => "一个状态",
+                }),
             // 将此牌放回手牌：状态触发器里用不了（见 NeedsCardPlayContext），但描述里不能印出英文种类名
             "ReturnSelfToHand" => "将此牌放回手牌",
             // 抽到这张牌时它自己本场战斗费用 -N：同样只在卡牌上（状态里没有「这张牌」）

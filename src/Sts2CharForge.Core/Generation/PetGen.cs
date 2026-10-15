@@ -229,11 +229,15 @@ public static class PetGen
     ///   · **自定义状态触发器**里「牺牲伙伴 + 收益 = 造成伤害」（V0.2.69 新增）：那一条也走
     ///     <c>.FromPetAttacker(...)</c>。以前这里只看卡牌 —— 漏掉状态那条路会让
     ///     cs/PetAttackExtensions.cs 不生成，状态源码里引用扩展方法 → CS1061（整个模组编译不过）。
+    /// ⚠ V0.2.176：**锻造节点图**上的伙伴攻击也一样会生成 <c>.FromPetAttacker(...)</c> ——
+    /// 统一改成走 <see cref="CSharpCodeGen.UsesKind"/>（它已经把节点图上的效果也收进来了，
+    /// 见 <c>CSharpCodeGen.AllEffects</c>），不再各自手写一遍「从哪几个列表里找」。
     /// </summary>
     public static bool UsesAttackExtension(CharacterProfile p) =>
-        IsActive(p) && (p.AllCards.Any(c => c.Effects.Any(e => IsAttackKind(e.Kind)))
-            || p.CustomPowers.Any(cp => cp.Triggers.Any(t => t.Effects.Any(e =>
-                e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage"))));
+        IsActive(p) && (CSharpCodeGen.UsesKind(p, "PetAttack", "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp")
+            // 「牺牲伙伴 + 收益 = 造成伤害」也是宠物发起攻击（先杀宠物再打）
+            || CSharpCodeGen.AllEffects(p).Any(e => e is not null
+                && e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage"));
 
     /// <summary>
     /// 哪些效果是「由宠物发起攻击」（都会生成 <c>.FromPetAttacker(...)</c>）。
