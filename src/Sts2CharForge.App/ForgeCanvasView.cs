@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -804,6 +804,10 @@ public sealed class ForgeCanvasView : Grid
         if (string.Equals(kind.Id, "Trigger", StringComparison.Ordinal)
             && field.Key is "PowerId" or "PowerAmount"
             && !ForgeTimings.NeedsPowerWatch(node.Get("Timing"))) return null;
+        // V0.2.270（用户报「锻造处也没看到『层数变化方向』」）：这一栏只在「某个状态层数变化后」显示
+        if (string.Equals(kind.Id, "Trigger", StringComparison.Ordinal)
+            && string.Equals(field.Key, "PowerDirection", StringComparison.Ordinal)
+            && !ForgeTimings.NeedsPowerDirection(node.Get("Timing"))) return null;
         if ((string.Equals(field.Key, "CountLimit", StringComparison.Ordinal) || string.Equals(field.Key, "CountScope", StringComparison.Ordinal))
             && !ForgeTimings.NeedsCount(node.Get("Timing"))) return null;
         // V0.2.194：「只对哪类牌生效」（CardFilter）只有**状态那一档**的「打出一张牌时 / 一张牌结算完毕时」
@@ -873,6 +877,8 @@ public sealed class ForgeCanvasView : Grid
                     "Effect" => ForgeGraphCatalog.EffectPicks,
                     "Cond" => ForgeGraphCatalog.ConditionPicks,
                     "CountScope" => ForgeTimings.CountScopes,
+            // V0.2.270：「层数变化方向」（空 = 都算 / Up / Down）
+            "PowerDirection" => ForgeTimings.PowerDirections,
                     "SpawnCardId" => ForgeGraphCatalog.CardChoices,
                     "PotionId" => ForgeGraphCatalog.PotionChoices,
                     // V0.2.247（用户要求）：「上一张打出的牌带有某关键词 / 是某范围（可按组）」

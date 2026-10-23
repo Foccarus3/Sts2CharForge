@@ -1,5 +1,21 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 163 批需求（V0.2.269 + V0.2.270：**「层数变化方向」到底在哪 / 为什么不出现**）
+
+> 用户报：「触发时机『某个状态层数变化后』没看到栏『层数变化方向』」→ 修完后「锻造处也没看到」。
+>
+> **V0.2.269（真因）**：`RelicTriggerSpec.Kind` 的 setter 没 `Raise(ShowPowerDirectionField)` ——
+> 在**当前这条时机上换种类**时，那一栏的显隐不会重算，卡在隐藏（只有重新点一次列表才出现）。
+> 现在三种时机对象（`RelicTriggerSpec` / `PowerTriggerSpec` / `RelicSpec.Trigger`）都会通知。
+>
+> **V0.2.270（锻造布）**：布上【触发时机】节点新增 `PowerDirection` 栏
+> （`ForgeGraphCatalog` 字段 + `ForgeTimings.NeedsPowerDirection` + `ForgeCanvasView` 的选项表 + 只在
+> 「某个状态层数变化后」显示）；生成端：状态档转成 `PowerTriggerSpec.PowerDirection`，
+> 遗物档在 `RelicSpec.TriggerPowerDirection` 空着时**退回读布上节点**（以前布上选了等于没选）；
+> 状态→布的搬迁（`ForgePowerGraph`）也会带上方向。
+>
+> **验收**：V0.2.269 自检 4417 PASS / 0 FAIL；V0.2.270 自检 4422 PASS / 0 FAIL；两次对拍都逐字节相同。
+
 ## 第 162 批需求（V0.2.268：**锻造页遗物面板补上「层数变化方向」**）
 
 > 用户报：「触发时机『某个状态层数变化后』没看到栏『层数变化方向』」。（详见 `docs/RELEASE_NOTES_V0.2.268.md`）

@@ -11207,7 +11207,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 守卫那一大段 switch 抽成了 RelicTriggerGuardLines（下面那个方法）——**文本一个字都没动**：
         // 单条时机这条路径仍然把它们原样写进方法体（return 式守卫），红线（逐字不变）不受影响；
         // 多条时机那条路径用同一份行文本改写成 if 块（见 EmitRelicMultiTriggerHook）。
-        foreach (string guardLine in RelicTriggerGuardLines(trigger.Id, r.TriggerPowerId, r.TriggerAmount, r.TriggerCardFilter, p, r.TriggerPowerDirection))
+        // V0.2.270：遗物在「锻造页」只有一个【触发时机】节点，用户会在**那块布上**选「层数变化方向」——
+        // 遗物自己的 RelicSpec.TriggerPowerDirection 空着时，退回读图上【触发时机】节点的 PowerDirection
+        //（不然布上选了等于没选，是静默失效）。
+        string relicDir = r.TriggerPowerDirection ?? "";
+        if (relicDir.Length == 0)
+            relicDir = (r.ForgeGraph?.TriggerNode?.Get("PowerDirection") ?? "").Trim();
+        foreach (string guardLine in RelicTriggerGuardLines(trigger.Id, r.TriggerPowerId, r.TriggerAmount, r.TriggerCardFilter, p, relicDir))
             w.Line(guardLine);
 
         // 触发时机上的数值（用户要求：遗物 / 状态两边都要有）：
@@ -11330,7 +11336,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 而 App 是另一个程序集（Core 没有 InternalsVisibleTo）。生成逻辑本身一个字没动。
     /// </summary>
     public static IReadOnlyList<string> ForgeTriggerGuardLines(string triggerId, string? triggerPowerId, decimal triggerAmount,
-        string? triggerAmountExpr = null)
+        string? triggerAmountExpr = null, string? powerDirection = null)
     {
         var lines = new List<string>();
         switch (triggerId)
@@ -11413,6 +11419,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
                 if (!string.IsNullOrWhiteSpace(triggerPowerId))
                     lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
+                // V0.2.270（用户报「锻造处也没看到『层数变化方向』」）：图上【触发时机】那一栏也要生效 ——
+                // amount 是这次变化的增量（加为正、掉为负）。
+                if (string.Equals(powerDirection, "Up", StringComparison.Ordinal))
+                    lines.Add("if (amount <= 0m) return;   // 只要「层数上升」那一下（下降 / 不变都不算）");
+                else if (string.Equals(powerDirection, "Down", StringComparison.Ordinal))
+                    lines.Add("if (amount >= 0m) return;   // 只要「层数下降」那一下（上升 / 不变都不算）");
                 break;
             case "PowerRemoved":
                 lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");

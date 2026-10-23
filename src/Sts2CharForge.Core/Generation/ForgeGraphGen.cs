@@ -869,6 +869,17 @@ public static class ForgeGraphGen
         return raw.Length == 0 ? "Any" : raw;
     }
 
+    /// <summary>
+    /// V0.2.270：图上【触发时机】的「层数变化方向」—— 只认 Up / Down，别的一律当「都算」（空串）。
+    /// 老图没有这一栏 → <c>Get</c> 返回默认空串 → 生成结果逐字不变。
+    /// </summary>
+    private static string NormalizeDirection(string? raw) => (raw ?? "").Trim() switch
+    {
+        "Up" => "Up",
+        "Down" => "Down",
+        _ => "",
+    };
+
     /// <summary>状态那块布的 choiceContext 从哪来（见 EmitCtx.CtxFrom）。</summary>
     private static string PowerCtxFrom(ForgeTimings.TimingOption timing) =>
         CustomPowerGen.TriggerHasChoiceContext(timing.Id) ? "Param" : "Hook";
@@ -939,6 +950,8 @@ public static class ForgeGraphGen
                     ? (decimal)trigger.GetNumber("PowerAmount", 1)
                     : 0m,
                 TriggerScope = trigger.Get("CountScope", "Turn"),
+                // V0.2.270：图上【触发时机】新加的「层数变化方向」（只在「某个状态层数变化后」有意义）
+                PowerDirection = NormalizeDirection(trigger.Get("PowerDirection")),
             };
             // 效果列表：只给「这个执行点里有没有需要 choiceContext 的效果」这条判据用
             //（方法壳里要不要自己造一个 context，见 CustomPowerGen.EmitChoiceContextBootstrap）。
@@ -1355,7 +1368,8 @@ public static class ForgeGraphGen
                 ForgeNumbers.Place.Inline, playTargetExpr: "null");
             foreach (string line in CSharpCodeGen.ForgeTriggerGuardLines(plan.Timing.Id,
                          plan.Trigger.Get("PowerId"), (decimal)plan.Trigger.GetNumber("PowerAmount", 1),
-                         amountField.Runtime ? amountField.Expr : null))
+                         amountField.Runtime ? amountField.Expr : null,
+                         NormalizeDirection(plan.Trigger.Get("PowerDirection"))))
                 sb.AppendLine("        " + line);
         }
 

@@ -96,6 +96,9 @@ public static class ForgePowerGraph
                 trigger.SetField("CardFilter", t.CardFilter.Trim());
             if (string.Equals(timing.Id, ForgeTimings.PowerReached, StringComparison.Ordinal))
                 trigger.SetField("PowerAmount", t.TriggerAmount.ToString("0.####", CultureInfo.InvariantCulture));
+            // V0.2.270：「层数变化方向」也搬过去（不搬就等于静默变回「升降都算」）
+            if (!string.IsNullOrWhiteSpace(t.PowerDirection) && string.Equals(timing.Id, ForgeTimings.PowerChanged, StringComparison.Ordinal))
+                trigger.SetField("PowerDirection", t.PowerDirection.Trim());
             if (t.TriggerScope is "Combat" or "Turn") trigger.SetField("CountScope", t.TriggerScope);
             g.Nodes.Add(trigger);
             moved++;

@@ -4003,6 +4003,11 @@ public sealed class RelicTriggerSpec : SpecBase
             Raise(nameof(Display));
             Raise(nameof(Summary));
             Raise(nameof(ShowPowerFields));
+            // V0.2.269（用户报「选了『某个状态层数变化后』还是没看到『层数变化方向』」）：
+            // 这一栏的显隐也按 Kind 算 —— 不通知的话，在当前这条时机上换种类**不会**当场出现
+            //（只有重新点一次列表才会重算；当时只有 ShowPowerFields 通知了，所以「盯哪个状态」出来了、
+            // 方向那一栏却卡在隐藏状态）。
+            Raise(nameof(ShowPowerDirectionField));
             Raise(nameof(ShowCardFilterField));
             Raise(nameof(ShowAmountField));
             Raise(nameof(ShowScopeField));

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Sts2CharForge.Core.Effects;
@@ -230,6 +230,21 @@ public static class ForgeTimings
     /// </summary>
     public static bool NeedsPowerWatch(string? id) =>
         id is PowerReached or PowerChanged or PowerRemoved;
+
+    /// <summary>
+    /// V0.2.270（用户报「锻造处也没看到『层数变化方向』」）：那一栏只有「某个状态层数变化后」才用得到 ——
+    /// 和自定义状态页 / 遗物页的 <c>ShowPowerDirectionField</c> 同一个口径。
+    /// </summary>
+    public static bool NeedsPowerDirection(string? id) =>
+        string.Equals(id, PowerChanged, StringComparison.Ordinal);
+
+    /// <summary>「层数变化方向」的候选（空 = 都算 / <c>Up</c> = 只要上升 / <c>Down</c> = 只要下降）。</summary>
+    public static IReadOnlyList<ForgeFieldOption> PowerDirections { get; } = new[]
+    {
+        new ForgeFieldOption("", "上升 / 下降都算（默认）"),
+        new ForgeFieldOption("Up", "只在上升时触发"),
+        new ForgeFieldOption("Down", "只在下降时触发"),
+    };
 
     /// <summary>时机的中文名（认不出来时退回 Id，界面 / 代码注释里不会出现空白）。</summary>
     public static string Zh(string? id) => Find(id)?.Display ?? (id ?? "").Trim();
@@ -575,6 +590,10 @@ public static class ForgeGraphCatalog
                     null, "", true, true),
                 new ForgeNodeField("PowerAmount", "到达 N 层（状态层数到达时用）", ForgeFieldType.Number,
                     "层数从 0 往上跨过这个数的那一下才触发（默认 1）", null, "1"),
+                // V0.2.270（用户报「锻造处也没看到『层数变化方向』」）：补上这一栏。
+                // 只有「某个状态层数变化后」才显示（见 ForgeCanvasView.BuildField / ForgeTimings.NeedsPowerDirection）。
+                new ForgeNodeField("PowerDirection", "层数变化方向（层数变化时用）", ForgeFieldType.Pick,
+                    "只在「某个状态层数变化后」用得到：上升 / 下降都算（默认）／只在上升时触发／只在下降时触发", null, ""),
                 // V0.2.194：**状态那一档**才显示的「只对哪类牌生效」（界面上按 scope 判，见 ForgeCanvasView）。
                 // 为什么要有它：「自定义状态」页那套触发时机里，「打出一张牌时 / 一张牌结算完毕时」能限定
                 // 牌型 / 关键词 / 组（PowerTriggerSpec.CardFilter）；从那一页搬到布上的状态如果丢掉这一栏，

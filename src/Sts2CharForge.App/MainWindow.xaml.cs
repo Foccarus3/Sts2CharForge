@@ -24221,6 +24221,69 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							string.Join(",", relicTplPaths.Where(x => x.Contains("Direction"))));
 					}
 
+					// ===== V0.2.269（用户报「选了『某个状态层数变化后』还是没看到那一栏」）=====
+					{
+						// 真正的原因：在当前这条时机上**换种类**时，那一栏的显隐没被通知 → 卡在隐藏状态。
+						// 只有重新点一次左边列表才会重算（用户看到的就是这个）。
+						var ntRelic = new RelicTriggerSpec { Kind = "EnemyTurnEnd" };
+						var gotRelic = new List<string>();
+						ntRelic.PropertyChanged += (s, e) => { if (e.PropertyName is not null) gotRelic.Add(e.PropertyName); };
+						ntRelic.Kind = "PowerChanged";
+						Check("V0.2.269：遗物时机上把种类换成「某个状态层数变化后」→ 会通知方向那一栏（不用重新点列表）",
+							gotRelic.Contains("ShowPowerDirectionField") && ntRelic.ShowPowerDirectionField, "通知了");
+
+						var ntPow = new PowerTriggerSpec { Kind = "TurnStart" };
+						var gotPow = new List<string>();
+						ntPow.PropertyChanged += (s, e) => { if (e.PropertyName is not null) gotPow.Add(e.PropertyName); };
+						ntPow.Kind = "PowerChanged";
+						Check("V0.2.269：状态页的时机同样会通知",
+							gotPow.Contains("ShowPowerDirectionField") && ntPow.ShowPowerDirectionField, "通知了");
+
+						var ntRelicSpec = new RelicSpec { Trigger = "CombatStart" };
+						var gotSpec = new List<string>();
+						ntRelicSpec.PropertyChanged += (s, e) => { if (e.PropertyName is not null) gotSpec.Add(e.PropertyName); };
+						ntRelicSpec.Trigger = "PowerChanged";
+						Check("V0.2.269：锻造页遗物面板换「触发时机」时也会通知",
+							gotSpec.Contains("ShowTriggerPowerDirection") && ntRelicSpec.ShowTriggerPowerDirection, "通知了");
+					}
+
+					// ===== V0.2.270（用户报「锻造处也没看到」）：锻造页布上【触发时机】节点也要有那一栏 =====
+					{
+						var trigKind = ForgeGraphCatalog.Find("Trigger");
+						var dirField = trigKind?.Fields.FirstOrDefault(f => f.Key == "PowerDirection");
+						Check("V0.2.270：锻造页【触发时机】模块上有「层数变化方向」这一栏",
+							dirField is not null && dirField.Type == ForgeFieldType.Pick, dirField?.Label ?? "(没有)");
+						Check("V0.2.270：这一栏只在「某个状态层数变化后」显示",
+							ForgeTimings.NeedsPowerDirection(ForgeTimings.PowerChanged)
+							&& !ForgeTimings.NeedsPowerDirection(ForgeTimings.PowerReached)
+							&& !ForgeTimings.NeedsPowerDirection(ForgeTimings.PowerRemoved), "判据对");
+						Check("V0.2.270：候选三项（都算 / 只在上升 / 只在下降）",
+							ForgeTimings.PowerDirections.Count == 3
+							&& ForgeTimings.PowerDirections[1].Id == "Up" && ForgeTimings.PowerDirections[2].Id == "Down",
+							$"{ForgeTimings.PowerDirections.Count} 项");
+
+						// 遗物布上选了方向 → 生成出来的守卫要带上升 / 下降判定（以前布上选了等于没选）
+						var dirProf2 = ProfileFactory.Sample();
+						var dirGraph = new ForgeGraphSpec();
+						var dirTrigNode = new ForgeNodeSpec { Kind = "Trigger", Id = "t1", X = 0, Y = 0 };
+						dirTrigNode.SetField("Timing", ForgeTimings.PowerChanged);
+						dirTrigNode.SetField("PowerId", "StrengthPower");
+						dirTrigNode.SetField("PowerDirection", "Up");
+						dirGraph.Nodes.Add(dirTrigNode);
+						var dirEffNode = new ForgeNodeSpec { Kind = "Effect", Id = "e1", X = 200, Y = 0 };
+						dirEffNode.EffectSpec = new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" };
+						dirGraph.Nodes.Add(dirEffNode);
+						dirGraph.Links.Add(new ForgeLinkSpec { From = "t1", FromPort = 0, To = "e1", ToPort = 0 });
+						var dirRelic2 = new RelicSpec { Name = "方向遗物布", ClassName = "UiDirForgeRelic", Trigger = ForgeTimings.PowerChanged, ForgeGraph = dirGraph };
+						dirProf2.Relics.Add(dirRelic2);
+						string dirRelicSrc = CSharpCodeGen.RelicSource(dirProf2, dirRelic2, dirProf2.Relics.Count - 1);
+						Check("V0.2.270：遗物布上选「只在上升时」→ 生成的守卫里有 if (amount <= 0m) return;",
+							dirRelicSrc.Contains("if (amount <= 0m) return;"), "生效了");
+						dirTrigNode.SetField("PowerDirection", "Down");
+						Check("V0.2.270：改成「只在下降时」→ if (amount >= 0m) return;",
+							CSharpCodeGen.RelicSource(dirProf2, dirRelic2, dirProf2.Relics.Count - 1).Contains("if (amount >= 0m) return;"), "生效了");
+					}
+
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
 					var aiStarter = new CardSpec { Name = "自检初始卡", ClassName = "UiCheckAiStarter", CardType = "Attack", Rarity = "Basic", Cost = 1, InStartingDeck = true, StartingCopies = 4 };
 					aiProf.Cards.Add(aiStarter);
