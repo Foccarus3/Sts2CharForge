@@ -78,6 +78,16 @@
                 <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Display" SelectedValuePath="Id"
                           ItemsSource="{Binding RelicTriggers, RelativeSource={RelativeSource AncestorType=Window}}"
                           SelectedValue="{Binding Trigger}"/>
+                <!-- V0.2.267：锻造遗物这边也要能选「层数变化方向」——
+                     用户报「触发时机『某个状态层数变化后』没看到『层数变化方向』」，
+                     原因就是以前只加在了遗物页 / 状态页的多时机编辑器里，这个模板漏了。 -->
+                <StackPanel Visibility="{Binding ShowTriggerPowerDirection, Converter={StaticResource BoolToVis}}">
+                    <TextBlock Text="层数变化方向（只在「某个状态层数变化后」用得到）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                    <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Display" SelectedValuePath="Id"
+                              ItemsSource="{Binding TriggerDirections, RelativeSource={RelativeSource AncestorType=Window}}"
+                              SelectedValue="{Binding TriggerPowerDirection}"
+                              ToolTip="上升 / 下降都算（默认，老行为）／只在上升时触发／只在下降时触发。&#10;盯的是哪个状态，在右边节点图的【触发时机】那一栏里配。"/>
+                </StackPanel>
             </StackPanel>
         </DataTemplate>
 

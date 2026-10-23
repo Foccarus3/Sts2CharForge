@@ -24200,6 +24200,27 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							"都算");
 					}
 
+					// ===== V0.2.268（用户报「触发时机『某个状态层数变化后』没看到『层数变化方向』」）=====
+					{
+						var dvPow = new PowerTriggerSpec { Kind = "PowerChanged" };
+						var dvRelicTrig = new RelicTriggerSpec { Kind = "PowerChanged" };
+						var dvRelic = new RelicSpec { Trigger = "PowerChanged" };
+						Check("V0.2.268：三种触发时机对象上「层数变化方向」的显隐都认「某个状态层数变化后」",
+							dvPow.ShowPowerDirectionField && dvRelicTrig.ShowPowerDirectionField && dvRelic.ShowTriggerPowerDirection,
+							"都认");
+						dvRelic.Trigger = "CombatStart";
+						Check("V0.2.268：（对照）换成「战斗开始时」那一栏就收起来",
+							!dvRelic.ShowTriggerPowerDirection, "收起了");
+						// 界面：锻造页的「锻造遗物」属性面板（DataTemplate 的 DataContext = RelicSpec）
+						// 以前漏了这一栏 —— 用户报「看不到层数变化方向」就是这里。
+						// 说明：遗物页 / 状态页的那两个编辑器走的是「选中才生成行」的列表，可视化树里摸不到，
+						// 所以只断言模板这一处 + 上面的模型显隐（那一处的绑定由 XAML 保证）。
+						var relicTplPaths = CollectBoundPathsOfTemplate(typeof(RelicSpec));
+						Check("V0.2.268：锻造页的遗物属性面板里有「层数变化方向」（以前漏了 → 用户报看不到）",
+							relicTplPaths.Contains("ShowTriggerPowerDirection") && relicTplPaths.Contains("TriggerPowerDirection"),
+							string.Join(",", relicTplPaths.Where(x => x.Contains("Direction"))));
+					}
+
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
 					var aiStarter = new CardSpec { Name = "自检初始卡", ClassName = "UiCheckAiStarter", CardType = "Attack", Rarity = "Basic", Cost = 1, InStartingDeck = true, StartingCopies = 4 };
 					aiProf.Cards.Add(aiStarter);
@@ -39691,6 +39712,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		var into = new HashSet<string>(StringComparer.Ordinal);
 		CollectBoundPathsInto(root, into);
 		return into;
+	}
+
+	/// <summary>
+	/// V0.2.268（自检用）：把一个 <see cref="DataTemplate"/> 里的绑定路径收出来 ——
+	/// 锻造页那三个属性面板（卡牌 / 药水 / 遗物）是模板，没选中节点时不在可视化树里，
+	/// <see cref="CollectBoundPaths"/> 摸不到它们（用户报「看不到层数变化方向」正是模板里漏了）。
+	/// </summary>
+	private HashSet<string> CollectBoundPathsOfTemplate(Type specType)
+	{
+		var into = new HashSet<string>(StringComparer.Ordinal);
+		if (TryFindResource(new DataTemplateKey(specType)) is not DataTemplate tpl) return into;
+		if (tpl.LoadContent() is not DependencyObject root) return into;
+		CollectBoundPathsLogical(root, into);
+		return into;
+	}
+
+	/// <summary>自检用：按**逻辑树**收绑定路径（模板刚 LoadContent 时还没有可视化子节点）。</summary>
+	private static void CollectBoundPathsLogical(DependencyObject root, HashSet<string> into)
+	{
+		if (root is FrameworkElement fe && BindingOperations.GetBinding(fe, UIElement.VisibilityProperty)?.Path?.Path is { Length: > 0 } vis)
+			into.Add(vis);
+		// 下拉的选中值绑定也算（例：「层数变化方向」下拉是 SelectedValue="{Binding TriggerPowerDirection}"）
+		if (root is System.Windows.Controls.Primitives.Selector sel
+			&& BindingOperations.GetBinding(sel, System.Windows.Controls.Primitives.Selector.SelectedValueProperty)?.Path?.Path is { Length: > 0 } val)
+			into.Add(val);
+		foreach (object? child in LogicalTreeHelper.GetChildren(root))
+			if (child is DependencyObject dep) CollectBoundPathsLogical(dep, into);
 	}
 
 	private static void CollectBoundPathsInto(DependencyObject root, HashSet<string> into)

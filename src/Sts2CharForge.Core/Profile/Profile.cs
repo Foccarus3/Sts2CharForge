@@ -4322,6 +4322,8 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
             Raise(nameof(TriggerSpendHint));
             // 「只对哪类牌生效」那一栏也只在一种时机下显示（打出一张牌后），换了时机必须通知
             Raise(nameof(ShowTriggerCardFilterField));
+            // V0.2.267：「层数变化方向」那一栏同理（只在「某个状态层数变化后」显示）
+            Raise(nameof(ShowTriggerPowerDirection));
             Raise(nameof(Display));
         }
     }
@@ -4396,8 +4398,17 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
             First.PowerDirection = value;
             Raise(nameof(TriggerHint));
             Raise(nameof(Display));
+            Raise(nameof(ShowTriggerPowerDirection));
         }
     }
+
+    /// <summary>
+    /// V0.2.267（用户报「触发时机『某个状态层数变化后』没看到『层数变化方向』」）：
+    /// 锻造遗物那个属性面板（DataTemplate 的 DataContext 就是 RelicSpec）也要显示方向那一栏 ——
+    /// 以前只在遗物页 / 状态页的多时机编辑器里加了，这个面板漏了。判据和 <see cref="RelicTriggerSpec.ShowPowerDirectionField"/> 一致。
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowTriggerPowerDirection => string.Equals(First.Kind, "PowerChanged", StringComparison.Ordinal);
 
     /// <summary>
     /// 「到达多少层」：只有「这一次变化**跨过**了 N 层」那一下才触发
