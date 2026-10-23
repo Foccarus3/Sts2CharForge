@@ -264,6 +264,12 @@ region = Rect2(0, 0, {ow}, {oh})
             string? outlineSrc = !string.IsNullOrWhiteSpace(s.IconOutline) && File.Exists(s.IconOutline)
                 ? s.IconOutline : baseSrc;
 
+            // V0.2.199：每瓶药水各自一行日志 —— 用户报过「上传的图标怎么在每一个药水都会显示」，
+            // 光看「X 个药水图标」这种汇总根本查不出哪瓶是哪张图（真凶其实是工具里的预览没刷新，
+            // 见 MainWindow.SyncDetail）。这里把「哪瓶 → 哪个文件」直接写进构建日志，对得上就是各自一份。
+            log?.Invoke($"    · 药水「{s.Name}」→ images/potions/large/{entry}.png ← "
+                + (s.Icon is { Length: > 0 } own && File.Exists(own) ? Path.GetFileName(own) : "占位图（没上传）"));
+
             // 大图（本体 LargeImagePath = images/potions/large/<id>.png）
             string bigDst = Path.Combine(projectRoot, "images/potions/large", entry + ".png");
             Directory.CreateDirectory(Path.GetDirectoryName(bigDst)!);
@@ -297,7 +303,9 @@ atlas = ExtResource("1_potion")
 region = Rect2(0, 0, {ow}, {oh})
 """);
         }
-        log?.Invoke($"  药水图标：{p.Potions.Count} 个（未上传的用本体药水图占位，建议自己上传）");
+        int uploadedCount = p.Potions.Count(s => !string.IsNullOrWhiteSpace(s.Icon) && File.Exists(s.Icon));
+        log?.Invoke($"  药水图标：{p.Potions.Count} 个（{uploadedCount} 个用你上传的图，其余用占位图；"
+            + "每瓶一张、互不共用，游戏按各自 Id 找各自的 .tres / .png）");
     }
 
     /// <summary>
@@ -1100,7 +1108,26 @@ region = Rect2(0, 0, {rw}, {rh})
                 e.BoostStat == "Block" ? "dexterity_power.png" : "accuracy_power.png",
                 "强化：" + (e.SpawnCardId ?? "?")));
 
-        int copied = 0, neutral = 0;
+        // ⚠ V0.2.185（用户实测报的「状态在血条上的显示好像有问题，没显示出来」）：
+        // **自定义状态**也要走这条回退路径。
+        // 以前只给上面那几个「工具自己生成的状态」写图标；用户自定义的状态只有「上传过图标」或
+        // 「设过层数颜色」才进 VanillaPowerCosmetic 那张补丁表 —— 一个都没设时补丁什么都不做，
+        // 于是游戏回到 PowerModel.Icon 这条**没有兜底**的路径：
+        //     public Texture2D Icon => ResourceLoader.Load<Texture2D>(PackedIconPath, null, Reuse);
+        // 图集里没有那个 sprite、回退 PNG 也不存在 → 落到本体的 missing_power.png（紫色问号占位）
+        //（日志里就是 `Missing sprite 'white_cloak_power_frozen_monitor' in power_atlas`，
+        //  一个存档一次能刷七八条 —— 状态挂上了却看不出是哪个状态）。
+        // 这里按已有的「中性占位」口径补一张（和卡面 / 遗物 / 状态大图一个做法）：
+        // 想换就直接上传自己的图标 —— 上传的那个优先（下面 File.Exists(dst) 那行会跳过，不会被覆盖）。
+        // 本体里没有「通用状态图」这种东西（只有缺图占位），所以语义上挑不出来 —— 走中性占位。
+        foreach (var cp in p.CustomPowers)
+        {
+            if (cp is null || !CustomPowerGen.IsActive(cp)) continue;
+            wanted.Add((CustomPowerGen.EntryOf(p, cp, p.CustomPowers.IndexOf(cp)), "",
+                "状态：" + (string.IsNullOrWhiteSpace(cp.Name) ? cp.ClassName : cp.Name)));
+        }
+
+        int copied = 0, neutral = 0, customNeutral = 0;
         foreach (var (entry, vanillaIcon, why) in wanted.DistinctBy(w => w.Entry))
         {
             // 文件名必须是**本体的 Id.Entry**（= 类名按本体规则 slugify，带下划线）：
@@ -1112,8 +1139,11 @@ region = Rect2(0, 0, {rw}, {rh})
             if (File.Exists(dst)) continue;                     // 用户自己的图标（自定义状态）优先，别覆盖
             Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
 
-            string src = Path.Combine(p.Paths.VanillaProject, "images", "powers", vanillaIcon);
-            if (File.Exists(src))
+            // 没给「用哪张本体图」= 自定义状态（本体里没有语义对得上的通用状态图）→ 直接中性占位
+            string src = vanillaIcon.Length == 0
+                ? ""
+                : Path.Combine(p.Paths.VanillaProject, "images", "powers", vanillaIcon);
+            if (src.Length > 0 && File.Exists(src))
             {
                 FsSafe.Copy(src, dst, overwrite: true);
                 copied++;
@@ -1121,13 +1151,45 @@ region = Rect2(0, 0, {rw}, {rh})
             else
             {
                 WriteNeutralPng(dst, 256, 256);
-                neutral++;
+                if (src.Length == 0) customNeutral++;
+                else neutral++;
             }
         }
-        if (copied + neutral > 0)
+        if (copied + neutral + customNeutral > 0)
             log?.Invoke($"  生成出来的状态的图标：{copied} 个用本体图（透支=下回合能量 / 额外回合=借来的时间 / 下回合·临时=那个状态自己的图）"
                 + (neutral > 0 ? $"，{neutral} 个中性占位（本体里找不到那张图：要指定解包工程目录）" : "")
+                + (customNeutral > 0 ? $"，{customNeutral} 个自定义状态用中性占位（没上传图标；想要自己的图就在「自定义状态」页上传，上传的不会被覆盖）" : "")
                 + "（放 res://images/powers/<本体 Id.Entry 小写>.png，本体在图集里找不到精灵时会回退到它）");
+
+        // 没上传图标的那些自定义状态，图集占位 .tres 也补一份（上传过图标的那条路走的是
+        // WriteCustomPowerAtlasFallback，那里会写；这里补上「没上传」的情况，两条路的文件集合保持一致）。
+        foreach (var cp in p.CustomPowers)
+        {
+            if (cp is null || !CustomPowerGen.IsActive(cp)) continue;
+            if (!string.IsNullOrWhiteSpace(cp.Icon)) continue;      // 上传过图标的已经在 WriteCustomPowerAtlasFallback 里写过
+            WriteCustomPowerAtlasStub(projectRoot, CustomPowerGen.EntryOf(p, cp, p.CustomPowers.IndexOf(cp)));
+        }
+    }
+
+    /// <summary>
+    /// 只写 res://images/atlases/power_atlas.sprites/&lt;entry&gt;.tres 这个占位（图集精灵由本体的
+    /// ResourceFormatLoader 按路径解析、内容只为兼容），图片本身已经在 images/powers/&lt;entry&gt;.png 里了。
+    /// </summary>
+    private static void WriteCustomPowerAtlasStub(string projectRoot, string entry)
+    {
+        entry = entry.ToLowerInvariant();
+        string png = Path.Combine(projectRoot, "images", "powers", entry + ".png");
+        if (!File.Exists(png)) return;
+        var (w, h) = ReadPngSize(png, 256, 256);
+        ProjectFilesGen.WriteText(Path.Combine(projectRoot, "images/atlases/power_atlas.sprites", entry + ".tres"), $"""
+[gd_resource type="AtlasTexture" load_steps=2 format=3]
+
+[ext_resource type="Texture2D" path="res://images/powers/{entry}.png" id="1_power"]
+
+[resource]
+atlas = ExtResource("1_power")
+region = Rect2(0, 0, {w}, {h})
+""");
     }
 
     /// <summary>
@@ -1419,6 +1481,73 @@ shader_parameter/transitionTex = ExtResource("1_trans")
 """);
     }
 
+    /// <summary>
+    /// 「卡面缩小档」的候选（界面下拉框 + <see cref="Profile.ArtSpec.CardArtShrink"/> 的合法值）。
+    /// 空字符串 = 原样拷贝（默认，老行为逐字不变）。
+    /// </summary>
+    public static IReadOnlyList<(string Id, string Label)> CardArtShrinkModes { get; } = new[]
+    {
+        ("", "原样拷贝（不缩）"),
+        ("2x", "缩到显示尺寸的 2 倍（500×380，推荐）"),
+        ("1x", "缩到显示尺寸（250×190，1080p 满屏最锐利）"),
+        ("4x", "缩到显示尺寸的 4 倍（1000×760，本体素材口径）"),
+    };
+
+    /// <summary>
+    /// 卡面在游戏里**实际画出来多大**（游戏单位）：普通卡 <c>card.tscn</c> 的 <c>%Portrait</c> 是 250×190；
+    /// 先古卡 <c>%AncientPortrait</c> 是 598×842 但节点 <c>scale = 0.5</c> ⇒ 299×421。
+    /// 本体素材：普通卡给 1000×760（= 4×）、先古卡给 606×852（≈ 2×）。
+    /// </summary>
+    public static (int W, int H) CardFaceDisplaySize(bool ancient) => ancient ? (299, 421) : (250, 190);
+
+    /// <summary>
+    /// 生效的缩小档：<c>""</c> = 原样；<c>"1x"</c> / <c>"2x"</c> / <c>"4x"</c> = 缩到显示尺寸的 N 倍。
+    /// 老存档的 <see cref="Profile.ArtSpec.FitCardArtToFrame"/>=true（V0.2.228 那个勾选框，缩到 1000×760）
+    /// 按 <c>2x</c> 处理 —— 实测 4× 和「不缩」完全等价（探针 imgcmp：RMSE 3.42 vs 3.42，等于那个勾选框没有可见作用）。
+    /// </summary>
+    public static string EffectiveCardArtShrink(Profile.ArtSpec art)
+    {
+        string mode = (art.CardArtShrink ?? "").Trim().ToLowerInvariant();
+        if (mode is "1x" or "2x" or "4x") return mode;
+        return art.FitCardArtToFrame ? "2x" : "";
+    }
+
+    /// <summary>
+    /// 把「比目标尺寸大」的卡面缩到目标尺寸（V0.2.229）。
+    ///
+    /// 目标 = 游戏实际绘制尺寸 × 倍率（见 <see cref="CardFaceDisplaySize"/> / <see cref="EffectiveCardArtShrink"/>）。
+    /// 目标和游戏一致（TextureRect 是 <c>KEEP_ASPECT_CENTERED</c>，先古卡节点还带 0.5 缩放）：
+    /// 按 <c>scale = max(targetW/w, targetH/h)</c> 算（保持比例、至少盖满目标那一块），
+    /// 用 <see cref="PngUtil.Resize"/> 的面积平均（alpha 加权，不是最近邻）。**只缩不放大**。
+    /// 缩不了（不是 8bit RGB/RGBA PNG）就保持原样并在日志里说明，不影响生成。
+    /// </summary>
+    private static void ShrinkCardArt(string pngPath, (int W, int H) target, string entry, Action<string>? log)
+    {
+        try
+        {
+            if (PngUtil.Decode(pngPath) is not { } img) return;
+            var (w, h) = (img.W, img.H);
+            if (w <= 0 || h <= 0 || target.W <= 0 || target.H <= 0) return;
+            if (w <= target.W && h <= target.H) return;          // 不比目标大就不动（绝不上采样）
+            double scale = Math.Max((double)target.W / w, (double)target.H / h);
+            int nw = Math.Max(1, (int)Math.Round(w * scale, MidpointRounding.AwayFromZero));
+            int nh = Math.Max(1, (int)Math.Round(h * scale, MidpointRounding.AwayFromZero));
+            if (nw == w && nh == h) return;
+            if (!PngUtil.Resize(pngPath, pngPath, nw, nh))
+            {
+                log?.Invoke($"  [提示] 卡面 {entry} 缩不了（不是 8bit RGB/RGBA PNG），按原图 {w}×{h} 拷进工程");
+                return;
+            }
+            log?.Invoke($"  卡面 {entry}：{w}×{h} → {nw}×{nh}"
+                + $"（缩到游戏显示尺寸 {target.W}×{target.H} 内，面积平均，原图不动）");
+        }
+        catch (Exception ex)
+        {
+            // 缩不了就用原图 —— 生成不能因为这个失败
+            log?.Invoke($"  [提示] 卡面 {entry} 缩小失败（{ex.Message}），按原图拷进工程");
+        }
+    }
+
     private static void WriteCardPortraits(CharacterProfile p, string projectRoot, Action<string>? log)
     {
         var n = Naming.From(p);
@@ -1457,6 +1586,17 @@ shader_parameter/transitionTex = ExtResource("1_trans")
             if (!string.IsNullOrWhiteSpace(userArt) && File.Exists(userArt))
             {
                 FsSafe.Copy(userArt, pngDst, overwrite: true);
+                // V0.2.229（V0.2.228 那个「缩到 1000×760」的勾选框实测**和没缩一样**）：
+                // 工具本身是原样拷贝、不压缩；卡面在游戏里只画 250×190（先古 299×421），而且没有 mipmap，
+                // 引擎双线性缩小 4 倍时 16 个纹素只采样 4 个 → 细节直接丢。预缩到「显示尺寸 × N」才真的有效：
+                // 2× 时引擎刚好用满 4 个纹素（实测 RMSE 0.27 vs 直接缩 3.42）。默认不缩 = 逐字老行为。
+                string shrink = EffectiveCardArtShrink(p.Art);
+                if (shrink.Length > 0)
+                {
+                    var display = CardFaceDisplaySize(ancient);
+                    int mult = shrink == "1x" ? 1 : shrink == "4x" ? 4 : 2;
+                    ShrinkCardArt(pngDst, (display.W * mult, display.H * mult), entry, log);
+                }
             }
             else if (p.Art.UseVanillaPlaceholders && File.Exists(vanillaPlaceholder))
             {

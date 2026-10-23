@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -388,6 +388,12 @@ public sealed class ForgeCanvasView : Grid
             // V0.2.168：一块布可以有**多块**【触发时机】（每块配自己后面那一条链），
             // 所以这里不再跳过 —— 第一块仍然是固定模块（删不掉），第二块起是普通模块。
             if (string.Equals(k.Id, "Energy", StringComparison.Ordinal) && _graph?.Nodes.Any(n => n.Kind == "Energy") == true) continue;
+            // V0.2.194：「状态列表」那一档**永远不给【能量】** —— 状态没有「费用」这一说
+            //（费用/额外资源量是卡牌自己的属性），摆上去也不参与生成，校验器只会回一句警告，
+            // 用户却要为此困惑半天。不给选就是最清楚的说明。
+            // ⚠ 只加这一条「跳过」：卡牌 / 药水 / 遗物三档原来什么样就还是什么样。
+            if (string.Equals(k.Id, "Energy", StringComparison.Ordinal)
+                && string.Equals(_scope, ForgeTimings.PowerScope, StringComparison.Ordinal)) continue;
             _kindPick.Items.Add(k.Display);
         }
         if (_kindPick.Items.Count > 0) _kindPick.SelectedIndex = 0;
@@ -745,6 +751,17 @@ public sealed class ForgeCanvasView : Grid
         "SpawnCardId" or "SpawnTo" => effectKind is "GenerateCard",
         "PotionPick" or "PotionId" => effectKind is "GainPotion",
         "Pick" => effectKind is "ExhaustCard" or "DiscardCard" or "UpgradeCard" or "TransformCard" or "CopyCard",
+        // V0.2.212：图上也能选「从哪一摞拿 / 放到哪一摞」了 —— 判据和「卡牌」页那两栏**同一份**
+        //（EffectSpec.KindUsesSelectPile / KindUsesPlaceTo），不会出现「卡牌页有、锻造页没有」。
+        "SelectPile" => EffectSpec.KindUsesSelectPile(effectKind),
+        "PlaceTo" => EffectSpec.KindUsesPlaceTo(effectKind),
+        // V0.2.220：「为抽到的牌加关键词」那两栏只在「真的把牌拿进手」的那几档上出现
+        //（判据和「卡牌」页那两栏同一份才不会有「卡牌页有、锻造页没有」）
+        "DrawnKeyword" or "DrawnKeywordTemp" => Core.Effects.EffectFieldPolicy.UsesDrawnKeyword(effectKind),
+        // V0.2.250（用户问「这个范围怎么不能选组或者特定关键词」）：【效果】模块的「范围」只在**真的读它**的
+        // 那几档上出现（判据和「卡牌」页「范围界定」那一行同一份）；「只持续本回合」只有「减少卡牌费用」用。
+        "SpawnFilter" => Core.Effects.EffectFieldPolicy.UsesCardScopeFilter(effectKind),
+        "CostDownThisTurn" => string.Equals(effectKind, "CostDown", StringComparison.Ordinal),
         // 「增益 / 减益」那一栏不藏：它是可搜索下拉，而且「临时增益 / 清除状态」等好几种都要看它，
         // 这里宁可贵一点也不要让用户找不到自己在哪选状态。
         _ => true,
@@ -757,6 +774,9 @@ public sealed class ForgeCanvasView : Grid
         if (string.Equals(kind.Id, "Effect", StringComparison.Ordinal)
             && !EffectFieldApplies(field.Key, node.Get("Effect", "Damage")))
             return null;
+        // 「不满足时 = 整张牌打不出去」（V0.2.218）：只有卡牌布上有意义（遗物 / 药水 / 状态没有「打出」）
+        if (string.Equals(field.Key, "WhenUnmet", StringComparison.Ordinal)
+            && !string.Equals(_scope, "Card", StringComparison.Ordinal)) return null;
         // 触发时机：候选按这一类物品筛；血量 / 生效次数只在选了对应时机时才显示
         if (string.Equals(field.Key, "Timing", StringComparison.Ordinal))
         {
@@ -786,12 +806,26 @@ public sealed class ForgeCanvasView : Grid
             && !ForgeTimings.NeedsPowerWatch(node.Get("Timing"))) return null;
         if ((string.Equals(field.Key, "CountLimit", StringComparison.Ordinal) || string.Equals(field.Key, "CountScope", StringComparison.Ordinal))
             && !ForgeTimings.NeedsCount(node.Get("Timing"))) return null;
+        // V0.2.194：「只对哪类牌生效」（CardFilter）只有**状态那一档**的「打出一张牌时 / 一张牌结算完毕时」
+        // 才有意义（和「自定义状态」页那份 PowerTriggerSpec.CardFilter 同一个口径）。
+        //   · 别的档的布上没有这个概念 —— 卡牌自己就是那张牌，药水 / 遗物更谈不上「只对哪类牌」；
+        //   · 状态档的别的时机（回合开始 / 受伤 / 胜利…）也没有「这张牌」可筛。
+        // ⚠ 工具的老规矩：「在哪选什么」这种栏位**不许藏**（见上面【状态列表】那段）—— 所以这里只藏
+        // 「场合不对」的，该显示时一定显示；留空 = 任意牌，也没丢东西。
+        if (string.Equals(field.Key, "CardFilter", StringComparison.Ordinal)
+            && (!string.Equals(_scope, ForgeTimings.PowerScope, StringComparison.Ordinal)
+                || !ForgeTimings.NeedsCardFilter(node.Get("Timing")))) return null;
         // 「随机目标允许重复选中同一个敌人」只在对象模块选「随机敌人」时出现
         if (string.Equals(field.Key, "AllowDuplicate", StringComparison.Ordinal)
             && !string.Equals(node.Get("Pick", "Self"), "RandomEnemy", StringComparison.Ordinal)) return null;
         // 【对象】选「指定召唤物」时才显示「召唤物名称」（需求）
         if (string.Equals(field.Key, "SummonId", StringComparison.Ordinal)
             && !string.Equals(node.Get("Pick", "Self"), "ChosenSummon", StringComparison.Ordinal)) return null;
+        // ⚠ V0.2.193：【状态列表】的「指定的那个状态」这一栏**永远显示**（用户实测反馈：
+        // 「我怎么在锻造页没看到自定义状态列表」—— 它被默认档「看哪些状态 = 全部状态」藏起来了，
+        // 用户以为这个模块里根本没有状态可挑）。和【效果】模块那条规矩同一个道理：
+        // 「增益 / 减益」是**可搜索下拉**、而且用户会满界面找「在哪选状态」——
+        // 宁可贵一点也不要让人找不到（生成端只在「看哪些状态 = 只看指定状态」时才读它，多显示一栏没有任何副作用）。
 
         switch (field.Type)
         {
@@ -841,6 +875,20 @@ public sealed class ForgeCanvasView : Grid
                     "CountScope" => ForgeTimings.CountScopes,
                     "SpawnCardId" => ForgeGraphCatalog.CardChoices,
                     "PotionId" => ForgeGraphCatalog.PotionChoices,
+                    // V0.2.247（用户要求）：「上一张打出的牌带有某关键词 / 是某范围（可按组）」
+                    // 关键词 = 本体 CardKeyword 那 7 个；范围 = 和「范围界定」同一份候选（含每个组）。
+                    "Keyword" => EffectCatalog.VanillaKeywordChoices
+                        .Select(k => new ForgeFieldOption(k.Id, k.Display)).ToList(),
+                    "Scope" => EffectCatalog.SpawnFiltersFor(Owner ?? EffectCatalog.DisplayProfile)
+                        .Select(f => new ForgeFieldOption(f.Id, f.Display)).ToList(),
+                    // V0.2.250：图上【效果】模块的「范围（哪一类牌 / 哪个组）」—— 候选要**按当前存档动态取**
+                    //（`SpawnFiltersFor` 里才有「自定义关键词：…」和「组：…」；ForgeNodeField 的 Options 是
+                    // 静态表，写在那里就永远只有内置那几档，这正是用户报「不能选组或者特定关键词」的原因）。
+                    "SpawnFilter" => EffectCatalog.SpawnFiltersFor(Owner ?? EffectCatalog.DisplayProfile)
+                        .Select(f => new ForgeFieldOption(f.Id, f.Display)).ToList(),
+                    // V0.2.220：「为抽到的牌加关键词」的候选 —— 和「卡牌」页那个下拉同源
+                    //（本体 7 个 + 存档里的自定义关键词），额外多一项「（不加关键词）」当默认档。
+                    "DrawnKeyword" => DrawnKeywordChoices(),
                     // 【对象】的「召唤物名称」：候选来自当前配置里那些启用的召唤物（唯一标识 = 类名）
                     "SummonId" => SummonChoices(),
                     _ => field.OptionList,
@@ -854,7 +902,9 @@ public sealed class ForgeCanvasView : Grid
                     var sel = options.FirstOrDefault(o => o.Display as string == combo.SelectedItem as string);
                     if (sel is null) return;
                     node.SetField(field.Key, sel.Id);
-                    if (field.Key is "Pick" or "Effect" or "Cond") Rebuild();
+                    // 「看哪些状态」（【状态列表】）与「对象」这类一改就会连带改变**别的栏显不显示**的，
+                    // 选完要重建这块布（不然「指定的那个状态」那一栏不会冒出来 / 不会收起来）。
+                    if (field.Key is "Pick" or "Effect" or "Cond" or "ListFilter") Rebuild();
                 };
                 return WithLabel(field, combo);
             }
@@ -865,8 +915,10 @@ public sealed class ForgeCanvasView : Grid
                 // ③ 当场校验：填错了描红并把原因写进 ToolTip（**不再静默变成默认值** —— 用户点名要的）。
                 bool needConst = ForgeGraphCatalog.NumberFieldNeedsConst(kind.Id, field.Key);
                 string tip = field.Hint + "\n\n" + (needConst
-                    ? "⚠ 这一栏会写进卡牌自己的费用（本体 base(cost, …)）——**必须**是生成期就算得出来的数："
-                      + "只能填数字，或者用「固定数值」来源的参数写 A+3；X / Y / 实时读数不能用。"
+                    ? "⚠ 这一栏会写进卡牌自己的费用（本体 base(cost, …) / CanonicalStarCost）——**必须**是生成期就算得出来的数："
+                      + "纯数字、用「固定数值」来源的参数写 A+3，或者写 X（= 消耗全部能量，本体 HasEnergyCostX 那套）。"
+                      + "额外资源量那一栏同理，写 Y（= 消耗全部额外资源量，HasStarCostX）。"
+                      + "其它实时读数（血量 / 状态层数 / 内置只读量）不能用。"
                     : ForgeGraphCatalog.NumberFormulaHint);
                 var box = new TextBox
                 {
@@ -903,11 +955,22 @@ public sealed class ForgeCanvasView : Grid
                 {
                     if (Owner is null) return;                       // 没有配置时（构造期）不判，免得误报
                     var r = ForgeNumbers.Resolve(Owner, node, field.Key, 0);
+                    // V0.2.215：费用那两栏写 X / Y 是**合法**的（本体「消耗全部能量 / 额外资源量」那套）——
+                    // 以前这里会把它描成蓝色「运行时才算」，用户以为填错了。
+                    bool costX = needConst && ForgeNumbers.ResolveCost(Owner, node.Get(field.Key),
+                        field.Key == "ResourceCost" ? "Y" : "X",
+                        allowPlus: field.Key != "ResourceCost", field.Label).IsX;
                     if (!r.Ok)
                     {
                         box.BorderBrush = Brushes.Firebrick;
                         box.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF0, 0xF0));
                         box.ToolTip = tip + "\n\n❌ " + r.Error;
+                    }
+                    else if (costX)
+                    {
+                        box.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
+                        box.Background = new SolidColorBrush(Color.FromRgb(0xF1, 0xF8, 0xE9));
+                        box.ToolTip = tip + $"\n\n✓ {(field.Key == "ResourceCost" ? "Y 费：打出时消耗全部额外资源量（本体 HasStarCostX）" : "X 费：打出时消耗全部能量（本体 HasEnergyCostX）")}";
                     }
                     else if (r.Runtime)
                     {
@@ -985,6 +1048,17 @@ public sealed class ForgeCanvasView : Grid
     }
 
     /// <summary>
+    /// 自检用：【状态列表】模块上某一栏会不会显示（V0.2.192；「指定的那个状态」**任何档位下都显示**）。
+    /// </summary>
+    public bool PowerListFieldVisibleForCheck(ForgeNodeSpec node, string filter, string fieldKey)
+    {
+        node.SetField("ListFilter", filter);
+        var kind = ForgeGraphCatalog.Find(ForgeGraphCatalog.PowerListKind);
+        var field = kind?.Fields.FirstOrDefault(f => f.Key == fieldKey);
+        return field is not null && BuildField(node, kind!, field) is not null;
+    }
+
+    /// <summary>
     /// 自检用：【效果】模块上某一栏会不会显示。
     ///
     /// V0.2.129（需求 3 / 用户拍板 Q1=A）之后判据换了：这个模块装的是「卡牌」页那套效果编辑器，
@@ -1018,6 +1092,10 @@ public sealed class ForgeCanvasView : Grid
             "ScrapeCond" or "ScrapeOp" => spec.ShowScrapeOptions,
             "NextTurn" => spec.ShowNextTurn,
             "TempPowerReverse" => spec.IsTempPower,
+            // V0.2.250（用户问「这个范围怎么不能选组或者特定关键词」）：【效果】模块新加的「范围」一栏，
+            // 判据和画布上那份 EffectFieldApplies 同一套（EffectFieldPolicy.UsesCardScopeFilter）。
+            "SpawnFilter" => Core.Effects.EffectFieldPolicy.UsesCardScopeFilter(effectKind),
+            "CostDownThisTurn" => string.Equals(effectKind, "CostDown", StringComparison.Ordinal),
             _ => false,
         };
     }
@@ -1030,6 +1108,21 @@ public sealed class ForgeCanvasView : Grid
             .Where(c => !Core.Generation.PetGen.IsAll(c.Id))
             .Select(c => new ForgeFieldOption(c.Id, c.Display))
             .ToList();
+    }
+
+    /// <summary>
+    /// V0.2.220：「为抽到的牌加关键词」下拉的候选（本体 7 个 + 存档里的自定义关键词），
+    /// 第一项是「（不加关键词）」= 默认档（老图就是这样，生成文本一个字都不变）。
+    /// </summary>
+    private IReadOnlyList<ForgeFieldOption> DrawnKeywordChoices()
+    {
+        var list = new List<ForgeFieldOption> { new("", "（不加关键词）") };
+        foreach (var k in Core.Effects.EffectCatalog.VanillaKeywordChoices)
+            list.Add(new ForgeFieldOption(k.Id, k.Display));
+        if (Owner is not null)
+            foreach (var (spec, key) in Core.Generation.KeywordGen.All(Owner))
+                list.Add(new ForgeFieldOption(key, Core.Generation.KeywordGen.DisplayName(spec, key) + "（自定义）"));
+        return list;
     }
 
     private static FrameworkElement WithLabel(ForgeNodeField field, FrameworkElement inner)
@@ -1402,6 +1495,20 @@ public sealed class ForgeCanvasView : Grid
         if (string.IsNullOrWhiteSpace(display)) return;
         _kindPick.SelectedItem = display;
         AddSelectedKind();
+    }
+
+    /// <summary>
+    /// 自检用：把这块布临时切到某一档（Card / Potion / Relic / Power）再去量东西。
+    ///
+    /// <para>为什么非要有它：「状态列表」那一档的规矩（「不给【能量】」「【触发时机】上多一栏只对哪类牌生效」）
+    /// 全挂在私有的 <c>_scope</c> 上 —— 不真切过去，就量不到「下拉里到底有没有那一项 / 那一栏显不显示」。</para>
+    ///
+    /// <para>⚠ 量完记得用同一个方法切回原来的档（自检里成对出现，别让后面那些断言看到串档的界面）。</para>
+    /// </summary>
+    public void ScopeForCheck(string scope)
+    {
+        Scope = scope;        // setter 里会 Rebuild（含 RefreshKindPick：模块下拉按新档位重算）
+        RefreshKindPick();    // 兜一道：万一以后 Rebuild 里那条路挪走了，这里也要拿到最新的下拉
     }
 
     /// <summary>「全部可见」/ 工具条上那个百分比按钮：把缩放调回 100%。</summary>
@@ -1861,12 +1968,12 @@ public sealed class ForgeCanvasView : Grid
         }
         // 链入口（没有标明接受类型的那些）只收链模块：对象 / 效果 / 触发时机 / if / 且 / 或
         // （「从哪取」的口有自己的接受类型 —— 比如【if】的条件口是 Bool —— 所以不会被这条挡住）
-        if (inPort.AcceptsKind is null && !asSlot && from.Kind is "Value" or "Power" or "Energy" or "Condition")
+        if (inPort.AcceptsKind is null && !asSlot && from.Kind is "Value" or "Power" or "PowerList" or "Energy" or "Condition")
             return "这个入口是执行链的入口，接的是【对象】/【效果】这类模块；条件与数值请接到 if / 效果 上。";
-        // 【数值】模块的接入点接的是另一块数值来源：只收数值 / 状态 / 能量
+        // 【数值】模块的接入点接的是另一块数值来源：只收数值 / 状态 / 状态列表 / 能量
         if (string.Equals(to.Kind, "Value", StringComparison.Ordinal)
-            && from.Kind is not ("Value" or "Power" or "Energy"))
-            return "【数值】模块的接入点只接【数值】/【状态】/【能量】（要在条件里用，请把条件接到【if】上）。";
+            && from.Kind is not ("Value" or "Power" or "PowerList" or "Energy"))
+            return "【数值】模块的接入点只接【数值】/【状态】/【状态列表】/【能量】（要在条件里用，请把条件接到【if】上）。";
         return null;
     }
 

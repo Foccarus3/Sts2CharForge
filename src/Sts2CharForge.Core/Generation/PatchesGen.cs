@@ -167,10 +167,16 @@ public static class PatchesGen
 
         // 自定义状态的「覆盖血条」补丁也单独手动打（同一个原因：打在**私有**方法 RefreshForeground 上，
         // 本体改了名字时带特性的 PatchAll 会抛异常、整个模组加载不了）。
+        //
+        // ⚠ V0.2.185：用户报「覆盖血条没显示出来」时日志里一个字都没有 —— 因为生成出来的补丁
+        //   成功 / 静默失败都不出声，根本分不清「没生成（存档里没填颜色）」「没打上」「打上了没触发」。
+        //   所以这里加载时就把**表里有哪几条**打出来（一眼看出模组里到底有没有这个功能），
+        //   两个入口各打一次（RefreshForeground + 它的调用方 RefreshValues），各自失败各自记警告。
         if (HpBarOverlayGen.Needs(p))
         {
             w.Line()
              .Line("// 自定义状态覆盖血条（见 ForgeHpBarOverlay.cs）：单独手动打，失败了只丢这一截颜色、不影响别的补丁")
+             .Line($"Log.Info({Lit.Str(HpBarOverlayGen.LoadSummary(p))});")
              .Open("try")
              .Line($"var __hpOverlay = {HpBarOverlayGen.ClassName}.Target;")
              .Line("if (__hpOverlay is not null)")
@@ -180,6 +186,16 @@ public static class PatchesGen
              .Close()
              .Open("catch (Exception e)")
              .Line($"Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：")} + e.Message);")
+             .Close()
+             .Open("try")
+             .Line($"var __hpValues = {HpBarOverlayGen.ClassName}.ValuesTarget;")
+             .Line("if (__hpValues is not null)")
+             .Line($"    harmony.Patch(__hpValues, postfix: new HarmonyLib.HarmonyMethod(typeof({HpBarOverlayGen.ClassName}), nameof({HpBarOverlayGen.ClassName}.Postfix)));")
+             .Line("else")
+             .Line($"    Log.Warn({Lit.Str("自定义状态覆盖血条：找不到 NHealthBar.RefreshValues（只接了 RefreshForeground 那一个入口）")});")
+             .Close()
+             .Open("catch (Exception e)")
+             .Line($"Log.Warn({Lit.Str("自定义状态覆盖血条：RefreshValues 那个入口没打上：")} + e.Message);")
              .Close();
         }
 
@@ -202,12 +218,49 @@ public static class PatchesGen
              .Close();
         }
 
+        // 「被给予自定义关键词」的卡面描述 / 悬停提示（见 GivenKeywords.cs）：**逐个重载手动打**。
+        // ⚠ 这两个补丁以前是带 [HarmonyPatch] 的，靠 PatchAll 打 —— 本体 v0.111 给
+        //   CardModel.GetDescriptionForPile 加了第二个重载（2 参 + 3 参），只写方法名的特性补丁
+        //   会让 PatchAll 抛 Harmony 的 "Ambiguous match"，而 PatchAll 一抛异常**整个初始化器就中断**
+        //   ⇒ 角色 / 卡池 / 遗物全都没注册，用户实测的表现是「进游戏找不到这个角色（存档也没了）」。
+        //   所以这里跟另外三处补丁同一套做法：反射拿全部重载、逐个 Patch，各自 try 一次。
+        if (CSharpCodeGen.UsesGivenCustomKeyword(p))
+        {
+            w.Line()
+             .Line("// 「被给予自定义关键词」：卡面描述 + 悬停提示（GivenKeywords.cs 里那两个 Postfix）")
+             .Line("// ⚠ 手动逐个重载打：本体 GetDescriptionForPile 有 2 个重载，特性补丁会让 PatchAll 抛 \"Ambiguous match\"，")
+             .Line("//   而 PatchAll 一抛异常整个初始化器就中断（角色注册一起没了）。")
+             .Open("try")
+             .Open("foreach (var __descMethod in typeof(MegaCrit.Sts2.Core.Models.CardModel).GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance))")
+             .Line("if (__descMethod.Name == \"GetDescriptionForPile\")")
+             .Line("    harmony.Patch(__descMethod, postfix: new HarmonyLib.HarmonyMethod(typeof(GivenKeywordTextPatch), nameof(GivenKeywordTextPatch.After)));")
+             .Close()
+             .Close()
+             .Open("catch (Exception e)")
+             .Line($"Log.Warn({Lit.Str("「被给予自定义关键词」的卡面描述补丁没打上（不影响别的功能）：")} + e.Message);")
+             .Close()
+             .Open("try")
+             .Line("var __hoverProp = typeof(MegaCrit.Sts2.Core.Models.CardModel).GetProperty(\"ExtraHoverTips\", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);")
+             .Line("if (__hoverProp?.GetGetMethod(true) is { } __hoverGet)")
+             .Line("    harmony.Patch(__hoverGet, postfix: new HarmonyLib.HarmonyMethod(typeof(GivenKeywordHoverPatch), nameof(GivenKeywordHoverPatch.After)));")
+             .Line("else")
+             .Line($"    Log.Warn({Lit.Str("「被给予自定义关键词」的悬停说明补丁没打上：找不到 CardModel.ExtraHoverTips（本体可能改过）")});")
+             .Close()
+             .Open("catch (Exception e)")
+             .Line($"Log.Warn({Lit.Str("「被给予自定义关键词」的悬停说明补丁没打上（不影响别的功能）：")} + e.Message);")
+             .Close();
+        }
+
         w.Line()
          .Line($"Log.Info({Lit.Str(n.ModId + " - 加载成功!")});")
          .Close()
          .Open("catch (Exception e)")
          .Line($"Log.Error({Lit.Str(n.ModId + " - 加载失败")});")
-         .Line("Log.Error(e.Message);")
+         .Line("// ⚠ 打全量：MethodBase.Invoke 抛出来的是 TargetInvocationException，真正的原因在 InnerException 里，")
+         .Line("//   只打 e.Message 会得到一句套话（或什么都没有），用户报「找不到角色/存档」时根本查不出原因。")
+         .Line("var __inner = (e as System.Reflection.TargetInvocationException)?.InnerException ?? e;")
+         .Line("Log.Error(__inner.GetType().Name + \": \" + __inner.Message);")
+         .Line("Log.Error(__inner.ToString());")
          .Close()
          .Close()
          .Close();
@@ -303,7 +356,7 @@ public static class PatchesGen
              .Open($"public static class {n.CharClass}{prop}Patch")
              .Open("static void Postfix(CharacterModel __instance, ref string __result)")
              .Open($"if (__instance is {n.CharClass})")
-             .Line($"__result = ModelDb.Character<Ironclad>().{prop};")
+             .Line($"__result = ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Ironclad>().{prop};")
              .Close()
              .Close()
              .Close()
@@ -315,7 +368,7 @@ public static class PatchesGen
          .Open($"public static class {n.CharClass}RunWonAchievementPatch")
          .Open("static void Postfix(CharacterModel __instance, ref Achievement __result)")
          .Open($"if (__instance is {n.CharClass})")
-         .Line("__result = ModelDb.Character<Ironclad>().RunWonAchievement;")
+         .Line("__result = ModelDb.Character<MegaCrit.Sts2.Core.Models.Characters.Ironclad>().RunWonAchievement;")
          .Close()
          .Close()
          .Close()
@@ -325,8 +378,20 @@ public static class PatchesGen
          .Line("// 自定义角色会抛 ArgumentOutOfRangeException(\"character\") → 精英/Boss 打完不结算。")
          .Line("// ============================================================")
          .Open("internal static class ForgeVanillaCharacterGuard")
+         .Line("/// <summary>是不是本体那 6 个官方角色。</summary>")
+         .Line("/// <remarks>")
+         .Line("/// ⚠ 这里**必须写全名**：短名会被作用域里任何同名类型抢走 —— 本 mod 自己有个类叫 <c>Defect</c> 时")
+         .Line("///   编译器会把它当成模式类型，于是 `character is … Defect …` 直接报")
+         .Line("///   CS8121:「\"Defect\" 类型的模式无法处理 \"CharacterModel\" 类型的表达式」")
+         .Line("///   （用户实测报过 cs\\Patches.cs(121,54)）。写全名之后不管本 mod 有什么同名类都不会再撞。")
+         .Line("/// </remarks>")
          .Line("public static bool IsVanilla(CharacterModel? character) =>")
-         .Line("    character is Ironclad or Silent or Regent or Defect or Necrobinder or Deprived;")
+         .Line("    character is MegaCrit.Sts2.Core.Models.Characters.Ironclad")
+         .Line("        or MegaCrit.Sts2.Core.Models.Characters.Silent")
+         .Line("        or MegaCrit.Sts2.Core.Models.Characters.Regent")
+         .Line("        or MegaCrit.Sts2.Core.Models.Characters.Defect")
+         .Line("        or MegaCrit.Sts2.Core.Models.Characters.Necrobinder")
+         .Line("        or MegaCrit.Sts2.Core.Models.Characters.Deprived;")
          .Close()
          .Line();
 

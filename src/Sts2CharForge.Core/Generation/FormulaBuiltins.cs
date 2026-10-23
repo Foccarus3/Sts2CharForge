@@ -37,7 +37,18 @@ namespace Sts2CharForge.Core.Generation;
 /// <c>CardPileCmd.AddGeneratedCardToCombat</c> → <c>History.CardGenerated</c>），
 /// 所以没有单独的「复制张数」——界面上和文档里都写明了这一点。
 /// </summary>
-public sealed record FormulaBuiltin(string Id, string Display, string CSharp, IReadOnlyList<string>? LegacyCSharp = null)
+/// <summary>
+/// 一条内置读数（界面上「可用量」/ 参考窗 / 「填入参数…」弹窗里列的就是它）。
+///
+/// <para><b><paramref name="CardOnly"/></b> = 这条读数**只能在卡牌链上用**（表达式里带着
+/// <c>base.…</c> 这种「这张牌自己」的成员）。遗物 / 药水 / 自定义状态的 Owner 不是
+/// <c>CardModel</c>，同一条表达式在那三条链上要么编不过、要么语义错；而「自定义参数 / 组」的
+/// 取值来源下拉（<c>ParamSources.All</c>）会把内置读数整张表铺进去 —— 卡牌专属的读数一旦被选成
+/// 参数来源，参数表达式会在 **OnPlay 序幕那一刻**求值（那时候伤害还没打）→ 恒为 0、静默失效。
+/// 所以卡牌专属的读数**不进参数来源下拉**，用它的校验器也会在别的链上报错拦住。</para>
+/// </summary>
+public sealed record FormulaBuiltin(string Id, string Display, string CSharp, IReadOnlyList<string>? LegacyCSharp = null,
+    bool CardOnly = false)
 {
     /// <summary>把表达式里的占位符换成真正的 C# 片段。</summary>
     public string Expr(string player, string creature) =>
@@ -215,6 +226,64 @@ public static class FormulaBuiltins
             "(base.EnergyCost.CostsX ? (decimal)base.ResolveEnergyXValue() : 0m)"),
         new FormulaBuiltin("YSpent", "这张牌花掉的额外资源量（Y 费牌就是那个 Y；不是 Y 费 = 0）",
             "(base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)"),
+        // ===== ⑩ 这张牌**这一次打出**造成的伤害（V0.2.194，用户问的「荒疫打击」）=====
+        // 由来：本体 BlightStrike（荒疫打击）是「造成 8 点伤害。给予等量于所造成伤害的灾厄。」，
+        // 灾厄层数取的是 `attackCommand.Results.SelectMany(r => r).Sum(r => r.TotalDamage)`
+        // —— 也就是**这一下打出的伤害**（含被格挡的部分：TotalDamage = BlockedDamage + UnblockedDamage）。
+        //
+        // 我们读的是卡片身上的一个字段 `ForgeThisCardDamage`：生成端在 OnPlay 开头把它清零、
+        // 每条「造成伤害」之后累加（见 CSharpCodeGen 的 usesThisCardDamage / EmitAttack）。于是：
+        //   · 每次打出各算一次（回手再打 / 重放 / 复制出来的第二张互不影响）；
+        //   · 跟回合、历史、中毒跳伤、遗物、别的牌打的伤害**完全无关**（不去查战斗历史）；
+        //   · 只算走 `DamageCmd.Attack` 的普通攻击（伙伴攻击 / 对自己造成伤害 / 中毒灾厄跳伤不算）。
+        //
+        // ⚠ CardOnly: 这条表达式里的 `this` 必须是卡片（CardModel 的子类）—— 遗物 / 药水 / 自定义状态上
+        //   编不过，校验器会拦住，也不进「自定义参数 / 组」的取值来源下拉（理由见 FormulaBuiltin 的注释）。
+        // ⚠ 表达式里用 **`this.`**（不是 `base.`）：这条读数读的是**派生卡片类**上的属性
+        //   （`ForgeThisCardDamage`），而 `base` 在卡片类里指的是本体 CardModel —— 写 `base.…`
+        //   直接 CS0117「CardModel 未包含该定义」（探针真编译抓出来的；XSpent / YSpent 能用 `base.`
+        //   是因为 EnergyCost / ResolveEnergyXValue 本来就是 CardModel 的成员）。
+        //   代价：卡面那个「现算预览值」的静态 lambda 里没有 `this`（它只有 `card` 参数，类型是 CardModel），
+        //   所以**含这条读数的公式不声明预览变量**（见 CSharpCodeGen.VarDeclarationCore），
+        //   卡面文案对「施加状态」那一档另做特判（印「等量于所造成伤害」、不印数字）。
+        new FormulaBuiltin("ThisCardDamage",
+            "本张牌这一次打出造成的伤害（含被格挡的；只算普通攻击，和本体「荒疫打击」同口径）",
+            "((decimal)this.ForgeThisCardDamage)",
+            CardOnly: true),
+        // ===== ⑪ 这张牌**这一次打出**获得的格挡（V0.2.194，用户问的「能不能加一个这张牌获得的格挡」）=====
+        // 和上面那条是一对（同一个属性机制：打出时清零、每条格挡效果之后累加）。口径取本体
+        // `CreatureCmd.GainBlock(...)` 的**返回值** —— 它是走完 `ModifyBlock` 之后**实际拿到**的格挡
+        //（CreatureCmd.cs:680-700），所以敏捷 / 遗物 / 状态那些格挡加成也算在内，跟卡面写的数字不一定相等。
+        //   · 只算「获得格挡」这一条效果真拿到的那部分（给队友 / 敌人的格挡也算）；
+        //   · 「失去格挡」（负数那种走 LoseBlock）、「下回合生效」（挂 BlockNextTurnPower）、
+        //     牺牲伙伴换来的格挡、状态 / 遗物给的格挡 —— 一律不算；
+        //   · 每次打出各算一次。
+        new FormulaBuiltin("ThisCardBlock",
+            "本张牌这一次打出获得的格挡（实际拿到多少；含敏捷等加成，只算「获得格挡」效果）",
+            "((decimal)this.ForgeThisCardBlock)",
+            CardOnly: true),
+        // ===== ⑫ 四个「张数」读数（V0.2.241，用户问的「这张卡丢弃 / 消耗 / 变化 / 生成的卡牌数」）=====
+        // 和上面两条同一套属性机制（打出时清零、每条对应效果之后累加），只是记的是**张数**。
+        // 为什么不用战斗历史：本体那几张记录（CardExhaustedEntry / CardDiscardedEntry / CardGeneratedEntry）
+        //   **只带卡、不带「哪一次打出」**，根本分不出是谁干的；「变化」更是压根没有历史记录 ——
+        //   所以只能在生成出来的代码里逐次记账（每个操作点 +1 / +列表张数）。
+        // 口径：只算「这张牌这一次打出」自己那几条效果；「下回合生效」、状态 / 遗物 / 别的牌做的都不算。
+        new FormulaBuiltin("ThisCardExhaust",
+            "本张牌这一次打出消耗的卡牌数（只算「消耗卡牌」这条效果；数值 0 = 消耗这张牌自己也算 1）",
+            "((decimal)this.ForgeThisCardExhaust)",
+            CardOnly: true),
+        new FormulaBuiltin("ThisCardDiscard",
+            "本张牌这一次打出丢弃的卡牌数（只算「丢弃卡牌」这条效果；数值 0 = 丢弃这张牌自己也算 1）",
+            "((decimal)this.ForgeThisCardDiscard)",
+            CardOnly: true),
+        new FormulaBuiltin("ThisCardTransform",
+            "本张牌这一次打出变化的卡牌数（只算「变化卡牌」这条效果）",
+            "((decimal)this.ForgeThisCardTransform)",
+            CardOnly: true),
+        new FormulaBuiltin("ThisCardGenerate",
+            "本张牌这一次打出生成的卡牌数（只算「生成卡牌」这条效果；「复制卡牌」不算）",
+            "((decimal)this.ForgeThisCardGenerate)",
+            CardOnly: true),
     };
 
     /// <summary>按名字找一条内置量（大小写不敏感；<c>M</c>/<c>N</c> 这种单字母参数不会和它们撞）。</summary>

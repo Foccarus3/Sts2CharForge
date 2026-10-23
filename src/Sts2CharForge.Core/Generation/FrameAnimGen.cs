@@ -573,9 +573,15 @@ public static class @@PRE@@FrameAnimDeathPatch
 }
 
 /// <summary>
-/// 篝火立绘：本体 _Ready 会无条件把第一个子节点当 SpineSprite 包装
-/// （MegaSpineBinding 构造函数里的 ValidateBoundObject() 会抛 InvalidOperationException），
-/// 所以非 Spine 节点有帧动画时必须跳过原逻辑（前置补丁返回 false）。
+/// 篝火立绘：挂帧动画，**然后放行本体 _Ready**（V0.2.227 修「篝火会卡死」）。
+///
+/// 老版本这里 `return false` 整段跳过本体，看起来「更安全」，实际是把本体初始化也跳掉了：
+/// 本体 _Ready 里除了「把 SpineSprite 子节点包成 MegaSprite」那一段（非 Spine 场景里是空循环，
+/// 根本不会抛异常），还要初始化 `_controlRoot` / `Hitbox` / `%SelectionReticle` / 两个气泡锚点并连接信号。
+/// 跳过之后 `_controlRoot` 一直是 null，而联机（两人以上）时 `NRestSiteRoom._Ready` 会对奇数位角色调
+/// `FlipX()` —— 它第一行就是 `_controlRoot.Scale` → NullReferenceException 从 `_Ready` 里冒出来，
+/// 把房间 _Ready **后面那一整段**（`UpdateRestSiteOptions` / 继续按钮 / 同步器事件）全打断：
+/// 篝火没选项、点不了继续 = 卡死（单机只有一个角色、永远不调 FlipX，所以只在联机出现）。
 /// </summary>
 [HarmonyLib.HarmonyPatch(typeof(NRestSiteCharacter), "_Ready")]
 public static class @@PRE@@FrameAnimRestSitePatch
@@ -591,7 +597,15 @@ public static class @@PRE@@FrameAnimRestSitePatch
             var player = FrameAnimPlayer.Attach(__instance, def)
                          ?? __instance.GetNodeOrNull<FrameAnimPlayer>("__FrameAnimPlayer");
             player?.Play(FrameAnimRestSiteAct(__instance));
-            return false;   // 跳过本体，否则它会把非 Spine 节点包装成 MegaSprite 抛异常
+            // 场景结构齐（本工具生成的篝火场景都齐）→ 放行本体，_controlRoot / Hitbox 这些才会被初始化
+            if (__instance.GetNodeOrNull<Control>("ControlRoot") is not null
+                && __instance.GetNodeOrNull<Control>("%Hitbox") is not null
+                && __instance.GetNodeOrNull<Control>("%SelectionReticle") is not null)
+                return true;
+            // 结构不齐（自己换过篝火场景）：跑本体会炸在 GetNode<…>("ControlRoot") 上、同样打断房间 _Ready，
+            // 所以这种情况下仍然跳过本体 —— 下面 @@PRE@@FrameAnimRestSiteFlipPatch 会把联机那次 FlipX 兜住。
+            Log.Warn("[@@SLUG@@_anim] 篝火场景缺 ControlRoot / %Hitbox / %SelectionReticle，只播帧动画、跳过本体 _Ready");
+            return false;
         }
         catch (Exception e)
         {
@@ -609,6 +623,58 @@ public static class @@PRE@@FrameAnimRestSitePatch
             return act switch { 0 => "overgrowth_loop", 1 => "hive_loop", 2 => "glory_loop", _ => "idle_loop" };
         }
         catch { return "idle_loop"; }
+    }
+}
+
+/// <summary>
+/// 篝火翻面：兜住「本体 _Ready 没跑完」时的 FlipX NRE（V0.2.227，用户报的「篝火会卡死」），
+/// 并给帧动画立绘补一次水平镜像。
+///
+/// ① `FlipX()` 第一行就是 `_controlRoot.Scale`。老版本生成器把本体 _Ready 跳过了 → `_controlRoot` 是 null，
+///    联机时 `NRestSiteRoom._Ready` 对奇数位角色调 FlipX → NullReferenceException 冒到房间 _Ready 外面，
+///    后面「生成选项 / 连继续按钮 / 注册同步器事件」全没跑 = 篝火卡死。这里字段为空就直接跳过翻面。
+///    （只拦**本工具**的帧动画角色：别的模组的角色别去动，他们有自己的做法。）
+/// ② 非 Spine 场景里本体只会翻 `SpineSprite` 子节点，帧动画的 `Visuals` / `__FrameAnimSprite` 不会跟着翻，
+///    2 号位玩家的立绘会朝反方向 → 在 Postfix 里补一次镜像。
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(NRestSiteCharacter), nameof(NRestSiteCharacter.FlipX))]
+public static class @@PRE@@FrameAnimRestSiteFlipPatch
+{
+    // 本体私有字段（名字取自反编译源码）。反射失败就退化成「照常翻」，不影响正常角色。
+    private static readonly AccessTools.FieldRef<NRestSiteCharacter, Control>? ControlRoot =
+        FrameAnimSpineProbe.TryFieldRef<NRestSiteCharacter, Control>("_controlRoot");
+
+    static bool Prefix(NRestSiteCharacter __instance)
+    {
+        try
+        {
+            if (ControlRoot is null) return true;
+            if (ControlRoot(__instance) is not null) return true;
+            if (__instance.GetNodeOrNull<Node>("__FrameAnimPlayer") is null) return true;   // 不是本工具的角色，不动
+            Log.Warn("[@@SLUG@@_anim] 篝火角色还没初始化完（_controlRoot = null），跳过这次 FlipX（否则联机会把房间初始化打断）");
+            return false;
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[@@SLUG@@_anim] FlipX 兜底失败: {e}");
+            return true;
+        }
+    }
+
+    static void Postfix(NRestSiteCharacter __instance)
+    {
+        try
+        {
+            if (__instance.GetNodeOrNull<Node>("__FrameAnimPlayer") is null) return;
+            if (FrameAnimSpineProbe.FindDirectSpineChild(__instance) is not null) return;   // 骨骼角色本体已经翻过
+            FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>("%Visuals"));
+            FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>("Visuals"));
+            FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>("__FrameAnimSprite"));
+        }
+        catch (Exception e)
+        {
+            Log.Error($"[@@SLUG@@_anim] 篝火镜像失败: {e}");
+        }
     }
 }
 
@@ -678,6 +744,35 @@ internal static class FrameAnimSpineProbe
         for (int i = 0; i < n; i++)
             if (host.GetChild(i) is Node2D n2 && n2.GetClass() == "SpineSprite") return n2;
         return null;
+    }
+
+    /// <summary>
+    /// 反射读本体私有字段（V0.2.227：篝火 FlipX 兜底用）。字段找不到 / 名字变了就返回 null，
+    /// 调用方退回「照常执行本体」—— 绝不能因为读不到字段把游戏改坏。
+    /// </summary>
+    public static AccessTools.FieldRef<T, F>? TryFieldRef<T, F>(string fieldName) where T : class
+    {
+        try
+        {
+            return AccessTools.FieldRefAccess<T, F>(fieldName);
+        }
+        catch (Exception e)
+        {
+            Log.Warn($"[@@SLUG@@_anim] 读不到 {typeof(T).Name}.{fieldName}：{e.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>水平镜像：Scale.X 与 Position.X 一起取反（和本体翻 Spine 子节点同一套做法）。</summary>
+    public static void MirrorX(Node2D? node)
+    {
+        if (node is null || !GodotObject.IsInstanceValid(node)) return;
+        Vector2 scale = node.Scale;
+        scale.X = 0f - scale.X;
+        node.Scale = scale;
+        Vector2 pos = node.Position;
+        pos.X = 0f - pos.X;
+        node.Position = pos;
     }
 }
 

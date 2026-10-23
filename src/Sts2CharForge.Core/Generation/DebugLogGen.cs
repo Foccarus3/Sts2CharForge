@@ -111,18 +111,26 @@ internal static class DebugLogGen
     /// </summary>
     internal static string LogText(string kindZh, string display, string className, string effectText,
         string amountExpr, string targetExpr = "", string selfExpr = "", bool inLoop = false,
-        string beforeLine = "")
+        string beforeLine = "", string groupZh = "")
     {
         var sb = new StringBuilder();
         sb.Append(Prefix);
         sb.Append(kindZh).Append('「').Append(display).Append("」(").Append(className).Append(") → ");
         sb.Append(effectText);
         if (!string.IsNullOrWhiteSpace(amountExpr)) sb.Append("；数值=").Append(amountExpr);
+        // V0.2.234：「全部友方 / 全体单位」这类效果是**逐个动手**的，打印点在 foreach **外面**（见
+        // CSharpCodeGen.EmitPerCreature），不能引用循环变量 `ally` / `unit`（否则 CS0103：用户实测
+        // 「生成调试日志」一开，VitaCard2x.cs(48,160): error CS0103: 当前上下文中不存在名称"ally"，
+        // 整个模组编译不过）。这几档改成把「打谁」写成一句固定说明。
+        if (!string.IsNullOrWhiteSpace(groupZh))
+        {
+            sb.Append("；目标=[").Append(groupZh).Append(']');
+        }
         // ⚠ 「逐个动手」（inLoop）时这一段**不写进日志原文**：那时目标名要按运行时打
         //（`"…目标=[" + ((__fgFoe)?.Name ?? "?") + "]"`），拼在字符串里会被 Lit.Str 转义成
         // 一串字面量代码（用户实测的日志里打出来就是 `目标=[' + ((x)?.Name ?? \"?\") + ']`）。
         // 调用方（Target / TargetInline）会把 LoopTargetCode 拼在后面。
-        if (!string.IsNullOrWhiteSpace(targetExpr) && !inLoop)
+        else if (!string.IsNullOrWhiteSpace(targetExpr) && !inLoop)
         {
             sb.Append("；目标=[").Append(targetExpr).Append("?.Name ?? \"?\"");
             sb.Append(string.Equals(targetExpr, selfExpr, StringComparison.Ordinal) ? "]（自己）" : "]（不是自己）");
@@ -166,19 +174,24 @@ internal static class DebugLogGen
     /// 「谁在跑 …」那一段（用**当前来源作用域**里的卡牌 / 遗物 … 名字 + 这条效果的实际正负档）。
     /// </summary>
     private static string TextOf(EffectSpec e, string amountExpr, string targetExpr = "", bool inLoop = false,
-        string beforeLine = "") =>
+        string beforeLine = "", string groupZh = "") =>
         LogText(_current?.KindZh ?? "", _current?.Display ?? "", _current?.ClassName ?? "", EffectDisplay(e),
-            amountExpr, targetExpr, _current?.SelfExpr ?? "", inLoop, beforeLine);
+            amountExpr, targetExpr, _current?.SelfExpr ?? "", inLoop, beforeLine, groupZh);
 
     // ======================================================================
     // 三个「开关关着就一个字都不写」的发射入口
     // ======================================================================
 
-    /// <summary>效果**对某个目标**动手时那一行（伤害 / 格挡 / 治疗 / 失去生命 … 用它打「实际数值」）。</summary>
-    internal static void Target(CodeWriter w, EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false)
+    /// <summary>
+    /// 效果**对某个目标**动手时那一行（伤害 / 格挡 / 治疗 / 失去生命 … 用它打「实际数值」）。
+    /// <paramref name="groupZh"/> 非空 = 「全部友方 / 全体单位」那种逐个动手的档：打印点在循环外面，
+    /// 目标改成一句固定说明（不能引用循环变量，见 <see cref="LogText"/>）。
+    /// </summary>
+    internal static void Target(CodeWriter w, EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false,
+        string groupZh = "")
     {
         if (!On) return;
-        w.Line(PrintStatement(e, targetExpr, amountExpr, inLoop) + $"   // {Marker}");
+        w.Line(PrintStatement(e, targetExpr, amountExpr, inLoop, groupZh) + $"   // {Marker}");
     }
 
     /// <summary>
@@ -192,10 +205,32 @@ internal static class DebugLogGen
     /// 换成带换行的写法后：日志自己占一行（「从工程反推存档」按行跳过，见 <see cref="PowerBefore"/> 的说明），
     /// 后面那条语句照旧原样执行。
     /// </summary>
-    internal static string TargetInline(EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false)
+    internal static string TargetInline(EffectSpec e, string targetExpr, string amountExpr = "", bool inLoop = false,
+        string groupZh = "")
     {
         if (!On) return "";
-        return PrintStatement(e, targetExpr, amountExpr, inLoop) + $"   // {Marker}\n";
+        return PrintStatement(e, targetExpr, amountExpr, inLoop, groupZh) + $"   // {Marker}\n";
+    }
+
+    /// <summary>
+    /// 「这一次是第几次打出」那一行（V0.2.236）。
+    ///
+    /// 用户报「投斧 对某张牌不生效」时最难判的就是这一点：本体 <c>CardModel.OnPlayWrapper</c> 是
+    /// <c>for (int i = 0; i &lt; playCount; i++) await OnPlay(...)</c> —— 多打的那一次**会再跑一遍 OnPlay**，
+    /// 但界面上（尤其是能力牌，打出后牌就去 <c>PileType.None</c>）常常看不出来。日志里写清「第 2/2 次」
+    /// 就能一眼分清两种情形：只有「第 1/1 次」= 遗物/状态压根没改 playCount（例：投斧每场战斗只加成
+    /// **第一张**打出的牌，Already used）；出现「第 2/2 次」= 多打的那次真的执行了，
+    /// 那么「没效果」只可能是效果本身不可叠加（单一实例的状态第二层看不出来）。
+    ///
+    /// 只读 <c>cardPlay.PlayIndex</c> / <c>cardPlay.PlayCount</c>（本体 CardModel.cs:1915-1925 赋的值），
+    /// 不改任何状态；开关关着时一个字都不写（红线①）。
+    /// </summary>
+    internal static void PlayCount(CodeWriter w)
+    {
+        if (!On) return;
+        string head = Lit.Str(Prefix + (_current?.KindZh ?? "") + "「" + (_current?.Display ?? "") + "」("
+            + (_current?.ClassName ?? "") + ") → 打出第 ") ;
+        w.Line($"Godot.GD.Print({head} + (cardPlay.PlayIndex + 1).ToString() + \"/\" + cardPlay.PlayCount.ToString() + \" 次\");   // {Marker}");
     }
 
     /// <summary>
@@ -204,9 +239,11 @@ internal static class DebugLogGen
     /// 「逐个动手」（<paramref name="inLoop"/>）时目标名拼在字符串**后面**按运行时打
     /// （<see cref="LoopTargetCode"/>）—— 塞进日志原文里会被 Lit.Str 转义成一串字面量代码。
     /// </summary>
-    private static string PrintStatement(EffectSpec e, string targetExpr, string amountExpr, bool inLoop)
+    private static string PrintStatement(EffectSpec e, string targetExpr, string amountExpr, bool inLoop,
+        string groupZh = "")
     {
-        string head = Lit.Str(TextOf(e, amountExpr, targetExpr, inLoop: true));
+        string head = Lit.Str(TextOf(e, amountExpr, targetExpr, inLoop: true, groupZh: groupZh));
+        if (!string.IsNullOrWhiteSpace(groupZh)) return $"Godot.GD.Print({head});";
         if (!inLoop || string.IsNullOrWhiteSpace(targetExpr)) return $"Godot.GD.Print({head});";
         return $"Godot.GD.Print({head} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")});";
     }

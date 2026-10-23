@@ -7,6 +7,19 @@ namespace Sts2CharForge.App;
 public partial class App : Application
 {
 
+    /// <summary>
+    /// V0.2.242：效应编辑器**公式框**旁边的「…」按钮（那个编辑器是 App.xaml 里的模板，
+    /// 所以事件处理器只能挂在 App 上 —— 挂在 MainWindow 上会 CS1061「App 未包含 …」）。
+    /// 真正的菜单由 <see cref="MainWindow.InsertFormulaParamInto"/> 弹（它拿得到当前存档 / 内置读数表）。
+    /// </summary>
+    private void OnInsertFormulaParam(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button btn) return;
+        var win = Windows.OfType<MainWindow>().FirstOrDefault();
+        if (win is null) return;
+        win.InsertFormulaParamInto(btn);
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         // 自检 / 命令行模式：绝不写用户的存档（只读）。
@@ -285,5 +298,24 @@ public partial class App : Application
         }
         win.Show();
         ShutdownMode = ShutdownMode.OnMainWindowClose;
+
+        // ⚠ V0.2.183：这一句**必须**在（V0.2.182 我把它漏了 —— 窗口类做了、启动时没人调，
+        // 用户报「怎么没弹出来」）。用户要求：「每次打开生成器时，打开一个参数参考小窗口，
+        // 并且对里面的参数进行分类」。编辑器里那三份内嵌的「可用量」清单已经删掉，清单只在这个窗里看。
+        // 用 Show（非模态）：用户可以把它拖到一边继续干活；Owner 指过去 —— CenterOwner 才落在主窗中间，
+        // 主窗关掉时它也一起走。
+        //
+        // ⚠ 这一步**绝不能把启动搞崩**（弹不出参考窗只是少个帮助窗，程序必须照常开）：
+        // 真出意外就记一行日志到程序目录（paramref_error.txt）然后继续。
+        // 另外给一个逃生开关：带 `--noparamref` 启动可以不弹（不想每次看到它的人用）。
+        if (!e.Args.Any(a => a.Equals("--noparamref", StringComparison.OrdinalIgnoreCase)))
+        {
+            try { win.ShowParamReference(); }
+            catch (Exception ex)
+            {
+                try { File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "paramref_error.txt"), ex.ToString(), new UTF8Encoding(false)); }
+                catch { /* 连日志都写不了就算了，绝不能因此崩启动 */ }
+            }
+        }
     }
 }

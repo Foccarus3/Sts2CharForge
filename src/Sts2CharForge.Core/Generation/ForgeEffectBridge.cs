@@ -161,10 +161,35 @@ public static class ForgeEffectBridge
             PotionId = NullIfEmpty(node.Get("PotionId")),
             PotionPick = Canonical(node.Get("PotionPick"), "Fixed", "Fixed", "Random"),
             SpawnTo = Canonical(node.Get("SpawnTo"), "Hand", "Hand", "Draw", "Discard", "Exhaust"),
+            // ⚠ V0.2.181：这几个「生成卡牌 / 变化卡牌」的档位以前**压根没读**（用户实测报的
+            // 「锻造卡的生成卡牌多选1不正常生效」：节点上明明选了「按范围随机」+「多选1 = 3」，
+            // 桥这边建出来的 spec 却是 SpawnPick=""（⇒ IsSpawnRandom=false）、SpawnChoice=1，
+            // 于是生成端走「指定卡」那条老路 —— 生成 N 张同一个卡，选牌界面根本不出现）。
+            // 键名 = EffectFieldUsage 里那一行（界面绑的就是 SpawnPick / SpawnChoice / SpawnFilter…）。
+            SpawnPick = Canonical(node.Get("SpawnPick"), "Fixed", "Fixed", "Random"),
+            SpawnChosen = node.GetFlag("SpawnChosen"),
+            SpawnFilter = (node.Get("SpawnFilter") ?? "").Trim(),
+            SpawnUpgraded = node.GetFlag("SpawnUpgraded"),
+            SpawnFree = node.GetFlag("SpawnFree"),
+            SpawnFreeThisTurn = node.GetFlag("SpawnFreeThisTurn"),
+            SpawnUpgradedThisTurn = node.GetFlag("SpawnUpgradedThisTurn"),
+            SpawnKeyword = (node.Get("SpawnKeyword") ?? "").Trim(),
+            // V0.2.220：图上【效果】新加的「为抽到的牌加关键词 / 是不是临时」两栏
+            //（抽牌 / 从三摞拿牌 / 填满手牌用得到）。没有这两个键的老图 → 空串 / false，
+            // 和 EffectSpec 的默认值一模一样（生成文本一个字都不变）。
+            DrawnKeyword = (node.Get("DrawnKeyword") ?? "").Trim(),
+            DrawnKeywordTemp = node.GetFlag("DrawnKeywordTemp"),
             // ⚠ 老图的「取牌方式」默认是「自己选」；卡牌那栏的默认是 Random，所以必须显式按老默认给
             CardPick = string.Equals(node.Get("Pick", "").Trim(), "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen",
+            // V0.2.212：图上【效果】模块新加的「从哪里选牌 / 放到哪一摞」两栏。
+            // 没有这两个键的老图 → 都落回 "Hand"，和 EffectSpec 自己的默认值一模一样（生成文本一个字都不变）。
+            SelectPile = Canonical(node.Get("SelectPile"), "Hand", "Hand", "Draw", "Discard", "Exhaust", "Top"),
+            PlaceTo = Canonical(node.Get("PlaceTo"), "Hand", "Hand", "Draw", "Discard", "Exhaust", "Top"),
             TempPowerReverse = node.Get("Reverse").Trim().Length == 0 ? TempPowerReverses.TurnEnd : node.Get("Reverse").Trim(),
             NextTurn = node.GetFlag("NextTurn"),
+            // V0.2.250：图上【效果】新加的「只持续本回合」（减少卡牌费用用）。
+            // 没有这个键的老图 → false，和 EffectSpec 默认值一样（老存档生成文本一个字都不变）。
+            CostDownThisTurn = node.GetFlag("CostDownThisTurn"),
             AllowDuplicates = node.GetFlag("AllowDuplicate", true),
             TargetSideCustom = false,
         };
@@ -179,6 +204,9 @@ public static class ForgeEffectBridge
         // ---- 生效次数 / 命中次数（默认都是 1）----
         ApplyCount(node.Get("Times"), "1", v => e.Times = v, f => e.TimesFormula = f);
         ApplyCount(node.Get("Hits"), "1", v => e.RepeatCount = v, f => e.RepeatFormula = f);
+        // ---- 多选1 的候选张数（默认 1 = 不是多选1；只认纯数字，公式这一栏不支持）----
+        if (decimal.TryParse(node.Get("SpawnChoice").Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out decimal sc))
+            e.SpawnChoice = sc;
 
         // ---- 概率生效（老图是一个数字：100 = 必定；也能写公式）----
         string chance = node.Get("Chance").Trim();
@@ -217,8 +245,35 @@ public static class ForgeEffectBridge
         node.SetField("Pick", string.Equals(e.CardPick, "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen");
         node.SetField("SpawnCardId", (e.SpawnCardId ?? "").Trim());
         node.SetField("SpawnTo", e.SpawnTo);
+        // V0.2.181：把「取卡方式 / 多选1 / 范围限定 / 从范围里自己挑 / 附加处理」也回写 ——
+        // 不回写的话，界面上改过这些栏位之后老字段还是旧的（生成端虽然读 spec，但回读 / 别的读老字段的
+        // 路径会看到过期值）。
+        node.SetField("SpawnPick", string.Equals(e.SpawnPick, "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Fixed");
+        node.SetField("SpawnChoice", e.SpawnChoice.ToString("0.####", CultureInfo.InvariantCulture));
+        node.SetField("SpawnFilter", (e.SpawnFilter ?? "").Trim());
+        node.SetField("SpawnChosen", e.SpawnChosen ? "1" : "0");
+        node.SetField("SpawnUpgraded", e.SpawnUpgraded ? "1" : "0");
+        node.SetField("SpawnFree", e.SpawnFree ? "1" : "0");
+        node.SetField("SpawnFreeThisTurn", e.SpawnFreeThisTurn ? "1" : "0");
+        node.SetField("SpawnUpgradedThisTurn", e.SpawnUpgradedThisTurn ? "1" : "0");
+        node.SetField("SpawnKeyword", (e.SpawnKeyword ?? "").Trim());
+        // V0.2.220：「为抽到的牌加关键词 / 是不是临时」—— 同样只在这几种效果用得到时才写
+        //（积木视图会把非空栏位拼成摘要，无条件写「关键词 = 不加」是噪声）。
+        if (Sts2CharForge.Core.Effects.EffectFieldPolicy.UsesDrawnKeyword(e.Kind))
+        {
+            node.SetField("DrawnKeyword", (e.DrawnKeyword ?? "").Trim());
+            node.SetField("DrawnKeywordTemp", e.DrawnKeywordTemp ? "1" : "0");
+        }
         node.SetField("PotionPick", e.PotionPick);
         node.SetField("PotionId", (e.PotionId ?? "").Trim());
+        // V0.2.212：「从哪里选牌 / 放到哪一摞」（放置卡牌、消耗 / 丢弃 / 升级 / 变化 / 复制类效果用得到）。
+        // ⚠ 只在这两种效果**用得到的那一档**才写：积木视图（ForgeBlockView）会把非空的栏位拼成一句摘要，
+        // 无条件写「手牌」会让每个效果模块都多一句「放到哪一摞：手牌」的噪声。
+        if (EffectSpec.KindUsesSelectPile(e.Kind)) node.SetField("SelectPile", e.SelectPile);
+        if (EffectSpec.KindUsesPlaceTo(e.Kind)) node.SetField("PlaceTo", e.PlaceTo);
+        // V0.2.250：「只持续本回合」只在「减少卡牌费用」上用得到时才回写（积木摘要不噪声）
+        if (string.Equals(e.Kind, "CostDown", StringComparison.Ordinal))
+            node.SetField("CostDownThisTurn", e.CostDownThisTurn ? "1" : "0");
         node.SetField("Reverse", e.TempPowerReverse);
         node.SetField("NextTurn", e.NextTurn ? "1" : "0");
     }

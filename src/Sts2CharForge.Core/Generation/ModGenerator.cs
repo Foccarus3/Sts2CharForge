@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -29,14 +29,17 @@ public static class ModGenerator
         //（「同一份存档生成两次文本逐字节相同」是既有红线，见 DebugLogGen._seq；各 Source 生成器里还会各自再归零一次）。
         DebugLogGen.Reset();
         // 自定义状态登记：卡牌/遗物/药水的「施加增益/减益」要能引用它们
+        // V0.2.247：条件里那个「范围（可按组）」要靠存档查组名（卡牌/遗物/药水/状态四条链共用一处）。
+        EffectCatalog.SetDisplayProfile(profile);
         // 注意：这里必须和 UI（MainWindow 的 SetCustomPowers）一样，只登记**启用**的状态。
         // 否则「停用/删除过的状态」也会被当成「存在」，校验器就放过了引用它的卡牌，
         // 而生成时又跳过它（ModGenerator 下面按 CustomPowerGen.IsActive 生成类）——
         // 结果 dotnet 直接报 CS0246 找不到类型，用户只看到一堆看不懂的编译错误。
         EffectCatalog.SetCustomPowers(profile.CustomPowers
-            .Select((cp, i) => (CustomPowerGen.ClassNameOf(profile, cp, i), cp.Name, Active: CustomPowerGen.IsActive(cp)))
+            .Select((cp, i) => (ClassName: CustomPowerGen.ClassNameOf(profile, cp, i), cp.Name,
+                AllowNegativeLayers: cp.AllowNegativeLayers, Single: cp.Single, Active: CustomPowerGen.IsActive(cp)))
             .Where(x => x.Active && !string.IsNullOrWhiteSpace(x.Name))
-            .Select(x => (x.Item1, x.Name)));
+            .Select(x => (x.ClassName, x.Name, x.AllowNegativeLayers, x.Single)));
 
         // 自定义关键词登记：范围限定里的「自定义关键词那一组」要用它显示中文名
         // （正式生成走的是 SpawnFiltersFor(profile)，登记表只是给没有 profile 参数的提示文案兜底）。
@@ -166,6 +169,9 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, n.PotionPoolClass + ".cs"), CSharpCodeGen.PotionPoolSource(profile));
         ProjectFilesGen.WriteText(Path.Combine(cs, "ModEntry.cs"), PatchesGen.ModEntrySource(profile, animPlan));
         ProjectFilesGen.WriteText(Path.Combine(cs, "Patches.cs"), PatchesGen.PatchesSource(profile));
+        // V0.2.260（用户要求）：先古道具专属（古老牙齿 / 尘封魔典 / 欧洛巴斯之触）—— 三个勾都不勾就**一个文件都不多**
+        if (AncientItemPatchGen.Needs(profile))
+            ProjectFilesGen.WriteText(Path.Combine(cs, AncientItemPatchGen.File + ".cs"), AncientItemPatchGen.Source(profile));
         // 锻造节点图的运行时辅助：**只有真的用了节点图才写**（空图 = 一个文件都不多，默认档逐字不变）。
         // 「数值公式」用的是同一个运行时辅助类（公式求值器是共用的），所以卡牌上写了公式也要写这个文件；
         // V0.2.164 起遗物 / 药水 / 自定义状态的触发器上写了公式同样要（那三条链走全内联求值）。
@@ -183,6 +189,10 @@ public static class ModGenerator
         // 自定义状态的「覆盖血条」：只有真的配了颜色才写（不配 = 一个文件都不多，也不打那个补丁）
         if (HpBarOverlayGen.Needs(profile))
             ProjectFilesGen.WriteText(Path.Combine(cs, HpBarOverlayGen.File + ".cs"), HpBarOverlayGen.Source(profile));
+        // 卡牌图鉴（本体 NCardLibrary）对 mod 角色的补丁：**每个存档都写** ——
+        // 只要玩的是我们生成的 mod 角色，本体图鉴打开时就会 KeyNotFoundException（表里没有我们的角色），
+        // 那个异常抛在 NSubmenuStack.Push 里 → 图鉴卡在打开到一半（用户实测）。
+        ProjectFilesGen.WriteText(Path.Combine(cs, CardLibraryGen.File + ".cs"), CardLibraryGen.Source(profile));
         // 逐帧动画的游戏侧两个文件：只有勾了总开关而且待机有素材时才写
         if (animPlan is not null)
         {
@@ -312,14 +322,25 @@ public static class ModGenerator
             Log("  已生成「仅本回合升级」用的临时升级 Power（生成 / 变化出来的卡回合结束降回来）");
         }
 
-        // 「敌人死亡计数」（用户要求：每 N 个敌人死亡触发一次）——本体历史里没有死亡记录，用到才生成那个小运行时
-        if (CSharpCodeGen.UsesEnemyDeathCounter(profile))
+        // 「敌人死亡计数」（用户要求：每 N 个敌人死亡触发一次）+「预见次数」（V0.2.225：条件「本回合预见过」）
+        // —— 本体历史里都没有这两种记录，用到才生成那个小运行时（只有用到的那部分会写进去）
+        if (CSharpCodeGen.UsesCombatCounters(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "CombatCounters.cs"), CSharpCodeGen.CombatCountersSource(profile));
-            Log("  已生成敌人死亡计数器（本体战斗历史里没有死亡记录，只能自己数）");
+            Log(CSharpCodeGen.UsesEnemyDeathCounter(profile)
+                ? "  已生成敌人死亡计数器（本体战斗历史里没有死亡记录，只能自己数）"
+                : "  已生成「预见次数」计数器（本体没有预见这个机制，条件「本回合预见过」靠它查）");
         }
 
         // 「获得的能量（本回合 / 本场战斗）」——本体没有这个读数（只有当前能量），用到才生成那个小运行时 + 补丁
+        // V0.2.231「我上传的音频会被下一个自定义音频顶替」：只有勾了才有这个小助手
+        //（没勾时播放代码还是原来那几句内联的 AudioStreamPlayer，一个字都不变）
+        if (CSharpCodeGen.UsesSfxReplace(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "ForgeSfx.cs"), CSharpCodeGen.SfxRegistrySource(profile));
+            Log("  已生成自定义音频播放器（「被下一个自定义音频顶替」用）");
+        }
+
         if (CSharpCodeGen.UsesEnergyGainTracker(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "EnergyGainTracker.cs"), CSharpCodeGen.EnergyGainTrackerSource(profile));
@@ -474,6 +495,14 @@ public static class ModGenerator
             ProjectFilesGen.WriteText(Path.Combine(cs, "TempPowers.cs"), CSharpCodeGen.TempPowersSource(profile));
             Log($"  已生成临时增益用的 Power {tempPowers.Count} 个（本回合 +X，回合结束撤掉）："
                 + string.Join("、", tempPowers.Select(e => EffectCatalog.PowerName(e.PowerId))));
+        }
+
+        // V0.2.249（用户要求「减少指定卡牌类别的费用（类似腐化，刺破帷幕），加在效果种类里」）：
+        // 一条带载荷的内部状态，覆写本体的 TryModifyEnergyCostInCombatLate
+        if (CSharpCodeGen.NeedsCostDownPower(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "CostDownPower.cs"), CSharpCodeGen.CostDownPowerSource(profile));
+            Log("  已生成「减少卡牌费用」用的状态（腐化 / 刺破帷幕同一个钩子：TryModifyEnergyCostInCombatLate）");
         }
 
         // 「抽到就减费」：在 N 回合内，每次抽到的牌本场战斗的费用 -1（我们自己生成的 Power）

@@ -64,11 +64,72 @@ public static class NameStabilizer
         changed |= RepairKeywords(p, old, notes);
         changed |= Freeze(p, notes);
         changed |= FreezeKeywords(p, notes);
+        // 类名**变过**的那些：旧存档 / 正在进行的那一局里引用的还是旧类名，我们改不了存档，只能提醒（见方法注释）
+        WarnRenamedClasses(p, old, notes);
         // **每次都写**类名表（不只是这次改了名字才写）：下一次构建要靠它把「引用的是哪个模型」认回来，
         // 所以哪怕这次一个名字都没固定（用户全填了类名），这张表也必须是最新的。
         try { SaveMap(projectRoot, p, modId); }
         catch (Exception ex) { notes.Add($"[警告] 英文类名表写入失败（下次构建只能靠「不存在」判断引用）：{ex.Message}"); }
         return new Report(changed, notes);
+    }
+
+    /// <summary>
+    /// 「英文类名变过」的警告（**这条只能提醒，修不了**）：
+    ///
+    /// 存档 / 正在进行的那一局里，卡组、牌堆、遗物栏存的是**类名字符串**（`CARD.BUGKILLER_CARD18` 这种）。
+    /// 用户把某张卡的英文类名改掉（比如 `BugkillerCard18` → `Fulan`）之后，那一局里那张卡就不存在了：
+    /// 游戏序列化时写 NONE（日志里 `Unknown ModelId 'CARD.…' during serialization, writing NONE`），
+    /// **抽到那张牌时拿不到模型 → 卡住**（用户实测「变出来的牌抽不上来，会卡死」+ 日志里正好有这条 Unknown ModelId）。
+    ///
+    /// 为什么不能自动修：类名表只认得**配置里**的引用，那一局的存档在游戏那边。
+    /// 所以这里只报一条警告，并给出两条出路：把类名改回去 / 用新版重新开一局。
+    /// </summary>
+    private static void WarnRenamedClasses(CharacterProfile p, ClassMap old, List<string> notes)
+    {
+        if (old.Names.Count == 0) return;      // 第一次构建（没有上一次的类名表）：没什么可比的
+
+        var n = Naming.From(p);
+        var nowByClass = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var nowByName = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        void Add(string? cls, string? name)
+        {
+            cls = (cls ?? "").Trim();
+            name = (name ?? "").Trim();
+            if (cls.Length == 0) return;
+            nowByClass[cls] = name;
+            if (name.Length > 0) nowByName[name] = cls;
+        }
+
+        foreach (var c in p.AllCards)
+        {
+            if (c is null || c.IsVanillaCard) continue;
+            Add(n.CardClassName(p, c), c.Name);
+        }
+        for (int i = 0; i < p.Relics.Count; i++)
+            if (p.Relics[i] is { } r) Add(n.RelicClassName(r, i), r.Name);
+        for (int i = 0; i < p.Potions.Count; i++)
+            if (p.Potions[i] is { } s) Add(n.PotionClassName(s, i), s.Name);
+        foreach (var d in PetGen.All(p)) Add(d.ClassName, d.DisplayName);
+        for (int i = 0; i < p.CustomPowers.Count; i++)
+            if (p.CustomPowers[i] is { } cp) Add(CustomPowerGen.ClassNameOf(p, cp, i), cp.Name);
+        foreach (var (spec, key) in KeywordGen.All(p)) Add(key, KeywordGen.DisplayName(spec, key));
+
+        var warned = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in old.Names)
+        {
+            string wasClass = (kv.Key ?? "").Trim();
+            string wasName = (kv.Value ?? "").Trim();
+            if (wasClass.Length == 0) continue;
+            if (nowByClass.ContainsKey(wasClass)) continue;                  // 这个类名还在（没变过）
+            if (wasName.Length == 0) continue;
+            if (!nowByName.TryGetValue(wasName, out string? nowClass)) continue;   // 那张卡被删了 / 改名了：另一回事
+            if (string.Equals(nowClass, wasClass, StringComparison.OrdinalIgnoreCase)) continue;
+            if (!warned.Add(wasClass)) continue;
+            notes.Add($"[警告] 「{wasName}」的英文类名从 {wasClass} 变成了 {nowClass}："
+                + $"**正在进行的那一局 / 旧存档**里引用的还是 {wasClass}，那张牌在游戏里会变成「不存在的模型」"
+                + $"（日志里是 `Unknown ModelId`，抽到它可能直接卡住）。"
+                + $"想保住旧存档就把它的英文类名改回 {wasClass}；不想要那局了就用新版重新开一局。");
+        }
     }
 
     /// <summary>
@@ -642,7 +703,7 @@ public static class NameStabilizer
         }
     }
 
-    /// <summary>存档里所有效果（卡牌 / 诅咒 / 先古卡 / 遗物 / 药水 / 自定义状态触发器）。</summary>
+    /// <summary>存档里所有效果（卡牌 / 诅咒 / 先古卡 / 遗物 / 药水 / 自定义状态触发器 / **四类布上的效果**）。</summary>
     private static IEnumerable<EffectSpec> AllEffects(CharacterProfile p)
     {
         foreach (var c in p.AllCards)
@@ -657,6 +718,21 @@ public static class NameStabilizer
         foreach (var s in p.Potions)
             if (s?.Effects is { } list)
                 foreach (var e in list) yield return e;
+        foreach (var cp in p.CustomPowers)
+        {
+            // V0.2.194：图说了算的状态（锻造页「状态列表」）效果在**布的【效果】模块**上，
+            // 不在 cp.Triggers 里 —— 不看图的话改号时这些效果里的引用不会被修（生成出来是旧类名，编译不过）。
+            if (cp?.ForgeGraph is null) continue;
+            foreach (var n in cp.ForgeGraph.Nodes)
+            {
+                if (n is null || !ForgeEffectBridge.IsEffectNode(n)) continue;
+                var e = n.EffectSpec ?? ForgeEffectBridge.Ensure(n);
+                // 挂上「spec 一改就回写老字段」（幂等）—— 改了引用之后生成端读到的才是新名字
+                //（生成端读的是模块上的字段，spec 只对「新编辑器说了算」的那些模块是唯一来源）。
+                ForgeEffectBridge.Bind(n);
+                if (e is not null) yield return e;
+            }
+        }
         foreach (var cp in p.CustomPowers)
         {
             if (cp?.Triggers is null) continue;

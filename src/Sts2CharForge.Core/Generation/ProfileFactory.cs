@@ -11,7 +11,32 @@ public static class ProfileFactory
     {
         WriteIndented = true,
         Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        // V0.2.256（用户报「弹窗 配置解析失败：The JSON value could not be converted to System.String.
+        // Path: $.Version」）：存档里某一项本该是**字符串**、却被写成数字 / true / false 时，
+        // 以前整份存档直接读不进来（手写一句 `"Version": 1` 就够）。现在宽容一点：
+        // 数字 / 布尔按原文当字符串读进来（写出时仍然是带引号的字符串，不改存档格式）。
+        Converters = { new LenientStringConverter() },
     };
+
+    /// <summary>
+    /// 宽容的 string 转换器（V0.2.256）：读的时候接受 字符串 / 数字 / true / false / null，
+    /// 数字和布尔按**原文**变成字符串（`1.5` → "1.5"、`true` → "true"）；写的时候一律写字符串。
+    /// 只用来救人（别人手写的存档、复制粘贴掉了引号），不改变我们自己的输出格式。
+    /// </summary>
+    private sealed class LenientStringConverter : System.Text.Json.Serialization.JsonConverter<string>
+    {
+        public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+            reader.TokenType switch
+            {
+                JsonTokenType.String => reader.GetString(),
+                JsonTokenType.Null => null,
+                // 数字 / true / false / 对象 / 数组：一律拿原文（至少不会整份存档都读不进来）
+                _ => JsonDocument.ParseValue(ref reader).RootElement.GetRawText(),
+            };
+
+        public override void Write(Utf8JsonWriter writer, string value, JsonSerializerOptions options) =>
+            writer.WriteStringValue(value);
+    }
 
     /// <summary>新建存档的示例配置：在示例内容之外，默认带上初始卡组的「打击 ×5 + 防御 ×5」（见 AddVanillaBasics）。</summary>
     public static CharacterProfile Sample()

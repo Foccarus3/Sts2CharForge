@@ -105,6 +105,8 @@ public sealed class ForgeBlockView : Grid
     {
         ("Effect", "效果"), ("Unit", "对象"), ("Value", "数值"), ("Condition", "条件"),
         ("If", "if"), ("And", "且"), ("Or", "或"), ("Power", "状态"),
+        // V0.2.192：用户要求「在锻造增加状态列表」
+        ("PowerList", "状态列表"),
     };
 
     /// <summary>自检用：画出来多少块。</summary>

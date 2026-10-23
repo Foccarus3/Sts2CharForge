@@ -270,8 +270,19 @@ public static class PetGen
     {
         foreach (var d in All(p))
         {
-            if (!d.HasImage) continue;
-            string entryLower = d.Entry.ToLowerInvariant();
+            if (!d.HasImage)
+            {
+                // V0.2.198（用户实测：召唤物「每次召唤都回满血」，日志里其实是
+                // `Cannot open file 'res://scenes/creature_visuals/<entry>.tscn'` +
+                // `MonsterModel.CreateVisuals` 里 NullReferenceException）：
+                // 以前「没上传图片就不写场景」，让本体按约定去猜这个路径 —— 文件不存在时视觉加载会抛异常，
+                // 于是 PlayerCmd.AddPet 半路挂掉、这只宠物没被登记，下一次触发召唤又新建一只满血的新宠物。
+                // 现在**即使没图也写一个占位场景**（贴本体的 error.png），路径一定存在：
+                // 宠物能正常进场 / 登记 / 承伤，再召唤走「加最大生命」那条路，不会回满血。
+                WritePetScene(d, projectRoot, ImageRelPathOfFallback, 128, 128, 1.0);
+                log?.Invoke($"  召唤物视觉：{d.DisplayName} 没上传图片 → 用本体的 error.png 占位场景 {SceneRelPath(d)}");
+                continue;
+            }
             string dstPng = Path.Combine(projectRoot, ImageRelPath(d).Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(dstPng)!);
             FsSafe.Copy(d.Spec.Image!, dstPng, overwrite: true);
@@ -283,17 +294,34 @@ public static class PetGen
             if (scale < 0.02) scale = 0.02;
             int spriteH = (int)Math.Round(h * scale);
             int spriteW = (int)Math.Round(w * scale);
-            string scaleLine = Math.Abs(scale - 1.0) < 0.001
-                ? ""
-                : $"scale = Vector2({Num(scale)}, {Num(scale)})";
 
-            string scene = Path.Combine(projectRoot, SceneRelPath(d).Replace('/', Path.DirectorySeparatorChar));
-            Directory.CreateDirectory(Path.GetDirectoryName(scene)!);
-            ProjectFilesGen.WriteText(scene, $"""
+            WritePetScene(d, projectRoot, ImageRelPath(d), spriteW, spriteH, scale);
+            log?.Invoke($"  召唤物视觉：{d.DisplayName} → {ImageRelPath(d)} + {SceneRelPath(d)}（{w}×{h}，按 {Num(scale)} 缩放）");
+        }
+    }
+
+    /// <summary>没上传图片时用的占位贴图（本体 fallback.tscn 用的就是它）。</summary>
+    private const string ImageRelPathOfFallback = "images/monsters/error.png";
+
+    /// <summary>
+    /// 写一只宠物的视觉场景（<c>scenes/creature_visuals/&lt;entry&gt;.tscn</c>）。
+    /// 结构照抄本工程已经在用的静态立绘场景 + 本体 fallback.tscn：根节点挂 <c>NCreatureVisuals</c>，
+    /// 子节点 <c>%Visuals</c>（Sprite2D）/ <c>%Bounds</c> / <c>%CenterPos</c> / <c>%IntentPos</c>
+    /// —— 本体 <c>NCreatureVisuals._Ready()</c> 是 <c>GetNode</c>（不是 GetNodeOrNull），少一个就抛异常。
+    /// </summary>
+    private static void WritePetScene(PetDef d, string projectRoot, string textureRelPath,
+        int spriteW, int spriteH, double scale)
+    {
+        string scaleLine = Math.Abs(scale - 1.0) < 0.001
+            ? ""
+            : $"scale = Vector2({Num(scale)}, {Num(scale)})";
+        string scene = Path.Combine(projectRoot, SceneRelPath(d).Replace('/', Path.DirectorySeparatorChar));
+        Directory.CreateDirectory(Path.GetDirectoryName(scene)!);
+        ProjectFilesGen.WriteText(scene, $"""
 [gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://src/Core/Nodes/Combat/NCreatureVisuals.cs" id="1_visuals"]
-[ext_resource type="Texture2D" path="res://{ImageRelPath(d)}" id="2_tex"]
+[ext_resource type="Texture2D" path="res://{textureRelPath}" id="2_tex"]
 
 [node name="{d.ClassName}Visuals" type="Node2D"]
 script = ExtResource("1_visuals")
@@ -326,8 +354,6 @@ position = Vector2(-1, -{spriteH / 2})
 unique_name_in_owner = true
 position = Vector2(2, -{spriteH + 60})
 """);
-            log?.Invoke($"  召唤物视觉：{d.DisplayName} → {ImageRelPath(d)} + {SceneRelPath(d)}（{w}×{h}，按 {Num(scale)} 缩放）");
-        }
     }
 
     private static string Num(double v) => v.ToString("0.####", CultureInfo.InvariantCulture);
@@ -461,24 +487,16 @@ position = Vector2(2, -{spriteH + 60})
          .Line("return Task.CompletedTask;")
          .Close();
 
-        if (d.HasImage)
-        {
-            w.Line()
-             .Line("/// <summary>")
-             .Line($"/// 视觉场景：<c>{SceneRelPath(d)}</c>（由你上传的宠物图生成）。")
-             .Line("/// 根节点挂着本体的 NCreatureVisuals，里面有它 GetNode 硬编码要的四个唯一名节点")
-             .Line("/// %Visuals / %Bounds / %CenterPos / %IntentPos —— 换场景时这四个名字不能改。")
-             .Line("/// </summary>")
-             .Line($"protected override string VisualsPath => \"res://{SceneRelPath(d)}\";");
-        }
-        else
-        {
-            w.Line()
-             .Line("// 没有自定义图片：不 override VisualsPath，让本体按约定去找")
-             .Line($"// res://scenes/creature_visuals/{d.Entry.ToLowerInvariant()}.tscn；")
-             .Line("// 找不到会回退 creature_visuals/fallback（一张静态 error.png）—— 能正常显示、能打、能死。")
-             .Line("// 想换成自己的图：到「召唤物」页里上传一张 PNG 再重新生成。");
-        }
+        // 视觉场景：**不管有没有上传图片都指过去** —— 没图时生成的是「本体 error.png 占位场景」
+        //（V0.2.198 起 GenerateVisuals 一定会写这个文件；以前没图就不写、指望本体按约定回退，
+        //  结果本体回退那条路在加载失败时会抛 NullReferenceException，宠物连登记都过不去 —— 见 GenerateVisuals 的注释）。
+        w.Line()
+         .Line("/// <summary>")
+         .Line($"/// 视觉场景：<c>{SceneRelPath(d)}</c>{(d.HasImage ? "（由你上传的宠物图生成）" : "（没上传图片：占位场景，贴本体的 error.png）")}。")
+         .Line("/// 根节点挂着本体的 NCreatureVisuals，里面有它 GetNode 硬编码要的四个唯一名节点")
+         .Line("/// %Visuals / %Bounds / %CenterPos / %IntentPos —— 换场景时这四个名字不能改。")
+         .Line("/// </summary>")
+         .Line($"protected override string VisualsPath => \"res://{SceneRelPath(d)}\";");
 
         w.Line()
          .Line("/// <summary>没有自主回合：唯一一个 move 是空操作，并且自循环（本体 Osty 的做法）。</summary>")
@@ -527,9 +545,12 @@ position = Vector2(2, -{spriteH + 60})
          .Line("Creature? alive = Get(player);")
          .Open("if (alive is not null)")
          .Line("// 已经在场：加最大生命（本体 OstyCmd 对活着的 Osty 就是这么做的 —— 同名牌叠着打不会浪费）")
+         .Line("// ⚠ V0.2.198（用户实测报的「触发召唤时好像会直接把召唤物回满血」）：")
+         .Line("//   本体 CreatureCmd.GainMaxHp 的实现是 `SetMaxHp(MaxHp + amount)` **再 `Heal(实际加上的上限)`** ——")
+         .Line("//   也就是「加多少上限就补多少血」，身上原来的伤是留着的。")
+         .Line("//   这里以前多补了一句 `Heal(MaxHp - CurrentHp)`，等于**把召唤物直接奶满**（玩家看到的就是这个），")
+         .Line("//   所以删掉：再召唤一次只该让它更结实，不该把之前挨的打一笔勾销。")
          .Line("await CreatureCmd.GainMaxHp(alive, hp);")
-         .Line("// 顺手回满：GainMaxHp 只抬上限，当前生命不会跟着涨，玩家会觉得「加了上限却还是在残血」")
-         .Line("await CreatureCmd.Heal(alive, Math.Max(0m, alive.MaxHp - alive.CurrentHp));")
          .Line("// 血条 / 站位也照修一次：本体 AddCreature 会把该玩家**所有**宠物重排 + 关掉交互（血条），")
          .Line("// 这只即使是「上一只死了、这一只刚复活」之类的路径进来的，也要把自己的血条要回来。")
          .Line("ForgePetLayout.RelayoutAll(player);")

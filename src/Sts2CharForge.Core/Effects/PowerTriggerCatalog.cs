@@ -149,7 +149,7 @@ public static class PowerTriggers
         if (f.Length == 0 || f == "Any") return "任意";
         if (EffectCatalog.IsKeywordFilter(f)) return "关键词：" + EffectCatalog.SpawnFilterZh(f);
         if (EffectCatalog.IsCardGroupFilter(f)) return "组：" + EffectCatalog.SpawnFilterZh(f);
-        return f switch { "Attack" => "攻击", "Skill" => "技能", "Power" => "能力", "Curse" => "诅咒", "Status" => "状态", _ => f };
+        return f switch { "Attack" => "攻击", "Skill" => "技能", "Power" => "能力", "Curse" => "诅咒", "Status" => "状态", "Quest" => "任务", _ => f };
     }
 
     /// <summary>
@@ -230,6 +230,14 @@ public static class PowerTriggers
         // 而状态那条链两样都有（没有 choiceContext 的钩子由 EmitChoiceContextBootstrap 照本体做法造一个；
         // 玩家 = base.Owner.Player）。生成端现在复用了卡牌那条链的同一个 EmitSummonPet。
         "SummonPet",
+        // 其余宠物效果（V0.2.210，用户报的用例：自定义状态「打出一张牌时（这张牌还没生效）→ 给伙伴施加状态」
+        // 被这条校验拦住，对话框里把这份清单原样列出来）。它们和「牺牲伙伴」一样**不需要卡牌上下文**：
+        //   · 「找那只宠物」= `XxxCmd.Get(玩家)` 一行（状态钩子里玩家 = base.Owner.Player）；
+        //   · 施加状态 / 治疗 / 失去生命 / 加最大生命 / 承伤开关，全都是本体 API + choiceContext，
+        //     而状态那条链两样都有（没有 choiceContext 的钩子由 EmitChoiceContextBootstrap 造一个）。
+        // 生成端现在复用卡牌那条链的同一批发射器（CustomPowerGen.EmitEffect 里那一段），
+        // 只把「施加者 / 主人」换成 base.Owner、「这张牌」换成 null。
+        "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetApplyPower", "PetGuardOn", "PetGuardOff",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>
@@ -334,8 +342,9 @@ public static class PowerTriggers
         };
         // V0.2.161（用户实测：「抽卡、获得能量之类的效果种类的对象没了，但是显示的是对敌人」）：
         // 「抽牌 / 获得能量」这些种类**生成端不读作用对象**（界面上那一行也藏了）⇒ 描述里也不写「对指定敌人」——
-        // 判据和显隐同一份（EffectFieldPolicy.UsesTargetSide），别各写一套。
-        string who = e.TargetSide == "Self" || !EffectFieldPolicy.UsesTargetSide(e.Kind) ? "" : foe;
+        // 判据和显隐同一份，别各写一套。V0.2.200 起这「同一份」多了一档：
+        // 「牺牲伙伴 → 造成伤害」也有作用对象可选（`EffectSpec.UsesTargetSideEffective`），描述要跟上。
+        string who = e.TargetSide == "Self" || !e.UsesTargetSideEffective ? "" : foe;
         string suffix = who.Length == 0 ? "" : $"（{who}）";
         if (e.ChanceEnabled) suffix += $"（{e.ChancePercent.ToString("0.##")}% 概率）";
         // 「获得能量 / 获得金币」填了负数 = 扣除（生成的是 LoseEnergy / LoseGold）：
@@ -390,6 +399,17 @@ public static class PowerTriggers
                     "Damage" => "伤害",
                     _ => "一个状态",
                 }),
+            // 其余宠物效果（V0.2.210）：状态那条链现在也支持了（见 SupportedEffectKinds），
+            // 描述里同样不能印出英文种类名。这个函数没有 profile 参数 → 拿不到那只伙伴的名字 / 血量，
+            // 所以统一写「伙伴」（界面上「召唤物（哪一只）」那一栏本来就在旁边）。
+            "PetHeal" => $"治疗伙伴 [blue]{n}[/blue] 点生命",
+            "PetLoseHp" => $"伙伴失去 [blue]{n}[/blue] 点生命",
+            "PetGainMaxHp" => $"伙伴最大生命 [blue]{n}[/blue]（当前生命同时回复）",
+            "PetApplyPower" => e.SlowPercentEffective > 0 && e.IsSlowPower
+                ? $"给伙伴施加{EffectCatalog.PowerName(e.PowerId, "状态")}（受到伤害 +{e.SlowPercentEffective}%）"
+                : $"给伙伴施加 [blue]{n}[/blue] 层{EffectCatalog.PowerName(e.PowerId, "状态")}",
+            "PetGuardOn" => "伙伴替主人承伤（开）",
+            "PetGuardOff" => "取消伙伴替主人承伤（关）",
             // 将此牌放回手牌：状态触发器里用不了（见 NeedsCardPlayContext），但描述里不能印出英文种类名
             "ReturnSelfToHand" => "将此牌放回手牌",
             // 抽到这张牌时它自己本场战斗费用 -N：同样只在卡牌上（状态里没有「这张牌」）

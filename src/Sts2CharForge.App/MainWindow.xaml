@@ -4,6 +4,7 @@
         xmlns:local="clr-namespace:Sts2CharForge.App"
         xmlns:profile="clr-namespace:Sts2CharForge.Core.Profile;assembly=Sts2CharForge.Core"
         Title="Sts2CharForge —— 杀戮尖塔2 自定义角色生成器" Height="880" Width="1420"
+        MinWidth="960" MinHeight="600"
         Icon="waku.ico"
         PreviewKeyDown="OnWindowPreviewKeyDown"
         WindowStartupLocation="CenterScreen">
@@ -110,33 +111,6 @@
              放在**窗口**资源里、由 App.xaml 的卡牌模板用 DynamicResource 引用 ——
              一处定义，数值公式 / 次数公式 / 条件数值公式三块共用一个外观；数据源是本体的内置只读量清单
              （FormulaBuiltins.All，界面和生成端同一份，不会两套漂移）。 -->
-        <DataTemplate x:Key="FormulaBuiltinList">
-            <Border BorderBrush="#D6E4F5" BorderThickness="1" Background="#F5F9FF" Padding="6" Margin="0,4,0,0">
-                <StackPanel>
-                    <TextBlock TextWrapping="Wrap" FontWeight="Bold" Foreground="#1F4E79"
-                               Text="可用量（直接写进公式，不用到「自定义参数 / 组」页定义）："/>
-                    <ItemsControl Margin="0,4,0,0"
-                                  ItemsSource="{Binding FormulaBuiltinRows, RelativeSource={RelativeSource AncestorType=Window}}">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Border Background="White" BorderBrush="#D6E4F5" BorderThickness="1" CornerRadius="3"
-                                        Padding="5,2" Margin="0,0,6,4">
-                                    <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="{Binding Id}" FontFamily="Consolas" FontWeight="Bold" Foreground="#1F4E79"/>
-                                        <TextBlock Text="{Binding Display}" Foreground="#555" Margin="6,0,0,0" FontSize="11"/>
-                                    </StackPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" Foreground="#555" FontSize="11"
-                               Text="另外还能写：X = 打出这张牌那一刻的当前能量 · Y = 当前额外资源量 · 参数名（M / N…，先到「自定义参数 / 组」页定义它从哪来）。"/>
-                </StackPanel>
-            </Border>
-        </DataTemplate>
         <DataTemplate x:Key="AncientPairingEditor">
             <GroupBox Header="配对表：每一行 = 一个「组」→ 换成哪几张先古卡" Margin="0,8,0,0"
                       Visibility="{Binding IsAncientTranscend, Converter={StaticResource BoolToVis}}">
@@ -224,7 +198,11 @@
                ③ 「单条效果的条件」以前单独摆在右下角一块里，现在跟着每条效果长在编辑区里（和卡牌页一样）。
                于是 OnToggleEffectRow / SelectEffectRowOf / ToggleEffectRow / EffectSpec.IsExpanded 全删了。 -->
     </Window.Resources>
-    <DockPanel>
+    <!-- 整窗内容都挂在 RootsPanel 上：V0.2.240 给它加一个 LayoutTransform 缩放，
+         小屏幕（1366×768 / 1280×720）上不再「有地方被窗口边裁掉」。
+         ⚠ 必须是 LayoutTransform（不是 RenderTransform）：LayoutTransform 会一起参与布局测量，
+         缩放后 WPF 认为内容只需要那么点地方 —— 于是不会被裁、滚动条也不会凭空出现。 -->
+    <DockPanel x:Name="RootPanel">
 
         <Border DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
             <StackPanel Orientation="Horizontal">
@@ -243,6 +221,14 @@
                 <TextBox Width="380" VerticalAlignment="Center" Padding="3"
                          Text="{Binding Profile.Paths.InstallDir, UpdateSourceTrigger=PropertyChanged}"/>
                 <Button Content="选择…" Padding="8,4" Margin="4,0" Click="OnPickInstallDir"/>
+                <Separator Margin="8,0"/>
+                <!-- V0.2.240（用户反馈「屏幕小的时候有些地方被遮挡」）：整窗缩放。
+                     小屏启动时会自动挑一档（见 MainWindow.FitWindowToScreen），这里也能手动改。
+                     缩放走 RootPanel.LayoutTransform，所以布局也跟着变 —— 不是把画面糊掉那种缩放。 -->
+                <TextBlock Text="界面缩放：" VerticalAlignment="Center"/>
+                <ComboBox x:Name="UiScaleBox" Width="86" VerticalAlignment="Center" Padding="4,2"
+                          SelectionChanged="OnUiScaleChanged"
+                          ToolTip="整窗等比缩放（布局也会跟着缩，文字不糊）。&#10;小屏幕会自动选一档：高 ≥ 1000 → 100%；≥ 900 → 100%；≥ 800 → 90%；≥ 700 → 80%；更矮 → 70%（窄屏还会再降一档）。&#10;手动选过之后会记住（存在 %LOCALAPPDATA%\Sts2CharForge\ui-scale.txt）。"/>
             </StackPanel>
         </Border>
 
@@ -279,6 +265,8 @@
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                                 <!-- V0.2.172：第 10 行（角色最大能量）—— 只加一行，已有 0~8 行一个都没动 -->
+                                <RowDefinition Height="Auto"/>
+                                <!-- V0.2.230：第 11 行（地图画线颜色 / 蜡笔） -->
                                 <RowDefinition Height="Auto"/>
                             </Grid.RowDefinitions>
 
@@ -337,6 +325,21 @@
                                  ToolTip="每回合的能量上限，本体默认 3。生成的角色类里只在不是 3 的时候写 public override int MaxEnergy => N;（本体 Player 建号时取的就是它，不需要任何补丁）。"/>
                         <TextBlock Grid.Row="8" Grid.Column="2" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,0,0,0"
                                    Text="每回合的能量上限，本体默认 3；留 3 = 不覆盖（生成结果和以前逐字一样）。改大 / 改小都会明显改难度。"/>
+
+                        <!-- V0.2.230（用户要求「能不能自定义在地图上的蜡笔的颜色」）：
+                             地图上画线的那支「蜡笔 / 羽毛笔」的颜色。本体 NMapDrawings.CreateLine 里
+                             `line2D.DefaultColor = player.Character.MapDrawingColor;`，默认黑色。 -->
+                        <TextBlock Grid.Row="9" Grid.Column="0" Text="地图画线颜色（蜡笔）" Style="{StaticResource Label}"/>
+                        <DockPanel Grid.Row="9" Grid.Column="1">
+                            <Border DockPanel.Dock="Right" Width="26" Margin="6,0,0,0"
+                                    BorderBrush="#999" BorderThickness="1"
+                                    Background="{Binding Profile.MapDrawingColor, Converter={StaticResource HexBrush}}"/>
+                            <TextBox x:Name="MapDrawingColorBox" Style="{StaticResource Field}"
+                                     Text="{Binding Profile.MapDrawingColor, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="联机时在地图上画路线的那支「蜡笔」的颜色（RRGGBB，例：CB282B）。留空 = 本体默认黑色。本体每个角色都有自己的颜色：铁甲战士 CB282B / 静默猎手 2F6729 / 故障机器人 0D638C / 亡灵缚者 AC0486 / 摄政王 935206。"/>
+                        </DockPanel>
+                        <TextBlock Grid.Row="9" Grid.Column="2" Grid.ColumnSpan="2" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="4,0,0,0"
+                                   Text="在地图上画线用的颜色（联机时队友看到的就是这个颜色）。留空 = 本体默认黑色；6 位 RRGGBB（也能写 8 位带透明度）。"/>
                         </Grid>
 
                         <!-- 下面这几块是「长说明」：必须留在网格外面（见本页顶部的注释） -->
@@ -922,7 +925,10 @@
                                 <Viewbox Stretch="Uniform" Margin="4">
                                     <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
                                           Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
-                                        <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                        <!-- V0.2.228：预览是「把大图缩进 190px 高的框里」，WPF 默认的双线性
+                                             缩法会把上传的高清图缩得很糊 —— 改成高质量缩放（Fant），预览就所见即所得。 -->
+                                        <Image RenderOptions.BitmapScalingMode="HighQuality"
+                                               Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
                                                Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                     </Grid>
                                 </Viewbox>
@@ -935,6 +941,10 @@
                                        Foreground="#B60"
                                        Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                        Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                            <!-- V0.2.228：分辨率说明（上传的图比游戏显示区域大很多时才出现） -->
+                                       <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#666"
+                                            Text="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            Visibility="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                             <!-- 卡牌自定义描述：留空 = 只用自动生成的那段 -->
                             <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用上面那些效果自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
                             <TextBox x:Name="CardCustomDesc" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
@@ -1029,7 +1039,10 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*" MinHeight="200"/>
                         <RowDefinition Height="8"/>
-                        <RowDefinition Height="Auto" MinHeight="180"/>
+                        <!-- V0.2.256：从 Auto 改成 * —— 「组」那块现在有两块勾选列表（牌 / 状态），
+                             Auto 会把整块撑到窗口外面（用户报「右边只看到卡牌，没有第二块」：那一块正好被裁在可视区外）。
+                             * + MinHeight 让它在剩余空间里自己排，两块都看得见。 -->
+                        <RowDefinition Height="*" MinHeight="200"/>
                     </Grid.RowDefinitions>
 
                     <!-- ===== 上半部分：自定义参数 ===== -->
@@ -1081,7 +1094,9 @@
 
                                     <TextBlock Text="取值来源" Style="{StaticResource Label}"/>
                                     <!-- 可搜索下拉（和「增益 / 减益」那个同一个控件）：V0.2.162 起这里有 7 个固定来源
-                                         + 80 条实时读数，普通下拉点起来太长 —— 打字（「状态牌」/「能量」/「回合」）就能筛。
+                                         + 80 条实时读数（V0.2.194 的卡牌专属读数 ThisCardDamage 不在这里 ——
+                                         参数是「打出这张牌那一刻先算一次」的，选它会恒 0），普通下拉点起来太长 ——
+                                         打字（「状态牌」/「能量」/「回合」）就能筛。
                                          注意不能套 ComboBox 那套 Style / DisplayMemberPath（控件类型不同）。 -->
                                     <local:SearchComboBox Margin="0,3,8,3"
                                                           SearchPath="Display"
@@ -1183,28 +1198,61 @@
                             <Border x:Name="GroupDetail" Grid.Column="2" BorderBrush="#DDD" BorderThickness="1" Padding="10"
                                     DataContext="{Binding SelectedItem, ElementName=GroupList}"
                                     Visibility="{Binding SelectedItem, ElementName=GroupList, Converter={StaticResource NotEmptyToVisibility}}">
-                                <DockPanel>
-                                    <StackPanel DockPanel.Dock="Top">
+                                <!-- V0.2.256（用户报「右边没有看到有两块勾选列表，还是只有卡牌」）：
+                                     以前状态那一块是**独立的 Border**，和卡牌那块摆在同一个单元格里靠 Bottom 对齐，
+                                     窗口一矮就被裁在可视区外（用户只看到「有哪些牌」）。
+                                     现在**并排两列**：左边「有哪些牌」、右边「有哪些状态」—— 一眼看到两块，
+                                     窗口矮时两列一起变矮（各自带滚动条），不会有一块被裁掉。 -->
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="*"/>
+                                    </Grid.RowDefinitions>
+                                    <StackPanel Grid.Row="0">
                                         <TextBlock Text="组名（改名字不会让已经勾好的卡掉出去）" Style="{StaticResource Label}"/>
                                         <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
                                         <TextBlock Text="备注" Style="{StaticResource Label}"/>
                                         <TextBox Style="{StaticResource Field}" Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"/>
-                                        <TextBlock Text="这个组里有哪些牌（勾选即加入 / 取消）" FontWeight="Bold" Margin="0,10,0,4"/>
-                                        <WrapPanel>
-                                            <Button Content="全选" Padding="8,4" Margin="0,0,6,6" Click="OnGroupSelectAllCards"/>
-                                            <Button Content="全不选" Padding="8,4" Margin="0,0,6,6" Click="OnGroupSelectNoCards"/>
-                                        </WrapPanel>
                                     </StackPanel>
-                                    <ListBox x:Name="GroupCardList" Margin="0,4,0,0" MaxHeight="360"
-                                             ItemsSource="{Binding GroupCardRows, RelativeSource={RelativeSource AncestorType=Window}}">
-                                        <ListBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <CheckBox Style="{StaticResource Check}" Content="{Binding Display}"
-                                                          IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
-                                            </DataTemplate>
-                                        </ListBox.ItemTemplate>
-                                    </ListBox>
-                                </DockPanel>
+                                    <Grid Grid.Row="1" Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="3*" MinWidth="200"/>
+                                            <ColumnDefinition Width="10"/>
+                                            <ColumnDefinition Width="2*" MinWidth="180"/>
+                                        </Grid.ColumnDefinitions>
+                                        <DockPanel Grid.Column="0">
+                                            <TextBlock DockPanel.Dock="Top" Text="这个组里有哪些牌（勾选即加入 / 取消）"
+                                                       FontWeight="Bold" Margin="0,0,0,4"/>
+                                            <WrapPanel DockPanel.Dock="Top">
+                                                <Button Content="全选" Padding="8,4" Margin="0,0,6,6" Click="OnGroupSelectAllCards"/>
+                                                <Button Content="全不选" Padding="8,4" Margin="0,0,6,6" Click="OnGroupSelectNoCards"/>
+                                            </WrapPanel>
+                                            <ListBox x:Name="GroupCardList"
+                                                     ItemsSource="{Binding GroupCardRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox Style="{StaticResource Check}" Content="{Binding Display}"
+                                                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </DockPanel>
+                                        <DockPanel Grid.Column="2">
+                                            <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,4" FontWeight="Bold"
+                                                       Text="这个组里有哪些状态（勾选即加入 —— 「清空指定状态」里可以选这个组，一次全清）"
+                                                       Foreground="#0A5"/>
+                                            <ListBox x:Name="GroupPowerList"
+                                                     ItemsSource="{Binding GroupPowerRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox Style="{StaticResource Check}" Content="{Binding Display}"
+                                                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </DockPanel>
+                                    </Grid>
+                                </Grid>
                             </Border>
                         </Grid>
                     </GroupBox>
@@ -1225,10 +1273,16 @@
                             <StackPanel>
                                 <RadioButton x:Name="ForgeKindNone" GroupName="ForgeKind" Content="（不选）" Margin="0,3"
                                              IsChecked="True"
-                                             ToolTip="不选任何一类时，右侧是空白的，只提示「请选择卡牌、药水、遗物」"/>
+                                             ToolTip="不选任何一类时，右侧是空白的，只提示「请选择卡牌、药水、遗物、状态」"/>
                                 <RadioButton x:Name="ForgeKindCard" GroupName="ForgeKind" Content="卡牌列表" Margin="0,3"/>
                                 <RadioButton x:Name="ForgeKindPotion" GroupName="ForgeKind" Content="药水列表" Margin="0,3"/>
                                 <RadioButton x:Name="ForgeKindRelic" GroupName="ForgeKind" Content="遗物列表" Margin="0,3"/>
+                                <!-- V0.2.194（用户原话：「我要的不是模块，是锻造页左边『要锻造哪一类』里多一个『状态列表』，
+                                     像卡牌列表 / 药水列表 / 遗物列表那样，用那块布给自定义状态编效果」）：
+                                     这一档列的是「自定义状态」页那些状态，所以文案就叫「状态列表」而不是「自定义状态列表」
+                                     —— 后者会和「自定义状态」页那个名字撞车，让人以为是在这儿新建状态。 -->
+                                <RadioButton x:Name="ForgeKindPower" GroupName="ForgeKind" Content="状态列表" Margin="0,3"
+                                             ToolTip="用右边那块布（节点图 / 积木）给**自定义状态**编触发时机和效果。列表里是在「自定义状态」页建好的那些状态。"/>
                             </StackPanel>
                         </GroupBox>
 
@@ -1245,13 +1299,13 @@
                         </GroupBox>
 
                         <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
-                                   Text="锻造页只管右边那块布：左边选一类 → 「添加」新建一项（名字带 *），右边那张「布」就是编辑器 —— 默认是节点图（触发时机为根，往右连对象 / 状态 / 数值 / 效果），右上角「视图」可以切成「积木（可拖）」。这一页的条目在「卡牌 / 药水 / 遗物」页照常显示，选中它们时属性照样能改、只有效果栏锁死。"/>
+                                   Text="锻造页只管右边那块布：左边选一类 → 「添加」新建一项（名字带 *），右边那张「布」就是编辑器 —— 默认是节点图（触发时机为根，往右连对象 / 状态 / 数值 / 效果），右上角「视图」可以切成「积木（可拖）」。卡牌 / 药水 / 遗物这三档的条目在「卡牌 / 药水 / 遗物」页照常显示，选中它们时属性照样能改、只有效果栏锁死。「状态列表」那一档不一样：它列的是「自定义状态」页里那些状态（这一档不新建状态，名字也不带 *），选中一只就能在这块布上编它的触发时机 / 效果；原本在「自定义状态」页配过触发时机 / 效果的，点右上角「⤓ 把现在的触发时机 / 效果搬到这块布上」搬过来，搬完就由这块布说了算。"/>
                     </DockPanel>
 
                     <!-- 一类都没选：整块空白 + 提示 -->
                     <TextBlock x:Name="ForgeEmptyHint" Grid.Column="2" FontSize="18" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Text="请选择卡牌、药水、遗物"
+                               Text="请选择卡牌、药水、遗物、状态"
                                Visibility="{Binding ForgeNoKind, Converter={StaticResource BoolToVis}}"/>
 
                     <Grid x:Name="ForgeDetail" Grid.Column="2" Visibility="{Binding ForgeHasKind, Converter={StaticResource BoolToVis}}">
@@ -1290,7 +1344,7 @@
                                                          ToolTip="类 Scratch 的堆叠块：按执行顺序从上往下排，缩进 = 在谁里面。可以拖块换位置、✚ 加块、✕ 删块，改完自动写回节点图。"/>
                                         </StackPanel>
                                     </Border>
-                                    <Border DockPanel.Dock="Left" Background="#FFF3CD" BorderBrush="#E0B000" BorderThickness="1"
+                                    <Border x:Name="ForgeGraphTabsBox" DockPanel.Dock="Left" Background="#FFF3CD" BorderBrush="#E0B000" BorderThickness="1"
                                             CornerRadius="3" Padding="6,2">
                                         <StackPanel Orientation="Horizontal">
                                             <TabControl x:Name="ForgeGraphTabs" BorderThickness="0" Background="Transparent"
@@ -1307,8 +1361,17 @@
                                             Visibility="{Binding ForgeCopyVisible, Converter={StaticResource BoolToVis}}"
                                             Click="OnForgeCopyUpgraded"
                                             ToolTip="把「升级前」那块布上的模块与连线整份复制到「升级后」（长按框选、多选移动在下一阶段做）"/>
+                                    <!-- V0.2.194：把「自定义状态」页那套触发时机 + 效果搬到这块布上。
+                                         只在「状态列表」档、选中的状态还没图、又在「自定义状态」页配过东西时才出现
+                                        （没配过的状态选中时已经自动给了一块空布，没有可搬的）。 -->
+                                    <Button DockPanel.Dock="Left" x:Name="ForgeMigrateButton" Margin="10,0,0,0"
+                                            Padding="10,3" FontWeight="Bold" Foreground="#B60"
+                                            Content="⤓ 把现在的触发时机 / 效果搬到这块布上"
+                                            Visibility="{Binding ForgeMigrateVisible, Converter={StaticResource BoolToVis}}"
+                                            Click="OnForgeMigrateToGraph"
+                                            ToolTip="把「自定义状态」页给这只状态配的触发时机 + 效果整份搬到这块布上。&#10;搬完这块布说了算：以后改触发时机 / 效果请在锻造页改（「自定义状态」页那几栏改了不生效）。&#10;搬不动的那几条（同一个钩子上有两条时机）会写进下面的日志里。"/>
                                     <TextBlock VerticalAlignment="Center" Margin="10,0,4,0" FontSize="11" Foreground="#888"
-                                               Text="属性在「卡牌 / 药水 / 遗物」页改，这一页只管右边那块布；右上角「视图」可切「积木（可拖）」（拖块换位置 / ✚ 加块 / ✕ 删块，改完自动写回节点图）。"
+                                               Text="卡牌 / 药水 / 遗物的属性在「卡牌 / 药水 / 遗物」页改，「状态列表」里那些自定义状态的属性（名字 / 类型 / 图标 / 层数颜色）在「自定义状态」页改 —— 这一页只管右边那块布；右上角「视图」可切「积木（可拖）」（拖块换位置 / ✚ 加块 / ✕ 删块，改完自动写回节点图）。"
                                                TextWrapping="Wrap"/>
                                 </DockPanel>
 
@@ -1436,6 +1499,14 @@
                                       DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding Rarity}"/>
                             <CheckBox Content="作为初始遗物" Style="{StaticResource Check}" IsChecked="{Binding IsStartingRelic}"/>
                             <CheckBox Content="加入遗物池（宝箱/精英/商店）" Style="{StaticResource Check}" IsChecked="{Binding InRelicPool}"/>
+                            <!-- V0.2.260（用户要求）：遗物专属的先古道具 ——「欧洛巴斯之触 TouchOfOrobas」
+                                 会把角色的**初始遗物**换成强化版；本体只认它自己那张表（燃烧之血→黑血…），
+                                 自定义角色的初始遗物不在表里 → 会给「头环 Circlet」。勾上之后生成一个 Harmony 前缀，
+                                 只对本模组角色生效。 -->
+                            <CheckBox Content="替换欧洛巴斯之触所替换的初始遗物"
+                                      Style="{StaticResource Check}"
+                                      IsChecked="{Binding OrobasReplace}"
+                                      ToolTip="勾上 = 拿到「欧洛巴斯之触」时，它会把你的**初始遗物**换成这一只（走本体自带的 SetupForTests，只对本模组角色生效）。&#10;不勾 = 本体那张「初始遗物 → 强化遗物」表里没有我们的遗物，你拿到欧洛巴斯之触只会得到「头环 Circlet」。&#10;这个勾只能勾在一只遗物上（勾多了会报错）。"/>
                             <Button Content="上传遗物图标…（建议 256×256 PNG）" Padding="8,4" Margin="6,6,0,0" HorizontalAlignment="Left" Click="OnPickRelicIcon"/>
                             <Border BorderBrush="#DDD" BorderThickness="1" Height="130" Width="130" HorizontalAlignment="Left" Margin="6,4,0,0" Background="#FAFAFA">
                                 <Image Source="{Binding RelicIconPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
@@ -1763,6 +1834,10 @@
                             <Border BorderBrush="#DDD" BorderThickness="1" Height="130" Width="130" HorizontalAlignment="Left" Margin="6,4,0,0" Background="#FAFAFA">
                                 <Image Source="{Binding PotionIconPreview, RelativeSource={RelativeSource AncestorType=Window}}" Stretch="Uniform"/>
                             </Border>
+                            <!-- V0.2.199：缩略图很容易看串（用户实测报过「上传的图标怎么在每一个药水都会显示」——
+                                 真凶是换选中项时预览没刷新）。这里把当前这瓶的文件名直接写出来，换一瓶就跟着变。 -->
+                            <TextBlock TextWrapping="Wrap" Margin="6,4,0,0" Foreground="#1F6FB2" FontSize="11"
+                                       Text="{Binding PotionIconHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
                             <TextBlock TextWrapping="Wrap" Foreground="#888" Margin="6,8,0,0"
                                        Text="提示：选「任意时机」时不要用造成伤害/抽牌/挂减益这类需要战斗的效果，生成时会被忽略。&#10;药水实际打谁由上面的「作用目标」决定，卡面描述会按它生成（效果里的「作用对象」对药水不起作用）。"/>
                         </StackPanel>
@@ -2061,7 +2136,8 @@
                                     <Viewbox Stretch="Uniform" Margin="4">
                                         <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
                                               Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
-                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            <Image RenderOptions.BitmapScalingMode="HighQuality"
+                                                   Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
                                                    Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                         </Grid>
                                     </Viewbox>
@@ -2072,6 +2148,10 @@
                                 <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                            Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                            Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                     <!-- V0.2.228：分辨率说明（上传的图比游戏显示区域大很多时才出现） -->
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#666"
+                                     Text="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     Visibility="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
                                 <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
@@ -2137,8 +2217,46 @@
                                 <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock Text="稀有度固定为「先古」（Ancient），生成时写死" Style="{StaticResource Label}" Foreground="#888" FontSize="11"
                                            Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
-                                <TextBlock Text="稀有度固定为「状态」（Status），生成时写死；默认 MaxUpgradeLevel = 0（不能升级，想让它能升级就勾下面的「可被无限升级」）" Style="{StaticResource Label}" Foreground="#888" FontSize="11" TextWrapping="Wrap"
+                                <TextBlock Text="稀有度固定为「状态」（Status），生成时写死；默认 MaxUpgradeLevel = 0（和本体「粘液」一样不能升级）—— 想让它局内能被升级（像本体「凋萎」那样）就勾下面那个「可被无限升级」"
+                                           Style="{StaticResource Label}" Foreground="#888" FontSize="11" TextWrapping="Wrap"
                                            Visibility="{Binding IsStatusCard, Converter={StaticResource BoolToVis}}"/>
+                                <!-- V0.2.223（用户实测报的「状态牌局内升级好像没生效」）：这一页以前**没有**这个开关
+                                     —— 状态牌只能在这一页编辑，于是永远升不了级（生成的是 MaxUpgradeLevel => 0），
+                                     「升级卡牌」效果自然什么都不做。 -->
+                                <CheckBox Content="可被无限升级（每次升级数值再涨一次 —— 状态牌 / 先古卡想局内升级就勾它）"
+                                          Style="{StaticResource Check}"
+                                          IsChecked="{Binding InfinitelyUpgradable}"
+                                          Visibility="{Binding ShowInfinitelyUpgradable, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="勾上 = 生成 MaxUpgradeLevel => int.MaxValue：局内用「升级卡牌」效果（或营火）每升一级都会再跑一遍 OnUpgrade()，每条效果的「升级增量」累加，卡面标题显示成「名字+N」——和本体「凋萎 Wither」的 FakeUpgrade 是同一个效果（那边每次也是 DynamicVars.Damage.UpgradeValueBy(3m)）。&#10;不勾 = 状态牌 MaxUpgradeLevel => 0（和本体「粘液」一样升不了级）、先古卡 = 本体默认只能升 1 级。&#10;⚠ 走的是**标准升级**，所以这张状态牌在营火（铁匠）/ 商店也能被升级。"/>
+                                <!-- V0.2.260（用户要求）：先古卡专属的两件先古道具。
+                                     「古老牙齿 ArchaicTooth」把角色的**初始卡**换成一张先古卡（本体只认它自己那张表，
+                                     自定义角色的初始卡不在表里 → 会变成「怀疑 Doubt」）；
+                                     「尘封魔典 DustyTome」是从卡池里**随机**挑一张先古卡。
+                                     勾上之后各生成一个 Harmony 前缀，只对本模组角色生效（别的角色照旧走本体）。 -->
+                                <CheckBox Content="替换古老牙齿所替换的初始卡牌"
+                                          Style="{StaticResource Check}"
+                                          IsChecked="{Binding ToothReplace}"
+                                          Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="勾上 = 拿到「古老牙齿」时，它会把你的**初始卡**换成这张先古卡（走本体自带的 SetupForTests，只对本模组角色生效）。&#10;不勾 = 本体那张「初始卡 → 先古卡」表里没有我们的卡，你拿到古老牙齿只会得到一张「怀疑 Doubt」。&#10;初始卡 = 卡牌页里勾了「初始牌」的第一张（按「初始卡组」那一栏从上往下）。"/>
+                                <CheckBox Content="作为尘封魔典给的先古卡"
+                                          Style="{StaticResource Check}"
+                                          IsChecked="{Binding DustyTomeGrant}"
+                                          Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="勾上 = 拿到「尘封魔典」时直接给这张先古卡（只对本模组角色生效）。&#10;不勾 = 本体从你的卡池里**随机**挑一张先古卡（它还会排掉古老牙齿换出来的那 5 张）。"/>
+                                <!-- V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：
+                                     被古老牙齿换掉的那张初始卡，现在可以自己指定（默认 = 初始卡组里第一张）。 -->
+                                <TextBlock Text="被古老牙齿换掉的初始卡（留空 = 自动取初始卡组第一张）"
+                                           Style="{StaticResource Label}" TextWrapping="Wrap"
+                                           Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
+                                <ComboBox Style="{StaticResource Pick}"
+                                          ItemsSource="{Binding ToothStarterChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                          DisplayMemberPath="Display" SelectedValuePath="Id"
+                                          SelectedValue="{Binding ToothStarterClass}"
+                                          Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"
+                                          ToolTip="古老牙齿会把这一张**初始卡**换成上面这张先古卡。&#10;留空（或选第一项）= 自动：取卡牌页勾了「初始牌」的第一张（按「初始卡组」从上往下）。&#10;⚠ 只有勾了「替换古老牙齿所替换的初始卡牌」，这个下拉才有意义。"/>
+                                <TextBlock Text="⚠ 这两个勾各只能勾一张先古卡（古老牙齿 / 尘封魔典每次只给一张），勾多了会报错。"
+                                           Style="{StaticResource Label}" Foreground="#B00" FontSize="11" TextWrapping="Wrap"
+                                           Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
                                 <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="6,10,6,0"/>
                                 <WrapPanel Margin="6,0,0,0">
                                     <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>
@@ -2182,7 +2300,8 @@
                                         <!-- 先古卡：预览框是竖的（606×852），而且按游戏里的做法「直接拉满」显示 -->
                                         <Grid Width="{Binding CardPortraitFrameWidth, RelativeSource={RelativeSource AncestorType=Window}}"
                                               Height="{Binding CardPortraitFrameHeight, RelativeSource={RelativeSource AncestorType=Window}}" Background="Black">
-                                            <Image Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
+                                            <Image RenderOptions.BitmapScalingMode="HighQuality"
+                                                   Source="{Binding CardPortraitPreview, RelativeSource={RelativeSource AncestorType=Window}}"
                                                    Stretch="{Binding CardPortraitPreviewStretch, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                         </Grid>
                                     </Viewbox>
@@ -2193,6 +2312,10 @@
                                 <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                            Text="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                            Visibility="{Binding CardPortraitPreviewNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
+                                     <!-- V0.2.228：分辨率说明（上传的图比游戏显示区域大很多时才出现） -->
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#666"
+                                     Text="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}}"
+                                     Visibility="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
                                 <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
@@ -2607,6 +2730,16 @@
                     <Border Grid.Column="2" x:Name="CustomPowerDetail" BorderBrush="#DDD" BorderThickness="1" Padding="10">
                         <ScrollViewer VerticalScrollBarVisibility="Auto">
                             <StackPanel>
+                                <!-- V0.2.194：这只状态已经由锻造页那块布说了算时，在这儿醒目地提醒一句 ——
+                                     生成端「图非空就只读图」（见 ForgeGraphGen.UsesGraph(CustomPowerSpec)），
+                                     下面那几栏（触发时机 / 触发时做什么）改了**不生效**；不提醒的话用户会白改半天。
+                                     显隐走窗口上的只读属性（和这一页其它提示同一套写法，选中项一变就重算）。 -->
+                                <Border Background="#FFF3CD" BorderBrush="#E0B000" BorderThickness="1" CornerRadius="3"
+                                        Padding="8,6" Margin="0,0,0,10"
+                                        Visibility="{Binding CustomPowerUsesForgeGraph, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontWeight="Bold"
+                                               Text="这只状态由**锻造页**那块布说了算 —— 改触发时机 / 效果请去「锻造」页的「状态列表」里改（这里改了不生效）。"/>
+                                </Border>
                                 <TextBlock Text="名字（游戏里显示的状态名）" FontWeight="Bold"/>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/>
 
@@ -2679,10 +2812,45 @@
                                 <WrapPanel Margin="0,10,0,0">
                                     <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="启用这个状态" IsChecked="{Binding Enabled}"/>
                                     <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2" Content="回合结束时移除（临时状态）" IsChecked="{Binding RemoveAtTurnEnd}"/>
+                                    <!-- V0.2.239（用户问「在自定义状态增加状态层数能否到负值」）：
+                                         勾了 → 生成的状态类带 AllowNegative => true，和本体 力量 / 敏捷 / 专注 一样
+                                         0 层也能扣成负数；「施加增益/减益」填负数时直接施加负值（本体尖啸那套）。
+                                         不勾 → 负数只从目标身上已有的层数里扣（扣到 0 就移除这个状态）。 -->
+                                    <CheckBox Style="{StaticResource Check}" Margin="0,2,14,2"
+                                              Content="允许负层数（像力量那样，0 层也能扣成负的）"
+                                              IsChecked="{Binding AllowNegativeLayers}"
+                                              ToolTip="勾上：这个状态的层数可以小于 0（和本体「力量 / 敏捷 / 专注」同一个口径）——&#10;· 「施加增益 / 减益」填负数时**直接施加负值**：目标本来 0 层也会变成 -N（本体「尖啸」扣敌人力量就是这么做的）；&#10;· 负层数在游戏里按「减益」显示（红框 + 红字），正好回到 0 时状态被移除。&#10;不勾（默认）：层数最低到 0 —— 填负数只从**已有层数**里扣，扣到 0 就把这个状态去掉。&#10;（「每回合衰减」两种情况都是「减到 0 就移除」，不会继续往负数扣。）"/>
                                     <TextBlock Text="每回合衰减" VerticalAlignment="Center" Margin="0,0,4,0"/>
                                     <TextBox Width="46" Style="{StaticResource Field}" Text="{Binding DecayPerTurn, UpdateSourceTrigger=PropertyChanged}"/>
                                     <TextBlock Text="层" VerticalAlignment="Center" Margin="4,0,0,0"/>
                                 </WrapPanel>
+
+                                <!-- V0.2.248（用户要求「减少指定卡牌类别的费用（类似腐化，刺破帷幕这些）」）：
+                                     生成的是本体的 TryModifyEnergyCostInCombatLate —— 腐化 / 刺破帷幕 / 免费攻击
+                                     三个本体状态用的就是这个钩子。范围留空 = 不启用（不影响任何老存档的生成）。 -->
+                                <GroupBox Header="费用修正（像腐化 / 刺破帷幕那样，让某一类牌变便宜）" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <WrapPanel>
+                                            <TextBlock Text="哪一类牌" VerticalAlignment="Center" Margin="0,2,4,2"/>
+                                            <ComboBox Width="300" Style="{StaticResource Pick}" Margin="0,2"
+                                                      ItemsSource="{Binding SpawnFilters, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                      DisplayMemberPath="Display" SelectedValuePath="Id"
+                                                      SelectedValue="{Binding CostReduceScope}"
+                                                      ToolTip="和别处的「范围」是同一份候选：不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务 / 自定义关键词那一组 / 每个组。&#10;选「不限」= 你所有的牌都减（很少见）。"/>
+                                            <TextBlock Text="减" VerticalAlignment="Center" Margin="12,2,4,2"/>
+                                            <TextBox Width="52" Style="{StaticResource Field}" Margin="0,2"
+                                                     Text="{Binding CostReduceAmount, UpdateSourceTrigger=PropertyChanged}"
+                                                     ToolTip="这一类牌减多少费。填 0 = 直接变成 0 费（腐化那种）。最低减到 0，不会变成负费。"/>
+                                            <TextBlock Text="费" VerticalAlignment="Center" Margin="4,2,0,2"/>
+                                            <CheckBox Margin="14,2,0,2" Style="{StaticResource Check}"
+                                                      Content="按层数（每层各减这么多）"
+                                                      IsChecked="{Binding CostReducePerStack}"
+                                                      ToolTip="勾上：按这个状态的层数算（3 层 × 每层 1 费 = 减 3 费）。&#10;不勾：只看有没有这个状态，和腐化一样减固定那么多。"/>
+                                        </WrapPanel>
+                                        <TextBlock Margin="2,4,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
+                                                   Text="范围留空 = 不改费用（不生任何代码）。只影响你自己的牌；选「组」时会把组里每张牌展开成判据，所以之后改组的内容会跟着变。"/>
+                                    </StackPanel>
+                                </GroupBox>
 
                                 <TextBlock Margin="0,16,0,4" Text="触发时机（什么时候做事）" FontWeight="Bold" FontSize="14"/>
                                 <!-- 实时汇总：配了哪些时机、每个时机做什么 —— 改了效果这里立刻跟着变 -->
@@ -2841,6 +3009,19 @@
                                   Content="未上传的槽位用本体（铁甲战士）素材占位"
                                   ToolTip="只为本地随手测试方便。勾上之后：战斗立绘 / 商店立绘 / 篝火立绘 / 选人背景直接用本体铁甲战士的场景（真 Spine 骨骼动画，能看到人），其余未上传的槽位（头像、选人立绘、地图标记等）用本体的图。发布模组前请关闭并提供自己的美术，否则模组里会带着本体美术资源。"
                                   IsChecked="{Binding Profile.Art.UseVanillaPlaceholders}"/>
+                        <!-- V0.2.229（V0.2.228 那个「缩到 1000×760」的勾选框实测**和没缩一模一样**）：
+                             工具本身是原样拷贝、不压缩；卡面在游戏里只画 250×190（先古卡 299×421），
+                             而且没有 mipmap —— 引擎双线性缩小 4 倍时 16 个像素只采样 4 个，细节直接丢。
+                             预缩到「显示尺寸 × N」才真的有效：2× 时刚好用满 4 个像素（实测 RMSE 0.27 vs 3.42）。 -->
+                        <TextBlock DockPanel.Dock="Top" Text="卡面过大时缩小到（游戏实际显示尺寸的几倍）"
+                                   Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                        <ComboBox DockPanel.Dock="Top" Margin="0,0,0,2" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding CardArtShrinkChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Label" SelectedValuePath="Id"
+                                  SelectedValue="{Binding CardArtShrink, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  ToolTip="游戏里卡面只画 250×190（先古卡 299×421），而且卡面纹理没有 mipmap：引擎缩小 4 倍时 16 个像素里只采样 4 个，图越大细节丢得越多（发糊 / 锯齿）。&#10;· 原样拷贝 = 工具一个字节都不动（默认）&#10;· 缩到 2× （500×380，推荐）= 引擎缩小 2 倍时刚好用满 4 个像素 —— 实测和理想缩放的误差 0.27，直接缩是 3.42，这一档是唯一看得出区别的&#10;· 1×（250×190）= 1080p 满屏最锐利，放大窗口会糊&#10;· 4×（1000×760）= 本体素材口径，实测和「不缩」几乎一样，只省文件体积&#10;缩的是拷进工程的那份副本，**你上传的原图永远不动**；比目标小的图绝不放大。"/>
+                        <TextBlock DockPanel.Dock="Top" Margin="0,0,0,8" TextWrapping="Wrap" FontSize="11" Foreground="#666"
+                                   Text="{Binding CardArtShrinkHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
                         <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8" DataContext="{Binding Profile.Art}">
                             <TextBlock Text="头像描边颜色（十六进制，自动生成描边）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                             <DockPanel>

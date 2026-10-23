@@ -61,6 +61,12 @@ public sealed record Naming(
     public static string AmbientShuffleTrackerClass => _currentCharClass + "ForgeShuffleTracker";
 
     /// <summary>
+    /// 工具自己记的战斗计数器类名（敌人死亡 / 预见次数…，兜底用当前角色）。
+    /// 条件表达式（<c>CSharpCodeGen.ConditionExpr</c>）拿不到 <c>CharacterProfile</c>，所以走这个兜底。
+    /// </summary>
+    public static string AmbientCombatCountersClass => _currentCharClass + "ForgeCombatCounters";
+
+    /// <summary>
     /// 需求⑩「卡牌时机 = 被给予自定义关键词」的转发器类名（兜底用当前角色）。
     /// 它就生成在「给予卡牌关键词」那份源码里（见 <see cref="CSharpCodeGen.GivenKeywordPatchSource"/>），
     /// 作用是把「这张牌刚被给了一个自定义关键词」转发给带那个时机的卡自己的方法。
@@ -184,6 +190,12 @@ public sealed record Naming(
     /// <summary>「额外获得一个回合」用的 Power。</summary>
     public string ExtraTurnPowerClass => CharClass + "ForgeExtraTurnPower";
 
+    /// <summary>
+    /// 「我上传的音频」播放器小助手（V0.2.231）：只在有用到「会被下一个自定义音频顶替」时才生成，
+    /// 负责记住「还在放、且允许被顶替」的那几个播放器，下一段开始时先停掉它们。
+    /// </summary>
+    public string SfxRegistryClass => CharClass + "ForgeSfx";
+
     /// <summary>「透支能量」用的负债 Power（下回合少 N 点能量；本体的 GainEnergy 会忽略负数，只能自己扣）。</summary>
     public string EnergyDebtPowerClass => CharClass + "ForgeEnergyDebtPower";
 
@@ -221,6 +233,13 @@ public sealed record Naming(
     /// 每回合掉 1 层、掉光自毁。
     /// </summary>
     public string DrawCostPowerClass => CharClass + "ForgeDrawCostPower";
+
+    /// <summary>
+    /// V0.2.249（用户要求「减少指定卡牌类别的费用（类似腐化，刺破帷幕），加在效果种类里」）：
+    /// 「减少卡牌费用」这条效果施加的状态类名。带载荷（范围 + 减多少 + 是否只持续本回合），
+    /// 覆写本体的 <c>TryModifyEnergyCostInCombatLate</c> —— 腐化 / 刺破帷幕同一个钩子。
+    /// </summary>
+    public string CostDownPowerClass => CharClass + "ForgeCostDownPower";
 
     /// <summary>
     /// 「禁止目标回复生命」用的状态：挂谁身上谁就回不了血（配一条 Harmony 前缀把
@@ -271,7 +290,23 @@ public sealed record Naming(
             string card = string.IsNullOrWhiteSpace(e.SpawnCardId)
                 ? (e.IsSpawnRandom ? "Rnd" + Lit.Identifier(e.SpawnFilter ?? "", "") : "")
                 : e.SpawnCardId!.Trim();
-            return "ForgeDelayed" + stem + Lit.Identifier(card, "");
+            // ⚠ 只编进「种类 + 卡（或随机范围）」还不够：`CollectDelayedEffects` 的去重键里还带着
+            //   生成到哪（手牌 / 抽牌堆 / 弃牌堆）、张数、几个附加处理（升级 / 免费 / 关键词）、数值 = X ——
+            //   两条只在这些栏位上不同的效果会被当成两条去生成，类名却一模一样 ⇒
+            //   `cs\DelayedPowers.cs` 里同一个类写两遍：**CS0101 + CS0111**（用户实测报的
+            //   `DaqgeForgeDelayedGenRnd` 重复定义）。
+            //   所以这里把**非默认**的那几栏编进类名（默认值一个字都不加 —— 默认存档的类名不变，守红线）。
+            string extra = "";
+            if (!string.Equals(e.SpawnTo, "Hand", StringComparison.Ordinal))
+                extra += "To" + Lit.Identifier(e.SpawnTo ?? "", "");
+            if (e.SpawnChoice > 1m) extra += "C" + ((int)Math.Round(e.SpawnChoice)).ToString();
+            if (e.SpawnUpgraded) extra += "Up";
+            if (e.SpawnFree) extra += "Free";
+            if (e.SpawnFreeThisTurn) extra += "FreeTurn";
+            if (e.SpawnUpgradedThisTurn) extra += "UpTurn";
+            if (e.HasSpawnKeyword) extra += "Kw" + Lit.Identifier(e.SpawnKeyword ?? "", "");
+            if (e.AmountIsXEffective) extra += "X";
+            return "ForgeDelayed" + stem + Lit.Identifier(card, "") + extra;
         }
         // V0.2.133 的**通用**延迟分支：这些种类大多**没有 PowerId**，必须按「种类 + 那几个会分叉的栏位」
         // 各自起名 —— 否则「造成伤害 / 回复生命 / 击晕…」全叫 ForgeDelayedPower，
@@ -292,7 +327,14 @@ public sealed record Naming(
             // 所以类名要带上这一档 —— 但默认档（Enemy）**不写**，保持短名好读（也避免老存档里
             // 已经存在的 ForgeDelayedDamage 突然改名）。
             string side = string.Equals(e.TargetSide, "Enemy", StringComparison.Ordinal) ? "" : e.TargetSide;
-            return "ForgeDelayed" + e.Kind + Lit.Identifier(tail ?? "", "") + Lit.Identifier(side, "");
+            // V0.2.210：宠物类效果**哪一只**也要编进类名 —— 延迟状态类体里「查哪只伙伴」那一行不同
+            //（`DaYunCmd.Get(...)` / `XiaoBaCmd.Get(...)`），而种类 + 状态名可能完全一样。
+            // 不编进类名就会：同一个类名生成两次 → CS0101（实测：两只伙伴各配一条「下回合生效：给伙伴施加中毒」）。
+            // 「全部召唤物」不写（那里由延迟状态类自己逐只处理，类名保持稳定）。
+            string pet = CSharpCodeGen.NeedsExistingPet(e) && !PetGen.IsAll(e.PetSummon)
+                ? Lit.Identifier(e.PetSummon ?? "", "")
+                : "";
+            return "ForgeDelayed" + e.Kind + Lit.Identifier(tail ?? "", "") + Lit.Identifier(side, "") + pet;
         }
         return "ForgeDelayed" + (e.PowerId ?? "Power");
     }
@@ -752,27 +794,38 @@ public sealed record Naming(
     }
 
     /// <summary>
-    /// 驼峰转大写下划线（WeakPower -> WEAK_POWER），与本体 <c>StringHelper.Slugify</c> 完全一致。
+    /// 驼峰转大写下划线（WeakPower -> WEAK_POWER），与本体 <c>StringHelper.Slugify</c> **逐字同源**。
     ///
-    /// 本体的实现是 <c>Regex.Replace(txt, "([A-Za-z0-9]|\G(?!^))([A-Z])", "$1_$2")</c> 再大写、再滤掉
-    /// 非 <c>[A-Z0-9_]</c>。那个 <c>\G(?!^)</c> 分支的效果就是：**连续大写时，每个大写字母前面都插一个下划线**
-    /// （前一个字符刚刚被上一次匹配吃掉，也仍然算「前一个是字母/数字」）。
-    /// 以前这里多了一个「前一个字符不能是大写」的条件，于是连续大写的名字和本体不等价：
-    /// 本体 <c>AIPet</c> → <c>A_I_PET</c>、<c>XiaoQI</c> → <c>XIAO_Q_I</c>，我们只会得到 <c>AIPET</c> / <c>XIAOQI</c> ——
-    /// 生成的本地化键和本体算出来的键对不上，非中文语言下 <c>LocTable</c> 直接抛 <c>LocException</c>。
-    /// 改完之后「常规驼峰命名」的键**一个都没变**（SevenCard1 → SEVEN_CARD1），只修掉连续大写的缺键坑。
+    /// ⚠ 必须用本体那对正则，不能自己写「每个大写字母前都插一个下划线」——
+    /// 本体是 <c>Regex.Replace(txt, "([A-Za-z0-9]|\G(?!^))([A-Z])", "$1_$2")</c>，
+    /// 它是**成对消费**的：匹配到 <c>EV</c> 之后引擎停在 <c>V</c> 后面，下一轮从那个位置继续配一对，
+    /// 所以「连续大写」只在**每隔一个**的位置插下划线：
+    /// <code>
+    ///   EVERelic1  → E_VE_RELIC1      （本体 / 游戏真正查的键）
+    ///   ABCRelic1  → A_BC_RELIC1
+    ///   AIPet      → A_I_PET
+    ///   EVE        → E_V_E
+    ///   AnonCard10 → ANON_CARD10
+    /// </code>
+    /// 以前这里写成「每个大写前都插」，只有「3 个以上连续大写」时才会露馅：
+    /// <c>EVERelic1</c> 我们给 <c>E_V_E_RELIC1</c>、游戏查 <c>E_VE_RELIC1</c> ——
+    /// 本地化键对不上 ⇒ <c>LocException: Key=E_VE_RELIC1.title not found in table=relics</c>，
+    /// 而且它是**在 <c>NCharacterSelectScreen.SelectCharacter</c> 里抛的**（选人界面右侧要显示起始遗物的标题）
+    /// ⇒ 选择流程中断、大厅里还是上一个角色 ⇒ 用户看到「选人页是对的，选完变成铁甲战士」。
+    ///
+    /// 常规驼峰命名（单大写边界）两种写法结果**完全相同**（AnonCard10 / VemiuRelic1 / SevenCrush /
+    /// TachiShrimpCard3 / WhiteCloakHeaven / XmlHttpPower / UIButton …都逐字不变），
+    /// 所以这次修的是「类名里出现 3 个以上连续大写」那一类**本来就已经坏掉**的存档。
     /// </summary>
     public static string Slug(string className)
     {
-        var sb = new System.Text.StringBuilder();
-        for (int i = 0; i < className.Length; i++)
-        {
-            char c = className[i];
-            // 本体条件：i > 0 && 当前字符 [A-Z] && 前一个字符 [A-Za-z0-9]（连续大写时也成立 → 每个大写前都插）
-            if (i > 0 && char.IsUpper(c) && char.IsLetterOrDigit(className[i - 1]))
-                sb.Append('_');
-            sb.Append(char.ToUpperInvariant(c));
-        }
+        // 本体 StringHelper.CamelCaseRegex：([A-Za-z0-9]|\G(?!^))([A-Z]) → "$1_$2"
+        string text = System.Text.RegularExpressions.Regex.Replace(
+            className.Trim(), @"([A-Za-z0-9]|\G(?!^))([A-Z])", "$1_$2");
+        // 本体 Slugify 最后一步：大写，并滤掉 [^0-9A-Z_]（合法标识符走这一步等于没变）
+        var sb = new System.Text.StringBuilder(text.Length + 4);
+        foreach (char c in text.ToUpperInvariant())
+            if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || c == '_') sb.Append(c);
         return sb.ToString();
     }
 }

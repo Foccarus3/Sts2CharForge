@@ -210,6 +210,12 @@ public static class ParamSources
     public const string MaxEnergy = "MaxEnergy";
     public const string Power = "Power";
 
+    /// <summary>
+    /// V0.2.250（用户要求「做成自定义参数」）：目标身上**减益的个数**（几种负面效果，和层数无关，每种算 1）。
+    /// 本体「撕碎 Rend」那种「基础 + 每有一种负面效果 × N」就是靠它算的。
+    /// </summary>
+    public const string DebuffCount = "DebuffCount";
+
     /// <summary>界面下拉的候选（顺序就是用户需求里点名的顺序）。</summary>
     public static IReadOnlyList<ParamSourceOption> All { get; } = new[]
     {
@@ -220,13 +226,17 @@ public static class ParamSources
         new ParamSourceOption(Energy,     "能量数",                 "当前能量"),
         new ParamSourceOption(MaxEnergy,  "最大能量数",             "每回合回满后的能量上限"),
         new ParamSourceOption(Power,      "增益/减益（状态层数）",   "目标身上某个状态的层数"),
+        new ParamSourceOption(DebuffCount, "减益的个数（几种负面效果）", "目标身上有**几种**减益，和层数无关（每种算 1）"),
     }
     // ===== 「实时读数」（用户要求：参数页也要能监听这些）=====
     // 直接复用「数值公式」那份内置只读量清单（Generation.FormulaBuiltins.All）——
     // 界面列出来的名字、生成端认的名字、回读认的名字都是同一份，不会出现「参数页有、公式里不认」这种漂移。
     // 它们都是**运行时现算**的（回合数 / 本回合与本场战斗的丢弃·消耗·生成·复制牌数 / 拿到的资源量 /
     // 身上的状态数…），所以「从谁身上取」那一栏对它们没意义（都是自己）。
-    .Concat(Generation.FormulaBuiltins.All.Select(b => new ParamSourceOption(
+    // ⚠ 卡牌专属的读数（`FormulaBuiltin.CardOnly`，例：ThisCardDamage —— 表达式里是 `base.…`）
+    //   **不列进来**：参数是「打出这张牌那一刻**先算一次**」的（见 EmitCardFormulaPrologue / ParamExpr），
+    //   选它当来源会恒为 0（伤害还没打），是个静默失效的坑。想用它直接写进「数值（公式）」那一栏。
+    .Concat(Generation.FormulaBuiltins.All.Where(b => !b.CardOnly).Select(b => new ParamSourceOption(
         b.Id, b.Display, "实时读数：每次取值现算（不用填固定数字）")))
     .ToList();
 
@@ -401,6 +411,25 @@ public sealed class CardGroupSpec : SpecBase
     /// <summary>界面列表里那一行（组名 + 备注）。</summary>
     [JsonIgnore]
     public string Display => string.IsNullOrWhiteSpace(_note) ? _name : $"{_name} ｜ {_note}";
+
+    private List<string> _powerIds = new();
+
+    /// <summary>
+    /// V0.2.255（用户要求「让状态进组」）：这个组里的**状态**（Power 类名，自定义状态 / 本体状态都行）。
+    /// 卡牌的归属记在卡自己身上（<c>CardSpec.GroupIds</c>）；状态的归属直接记在组这边 ——
+    /// 本体状态没法往它身上加字段，只有这一个位置两种状态都放得下。
+    /// 目前只有「清除指定状态」那条效果读它（一次清掉一个组里的所有状态）。
+    /// </summary>
+    public List<string> PowerIds
+    {
+        get => _powerIds;
+        set { if (Set(ref _powerIds, value ?? new List<string>())) Raise(nameof(PowerIdList)); }
+    }
+
+    /// <summary>去掉空值 / 重复之后的状态类名（读老存档、手写 JSON 时兜底）。</summary>
+    [JsonIgnore]
+    public List<string> PowerIdList =>
+        PowerIds.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
 }
 
 /// <summary>

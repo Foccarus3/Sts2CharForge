@@ -63,6 +63,9 @@ public static class EffectFieldUsage
         new("CountMode", "取几张", s => { s.CardPick = "Chosen"; s.CountMode = "UpTo"; }),
         new("GivenKeyword", "给予关键词", s => s.GivenKeyword = "Retain"),
         new("TempKeyword", "临时关键词", s => { s.GivenKeyword = "Retain"; s.TempKeyword = true; }),
+        // V0.2.220：抽牌 / 拿牌时「为抽到的牌加关键词」（+ 是不是临时）
+        new("DrawnKeyword", "为抽到的牌加关键词", s => s.DrawnKeyword = "Retain"),
+        new("DrawnKeywordTemp", "抽到的牌的关键词是临时的", s => { s.DrawnKeyword = "Retain"; s.DrawnKeywordTemp = true; }),
         new("BoostStat", "强化什么", s => { s.SpawnCardId = "<card>"; s.BoostStat = "Block"; }),
         new("SpawnPick", "取卡方式", s => { s.SpawnPick = "Random"; s.SpawnCardId = ""; }),
         new("SpawnFilter", "范围限定 / 范围界定", s => { s.SpawnPick = "Random"; s.SpawnFilter = "Attack"; }),
@@ -88,6 +91,8 @@ public static class EffectFieldUsage
         new("PetSacrificeFormula", "牺牲伙伴：收益公式", s => s.PetSacrificeFormula = "CurHp"),
         new("PetSacrificeMultiplier", "牺牲伙伴：倍率", s => { s.PetSacrificeFormula = "MaxHp"; s.PetSacrificeMultiplier = 127m; }),
         new("Condition", "条件选项", s => s.Condition = new ConditionSpec { Kind = "HandAtLeast", Amount = 130m, WhenUnmet = "Skip" }),
+        // V0.2.231：播放音频文件 ——「会被下一个自定义音频顶替」（勾了才走 cs/ForgeSfx.cs）
+        new("SfxReplace", "被下一个自定义音频顶替", s => s.SfxReplace = true),
     };
 
     /// <summary>
@@ -118,6 +123,9 @@ public static class EffectFieldUsage
         PetSacrificeMultiplier = 3m,
         GivenKeyword = "Exhaust",     // 不填的话「给予关键词」整条走早退分支
         PotionId = probePotionId,     // 同上，「获得药水」
+        // V0.2.231：同上 —— 「播放音频文件」没选音频时整条只剩一句注释，别的栏位（比如
+        // 「被下一个自定义音频顶替」）就全都测不出来（会被误判成「界面摆了但生成端没读」）。
+        Sfx = "probe_sfx.ogg",
     };
 
     /// <summary>CET 标记行整行删掉（见类注释坑①）。</summary>

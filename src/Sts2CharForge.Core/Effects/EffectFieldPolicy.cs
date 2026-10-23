@@ -29,6 +29,16 @@ public static class EffectFieldPolicy
         or "ForbidBlock" or "ForbidHeal" or "TempPower" or "TimesUp"
         or "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp";
 
+    /// <summary>
+    /// 「牺牲伙伴」的「作用对象」：**只有收益 = 造成伤害**时才有得选（V0.2.200，用户要求）。
+    ///
+    /// <para>收益是格挡 / 获得增益·减益时，「对谁生效」根本没有第二种可能（格挡给自己、
+    /// 层数也挂在自己身上），摆出这一栏只会让人以为能改。所以判据挂在<b>收益类型</b>上，
+    /// 而不是挂在效果种类上 —— <see cref="UsesTargetSide"/> 那种「只看 Kind」的写法表达不了。</para>
+    /// </summary>
+    public static bool UsesTargetSideForSacrifice(string? gain) =>
+        string.Equals(gain, "Damage", StringComparison.Ordinal);
+
     /// <summary>「增益 / 减益」那一栏（要施加 / 翻倍 / 清除 / 暴露哪个状态）。</summary>
     public static bool UsesPower(string? kind) => kind is
         "ApplyPower" or "DoublePower" or "Expose" or "ClearPowerOne" or "TempPower" or "PetApplyPower";
@@ -103,7 +113,9 @@ public static class EffectFieldPolicy
     public static bool UsesCardScopeFilter(string? kind) => kind is
         "ExhaustCard" or "DiscardCard" or "UpgradeCard" or "GiveKeyword"
         or "CopyCard" or "ReplayCard" or "TurnEndPlay"
-        or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry";
+        or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust" or "Scry"
+        // V0.2.249：「减少指定卡牌类别的费用」—— 这一栏的「范围」就是「哪一类牌」
+        or "CostDown";
 
     /// <summary>「取几张（恰好 / 最多 / 任意）」那一栏 —— 选牌类效果真的会读它。</summary>
     public static bool UsesCountMode(string? kind) => kind is
@@ -121,6 +133,27 @@ public static class EffectFieldPolicy
     /// </summary>
     public static bool UsesSpawnPick(string? kind) => kind is
         "GenerateCard" or "TransformCard" or "AddCardGlobal" or "TransformCardGlobal";
+
+    /// <summary>
+    /// 「为抽到的牌添加关键词」那一栏（V0.2.220，用户要求：抽牌 / 拿牌这些效果下多一条选项）。
+    ///
+    /// <para>只在这几档有意义 —— 它们是**真的把牌拿进手里**的那几种（<c>CardPileCmd.Draw</c> 的返回值 /
+    /// 选牌结果 / 填满手牌那批新卡）：抽牌 / 刮削（先抽再挑）/ 从三摞拿牌 / 用目标卡填满手牌。
+    /// 其它种类生成端**根本不读**这个字段，所以这里收起来（机械测量会钉住这一点）。</para>
+    /// </summary>
+    public static bool UsesDrawnKeyword(string? kind) => kind is
+        "Draw" or "ScrapeDraw"
+        or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust"
+        or "FillHand";
+
+    /// <summary>「临时关键词」那个勾要不要显示：有「为抽到的牌加关键词」那一栏的种类才做得了。</summary>
+    public static bool UsesDrawnKeywordTemp(string? kind) => UsesDrawnKeyword(kind);
+
+    /// <summary>
+    /// 「会被下一个自定义音频顶替」那个勾（V0.2.231）—— 只有「播放音频文件（我上传的）」读它。
+    /// 机械测量会钉住这一点（其它种类勾了也不影响生成，所以界面上不摆）。
+    /// </summary>
+    public static bool UsesSfxReplace(string? kind) => string.Equals(kind, "PlaySoundFile", StringComparison.Ordinal);
 
     /// <summary>
     /// 「随机目标允许攻击同个敌人」那一栏要不要显示：

@@ -176,7 +176,18 @@ public static class ProjectRecovery
         string powerDir = Path.Combine(cs, "Powers");
         if (Directory.Exists(powerDir))
             foreach (string file in Sorted(Directory.GetFiles(powerDir, "*.cs")))
-                p.CustomPowers.Add(ParseCustomPower(file, p, loc, result));
+            {
+                var cp = ParseCustomPower(file, p, loc, result);
+                p.CustomPowers.Add(cp);
+                // V0.2.194：这只状态是不是「锻造页 →『状态列表』」那块布做的？
+                // 生成端在**类级**写了一行 `// CET:ForgeGraph=1:<Base64>`（见 ForgeGraphGen.ApplyGraphMarker）。
+                // 认到就把整张图装回来，并把上面从各个钩子方法反推出来的 Triggers **清掉**：
+                // 图非空 = 图说了算（那些 Triggers 只是同一份配置的反推副本，留着会让「配置检查」
+                // 报一句「页面上的触发时机不再参与生成」，吓用户一跳）。
+                if (ForgeGraphGen.AttachMarker(file, cp, result, $"自定义状态「{cp.Name}」的锻造节点图",
+                        portVersionSink: () => p.ForgeGraphPortVersion = ForgeGraphGen.PortVersion))
+                    cp.Triggers.Clear();
+            }
 
         // ---- 本体状态改写（要在「状态名 → 类名」的映射之前解析：改名会用到它） ----
         ParseVanillaOverrides(projectDir, cs, p, loc, result);
@@ -386,6 +397,15 @@ public static class ProjectRecovery
     private static ParamSpec? ParamFromExpr(string letter, string expr)
     {
         var spec = new ParamSpec { Name = letter };
+        // V0.2.250：「减益的个数」—— 表达式是同一个运行时帮手（PowerCount + "Debuff" 筛选），
+        // 要在「状态层数」那条之前认，不然会被当成别的来源。
+        Match debuffCount = Regex.Match(expr, @"ForgeFormulaRuntime\.PowerCount\((.*?),\s*""Debuff"",\s*null\)");
+        if (debuffCount.Success)
+        {
+            spec.Source = ParamSources.DebuffCount;
+            spec.Target = ParamTargetOf(debuffCount.Groups[1].Value);
+            return spec;
+        }
         Match power = Regex.Match(expr, @"ForgeFormulaRuntime\.PowerAmount\((.*?),\s*""(.*?)""\)");
         if (power.Success)
         {
@@ -933,6 +953,8 @@ public static class ProjectRecovery
         // V0.2.132：新档「全体单位」也走这一行标记；「全部友方不包括召唤物」在同一行补 ` CET:AllyNoPets=1`。
         string? pendingTargetSide = null;
         bool pendingAllyNoPets = false;
+        // V0.2.201：「全部友方 · 包括自己」也靠同一行标记回读（` CET:AllySelf=1`）
+        bool pendingAllySelf = false;
         // 「不同效果的概率之间是否独立」（V0.2.132）：`// CET:ChanceIndependent=1 CET:ChancePct=70`
         // 由紧跟着那条效果认领（只在显式勾了「独立」时才写）。
         decimal? pendingChanceIndependent = null;
@@ -985,6 +1007,13 @@ public static class ProjectRecovery
         // 所以由紧跟着的那条效果认领（默认档不写标记，老工程一个字都不变）。
         string? pendingCountMode = null;
 
+        // V0.2.220：「为抽到 / 拿到的牌加关键词」（抽牌 / 拿牌 / 填满手牌那几条）。
+        // 生成端在那条效果**自己的识别行前面**写
+        // `// CET:DrawnKeyword=<本体枚举名 或 自定义关键词的键> CET:DrawnKeywordTemp=0/1`，
+        // 加关键词那几行（`foreach (CardModel __drawnKw in …)` 里）整段跳过（见下面 skip 那一支）。
+        string? pendingDrawnKeyword = null;
+        bool pendingDrawnKeywordTemp = false;
+
         // 收尾：把「每条效果自己的条件」带上（生成器是用一层 if 包的）
         void Done(EffectSpec e)
         {
@@ -995,6 +1024,20 @@ public static class ProjectRecovery
             {
                 e.CountMode = pendingCountMode;
                 pendingCountMode = null;
+            }
+            // V0.2.220：「为抽到 / 拿到的牌加关键词」：紧跟在标记后面的那条效果认领它
+            // ⚠ 只认「真的支持这一项」的那几种（抽牌 / 刮削 / 从三摞拿牌 / 填满手牌）——
+            //   万一那条效果自己没被认出来（例如状态链里的某种写法），标记就**丢掉**，
+            //   绝不留给后面不相关的效果（那会把关键词加到别的效果上）。
+            if (pendingDrawnKeyword is not null)
+            {
+                if (Sts2CharForge.Core.Effects.EffectFieldPolicy.UsesDrawnKeyword(e.Kind))
+                {
+                    e.DrawnKeyword = pendingDrawnKeyword;
+                    e.DrawnKeywordTemp = pendingDrawnKeywordTemp;
+                }
+                pendingDrawnKeyword = null;
+                pendingDrawnKeywordTemp = false;
             }
             // 「数值公式」：紧跟在标记后面的那条效果认领它（见上面的 pendingFormula）。
             // 必须在别的分支之前认领 —— Done 后面有 early return（全部召唤物的同组第 2..N 份），
@@ -1021,8 +1064,10 @@ public static class ProjectRecovery
             {
                 e.TargetSide = pendingTargetSide;
                 if (pendingAllyNoPets) e.AllAlliesExcludePets = true;
+                if (pendingAllySelf) e.AllAlliesIncludeSelf = true;   // V0.2.201：全部友方 · 包括自己
                 pendingTargetSide = null;
                 pendingAllyNoPets = false;
+                pendingAllySelf = false;
             }
             // 「不同效果的概率之间是否独立」（V0.2.132）：标记里带着百分比 —— 一条效果自己独立掷一次。
             if (pendingChanceIndependent is { } chancePct)
@@ -1051,6 +1096,9 @@ public static class ProjectRecovery
                 e.SpawnKeyword = pendingSpawn.SpawnKeyword;
                 // 「从范围里自己挑一张」（用户要求）
                 if (pendingSpawn.SpawnChosen) e.SpawnChosen = true;
+                // V0.2.213：变化卡牌「只变化哪些牌」（范围 / 指定卡）
+                if (!string.IsNullOrWhiteSpace(pendingSpawn.TransformPick)) e.TransformPick = pendingSpawn.TransformPick;
+                if (!string.IsNullOrWhiteSpace(pendingSpawn.ScopeCardId)) e.ScopeCardId = pendingSpawn.ScopeCardId;
                 pendingSpawn = null;
                 pendingSpawnKind = null;
             }
@@ -1323,6 +1371,8 @@ public static class ProjectRecovery
                         Kind = "PlaySoundFile",
                         Sfx = sfxFileRaw,
                         Amount = Dec(line, @"CET:SfxVolume=(-?[\d.]+)", 100m),
+                        // V0.2.231：「会被下一个自定义音频顶替」那一档
+                        SfxReplace = line.Contains("CET:SfxReplace=1", StringComparison.Ordinal),
                     });
                     skipSelfContainedBody = true;
                     selfContainedKind = "PlaySoundFile";
@@ -1401,6 +1451,8 @@ public static class ProjectRecovery
                     pendingTargetSide = tsRaw;
                     // V0.2.132：「全部友方不包括召唤物」跟在同一行末尾（` CET:AllyNoPets=1`）
                     pendingAllyNoPets = line.Contains("CET:AllyNoPets=1", StringComparison.Ordinal);
+                    // V0.2.201：「全部友方 · 包括自己」同理（` CET:AllySelf=1`）
+                    pendingAllySelf = line.Contains("CET:AllySelf=1", StringComparison.Ordinal);
                     continue;
                 }
                 // 「取几张」的非默认档（最多 N / 任意张 / 全部，V0.2.163）：先存着，等紧跟着那条效果认领。
@@ -1410,6 +1462,15 @@ public static class ProjectRecovery
                 if (cmRaw is not null)
                 {
                     pendingCountMode = cmRaw;
+                    continue;
+                }
+                // V0.2.220：「为抽到 / 拿到的牌加关键词」（抽牌 / 拿牌 / 填满手牌）：先存着，等紧跟着那条效果认领。
+                // 值可能是本体枚举名（Retain…）也可能是自定义关键词的键（带下划线 / 大小写，所以不能用 \w）。
+                string? drawnKwRaw = Match(line, @"CET:DrawnKeyword=([^\s]+)");
+                if (drawnKwRaw is not null)
+                {
+                    pendingDrawnKeyword = drawnKwRaw;
+                    pendingDrawnKeywordTemp = line.Contains("CET:DrawnKeywordTemp=1", StringComparison.Ordinal);
                     continue;
                 }
                 // 「生成 / 变化卡牌」的范围限定 + 「生成出来的卡怎么处理」：
@@ -1435,7 +1496,19 @@ public static class ProjectRecovery
                         SpawnKeyword = Match(line, @"CET:SpawnKeyword=(\S+)") ?? "",
                         // 「从范围里自己挑一张」（用户要求）：只在勾了的时候才在标记行里
                         SpawnChosen = line.Contains("CET:Chosen=1", StringComparison.Ordinal),
+                        // V0.2.214：「只对这张卡（指定）」—— 空 = 没设（默认档标记行里没有这一项）
+                        ScopeCardId = Match(line, @"CET:OnlyCard=(\S+)"),
                     };
+                }
+                // V0.2.213：变化卡牌「只变化哪些牌」——生成时紧跟在 CET:SpawnPick= 那一行后面写
+                // `// CET:ChangePick=<范围> CET:ChangeCard=<指定卡类名>`（空 = 那一档没设）。
+                // 直接补到刚暂存的那份效果上，等下一条「变化卡牌」效果出现时一起配上。
+                string? changePick = Match(line, @"CET:ChangePick=(\S*)");
+                string? changeCard = Match(line, @"CET:ChangeCard=(\S*)");
+                if ((changePick is not null || changeCard is not null) && pendingSpawn is not null)
+                {
+                    pendingSpawn.TransformPick = changePick is null or "-" ? "" : changePick;
+                    pendingSpawn.ScopeCardId = changeCard ?? "";
                 }
                 continue;
             }
@@ -1523,6 +1596,9 @@ public static class ProjectRecovery
                     || line.StartsWith("var __scryDiscard", StringComparison.Ordinal)
                     || line.StartsWith("if (__scryDiscard.Count", StringComparison.Ordinal)
                     || line.StartsWith("await CardCmd.Discard(choiceContext, __scryDiscard)", StringComparison.Ordinal)
+                    // V0.2.225：「预见」那条效果现在会先数一次（条件「本回合预见过 / 预见次数」的计数器）——
+                    // 这一句也在那段实现里，不跳过的话整段的「跳过开关」会在这里被关掉（后面几行就变成没认出来）
+                    || line.Contains("BumpScry(", StringComparison.Ordinal)
                     // 「刮削」那一段的实现（抽 N 张 + 丢掉非 0 费的）：效果本身由 CET:Effect=ScrapeDraw 收尾
                     || line.Contains("__scraped", StringComparison.Ordinal)
                     // 「用目标卡填满手牌」那一段的实现（算还差几张 + 逐张 CreateCard + 加进手牌）
@@ -1556,6 +1632,9 @@ public static class ProjectRecovery
                     || line.Contains("__src", StringComparison.Ordinal)
                     || line.Contains("__clone", StringComparison.Ordinal)
                     || line.Contains("__copyIdx", StringComparison.Ordinal)
+                    // V0.2.226：数值 0 = 复制**这张牌自己**那一支（`CardModel __selfClone = this.CreateClone();`
+                    // + `AddGeneratedCardToCombat(__selfClone, …)`）—— 同样由标记行收尾，整段跳过。
+                    || line.Contains("__selfClone", StringComparison.Ordinal)
                     || line.Contains("__copyPickIdx", StringComparison.Ordinal)
                     // 「放置卡牌」那一段的实现（自己选 / 随机 / 牌顶拿 + Add 到目标那一摞）：
                     // 效果本身已经由标记行 CET:Effect=PlaceCard 收尾了，这里整段跳过。
@@ -1617,7 +1696,10 @@ public static class ProjectRecovery
                     // 「播放音效」（V0.2.154）：标记行已经把效果收尾了，后面那一句 SfxCmd.Play 是它的实现
                     || (selfContainedKind == "PlaySfx" && line.StartsWith("SfxCmd.Play(", StringComparison.Ordinal))
                     // 「播放音频文件」（V0.2.155）：整段 AudioStreamPlayer 都是它的实现（局部变量统一叫 __sfx）
-                    || (selfContainedKind == "PlaySoundFile" && line.Contains("__sfx", StringComparison.Ordinal))
+                    // V0.2.231：勾了「会被下一个自定义音频顶替」时不是 __sfx 那几句，而是一行
+                    // `<角色>ForgeSfx.Play("res://audio/…", …, replaceable: …)` —— 同样算它的实现。
+                    || (selfContainedKind == "PlaySoundFile" && (line.Contains("__sfx", StringComparison.Ordinal)
+                            || line.Contains("ForgeSfx.Play(", StringComparison.Ordinal)))
                     // 「获得药水」（需求 ⑨）：标记行已经把效果收尾了，后面这几行是它的实现 ——
                     // 固定档是一句 TryToProcure<T>（瓶数 > 1 时外面还有一层 for），
                     // 随机档是 PotionFactory 那三行 + TryToProcure。
@@ -1648,11 +1730,28 @@ public static class ProjectRecovery
                 // （`__tr.cardAdded?` 是「本体随机变化」那一支接住本体返回的新卡用的，`__tr?.cardAdded?` 是「填了目标卡」那一支）
                 || line.Contains(".AddKeyword(CardKeyword.", StringComparison.Ordinal)
                 || line.Contains(".AddGivenCustomKeyword(", StringComparison.Ordinal)
+                // V0.2.220：「为抽到 / 拿到的牌加关键词」那一段（抽牌 / 拿牌 / 填满手牌自带的那几行）。
+                // 效果本身已经从抽牌 / 选牌 / 标记行认出来了；这里把 foreach 和里面那几行一起跳过
+                //（统一用循环变量名 __drawnKw 判，不会误伤别的效果）。
+                || line.Contains("__drawnKw", StringComparison.Ordinal)
                 // 斩杀条件那两行辅助语句（效果本身在 DamageCmd.Attack 那一行认）
                 || line.StartsWith("__fatalOk = ", StringComparison.Ordinal)
                 || line.StartsWith("__lastAttack = null;", StringComparison.Ordinal)
                 || line.StartsWith("bool __fatalOk = false;", StringComparison.Ordinal)
                 || line.StartsWith("MegaCrit.Sts2.Core.Commands.Builders.AttackCommand? __lastAttack", StringComparison.Ordinal)
+                // V0.2.194 / V0.2.241「这一次打出」那组读数（ThisCardDamage / Block / Exhaust / Discard /
+                // Transform / Generate）的辅助语句：
+                //   · 打出时那几句清零（`ForgeThisCardX = 0m;`）
+                //   · 每条攻击后面那句累加（`if (__atk1 is not null) ForgeThisCardDamage += …`）
+                //   · 消耗 / 丢弃 / 变化 / 生成那几条效果后面的 `ForgeThisCardX += …`
+                // ⚠ 但 `ForgeThisCardBlock += await CreatureCmd.GainBlock(` 那一句**是识别行**（格挡效果本体），
+                //   不能跳过（否则回读会把那条「获得格挡」整条丢掉）。
+                || line.StartsWith("ForgeThisCardDamage = 0m;", StringComparison.Ordinal)
+                || line.StartsWith("ForgeThisCardBlock = 0m;", StringComparison.Ordinal)
+                || (line.StartsWith("ForgeThisCard", StringComparison.Ordinal) && line.Contains(" = 0m;", StringComparison.Ordinal))
+                || (line.StartsWith("ForgeThisCard", StringComparison.Ordinal) && line.Contains(" += ", StringComparison.Ordinal)
+                    && !line.Contains("CreatureCmd.GainBlock(", StringComparison.Ordinal))
+                || line.StartsWith("if (__atk", StringComparison.Ordinal) && line.Contains("ForgeThisCardDamage += ", StringComparison.Ordinal)
                 || line.Contains("AddGeneratedCardToCombat(__gen", StringComparison.Ordinal)
                 || line.Contains("__gen.SetToFree", StringComparison.Ordinal)
                 || line.StartsWith("CardCmd.Upgrade(__gen)", StringComparison.Ordinal)
@@ -1716,9 +1815,13 @@ public static class ProjectRecovery
 
             // 攻击链：多行。
             // 带「斩杀」条件的卡把结果记进 __lastAttack（`__lastAttack = await DamageCmd.Attack(…)`），
-            // 所以两种前缀都要认。
+            // V0.2.194 起「本张牌这一次打出造成的伤害」又把结果接进一个临时变量
+            //（卡牌页 `MegaCrit.…AttackCommand? __atk1 = await DamageCmd.Attack(…)`、
+            //  锻造图上 `… __fgAtk<模块后缀> = await …`），所以三种前缀都要认。
             if (line.StartsWith("await DamageCmd.Attack(", StringComparison.Ordinal)
-                || line.StartsWith("__lastAttack = await DamageCmd.Attack(", StringComparison.Ordinal))
+                || line.StartsWith("__lastAttack = await DamageCmd.Attack(", StringComparison.Ordinal)
+                || System.Text.RegularExpressions.Regex.IsMatch(line,
+                       @"^(?:MegaCrit\.Sts2\.Core\.Commands\.Builders\.AttackCommand\? )?__\w+ = await DamageCmd\.Attack\("))
             {
                 // 斩杀那条判据（__fatalOk = …）不是效果，跳过
                 var chain = new StringBuilder(line);
@@ -1822,7 +1925,11 @@ public static class ProjectRecovery
                 continue;
             }
 
-            if (line.StartsWith("CreatureCmd.GainBlock(", StringComparison.Ordinal) || line.StartsWith("await CreatureCmd.GainBlock(", StringComparison.Ordinal))
+            if (line.StartsWith("CreatureCmd.GainBlock(", StringComparison.Ordinal)
+                || line.StartsWith("await CreatureCmd.GainBlock(", StringComparison.Ordinal)
+                // V0.2.194：「本张牌这一次打出获得的格挡」的记账前缀（ThisCardBlock）——
+                // 生成的是 `ForgeThisCardBlock += await CreatureCmd.GainBlock(…)`，效果本体还是这一句。
+                || line.StartsWith("ForgeThisCardBlock += await CreatureCmd.GainBlock(", StringComparison.Ordinal))
             {
                 // 牺牲伙伴（收益是**格挡**）：Kill 已经在上一行出现过 → 这一句才是那条效果的收尾
                 // （固定收益时数值是普通 BlockVar，按生命值算时是计算三件套）。
@@ -1853,6 +1960,19 @@ public static class ProjectRecovery
             {
                 var e = new EffectSpec { Kind = "Draw" };
                 FillAmount(e, NextVar(vars, ref varIdx, "Cards"), nameToPowerId, fallbackExpr: ArgAt(line, 1));
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // V0.2.220：「抽牌 + 给抽到的牌加关键词」那一档（生成端为了给牌加关键词，把抽牌结果接住了）：
+            //   IEnumerable<CardModel> __drawnBatch = await CardPileCmd.Draw(choiceContext, N, base.Owner);
+            // 数值从第二实参取（和上面那一句同一套兜底），关键词由紧跟着的 CET:DrawnKeyword 标记认领。
+            if (line.Contains("__drawnBatch = await CardPileCmd.Draw(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "Draw" };
+                string amtExpr = Match(line, @"__drawnBatch = await CardPileCmd\.Draw\(choiceContext, ([^,]+),") ?? "";
+                FillAmount(e, NextVar(vars, ref varIdx, "Cards"), nameToPowerId, fallbackExpr: amtExpr);
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -1907,6 +2027,20 @@ public static class ProjectRecovery
                 // 有 StarsVar 就取变量值（升级增量在 OnUpgrade 里）；否则解析表达式（X / 字面量 / 三目）
                 if (starArg.Contains("base.DynamicVars")) FillAmount(e, NextVar(vars, ref varIdx, "Stars"), nameToPowerId);
                 else FillExpr(e, starArg);
+                ApplyLoop(e, frames);
+                Done(e);
+                continue;
+            }
+
+            // 负数「获得额外资源量」= 失去（生成的是 LoseStars(System.Math.Abs(…))）：回读成负数
+            // ⚠ V0.2.190：这条以前没有 —— 状态链上「额外资源量填 -1」（用户实测的「黑暗圣所（减益）」）
+            // 这一版改成生成 `PlayerCmd.LoseStars`（本体 GainStars 对负数直接抛异常），回读也必须跟上，
+            // 否则「从工程恢复」会把这一条丢掉、只剩一行「没认出来」。
+            if (line.StartsWith("await PlayerCmd.LoseStars(", StringComparison.Ordinal))
+            {
+                var e = new EffectSpec { Kind = "ExtraResource" };
+                FillAmount(e, NextVar(vars, ref varIdx, "Stars"), nameToPowerId, fallbackExpr: AbsInner(ArgAt(line, 0)));
+                e.Amount = -Math.Abs(e.Amount);
                 ApplyLoop(e, frames);
                 Done(e);
                 continue;
@@ -2429,12 +2563,14 @@ public static class ProjectRecovery
 
             if (line.StartsWith("await CardPileCmd.AddToCombatAndPreview<", StringComparison.Ordinal))
             {
-                var m = Regex.Match(line, @"AddToCombatAndPreview<(\w+)>\(([^;]*)\);");
+                // ⚠ 泛型实参可能是**全名**（本体卡现在写全名，见 CSharpCodeGen.CardTypeExpr：
+                //   本体有一张卡就叫 Void，短名会和 System.Void 撞成 CS0104），所以这里允许点号并还原成短类名。
+                var m = Regex.Match(line, @"AddToCombatAndPreview<([\w\.]+)>\(([^;]*)\);");
                 var parts = m.Success ? SplitArgs(m.Groups[2].Value) : new List<string>();
                 var e = new EffectSpec
                 {
                     Kind = "GenerateCard",
-                    SpawnCardId = m.Success ? m.Groups[1].Value : null,
+                    SpawnCardId = m.Success ? ShortCardName(m.Groups[1].Value) : null,
                     SpawnTo = parts.Count > 1 ? parts[1].Trim().Replace("PileType.", "") : "Hand",
                 };
                 if (parts.Count > 2) FillExpr(e, parts[2]);
@@ -2453,7 +2589,7 @@ public static class ProjectRecovery
                 var e = new EffectSpec
                 {
                     Kind = "GenerateCard",
-                    SpawnCardId = Match(line, @"ModelDb\.Card<(\w+)>"),
+                    SpawnCardId = ShortCardName(Match(line, @"ModelDb\.Card<([\w\.]+)>")),
                     SpawnTo = PeekSpawnToPile(lines, i),
                 };
                 // 生成张数 = 里面那层 for (__genIdx) 的上限（外层 for(i) 才是「生效次数」）
@@ -2732,7 +2868,7 @@ public static class ProjectRecovery
                 var e = new EffectSpec
                 {
                     Kind = "AddCardGlobal",
-                    SpawnCardId = Match(line, @"ModelDb\.Card<(\w+)>"),
+                    SpawnCardId = ShortCardName(Match(line, @"ModelDb\.Card<([\w\.]+)>")),
                 };
                 e.Amount = LoopValue(LoopTop() ?? "1");
                 Done(e);
@@ -3414,6 +3550,16 @@ public static class ProjectRecovery
             return new ConditionSpec { Kind = "ShuffledThisTurn" };
         if (e.Contains("ShuffleTracker", StringComparison.Ordinal) && e.Contains("ShuffledThisCombat", StringComparison.Ordinal))
             return new ConditionSpec { Kind = "ShuffledThisCombat" };
+        // V0.2.225（用户要求）：预见。「本回合预见过」生成的是 `…ScryThisTurn(base.Owner) > 0`；
+        // 「至少 N 次」是 `>= N`，填负数（反向）是 `< N` —— 数值取成负数还原。
+        if (e.Contains("ForgeCombatCounters", StringComparison.Ordinal) && e.Contains("ScryThisTurn", StringComparison.Ordinal))
+        {
+            var scryAtLeast = Regex.Match(e, @"ScryThisTurn\([^)]*\) >= ([\d.]+)");
+            if (scryAtLeast.Success) return new ConditionSpec { Kind = "ScryAtLeast", Amount = Num(scryAtLeast.Groups[1].Value) };
+            scryAtLeast = Regex.Match(e, @"ScryThisTurn\([^)]*\) < ([\d.]+)");
+            if (scryAtLeast.Success) return new ConditionSpec { Kind = "ScryAtLeast", Amount = -Num(scryAtLeast.Groups[1].Value) };
+            return new ConditionSpec { Kind = "ScryThisTurn" };
+        }
         if (e.Contains("CardType.Attack") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlyAttack" };
         if (e.Contains("CardType.Skill") && e.Contains("PileType.Hand")) return new ConditionSpec { Kind = "HandOnlySkill" };
         if (e.Contains("PileType.Draw")) return new ConditionSpec { Kind = "DrawPileEmpty" };
@@ -3431,12 +3577,85 @@ public static class ProjectRecovery
         played = Regex.Match(e, @"CardPlays(?:Started|Finished)\.Count\(.*?\)\s*<\s*([\d.]+)");
         if (played.Success) return new ConditionSpec { Kind = "PlayedAtLeast", Amount = -Num(played.Groups[1].Value) };
         if (e.Contains("CardPlaysFinished.Any") && e.Contains("== this")) return new ConditionSpec { Kind = "NotPlayedThisCombat" };
+        // V0.2.195（用户要求）：「上一张打出的牌是 X 牌」生成的是
+        //   …CombatManager.Instance.History.CardPlaysFinished.LastOrDefault(e => e.CardPlay.Player == …)?.CardPlay.Card.Type == CardType.X
+        // ⚠ 必须排在下面那几条「Contains 猜」的前面吗？不必 —— 前面几条都要求 Count(/PileType/== this，
+        //   这条表达式一个都不含。但**要放在 `return null` 之前**（放最后会让回读丢这条条件）。
+        var lastCard = Regex.Match(e, @"CardPlaysFinished\.LastOrDefault\(.*?\)\?\.CardPlay\.Card\.Type == CardType\.(\w+)");
+        if (lastCard.Success)
+        {
+            string kindOfLast = lastCard.Groups[1].Value switch
+            {
+                "Attack" => "LastCardAttack",
+                "Skill" => "LastCardSkill",
+                "Power" => "LastCardPower",
+                "Status" => "LastCardStatus",
+                "Curse" => "LastCardCurse",
+                _ => "",
+            };
+            if (kindOfLast.Length > 0) return new ConditionSpec { Kind = kindOfLast };
+        }
+        // V0.2.247（用户要求）：「上一张打出的牌带有某关键词 / 是某范围（可按组）」。
+        // 关键词：… is { } __lastCard && (__lastCard.Keywords.Contains(CardKeyword.Exhaust))
+        var lastKw = Regex.Match(e, @"\.Keywords\.Contains\(CardKeyword\.(\w+)\)");
+        if (lastKw.Success && EffectCatalog.NormalizeVanillaKeyword(lastKw.Groups[1].Value) is string kw)
+            return new ConditionSpec { Kind = "LastCardKeyword", Keyword = kw };
+        // 范围：… is { } __lastCard && (<范围判据>)
+        if (e.Contains("__lastCard"))
+        {
+            string? scope = RecoverLastCardScope(e);
+            if (scope is not null) return new ConditionSpec { Kind = "LastCardScope", Scope = scope };
+        }
         var turn = Regex.Match(e, @"TurnNumber % ([\d.]+) == 0");
         if (turn.Success) return new ConditionSpec { Kind = "EveryNTurns", Amount = Num(turn.Groups[1].Value) };
         if (e.Contains("_condUsedThisCombat")) return new ConditionSpec { Kind = "OncePerCombat" };
         // 斩杀（本体 Fatal）：生成的是
         //   __lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled)
         if (e.Contains("__lastAttack") && e.Contains("WasTargetKilled")) return new ConditionSpec { Kind = "Fatal" };
+        return null;
+    }
+
+    /// <summary>
+    /// V0.2.247：把「上一张打出的牌是某范围」生成出来的判据反推回范围 Id。
+    /// 内置那几档直接认（攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务）；「组 / 自定义关键词那一组」生成的是
+    /// 一串 <c>__lastCard.Id == ModelDb.Card&lt;某卡&gt;().Id</c>，这里拿这串卡的**集合**去和存档里的
+    /// 组 / 关键词组比对（集合完全相同才算命中），命中不了就返回 null。
+    /// </summary>
+    private static string? RecoverLastCardScope(string e)
+    {
+        // 组 / 关键词组要靠存档查（回读入口拿不到 profile，用界面 / 生成端登记的那一份）
+        CharacterProfile? profile = EffectCatalog.DisplayProfile;
+        if (Regex.IsMatch(e, @"__lastCard\.Type == CardType\.Attack")) return "Attack";
+        if (Regex.IsMatch(e, @"__lastCard\.Type == CardType\.Skill")) return "Skill";
+        if (Regex.IsMatch(e, @"__lastCard\.Type == CardType\.Power")) return "Power";
+        if (Regex.IsMatch(e, @"__lastCard\.Type == CardType\.Quest")) return "Quest";
+        if (Regex.IsMatch(e, @"__lastCard\.Rarity == CardRarity\.Curse")) return "Curse";
+        if (Regex.IsMatch(e, @"__lastCard\.Type == CardType\.Status")) return "Status";
+        if (profile is null) return null;
+        var ids = Regex.Matches(e, @"\.Card\.Id == ModelDb\.Card<([\w.]+)>\(\)\.Id")
+            .Select(m => m.Groups[1].Value.Split('.').Last())
+            .ToHashSet(StringComparer.Ordinal);
+        if (ids.Count == 0) return null;
+        if (profile.CardGroups is not null)
+            foreach (var g in profile.CardGroups)
+            {
+                if (g is null || string.IsNullOrWhiteSpace(g.Id)) continue;
+                var set = EffectCatalog.CardGroupCards(profile, EffectCatalog.GroupFilterPrefix + g.Id)
+                    .Select(c => (c.ClassName ?? "").Trim())
+                    .Where(x => x.Length > 0)
+                    .ToHashSet(StringComparer.Ordinal);
+                if (set.Count == ids.Count && set.SetEquals(ids))
+                    return EffectCatalog.GroupFilterPrefix + g.Id;
+            }
+        foreach (var (spec, key) in KeywordGen.All(profile))
+        {
+            var set = EffectCatalog.KeywordGroupCards(profile, EffectCatalog.KeywordFilterPrefix + key)
+                .Select(c => (c.ClassName ?? "").Trim())
+                .Where(x => x.Length > 0)
+                .ToHashSet(StringComparer.Ordinal);
+            if (set.Count == ids.Count && set.SetEquals(ids))
+                return EffectCatalog.KeywordFilterPrefix + key;
+        }
         return null;
     }
 
@@ -4767,6 +4986,20 @@ public static class ProjectRecovery
     {
         var m = Regex.Match(text, pattern);
         return m.Success ? m.Groups[1].Value : null;
+    }
+
+    /// <summary>
+    /// 把生成代码里的「卡牌类型名」还原成**短类名**：生成端现在给**本体卡**写全名
+    /// （<c>MegaCrit.Sts2.Core.Models.Cards.Void</c> —— 本体有一张卡就叫 <c>Void</c>，短名会和
+    /// <c>System.Void</c> 撞成 CS0104，见 <see cref="CSharpCodeGen.CardTypeExpr"/>），
+    /// 而存档里 <c>SpawnCardId</c> 一直存的是短名（界面下拉 / 校验器 / 老存档都是短名），所以回读时要去掉前缀。
+    /// </summary>
+    private static string? ShortCardName(string? raw)
+    {
+        string s = (raw ?? "").Trim();
+        if (s.Length == 0) return null;
+        int dot = s.LastIndexOf('.');
+        return dot >= 0 ? s[(dot + 1)..] : s;
     }
 
     /// <summary>

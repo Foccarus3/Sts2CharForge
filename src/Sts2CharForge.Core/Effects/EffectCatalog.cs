@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -9,6 +9,13 @@ namespace Sts2CharForge.Core.Effects;
 public sealed record PowerEntry(string Id, string Slug, string Type, string StackType, string Zh, string En)
 {
     public bool IsBuff => Type == "Buff";
+
+    /// <summary>
+    /// V0.2.259：本体这个状态是「只叠一层」（<c>PowerStackType.Single</c>）—— 层数恒为 1、界面不显示。
+    /// 「临时 +1 / -1」在它身上没有意义（护卫 GuardedPower 还是 Instanced：每施加一次 = 一个新实例），
+    /// 生成端遇到这类状态一律按「挂上 / 摘下」处理，不做层数加减。
+    /// </summary>
+    public bool IsSingle => string.Equals(StackType, "Single", StringComparison.OrdinalIgnoreCase);
     public bool Recommended => RecommendedIds.Contains(Id);
 
     private static readonly HashSet<string> RecommendedIds = new(StringComparer.Ordinal)
@@ -73,7 +80,10 @@ public sealed record ConditionOption(string Id, string Display, bool ForCard, bo
     // 这个条件支持「填负数 = 反向」吗（校验器用它提醒）
     bool SupportsNegative = false,
     // 这个条件底下还要再选一个「子时机」吗（需求⑩ 的「卡牌时机」用得到，见 CardTimings）
-    bool NeedsTiming = false);
+    bool NeedsTiming = false,
+    // V0.2.247（用户要求）：底下还要再选「某个本体关键词」/「某个范围（可按组）」吗
+    bool NeedsKeyword = false,
+    bool NeedsScope = false);
 
 /// <summary>
 /// 「卡牌时机」的一个子时机（需求⑩）。
@@ -349,14 +359,48 @@ public static class EffectCatalog
     // 类名 → 显示名（PowerId 存的就是类名，生成代码里就是 PowerCmd.Apply<类名>(...)）。
     private static readonly Dictionary<string, string> CustomPowers = new(StringComparer.Ordinal);
 
-    /// <summary>按配置里的自定义状态更新登记表（生成前 / 界面刷新时各调一次）。</summary>
-    public static void SetCustomPowers(IEnumerable<(string ClassName, string Display)>? powers)
+    /// <summary>
+    /// 按配置里的自定义状态更新登记表（生成前 / 界面刷新时各调一次），外加「这个自定义状态允不允许负层数」
+    /// 那一栏（V0.2.239）。
+    ///
+    /// 用户问的「在自定义状态增加状态层数能否到负值」就是这一栏：勾了之后这个状态和本体
+    /// 力量 / 敏捷 / 专注 同一个口径（<c>AllowNegative =&gt; true</c>），0 层也能被扣成负数。
+    /// 生成端判断「负数 = 直接施加负值」还是「负数 = 扣已有层数」用的就是
+    /// <see cref="AllowsNegativeLayers"/> —— 所以这里必须把那一栏也登记进来。
+    /// </summary>
+    public static void SetCustomPowers(IEnumerable<(string ClassName, string Display, bool AllowNegativeLayers, bool Single)>? powers)
     {
         CustomPowers.Clear();
+        CustomNegativePowers.Clear();
+        CustomSinglePowers.Clear();
         if (powers is null) return;
-        foreach (var (cls, name) in powers)
-            if (!string.IsNullOrWhiteSpace(cls)) CustomPowers[cls.Trim()] = string.IsNullOrWhiteSpace(name) ? cls : name;
+        foreach (var (cls, name, allowNegative, single) in powers)
+        {
+            if (string.IsNullOrWhiteSpace(cls)) continue;
+            string key = cls.Trim();
+            CustomPowers[key] = string.IsNullOrWhiteSpace(name) ? key : name;
+            if (allowNegative) CustomNegativePowers.Add(key);
+            if (single) CustomSinglePowers.Add(key);
+        }
     }
+
+    /// <summary>
+    /// 「只叠一层」（<c>CustomPowerSpec.Single</c>）的自定义状态。
+    ///
+    /// <para>V0.2.246（用户报「形态生效、效果没生效」）：本体 <c>PowerStackType.Single</c> 的注释写的是
+    /// “Amount is hidden, and is always 1” —— 但**只是不显示**：<c>PowerCmd.Apply</c> 第二次走
+    /// <c>ModifyAmount(+1)</c> → <c>SetAmount(2)</c>，内部层数照样变 2（<c>SetAmount</c> 对 Single 没有任何夹取，
+    /// 见 PowerModel.cs）。所以「锻造图里的条件写成『等于 1 层』」在这种状态上会在「被施加过两次」时失效 ——
+    /// 图标还在（层数不显示）、条件不成立、效果整段被跳过。校验器据此给提示。</para>
+    /// </summary>
+    public static bool IsSingleLayerCustomPower(string? powerId) =>
+        powerId is not null && CustomSinglePowers.Contains(powerId.Trim());
+
+    /// <summary>「只叠一层」的自定义状态（类名）。</summary>
+    private static readonly HashSet<string> CustomSinglePowers = new(StringComparer.Ordinal);
+
+    /// <summary>勾了「允许负层数」的自定义状态（类名）。</summary>
+    private static readonly HashSet<string> CustomNegativePowers = new(StringComparer.Ordinal);
 
     /// <summary>这个类名是不是配置里自己的自定义状态。</summary>
     public static bool IsCustomPower(string? powerId) =>
@@ -371,9 +415,18 @@ public static class EffectCatalog
     /// 只能从「目标身上已有的层数」里扣（<c>GetPower</c> + <c>ModifyAmount(-N)</c>）。
     /// 本体的名单是扫源码得来的（<c>override bool AllowNegative =&gt; true</c>）：
     /// 力量 / 敏捷 / 专注 / 尖啸 Shriek / 萎缩 Shrink —— 就这 5 个。
+    ///
+    /// <para>V0.2.239：**自定义状态**勾了「允许负层数」时也在这里（见
+    /// <see cref="SetCustomPowers(IEnumerable{ValueTuple{string,string,bool}})"/>），
+    /// 于是「施加增益 / 减益填负数」「临时增益填负数」对这些状态也走「直接施加负值」那一档。</para>
     /// </summary>
-    public static bool AllowsNegativeLayers(string? powerId) => (powerId ?? "").Trim() is
-        "StrengthPower" or "DexterityPower" or "FocusPower" or "ShriekPower" or "ShrinkPower";
+    public static bool AllowsNegativeLayers(string? powerId)
+    {
+        string id = (powerId ?? "").Trim();
+        if (id.Length == 0) return false;
+        if (id is "StrengthPower" or "DexterityPower" or "FocusPower" or "ShriekPower" or "ShrinkPower") return true;
+        return CustomNegativePowers.Contains(id);
+    }
 
     /// <summary>自定义状态的显示名（不是自定义状态就返回 null）。</summary>
     public static string? CustomPowerName(string? powerId) =>
@@ -912,6 +965,12 @@ public static class EffectCatalog
     // 这期间**每抽到一张牌，那张牌**本场战斗费用 -1 —— 不是「这张牌自己」减费。
     // 想要「抽到这张牌时、这张牌自己费用 -1」请用另一条：CheapenSelfOnDraw（卡自己的 AfterCardDrawn）。
     new EffectKindOption(Kind: "CheapenDraw", Display: "抽到就减费：挂 N 回合状态，这期间每抽到一张牌、那张牌费用 -1（负数 = 扣层数）", Unit: "回合", Min: -5, Max: 5, NeedsTarget: false),
+    // V0.2.249（用户要求「减少指定卡牌类别的费用（类似腐化，刺破帷幕这些）」，随后澄清「不是给自定义状态，
+    // 而是增加在效果种类中」）：数值 = 这一类牌**减多少费**，0 = 直接变成 0 费（腐化那种）。
+    // 「哪一类牌」复用「范围界定」那一栏（攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务 / 自定义关键词那一组 / 每个组）。
+    // 生成 = 挂一只带载荷的内部状态（{角色}ForgeCostDownPower）+ 覆写本体的
+    // TryModifyEnergyCostInCombatLate（腐化 Corruption / 刺破帷幕 Veilpiercer / 免费攻击 FreeAttackPower 同一个钩子）。
+    new EffectKindOption(Kind: "CostDown", Display: "减少指定卡牌类别的费用（像腐化 / 刺破帷幕：「范围」选哪一类牌，数值 = 减几费；填 0 = 变成 0 费）", Unit: "费", Min: 0, Max: 9, NeedsTarget: false),
     // 减少**这张牌自己**本回合所需的费用（用户要求：参考本体「子弹时间」那种「本回合费用变 0」）。
     // 实现 = 本体 CardModel.SetToFreeThisTurn()：EnergyCost.SetThisTurnOrUntilPlayed(0) + SetStarCostThisTurn(0)，
     // 也就是「本回合内费用变 0、打出后恢复」，能量费与额外资源量费一起管。
@@ -1341,6 +1400,11 @@ public static class EffectCatalog
         new SpawnFilterOption("Power", "能力牌", "能力"),
         new SpawnFilterOption("Curse", "诅咒牌（从诅咒卡池 + 你自己的诅咒里挑）", "诅咒"),
         new SpawnFilterOption("Status", "状态牌（伤口 / 灼伤那种）", "状态"),
+        // V0.2.204（用户报的）：「消耗指定牌」的范围界定里没有任务牌 —— 想穷举出「非攻击牌」时，
+        // 任务牌（CardType.Quest）永远匹配不上，于是永远消耗不到它。
+        // 本体的 CardType 一共就这 7 档（None / Attack / Skill / Power / Status / Curse / Quest），
+        // 内建筛选项补上 Quest 之后，「除攻击以外的全部牌」才算真的穷举得到。
+        new SpawnFilterOption("Quest", "任务牌（本体 CardType.Quest 那一类）", "任务"),
     };
 
     // ==================== 「自定义关键词」当作「卡的组」用 ====================
@@ -1609,7 +1673,9 @@ public static class EffectCatalog
         // 自定义关键词 / 组那一组：这两样是不是真的存在于配置里由「空组」那条检查负责，这里只认前缀
         if (IsKeywordFilter(id)) return true;
         if (IsCardGroupFilter(id)) return true;
-        return id is "Attack" or "Skill" or "Power" or "Curse" or "Status";
+        // V0.2.204：类型那几档不再手写死（以前这里漏了「任务牌」，于是轮廓上能选、校验器却说「认不出来」）——
+        // 直接认「内置范围限定」里除「不限」以外的 Id，两边永远是同一份清单。
+        return SpawnFilters.Any(f => f.Id.Length > 0 && string.Equals(f.Id, id, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -1689,6 +1755,29 @@ public static class EffectCatalog
         new ConditionOption("HandOnlyAttack", "手牌里只有攻击牌", true, true, false, false,
             "本体「Clash」的做法：手牌里全是攻击牌（含这张）。", true),
         new ConditionOption("HandOnlySkill", "手牌里只有技能牌", true, true, false, false, "手牌里全是技能牌（含这张）。", true),
+        // ==================== V0.2.195（用户要求）：上一张打出的牌是什么类型 ====================
+        // 用户原话：「在条件选项增加『上一张打出的卡是否为技能/攻击/状态/诅咒/能力牌』」。
+        //
+        // 口径（写死在生成端 CSharpCodeGen.ConditionExpr 里，卡面文案就是这里的 Display）：
+        //   查战斗历史 `CombatManager.Instance.History.CardPlaysFinished` 里**最后一张结算完的牌**
+        //   （本体在 Player 上记的那条历史；不限于本回合，本场战斗从头数）。
+        //   ⇒ 卡牌上用（OnPlay / 能否打出）：「你打出这张牌之前最后打出的那张」——
+        //      本体是在一张牌**结算完**才记 Finished，所以 OnPlay 里读到的正好是上一张；
+        //   ⇒ 遗物 / 状态在「打出一张牌后」这类钩子上用：就是**刚才那张**（那时已经记上了）。
+        //   本场战斗还一张牌都没打过（或者不是自己的回合里别人的牌）→ 条件不成立。
+        // 之所以拆成五条而不是「一个类型下拉」：条件模型（ConditionSpec）里没有多余的字符串栏位可放类型，
+        // 拆成五条不用动存档格式 / 界面模板 / 回读标记，下拉里读起来也是一句完整的话。
+        new ConditionOption("LastCardAttack", "上一张打出的牌是攻击牌", true, true, false, false,
+            "查战斗历史里**最后一张结算完的牌**是不是攻击牌。卡牌上用 = 你打出这张牌之前最后打出的那张；"
+            + "遗物 / 状态用在「打出一张牌后」这类钩子上 = 刚才那张。本场还没打过牌 = 不成立。", true),
+        new ConditionOption("LastCardSkill", "上一张打出的牌是技能牌", true, true, false, false,
+            "同「上一张打出的牌是攻击牌」，判的是技能牌。", true),
+        new ConditionOption("LastCardPower", "上一张打出的牌是能力牌", true, true, false, false,
+            "同「上一张打出的牌是攻击牌」，判的是能力牌。", true),
+        new ConditionOption("LastCardStatus", "上一张打出的牌是状态牌", true, true, false, false,
+            "同「上一张打出的牌是攻击牌」，判的是状态牌（本体「粘液」那种）。", true),
+        new ConditionOption("LastCardCurse", "上一张打出的牌是诅咒牌", true, true, false, false,
+            "同「上一张打出的牌是攻击牌」，判的是诅咒牌。", true),
         new ConditionOption("DrawPileEmpty", "抽牌堆为空", true, true, false, false,
             "本体「GrandFinale」的做法：抽牌堆已经抽空。", true),
         new ConditionOption("DiscardPileEmpty", "弃牌堆为空", true, true, false, false, "弃牌堆里一张牌都没有。", true),
@@ -1741,6 +1830,21 @@ public static class EffectCatalog
             + "注意：**开局的洗牌不算**（本体开战那次只走 ModifyShuffleOrder），战斗结束阶段也不算。", true),
         new ConditionOption("ShuffledThisCombat", "抽牌堆本场战斗被打乱洗过牌", true, true, false, false,
             "同上，但看的是「这一场战斗里洗过没有」（战斗换一场就重新算）。"),
+        // ==================== V0.2.225（用户要求）：预见 ====================
+        // 用户原话：「条件新增是否预见」→ 补充「这回合是否预见过，这回合预见的次数」。
+        //
+        // 「预见」是**工具自己拼**的效果（本体没有这个机制，见 CSharpCodeGen.EmitScry），所以计数也只能由工具自己记：
+        // 生成一个静态计数器（cs/CombatCounters.cs，和「每 N 个敌人死亡」共用那个类），每跑一次「预见」就 +1，
+        // 按**玩家自己的回合号**自动清零（换回合 / 换战斗都从 0 重新数）。
+        // ⚠ 只算**工具生成的「预见」效果**：本体没有这个机制，别人的模组 / 本体的牌不会给它 +1。
+        new ConditionOption("ScryThisTurn", "本回合预见过", true, true, false, false,
+            "本回合（按你自己的回合数算）用过一次「预见」就成立。"
+            + "数据源是工具自己记的计数器：只有**工具生成的「预见」效果**会让它 +1（本体没有预见这个机制），"
+            + "而且换回合自动清零。", true),
+        new ConditionOption("ScryAtLeast", "本回合已预见至少 N 次", true, true, true, false,
+            "同「本回合预见过」，这里是次数：填 N = 本回合至少预见 N 次。填负数 = 反向（少于 N 次）。"
+            + "数据源同上（只算工具生成的「预见」效果，换回合清零）。",
+            true, false, false, "本回合预见的次数少于 N 次", true),
         new ConditionOption("EveryNTurns", "每 N 回合触发一次", false, true, true, false,
             "按战斗回合数取余（第 N、2N、3N…回合满足）。"),
         new ConditionOption("OncePerCombat", "每场战斗只触发一次", false, true, false, false,
@@ -1753,6 +1857,24 @@ public static class EffectCatalog
             + "而是挂到本体对应时机的钩子上（和本体「战鼓」一样 —— 它是 override AfterCardExhausted）。"
             + "所以它的效果里不能用「打出的目标」（那个钩子里没有打出记录），也不能用 X 值 / 伙伴。"
             + "只能用在普通卡牌上。", false, false, false, null, false, true),
+
+        // ==================== V0.2.247（用户要求）：上一张打出的牌的「关键词 / 范围」 ====================
+        // 数据源和上面那五条 LastCard* 完全一样：本体战斗历史 `CardPlaysFinished`，按**玩家**过滤
+        // （`e.CardPlay.Player == 玩家`）取最后一条 → `CardPlay.Card`。
+        // 区别只在判据：
+        //   · 关键词 = 本体 CardKeyword 枚举（模组加不了新值，所以自定义关键词不在这一条里，
+        //     要判自定义关键词请用第二条的「自定义关键词：…」范围）；
+        //   · 范围 = 和「范围界定 / 刮削条件」**同一份候选表**（SpawnFiltersFor：攻击 / 技能 / 能力 /
+        //     诅咒 / 状态 / 任务 / 每个自定义关键词一组 / 每个**组**）。
+        new ConditionOption("LastCardKeyword", "上一张打出的牌带有某关键词", true, true, false, false,
+            "看这场战斗里**你的**最后一张打出的牌（不限回合）有没有这个本体关键词"
+            + "（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒）。"
+            + "要判「自定义关键词」请用下面那条「上一张打出的牌是某范围」并选「自定义关键词：…」。",
+            true, false, false, null, false, false, true, false),
+        new ConditionOption("LastCardScope", "上一张打出的牌是某种范围的牌（范围可填：攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务 / 自定义关键词 / 组）", true, true, false, false,
+            "范围 = 攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务 / 每个自定义关键词一组 / 每个**组**"
+            + "（和「范围界定」那一栏同一份候选）。留空 = 任意牌 —— 那这条条件永远成立，校验器会提醒。",
+            true, false, false, null, false, false, false, true),
     };
 
     /// <summary>
@@ -1842,9 +1964,54 @@ public static class EffectCatalog
             ["TagTeamPower"] = "它固定显示 1。",
         };
 
+    /// <summary>
+    /// 「这个状态**不是按层数生效**，而是有它自己的一套条件」—— 校验器据此给一条提示，
+    /// 免得用户施加上以后觉得「没用」（V0.2.245，用户报「翱翔减伤给自己没用」）。
+    ///
+    /// <para>和 <see cref="PowerAmountNote"/> 的区别：那个讲「显示的数字不是层数」，这个讲
+    /// 「它的效果在什么条件下才触发」。名单是照着本体源码逐条核过的，别凭印象加。</para>
+    /// </summary>
+    public static string? PowerMechanicNote(string? powerId) => (powerId ?? "").Trim() switch
+    {
+        // SoarPower.cs:20-31 —— ModifyDamageMultiplicative：target != Owner 就返回 1；
+        // !props.IsPoweredAttack() 也返回 1；否则 50/100。
+        "SoarPower" => "它**只减「攻击伤害」**。本体 SoarPower.ModifyDamageMultiplicative 要两个条件同时成立："
+            + "① 正在挨打的就是这个状态的持有者；② 这次伤害是 `ValueProp.IsPoweredAttack()`"
+            + "（= 带 Move 且**不带** Unpowered 的攻击）。所以「失去生命 / 状态造成的伤害 / 自伤」一律不减 —— "
+            + "本体的自伤牌（献血 Bloodletting / 血墙 BloodWall / 突破 Breakthrough）用的也都是 Unpowered。"
+            + "另外它在本体里是「猫头鹰执政官 OwlMagistrate」的机制，落地时由它自己移除；"
+            + "工具施加的这一枚不会自动消失，会一直挂着（只对攻击伤害减 50%）。",
+
+        // RingingPower.cs:20-32 / 42-49 / 64-75 —— 给卡牌挂 Ringing 标记 + ShouldPlay 拦「带标记且本回合已打过」的牌
+        "RingingPower" => "它**不改层数**，而是给「施加那一刻你身上已有的卡牌」挂上「耳鸣 Ringing」标记；"
+            + "本回合里**带标记的牌**只有第一张打得出去、其余打不了（没被挂上标记的牌照常打）。"
+            + "玩家回合结束时它自己移除，所以它只在「被施加的这一回合」有效。",
+
+        _ => null,
+    };
+
     /// <summary>这个状态显示的数字是不是「不是层数」？是的话给一句说明（不是返回 null）。</summary>
     public static string? PowerAmountNote(string? powerId) =>
         powerId is not null && PowerAmountNotes.TryGetValue(powerId.Trim(), out string? note) ? note : null;
+
+    /// <summary>
+    /// 这些状态**本身没有任何玩法效果**（只是视觉标记，真正的逻辑在别处）—— 单独施加它什么都不会发生。
+    ///
+    /// <para>V0.2.244（用户报「仪式鹿给的那个 debuff 晕眩和狩猎不会生效」）：他在卡牌效果里施加了
+    /// <c>TheHuntPower</c>（中文名「狩猎」），期待「战斗结束多一份卡牌奖励」，结果什么都没发生。
+    /// 查本体源码：<c>TheHuntPower</c> 的类注释原文就是
+    /// 「This power acts as a visual indicator to the player that the Hunt card was successful.
+    ///  The actual behavior lives in TheHunt」—— 全项目只有 <c>TheHunt.cs</c> 施加它、
+    /// **没有任何地方读它**，所以它天生就是个图标。校验器据此给一条「提示」，
+    /// 把「施加了却没反应」直接说清（而不是让用户以为工具坏了）。</para>
+    /// </summary>
+    public static string? PowerNoGameplayNote(string? powerId) => (powerId ?? "").Trim() switch
+    {
+        "TheHuntPower" => "这个状态本体**只是一枚视觉标记** —— 真正的行为写在「狩猎 TheHunt」那张牌里"
+            + "（打出它、把目标打死时才加额外卡牌奖励，并在卡里自己发奖励）。单独施加这个状态不会发生任何事。"
+            + "想做「战斗结束多一份卡牌奖励」，请用效果「获得卡牌奖励」，触发时机选「战斗胜利后」。",
+        _ => null,
+    };
 
     /// <summary>
     /// 本体那套 <c>CardTag</c>（行为无关的元数据，给别的模型查牌用）。
@@ -1894,7 +2061,8 @@ public static class EffectCatalog
     /// </summary>
     public static string ConditionZh(string kind, decimal amount, decimal amount2, string? powerId,
         string targetZh, string? resourceName = null, string? timing = null,
-        string? amountFormula = null, string? amount2Formula = null)
+        string? amountFormula = null, string? amount2Formula = null,
+        string? keyword = null, string? scope = null)
     {
         var opt = FindCondition(kind);
         if (opt is null || string.Equals(opt.Id, "None", StringComparison.Ordinal)) return "";
@@ -1926,8 +2094,25 @@ public static class EffectCatalog
         // 「额外资源量」用界面 / 游戏里真正显示的那个名字（用户可能叫它「冰附魔」）
         if (!string.IsNullOrWhiteSpace(resourceName) && resourceName.Trim() != "额外资源量")
             text = text.Replace("额外资源量", resourceName.Trim());
+        // V0.2.247：上一张打出的牌的两条新条件 —— 把选的关键词 / 范围也写进文案
+        //（范围可能是「组：暗器」，组名要靠当前存档查，见 SetDisplayProfile）
+        if (opt.NeedsKeyword)
+            text += $"（关键词：{(string.IsNullOrWhiteSpace(keyword) ? "没选" : VanillaKeywordZh(keyword))}）";
+        if (opt.NeedsScope)
+            text += $"（范围：{(string.IsNullOrWhiteSpace(scope) ? "不限" : SpawnFilterZhFor(_displayProfile, scope))}）";
         return text;
     }
+
+    /// <summary>
+    /// 「条件 / 卡面文案里那个范围（组）叫什么」需要看**当前存档**（组名是玩家起的）。
+    /// 界面在载入存档 / 改组名时、生成端在开始生成时各设一次（和 <see cref="SetCustomPowers"/> 同一套做法）。
+    /// </summary>
+    public static void SetDisplayProfile(CharacterProfile? p) => _displayProfile = p;
+
+    /// <summary>当前用于「查组名」的存档（生成端 / 界面各设一次；没设就是 null）。</summary>
+    public static CharacterProfile? DisplayProfile => _displayProfile;
+
+    [ThreadStatic] private static CharacterProfile? _displayProfile;
 
     /// <summary>
     /// 卡牌类型（本体 CardType 枚举里能用的那些）。
@@ -2019,6 +2204,9 @@ public static class EffectCatalog
     /// </summary>
     public static bool NextTurnMeaningless(string? kind) =>
         kind is "CheapenSelf" or "CheapenSelfOnDraw" or "ReturnSelfToHand" or "CheapenDraw"
+        // V0.2.249：「减少卡牌费用」这条是「现在起这一类牌便宜」，再套「下回合生效」语义说不清
+        //（而且延迟那条链里没有 base.Owner.Creature，生成了也编不过）→ 不支持
+        or "CostDown"
             or "EndTurn" or "ExtraTurn" or "ScrapeDraw" or "TurnEndPlay"
             // V0.2.154：「播放音效」——它本身就是「此刻放一下」，没有「下回合再生效」的落点
             //（延迟那条路是给「下回合的状态 / 延迟生成」用的，声音延迟没有意义）。

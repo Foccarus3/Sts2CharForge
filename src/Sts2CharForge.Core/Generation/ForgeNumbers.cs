@@ -76,7 +76,7 @@ public static class ForgeNumbers
         "这一栏也能填公式或参数（和【数值】模块同一套）：X = 当前所有能量，Y = 当前所有额外资源量，"
         + "一个字母的自定义参数（要先在「自定义参数 / 组」页定义），"
         + $"以及 {Generation.FormulaBuiltins.All.Count} 条内置只读量（Turn / HandCount / DeckStatusCount / PlayedThisTurn…，"
-        + "完整清单见效果编辑器下面那个「可用量」小框）。"
+        + "完整清单见启动时自动弹出的「参数参考」窗）。"
         + "支持 + - * / ( ) 和 min/max/floor/ceil/round/abs。"
         + "只写数字的老写法一个字都不变。";
 

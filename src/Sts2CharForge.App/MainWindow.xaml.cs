@@ -302,6 +302,109 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			+ $"（约占那一侧的 {bar * 100:0}%）。上面预览里的黑底部分就是它 —— 想不留黑边就裁成 {frameW}×{frameH}（或同比例）。";
 	}
 
+	/// <summary>
+	/// 「卡面过大时缩到游戏显示尺寸的几倍」（V0.2.229；V0.2.228 那个勾选框 = 4×，实测等于没缩）。
+	/// 绑到「美术资源」页的下拉框；改完立刻落盘（和上传卡面同一个口径）。
+	/// </summary>
+	public IReadOnlyList<CardArtShrinkChoice> CardArtShrinkChoices { get; } =
+		ArtGenerator.CardArtShrinkModes.Select((m, i) => new CardArtShrinkChoice(m.Id,
+			m.Id.Length == 0 ? m.Label : m.Label + ShrinkTargetHint(m.Id))).ToList();
+
+	/// <summary>下拉框里那一行旁边的小字（显示这一档会把普通卡 / 先古卡缩到多大）。</summary>
+	private static string ShrinkTargetHint(string mode)
+	{
+		int mult = mode == "1x" ? 1 : mode == "4x" ? 4 : 2;
+		var normal = ArtGenerator.CardFaceDisplaySize(false);
+		var ancient = ArtGenerator.CardFaceDisplaySize(true);
+		return $" → 普通卡 {normal.W * mult}×{normal.H * mult} / 先古卡 {ancient.W * mult}×{ancient.H * mult}";
+	}
+
+	public string CardArtShrink
+	{
+		get => ArtGenerator.EffectiveCardArtShrink(_profile.Art);
+		set
+		{
+			string mode = (value ?? "").Trim().ToLowerInvariant();
+			if (mode is not ("" or "1x" or "2x" or "4x")) mode = "";
+			if (ArtGenerator.EffectiveCardArtShrink(_profile.Art) == mode && _profile.Art.CardArtShrink == mode) return;
+			_profile.Art.CardArtShrink = mode;
+			_profile.Art.FitCardArtToFrame = false;      // 老勾选框（4×）不再用，清掉免得两套口径打架
+			Raise(nameof(CardArtShrink));
+			Raise(nameof(CardArtShrinkHint));
+			Raise(nameof(CardPortraitResolutionNote));
+			PersistArtChange(mode.Length == 0
+				? "已关掉缩小：卡面按原图原样拷进工程"
+				: $"已设置卡面缩小：{mode.ToUpperInvariant().Replace("X", "×")}{ShrinkTargetHint(mode)}（原图不动）");
+		}
+	}
+
+	/// <summary>下拉框下面那行说明（说清每一档的实际效果 —— 4× 和不缩观感几乎一样，别让人白等）。</summary>
+	public string CardArtShrinkHint
+	{
+		get
+		{
+			string mode = ArtGenerator.EffectiveCardArtShrink(_profile.Art);
+			if (mode.Length == 0)
+				return "默认「原样拷贝」：工具一个字节都不动你的 PNG（不压缩）。但引擎画卡面时只用双线性采样 4 个像素，"
+					+ "图比显示尺寸大很多时会丢掉细节（发糊 / 锯齿）—— 想更干净就选「2×」。";
+			return mode switch
+			{
+				"2x" => "✅ 推荐：引擎缩小 2 倍时刚好把 4 个像素都用上（实测和理想缩放的误差 0.27，直接缩是 3.42），在 1080p~4K 窗口下都清楚。",
+				"1x" => "最锐利：正好等于游戏画出来的像素（1080p 满载）。窗口再放大就会糊，只建议 1080p 全屏玩。",
+				"4x" => "⚠ 这一档 = 本体素材口径（1000×760）：实测和「不缩」的观感**几乎一样**（引擎还是只用 4 个像素），"
+					   + "只省文件体积，不会更清晰。想要看得出区别请选「2×」。",
+				_ => "",
+			};
+		}
+	}
+
+	/// <summary>
+	/// 预览下面那行「分辨率说明」（V0.2.228）：上传的图比游戏显示区域大很多时，说清
+	/// 「工具不压缩、原样拷进工程；游戏里那块只有 W×H，多的像素是引擎缩掉的（会发糊）」+ 怎么办。
+	/// 没上传 / 文件不在 / 尺寸不比显示区域大 → 空字符串（不留一行废话）。
+	/// </summary>
+	public string CardPortraitResolutionNote
+	{
+		get
+		{
+			var cardSpec = CardUiSelection ?? SpecialCardOf();
+			if (cardSpec is null) return "";
+			string key = Naming.From(_profile).CardClassName(_profile, cardSpec);
+			_profile.Art.CardPortraits.TryGetValue(key, out string? value);
+			var (w, h, _, _) = CardPortraitFrameOf(cardSpec);
+			return ResolutionNoteOf(value, w, h, ArtGenerator.EffectiveCardArtShrink(_profile.Art));
+		}
+	}
+
+	/// <summary>下拉框里的一项（显示用）。</summary>
+	public sealed class CardArtShrinkChoice
+	{
+		public CardArtShrinkChoice(string id, string label) { Id = id; Label = label; }
+		public string Id { get; }
+		public string Label { get; }
+	}
+
+	/// <summary>
+	/// 上传图的像素尺寸 vs 游戏显示区域（内部静态版，自检直接调）。
+	/// 只在「明显比显示区域大」（任一边 > 1.25 倍）时说，避免 1000×760 这种正常图多一行字。
+	/// </summary>
+	internal static string ResolutionNoteOf(string? path, int frameW, int frameH, string shrinkMode)
+	{
+		if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return "";
+		if (frameW <= 0 || frameH <= 0) return "";
+		if (PngUtil.Decode(path) is not { } s || s.W <= 0 || s.H <= 0) return "";
+		double ratio = Math.Max((double)s.W / frameW, (double)s.H / frameH);
+		if (ratio <= 1.25) return "";
+		string how = shrinkMode.Length == 0
+			? "想让最清晰：① 在「美术资源」页把「卡面缩小」设成「缩到显示尺寸的 2 倍」（推荐，实测最接近理想）；"
+			  + "或 ② 自己按 500×380 出一张图。（工具本身**不压缩**：原图会原样拷进工程，那个下拉框只是替引擎预先缩好。）"
+			: shrinkMode == "4x"
+				? "⚠ 你现在选的是 4×（1000×760）= 本体素材口径：实测和「不缩」观感几乎一样，想要看出区别请选「2×」。"
+				: $"✅ 已设成 {shrinkMode.ToUpperInvariant().Replace("X", "×")}：生成时会先缩好（面积平均），原图不会被动。";
+		return $"ℹ 这张图 {s.W}×{s.H}，游戏里卡面这块只有 {frameW}×{frameH} —— "
+			+ "多出来的像素是**引擎在运行时缩掉的**（缩得越多越容易发糊 / 出锯齿）。" + how;
+	}
+
 	public BitmapImage? RelicIconPreview
 	{
 		get
@@ -323,6 +426,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				return null;
 			}
 			return LoadImage(potionSpec.Icon);
+		}
+	}
+
+	/// <summary>
+	/// 「当前这瓶药水的图标是哪一张」（V0.2.199）。图是缩略图、不同药水很容易看串，
+	/// 这里直接把文件名写出来 —— 换一瓶药水就跟着变，用户能一眼确认「这是给这瓶传的」。
+	/// </summary>
+	public string PotionIconHint
+	{
+		get
+		{
+			if (!(PotionList.SelectedItem is PotionSpec potionSpec))
+			{
+				return "当前这瓶：未选中药水";
+			}
+			return string.IsNullOrWhiteSpace(potionSpec.Icon)
+				? "当前这瓶：未上传图标（生成时自动用占位图）"
+				: "当前这瓶：" + Path.GetFileName(potionSpec.Icon) + "（换一瓶药水这里会跟着变）";
 		}
 	}
 
@@ -395,6 +516,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("NoCardGroups");
 		Raise("CardGroupRowHint");
 		Raise("GroupCardRows");
+		// V0.2.257：组增删 / 改名之后，「这个组里有哪些状态」和「清除指定状态 → 选组」的下拉都要重新求值
+		Raise("GroupPowerRows");
+		Raise("PowerGroupChoices");
 	}
 
 	private readonly List<ParamSpec> _paramHooked = new();
@@ -418,6 +542,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("SpawnFilters");
 		Raise("CardFilterOptions");   // 「只对哪类牌生效」里也有「组：XXX」那几条（V0.2.118）"
 		Raise("ScrapeConds");
+		// V0.2.257：组名改了 → 「清除指定状态 → 或者清空一个组」下拉里的文字跟着变；
+		// 组的 PowerIds 变了 → 右边那个状态勾选列表重算（勾上 / 取消立刻反映）
+		Raise("PowerGroupChoices");
+		Raise("GroupPowerRows");
 	}
 
 	/// <summary>
@@ -600,6 +728,94 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public IReadOnlyList<string> CardPickModes => EffectCatalog.CardPickModes;
 
 	/// <summary>
+	/// 「…」菜单里到底有哪些条目（**纯数据**，自检直接钉它，不用真弹菜单）。
+	/// Group = 分组标题（空 = 普通条目）；Id 是插进公式框的文本。
+	///
+	/// 顺序就是界面顺序：卡牌专用读数 → X / Y → 自定义参数 → 其余内置读数。
+	/// 用户报「怎么没看到 ThisCardBlock / ThisCardExhaust …」以后，卡牌专用那一组**必须排第一**。
+	/// </summary>
+	public static List<(string Group, string Id, string Header)> FormulaInsertItems(CharacterProfile profile)
+	{
+		var list = new List<(string Group, string Id, string Header)>();
+		var cardOnly = FormulaBuiltins.All.Where(b => b.CardOnly).ToList();
+		if (cardOnly.Count > 0)
+		{
+			const string g = "这张牌这一次打出（只能用在卡牌上）";
+			foreach (var b in cardOnly) list.Add((g, b.Id, $"{b.Id} — {b.Display}"));
+		}
+		list.Add(("特殊变量 X / Y", "X", "X — 打出这张牌那一刻的当前能量"));
+		list.Add(("特殊变量 X / Y", "Y", "Y — 当前额外资源量"));
+		var pars = (profile?.CustomParams ?? new System.Collections.ObjectModel.ObservableCollection<ParamSpec>())
+			.Select(p => ParamNames.Normalize(p.Name)).Where(n => n.Length > 0).Distinct().ToList();
+		foreach (string name in pars) list.Add(("自定义参数（当前存档）", name, name));
+		const string allGroup = "内置实时读数（所有链都能用）";
+		foreach (var b in FormulaBuiltins.All.Where(b => !b.CardOnly)) list.Add((allGroup, b.Id, $"{b.Id} — {b.Display}"));
+		return list;
+	}
+
+	/// <summary>把 <see cref="FormulaInsertItems"/> 铺成菜单（分组标题置灰 + 分隔线）。</summary>
+	public void InsertFormulaParamInto(Button btn)
+	{
+		if (btn is null) return;
+		var box = btn.Tag as TextBox ?? FindFormulaBoxFor(btn);
+		if (box is null) { SetStatus("没找到要填的那个公式框（界面刚变过？重开这个页面再试）。"); return; }
+		if (FormulaBuiltinRows.Count == 0) { SetStatus("内置读数清单是空的（本体数据没读到），只能手写参数名。"); return; }
+		var menu = new ContextMenu { PlacementTarget = btn };
+		string? lastGroup = null;
+		foreach (var (group, id, header) in FormulaInsertItems(Profile))
+		{
+			if (!string.Equals(group, lastGroup, StringComparison.Ordinal))
+			{
+				if (lastGroup is not null) menu.Items.Add(new Separator());
+				if (group.Length > 0) menu.Items.Add(new MenuItem { Header = group, IsEnabled = false });
+				lastGroup = group;
+			}
+			string text = id;
+			var item = new MenuItem { Header = header };
+			item.Click += delegate { InsertFormulaText(box, text); };
+			menu.Items.Add(item);
+		}
+		menu.IsOpen = true;
+	}
+
+	/// <summary>按钮 Tag 没绑上时（例如模板里 ElementName 没解析到）退回「视觉树里最近的那个可编辑公式框」。</summary>
+	private static TextBox? FindFormulaBoxFor(DependencyObject start)
+	{
+		// 按钮本身没子节点 → 从它的父级往下找第一个 TextBox（同一行里那个公式框）
+		DependencyObject? cur = System.Windows.Media.VisualTreeHelper.GetParent(start);
+		for (int guard = 0; guard < 6 && cur is not null; guard++)
+		{
+			if (cur is TextBox direct) return direct;
+			var found = FindChildTextBox(cur);
+			if (found is not null) return found;
+			cur = System.Windows.Media.VisualTreeHelper.GetParent(cur);
+		}
+		return null;
+	}
+
+	private static TextBox? FindChildTextBox(DependencyObject root)
+	{
+		int n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < n; i++)
+		{
+			var child = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+			if (child is TextBox tb && !tb.IsReadOnly) return tb;
+			var nested = FindChildTextBox(child);
+			if (nested is not null) return nested;
+		}
+		return null;
+	}
+
+	/// <summary>把一段名字插到光标处（公式框用；和自定义描述那个 <see cref="InsertAtCaret"/> 分开，免得混用占位符）。</summary>
+	private static void InsertFormulaText(TextBox box, string text)
+	{
+		int at = box.CaretIndex < 0 ? box.Text.Length : box.CaretIndex;
+		box.Text = box.Text.Insert(at, text);
+		box.CaretIndex = Math.Min(box.Text.Length, at + text.Length);
+		box.Focus();
+	}
+
+	/// <summary>
 	/// 「填入参数…」：把这条模型能用的数值占位符插进自定义描述里（用户要求）。
 	///
 	/// 候选来自 <see cref="CSharpCodeGen.ParamHints"/>（只列这条模型**真的声明过**的动态变量）：
@@ -703,6 +919,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// 关键词是配置里随时能改的，所以这里每次都重新取一份（绑的是窗口属性，改完关键词 Raise 一下就行）。
 	/// </summary>
 	public IReadOnlyList<SpawnFilterOption> SpawnFilters => EffectCatalog.SpawnFiltersFor(_profile);
+	/// <summary>
+	/// V0.2.247（用户要求「上一张打出的牌带有某关键词」）那个下拉的候选：**只列本体的 7 个**。
+	/// 自定义关键词不在这个下拉里 —— 本体 CardKeyword 是封闭枚举，模组加不了新值；
+	/// 要判「上一张打出的牌带某个自定义关键词」请用旁边那条「是某范围」并选「自定义关键词：…」。
+	/// </summary>
+	public IReadOnlyList<KeywordChoiceOption> ConditionKeywordChoices => EffectCatalog.VanillaKeywordChoices;
 
 	/// <summary>
 	/// 「刮削」那一栏「其中符合条件的牌」（条件）的候选：非 0 费 / 不限 + 上面那份范围限定
@@ -1882,6 +2104,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private void OnGroupSelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
 		Raise("GroupCardRows");
+		// V0.2.257（用户报「还是无法选进组」）：右边那个「这个组里有哪些状态」也是按**选中的组**算的，
+		// 切组时没通知就不会重新求值 —— 它一直是载入时那次（空列表），所以永远看不到状态、也勾不了。
+		Raise("GroupPowerRows");
 	}
 
 
@@ -1950,6 +2175,65 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			return _profile.Cards.Select(c => new CardGroupMemberRow(c, g)).ToList();
 		}
 	}
+
+	/// <summary>
+	/// V0.2.255（用户要求「让状态进组」）：组右边那个「这个组里有哪些状态」的勾选列表。
+	/// 成员记在组身上（<c>CardGroupSpec.PowerIds</c>）—— 自定义状态 + 本体状态都在候选里
+	/// （本体状态没法往它身上加字段，只有组这边放得下）。
+	/// </summary>
+	public IReadOnlyList<PowerGroupMemberRow> GroupPowerRows
+	{
+		get
+		{
+			if (!(GroupList?.SelectedItem is CardGroupSpec g)) return Array.Empty<PowerGroupMemberRow>();
+			return PowerGroupMemberRow.Build(_profile, g, this);
+		}
+	}
+
+	/// <summary>「清除指定状态」里那个「或者清空一个组」的下拉候选（组名 + Id）。</summary>
+	public IReadOnlyList<GroupChoice> PowerGroupChoices =>
+		_profile.CardGroups.Where(g => g is not null)
+			.Select(g => new GroupChoice(string.IsNullOrWhiteSpace(g.Name) ? g.Id : g.Name.Trim(), g.Id))
+			.ToList();
+
+	/// <summary>
+	/// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：先古卡页「被替换的初始卡」下拉的候选。
+	/// 第一项 = 「（自动：初始卡组里第一张）」（Id 为空）。
+	///
+	/// V0.2.263 / V0.2.264（用户说「怎么全是范例卡」）：排序 + 标注都改了 ——
+	/// **你自己的、不是打击 / 防御那种范例牌**排最前，然后是本体牌，最后才是新建存档时自动加进去的
+	/// 「打击 / 防御」（那两张是工具塞的范例牌，会明确标出来，免得以为自己的牌没进列表）。
+	/// </summary>
+	public IReadOnlyList<GroupChoice> ToothStarterChoices
+	{
+		get
+		{
+			var list = new List<GroupChoice> { new("（自动：初始卡组里第一张）", "") };
+			var n = Naming.From(_profile);
+			var ordered = _profile.AllCards
+				.OrderBy(c => IsSampleBasic(c) ? 2 : (c.IsVanillaCard ? 1 : 0))   // 自己的牌 → 本体牌 → 打击 / 防御
+				.ThenByDescending(c => c.InStartingDeck)                          // 同一档里初始牌优先
+				.ToList();
+			foreach (var c in ordered)
+			{
+				string cls = n.CardClassName(_profile, c);
+				string tag = IsSampleBasic(c) ? "新建存档自带的打击 / 防御（范例牌）"
+					: c.IsVanillaCard ? (c.InStartingDeck ? "本体牌（初始牌）" : "本体牌")
+					: (c.InStartingDeck ? "你的初始牌" : "你的牌（不在初始卡组）");
+				list.Add(new GroupChoice($"{c.Name}  ({cls})  ｜ {tag}", cls));
+			}
+			return list;
+		}
+	}
+
+	/// <summary>
+	/// 这张是不是「新建存档时工具自动塞进去的打击 / 防御」（用户说的「范例卡」）：
+	/// 名字就叫 打击 / 防御，或者在初始卡组里、类名是 Strike / Defend。
+	/// </summary>
+	private static bool IsSampleBasic(CardSpec c) =>
+		c.InStartingDeck && (c.Name is "打击" or "防御"
+			|| string.Equals(c.ClassName, "Strike", StringComparison.OrdinalIgnoreCase)
+			|| string.Equals(c.ClassName, "Defend", StringComparison.OrdinalIgnoreCase));
 
 	/// <summary>「新建参数」：自动挑一个没被占用的字母（需求：点击新建参数时自动生成一个不会被占用的参数）。 /summary>
 	private void OnAddParam(object sender, RoutedEventArgs e)
@@ -2042,6 +2326,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		card.GroupIds = list;
 	}
 
+	/// <summary>
+	/// V0.2.257：把一个**状态**加进 / 移出一个组。和卡那边不同：状态的归属记在**组**身上
+	/// （<see cref="CardGroupSpec.PowerIds"/>）—— 本体状态没法往它身上加字段，
+	/// 只有组这边能同时放下「自定义状态」和「本体状态」。
+	///
+	/// ⚠ 一定要写进**当前存档里那个同 Id 的组**：界面上的列表有时候还持有上一份存档的组实例，
+	/// 往旧实例上写等于白写（用户报「勾了但没进组 / 存了还是空的」就是这个）。
+	/// </summary>
+	internal static void SetPowerGroupMembership(CharacterProfile? profile, CardGroupSpec group, string powerId, bool member)
+	{
+		string id = (powerId ?? "").Trim();
+		if (id.Length == 0) return;
+		var target = group;
+		if (profile is not null)
+		{
+			var live = profile.CardGroups.FirstOrDefault(x => x is not null && string.Equals(x.Id, group.Id, StringComparison.Ordinal));
+			if (live is not null) target = live;
+		}
+		var list = new List<string>(target.PowerIdList);
+		bool has = list.Contains(id);
+		if (member == has)
+		{
+			return;
+		}
+		if (member) list.Add(id);
+		else list.Remove(id);
+		target.PowerIds = list;
+	}
 	/// <summary>参数列表变了（增到 / 改名 / 改来源）之后要把所有算出来的候选重新通知一遍」 /summary>
 	private void RaiseParamsChanged()
 	{
@@ -2092,7 +2404,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	//  锻造页
 	// ==================================================================================
 
-	/// <summary>「不选任何一类」时右侧整块空白 + 提示「请选择卡牌、药水、遗物」。 /summary>
+	/// <summary>「不选任何一类」时右侧整块空白 + 提示「请选择卡牌、药水、遗物、状态」。 /summary>
 	public bool ForgeNoKind => _forgeKind.Length == 0;
 
 	/// <summary>选了某一类之后右侧才显示编辑器」 /summary>
@@ -2101,20 +2413,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>「添加 / 删除」两个按钮能不能点（没选一类就没有可加的列表）。 /summary>
 	public bool ForgeAddEnabled => _forgeKind.Length > 0;
 
-	/// <summary>当前选的是哪一类："" / "Card" / "Potion" / "Relic"」 /summary>
+	/// <summary>当前选的是哪一类："" / "Card" / "Potion" / "Relic" / "Power"」 /summary>
 	public string ForgeKind => _forgeKind;
 
 	/// <summary>
-	/// 当前这一类里**用锻造页做出来的**那些（左下方那个列表就是它）。"
-	/// 「自定义状态」这一类**已经从锻造页去掉**了（用户要求）：自定义状态没有节点图那套可接的东西 
-	/// （它的触发时机 / 效果本来就在「自定义状态」页里配），放在这儿只会让人以为「在锻造页也能配状态」。"
-	/// 想让自定义状态出现在布上的「增益 / 减益」下拉里，去「自定义状态」页新建即可 —— 和锻造页无关。"
+	/// 当前这一类里要显示哪些条目（左下方那个列表就是它）。"
+	///
+	/// <para>卡牌 / 药水 / 遗物三档只列**在锻造页做出来的**那些（<c>IsForged</c>）—— 普通条目回原来的页里管。</para>
+	///
+	/// <para>⚠ V0.2.194「状态列表」这一档和那三档**不一样**：自定义状态没有「锻造出来的 / 不是锻造出来的」之分
+	/// （它本来就只有「自定义状态」页能新建，这里只是借那块布给它编触发时机 / 效果），所以**不过滤**、
+	/// 一列就是 <c>Profile.CustomPowers</c> 全体（用户在「自定义状态」页加了新的，这里立刻就有）。
+	/// 也正因为它不带 <c>IsForged</c>，这一档的「删除」删的是真状态（见 <see cref="OnRemoveForged"/>），
+	/// 卡牌那三档删的只是「锻造出来」的那一份。</para>
 	/// </summary>
 	public IEnumerable<object> ForgeItems => _forgeKind switch
 	{
 		"Card" => _profile.Cards.Where(c => c.IsForged).Cast<object>(),
 		"Potion" => _profile.Potions.Where(p => p.IsForged).Cast<object>(),
 		"Relic" => _profile.Relics.Where(r => r.IsForged).Cast<object>(),
+		"Power" => _profile.CustomPowers.Where(cp => cp is not null).Cast<object>(),
 		_ => Enumerable.Empty<object>(),
 	};
 
@@ -2126,6 +2444,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	/// <summary>「升级后」分页选中的时候才显示那个「一键复制升级前」的悬浮按钮（需求）。 /summary>
 	public bool ForgeCopyVisible => ForgeGraphTabs?.SelectedIndex == 1;
+
+	/// <summary>
+	/// 「状态列表」右上角那个「⤓ 把现在的触发时机 / 效果搬到这块布上」按钮要不要显示（V0.2.194）。
+	///
+	/// <para>三个条件缺一不可：当前是「状态列表」档；选中的状态**还没有图**（已经有图 = 早就搬过了）；
+	/// 而且它在「自定义状态」页**配过东西**（<see cref="ForgePowerGraph.HasLegacyContent"/>）。</para>
+	///
+	/// <para>⚠ 为什么要看「配过东西」：没配过东西的状态，选中时 <see cref="SyncForgeCanvas"/> 已经自动给它
+	/// 建了一块只有【触发时机】的空布 —— 没有可搬的，按钮留着只会让人以为漏了一步。
+	/// 反过来，**有老内容又没有图**时绝对不能自动建布（建了生成端立刻改成「图说了算」、老配置全丢），
+	/// 只能靠用户点这个按钮搬 —— 这就是它存在的唯一理由。</para>
+	/// </summary>
+	public bool ForgeMigrateVisible => _forgeKind == "Power"
+		&& ForgeItemList?.SelectedItem is CustomPowerSpec cp
+		&& !ForgeGraphGen.UsesGraph(cp)
+		&& ForgePowerGraph.HasLegacyContent(cp);
 
 	/// <summary>
 	/// 卡牌页当前选中的是不是**锻造卡**（名字带 * 的那些）。
@@ -2185,21 +2519,82 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (ForgeCanvas is null) return;
 		object? item = ForgeItemList?.SelectedItem;
 		ForgeCanvas.Owner = _profile;
+		// 「状态列表」这一档传的就是 "Power"（V0.2.194 起 ForgeTimings 有了同一档），
+		// 那张布上【触发时机】的候选按它筛。
 		ForgeCanvas.Scope = _forgeKind.Length > 0 ? _forgeKind : "Card";
-		ForgeGraphSpec? graph = item switch
+		ForgeGraphSpec? graph;
+		if (item is CustomPowerSpec cp)
 		{
-			CardSpec c => ForgeEditingUpgraded ? (c.UpgradedForgeGraph ?? c.ForgeGraph) : c.ForgeGraph,
-			PotionSpec p => ForgeEditingUpgraded ? p.ForgeGraph : p.ForgeGraph,
-			RelicSpec r => ForgeEditingUpgraded ? r.ForgeGraph : r.ForgeGraph,
-			_ => null,
-		};
+			// 没图、又没在老那一套（「自定义状态」页的触发时机 / 效果）上配过东西 → 直接给一块空布，
+			// 让用户一进来就有【触发时机】可接。新建的状态走的就是这一条。
+			//
+			// ⚠ 红线：**不能**「选中就建布」。ForgeGraphSpec.IsEmpty 判的是「一个模块都没有」——
+			// 只要布上有【触发时机】就不算空，生成端立刻切成「图说了算」，老配置的触发时机 / 效果全丢。
+			// 所以老内容非空时这里什么都不做（画布显示空图提示），只让「⤓ 搬到这块布上」那个按钮露面，
+			// 由用户自己按（见 ForgeMigrateVisible / OnForgeMigrateToGraph）。
+			if (ForgePowerGraph.CanAutoCreate(cp)) ForgePowerGraph.EnsureGraph(cp);
+			// 「升级前 / 升级后」那对分页对状态没有意义：状态永远只有这一张图，不取「升级后」那张。
+			graph = cp.ForgeGraph;
+		}
+		else
+		{
+			graph = item switch
+			{
+				CardSpec c => ForgeEditingUpgraded ? (c.UpgradedForgeGraph ?? c.ForgeGraph) : c.ForgeGraph,
+				PotionSpec p => ForgeEditingUpgraded ? p.ForgeGraph : p.ForgeGraph,
+				RelicSpec r => ForgeEditingUpgraded ? r.ForgeGraph : r.ForgeGraph,
+				_ => null,
+			};
+		}
 		ForgeCanvas.Graph = graph;
+		// 「升级前 / 升级后」那对分页只对卡牌有意义（卡牌有「升级后」那张独立的布）：
+		// 「状态列表」档整个收起来，免得用户点来点去发现「升级后」跟「升级前」长得一模一样、还以为是坏掉了。
+		// ⚠ 只动 Power 这一档：卡牌 / 药水 / 遗物原来是什么样就还是什么样（药水 / 遗物本来也没用这两页，
+		// 但那是既有行为，这次不顺手改）。
+		if (ForgeGraphTabsBox is not null)
+			ForgeGraphTabsBox.Visibility = _forgeKind == "Power" ? Visibility.Collapsed : Visibility.Visible;
 		// 积木视图（只读）：同一块布换个排法，图上怎么连它就怎么排；空图会显示一句提示。"
 		ForgeBlocks?.Show(graph);
 		// Graph 的 setter 见到「同一个对象」就不重画了；数据是先加进列表、再指给画布的，
 		// 中间万一错过一次重画，布上画的模块数就和数据对不上（拖动会找不到外框）。"
 		// 这里兜一道：数不对就补一次重画」"
 		if (graph is not null && ForgeCanvas.DrawnNodeCount != graph.Nodes.Count) ForgeCanvas.Rebuild();
+		Raise("ForgeMigrateVisible");
+		// 这块布刚可能给某只状态建了图 / 搬了内容 —— 「自定义状态」页顶上那条提示也跟着重算一遍
+		//（不然切回那一页会看到过期的提示：明明已经归锻造页管了，还写着「这里改了不生效」没出现）。
+		Raise("CustomPowerUsesForgeGraph");
+	}
+
+	/// <summary>
+	/// 「⤓ 把现在的触发时机 / 效果搬到这块布上」：把「自定义状态」页给这只状态配的那一套搬到布上（V0.2.194）。
+	///
+	/// <para>搬完这块布说了算（见 Core 的 <c>ForgePowerGraph.MigrateToGraph</c>）：以后改触发时机 / 效果
+	/// 要在锻造页这块布上改。搬不动的那几条（同一个钩子上有两条时机 —— 布上会是同一个类里两个同名 override）
+	/// 会由 Core 写进 notes，这里原样告诉用户（状态栏 + 日志）。</para>
+	/// </summary>
+	private void OnForgeMigrateToGraph(object sender, RoutedEventArgs e)
+	{
+		if (ForgeItemList?.SelectedItem is not CustomPowerSpec cp)
+		{
+			SetStatus("「搬到这块布上」只对「状态列表」里的自定义状态有意义（先选一只状态）。");
+			return;
+		}
+		if (ForgeGraphGen.UsesGraph(cp))
+		{
+			SetStatus("这只状态已经在用锻造页那块布了，没有可搬的。");
+			return;
+		}
+		ForgePowerGraph.MigrateToGraph(cp, out List<string> notes);
+		// 搬完立刻重刷：列表行 / 画布 / 那个按钮的显隐都要跟着变（搬完就不该再显示这个按钮了）。
+		RefreshForgeList();
+		ForgeItemList!.SelectedItem = cp;
+		SyncForgeCanvas();
+		ForgeCanvas?.Rebuild();
+		Raise("ForgeMigrateVisible");
+		// notes 是给用户看的说明（搬了几块、哪几条没搬动、为什么要自己合一下）—— 逐条进日志，
+		// 状态栏放最后那句总结（它就是「搬完了，从现在起这块布说了算」）。
+		foreach (string note in notes) AppendLog(note);
+		SetStatus(notes.Count > 0 ? notes[notes.Count - 1] : "已把这套触发时机 / 效果搬到布上。");
 	}
 
 	/// <summary>「升级后」那块布上的悬浮按钮：把「升级前」整份复制过来（需求）。 /summary>
@@ -2256,9 +2651,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void OnForgeKindChanged(object sender, RoutedEventArgs e)
 	{
+		// "Power" = 左边的「状态列表」（V0.2.194）：列的是 _profile.CustomPowers 那些自定义状态，
+		// 右边那块布编的是它们的 ForgeGraph。另外三档逐字照旧。
 		_forgeKind = ForgeKindCard.IsChecked == true ? "Card"
 			: ForgeKindPotion.IsChecked == true ? "Potion"
 			: ForgeKindRelic.IsChecked == true ? "Relic"
+			: ForgeKindPower.IsChecked == true ? "Power"
 			: "";
 		// 注意：这个处理器在 XAML 解析阶段就会被调一次（默认选中的「（不选）」那一项），"
 		// 那时候后面那些控件还没造出来 —— 构造函数末尾接好之后再刷新。"
@@ -2286,6 +2684,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("ForgeAddEnabled");
 		Raise("ForgeKind");
 		Raise("ForgeNoItemSelected");
+		// 「⤓ 搬到这块布上」那个按钮的显隐（换了档 / 换了选中项都要重算）
+		Raise("ForgeMigrateVisible");
 	}
 
 	/// <summary>锻造页详情：选中一件才显示右侧编辑器，没选就只留一句提示。 /summary>
@@ -2310,7 +2710,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		get
 		{
 			var g = ForgeCanvas?.Graph;
-			string which = ForgeEditingUpgraded ? "升级后" : "升级前";
+			// 「状态列表」档没有「升级前 / 升级后」这回事（那一对分页在这一档是收起来的），
+			// 这里点名「状态列表」，不然那句话会写着「升级前」而用户根本看不到分页。
+			string which = _forgeKind == "Power" ? "状态列表" : (ForgeEditingUpgraded ? "升级后" : "升级前");
 			string head = g is null
 				? $"（{which}：这一件还没有节点图）"
 				: g.IsEmpty
@@ -2323,8 +2725,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	/// <summary>
-	/// 「添加」：按当前分类生成一项**前缀带** 的**卡牌 / 药水 / 遗物（需求：
-	/// 点击添加后，会生成一项前缀带有「*」的卡牌，并且此牌在卡牌页中被选择时右侧全部空白并提示请在锻造页查看）。"
+	/// 「添加」：按当前分类新建一项。
+	///
+	/// <para>卡牌 / 药水 / 遗物三档建的是**前缀带 * 的锻造副本**（需求：点击添加后，会生成一项前缀带有「*」的卡牌，
+	/// 并且此牌在卡牌页中被选择时右侧全部空白并提示请在锻造页查看）。</para>
+	///
+	/// <para>⚠ 「状态列表」（Power）这一档建的是**真的自定义状态**（V0.2.194）：它不带 <c>*</c>、也不是副本 ——
+	/// 自定义状态本来就只有「自定义状态」页能建，这里只是换个地方建 + 顺手把那块布给它，
+	/// 两个入口建出来的东西完全一样（同一份数据）。</para>
 	/// </summary>
 	private void OnAddForged(object sender, RoutedEventArgs e)
 	{
@@ -2383,14 +2791,37 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				SetStatus("已添加一只锻造遗物（名字前面带**）。");
 				break;
 			}
+			case "Power":
+			{
+				// 「状态列表」这一档建的是**真的自定义状态**（不是「锻造出来的副本」那种）：
+				// 它和「自定义状态」页新建出来的是同一种东西、同一份数据，两边看到的是同一条。
+				// 名字沿用「自定义状态」页那套「新状态N」的起法（两个入口建出来的名字长一个样，用户不会困惑）。
+				// ClassName 留空 = 生成时按序号自动起（<角色类名>PowerN）—— 这里**故意不写死**：
+				// 写完再删掉几只，写死的类名就会撞车（「自定义状态」页那边是另一个故事，不去动它）。
+				var cp = new CustomPowerSpec
+				{
+					Name = $"新状态{_profile.CustomPowers.Count + 1}",
+					Enabled = true,
+				};
+				_profile.CustomPowers.Add(cp);
+				// 刚建出来的状态一定既没有图、也没有「自定义状态」页那套老内容 → CanAutoCreate 必定为 true，
+				// 直接给它一块只有【触发时机】的空布（和「自定义状态」页新建时给默认触发时机是同一个作用：
+				// 一进去就有东西可接）。⚠ 绝不要对**已有老内容**的状态这么干（见 SyncForgeCanvas 那段红线注释）。
+				ForgePowerGraph.EnsureGraph(cp);
+				RefreshForgeList();
+				ForgeItemList!.SelectedItem = cp;
+				SetStatus("已添加一只自定义状态（名字叫「" + cp.Name + "」）—— 名字 / 类型 / 图标在「自定义状态」页改，右边那块布上编它的触发时机和效果。");
+				break;
+			}
 			default:
-				SetStatus("请先在左上角选「卡牌列表 / 药水列表 / 遗物列表」，再点「添加」。");
+				SetStatus("请先在左上角选「卡牌列表 / 药水列表 / 遗物列表 / 状态列表」，再点「添加」。");
 				break;
 		}
 		Raise("CardCountText");
 	}
 
-	/// <summary>「删除」：只删当前这一类里锻造出来的条目（普通条目在原来的页里删）。 /summary>
+	/// <summary>「删除」：只删当前这一类里锻造出来的条目（普通条目在原来的页里删）。
+	/// ⚠ 「状态列表」这一档是例外：那里没有「普通条目」，删的就是那只自定义状态本身（见下面的注释）。 /summary>
 	private void OnRemoveForged(object sender, RoutedEventArgs e)
 	{
 		var picked = ForgeItemList?.SelectedItems?.Cast<object>().ToList() ?? new List<object>();
@@ -2401,12 +2832,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		if (!Confirm(picked.Count == 1 ? "确定要删除这一项吗？" : $"确定要删除这 {picked.Count} 项吗？", "确认删除"))
 			return;
+		// 「状态列表」这一档删掉的是**真的自定义状态**（它没有「只删锻造出来的那份」这个说法），
+		// 所以删完还得把状态注册表重刷一遍 —— 卡牌效果里「施加增益 / 减益」那份候选读的就是它
+		//（和「自定义状态」页那个「删除选中」同一套收尾，见 OnRemoveCustomPower）。
+		bool removedPower = false;
 		foreach (var o in picked)
 		{
 			if (o is CardSpec c && c.IsForged) _profile.Cards.Remove(c);
 			else if (o is PotionSpec p && p.IsForged) _profile.Potions.Remove(p);
 			else if (o is RelicSpec r && r.IsForged) _profile.Relics.Remove(r);
+			else if (o is CustomPowerSpec cp) { _profile.CustomPowers.Remove(cp); removedPower = true; }
 		}
+		if (removedPower)
+		{
+			EffectCatalog.SetCustomPowers(null);
+			RefreshCustomPowerRegistry();
+			SyncCustomPowerDetail();
+		}
+		// RefreshForgeList 会把左边列表重建一遍：选中项已经不在列表里了 → ListBox 自动清成 null →
+		// SyncForgeDetail → SyncForgeCanvas 把 ForgeCanvas.Graph 指成 null，画布不会继续指着刚删掉的那只。
 		RefreshForgeList();
 		Raise("CardCountText");
 		SetStatus($"已删除 {picked.Count} 项。");
@@ -2875,6 +3319,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			.Concat(KeywordChoices)
 			.ToList();
 
+	/// <summary>
+	/// V0.2.220：「为抽到的牌添加关键词」那个下拉的候选（抽牌 / 拿牌 / 填满手牌那几档）。
+	/// 和「生成出来的卡加关键词」同一份：多一项空档当默认值（老存档就是它 —— 不加、生成文本逐字不变）。
+	/// </summary>
+	public IReadOnlyList<KeywordChoiceOption> DrawnKeywordChoices => SpawnKeywordChoices;
+
 	/// <summary>有没有自定义关键词（「卡牌」页的空态提示用）。</summary>
 	public bool HasCustomKeywords => _profile.CustomKeywords.Count > 0;
 	public bool NoCustomKeywords => _profile.CustomKeywords.Count == 0;
@@ -2977,9 +3427,123 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	public event PropertyChangedEventHandler? PropertyChanged;
 
+	// ===== V0.2.240：小屏幕适配（用户反馈「有一些人的屏幕小，就会发生有一些地方被遮挡」）=====
+	//
+	// 三件事一起做，缺一件都还会被裁：
+	//   ① 启动时把窗口**压进屏幕可用区域**（WorkArea，扣掉任务栏）—— 以前写死 1420×880，
+	//      在 1366×768 / 1280×720 这类屏上，右边和下边直接被屏幕边切掉（截图里效果编辑区那一截就是这么没的）；
+	//   ② 再按屏幕大小自动挑一个**整窗缩放**档（LayoutTransform，布局跟着缩、文字不糊）；
+	//   ③ 顶栏留一个「界面缩放」下拉，用户随时能手动改，选过的值记在
+	//      %LOCALAPPDATA%\Sts2CharForge\ui-scale.txt（没有写权限就静默跳过，不影响启动）。
+	//
+	// 为什么不用 RenderTransform：它只改绘制、不改布局 —— 内容仍按原尺寸参与测量，于是依然被裁，
+	// 而且文字会被拉伸糊掉。LayoutTransform 会让布局按缩放后的尺寸重新排，这才是「小屏能看全」。
+
+	/// <summary>整窗缩放档位（百分数）。下拉框里展示的就是这些。</summary>
+	public static readonly int[] UiScalePercents = { 60, 70, 75, 80, 90, 100, 110, 125 };
+
+	/// <summary>按屏幕可用区域挑一档缩放（纯函数，自检直接钉它）。</summary>
+	public static int AutoUiScaleFor(double workWidth, double workHeight)
+	{
+		// 高度是主要矛盾（工具是「左边列表 + 右边编辑区」的竖向布局），先按高度定档
+		int percent = workHeight >= 900 ? 100
+			: workHeight >= 800 ? 90
+			: workHeight >= 700 ? 80
+			: workHeight >= 620 ? 75
+			: 70;
+		// 特别窄的屏（< 1300）再降一档：左栏固定 380、右栏编辑区本来就挤
+		if (workWidth < 1300 && percent > 80) percent = 80;
+		return Math.Clamp(percent, UiScalePercents[0], UiScalePercents[^1]);
+	}
+
+	/// <summary>缩放配置文件（手动选过就记下来；读不到 / 写不了都不报错）。</summary>
+	private static string UiScaleFilePath => Path.Combine(
+		Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Sts2CharForge", "ui-scale.txt");
+
+	private static int LoadSavedUiScale()
+	{
+		try
+		{
+			if (!File.Exists(UiScaleFilePath)) return 0;
+			return int.TryParse(File.ReadAllText(UiScaleFilePath).Trim(), out int v) ? v : 0;
+		}
+		catch { return 0; }
+	}
+
+	private static void SaveUiScale(int percent)
+	{
+		try
+		{
+			string dir = Path.GetDirectoryName(UiScaleFilePath)!;
+			Directory.CreateDirectory(dir);
+			File.WriteAllText(UiScaleFilePath, percent.ToString(System.Globalization.CultureInfo.InvariantCulture));
+		}
+		catch { /* 没权限就只在本进程里生效，不值得打扰用户 */ }
+	}
+
+	/// <summary>把一个缩放档应用到整窗（同时把下拉框的选中项对齐，不触发递归）。</summary>
+	public void ApplyUiScale(int percent)
+	{
+		percent = Math.Clamp(percent, UiScalePercents[0], UiScalePercents[^1]);
+		double s = percent / 100.0;
+		if (RootPanel is not null) RootPanel.LayoutTransform = new ScaleTransform(s, s);
+		if (UiScaleBox is not null && !_uiScaleBoxSyncing)
+		{
+			_uiScaleBoxSyncing = true;
+			try
+			{
+				string want = percent + "%";
+				if (UiScaleBox.Items.Contains(want)) UiScaleBox.SelectedItem = want;
+				else UiScaleBox.SelectedIndex = Array.IndexOf(UiScalePercents, percent);
+			}
+			finally { _uiScaleBoxSyncing = false; }
+		}
+		_uiScalePercent = percent;
+	}
+
+	private bool _uiScaleBoxSyncing;
+	private int _uiScalePercent = 100;
+
+	/// <summary>当前生效的整窗缩放（百分数，自检用）。</summary>
+	public int UiScalePercent => _uiScalePercent;
+
+	/// <summary>启动时把窗口塞进屏幕可用区域，并按屏幕大小选一档缩放。</summary>
+	public void FitWindowToScreen()
+	{
+		Rect work = SystemParameters.WorkArea;
+		// ① 窗口尺寸压进可用区域（留 16px 余量给窗口边框 / 阴影）
+		double maxW = Math.Max(MinWidth, work.Width - 16);
+		double maxH = Math.Max(MinHeight, work.Height - 16);
+		if (Width > maxW) Width = maxW;
+		if (Height > maxH) Height = maxH;
+		// 屏比 MinWidth/MinHeight 还小时最大化，至少把任务栏那块地方用上
+		if (work.Width <= 1000 || work.Height <= 640) WindowState = WindowState.Maximized;
+		// ② 缩放：用户手动选过就用他的，否则按屏幕自动挑
+		int saved = LoadSavedUiScale();
+		ApplyUiScale(saved > 0 ? saved : AutoUiScaleFor(work.Width, work.Height));
+	}
+
+	/// <summary>顶栏「界面缩放」下拉：手动改（并记住）。</summary>
+	private void OnUiScaleChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (_uiScaleBoxSyncing) return;
+		if (UiScaleBox?.SelectedItem is not string s) return;
+		if (!int.TryParse(s.TrimEnd('%'), out int percent)) return;
+		ApplyUiScale(percent);
+		// 自检里不要往真实用户目录写文件（和 SuppressProfileWrites 同一套约定）
+		if (!SuppressProfileWrites) SaveUiScale(percent);
+	}
+
 	public MainWindow()
 	{
 		InitializeComponent();
+		// V0.2.240：先把窗口压进屏幕、挑好缩放档（必须在其它初始化之前 —— 后面很多地方按控件实际宽度算排版）
+		try
+		{
+			UiScaleBox.ItemsSource = UiScalePercents.Select(p => p + "%").ToList();
+			FitWindowToScreen();
+		}
+		catch { /* 缩放只是适配手段，出问题也不能挡住启动 */ }
 		// V0.2.140：三个卡牌列表页（卡牌 / 诅咒卡 / 先古卡）的界面镜像集合（真卡 + 末尾空槽行）。
 		// ⚠ 必须**最早**建：下面的 RefreshAll / BuildAncientRows / HookCardCount 中途就可能调到
 		// RefreshCardOrdinals / OnCardsChanged / SyncDetail，那些路径都要往镜像里写。
@@ -3133,10 +3697,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		};
 		// 锻造页左上角那四个分类单选：**在 XAML 里不按 Checked**（解析到一半就会触发，后面的控件还没造出来），"
 		// 等所有控件都在了再挂。"
+		// V0.2.194 起多了第五个「状态列表」（Power）—— 挂法一模一样，晚了 XAML 解析那一次就漏刷新。
 		ForgeKindNone.Checked += OnForgeKindChanged;
 		ForgeKindCard.Checked += OnForgeKindChanged;
 		ForgeKindPotion.Checked += OnForgeKindChanged;
 		ForgeKindRelic.Checked += OnForgeKindChanged;
+		ForgeKindPower.Checked += OnForgeKindChanged;
 		// 所有控件都造好了：这一页现在可以安全刷新 
 		_uiReady = true;
 		RefreshForgeList();
@@ -3177,6 +3743,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("KeywordChoices");
 		// 需求 ⑦：「生成出来的卡加上关键词」的下拉与自定义关键词注册联动（同源的那一份候选）
 		Raise("SpawnKeywordChoices");
+		// V0.2.220：「为抽到的牌加关键词」那个下拉和上面同源
+		Raise("DrawnKeywordChoices");
 		// 关键词改了名字 / 加了删了 → 「范围限定」里那一组选项跟着变（生成 / 变化卡牌能只从这一组里出牌）
 		RefreshCustomKeywordRegistry();
 		Raise("HasCustomKeywords");
@@ -3232,6 +3800,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RaiseGroupsChanged();
 		RaiseCardPortrait();
 		Raise("RelicIconPreview");
+		// V0.2.199：药水图标预览也得跟着「换选中项」刷新。以前这里只有遗物那一行，
+		// 于是「给第 1 瓶传了图标 → 点第 2 瓶」时，右下角那张预览图**还停在上一瓶**，
+		// 看起来就像「上传的图标出现在每一瓶药水上」（用户实测报过）。
+		// 预览框绑的是 Window.PotionIconPreview（RelativeSource=Window），换 DataContext 不会让它重读，
+		// 必须显式发一次 PropertyChanged。
+		Raise("PotionIconPreview");
+		Raise("PotionIconHint");
 	}
 
 	/// <summary>
@@ -3263,6 +3838,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		Raise("CardPortraitPreview");
 		Raise("CardPortraitPreviewNote");
+		Raise("CardPortraitResolutionNote");
 		Raise("CardPortraitFrameWidth");
 		Raise("CardPortraitFrameHeight");
 		Raise("CardPortraitPreviewStretch");
@@ -3297,6 +3873,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			potionSpec.Icon = openFileDialog.FileName;
 			Raise("PotionIconPreview");
+			Raise("PotionIconHint");
 			PersistArtChange($"已为药水「{potionSpec.Name}」设置图标：{openFileDialog.FileName}（建议 256×256 PNG）");
 		}
 	}
@@ -3478,6 +4055,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		// 需求 ⑨：「目标药水」的候选和卡牌候选同一个刷新时机（重新扫描效果库 / 配好路径之后各自同步一次）
 		RefreshPotionChoices();
+		// V0.2.264（用户报「被古老牙齿替换的初始卡底下的下拉选项还是只有范例卡」）：
+		// 那个下拉的候选是按**当前存档的牌**算的，但以前从来没通知过 —— ComboBox 只在第一次绑定时取一次，
+		// 于是载入别的存档后它一直显示**启动时那份（示例）存档**的牌。卡牌候选一变就在这里一起通知。
+		Raise("ToothStarterChoices");
 	}
 
 	/// <summary>
@@ -4270,9 +4851,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Raise("TriggerHint");
 			Raise("CustomTriggersSummary");
 			Raise("CustomPowerDescriptionHint");
+			// V0.2.194：选中的这只状态是不是已经由锻造页那块布说了算（决定顶上那条醒目提示显不显示）
+			Raise("CustomPowerUsesForgeGraph");
 			ResyncCustomPowerHooks();
 		}
 	}
+
+	/// <summary>
+	/// 「自定义状态」页顶上那条「这只状态由**锻造页**那块布说了算 —— 改触发时机 / 效果请去「锻造」页的「状态列表」里改」
+	/// 要不要显示（V0.2.194）。
+	///
+	/// <para>判据就是生成端的判据本身（<c>ForgeGraphGen.UsesGraph</c>：图非空 = 只读图），
+	/// 所以这里显示着提示时，下面那几栏改了**确实**不会生效 —— 不能让用户改了半天才发现白改。</para>
+	/// </summary>
+	public bool CustomPowerUsesForgeGraph => CustomPowerList?.SelectedItem is CustomPowerSpec cp
+		&& ForgeGraphGen.UsesGraph(cp);
 
 	private void OnCustomTriggerSelectionChanged(object sender, SelectionChangedEventArgs e)
 	{
@@ -4518,16 +5111,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	public void RefreshCustomPowerRegistry()
 	{
-		List<(string, string)> list = new List<(string, string)>();
+		List<(string, string, bool, bool)> list = new List<(string, string, bool, bool)>();
 		for (int i = 0; i < _profile.CustomPowers.Count; i++)
 		{
 			CustomPowerSpec customPowerSpec = _profile.CustomPowers[i];
 			if (CustomPowerGen.IsActive(customPowerSpec))
 			{
-				list.Add((CustomPowerGen.ClassNameOf(_profile, customPowerSpec, i), customPowerSpec.Name.Trim()));
+				// 第三/四个 = 「允许负层数」/「只叠一层」：前者决定「施加负数」怎么生成，
+				// 后者给校验器用（只叠一层的状态**层数不显示但内部会被加到 2+**，条件写「等于 1」会失效）
+				list.Add((CustomPowerGen.ClassNameOf(_profile, customPowerSpec, i), customPowerSpec.Name.Trim(),
+					customPowerSpec.AllowNegativeLayers, customPowerSpec.Single));
 			}
 		}
 		EffectCatalog.SetCustomPowers(list);
+		EffectCatalog.SetDisplayProfile(_profile);   // V0.2.247：条件里「范围（组）」的文案要查当前存档的组名
 		RefreshPowerChoices();
 	}
 
@@ -4727,6 +5324,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		// 稀有度改成 / 改离「状态」→ 状态卡列表（那一页的第三栏）跟着变"
 		if (e.PropertyName is "Rarity" or "") RebuildStatusCards();
+		// V0.2.223：勾 / 取消「可被无限升级」→ 那几行提示（状态牌能不能升级）要当场刷新
+		if (e.PropertyName is "InfinitelyUpgradable" or "Rarity" or "")
+		{
+			Raise("UpgradeCustomKeywordHint");
+			Raise("ValueEditable");
+		}
 	}
 
 	private void BuildArtSlots()
@@ -5004,7 +5607,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		catch (Exception ex)
 		{
-			MessageBox.Show(this, "配置解析失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Hand);
+			// V0.2.256：把**哪个文件**、以及最常见的「类型写错」直接说出来 ——
+			// 以前只有一句 `配置解析失败：The JSON value could not be converted to System.String. Path: $.Version`，
+			// 用户根本不知道是哪份存档、更不知道要加引号。
+			string hint = ex.Message.Contains("could not be converted", StringComparison.OrdinalIgnoreCase)
+				? "\n\n这是存档里某一项的值类型写错了：例如 \"Version\": 1 应该是 \"Version\": \"1\"（文字两边要有引号），"
+				  + "true / false 也要带引号。改完再打开就行；这份存档本身没有被改动。"
+				: "";
+			MessageBox.Show(this, $"配置解析失败（文件：{path}）：{ex.Message}{hint}",
+				"错误", MessageBoxButton.OK, MessageBoxImage.Hand);
 			return false;
 		}
 	}
@@ -5018,14 +5629,40 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 	}
 
+	/// <summary>
+	/// 打开「参数参考」窗（V0.2.182，用户要求：参数占的面积太大 → 编辑器里那份清单全删掉，
+	/// 改成每次打开生成器时弹一个分类好的参考小窗）。
+	///
+	/// 非模态：用户可以把它拖到一边继续干活，再点一次也只把已有那个窗激活（不叠一摞）。
+	/// </summary>
+	public void ShowParamReference()
+	{
+		if (_paramReference is { IsLoaded: true })
+		{
+			_paramReference.Activate();
+			return;
+		}
+		_paramReference = new ParamReferenceWindow(Profile);
+		// ⚠ Owner 只能在**已经显示**的窗口上设（`无法将 Owner 属性设置为之前未显示的 Window` ——
+		// 自检里主窗没 Show 就调它会抛；真实启动路径上主窗先 Show 了，所以设得上）。
+		// 设 Owner 的用处：CenterOwner 才能落在主窗中间，主窗关掉时参考窗一起走。
+		if (IsLoaded) _paramReference.Owner = this;
+		_paramReference.Closed += (_, _) => _paramReference = null;
+		_paramReference.Show();
+	}
+
+	private ParamReferenceWindow? _paramReference;
+
+	/// <summary>自检用：现在开着的那份参考窗（null = 没开）。见 <see cref="ShowParamReference"/>。</summary>
+	internal ParamReferenceWindow? ParamReferenceForCheck => _paramReference;
+
 	public bool PromptForProfileAtStartup()
 	{
 		StartupProfileDialog startupProfileDialog = new StartupProfileDialog(ProfileFolder);
 		if (!startupProfileDialog.ShowDialog().GetValueOrDefault())
 		{
 			return false;
-		}
-		if (startupProfileDialog.NewProfileRequested)
+		}		if (startupProfileDialog.NewProfileRequested)
 		{
 			NewProfileCore(askForName: false);
 			return true;
@@ -9022,6 +9659,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			AppVersion.Current.StartsWith("V", StringComparison.Ordinal) && AppVersion.Current.Length >= 5
 			&& AppVersion.Current.Count((char c) => c == '.') >= 2, AppVersion.Current);
 		Check("窗口标题里带版本号", Title.Contains(AppVersion.Current, StringComparison.Ordinal), Title);
+		// ===== V0.2.240：小屏幕适配（用户反馈「有一些人的屏幕小，就会发生有一些地方被遮挡」）=====
+		// 三件事：① 窗口能被压进屏幕可用区域（MinWidth/MinHeight 也别大到放不下）；② 按屏幕自动挑缩放档；
+		// ③ 顶栏有「界面缩放」下拉，改了立刻生效（LayoutTransform —— 布局跟着缩，文字不糊）。
+		{
+			Check("V0.2.240：窗口有最小尺寸限制（拖不小到不可用），而且不会比常见小屏还宽",
+				MinWidth >= 900 && MinWidth <= 1280 && MinHeight >= 520 && MinHeight <= 800,
+				$"MinWidth={MinWidth} MinHeight={MinHeight}");
+			Check("V0.2.240：启动时会把自己压进屏幕可用区域（宽高都不超过 WorkArea）",
+				Width <= Math.Max(MinWidth, SystemParameters.WorkArea.Width) + 0.5
+				&& Height <= Math.Max(MinHeight, SystemParameters.WorkArea.Height) + 0.5,
+				$"窗口 {Width:0}×{Height:0} / 可用 {SystemParameters.WorkArea.Width:0}×{SystemParameters.WorkArea.Height:0}");
+			// 自动档：矮屏要降档，够高的屏保持 100%（纯函数，和真实屏幕无关）
+			Check("V0.2.240：自动缩放档按屏幕高度/宽度选（1920×1040 → 100%，1366×728 → 80%，1280×620 → 75%，1024×600 → 70%）",
+				AutoUiScaleFor(1920, 1040) == 100 && AutoUiScaleFor(1366, 728) == 80
+				&& AutoUiScaleFor(1280, 620) == 75 && AutoUiScaleFor(1024, 600) == 70,
+				$"{AutoUiScaleFor(1920, 1040)} / {AutoUiScaleFor(1366, 728)} / {AutoUiScaleFor(1280, 620)} / {AutoUiScaleFor(1024, 600)}");
+			Check("V0.2.240：窄屏额外再降一档（宽 < 1300 时最高只给 80%）",
+				AutoUiScaleFor(1280, 1040) == 80 && AutoUiScaleFor(1920, 1040) == 100,
+				$"1280 宽 → {AutoUiScaleFor(1280, 1040)}%");
+			// 顶栏那个下拉：候选就是 UiScalePercents 那一份（界面和自检不会各写一份清单）
+			int before = UiScalePercent;
+			ApplyUiScale(80);
+			Check("V0.2.240：改缩放档立刻作用到整窗（RootPanel.LayoutTransform = 0.8）",
+				UiScalePercent == 80 && RootPanel.LayoutTransform is ScaleTransform st80
+				&& Math.Abs(st80.ScaleX - 0.8) < 1e-6 && Math.Abs(st80.ScaleY - 0.8) < 1e-6,
+				$"scale={(RootPanel.LayoutTransform as ScaleTransform)?.ScaleX:0.00}");
+			Check("V0.2.240：「界面缩放」下拉里选中的就是当前档（不会和实际缩放对不上）",
+				UiScaleBox is not null && (string?)UiScaleBox.SelectedItem == "80%"
+				&& UiScaleBox.Items.Count == UiScalePercents.Length,
+				$"选中={(string?)UiScaleBox?.SelectedItem} / 共 {UiScaleBox?.Items.Count} 档");
+			ApplyUiScale(before == 0 ? 100 : before);
+			Check("V0.2.240：（收尾）缩放恢复原档，后面的排版类自检不受影响",
+				UiScalePercent == (before == 0 ? 100 : before)
+				&& RootPanel.LayoutTransform is ScaleTransform stBack
+				&& Math.Abs(stBack.ScaleX - UiScalePercent / 100.0) < 1e-6,
+				$"现在是 {UiScalePercent}%");
+		}
 		Check("Power 效果库非空（增益+减益）", AllPowers.Count > 0, $"{AllPowers.Count} 项 / {EffectCatalog.CatalogStatus}");
 		Check("效果种类选项非空", Kinds.Count > 0, $"{Kinds.Count} 项");
 		// 本地化键的算法必须和本体 StringHelper.Slugify 一致（连续大写是踩过的坑：键对不上 → LocException）
@@ -9259,6 +9933,37 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& ProfileValidator.Validate(WithMaxEnergy(200)).Any((ValidationIssue i) => i.IsError && i.Message.Contains("最大能量"))
 				&& ProfileValidator.Validate(WithMaxEnergy(5)).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("最大能量"))
 				&& !ProfileValidator.Validate(WithMaxEnergy(3)).Any((ValidationIssue i) => i.Message.Contains("最大能量")), "1~99 之外报错");
+			// ===== V0.2.230：地图上画线的「蜡笔」颜色（用户要求「能不能自定义在地图上的蜡笔的颜色」）=====
+			// 引擎依据：NMapDrawings.CreateLine 里 `line2D.DefaultColor = player.Character.MapDrawingColor;`，
+			// CharacterModel.MapDrawingColor 默认 Colors.Black（本体每个角色各自覆盖成专属色）。
+			// 所以角色类里写一个 override 就够，不需要补丁；留空 = 一个字不写（老存档逐字不变）。
+			Check("角色页有「地图画线颜色（蜡笔）」输入框（绑 Profile.MapDrawingColor）",
+				roleNodes.OfType<TextBox>().Any((TextBox tb) => PathOf(tb) == "Profile.MapDrawingColor")
+				&& roleNodes.OfType<TextBlock>().Any((TextBlock t) => (t.Text ?? "").Contains("地图画线颜色")), "框在");
+			string mapDrawBlank = CSharpCodeGen.CharacterSource(ProfileFactory.Sample());
+			Check("V0.2.230：（红线）地图画线颜色留空 → 生成的角色类里**没有** MapDrawingColor override（沿用本体默认黑色）",
+				!mapDrawBlank.Contains("MapDrawingColor"), "一个字都没写");
+			var mapDraw6 = ProfileFactory.Sample();
+			mapDraw6.MapDrawingColor = "#3fa9f5";
+			Check("V0.2.230：填 #3fa9f5 → 写 public override Color MapDrawingColor => new Color(\"3FA9F5\");（去掉 #、转大写）",
+				CSharpCodeGen.CharacterSource(mapDraw6).Contains("public override Color MapDrawingColor => new Color(\"3FA9F5\");"),
+				"写了");
+			var mapDraw8 = ProfileFactory.Sample();
+			mapDraw8.MapDrawingColor = "3FA9F580";
+			Check("V0.2.230：8 位（带透明度）也支持 → new Color(\"3FA9F580\")",
+				CSharpCodeGen.CharacterSource(mapDraw8).Contains("new Color(\"3FA9F580\")"), "写了");
+			static CharacterProfile WithMapColor(string hex) { var q = ProfileFactory.Sample(); q.MapDrawingColor = hex; return q; }
+			Check("V0.2.230：校验器：非法十六进制报**错误**；透明度 00（画出来看不见）给**警告**；留空一条都不出",
+				ProfileValidator.Validate(WithMapColor("zzz")).Any((ValidationIssue i) => i.IsError && i.Message.Contains("地图画线颜色"))
+				&& ProfileValidator.Validate(WithMapColor("3FA9F500")).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("地图画线颜色"))
+				&& !ProfileValidator.Validate(WithMapColor("")).Any((ValidationIssue i) => i.Message.Contains("地图画线颜色")), "校验对");
+			{
+				string mapColorJson = Path.Combine(Path.GetTempPath(), "forge_uicheck_mapcolor_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+				ProfileFactory.Save(mapDraw6, mapColorJson);
+				var mapColorBack = ProfileFactory.Load(mapColorJson);
+				Check("V0.2.230：存档往返：地图画线颜色存得进 JSON、读得回来",
+					mapColorBack.MapDrawingColor == "#3fa9f5", "」" + mapColorBack.MapDrawingColor + "「");
+			}
 			// V0.2.173：多人催促文本（联机 Ping 那句）的存档往返 —— 填了要存进 JSON、也要读得回来
 			// （老存档里没有这个字段 → 读出来是空 → 生成时用默认那句「……继续。」，红线不变）
 			{
@@ -10300,10 +11005,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			&& new EffectSpec { Kind = "Draw" }.AmountFormulaHint.Contains("纯数字")
 			&& new EffectSpec { Kind = "Draw" }.AmountFormulaHint.Contains("X"),
 			formulaSpec.AmountFormulaHint);
-		// 「可用量」清单（用户报「参数监听那几个量找不到在哪」），"
-		// 必须**一直显示**在卡牌的效果编辑器里，而且是生成端那张表本身（界面与生成端同一份，不会漂移）。"
+		// ===== V0.2.182：内嵌的「可用量」清单**整块删掉**，改成启动时弹出的 ParamReferenceWindow =====
+		// 用户原话：「参数占的面积太大了，能不能全删了，不占用生成器内的位置，然后每次打开生成器时，
+		// 打开一个参数参考小窗口，并且对里面的参数进行分类」。
+		// 所以这段自检改成：① 编辑器里**不再**有那串清单；② 参考窗的分类数据 **一条不丢**（80 条全能对上）。
 		{
-			Check($"「可用量」清单的数据源就是生成端那张表（{FormulaBuiltins.All.Count} 条内置只读量）",
+			Check($"「可用量」数据源仍是生成端那张表（{FormulaBuiltins.All.Count} 条内置只读量）",
 				FormulaBuiltinRows.Count == FormulaBuiltins.All.Count && FormulaBuiltinRows.All(b => FormulaBuiltins.Find(b.Id) is not null),
 				$"{FormulaBuiltinRows.Count} 条");
 			CardSpec clearCard = new CardSpec { Name = "可用量清单卡", ClassName = "UiCheckBuiltinList", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
@@ -10311,30 +11018,96 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Profile.Cards.Add(clearCard);
 			CardList.SelectedItem = clearCard;
 			UpdateLayout();
-			// 效果栏里选中那条效果（清单长在效果编辑器里）
+			// 效果栏里选中那条效果（以前清单就长在效果编辑器里）
 			CardEffectList.SelectedItem = clearCard.Effects[0];
 			UpdateLayout();
 			List<TextBlock> builtinBlocks = new List<TextBlock>();
 			CollectTextBlocks(CardDetail, builtinBlocks);
 			var shown = builtinBlocks.Where(b => b.Text is not null).Select(b => b.Text!).ToList();
-			Check("卡牌效果编辑器里**显示**了「可用量」标题（不用先填错才知道去哪找）",
-				shown.Any(t => t.Contains("可用量")), string.Join(" / ", shown.Where(t => t.Contains("可用")).Take(3)));
-			Check($"内置名字都列出来了（共 {FormulaBuiltins.All.Count} 条：Turn / HandCount / DeckStatusCount / PlayedThisTurn / PowersOnMe …）",
-				new[] { "Turn", "Round", "HandCount", "DiscardedThisTurn", "ExhaustedThisCombat", "GeneratedThisTurn", "EnergySpentThisCombat", "StarsGainedThisTurn", "PowersOnMe",
-					"DeckStatusCount", "PlayedThisTurn", "MyMaxHp", "EnemyCount", "Floor", "DamageDealtThisCombat" }
-					.All(id => shown.Contains(id)),
-				string.Join(" / ", FormulaBuiltinRows.Take(4).Select(b => b.Id)));
-			Check("清单里每个名字都带中文说明（例：Turn 后面跟着「自己这一侧的第几回合」）",
-				shown.Any(t => t.Contains("自己这一侧的第几回合")) && shown.Any(t => t.Contains("复制出来的也算")), "有说明");
-			Check("「获得的能量」那两条读数也在清单里（本回合 / 本场战斗）",
-				shown.Contains("EnergyGainedThisTurn") && shown.Contains("EnergyGainedThisCombat"), "在");
-			Check("清单里还写了 X / Y / 参数名那三种写法",
-				shown.Any(t => t.Contains("当前能量") && t.Contains("参数名")), "写了");
-			Check("「数值公式」的说明文字指向了这块清单（用户照着说明就能找到）",
-				formulaSpec.AmountFormulaHint.Contains("可用量"), "指向了");
-			// V0.2.164：遗物 / 药水 / 自定义状态上那 5 种也能写公式了 ⇒ 这几页也摆「可用量」清单
-			// （判据是同一个 ShowAmountFormula：那 5 种之外它不显示，免得摆一个填了就报错的清单）
-			Check("V0.2.164：遗物 / 药水的效果编辑器里，能写公式的那 5 种也摆出了「可用量」清单",
+			Check("V0.2.182：效果编辑器里**不再**摆「可用量」清单（省掉那一大片面积）",
+				!shown.Any(t => t.Contains("可用量")), string.Join(" / ", shown.Where(t => t.Contains("可用")).Take(3)));
+			// 参考窗（不 Show —— 自检里不能弹模态窗）
+			{
+				var cats = ParamReferenceWindow.BuildCategories(Profile);
+				// 带一个自定义参数的存档（给「自定义参数」那一类的断言用；每次现建，免得被别的断言改过）
+				var profileWithParamM = ProfileFactory.Sample();
+				profileWithParamM.CustomParams.Clear();
+				profileWithParamM.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.MaxHp, Target = ParamTargets.Self });
+				var ProfileWithParamM = profileWithParamM;
+				Check("V0.2.182：参数参考窗按类分好了（≥5 类：内置读数 / X-Y / 自定义参数 / 取值来源 / 语法）",
+					cats.Count >= 5 && cats.All(c => c.Items.Count > 0 && c.Title.Length > 0 && c.Hint.Length > 0),
+					string.Join(" / ", cats.Select(c => $"{c.Title}×{c.Items.Count}")));
+				var allIds = cats.SelectMany(c => c.Items).Select(i => i.Id).ToList();
+				Check($"V0.2.182：{FormulaBuiltins.All.Count} 条内置只读量**一条不丢**地进了参考窗（分类不重不漏）",
+					FormulaBuiltins.All.All(b => allIds.Contains(b.Id)), 
+					$"参考窗里 {allIds.Count} 条（含 X/Y / 语法那几类）");
+				Check("V0.2.182：参考窗里每个内置名字都带中文说明（例：Turn → 自己这一侧的第几回合）",
+					cats.SelectMany(c => c.Items).Any(i => i.Id == "Turn" && i.Display.Contains("自己这一侧的第几回合"))
+					&& cats.SelectMany(c => c.Items).Any(i => i.Id == "GeneratedThisTurn" && i.Display.Contains("复制出来的也算")),
+					"有说明");
+				// ===== V0.2.242：用户报「怎么没看到 ThisCardBlock / ThisCardExhaust / ThisCardDiscard /
+				// ThisCardTransform / ThisCardGenerate」=====
+				// 那几条一直在 FormulaBuiltins 里，但混在「内置实时读数」这张 80+ 行的大表**最下面**，
+				// 参考窗一开只露出开头十行 → 等于没有。现在拆成**第一类**（窗口一开就选中它）。
+				{
+					var cardOnlyIds = FormulaBuiltins.All.Where(b => b.CardOnly).Select(b => b.Id).ToList();
+					Check("V0.2.242：卡牌专用读数（ThisCardDamage / ThisCardBlock / 四条张数）单独一类、排在参考窗**第一个**",
+						cats.Count > 0 && cats[0].Items.Select(i => i.Id).SequenceEqual(cardOnlyIds)
+						&& cardOnlyIds.Contains("ThisCardDamage") && cardOnlyIds.Contains("ThisCardBlock")
+						&& cardOnlyIds.Contains("ThisCardExhaust") && cardOnlyIds.Contains("ThisCardDiscard")
+						&& cardOnlyIds.Contains("ThisCardTransform") && cardOnlyIds.Contains("ThisCardGenerate"),
+						$"第一类 = {cats[0].Title}（{cats[0].Items.Count} 条：{string.Join(" / ", cardOnlyIds)}）");
+					Check("V0.2.242：这 6 条在参考窗里**只出现一次**（卡牌专用那一类收走，内置读数那类不再重复列）",
+						cats.SelectMany(c => c.Items).Count(i => cardOnlyIds.Contains(i.Id)) == cardOnlyIds.Count,
+						$"共出现 {cats.SelectMany(c => c.Items).Count(i => cardOnlyIds.Contains(i.Id))} 次 / 应为 {cardOnlyIds.Count}");
+					// 「…」插入菜单：卡牌专用那一组排最上面，而且真的有 ThisCardBlock 等
+					var insertItems = FormulaInsertItems(Profile);
+					Check("V0.2.242：公式框「…」菜单里卡牌专用读数排最前（第一条就是 ThisCardDamage，且含 ThisCardBlock 与四条张数）",
+						insertItems.Count > 0 && insertItems[0].Id == "ThisCardDamage"
+						&& insertItems.Take(cardOnlyIds.Count).Select(x => x.Id).SequenceEqual(cardOnlyIds)
+						&& insertItems.Any(x => x.Id == "ThisCardBlock") && insertItems.Any(x => x.Id == "ThisCardGenerate"),
+						string.Join(" / ", insertItems.Take(cardOnlyIds.Count).Select(x => x.Id)));
+					Check("V0.2.242：「…」菜单里还有 X / Y 和其余内置读数（84 条左右，一条不少）",
+						insertItems.Any(x => x.Id == "X") && insertItems.Any(x => x.Id == "Y")
+						&& insertItems.Any(x => x.Id == "Turn")
+						&& insertItems.Count >= FormulaBuiltins.All.Count,
+						$"{insertItems.Count} 条（含 X / Y）");
+					// 真的在界面上找那个按钮：公式框那一行现在多了一个 Content="…" 的按钮
+					List<Button> formulaBtns = new List<Button>();
+					CollectButtons(CardDetail, formulaBtns);
+					Check("V0.2.242：卡牌页上真的画出「…」按钮（点它才会弹参数清单）",
+						formulaBtns.Any(b => (b.Content as string) == "…"),
+						$"找到 {formulaBtns.Count(b => (b.Content as string) == "…")} 个");
+				}
+				Check("V0.2.182：参考窗里写了「获得的能量」那两条读数（本回合 / 本场战斗）",
+					allIds.Contains("EnergyGainedThisTurn") && allIds.Contains("EnergyGainedThisCombat"), "在");
+				Check("V0.2.182：参考窗里有 X / Y / 参数名那三种写法（单独一类）",
+					cats.Any(c => c.Items.Any(i => i.Id == "X")) && cats.Any(c => c.Items.Any(i => i.Id == "Y"))
+					&& cats.Any(c => c.Title.Contains("参数") && c.Items.Any(i => i.Display.Contains("M / N"))), "都在");
+				Check("V0.2.182：参考窗的「自定义参数」那一类按**存档**列（给一份带 M 的存档 → 那一类里就有 M）",
+					ParamReferenceWindow.BuildCategories(ProfileWithParamM)
+						.Any(c => c.Title.Contains("自定义参数") && c.Items.Any(i => i.Id == "M")),
+					string.Join(" / ", ParamReferenceWindow.BuildCategories(ProfileWithParamM)
+						.Where(c => c.Title.Contains("自定义参数")).SelectMany(c => c.Items).Select(i => i.Id)));
+				Check("V0.2.182：参考窗的「取值来源」那类就是 ParamSources 那份候选（界面 / 生成端同一份）",
+					cats.Any(c => c.Items.Count == ParamSources.All.Count && c.Items.Any(i => i.Id == ParamSources.MaxHp)), "同一份");
+				// ⚠ V0.2.183：V0.2.182 我**漏了启动时那句调用**（窗口类做了、没人弹），用户报「怎么没弹出来」。
+				// 这里钉住两条：
+				//   ① 那个 public 入口真的存在（App.xaml.cs 的启动分支调的就是它，见那边注释里的红线）；
+				//   ② 「重复调只激活已有那个窗」的判据在（不叠一摞）。
+				// ⚠ 特意**不**在这里真开窗：自检里开一个临时主窗会抢走「可见窗口」的判定，
+				//   让后面跟「锻造页视图显隐」有关的两条断言变成 False（实测踩过）。
+				Check("V0.2.183：参数参考窗有 public 入口 ShowParamReference()（启动时那句就是调它）",
+					typeof(MainWindow).GetMethod("ShowParamReference", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance)
+						is { ReturnType: var rt } && rt == typeof(void), "入口在");
+				Check("V0.2.183：参考窗的初始分类数是刚建出来就有的（不是第一次选中某类才填）",
+					cats.Count >= 5, $"{cats.Count} 类");
+			}
+			Check("V0.2.182：「数值公式」的说明文字不再指向编辑器里那块清单，而是指向参考窗",
+				formulaSpec.AmountFormulaHint.Contains("参数参考") || formulaSpec.AmountFormulaHint.Contains("可用量"),
+				formulaSpec.AmountFormulaHint);
+			// V0.2.164：遗物 / 药水 / 自定义状态上那 5 种也能写公式了 ⇒ 这些页的**说明**照旧（只是没了内嵌清单）
+			Check("V0.2.164：遗物 / 药水的效果编辑器里，能写公式的那 5 种照旧显示「数值（公式）」那一栏",
 				new EffectSpec { Kind = "Heal" }.ShowAmountFormula && !new EffectSpec { Kind = "Draw" }.ShowAmountFormula,
 				$"Heal={new EffectSpec { Kind = "Heal" }.ShowAmountFormula} / Draw={new EffectSpec { Kind = "Draw" }.ShowAmountFormula}");
 			Profile.Cards.Remove(clearCard);
@@ -10793,6 +11566,54 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				CardList.SelectedItem = null;
 				UpdateLayout();
 			}
+
+			// ===== V0.2.212：锻造页【效果】模块里的「放到哪一摞 / 从哪里选牌」=====
+			// 用户问「放置卡牌怎么选择放在哪里」。两处都能选，而且判据是**同一份**：
+			//   · 卡牌 / 遗物 / 药水 / 自定义状态页：效果栏里选到「放置卡牌」→ 出现「放到哪一摞」；
+			//   · 锻造页：【效果】模块直接复用同一套编辑器（EffectCommon 模板）→ 同一行也在。
+			// 这里把「同一份判据」和「节点字段 ↔ EffectSpec 的双向同步」钉死，免得以后一边有、一边没有。
+			{
+				Check("V0.2.212：「要不要显示放到哪一摞 / 从哪里选牌」是按**效果种类**判的（两种页面共用这一份）",
+					EffectSpec.KindUsesPlaceTo("PlaceCard") && !EffectSpec.KindUsesPlaceTo("Damage")
+					&& EffectSpec.KindUsesSelectPile("PlaceCard") && EffectSpec.KindUsesSelectPile("ExhaustCard")
+					&& !EffectSpec.KindUsesSelectPile("Damage")
+					&& new EffectSpec { Kind = "PlaceCard" }.UsesPlaceTo
+					&& !new EffectSpec { Kind = "Damage" }.UsesPlaceTo,
+					$"PlaceCard→{EffectSpec.KindUsesPlaceTo("PlaceCard")} ExhaustCard(选牌)→{EffectSpec.KindUsesSelectPile("ExhaustCard")}");
+				// 图的【效果】模块：这两行也认（EffectFieldVisibleForCheck 读的是 EffectSpec 那几个 Show* 属性）
+				var pcGate = new ForgeNodeSpec { Kind = "Effect" };
+				Check("V0.2.212：锻造图【效果】模块上，选「放置卡牌」会显示「放到哪一摞」+「从哪里选牌」，选「造成伤害」都不显示",
+					ForgeCanvas.EffectFieldVisibleForCheck(pcGate, "PlaceCard", "PlaceTo")
+					&& ForgeCanvas.EffectFieldVisibleForCheck(pcGate, "PlaceCard", "SelectPile")
+					&& !ForgeCanvas.EffectFieldVisibleForCheck(pcGate, "Damage", "PlaceTo")
+					&& !ForgeCanvas.EffectFieldVisibleForCheck(pcGate, "Damage", "SelectPile"),
+					"显隐对");
+				// 节点字段 → EffectSpec（老图 / 手写 JSON 里只有 Fields 也要认）
+				var pcNode = new ForgeNodeSpec { Kind = "Effect" };
+				pcNode.SetField("Effect", "PlaceCard");
+				pcNode.SetField("Amount", "0");
+				pcNode.SetField("PlaceTo", "Top");
+				pcNode.SetField("SelectPile", "Discard");
+				var pcSpec = ForgeEffectBridge.Ensure(pcNode);
+				Check("V0.2.212：节点字段里的 PlaceTo / SelectPile 会读进 EffectSpec（图上选过的不会丢）",
+					pcSpec.PlaceTo == "Top" && pcSpec.SelectPile == "Discard", $"{pcSpec.SelectPile} → {pcSpec.PlaceTo}");
+				// EffectSpec → 节点字段（界面上改完要写回去，回读 / 别的读老字段的地方才看得到）
+				var pcNode2 = new ForgeNodeSpec { Kind = "Effect" };
+				var pcSpec2 = ForgeEffectBridge.Author(pcNode2);
+				pcSpec2.Kind = "PlaceCard";
+				pcSpec2.PlaceTo = "Exhaust";
+				pcSpec2.SelectPile = "Top";
+				Check("V0.2.212：在图上改「放到哪一摞 / 从哪里选牌」会写回节点字段（不是只活在内存里）",
+					pcNode2.Get("PlaceTo") == "Exhaust" && pcNode2.Get("SelectPile") == "Top",
+					$"{pcNode2.Get("SelectPile")} → {pcNode2.Get("PlaceTo")}");
+				// 别的效果种类不写这两栏（不然积木摘要里每个效果模块都多一句「放到哪一摞：手牌」的噪声）
+				var pcNode3 = new ForgeNodeSpec { Kind = "Effect" };
+				var pcSpec3 = ForgeEffectBridge.Author(pcNode3);
+				pcSpec3.Kind = "Damage";
+				Check("V0.2.212：不是「放置卡牌 / 取牌类」效果时不往节点里写这两栏（积木摘要不留噪声）",
+					pcNode3.Get("PlaceTo") == "" && pcNode3.Get("SelectPile") == "",
+					$"PlaceTo=「{pcNode3.Get("PlaceTo")}」 SelectPile=「{pcNode3.Get("SelectPile")}」");
+			}
 		}
 		// ===== 「要和其他时机同时成立」（用户要求，V0.2.117） ====
 		{
@@ -11030,6 +11851,66 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			rfAtkRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
 			Check("（攻击档）生成 `if (cardPlay.Card.Type != CardType.Attack) return;` —— 只对攻击牌生效",
 				CSharpCodeGen.RelicSource(rfGenProfile, rfAtkRelic, 0).Contains("if (cardPlay.Card.Type != CardType.Attack) return;"), "对");
+			// ===== V0.2.207（用户报的「给卡牌关键词后打出它，触发时机不响」）=====
+			// 关键词那一档以前只有生成期白名单（设计期就带这个关键词的牌），战斗中刚给上去的牌不在名单里。
+			// 现在白名单 **或** 运行时标记（ForgeGivenKeywords）命中都算。
+			{
+				CharacterProfile kwGuardProfile = ProfileFactory.Sample();
+				kwGuardProfile.CustomKeywords.Clear();
+				kwGuardProfile.CustomKeywords.Add(new CustomKeywordSpec { Name = "契约", Key = "CONTRACT", Description = "自检" });
+				kwGuardProfile.Cards.Clear();
+				kwGuardProfile.Cards.Add(new CardSpec { Name = "带契约", ClassName = "UiCheckKwIntrinsic", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, KeywordIds = new List<string> { "CONTRACT" } });
+				var kwGuardRelic = new RelicSpec { Name = "契约遗物", ClassName = "UiCheckKwRelic", Trigger = "CardPlayed", TriggerCardFilter = "Keyword:CONTRACT" };
+				kwGuardRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 2m, TargetSide = "Self" });
+				string kwGuardSrc = CSharpCodeGen.RelicSource(kwGuardProfile, kwGuardRelic, 0);
+				Check("V0.2.207：遗物的「只对『关键词：X』生效」= 设计期白名单 **或** 运行时标记（给关键词后打出也触发）",
+					kwGuardSrc.Contains("ForgeGivenKeywords.Get(cardPlay.Card).Contains(\"CONTRACT\")")
+					&& kwGuardSrc.Contains("cardPlay.Card.Id == ModelDb.Card<UiCheckKwIntrinsic>().Id"), "白名单 + 运行时标记");
+				var kwGuardPower = new CustomPowerSpec { Name = "契约回响", ClassName = "UiCheckKwPower", Type = "Buff", Enabled = true };
+				var kwGuardTrig = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Keyword:CONTRACT" };
+				kwGuardTrig.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+				kwGuardPower.Triggers.Add(kwGuardTrig);
+				kwGuardProfile.CustomPowers.Clear();
+				kwGuardProfile.CustomPowers.Add(kwGuardPower);
+				string kwGuardPowerSrc = CustomPowerGen.Source(kwGuardProfile, kwGuardPower, 0);
+				Check("V0.2.207：自定义状态的「打出一张牌时 + 关键词」同样带上运行时标记",
+					kwGuardPowerSrc.Contains("ForgeGivenKeywords.Get(cardPlay.Card).Contains(\"CONTRACT\")"), "带上了");
+				// 只有「关键词筛选的触发时机」、没有「给予关键词」效果时，GivenKeywords.cs 也必须生成（否则编译不过）
+				kwGuardProfile.Cards.Add(new CardSpec { Name = "不打字", ClassName = "UiCheckKwNoGive", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true });
+				Check("V0.2.207：光有「关键词筛选的触发时机」也要生成 GivenKeywords 那份标记类（否则编译不过）",
+					CSharpCodeGen.UsesGivenCustomKeyword(kwGuardProfile), "会生成");
+				Check("V0.2.207：非关键词档（攻击）不受影响，判据一字未变",
+					!CSharpCodeGen.RelicSource(kwGuardProfile, rfAtkRelic, 0).Contains("ForgeGivenKeywords")
+					&& CSharpCodeGen.RelicSource(kwGuardProfile, rfAtkRelic, 0).Contains("if (cardPlay.Card.Type != CardType.Attack) return;"), "不受影响");
+			}
+
+			// ===== V0.2.208：状态 / 遗物 / 药水的布上没有「这张牌」→ 不能拼 `.FromCard(null, null)` =====
+			// 本体 AttackCommand.FromCard 第一句就是 card.Owner → 传 null 会在钩子里抛 NRE，
+			// 整个回合循环直接断掉（日志：Combat #N turn loop died … the combat is stuck）。
+			{
+				CharacterProfile noCardProfile = ProfileFactory.Sample();
+				var hookPower = new CustomPowerSpec { Name = "自检钩子状态", ClassName = "UiCheckNoCardHookPower", Type = "Buff", Enabled = true };
+				var hookGraph = new ForgeGraphSpec();
+				var hookTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				hookTrig.SetField("Timing", "SideTurnEnd");
+				var hookEff = new ForgeNodeSpec { Kind = "Effect" };
+				hookEff.SetField("Effect", "TimesUp");
+				hookEff.SetField("Amount", "3");
+				hookGraph.Nodes.AddRange(new[] { hookTrig, hookEff });
+				hookGraph.Links.Add(new ForgeLinkSpec { From = hookTrig.Id, To = hookEff.Id });
+				hookPower.ForgeGraph = hookGraph;
+				noCardProfile.CustomPowers.Clear();
+				noCardProfile.CustomPowers.Add(hookPower);
+				string hookSrc = CustomPowerGen.Source(noCardProfile, hookPower, 0);
+				Check("V0.2.208：状态（能力）那条链的「大限已至」不再生成 `.FromCard(null, null)`（以前会在钩子里 NRE、回合卡死）",
+					!hookSrc.Contains(".FromCard(null") && hookSrc.Contains("DamageCmd.Attack("), hookSrc.Contains(".FromCard(null") ? "还有 null" : "没有了");
+				// 对照：卡牌链照旧带 `.FromCard(this, cardPlay)`（逐字不变）
+				CardSpec cardTimesUp = new CardSpec { Name = "卡牌大限", ClassName = "UiCheckCardTimesUp", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				cardTimesUp.Effects.Add(new EffectSpec { Kind = "TimesUp", Amount = 2m, TargetSide = "Enemy" });
+				string cardTimesUpSrc = CSharpCodeGen.CardSource(Profile, cardTimesUp, 0);
+				Check("V0.2.208：（对照）卡牌链的「大限已至」照旧 `.FromCard(this, cardPlay)`（来源是这张牌）",
+					cardTimesUpSrc.Contains(".FromCard(this, cardPlay)"), "没变");
+			}
 			// 生成：新档（诅咒）用卡牌那边同一套「范围界定」谓词 + 写回读标记
 			var rfCurseRelic = new RelicSpec { Name = "诅咒遗物", ClassName = "UiCheckFilterRelicCurse", Trigger = "CardPlayed", TriggerCardFilter = "Curse" };
 			rfCurseRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
@@ -11044,6 +11925,56 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			rfGenProfile.Relics.Add(rfAtkRelic);
 			string rfLoc = LocalizationGen.RelicsJson(rfGenProfile);
 			Check("遗物描述里写清「只对诅咒牌生效」（游戏里能看见）", rfLoc.Contains("只对诅咒牌生效"), "写了");
+
+			// ===== V0.2.209：锻造图说了算的遗物**不声明动态变量** → 描述里必须写数字字面量 =====
+			// 否则游戏里 hover 时抛 `Localization formatting error! … selector named "VulnerablePower"`（用户日志）。
+			{
+				CharacterProfile litProbe = ProfileFactory.Sample();
+				var litRelic = new RelicSpec { Name = "自检锻造遗物", ClassName = "UiCheckLiteralRelic", Rarity = "Common", InRelicPool = true };
+				var litGraph = new ForgeGraphSpec();
+				var litTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				litTrig.SetField("Timing", "CardPlayed");
+				var litEff = new ForgeNodeSpec { Kind = "Effect" };
+				litEff.SetField("Effect", "ApplyPower");
+				litEff.SetField("PowerId", "VulnerablePower");
+				litEff.SetField("Amount", "2");
+				litGraph.Nodes.AddRange(new[] { litTrig, litEff });
+				litGraph.Links.Add(new ForgeLinkSpec { From = litTrig.Id, To = litEff.Id });
+				litRelic.ForgeGraph = litGraph;
+				litRelic.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", CardFilter = "Any" });
+				litProbe.Relics.Add(litRelic);
+				string litJson = LocalizationGen.RelicsJson(litProbe);
+				// 只看**这一只**遗物的那一条（整份配置里别的遗物可能仍然有 {…:diff()}，那是对的）
+				string litEntry = Naming.EntryOf(Naming.From(litProbe).RelicClassName(litRelic, litProbe.Relics.IndexOf(litRelic)));
+				string litDesc = litJson.Split('\n').FirstOrDefault(l => l.Contains($"\"{litEntry}.description\"")) ?? "";
+				Check("V0.2.209：锻造图遗物的描述写数字字面量、不写 {…:diff()}（否则游戏里抛 Localization formatting error）",
+					litDesc.Contains("施加 2 层") && !litDesc.Contains(":diff()"),
+					litDesc.Length == 0 ? "(没找到这一条描述)" : litDesc.Trim());
+				// 对照：普通遗物（不是锻造图）照旧用 {…:diff()} 占位（源码真的声明了变量）
+				var plainRelic = new RelicSpec { Name = "自检普通遗物", ClassName = "UiCheckPlainPowerRelic", Rarity = "Common", InRelicPool = true };
+				plainRelic.Effects.Add(new EffectSpec { Kind = "ApplyPower", Amount = 2m, PowerId = "VulnerablePower", TargetSide = "Enemy" });
+				var plainProbe = ProfileFactory.Sample();
+				plainProbe.Relics.Add(plainRelic);
+				Check("V0.2.209：（对照）普通遗物的描述照旧用 {…:diff()} 占位（源码里有 PowerVar）",
+					LocalizationGen.RelicsJson(plainProbe).Contains("{VulnerablePower:diff()}"), "占位符");
+			}
+
+			// ===== V0.2.209：辅助 Power 的 title/description 也要写进 powers.json =====
+			// 日志里那条：`GetRawText: Key 'AINODI_FORGE_TURN_END_PLAY_POWER.title' not found in table 'powers'`。
+			{
+				CharacterProfile hp = ProfileFactory.Sample();
+				var hpCard = new CardSpec { Name = "自检回合末", ClassName = "UiCheckHelperPowerCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				hpCard.Effects.Add(new EffectSpec { Kind = "TurnEndPlay", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand" });
+				hp.Cards.Add(hpCard);
+				string hpJson = LocalizationGen.PowersJson(hp);
+				string hpEntry = Naming.EntryOf(Naming.From(hp).TurnEndPlayPowerClass);
+				Check("V0.2.209：用到「回合结束时自动打出」时，那个辅助 Power 的 title / description 会写进 powers.json",
+					hpJson.Contains($"\"{hpEntry}.title\"") && hpJson.Contains($"\"{hpEntry}.description\""), hpEntry);
+				// 没用到就不写（老存档生成文本不变）
+				string hpJsonNone = LocalizationGen.PowersJson(ProfileFactory.Sample());
+				Check("V0.2.209：（红线）没用到那个辅助 Power 的存档不会凭空多出这条本地化",
+					!hpJsonNone.Contains(hpEntry), "没多写");
+			}
 			// 别的触发时机填了筛选 → 提示「不生效」，不静默
 			var rfIdleRelic = new RelicSpec { Name = "时机不对遗物", ClassName = "UiCheckFilterRelicIdle", Trigger = "PlayerTurnStart", TriggerCardFilter = "Attack" };
 			rfIdleRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
@@ -11527,15 +12458,59 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("（红线）没写次数公式的卡：不写次数标记、循环上界还是固定数字（老存档生成结果逐字不变）",
 				!plainSrc.Contains("CET:CountFormulas") && plainSrc.Contains("for (int i = 0; i < 2; i++)")
 				&& plainSrc.Contains(".WithHitCount(3)"), "老样子");
-			// 校验器 
+			// 校验器
 			var cfRelic = ProfileFactory.Sample();
 			var cfRelicSpec = new RelicSpec { Name = "次数公式遗物", ClassName = "UiCheckCountRelic", Trigger = "PlayerTurnStart" };
 			var cfRelicEff = new EffectSpec { Kind = "Damage", Amount = 2m, TargetSide = "Enemy" };
 			cfRelicEff.TimesFormula = "Turn";
 			cfRelicSpec.Effects.Add(cfRelicEff);
 			cfRelic.Relics.Add(cfRelicSpec);
-			Check("校验器：遗物上填次数公式 → 报错说清「只做在卡牌上」",
-				ProfileValidator.Validate(cfRelic).Any(i => i.IsError && i.Message.Contains("次数公式") && i.Message.Contains("卡牌")), "拦住了");
+			// V0.2.238（用户问「生效次数可以填写公式吗」）：遗物的「生效次数」公式**不再拦**，
+			// 而且真的落到生成代码里（内联求值 —— 遗物链没有卡牌那套前置局部变量，见 EmitRepeated）。
+			Check("V0.2.238：遗物上填「生效次数」公式 → 校验器不再拦（以前报「只做在卡牌上」）",
+				!ProfileValidator.Validate(cfRelic).Any(i => i.IsError && i.Message.Contains("次数公式")), "放行");
+			string cfRelicSrc = CSharpCodeGen.RelicSource(cfRelic, cfRelicSpec, 0);
+			Check("V0.2.238：遗物的「生效次数」公式 → 生成内联的 Clamp 循环（不是卡牌那套 __fgPlayer 局部变量）",
+				cfRelicSrc.Contains("for (int i = 0; i < (int)System.Math.Clamp(")
+				&& !cfRelicSrc.Contains("__fgPlayer")
+				&& cfRelicSrc.Contains("CET:CountFormulas=Times=Turn"), "内联循环");
+			// 其余几栏（命中次数 / 复制 / 重放 / 概率）在这条链上生成端不读 —— 仍然报错拦住
+			var cfRelicBad = ProfileFactory.Sample();
+			var cfRelicBadSpec = new RelicSpec { Name = "次数公式遗物2", ClassName = "UiCheckCountRelic2", Trigger = "PlayerTurnStart" };
+			var cfRelicBadEff = new EffectSpec { Kind = "Damage", Amount = 2m, TargetSide = "Enemy" };
+			cfRelicBadEff.RepeatFormula = "Turn";
+			cfRelicBadSpec.Effects.Add(cfRelicBadEff);
+			cfRelicBad.Relics.Add(cfRelicBadSpec);
+			Check("V0.2.238：遗物上填「命中次数」公式 → 仍然报错（这条链的生成端不读它，绝不静默忽略）",
+				ProfileValidator.Validate(cfRelicBad).Any(i => i.IsError && i.Message.Contains("生效次数")), "拦住了");
+			// 自定义状态那一条链同样认「生效次数」公式
+			var cfPower = ProfileFactory.Sample();
+			cfPower.CustomPowers.Clear();
+			var cfPowerSpec = new CustomPowerSpec { Name = "次数公式状态", ClassName = "UiCheckCountPower", Enabled = true };
+			cfPowerSpec.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "TurnStart",
+				Effects =
+				{
+					new EffectSpec { Kind = "Damage", Amount = 2m, TargetSide = "Enemy", TimesFormula = "Turn" },
+				},
+			});
+			cfPower.CustomPowers.Add(cfPowerSpec);
+			Check("V0.2.238：自定义状态上填「生效次数」公式 → 校验器放行",
+				!ProfileValidator.Validate(cfPower).Any(i => i.IsError && i.Message.Contains("次数公式")), "放行");
+			string cfPowerSrc = CustomPowerGen.Source(cfPower, cfPowerSpec, 0);
+			Check("V0.2.238：状态链的「生效次数」公式 → 生成内联的 Clamp 循环 + 回读标记",
+				cfPowerSrc.Contains("for (int __rep = 0; __rep < (int)System.Math.Clamp(")
+				&& cfPowerSrc.Contains("CET:CountFormulas=Times=Turn"), "内联循环");
+			// 界面：遗物 / 药水 / 状态那三条链也摆出「生效次数（公式）」框（摆了就必须真有用）
+			Check("V0.2.238：遗物 / 药水 / 自定义状态那条「生效次数」行也给出公式框（ShowTimesFormulaBox）",
+				new EffectSpec { Kind = "Damage", TargetSide = "Enemy", IsCardChain = false }.ShowTimesFormulaBox
+				&& new EffectSpec { Kind = "Damage", TargetSide = "Enemy", IsCardChain = true }.ShowTimesFormulaBox,
+				"两条链都摆");
+			Check("V0.2.238：那条公式框的可见性与「生效次数」固定框一致（同一种效果不会只出现一半）",
+				new EffectSpec { Kind = "Damage", TargetSide = "Enemy" }.ShowPlainFixedTimesBox
+				&& new EffectSpec { Kind = "Damage", TargetSide = "Enemy" }.ShowTimesFormulaBox,
+				"固定框 + 公式框都在");
 			var cfClash = new CardSpec { Name = "冲突卡", ClassName = "UiCheckCountClash", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
 			var cfClashEff = new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "Enemy", TimesIsX = true };
 			cfClashEff.TimesFormula = "Turn";
@@ -14313,7 +15288,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			string tpNegStr = CSharpCodeGen.TempPowersSource(tpProfWithNeg());
 			Check("负数 + 力量：生成的是 Apply<StrengthPower>(—  amount)（负数直接施加，不再面 GetPower）",
 				tpNegStr.Contains("await PowerCmd.Apply<StrengthPower>(new ThrowingPlayerChoiceContext(), target, amount")
-				&& !tpNegStr.Contains("GetPower<StrengthPower>()"),
+				&& !tpNegStr.Contains("target.GetPower<StrengthPower>()"),
 				"照尖啸那套");
 			string tpNegWeak = CSharpCodeGen.TempPowersSource(tpProfWithNeg("WeakPower"));
 			Check("负数 + 虚弱（本体不允许负层数）：仍旧是 GetPower + ModifyAmount 扣已有层数",
@@ -14328,6 +15303,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				"接口在");
 			Check("临时 Power 开了 AllowNegative（负层数状态不会被本体当成 0 层当场移除）",
 				tpNegStr.Contains("public override bool AllowNegative => true;"), "开了");
+			// ⚠ V0.2.237（用户实测：「自带减层的效果加上临时之后只要层数是 1，回合结束就会扣成 -1」）
+			// 本体 TemporaryStrengthPower.cs:153 是**盲写** `Apply(-Sign * base.Amount)` —— 它只会配
+			// 力量 / 敏捷 / 专注，那几个自己**不扣层**，盲还原安全。而本工具允许把**任何**状态做成临时：
+			// 虚弱 / 易伤 / 脆弱本体在 AfterSideTurnEnd 里自己 TickDownDuration（WeakPower.cs:49 /
+			// VulnerablePower.cs:60 / FrailPower.cs:35），于是「临时 +1 层」被它自己扣掉、归 0 后整个状态被
+			// 移除，我们再 Apply(-1) → `PowerModel.ApplyInternal` 直接 SetAmount((int)amount)（不夹 0）
+			// → **凭空造出一个层数 -1 的状态**。修法：还原前先取实例（没了就什么都不做），再夹到不跨过 0。
+			Check("V0.2.237：临时增益的还原先取真实状态实例（它已经被自己的回合结束扣光移除时什么都不做）",
+				tpNegStr.Contains("PowerModel? __back = base.Owner.GetPower<StrengthPower>();")
+				&& tpNegStr.Contains("if (__back is not null)"), "先取实例");
+			Check("V0.2.237：还原量夹到「不跨过 0」，且只对不允许负层数的状态夹（力量 / 敏捷照旧盲还原）",
+				tpNegStr.Contains("if (!__back.AllowNegative && __now + __amount < 0m) __amount = -__now;"), "夹住了");
+			Check("V0.2.237：不再出现「把 -base.Amount 直接塞进 Apply」的盲还原",
+				!tpNegStr.Contains("base.Owner, -base.Amount, base.Owner, null)"), "没有盲还原了");
+			Check("V0.2.237：两档还原（回合结束 / 下回合开始）都带守卫（各 1 处，共 2 处）",
+				tpSrc.Contains("AfterSideTurnEnd") && tpSrc.Contains("AfterPlayerTurnStart")
+				&& tpSrc.Split("if (__back is not null)").Length - 1 == 2
+				&& tpSrc.Split("if (!__back.AllowNegative && __now + __amount < 0m) __amount = -__now;").Length - 1 == 2,
+				"守卫处数 = " + (tpSrc.Split("if (__back is not null)").Length - 1));
 			// 图（锻造页）里的「临时增益」：以前**没有**生成临时 Power，施加的是永久状态"
 			CharacterProfile forgedTempProf = ForgedTempPowerProfile(out string tpvCall);
 			Check("节点图里的「临时增益」会生成临时 Power 类（扫描时也带上自定义状态的图）",
@@ -14582,7 +15576,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			}
 			var countKinds = new (string Label, EffectSpec Spec, string Probe)[]
 			{
-				("生成卡牌（指定卡）", new EffectSpec { Kind = "GenerateCard", Amount = 1m, UpgradeAmount = 1m, SpawnCardId = "Strike", SpawnTo = "Hand", TargetSide = "Self" }, "AddToCombatAndPreview<Strike>(base.Owner.Creature, PileType.Hand, (int)base.DynamicVars.Cards.BaseValue"),
+				("生成卡牌（指定卡）", new EffectSpec { Kind = "GenerateCard", Amount = 1m, UpgradeAmount = 1m, SpawnCardId = "Strike", SpawnTo = "Hand", TargetSide = "Self" }, "AddToCombatAndPreview<MegaCrit.Sts2.Core.Models.Cards.Strike>(base.Owner.Creature, PileType.Hand, (int)base.DynamicVars.Cards.BaseValue"),
 				("生成卡牌（按范围随机）", new EffectSpec { Kind = "GenerateCard", Amount = 2m, UpgradeAmount = 1m, SpawnFilter = "Attack", SpawnPick = "Random", SpawnTo = "Hand", TargetSide = "Self" }, "GetDistinctForCombat(base.Owner, __genPool, (int)base.DynamicVars.Cards.BaseValue"),
 				("消耗卡牌", new EffectSpec { Kind = "ExhaustCard", Amount = 2m, UpgradeAmount = 1m, CardPick = "Chosen", SelectPile = "Hand", TargetSide = "Self" }, "(int)base.DynamicVars.Cards.BaseValue"),
 				("丢弃卡牌", new EffectSpec { Kind = "DiscardCard", Amount = 2m, UpgradeAmount = 1m, CardPick = "Chosen", SelectPile = "Hand", TargetSide = "Self" }, "(int)base.DynamicVars.Cards.BaseValue"),
@@ -14801,6 +15795,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					CountKind(eb2, "Energy") == energyBefore && attempt is null,
 					$"能量块 {energyBefore} → {CountKind(eb2, "Energy")} / 说明：{ForgeBlocks.StatusText}");
 			}
+			// V0.2.192：新模块【状态列表】在积木调色板里也能加（加完随手删掉，别影响后面几条）
+			{
+				int listBefore = CountKind(eb2, ForgeGraphCatalog.PowerListKind);
+				var listBlock = ForgeBlocks.AddBlockForCheck(ForgeGraphCatalog.PowerListKind, null);
+				UpdateLayout();
+				Check("积木编辑器：调色板里有【状态列表】，点一下真的加得出来",
+					listBlock is not null && CountKind(eb2, ForgeGraphCatalog.PowerListKind) == listBefore + 1,
+					$"状态列表块 {listBefore} → {CountKind(eb2, ForgeGraphCatalog.PowerListKind)}");
+				if (listBlock is not null)
+				{
+					ForgeBlocks.DeleteBlockForCheck(listBlock);
+					UpdateLayout();
+				}
+			}
 
 			// 删块：删掉刚加的第二块"
 			ForgeBlocks.DeleteBlockForCheck(a2!);
@@ -14881,6 +15889,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			GenerationResult generationResult = ModGenerator.Generate(characterProfile10);
 			string path2 = Path.Combine(generationResult.ProjectRoot, "cs", "ExtraResource.cs");
 			Check("生成工程时会真的写出 cs/ExtraResource.cs", generationResult.Success && File.Exists(path2), (!generationResult.Success) ? ("生成失败：" + generationResult.Issues.FirstOrDefault((ValidationIssue i) => i.IsError)) : (File.Exists(path2) ? "已写出" : "文件不存在"));
+			// V0.2.187：卡牌图鉴对 mod 角色的补丁（用户实测日志：`KeyNotFoundException: ... 'CHARACTER.BUGKILLER' ...`
+			// 抛在 NCardLibrary.OnSubmenuOpened 里，图鉴停在打开到一半）。每个存档都要有这个文件。
+			string pathLib = Path.Combine(generationResult.ProjectRoot, "cs", CardLibraryGen.File + ".cs");
+			Check("生成工程时写出卡牌图鉴补丁 cs/ForgeCardLibrary.cs（本体那张表只认 5 个官方角色 → mod 角色一进图鉴就抛异常）",
+				generationResult.Success && File.Exists(pathLib), File.Exists(pathLib) ? "已写出" : "文件不存在");
 			string path3 = Path.Combine(generationResult.ProjectRoot, "cs", "ExtraResourceUi.cs");
 			Check("生成工程时会写出自定义图标/名字的补丁 cs/ExtraResourceUi.cs", generationResult.Success && File.Exists(path3), File.Exists(path3) ? "已写出" : "文件不存在");
 			string path4 = Path.Combine(generationResult.ProjectRoot, ArtGenerator.ExtraResourceIconRelPath(characterProfile10).Replace('/', Path.DirectorySeparatorChar));
@@ -16511,6 +17524,73 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("公式里的 X / Y 是固定的（当前所有能量 / 当前所有额外资源量）",
 					ForgeFormula.Identifiers(ForgeFormula.TryParse("min(2, X) + Y", out _)).SequenceEqual(new[] { "X", "Y" }),
 					"min(2, X) + Y");
+				// ===== V0.2.196（用户要求）：公式里也能写条件 =====
+				// 用户原话：「能不能让生成器使用上述」+ 15 个「(条件 ? 1 : 0) 再参与算术」的例子。
+				{
+					string Emit2(string f, params (string Name, string Expr)[] vars)
+						=> ForgeFormula.Emit(ForgeFormula.TryParse(f, out _),
+							id => vars.FirstOrDefault(v => v.Name == id).Expr, out _) ?? "";
+					Check("公式支持比较 / 逻辑 / 三元：a > 0 && b > 0 ? 1 : 0 认得出、翻成 C#",
+						Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")).Contains("&& ") && Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")).Contains("? (1m) : (0m)"),
+						Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")));
+					Check("布尔当数值用 = 真取 1、假取 0（例子：三个数里正数个数）",
+						Emit2("(a > 0 ? 1 : 0) + (b > 0 ? 1 : 0) + (c > 0 ? 1 : 0)", ("A", "__pA"), ("B", "__pB"), ("C", "__pC"))
+							.Contains("? (1m) : (0m)"), "生成 1/0");
+					Check("「(a > 0) * 5」这种把布尔直接乘进数值的写法也认（自动补 真1/假0）",
+						Emit2("(a > 0) * 5", ("A", "__pA")).Contains(") ? 1m : 0m) * (5m)"), Emit2("(a > 0) * 5", ("A", "__pA")));
+					Check("数字当条件用 = 「不等于 0」（例子：flag ? 1 : 0，flag 只是 0/1 的参数）",
+						Emit2("f ? 1 : 0", ("F", "__pF")).Contains("(__pF != 0m)"), Emit2("f ? 1 : 0", ("F", "__pF")));
+					Check("嵌套三元（例子：符号函数 x>0 ? 1 : x<0 ? -1 : 0）",
+						Emit2("x > 0 ? 1 : x < 0 ? -1 : 0", ("X", "__X")).Contains("? (1m) : ((__X < (0m)) ? -((1m)) : (0m))"),
+						Emit2("x > 0 ? 1 : x < 0 ? -1 : 0", ("X", "__X")));
+					Check("也认 C# 那套写法：Math.Abs(…) / Math.Max(…) / Convert.ToInt32(…) / true·false",
+						Emit2("Math.Abs(a) + Math.Max(1, b)", ("A", "__pA"), ("B", "__pB")).Contains("System.Math.Abs(__pA)")
+						&& Emit2("Convert.ToInt32(a > 0)", ("A", "__pA")).Contains("System.Math.Truncate(")
+						&& Emit2("(true ? 1 : 0) * 8").Contains("? (1m) : (0m)"),
+						Emit2("Math.Abs(a) + Math.Max(1, b)", ("A", "__pA"), ("B", "__pB")));
+					Check("比较 / 逻辑 / 三元都能在生成期折成常数（真 1 假 0）",
+						ForgeFormula.TryEvalConst(ForgeFormula.TryParse("((2 > 1) ? 1 : 0) * 2", out _), _ => null, out decimal f1, out _) && f1 == 2m
+						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("(a > 0 ? 1 : 0) + (b > 0 ? 1 : 0) + (c > 0 ? 1 : 0)", out _),
+							id => id switch { "A" => 5m, "B" => 3m, "C" => -2m, _ => null }, out decimal f2, out _) && f2 == 2m
+						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("a % 2 == 1 ? 10 : 0", out _), id => id == "A" ? 5m : null, out decimal f3, out _) && f3 == 10m,
+						$"2 / 2 / 10");
+					Check("三元少写冒号时给一句中文原因（不丢给 dotnet 报 CS 错）",
+						ForgeFormula.TryParse("a > 0 ? 1", out string terr) is null && terr.Contains("冒号"), terr);
+					Check("老公式生成文本没变（2*3 → (2m) * (3m)）",
+						Emit2("2*3") == "((2m) * (3m))", Emit2("2*3"));
+					// ===== V0.2.197（用户贴了整张 .NET Math 表问「这些能用吗」）：Math 那一套 =====
+					Check("常量：Math.PI / Math.E / Math.Tau 认得出（照 C# 写就行）",
+						Emit2("Math.PI * 2").Contains("(3.1415926535897932384626433833m)")
+						&& Emit2("Math.E").Contains("(2.7182818284590452353602874714m)")
+						&& Emit2("Math.Tau").Contains("(6.2831853071795864769252867666m)"), "常量在");
+					Check("decimal 有重载的直接调（min/max/abs/sign/clamp/floor/ceiling/round/truncate）",
+						Emit2("Math.Clamp(15, 0, 10)").Contains("System.Math.Clamp(")
+						&& Emit2("Math.Sign(-8)").Contains("System.Math.Sign(")
+						&& Emit2("Math.Truncate(3.9)").Contains("System.Math.Truncate("), "直接调");
+					Check("只有 double 重载的（pow/sqrt/log/三角）→ 参数转 double、结果转回 decimal",
+						Emit2("Math.Pow(2, 3)").Contains("(decimal)System.Math.Pow((double)(")
+						&& Emit2("Math.Sqrt(16)").Contains("(decimal)System.Math.Sqrt((double)(")
+						&& Emit2("Math.Log(8, 2)").Contains("(decimal)System.Math.Log((double)("), "转手");
+					Check("三角 / 双曲 / atan2 都在（只有 double 重载，参数转一手）",
+						Emit2("Math.Sin(x) + Math.Cos(x) + Math.Tan(x)", ("X", "__X")).Contains("System.Math.Tan((double)")
+						&& Emit2("Math.Sinh(x) + Math.Cosh(x) + Math.Tanh(x)", ("X", "__X")).Contains("System.Math.Tanh((double)")
+						&& Emit2("Math.Asin(x) + Math.Acos(x) + Math.Atan(x) + Math.Atan2(1, 1)", ("X", "__X")).Contains("System.Math.Atan2("), "都在");
+					Check("Math.Round(x, AwayFromZero) = 传统四舍五入（2.5 → 3），默认 Round 仍是银行家舍入",
+						Emit2("Math.Round(2.5, AwayFromZero)").Contains(">= 0m ? System.Math.Floor(")
+						&& Emit2("Math.Round(2.5)").Contains("System.Math.Round((2.5m))"), "两档都在");
+					Check("本体没有现成重载的照语义拼（MaxMagnitude / MinMagnitude / CopySign / 角度↔弧度）",
+						Emit2("Math.MaxMagnitude(-5, 3)").Contains("System.Math.Abs(")
+						&& Emit2("Math.CopySign(3, -1)").Contains("System.Math.Sign(")
+						&& Emit2("Math.RadiansToDegrees(Math.PI)").Contains("* 180m / "), "拼出来了");
+					Check("判断族（double.IsNaN / IsFinite…）在 decimal 上是确定的（NaN 恒假、有限恒真）",
+						Emit2("double.IsNaN(3.14) ? 7 : 8").Contains("(false) ?") && Emit2("double.IsFinite(3.14) ? 7 : 8").Contains("(true) ?"), "常数");
+					Check("Math 公式也能在生成期折成常数（卡牌费用那种要常量的地方能用）",
+						ForgeFormula.TryEvalConst(ForgeFormula.TryParse("Math.Pow(2, 3) + Math.Sqrt(16) + Math.Cbrt(27)", out _), _ => null, out decimal m1, out _) && m1 == 15m
+						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("Math.Clamp(15, 0, 10) + Math.Sign(-8)", out _), _ => null, out decimal m2, out _) && m2 == 9m,
+						$"15 / 9");
+					Check("没这个函数时给中文原因（不是丢给 dotnet 报 CS 错）",
+						ForgeFormula.TryParse("nosuchfn(1)", out string merr) is null && merr.Contains("没有"), merr);
+				}
 
 				// 生成：图非空时卡牌源码里要有 ForgeGraphOnPlay 和那条伤害 
 				string cardSrc = CSharpCodeGen.CardSource(Profile, forged, 0);
@@ -16596,6 +17676,141 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						bSrc2.Contains("GetPowerAmount<VulnerablePower>() >= 1"), 
 						bSrc2.Contains("GetPowerAmount<VulnerablePower>") ? "生成在" : "条件丢了");
 					Profile.Cards.Remove(bCard);
+				}
+
+				// ===== V0.2.216（用户报的「处于二形态时触发不了多效卡效果只能打24的基础效果」）=====
+				// 两个真 bug：
+				//  ① 三层「且」串起来时（且(且(A,B),C)），第二个【且】的条件以前取的是**它 Out 口上接进来的那一块**
+				//     （= 第一个【且】），于是 C 被整个丢掉 —— 形态判断只剩两个；
+				//  ② 图上有「会做事」的模块没接到【触发时机】这条链上时，生成端**一个字都不输出**（静默失效）。
+				{
+					// ① 三层且：A && B && C 必须一个不落
+					var andCard = new CardSpec { Name = "自检三层且", ClassName = "UiCheckAnd3", CardType = "Skill", Cost = 0, IsForged = true };
+					andCard.ForgeGraph = new ForgeGraphSpec();
+					var aTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					aTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					ForgeNodeSpec AndCond(int amt)
+					{
+						var u = new ForgeNodeSpec { Kind = "Unit" };
+						u.SetField("Pick", "Self");
+						var p2 = new ForgeNodeSpec { Kind = "Power" };
+						p2.SetField("PowerId", "VulnerablePower");
+						var rel = new ForgeNodeSpec { Kind = "Relate" };
+						rel.SetField("Op", "Lt");
+						rel.SetField("Amount", amt.ToString());
+						andCard.ForgeGraph.Nodes.AddRange(new[] { u, p2, rel });
+						andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = u.Id, To = rel.Id, FromPort = 0, ToPort = 0 });
+						andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = p2.Id, To = rel.Id, FromPort = 0, ToPort = 1 });
+						return rel;
+					}
+					// 三个独立的「状态 < N」条件（N = 1 / 2 / 3，生成出来能一眼看出三个都在）+ 两层【且】
+					var r1 = AndCond(1);
+					var r2 = AndCond(2);
+					var r3 = AndCond(3);
+					var and1 = new ForgeNodeSpec { Kind = "And" };
+					var and2 = new ForgeNodeSpec { Kind = "And" };
+					var finalEff = new ForgeNodeSpec { Kind = "Effect" };
+					finalEff.SetField("Effect", "Block");
+					finalEff.SetField("Amount", "5");
+					andCard.ForgeGraph.Nodes.Add(aTrig);
+					andCard.ForgeGraph.Nodes.AddRange(new[] { and1, and2, finalEff });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = aTrig.Id, To = and1.Id, FromPort = 0, ToPort = 0 });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = r1.Id, To = and1.Id, FromPort = 0, ToPort = 0 });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = r2.Id, To = and1.Id, FromPort = 0, ToPort = 1 });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = and1.Id, To = and2.Id, FromPort = 0, ToPort = 0 });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = r3.Id, To = and2.Id, FromPort = 0, ToPort = 1 });
+					andCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = and2.Id, To = finalEff.Id, FromPort = 0, ToPort = 0 });
+					string andSrc = CSharpCodeGen.CardSource(Profile, andCard, 0);
+					Check("V0.2.216：三层「且」串起来时三个条件**一个都不丢**（以前第二个【且】只认第一个输入）",
+						andSrc.Contains("< (1))", StringComparison.Ordinal)
+						&& andSrc.Contains("< (2))", StringComparison.Ordinal)
+						&& andSrc.Contains("< (3))", StringComparison.Ordinal)
+						&& andSrc.Contains("&&", StringComparison.Ordinal),
+						$"len={andSrc.Length} 1={andSrc.Contains("< (1))")} 2={andSrc.Contains("< (2))")} 3={andSrc.Contains("< (3))")} &&={andSrc.Contains("&&")} hasPlay={andSrc.Contains("ForgeGraphOnPlay")}");
+					Profile.Cards.Remove(andCard);
+
+					// ② 没接上的模块：生成代码里要有可见警告 + 校验器给一条警告
+					var orphanCard = new CardSpec { Name = "自检漏接线", ClassName = "UiCheckOrphan", CardType = "Skill", Cost = 0, IsForged = true };
+					orphanCard.ForgeGraph = new ForgeGraphSpec();
+					var oTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					oTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var oEff = new ForgeNodeSpec { Kind = "Effect" };
+					oEff.SetField("Effect", "Damage");
+					oEff.SetField("Amount", "24");
+					var oOrphan = new ForgeNodeSpec { Kind = "Effect" };
+					oOrphan.SetField("Effect", "Damage");
+					oOrphan.SetField("Amount", "27");
+					orphanCard.ForgeGraph.Nodes.AddRange(new[] { oTrig, oEff, oOrphan });
+					orphanCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = oTrig.Id, To = oEff.Id, FromPort = 0, ToPort = 0 });
+					var missed = ForgeGraphGen.UnreachableModules(orphanCard.ForgeGraph);
+					Check("V0.2.216：能算出「没接到触发时机」的模块（这里就是那条 27 伤害）",
+						missed.Count == 1 && missed[0].Get("Amount") == "27", $"算出 {missed.Count} 块");
+					string orphanSrc = CSharpCodeGen.CardSource(Profile, orphanCard, 0);
+					Check("V0.2.216：生成出来的卡里写了一段「没接到【触发时机】」的警告（不再静默失效）",
+						orphanSrc.Contains("没接到【触发时机】", StringComparison.Ordinal)
+						&& orphanSrc.Contains("fg:" + oOrphan.Id, StringComparison.Ordinal), "有警告");
+					Check("V0.2.216：校验器给一条**警告**（不是错误：留备用模块是正常用法）",
+						ForgeGraphGen.Issues(orphanCard.ForgeGraph, Profile, "Card")
+							.Any(x => x.Level == "警告" && x.Message.Contains("没接到【触发时机】", StringComparison.Ordinal)),
+						string.Join(" / ", ForgeGraphGen.Issues(orphanCard.ForgeGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
+					Check("V0.2.216：（红线）没有漏接线的图不会多出这段警告",
+						!CSharpCodeGen.CardSource(Profile, new CardSpec
+						{
+							Name = "自检干净卡", ClassName = "UiCheckClean", CardType = "Skill", Cost = 0, IsForged = true,
+							ForgeGraph = new ForgeGraphSpec
+							{
+								Nodes = { new ForgeNodeSpec { Kind = "Trigger", Fields = { ["Timing"] = ForgeTimings.CardPlayed } } },
+							},
+						}, 0).Contains("没接到【触发时机】", StringComparison.Ordinal), "没多写");
+					Profile.Cards.Remove(orphanCard);
+				}
+
+				// ===== V0.2.218（用户要求：「锻造无法『处于某种条件下时，该牌无法被打出』」）=====
+				// 【条件】模块多一栏「不满足时」：跳过这一支（默认）/ **整张牌打不出去**（本体 IsPlayable + 描金边）。
+				{
+					Check("V0.2.218：【条件】模块上有「不满足时」这一栏，两个档位（跳过 / 整张牌打不出去）",
+						ForgeGraphCatalog.Find("Condition")!.Fields.Any(f => f.Key == "WhenUnmet"
+							&& f.OptionList.Count == 2
+							&& f.OptionList[0].Id == "Pass" && f.OptionList[1].Id == "Unplayable"),
+						string.Join(" / ", (ForgeGraphCatalog.Find("Condition")!.Fields.FirstOrDefault(f => f.Key == "WhenUnmet")?.OptionList ?? Array.Empty<ForgeFieldOption>()).Select(o => o.Id)));
+					var gateCard = new CardSpec { Name = "自检打不出", ClassName = "UiCheckUnplayable", CardType = "Attack", Cost = 1, IsForged = true, InCardPool = true };
+					gateCard.ForgeGraph = new ForgeGraphSpec();
+					var gTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					gTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var gCond = new ForgeNodeSpec { Kind = "Condition" };
+					gCond.SetField("Cond", "HandAtLeast");
+					gCond.SetField("Amount", "3");
+					var gEff = new ForgeNodeSpec { Kind = "Effect" };
+					gEff.SetField("Effect", "Damage");
+					gEff.SetField("Amount", "9");
+					gateCard.ForgeGraph.Nodes.AddRange(new[] { gTrig, gCond, gEff });
+					gateCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = gTrig.Id, To = gEff.Id, FromPort = 0, ToPort = 0 });
+					string gateOff = CSharpCodeGen.CardSource(Profile, gateCard, 0);
+					Check("V0.2.218：（默认档）没选「整张牌打不出去」时**不生成** IsPlayable（老图逐字不变）",
+						!gateOff.Contains("IsPlayable", StringComparison.Ordinal), gateOff.Contains("IsPlayable") ? "多写了" : "没写");
+					gCond.SetField("WhenUnmet", "Unplayable");
+					string gateOn = CSharpCodeGen.CardSource(Profile, gateCard, 0);
+					Check("V0.2.218：选「整张牌打不出去」→ 生成 IsPlayable（条件 = 布上那个【条件】）",
+						gateOn.Contains("protected override bool IsPlayable =>", StringComparison.Ordinal)
+						&& gateOn.Contains("PileType.Hand).Count() >= 3)", StringComparison.Ordinal),
+						gateOn.Contains("IsPlayable") ? "生成了" : "没生成");
+					Check("V0.2.218：同时生成描金边（条件满足时可以打，本体「死亡之门」那种提示）",
+						gateOn.Contains("ShouldGlowGoldInternal", StringComparison.Ordinal), "描金边在");
+					Check("V0.2.218：只当「打不出去」用的【条件】不算「漏接线」（不误报那条警告）",
+						ForgeGraphGen.UnreachableModules(gateCard.ForgeGraph).Count == 0
+						&& !gateOn.Contains("没接到【触发时机】", StringComparison.Ordinal), "没误报");
+					// 遗物 / 药水 / 状态布上没有「打出」，这一栏不显示、校验器报错说清
+					var gateIssuesRelic = ForgeGraphGen.Issues(gateCard.ForgeGraph, Profile, "Relic");
+					Check("V0.2.218：非卡牌布上勾了「整张牌打不出去」→ 校验器报错说清（没有「打出」这回事）",
+						gateIssuesRelic.Any(x => x.Level == "错误" && x.Message.Contains("打不出去", StringComparison.Ordinal)),
+						string.Join(" / ", gateIssuesRelic.Select(x => x.Level + ":" + x.Message).Take(3)));
+					// 数值写运行时公式 → 跳过 + 警告（IsPlayable 是表达式体属性，放不下局部变量）
+					gCond.SetField("Amount", "X");
+					var gateIssuesX = ForgeGraphGen.Issues(gateCard.ForgeGraph, Profile, "Card");
+					Check("V0.2.218：条件的数值写了运行时公式 → 警告说清「这一条不会生效」（不静默）",
+						gateIssuesX.Any(x => x.Level == "警告" && x.Message.Contains("打不出去", StringComparison.Ordinal)),
+						string.Join(" / ", gateIssuesX.Select(x => x.Level + ":" + x.Message).Take(3)));
+					Profile.Cards.Remove(gateCard);
 				}
 
 				// ===== 【对象】的多人 / 召唤物 / 全体单位（这一轮做的细分）=====
@@ -16784,8 +17999,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& ForgeGraphGen.SupportedEffectKinds.Contains("ReplayCard")
 						&& ForgeGraphGen.SupportedEffectKinds.Contains("TurnEndPlay")
 						&& ForgeGraphGen.SupportedEffectKinds.Contains("ReturnSelfToHand")
-						// 反例：仍然没接的（卡牌自己的行为 + 只有遗物 / 药水能配的那一档）
-						&& !ForgeGraphGen.SupportedEffectKinds.Contains("CheapenSelf")
+						// V0.2.203：用户截图报的「处决」用的就是这一档，现在卡牌图能生成
+						&& ForgeGraphGen.SupportedEffectKinds.Contains("CheapenSelf")
+						// 反例：仍然没接的（抽到就减费那档要挂卡自己的钩子 + 只有遗物 / 药水能配的那一档）
+						&& !ForgeGraphGen.SupportedEffectKinds.Contains("CheapenSelfOnDraw")
 						&& !ForgeGraphGen.SupportedEffectKinds.Contains("AncientRelicSwap"), "名单在");
 					var badKindTrig = new ForgeNodeSpec { Kind = "Trigger" };
 					badKindTrig.SetField("Timing", ForgeTimings.CardPlayed);
@@ -16822,14 +18039,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("图里【数值】用了没定义的参数 → 报错（以前这条没人报）",
 						ProfileValidator.Validate(Profile).Any((ValidationIssue i) => i.IsError && i.Message.Contains("没有这个参数")), "报了");
 					Profile.Cards.Remove(badKindCard);
-					// 自定义状态上那块布：生成端还没接 → 必须说出来（不能静默）"
+					// 自定义状态上那块布：V0.2.194 起生成端**已经接了**（锻造页 →「状态列表」）——
+					// 新口径是「**图非空 = 图说了算**」（ForgeGraphGen.UsesGraph(CustomPowerSpec)），
+					// 所以这里要钉住的是那件**用户会踩的事**：页面上配过触发时机 / 效果、布上又有图时，
+					// 老那套**不再参与生成** —— 必须说出来（不然用户在「自定义状态」页改了没反应会一头雾水）。
+					// ⚠ 老断言写的是「生成端还没接（要警告）」，那句话已经过期（Core 已接），这里跟着换掉。
 					var cpGraph = new CustomPowerSpec { Name = "自检布状态", Enabled = true, HpBarColor = "" };
-					cpGraph.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+					cpGraph.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });      // 老内容：页面上配过
 					cpGraph.ForgeGraph = new ForgeGraphSpec { Nodes = { new ForgeNodeSpec { Kind = "Trigger" } } };
 					Profile.CustomPowers.Add(cpGraph);
-					Check("自定义状态上用节点图画了东西 → 警告（生成端还没接那块布）",
+					Check("自定义状态：布上有图 + 页面上也配过 → 警告「现在由锻造页那块布说了算（老那套不再参与生成）」",
 						ProfileValidator.Validate(Profile).Any((ValidationIssue i) => i.Level == "警告"
-							&& i.Message.Contains("自定义状态的节点图生成端还没接")), "警告了");
+							&& i.Message.Contains("现在由锻造页那块布说了算") && i.Message.Contains("不再参与生成")), "警告了");
+					// 反过来：只画了图、页面上一样都没配 → 没有「盖过老那套」这回事，不该报这条警告
+					//（不然「纯在锻造页新造一只状态」这种最正常的用法会平白多一句警告）。
+					cpGraph.Triggers.Clear();
+					Check("（对照）只画了图、页面上没配过东西 → 不报那条警告（没有可盖的）",
+						!ProfileValidator.Validate(Profile).Any((ValidationIssue i) => i.Message.Contains("现在由锻造页那块布说了算")), "没报");
 					Profile.CustomPowers.Remove(cpGraph);
 				}
 
@@ -17531,13 +18757,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							badIssues.Any(x => x.Level == "错误" && x.Message.Contains("【效果】") && x.Message.Contains("数值")),
 							string.Join(" / ", badIssues.Select(x => x.Level + ":" + x.Message)));
 						// ③ 卡牌费用那两栏只收「生成期算得出来」的数
+						//  V0.2.215（用户截图报的「虚化」）：**X / Y 是合法的** —— 那是本体「消耗全部能量 /
+						//  全部额外资源量」那套（HasEnergyCostX / HasStarCostX）；真正拦的是其它运行时读数。
 						var costNode = new ForgeNodeSpec { Kind = "Energy" };
 						costNode.SetField("EnergyCost", "X");
 						var costGraph = new ForgeGraphSpec { Nodes = { badTrig, costNode } };
 						var costIssues = ForgeGraphGen.Issues(costGraph, Profile, "Card");
-						Check("校验器：【能量】的费用写了 X（运行时）→ 报错说清要编译期常量",
-							costIssues.Any(x => x.Level == "错误" && x.Message.Contains("编译期常量")),
+						Check("校验器V0.2.215：【能量】写 X 不再报错（= 消耗全部能量），而且被认成 X 费",
+							!costIssues.Any(x => x.Level == "错误") && ForgeGraphGen.IsEnergyCostX(costGraph),
 							string.Join(" / ", costIssues.Select(x => x.Level + ":" + x.Message)));
+						costNode.SetField("EnergyCost", "MyHp");
+						var costIssues2 = ForgeGraphGen.Issues(costGraph, Profile, "Card");
+						Check("校验器V0.2.215：真正跑起来才知道的量（MyHp）在费用那栏仍然报错说清要编译期常量",
+							costIssues2.Any(x => x.Level == "错误" && x.Message.Contains("编译期常量")),
+							string.Join(" / ", costIssues2.Select(x => x.Level + ":" + x.Message)));
 						costNode.SetField("EnergyCost", "1+1");
 						Check("【能量】的费用写常量公式（1+1）→ 折叠成 2、没有错误",
 							ForgeGraphGen.EnergyCostOf(costGraph) == 2
@@ -17584,11 +18817,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						//     所以这一套（「…」按钮 / 描红 / 标蓝）改用照旧走数据驱动字段的【能量】费用栏来验，
 						//     锻造【效果】模块自己的界面在下一条（V0.2.129）里单独验。
 						var uiEnergy = new ForgeNodeSpec { Kind = "Energy" };
-						uiEnergy.SetField("EnergyCost", "X");
+						// V0.2.215：X 现在是**合法**的（绿色「X 费」提示），标蓝那一档改用真正跑起来才知道的量（MyHp）
+						uiEnergy.SetField("EnergyCost", "MyHp");
 						var uiNum = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
 						Check("界面：数字框旁边有「…」插入参数 / 可用量的按钮", uiNum.HasInsert, $"HasInsert={uiNum.HasInsert}");
 						Check("界面：填了运行时公式的框标蓝 + ToolTip 里写出它变成什么表达式",
 							uiNum.Runtime && uiNum.Tip.Contains("运行时才算"), uiNum.Tip.Replace("\n", " "));
+						uiEnergy.SetField("EnergyCost", "X");
+						var uiX = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
+						Check("界面V0.2.215：费用那栏填 X 不标红也不标蓝，ToolTip 说清「X 费 = 消耗全部能量」",
+							!uiX.Invalid && uiX.Tip.Contains("X 费"), uiX.Tip.Replace("\n", " "));
 						uiEnergy.SetField("EnergyCost", "2+");
 						var uiBad = ForgeCanvas.NumberFieldUiForCheck(uiEnergy, "EnergyCost");
 						Check("界面：填错的框当场描红 + ToolTip 里写出原因（不再静默变默认值）",
@@ -17672,10 +18910,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("界面：（对照）卡牌 / 遗物 / 药水 / 自定义状态四处一个字都没变：非锻造链时那一套控件照旧",
 							PlainChainRowsUnchanged(), "ShowForge* 全关 / 原来是哪套还是哪套");
 						var mgVisible = VisibleTextsIn(ForgeCanvas);
-						Check("界面：真画出来了那几栏（数值 / 生效次数 / 命中次数 / 概率生效（%） + 可用量清单）",
+						Check("界面：真画出来了那几栏（数值 / 生效次数 / 命中次数 / 概率生效（%））"
+							+ " —— V0.2.182 起**不再**在编辑器里摆「可用量」清单（改到启动时弹出的参考窗）",
 							mgVisible.Any(t => t == "数值") && mgVisible.Any(t => t.Contains("生效次数"))
 							&& mgVisible.Any(t => t.Contains("命中次数")) && mgVisible.Any(t => t.Contains("概率生效（%）"))
-							&& mgVisible.Any(t => t.Contains("可用量")),
+							&& !mgVisible.Any(t => t.Contains("可用量")),
 							string.Join(" / ", mgVisible.Where(t => t.Contains("数值") || t.Contains("次数") || t.Contains("概率")).Take(5)));
 						Check("界面：卡牌那种独立的「数值（公式）」框在锻造链上**不重复摆**（那个「数值」框本身就能写公式）",
 							!mgVisible.Any(t => t == "数值（公式）"), string.Join(" / ", mgVisible.Where(t => t.Contains("数值")).Take(3)));
@@ -17746,14 +18985,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							gateIssues.Any(x => x.Level == "警告" && x.Message.Contains("下回合生效")),
 							string.Join(" / ", gateIssues.Where(x => x.Message.Contains("下回合生效")).Select(x => x.Level + ":" + x.Message).Take(1)));
 						mgSpec.NextTurn = false;
-						// V0.2.176：放置卡牌 / 大限已至 / 先古转化都接进节点图了，这条断言改用**仍然没接**的
-						// 那一档：「本回合这张牌自己费用变 0」是**卡牌自己的行为**（`base.SetToFreeThisTurn()`），
-						// 节点图的【效果】模块没有「牌自己」可以挂 —— 仍然会被拦住。
+						// V0.2.203（用户截图报的「处决」）：「本回合这张牌自己费用变 0」在**卡牌**的锻造图上
+						// 现在真的能生成了（`this.SetToFreeThisTurn()`）—— 卡牌图不该再报错。
+						// 这一档不吃数值 / 生效次数，前面用例留下的 X / 3 要先清掉（否则会报「X 在节点图里不生效」，
+						// 那条是对的、只是和本条断言无关）。
+						mgSpec.ForgeAmountText = "";
+						mgSpec.ForgeTimesText = "";
+						mgSpec.AmountIsX = false;
+						mgSpec.TimesIsX = false;
+						mgSpec.RepeatIsX = false;
+						mgSpec.AmountFormula = "";
+						mgSpec.TimesFormula = "";
+						mgSpec.RepeatFormula = "";
 						mgSpec.Kind = "CheapenSelf";
 						gateIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Card");
-						Check("校验器：选到节点图没接的种类（本回合这张牌自己费用变 0）→ 报错拦住并说清怎么办",
-							gateIssues.Any(x => x.Level == "错误" && x.Message.Contains("还没接上") && x.Message.Contains("效果」列表")),
+						Check("V0.2.203：卡牌锻造图里「本回合这张牌自己费用变 0」不再报错（以前被拦成「还没接上」）",
+							!gateIssues.Any(x => x.Level == "错误"),
 							string.Join(" / ", gateIssues.Where(x => x.Level == "错误").Select(x => x.Message).Take(1)));
+						string cheapenSelfFgSrc = ForgeGraphGen.CardHooks(Profile, mgCard, isUpgraded: false);
+						Check("V0.2.203：卡牌锻造图里这一档生成的就是 `this.SetToFreeThisTurn()`（和卡牌页那条链同一句）",
+							cheapenSelfFgSrc.Contains("this.SetToFreeThisTurn();"), "生成了");
+						// 同一档放到**状态 / 遗物 / 药水**的布上仍然要拦住（那三块布没有「这张牌」）
+						var cheapenSelfBadIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Potion");
+						Check("V0.2.203：（对照）同一档放在药水 / 遗物 / 状态的布上照旧报错，并说清只有卡牌有「这张牌」",
+							cheapenSelfBadIssues.Any(x => x.Level == "错误" && x.Message.Contains("只有「卡牌」的锻造图")),
+							string.Join(" / ", cheapenSelfBadIssues.Where(x => x.Level == "错误").Select(x => x.Message).Take(1)));
 						// 收尾：这张自检卡不进后面的用例
 						Profile.Cards.Remove(mgCard);
 						ForgeCanvas.Graph = forged.ForgeGraph;
@@ -17803,7 +19059,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							forgePowers.All((string id) => !id.StartsWith("-", StringComparison.Ordinal)),
 							$"{forgePowers.Count((string id) => id.StartsWith("-", StringComparison.Ordinal))} 条伪条目混进来了");
 						// 恢复成这一条之前的登记（后面的自检项还在用探针那套自定义状态）
-						EffectCatalog.SetCustomPowers(savedEntries.Select((PowerEntry e) => (e.Id, e.Zh)).ToList());
+						EffectCatalog.SetCustomPowers(savedEntries.Select((PowerEntry e) => (e.Id, e.Zh, false, false)).ToList());
 						RefreshPowerChoices();
 					}
 					// 拖动标题栏：按钮事件里以前写的是 (Border)header.Parent（标题栏的 Parent 其实是 StackPanel），
@@ -18128,6 +19384,64 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& twoSrc.Contains("else await ForgeGraphOnPlay("),
 						"二选一在");
 				}
+				// ===== V0.2.180：两块布都设成**卡自己那个钩子之外**的卡牌时刻 → 只能留一个 override =====
+				// 用户实测报的：锻造卡的「升级前」「升级后」两块布都设「这张牌被抽到时」→ 生成两个
+				// `public override async Task AfterCardDrawn(...)` → 整个模组 CS0111 编译不过。
+				// 卡自己**没有**那个钩子（没有「卡牌时机 = 被抽到」这种效果）时靠 UnusedNested 兜：
+				// 图那两块变成私有方法，CSharpCodeGen.EmitGraphOnlyHookContainers 补**唯一一个**壳 override。
+				{
+					var hookClash = new CardSpec
+					{
+						Name = "自检碰撞卡", ClassName = "UiCheckHookClash", CardType = "Skill", Rarity = "Common",
+						Cost = 1, IsForged = true, InCardPool = false,
+					};
+					ForgeGraphSpec Mk(string timing)
+					{
+						var g = ForgeGraphSpec.NewWithTiming(timing);
+						var t = g.TriggerNode!;
+						var e = new ForgeNodeSpec { Kind = "Effect" };
+						e.SetField("Effect", "Block");
+						e.SetField("Amount", "2");
+						e.SetField("TargetSide", "Self");
+						g.Nodes.Add(e);
+						g.Links.Add(new ForgeLinkSpec { From = t.Id, To = e.Id, FromPort = 0, ToPort = 0 });
+						return g;
+					}
+					hookClash.ForgeGraph = Mk(ForgeTimings.CardDrawn);
+					hookClash.UpgradedForgeGraph = Mk(ForgeTimings.CardDrawn);
+					Profile.Cards.Add(hookClash);
+					string clashSrc = CSharpCodeGen.CardSource(Profile, hookClash, Profile.Cards.Count - 1);
+					int drawnOverrides = clashSrc.Split("public override async Task AfterCardDrawn(").Length - 1;
+					Check("V0.2.180：两块布都设「这张牌被抽到时」→ 只生成**一个** AfterCardDrawn override（两个就 CS0111）",
+						drawnOverrides == 1, $"{drawnOverrides} 个");
+					Check("V0.2.180：那一个 override 里按 base.IsUpgraded 二选一调用两块布的私有方法",
+						clashSrc.Contains("if (base.IsUpgraded) await ForgeGraphOnAfterCardDrawnUpgraded(choiceContext);", StringComparison.Ordinal)
+						&& clashSrc.Contains("else await ForgeGraphOnAfterCardDrawn(choiceContext);", StringComparison.Ordinal)
+						&& clashSrc.Contains("public async Task ForgeGraphOnAfterCardDrawn(PlayerChoiceContext choiceContext)", StringComparison.Ordinal)
+						&& clashSrc.Contains("public async Task ForgeGraphOnAfterCardDrawnUpgraded(PlayerChoiceContext choiceContext)", StringComparison.Ordinal),
+						"二选一 + 两个私有方法都在");
+					Check("V0.2.180：壳 override 的守卫照卡牌时机那份写（card != this + 战斗中）",
+						clashSrc.Contains("if (card != this || base.CombatState is null) return;", StringComparison.Ordinal), "有守卫");
+					// 反例：只有一块布（升级后那块没设）时**不许**多出壳 override —— 那时图自己写一个 override 就够了
+					//（判成「两块都撞上」会凭空多一个，自检里那条「不许生成 AfterFlush(PlayerChoiceContext) 这种
+					//  不存在的签名」就是这么 FAIL 的）。
+					var single = new CardSpec
+					{
+						Name = "自检单布卡", ClassName = "UiCheckHookSingle", CardType = "Skill", Rarity = "Common",
+						Cost = 1, IsForged = true, InCardPool = false,
+					};
+					single.ForgeGraph = Mk(ForgeTimings.CardDrawn);
+					Profile.Cards.Add(single);
+					string singleSrc = CSharpCodeGen.CardSource(Profile, single, Profile.Cards.Count - 1);
+					int singleOverrides = singleSrc.Split("public override async Task AfterCardDrawn(").Length - 1;
+					Check("V0.2.180：只有一块布时照旧由它自己写一个 override（不多出壳、也不变私有方法）",
+						singleOverrides == 1
+						&& singleSrc.Contains("if (card != this || base.CombatState is null) return;", StringComparison.Ordinal)
+						&& !singleSrc.Contains("ForgeGraphOnAfterCardDrawn(choiceContext)", StringComparison.Ordinal),
+						$"{singleOverrides} 个 override");
+					Profile.Cards.Remove(hookClash);
+					Profile.Cards.Remove(single);
+				}
 				Check("「升级前 / 升级后」差异说明会点出「改了几块 / 多了几块 / 少了几块」",
 					ForgeGraphGen.UpgradeDiff(forged).Contains("升级后"), ForgeGraphGen.UpgradeDiff(forged));
 				Check("升级后那块布空着时，说明里写清「跟升级前一模一样」",
@@ -18173,6 +19487,268 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				if (Profile.Relics.Count > relicsBefore) Profile.Relics.RemoveAt(Profile.Relics.Count - 1);
 				ForgeKindNone.IsChecked = true;
 				RefreshForgeList();
+			}
+
+			// ===== 锻造页「状态列表」那一档（V0.2.194：用那块布给自定义状态编触发时机 / 效果）=====
+			{
+				// ①【触发时机】上新加的「只对哪类牌生效」只在**状态那一档 + 打牌类时机**上出现。
+				// 量它必须真把这块布切到那一档 —— Scope 是 ForgeCanvasView 的私有字段，
+				// 光看代码量不出「那一栏到底显不显示」（见 ForgeCanvasView.ScopeForCheck）。
+				var prevScope = ForgeCanvas.Scope;
+				var probeTrigger = new ForgeNodeSpec { Kind = "Trigger" };
+				ForgeCanvas.ScopeForCheck(ForgeTimings.PowerScope);
+				bool powerCardPlayed = ForgeCanvas.TriggerFieldVisibleForCheck(probeTrigger, ForgeTimings.CardPlayed, "CardFilter");
+				// 状态档，但时机换成一条非打牌类的（这条在状态那一档确实有）—— 没有「这张牌」可筛，不该显示
+				bool powerTurnStart = ForgeCanvas.TriggerFieldVisibleForCheck(probeTrigger, "PlayerTurnStart", "CardFilter");
+				ForgeCanvas.ScopeForCheck("Card");
+				bool cardCardPlayed = ForgeCanvas.TriggerFieldVisibleForCheck(probeTrigger, ForgeTimings.CardPlayed, "CardFilter");
+				ForgeCanvas.ScopeForCheck(prevScope);
+				Check("「状态列表」档 + 「打出一张牌时」→【触发时机】上有「只对哪类牌生效」那一栏（从「自定义状态」页搬过来的状态不能丢掉这个筛选）",
+					powerCardPlayed, powerCardPlayed ? "显示" : "没显示");
+				Check("（对照）状态那一档的「玩家回合开始时」上不显示那一栏（这个时机没有「这张牌」可筛）",
+					!powerTurnStart, powerTurnStart ? "还显示着（错）" : "藏起来了");
+				Check("（对照）同一个时机在**卡牌**那一档上不显示那一栏（卡牌自己就是那张牌）",
+					!cardCardPlayed, cardCardPlayed ? "还显示着（错）" : "藏起来了");
+
+				// ②「状态列表」档的「加模块」下拉里**没有【能量】**；卡牌档照旧有（回归红线：那一档一个字节都不许变）
+				string energyDisplay = ForgeGraphCatalog.Find("Energy")?.Display ?? "能量";
+				ForgeCanvas.ScopeForCheck(ForgeTimings.PowerScope);
+				bool powerHasEnergy = ForgeCanvas.KindPickItemsForCheck.Contains(energyDisplay);
+				ForgeCanvas.ScopeForCheck("Card");
+				bool cardHasEnergy = ForgeCanvas.KindPickItemsForCheck.Contains(energyDisplay);
+				ForgeCanvas.ScopeForCheck(prevScope);
+				Check("「状态列表」档的「加模块」下拉里没有【能量】（状态没有「费用」这一说，摆了也不参与生成）",
+					!powerHasEnergy, powerHasEnergy ? "下拉里还有（错）" : "没有");
+				Check("（对照）卡牌档的下拉里照旧有【能量】",
+					cardHasEnergy, cardHasEnergy ? "有" : "没有（错）");
+
+				// ③ 红线：有老内容（「自定义状态」页配过触发时机）又没图的状态，选中它**绝对不许自动建布**
+				// —— 布上一旦有【触发时机】就不算空（ForgeGraphSpec.IsEmpty 判的是「一个模块都没有」），
+				// 生成端立刻切成「图说了算」，老配置的触发时机 / 效果全丢。只能用户自己按那个按钮搬。
+				var legacy = new CustomPowerSpec { Name = "自检老内容状态", Enabled = true };
+				legacy.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" } },
+				});
+				Profile.CustomPowers.Add(legacy);
+				ForgeKindPower.IsChecked = true;
+				RefreshForgeList();
+				ForgeItemList.SelectedItem = legacy;
+				SyncForgeDetail();
+				Check("有老配置又没图的状态：选中它**不会**自动建布（红线 —— 建了老配置就全丢了）",
+					legacy.ForgeGraph is null,
+					legacy.ForgeGraph is null ? "没建（对）" : $"建了 {legacy.ForgeGraph.Nodes.Count} 块（错）");
+				Check("这种情况（有老内容 + 还没图）下「⤓ 把现在的触发时机 / 效果搬到这块布上」那个按钮会露出来",
+					ForgeMigrateVisible, $"ForgeMigrateVisible={ForgeMigrateVisible}");
+				OnForgeMigrateToGraph(this, new RoutedEventArgs());
+				Check("点了「搬到这块布上」→ 这块布非空、生成端从此认它（ForgeGraphGen.UsesGraph）",
+					ForgeGraphGen.UsesGraph(legacy), $"图={legacy.ForgeGraph?.Nodes.Count ?? 0} 块");
+				Check("搬完那个按钮就收起来了（没有可搬的了）", !ForgeMigrateVisible, $"ForgeMigrateVisible={ForgeMigrateVisible}");
+				Check("搬的是**同一份**老配置（效果对象没被复制掉，之后两边还看得见）",
+					legacy.Triggers.Count == 1 && legacy.Triggers[0].Effects.Count == 1,
+					$"{legacy.Triggers.Count} 条时机 / {legacy.Triggers.FirstOrDefault()?.Effects.Count ?? 0} 条效果");
+
+				// ④「添加」：新建的状态会立刻自带一块只有【触发时机】的空布
+				int powersBefore = Profile.CustomPowers.Count;
+				OnAddForged(this, new RoutedEventArgs());
+				CustomPowerSpec added = Profile.CustomPowers[Profile.CustomPowers.Count - 1];
+				Check("「状态列表」档点「添加」→ 新建一只自定义状态，而且立刻自带一块布（有【触发时机】可接）",
+					Profile.CustomPowers.Count == powersBefore + 1 && added.ForgeGraph is not null
+					&& added.ForgeGraph.Nodes.Any(n => n is not null && n.Kind == "Trigger"),
+					$"{powersBefore} → {Profile.CustomPowers.Count} 只 / 图={added.ForgeGraph?.Nodes.Count ?? 0} 块");
+				Check("刚建的状态会立刻选中，右边那块布马上指向它",
+					ReferenceEquals(ForgeItemList.SelectedItem, added) && ReferenceEquals(ForgeCanvas.Graph, added.ForgeGraph),
+					ForgeItemList.SelectedItem is CustomPowerSpec cur ? cur.Name : "(没选中)");
+				Check("新建的状态名字沿用「自定义状态」页那套（新状态N）",
+					added.Name.StartsWith("新状态", StringComparison.Ordinal), added.Name);
+
+				// 清理：自检造出来的两只状态删掉。
+				// ⚠ 这里**不能**走 OnRemoveForged —— 它会弹确认框，自检会卡在那儿等人点。
+				Profile.CustomPowers.Remove(legacy);
+				Profile.CustomPowers.Remove(added);
+				ForgeKindNone.IsChecked = true;
+				RefreshForgeList();
+				Check("自检造出来的两只自定义状态已清理", Profile.CustomPowers.Count == powersBefore - 1,
+					$"{Profile.CustomPowers.Count} 只");
+			}
+			// ===== V0.2.194：状态那块布的**生成端**（上面那一段量的是界面；这一段量生成的代码）=====
+			{
+				// ① 时机菜单：Power 档 = 「自定义状态」页那一整套（id / 显示名逐条对齐，一个不漏）
+				var forgePowerTimings = ForgeTimings.For(ForgeTimings.PowerScope);
+				Check("状态那一档的触发时机 = 「自定义状态」页那份（逐条对齐，一个不漏）",
+					forgePowerTimings.Count == PowerTriggers.All.Count
+					&& PowerTriggers.All.All(t => forgePowerTimings.Any(x => x.Id == t.Kind && x.Display == t.Display)),
+					$"Power {forgePowerTimings.Count} 条 / PowerTriggers {PowerTriggers.All.Count} 条");
+				Check("状态那一档的钩子分组 = 「自定义状态」页那份（同一个本体钩子只生成一个 override）",
+					forgePowerTimings.All(x => CustomPowerGen.PowerHookOf(x.Id) == x.Hook)
+					&& CustomPowerGen.PowerHookOf("PlayerTurnEnd") == "TurnEnd"
+					&& CustomPowerGen.PowerHookOf("EnemyTurnEnd") == "TurnEnd"
+					&& CustomPowerGen.PowerHookOf("CombatEnd") == "CombatVictory", "同一份");
+				Check("状态那一档的时机没有混进卡牌 / 药水 / 遗物那三档（默认档输出不变的前提）",
+					ForgeTimings.For("Card").All(x => x.Scope == "Card") && ForgeTimings.For("Card").Count == 6
+					&& ForgeTimings.For("Potion").Count == 1
+					&& ForgeTimings.For("Relic").All(x => x.Scope == "Relic"), "各归各档");
+
+				// ② 老路：图空 → 「自定义状态」页那套照旧（没有图的序幕，也没有图标记）
+				var genLegacy = new CustomPowerSpec { Name = "自检老路状态", ClassName = "UiCheckPowerLegacyGen", Type = "Debuff" };
+				var genLegacyTrig = new PowerTriggerSpec { Kind = "PlayerTurnEnd" };
+				genLegacyTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = -6m });
+				genLegacy.Triggers.Add(genLegacyTrig);
+				string genLegacySrc = CustomPowerGen.Source(Profile, genLegacy, 0);
+				Check("状态这一类：图空 = 老路（触发时机 + 效果列表照旧，且**没有**图的序幕 / 标记）",
+					genLegacySrc.Contains("public override async Task BeforeSideTurnEnd(")
+					&& genLegacySrc.Contains("CreatureCmd.LoseBlock")
+					&& !genLegacySrc.Contains("锻造节点图：执行点先算好这几个值")
+					&& !genLegacySrc.Contains("CET:ForgeGraph="), "老路");
+
+				// ③ 图版：「玩家回合开始时 → 获得 5 格挡」+「打出一张牌时（只对攻击牌）→ if(自己身上减益数 ≥ 3) 抽 2 张」
+				var genGraph = new CustomPowerSpec { Name = "自检布状态", ClassName = "UiCheckPowerGraphGen", Type = "Buff" };
+				var genSpec = new ForgeGraphSpec();
+				var genTrig1 = new ForgeNodeSpec { Kind = "Trigger" };
+				genTrig1.SetField("Timing", "PlayerTurnStart");
+				var genBlock = new ForgeNodeSpec { Kind = "Effect" };
+				genBlock.SetField("Effect", "Block");
+				genBlock.SetField("Amount", "5");
+				var genTrig2 = new ForgeNodeSpec { Kind = "Trigger" };
+				genTrig2.SetField("Timing", "CardPlayed");
+				genTrig2.SetField("CardFilter", "Attack");
+				var genIf = new ForgeNodeSpec { Kind = "If" };
+				var genList = new ForgeNodeSpec { Kind = "PowerList" };
+				genList.SetField("ListFilter", "Debuff");
+				genList.SetField("ListWhat", "Count");
+				var genRel = new ForgeNodeSpec { Kind = "Relate" };
+				genRel.SetField("Op", "Ge");
+				genRel.SetField("Amount", "3");
+				var genDraw = new ForgeNodeSpec { Kind = "Effect" };
+				genDraw.SetField("Effect", "Draw");
+				genDraw.SetField("Amount", "2");
+				genSpec.Nodes.AddRange(new[] { genTrig1, genBlock, genTrig2, genIf, genList, genRel, genDraw });
+				genSpec.Links.Add(new ForgeLinkSpec { From = genTrig1.Id, To = genBlock.Id });
+				genSpec.Links.Add(new ForgeLinkSpec { From = genTrig2.Id, To = genIf.Id });
+				genSpec.Links.Add(new ForgeLinkSpec { From = genIf.Id, To = genDraw.Id, FromPort = 0, ToPort = 0 });
+				genSpec.Links.Add(new ForgeLinkSpec { From = genList.Id, To = genRel.Id, FromPort = 0, ToPort = 1 });
+				genSpec.Links.Add(new ForgeLinkSpec { From = genRel.Id, To = genIf.Id, FromPort = 0, ToPort = 1 });
+				genGraph.ForgeGraph = genSpec;
+				string genGraphSrc = CustomPowerGen.Source(Profile, genGraph, 0);
+				Check("状态那块布：每条【触发时机】各生成一个本体钩子（方法壳复用「自定义状态」页那一份）",
+					genGraphSrc.Contains("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)")
+					&& genGraphSrc.Contains("public override async Task BeforeCardPlayed(CardPlay cardPlay)"), "两个钩子");
+				Check("状态那块布：序幕按状态取（base.Owner.Player / base.Owner），不写卡牌 / 遗物那套",
+					genGraphSrc.Contains("Player __fgPlayer = base.Owner.Player!;")
+					&& genGraphSrc.Contains("Creature __fgSelf = base.Owner;")
+					&& !genGraphSrc.Contains("__fgPlayer.Creature"), "状态那一档");
+				Check("状态那块布：图上【效果】真的进了钩子（获得格挡 / 抽牌都写出来了）",
+					genGraphSrc.Contains("CreatureCmd.GainBlock") && genGraphSrc.Contains("CardPileCmd.Draw"), "都在");
+				Check("状态那块布：【状态列表】没接【对象】时默认数**自己身上**的（不是第一个敌人）",
+					genGraphSrc.Contains("ForgeFormulaRuntime.PowerCount(__fgSelf,"), "自己");
+				Check("状态那块布：写了 CET:ForgeGraph 标记（「从工程恢复」靠它把图整份装回来）",
+					genGraphSrc.Contains("// CET:ForgeGraph=1:"), "有标记");
+				Check("状态那块布：「只对哪类牌生效」那一栏保住（打牌类时机，从「自定义状态」页搬过来不会丢）",
+					genGraphSrc.Contains("cardPlay.Card.Type == CardType.Attack"), "筛攻击牌");
+
+				// ④ 「数值 / 生效次数 / 命中次数 = 本状态层数」三个开关（用户 31 只状态里 16 只用它）
+				var genStack = new CustomPowerSpec { Name = "自检层数状态", ClassName = "UiCheckPowerStackGen", Type = "Buff" };
+				var genStackGraph = new ForgeGraphSpec();
+				var genStackTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				genStackTrig.SetField("Timing", "PlayerTurnStart");
+				var genStackFx = new ForgeNodeSpec { Kind = "Effect" };
+				genStackFx.SetField("Effect", "Block");
+				genStackFx.SetField("Amount", "3");
+				var genStackSpec = ForgeEffectBridge.Author(genStackFx);
+				genStackSpec.Kind = "Block";
+				genStackSpec.Amount = 3m;
+				genStackSpec.AmountIsStack = true;      // 「数值 = 本状态层数」那一栏
+				genStackGraph.Nodes.AddRange(new[] { genStackTrig, genStackFx });
+				genStackGraph.Links.Add(new ForgeLinkSpec { From = genStackTrig.Id, To = genStackFx.Id });
+				genStack.ForgeGraph = genStackGraph;
+				string genStackSrc = CustomPowerGen.Source(Profile, genStack, 0);
+				Check("状态那块布：「数值 = 本状态层数」生成 base.Amount（不是那个固定数字）",
+					genStackSrc.Contains("GainBlock(__fgFoe, ((decimal)base.Amount)"), "base.Amount");
+				Check("状态那块布：「= 本状态层数」只对**状态**放行（卡牌 / 遗物 / 药水照旧报「不生效」拦住）",
+					!ForgeGraphGen.UnsupportedEffectSettings(genStackGraph, genStackFx, ForgeTimings.PowerScope)
+						.Any(x => x.Message.Contains("本状态层数"))
+					&& ForgeGraphGen.UnsupportedEffectSettings(genStackGraph, genStackFx)
+						.Any(x => x.Message.Contains("本状态层数")), "只对状态放行");
+
+				// ⑤ 搬迁助手（界面那个按钮背后那份逻辑）：能不能自动建布 / 搬了什么
+				Check("搬迁：有老内容的状态**不能**自动建布（一建布生成就改成图说了算，老配置会静默失效）",
+					!ForgePowerGraph.CanAutoCreate(genLegacy) && ForgePowerGraph.HasLegacyContent(genLegacy)
+					&& ForgePowerGraph.CanAutoCreate(new CustomPowerSpec { Name = "自检空状态", ClassName = "UiCheckPowerEmptyGen" }),
+					"不自动");
+				var genMove = new CustomPowerSpec { Name = "自检搬迁", ClassName = "UiCheckPowerMoveGen", Type = "Debuff" };
+				var genMoveTrig = new PowerTriggerSpec { Kind = "PlayerTurnEnd", CardFilter = "Attack" };
+				genMoveTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = -6m });
+				genMove.Triggers.Add(genMoveTrig);
+				var genMoved = ForgePowerGraph.MigrateToGraph(genMove, out List<string> genMoveNotes);
+				Check("搬迁：触发时机 / 效果都搬到布上（图非空 → 生成改由图说了算）",
+					ForgeGraphGen.UsesGraph(genMove) && genMoved.TriggerNodes.Count == 1
+					&& genMoved.TriggerNodes[0].Get("Timing") == "PlayerTurnEnd"
+					&& genMoved.Nodes.Count(n => n.Kind == "Effect") == 1
+					&& genMoved.Nodes.First(n => n.Kind == "Effect").Get("Effect") == "Block"
+					&& genMoved.Nodes.First(n => n.Kind == "Effect").EffectSpec?.Amount == -6m
+					&& genMoveNotes.Any(x => x.Contains("这块布说了算")), $"{genMoved.Nodes.Count} 个模块");
+				Check("搬迁：原来那条「只对哪类牌生效」也搬过去了（不然会变成「任意一张牌都触发」）",
+					string.Equals(genMoved.TriggerNodes[0].Get("CardFilter"), "Attack", StringComparison.Ordinal),
+					genMoved.TriggerNodes[0].Get("CardFilter"));
+				string genMoveSrc = CustomPowerGen.Source(Profile, genMove, 0);
+				Check("搬迁后生成：钩子 / 效果跟老路语义一致（回合结束失去 6 点格挡，打在自己身上）",
+					genMoveSrc.Contains("public override async Task BeforeSideTurnEnd(")
+					&& genMoveSrc.Contains("LoseBlock(choiceContext, __fgFoe, 6m")
+					&& genMoveSrc.Contains("new List<Creature> { __fgSelf }"), "一致");
+
+				// ⑥ 校验器：布上做不了 / 会静默不生效的几条（一律报错或警告，不许静默）
+				var vpPower = ProfileFactory.Sample();
+				var badNoTrig = new CustomPowerSpec { Name = "自检空布状态", ClassName = "UiCheckPowerNoTrig", Enabled = true };
+				badNoTrig.ForgeGraph = new ForgeGraphSpec();
+				badNoTrig.ForgeGraph.Nodes.Add(new ForgeNodeSpec { Kind = "Effect" });      // 只有【效果】，没有【触发时机】
+				var badObtained = new CustomPowerSpec { Name = "自检获得时状态", ClassName = "UiCheckPowerObtained", Enabled = true };
+				var badObtainedGraph = new ForgeGraphSpec();
+				var badObtainedTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				badObtainedTrig.SetField("Timing", "Obtained");
+				badObtainedGraph.Nodes.Add(badObtainedTrig);
+				badObtained.ForgeGraph = badObtainedGraph;
+				var badReward = new CustomPowerSpec { Name = "自检奖励状态", ClassName = "UiCheckPowerReward", Enabled = true };
+				var badRewardGraph = new ForgeGraphSpec();
+				var badRewardTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				badRewardTrig.SetField("Timing", "CombatVictory");
+				var badRewardFx = new ForgeNodeSpec { Kind = "Effect" };
+				badRewardFx.SetField("Effect", "CardReward");
+				badRewardGraph.Nodes.AddRange(new[] { badRewardTrig, badRewardFx });
+				badRewardGraph.Links.Add(new ForgeLinkSpec { From = badRewardTrig.Id, To = badRewardFx.Id });
+				badReward.ForgeGraph = badRewardGraph;
+				var badEnergy = new CustomPowerSpec { Name = "自检能量布状态", ClassName = "UiCheckPowerEnergyNode", Enabled = true };
+				var badEnergyGraph = new ForgeGraphSpec();
+				var badEnergyTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				badEnergyTrig.SetField("Timing", "PlayerTurnStart");
+				badEnergyGraph.Nodes.AddRange(new[] { badEnergyTrig, new ForgeNodeSpec { Kind = "Energy" } });
+				badEnergy.ForgeGraph = badEnergyGraph;
+				vpPower.CustomPowers.Add(badNoTrig);
+				vpPower.CustomPowers.Add(badObtained);
+				vpPower.CustomPowers.Add(badReward);
+				vpPower.CustomPowers.Add(badEnergy);
+				var vIssues = ProfileValidator.Validate(vpPower);
+				Check("校验：布上一个【触发时机】都没有 → 错误（那样一个钩子都不会生成）",
+					vIssues.Any(x => x.Level == "错误" && x.Message.Contains("自检空布状态") && x.Message.Contains("一块【触发时机】都没有")), "报错");
+				Check("校验：布上用了【触发时机】=「获得时」→ 错误（遗物专属，状态上不生成任何东西）",
+					vIssues.Any(x => x.Level == "错误" && x.Message.Contains("自检获得时状态") && x.Message.Contains("获得时")), "报错");
+				Check("校验：布上放了【获得卡牌奖励】→ 错误（那几句要 base.Owner.Character，状态上没有）",
+					vIssues.Any(x => x.Level == "错误" && x.Message.Contains("自检奖励状态") && x.Message.Contains("获得卡牌奖励")), "报错");
+				Check("校验：布上摆了【能量】模块 → 警告（状态没有费用这一说，那一块不参与生成）",
+					vIssues.Any(x => x.Level == "警告" && x.Message.Contains("自检能量布状态") && x.Message.Contains("能量")), "警告");
+				var mixedPower = new CustomPowerSpec { Name = "自检图说了算", ClassName = "UiCheckPowerGraphWins", Enabled = true };
+				var mixedTrig = new PowerTriggerSpec { Kind = "PlayerTurnEnd" };
+				mixedTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+				mixedPower.Triggers.Add(mixedTrig);
+				var mixedGraph = new ForgeGraphSpec();
+				var mixedNode = new ForgeNodeSpec { Kind = "Trigger" };
+				mixedNode.SetField("Timing", "PlayerTurnStart");
+				mixedGraph.Nodes.Add(mixedNode);
+				mixedPower.ForgeGraph = mixedGraph;
+				vpPower.CustomPowers.Add(mixedPower);
+				var vIssues2 = ProfileValidator.Validate(vpPower);
+				Check("校验：图说了算 + 页面上还配着老内容 → 警告（说清「页面上那套不再参与生成」）",
+					vIssues2.Any(x => x.Level == "警告" && x.Message.Contains("自检图说了算") && x.Message.Contains("那块布说了算")), "警告");
 			}
 			Check("召唤物列表绑定到 Profile.Summons（列表，不是单对象）",
 				SummonList != null && BindingOperations.GetBinding(SummonList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Summons",
@@ -18301,6 +19877,133 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						ProfileValidator.Validate(petBadProbe).Any((ValidationIssue x) => x.IsError
 							&& x.Message.Contains("召唤", StringComparison.Ordinal)),
 						ProfileValidator.Validate(petBadProbe).FirstOrDefault((ValidationIssue x) => x.IsError)?.Message ?? "(没报！)");
+				}
+
+				// ===== V0.2.210：自定义状态触发器里的**其余宠物效果** =====
+				// 用户截图报的：状态「新状态29」『打出一张牌时（这张牌还没生效）』第 1 条是「给伙伴施加状态」，
+				// 被校验拦成错误（PowerTriggers.SupportedEffectKinds 里没有它，生成端也没实现）。
+				{
+					Check("V0.2.210：状态那条链的支持清单里有「给伙伴施加状态 / 治疗伙伴 / 伙伴失去生命 / 伙伴最大生命 +N / 承伤开关」",
+						PowerTriggers.Supports("PetApplyPower") && PowerTriggers.Supports("PetHeal")
+						&& PowerTriggers.Supports("PetLoseHp") && PowerTriggers.Supports("PetGainMaxHp")
+						&& PowerTriggers.Supports("PetGuardOn") && PowerTriggers.Supports("PetGuardOff"),
+						"六个都在");
+					Check("V0.2.210：那六个都进了状态编辑器的效果下拉（= PowerKinds 筛 Supports 出来的那份）",
+						new[] { "PetApplyPower", "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetGuardOn", "PetGuardOff" }
+							.All(id => PowerKinds.Any(k => k.Kind == id)),
+						string.Join(" / ", PowerKinds.Where(k => EffectCatalog.IsPetKind(k.Kind)).Select(k => k.Kind)));
+					// 「给伙伴施加状态」需要 choiceContext（PowerCmd.Apply 第一个实参）；治疗 / 加最大生命不需要
+					Check("V0.2.210：需要 choiceContext 的那几条被认出来了（施加上状态 / 失去生命 / 承伤开关要，治疗 / 加最大生命不要）",
+						CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetApplyPower" })
+						&& CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetLoseHp" })
+						&& CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetGuardOn" })
+						&& CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetGuardOff" })
+						&& !CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetHeal" })
+						&& !CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetGainMaxHp" }),
+						"判据对");
+					// 「牺牲伙伴」收益 = 造成伤害 / 获得状态 也要（以前漏了 → 那种配置生成出来 CS0103）
+					Check("V0.2.210：「牺牲伙伴」按收益档位判 choiceContext（伤害 / 状态要，格挡不要）",
+						CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Damage" })
+						&& CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Power" })
+						&& !CustomPowerGen.NeedsChoiceContext(new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Block" }),
+						"判据对");
+
+					// 真的生成一遍：状态「打出一张牌时 → 给伙伴施加状态 2 层易伤」
+					var petFxProbe = ProfileFactory.Sample();
+					petFxProbe.Summons.Clear();
+					petFxProbe.Summons.Add(new SummonSpec { Enabled = true, Name = "自检大运", ClassName = "UiCheckPetFx", Hp = 20 });
+					var petFxPow = new CustomPowerSpec { Name = "自检宠物效果状态", ClassName = "UiCheckPetFxPower", Enabled = true };
+					var petFxTrig = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Any" };
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetApplyPower", Amount = 2m, PowerId = "VulnerablePower", PetSummon = "UiCheckPetFx" });
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetHeal", Amount = 5m, PetSummon = "UiCheckPetFx" });
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetLoseHp", Amount = 3m, PetSummon = "UiCheckPetFx" });
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetGainMaxHp", Amount = 4m, PetSummon = "UiCheckPetFx" });
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetGuardOn", PetSummon = "UiCheckPetFx" });
+					petFxTrig.Effects.Add(new EffectSpec { Kind = "PetGuardOff", PetSummon = "UiCheckPetFx" });
+					petFxPow.Triggers.Add(petFxTrig);
+					petFxProbe.CustomPowers.Add(petFxPow);
+					var petFxIssues = ProfileValidator.Validate(petFxProbe);
+					Check("V0.2.210：校验器不再拦「状态里放给伙伴施加状态 / 治疗 / 失去生命 / 最大生命 / 承伤开关」（用户报的那条）",
+						!petFxIssues.Any((ValidationIssue x) => x.IsError
+							&& (x.Message.Contains("给伙伴施加状态", StringComparison.Ordinal)
+								|| x.Message.Contains("治疗伙伴", StringComparison.Ordinal)
+								|| x.Message.Contains("伙伴失去生命", StringComparison.Ordinal)
+								|| x.Message.Contains("伙伴最大生命", StringComparison.Ordinal))),
+						petFxIssues.FirstOrDefault((ValidationIssue x) => x.IsError)?.Message ?? "没有错误");
+					string petFxSrc = CustomPowerGen.Source(petFxProbe, petFxPow, petFxProbe.CustomPowers.Count - 1);
+					Check("V0.2.210：状态链先查那只伙伴（`XxxCmd.Get(base.Owner.Player)` —— 生成的方法收的是 Player）",
+						petFxSrc.Contains("UiCheckPetFxCmd.Get(base.Owner.Player)", StringComparison.Ordinal),
+						"查了伙伴");
+					Check("V0.2.210：「给伙伴施加状态」生成 `PowerCmd.Apply<VulnerablePower>(choiceContext, __伙伴, 2m, base.Owner, null)`"
+						+ "（施加者是 base.Owner；**不能**是 this —— 状态里 this 是 PowerModel，会 CS1503）",
+						petFxSrc.Contains("PowerCmd.Apply<VulnerablePower>(choiceContext,", StringComparison.Ordinal)
+						&& petFxSrc.Contains("2m, base.Owner, null)", StringComparison.Ordinal)
+						&& !petFxSrc.Contains("2m, base.Owner, this)", StringComparison.Ordinal),
+						"施加者 = base.Owner");
+					Check("V0.2.210：治疗 / 加最大生命 / 失去生命都用状态链的写法人称（没有 base.Owner.Creature、没有 cardPlay.Target / FromCard、没有 base.DynamicVars）",
+						petFxSrc.Contains("CreatureCmd.Heal(", StringComparison.Ordinal)
+						&& petFxSrc.Contains("CreatureCmd.GainMaxHp(", StringComparison.Ordinal)
+						&& petFxSrc.Contains("CreatureCmd.Damage(choiceContext,", StringComparison.Ordinal)
+						&& !petFxSrc.Contains("base.Owner.Creature", StringComparison.Ordinal)
+						&& !petFxSrc.Contains("cardPlay.Target", StringComparison.Ordinal)
+						&& !petFxSrc.Contains("FromCard(", StringComparison.Ordinal)
+						&& !petFxSrc.Contains("base.DynamicVars", StringComparison.Ordinal),
+						"写法对");
+					Check("V0.2.210：承伤开 / 关挂的是共用的守卫类（Apply + Remove）",
+						petFxSrc.Contains("PowerCmd.Apply<", StringComparison.Ordinal)
+						&& petFxSrc.Contains("ForgePetGuardianPower", StringComparison.Ordinal)
+						&& petFxSrc.Contains("PowerCmd.Remove<", StringComparison.Ordinal),
+						"守卫类");
+					string petFxDesc = PowerTriggers.Plain(PowerTriggers.AutoDescription(petFxPow));
+					Check("V0.2.210：状态描述里写中文（不印出 PetApplyPower 这种英文种类名）",
+						petFxDesc.Contains("给伙伴施加 2 层", StringComparison.Ordinal)
+						&& petFxDesc.Contains("治疗伙伴 5 点生命", StringComparison.Ordinal)
+						&& !petFxDesc.Contains("PetApplyPower", StringComparison.Ordinal)
+						&& !petFxDesc.Contains("PetHeal", StringComparison.Ordinal),
+						petFxDesc.Replace("\n", " ⏎ "));
+
+					// 「全部召唤物」：状态里也要逐只展开（以前 PetGen.Resolve("*") 返回 null → 生成一句
+					// 「⚠ 没有可用的召唤物」然后什么都不做，而校验器明确允许这个组合 = 静默失效）
+					var petAllProbe = ProfileFactory.Sample();
+					petAllProbe.Summons.Clear();
+					petAllProbe.Summons.Add(new SummonSpec { Enabled = true, Name = "自检甲", ClassName = "UiCheckPetAllA", Hp = 10 });
+					petAllProbe.Summons.Add(new SummonSpec { Enabled = true, Name = "自检乙", ClassName = "UiCheckPetAllB", Hp = 10 });
+					var petAllPow = new CustomPowerSpec { Name = "自检全部伙伴状态", ClassName = "UiCheckPetAllPower", Enabled = true };
+					var petAllTrig = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Any" };
+					petAllTrig.Effects.Add(new EffectSpec { Kind = "PetApplyPower", Amount = 1m, PowerId = "WeakPower", PetSummon = PetGen.AllId });
+					petAllTrig.Effects.Add(new EffectSpec { Kind = "PetSacrifice", Amount = 2m, PetSacrificeGain = "Block", PetSacrificeFormula = "Fixed", PetSummon = PetGen.AllId });
+					petAllPow.Triggers.Add(petAllTrig);
+					petAllProbe.CustomPowers.Add(petAllPow);
+					string petAllSrc = CustomPowerGen.Source(petAllProbe, petAllPow, petAllProbe.CustomPowers.Count - 1);
+					Check("V0.2.210：状态里「全部召唤物」会**逐只展开**（两只各查一次），不再生成「没有可用的召唤物」",
+						petAllSrc.Contains("UiCheckPetAllACmd.Get(base.Owner.Player)", StringComparison.Ordinal)
+						&& petAllSrc.Contains("UiCheckPetAllBCmd.Get(base.Owner.Player)", StringComparison.Ordinal)
+						&& !petAllSrc.Contains("没有可用的召唤物", StringComparison.Ordinal),
+						"逐只展开");
+					Check("V0.2.210：状态里的「牺牲伙伴」不再引用 base.DynamicVars / cardPlay.Target（状态类里根本没有这两样 → 会 CS0103）",
+						!petAllSrc.Contains("base.DynamicVars", StringComparison.Ordinal)
+						&& !petAllSrc.Contains("cardPlay.Target", StringComparison.Ordinal),
+						"没引用");
+					// 「下回合生效」+「全部召唤物」不能一起用 → 明确报错（延迟状态里只认一只伙伴）
+					petAllTrig.Effects[0].NextTurn = true;
+					Check("V0.2.210：「下回合生效」+「全部召唤物」→ 报错说清（不生成一段什么都不做的注释）",
+						ProfileValidator.Validate(petAllProbe).Any((ValidationIssue x) => x.IsError
+							&& x.Message.Contains("下回合生效", StringComparison.Ordinal)
+							&& x.Message.Contains("全部召唤物", StringComparison.Ordinal)),
+						ProfileValidator.Validate(petAllProbe).FirstOrDefault((ValidationIssue x) => x.IsError)?.Message ?? "(没报！)");
+					petAllTrig.Effects[0].NextTurn = false;
+					// 「下回合生效」单只伙伴：走卡牌链同一个入口（挂延迟状态 + CET 标记），不在这里直接施加
+					petAllTrig.Effects[0].PetSummon = "UiCheckPetAllA";
+					petAllTrig.Effects[0].NextTurn = true;
+					string petDelayedSrc = CustomPowerGen.Source(petAllProbe, petAllPow, petAllProbe.CustomPowers.Count - 1);
+					Check("V0.2.210：「下回合生效」的给伙伴施加状态走 EmitDelayedPowerApply（挂延迟状态 + 写 CET:NextTurn 标记，不再直接施加）",
+						petDelayedSrc.Contains("CET:NextTurn=1", StringComparison.Ordinal)
+						&& petDelayedSrc.Contains("ForgeDelayedPetApplyPower", StringComparison.Ordinal)
+						&& !petDelayedSrc.Contains("PowerCmd.Apply<WeakPower>", StringComparison.Ordinal),
+						"挂延迟状态");
+					Check("V0.2.210：那只伙伴被编进延迟状态类名（两只伙伴各配一条同名状态时不会撞成同一个类 → CS0101）",
+						petDelayedSrc.Contains("ForgeDelayedPetApplyPowerWeakPowerUiCheckPetAllA", StringComparison.Ordinal),
+						"类名带伙伴");
 				}
 				List<string> cardKindItems = cardKindCombos.Count == 0
 					? new List<string>()
@@ -18433,6 +20136,39 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& PetGen.DisplayNameOf(probe, PetGen.ClassNameOf(Profile, probe)) == "测试伙伴"
 						&& PetGen.HpOf(probe) == 12 && PetGen.StandDistanceOf(probe) == 130,
 						$"{PetGen.ClassNameOf(Profile, probe)} / {PetGen.HpOf(probe)} / {PetGen.StandDistanceOf(probe)}");
+					// V0.2.198（用户实测报的「触发召唤时好像会直接把召唤物回满血」）：
+					// 已经在场的召唤物**再召唤一次**只该加最大生命（本体 GainMaxHp 本身会把新加的那部分补上），
+					// 不许再补一句 Heal(MaxHp − CurrentHp) 把它整个奶满（那等于把之前挨的打一笔勾销）。
+					{
+						string petSrc = PetGen.Source(Profile);
+						Check("召唤物：再召唤（已经在场）只加最大生命 —— 不会把召唤物直接回满血",
+							petSrc.Contains("await CreatureCmd.GainMaxHp(alive, hp);")
+							&& !petSrc.Contains("alive.MaxHp - alive.CurrentHp"),
+							petSrc.Contains("alive.MaxHp - alive.CurrentHp") ? "还在补满（错）" : "只加最大生命（对）");
+						Check("召唤物：新召一只仍然是满血（SetMaxHp + Heal 到上限，不然攻击会因为 0 血静默早退）",
+							petSrc.Contains("await CreatureCmd.SetMaxHp(") && petSrc.Contains("hp - ", StringComparison.Ordinal),
+							"满血新召");
+						// 没上传图片也必须写一个占位场景：本体按约定找 <entry>.tscn，找不到时视觉加载会抛
+						// NullReferenceException（用户日志里就是这个），宠物连登记都过不去 → 每次触发召唤都新建一只满血的。
+						string petArtDir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "forge_petcheck_" + Guid.NewGuid().ToString("N"));
+						try
+						{
+							System.IO.Directory.CreateDirectory(petArtDir);
+							PetGen.GenerateVisuals(Profile, petArtDir, null);
+							var sc = System.IO.Path.Combine(petArtDir,
+								PetGen.SceneRelPath(PetGen.DefOf(Profile, probe)).Replace('/', System.IO.Path.DirectorySeparatorChar));
+							if (!System.IO.File.Exists(sc)) sc = null;
+							Check("召唤物：没上传图片也会生成占位场景（贴本体 error.png）—— 不然加载视觉会抛异常、宠物登记不上",
+								sc is not null && System.IO.File.ReadAllText(sc).Contains("images/monsters/error.png"),
+								sc is null ? "没生成（错）" : System.IO.Path.GetFileName(sc));
+							Check("召唤物：宠物类永远指着这个场景（不管有没有图）",
+								petSrc.Contains($"VisualsPath => \"res://{PetGen.SceneRelPath(PetGen.DefOf(Profile, probe))}\""), "指着");
+						}
+						finally
+						{
+							try { System.IO.Directory.Delete(petArtDir, true); } catch { }
+						}
+					}
 					// 「哪一只」下拉的候选 = 第一条「全部召唤物」+ 各只已启用的召唤物
 					RaisePetSummonChoices();
 					Check("「召唤物（哪一只）」下拉的候选 = 「全部召唤物」+ 各只已启用的召唤物",
@@ -18509,8 +20245,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								gAll4.Contains(".WithHitCount(4)") && !gAll4.Contains("Targeting(__fgFoe)"), "命中 4 次");
 							Check("图里【全体敌人】+命中次数 1 不写 WithHitCount（默认一下，和以前一致）",
 								!gAll1.Contains("WithHitCount"), "不写");
-							Check("图里【随机敌人】+命中次数 4 仍然是「挑中的那个打 4 下」（本体语义）",
-								gRand4.Contains("foreach (Creature __fgFoe") && gRand4.Contains(".WithHitCount(4)"), "逐个动手");
+							// V0.2.222（用户报的「对群数和命中次数在锻造里写在一起、随机多段异常」）：
+							// 旧断言锁的是**旧行为**（随机敌人 = 对全体 foreach + WithHitCount = 每个敌人各挨 4 下），
+							// 那个行为本身就是 bug；现在和「卡牌」页同一口径 = 本体的 TargetingRandomOpponents
+							//（每一下随机挑一个敌人）× 命中次数。
+							Check("图里【随机敌人】+命中次数 4 = **随机打 4 下**（TargetingRandomOpponents + WithHitCount(4)），"
+								+ "不是「每个敌人各挨 4 下」",
+								gRand4.Contains("TargetingRandomOpponents")
+								&& gRand4.Contains(".WithHitCount(4)")
+								&& !gRand4.Contains("foreach (Creature __fgFoe"), "随机多段");
 						}
 
 						// 【效果】（V0.2.129）：现在和「卡牌」页**同一份判据**（同一条 EffectSpec 的 Show* 属性）——
@@ -18686,8 +20429,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				petCs.Contains("NOTHING_MOVE"), "有 NOTHING_MOVE");
 			Check("召唤物：召唤命令里有 SetMaxHp（本体造宠物时给的是初始生命随机值）",
 				petCs.Contains("CreatureCmd.SetMaxHp(__uiCheckPet, hp)"), "有 SetMaxHp");
-			Check("召唤物：没上传图片时不 override VisualsPath（回退本体的 fallback 占位图）",
-				!petCs.Contains("VisualsPath =>") && petCs.Contains("creature_visuals/"), "用占位图");
+			// V0.2.198（用户实测「召唤时召唤物回满血」的根因之一）：以前没图就**不写场景、不 override**，
+			// 指望本体按约定回退 fallback —— 可那条路在真机上会抛 NullReferenceException（用户日志里就有），
+			// 宠物连登记都过不去（于是每次触发召唤都新建一只满血的新宠物）。现在没图也写占位场景并指过去。
+			Check("召唤物：没上传图片也 override VisualsPath（指到生成出来的占位场景，不再靠本体回退）",
+				petCs.Contains("VisualsPath => \"res://scenes/creature_visuals/"), "指着占位场景");
 			Check("召唤物：两只的生命各自独立（9 / 15）",
 				petCs.Contains("private const int BaseHp = 9;") && petCs.Contains("private const int BaseHp = 15;"), "BaseHp 9 / 15");
 
@@ -19232,6 +20978,65 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("新效果「牺牲伙伴（最大生命×倍率）」标记里带倍率（回读要能还原 3 倍）",
 					sacBlockSrc.Contains("CET:PetMul=3m"), "倍率标记在");
 
+				// ===== V0.2.200（用户要求「召唤物即死：收益的造成伤害能不能加个选择对象」）=====
+				// 以前「牺牲伙伴」**一律不摆**「作用对象」那一栏（判据只看 Kind），收益选「造成伤害」时
+				// 生成端写死 `.Targeting(cardPlay.Target)` —— 想「牺牲一只伙伴、对所有敌人造成伤害」根本做不到。
+				{
+					var sacUiBlock = new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Block" };
+					var sacUiPower = new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Power", PowerId = "StrengthPower" };
+					var sacUiDmg = new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Damage", TargetSide = "AllEnemies" };
+					Check("V0.2.200：牺牲伙伴**只有收益=造成伤害**时才摆「作用对象」（格挡 / 状态挂在自己身上，摆了等于骗人）",
+						!sacUiBlock.ShowTargetSideRow && !sacUiPower.ShowTargetSideRow && sacUiDmg.ShowTargetSideRow
+						&& !sacUiBlock.ShowsTargetSideSuffix && sacUiDmg.ShowsTargetSideSuffix,
+						$"格挡={sacUiBlock.ShowTargetSideRow} / 状态={sacUiPower.ShowTargetSideRow} / 伤害={sacUiDmg.ShowTargetSideRow}");
+					Check("V0.2.200：收益=伤害时列表行尾写「→ 全体敌人」（格挡那一档不写「→ 自己」）",
+						sacUiDmg.Display.Contains("→ 全体敌人") && !sacUiBlock.Display.Contains("→"),
+						sacUiBlock.Display + " ／ " + sacUiDmg.Display);
+					// 把收益从「格挡」切成「造成伤害」→ 界面要收到「作用对象那一行该出来了」的通知
+					//（漏了 Raise 的话：切档后那一行不出现，用户以为还是不能选）
+					var gainRaises = new List<string>();
+					PropertyChangedEventHandler gainSpy = (_, ev) => { if (ev.PropertyName is { Length: > 0 } gp) gainRaises.Add(gp); };
+					var gainProbe = new EffectSpec { Kind = "PetSacrifice", PetSacrificeGain = "Block" };
+					gainProbe.PropertyChanged += gainSpy;
+					try { gainProbe.PetSacrificeGain = "Damage"; } finally { gainProbe.PropertyChanged -= gainSpy; }
+					Check("V0.2.200：把「收益」从格挡切成造成伤害会通知界面刷新「作用对象」那一行",
+						gainRaises.Contains("ShowTargetSideRow") && gainRaises.Contains("ShowsTargetSideSuffix"),
+						string.Join("/", gainRaises));
+
+					// 生成端：默认「单体敌人」= 老路（逐字节不变）；其它档按 EmitPerCreature 一只一只打
+					CardSpec sacAll = new CardSpec { Name = "骨刺群", ClassName = "UiCheckPetNewSacAll", CardType = "Attack", Cost = 1, InCardPool = true };
+					sacAll.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "AllEnemies", PetSummon = "UiCheckPet", PetSacrificeGain = "Damage", PetSacrificeFormula = "Fixed", Amount = 7m });
+					string sacAllSrc = CSharpCodeGen.CardSource(petSrc, sacAll, 0);
+					Check("V0.2.200：「牺牲伙伴 → 造成伤害」+ 全体敌人 → 对每个可打的敌人各打一下（不再写死 cardPlay.Target）",
+						sacAllSrc.Contains("foreach (Creature foe in base.Owner.Creature.CombatState.HittableEnemies)")
+						&& sacAllSrc.Contains(".Targeting(foe)")
+						&& !sacAllSrc.Contains(".Targeting(cardPlay.Target)")
+						&& sacAllSrc.Contains("if (base.Owner.Creature.CombatState is not null)"),
+						"按作用对象打");
+					Check("V0.2.200：（对照）默认「单体敌人」照旧只打 cardPlay.Target（老存档逐字节不变）",
+						sacDmgSrc.Contains(".Targeting(cardPlay.Target)") && !sacDmgSrc.Contains("HittableEnemies"),
+						"老路不变");
+					Check("V0.2.200：「全体敌人」那一版卡牌 TargetType 变成 AllEnemies（不用玩家再选目标）",
+						sacAllSrc.Contains("TargetType.AllEnemies"), "AllEnemies");
+					CardSpec sacRand = new CardSpec { Name = "骨刺乱", ClassName = "UiCheckPetNewSacRand", CardType = "Attack", Cost = 1, InCardPool = true };
+					sacRand.Effects.Add(new EffectSpec { Kind = "PetSacrifice", TargetSide = "RandomEnemies", PetSummon = "UiCheckPet", PetSacrificeGain = "Damage", PetSacrificeFormula = "Fixed", Amount = 3m, RepeatCount = 2 });
+					string sacRandSrc = CSharpCodeGen.CardSource(petSrc, sacRand, 0);
+					Check("V0.2.200：+ 随机敌人 → 随机挑，次数 = 「命中次数」（这里 2 次）",
+						sacRandSrc.Contains("__foeIdx < 2") && sacRandSrc.Contains("CombatTargets.NextItem(foes)"),
+						"随机挑");
+					// 卡面描述：打谁也得说对（以前一律印「指定敌人」）
+					// 描述在 localization 里（不在卡牌 .cs 里），所以临时把这张卡挂进探针配置再取一次。
+					string sacAllLoc;
+					{
+						petSrc.Cards.Add(sacAll);
+						try { sacAllLoc = LocalizationGen.CardsJson(petSrc); }
+						finally { petSrc.Cards.Remove(sacAll); }
+					}
+					Check("V0.2.200：「全体敌人」那一版的卡面描述写「所有敌人」而不是「指定敌人」",
+						sacAllLoc.Contains("然后它对所有敌人造成"),
+						sacAllLoc.Contains("所有敌人") ? "写对了" : "还写着指定敌人");
+				}
+
 				// —— 牺牲伙伴选「固定 N」又填了升级增量 ——
 				// 用户实测报过：这种卡一开牌组就是一片空白（牌组界面打不开）。原因：升级增量被写到
 				// base.DynamicVars.CalculationBase.UpgradeValueBy(3m)，而「固定 N」声明的是普通
@@ -19361,6 +21166,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					allSrc.Contains("if (__uiCheckPet is not null)") && allSrc.Contains("if (__uiCheckPet2 is not null)"), "两只各一层守卫");
 				Check("「全部召唤物」：这张牌**自己会召**它们，所以不再被「必须先有伙伴」卡住打不出去",
 					!allSrc.Contains("protected override bool IsPlayable"), allSrc.Contains("IsPlayable") ? "还有 IsPlayable 判定" : "没有判定");
+
+				// V0.2.262（用户报「召唤所有召唤物不生效」）：**自定义状态**那条链以前把 "*" 丢给「单只」那套，
+				// 认不出来 → 只生成一句「没有可用的召唤物」，一只都不召。
+				var allPetPower = new CustomPowerSpec { Name = "全体出动的状态", ClassName = "UiCheckPetAllPower", Enabled = true, Type = "Buff" };
+				var allPetTrig = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+				allPetTrig.Effects.Add(new EffectSpec { Kind = "SummonPet", Amount = 0m, TargetSide = "Self", PetSummon = PetGen.AllId });
+				allPetPower.Triggers.Add(allPetTrig);
+				petSrc.CustomPowers.Add(allPetPower);
+				string allPetPowSrc = CustomPowerGen.Source(petSrc, allPetPower, petSrc.CustomPowers.Count - 1);
+				Check("V0.2.262：状态链「召唤伙伴 + 全部召唤物」→ 每只各召一次（不再只写一句「没有可用的召唤物」）",
+					allPetPowSrc.Contains("UiCheckPetCmd.Summon(choiceContext, base.Owner.Player,")
+					&& allPetPowSrc.Contains("UiCheckPet2Cmd.Summon(choiceContext, base.Owner.Player,"),
+					allPetPowSrc.Contains("没有可用的召唤物") ? "还是只写了注释" : "两只都召");
+				Check("V0.2.262：状态链「全部召唤物」的两份展开共用同一个 CET:PetAll 组号（回读能合并回一条）",
+					System.Text.RegularExpressions.Regex.Matches(allPetPowSrc, "CET:PetAll=p\\d+").Count >= 2,
+					"组号标记 " + System.Text.RegularExpressions.Regex.Matches(allPetPowSrc, "CET:PetAll=p\\d+").Count + " 处");
 				// 反过来：一张**只让伙伴干活、自己不召**的牌，照旧要有「缺伙伴就打不出去 / 描红框」的判定，
 				// 而且「全部召唤物」要用「任意一只在场」的或运算。
 				CardSpec allHealOnly = new CardSpec { Name = "全体育疗", ClassName = "UiCheckPetAllHeal", CardType = "Skill", Cost = 1, InCardPool = true };
@@ -19734,12 +21555,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("指定队友：用 cardPlay.Target（和指定敌人同一个字段），并写了回读标记 CET:TargetSide=Ally",
 				allySrc.Contains("TargetType.AnyAlly") && allySrc.Contains("CET:TargetSide=Ally")
 				&& allySrc.Contains("CreatureCmd.GainBlock(cardPlay.Target,"), "对");
-			Check("全部队友：遍历同一边的玩家单位、排除自己（本体 BladeSymphony 那种「全体友方」）",
-				allAllySrc.Contains("base.Owner.Creature.CombatState.PlayerCreatures.Where(c => c.IsAlive && c != base.Owner.Creature)"),
-				"有循环");
-			Check("卡面描述也跟着写「指定队友 / 所有队友」（不再印成「对自己」）",
+			Check("全部队友：遍历**同一边的全部单位**（CombatState.Allies）并排除自己",
+				allAllySrc.Contains("base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner.Creature)")
+				// V0.2.201：以前用的是 PlayerCreatures —— 那个列表只装 `Player != null` 的单位，
+				// 召唤物（只有 PetOwner）不在里面，单人游戏里「除自己」之后一个不剩（等于空转）。
+				&& !allAllySrc.Contains("PlayerCreatures"),
+				"有循环（Allies，不再是 PlayerCreatures）");
+			Check("卡面描述也跟着写「指定队友 / 队友和召唤物」（不再印成「对自己」）",
 				LocalizationGen.CardsJson(allyProbe).Contains("指定队友")
-				&& LocalizationGen.CardsJson(allyProbe).Contains("所有队友"), "文案对");
+				&& LocalizationGen.CardsJson(allyProbe).Contains("队友和所有召唤物"), "文案对");
 			var allyIssues = ProfileValidator.Validate(allyProbe);
 			Check("校验器提示：指定队友是联机档，单人按本体规则打不出去（不静默）",
 				allyIssues.Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("打不出去")),
@@ -19805,6 +21629,204 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			"指定敌人回血 / 掉血");
 		Check("这张牌的 TargetType 变成 AnyEnemy（因为有效果打敌人）", foeHealText.Contains("TargetType.AnyEnemy"), "AnyEnemy");
 		Check("打敌人的格挡也做了目标非空保护", foeHealText.Contains("ArgumentNullException.ThrowIfNull(cardPlay.Target"), "有保护");
+
+		// ===== V0.2.217（用户实测：牌打出去直接卡住，日志 ArgumentNullException 'cardPlay.Target'）=====
+		// 病因：`TargetType` 那份判据过滤了「数值 0 → 整条不生成」的效果，而 `NeedsTargetNullCheck`
+		// 那份**没有** → 「全体敌人伙伴伤害 + 施加 0 层灾厄」这种牌被推成 AllEnemies（不弹选目标），
+		// 却生成了 ThrowIfNull(cardPlay.Target) → 一打出去就抛异常、回合卡死。
+		{
+			var guardProfile = ProfileFactory.Sample();
+			guardProfile.Summons.Clear();
+			guardProfile.Summons.Add(new SummonSpec { Enabled = true, Name = "自检伙伴", ClassName = "UiCheckGuardPet", Hp = 30 });
+			var guardCard = new CardSpec { Name = "自检灾厄", ClassName = "UiCheckDoomGuard", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			guardCard.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 3m, RepeatCount = 6, TargetSide = "AllEnemies", PetSummon = "UiCheckGuardPet" });
+			guardCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", Amount = 0m, TargetSide = "Enemy" });   // 数值 0 → 整条不生成
+			guardProfile.Cards.Add(guardCard);
+			string guardSrc = CSharpCodeGen.CardSource(guardProfile, guardCard, 0);
+			Check("V0.2.217：「全体敌人伤害 + 施加 0 层状态」不再生成 ThrowIfNull（以前会卡死）",
+				!CSharpCodeGen.NeedsTargetNullCheck(guardCard)
+				&& CSharpCodeGen.TargetTypeOf(guardCard) == "AllEnemies"
+				&& !guardSrc.Contains("ArgumentNullException.ThrowIfNull(cardPlay.Target", StringComparison.Ordinal),
+				$"NeedsTargetNullCheck={CSharpCodeGen.NeedsTargetNullCheck(guardCard)} TargetType={CSharpCodeGen.TargetTypeOf(guardCard)} ThrowIfNull={guardSrc.Contains("ThrowIfNull")}");
+			// 对照：同样的牌但状态填 2 层 → 需要目标、TargetType=AnyEnemy、守卫该在
+			guardCard.Effects[1].Amount = 2m;
+			string guardSrc2 = CSharpCodeGen.CardSource(guardProfile, guardCard, 0);
+			Check("V0.2.217：（对照）状态填 2 层 → 要选目标、TargetType=AnyEnemy、目标非空保护在",
+				CSharpCodeGen.NeedsTargetNullCheck(guardCard)
+				&& CSharpCodeGen.TargetTypeOf(guardCard) == "AnyEnemy"
+				&& guardSrc2.Contains("ArgumentNullException.ThrowIfNull(cardPlay.Target", StringComparison.Ordinal),
+				$"NeedsTargetNullCheck={CSharpCodeGen.NeedsTargetNullCheck(guardCard)} TargetType={CSharpCodeGen.TargetTypeOf(guardCard)}");
+			// 不变量：只要「要判空」，TargetType 就必须是 AnyEnemy / AnyAlly（两份判据共用一份事实）
+			var guardKinds = new[] { "Damage", "ApplyPower", "TempPower", "Block", "Heal", "HpLoss", "MaxHp", "Stun", "TimesUp", "DoublePower", "PetAttack", "PetSacrifice" };
+			var guardSides = new[] { "Enemy", "Ally" };
+			var broken = new List<string>();
+			foreach (string kind in guardKinds)
+				foreach (string side in guardSides)
+					foreach (decimal amt in new[] { 0m, 2m })
+					{
+						var probe = new CardSpec { Name = "不变量" + kind + side + amt, Cost = 1 };
+						var fx = new EffectSpec { Kind = kind, Amount = amt, TargetSide = side };
+						if (kind is "ApplyPower" or "TempPower") fx.PowerId = "WeakPower";
+						if (kind == "PetSacrifice") { fx.PetSacrificeGain = "Damage"; fx.PetSacrificeFormula = "Fixed"; }
+						if (kind == "PetAttack") fx.PetSummon = "UiCheckGuardPet";
+						probe.Effects.Add(fx);
+						if (CSharpCodeGen.NeedsTargetNullCheck(probe))
+						{
+							string tt = CSharpCodeGen.TargetTypeOf(probe);
+							if (tt is not ("AnyEnemy" or "AnyAlly")) broken.Add($"{kind}/{side}/{amt}→{tt}");
+						}
+					}
+			Check("V0.2.217：不变量 —— 「要判空」的效果一定让 TargetType 变成 AnyEnemy / AnyAlly（不会再出现「不弹选目标却判空」）",
+				broken.Count == 0, broken.Count == 0 ? "全部一致" : string.Join(" / ", broken.Take(6)));
+
+			// ===== V0.2.243（用户实测：「死焰」打出后浮空）=====
+			// 同一个洞的另一半：**多目标档**（全体敌人 / 全体单位 / 全部友方 / 随机敌人 / 自己）下，
+			// TargetType 不会是 AnyEnemy ⇒ `cardPlay.Target` 一定是 null。任何一条效果在多目标档下
+			// 还去读 `cardPlay.Target`（或写 ThrowIfNull）都会一打出去就抛异常 → 牌浮空、回合断掉。
+			// 「死焰」就是「大限已至 + 作用对象 = 全体敌人」这一格。
+			{
+				var multiSides = new[] { "AllEnemies", "AllUnits", "AllAllies", "RandomEnemies", "Self" };
+				var multiKinds = new[]
+				{
+					"Damage", "ApplyPower", "TempPower", "Block", "Heal", "HpLoss", "MaxHp", "Stun", "TimesUp",
+					"DoublePower", "Expose", "ClearPowerOne", "ClearPowerDebuffs", "ForbidBlock", "ForbidHeal",
+					"PetAttack", "PetSacrifice", "Draw", "ExhaustCard", "DiscardCard",
+				};
+				var badMulti = new List<string>();
+				foreach (string kind in multiKinds)
+					foreach (string side in multiSides)
+					{
+						var probe = new CardSpec { Name = "多目标" + kind + side, ClassName = "UiCheckMulti" + kind + side, Cost = 1, CardType = "Attack", Rarity = "Common" };
+						var fx = new EffectSpec { Kind = kind, Amount = 2m, TargetSide = side };
+						if (kind is "ApplyPower" or "TempPower" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs")
+							fx.PowerId = "WeakPower";
+						if (kind is "ForbidBlock" or "ForbidHeal") fx.Amount = 2m;
+						if (kind == "PetAttack") fx.PetSummon = "UiCheckGuardPet";
+						if (kind == "PetSacrifice") { fx.PetSacrificeGain = "Damage"; fx.PetSacrificeFormula = "Fixed"; }
+						probe.Effects.Add(fx);
+						string src;
+						try { src = CSharpCodeGen.CardSource(guardProfile, probe, 0); }
+						catch (Exception ex) { badMulti.Add($"{kind}/{side}→生成抛异常 {ex.GetType().Name}"); continue; }
+						string tt = CSharpCodeGen.TargetTypeOf(probe);
+						if (tt is "AnyEnemy" or "AnyAlly") { badMulti.Add($"{kind}/{side}→TargetType 竟是 {tt}"); continue; }
+						if (src.Contains("cardPlay.Target", StringComparison.Ordinal))
+							badMulti.Add($"{kind}/{side}→仍然读了 cardPlay.Target（TargetType={tt}）");
+					}
+				Check("V0.2.243：多目标档（全体敌人 / 全体单位 / 全部友方 / 随机 / 自己）下没有效果去读 cardPlay.Target（读了就是一打出就抛异常、牌浮空）",
+					badMulti.Count == 0, badMulti.Count == 0 ? "全部干净" : string.Join(" ｜ ", badMulti.Take(8)));
+				// 具体到用户那张牌的形状：「大限已至 + 全体敌人」必须按敌人逐个打、不许判空
+				var timesUpAll = new CardSpec { Name = "大限全体", ClassName = "UiCheckTimesUpAll", Cost = 1, CardType = "Attack", Rarity = "Common" };
+				timesUpAll.Effects.Add(new EffectSpec { Kind = "TimesUp", Amount = 1m, TargetSide = "AllEnemies" });
+				string timesUpAllSrc = CSharpCodeGen.CardSource(guardProfile, timesUpAll, 0);
+				Check("V0.2.243：「大限已至 + 全体敌人」→ 逐个敌人打、不写 ThrowIfNull（以前第一句就抛异常 → 牌浮空）",
+					timesUpAllSrc.Contains("foreach (Creature __tuFoe in base.CombatState.HittableEnemies)")
+					&& timesUpAllSrc.Contains(".Targeting(__tuFoe)")
+					&& !timesUpAllSrc.Contains("ThrowIfNull(cardPlay.Target", StringComparison.Ordinal),
+					"逐个打");
+
+				// 光「生成得像」不够：这些新展开的循环要真的编译得过（生成 → dotnet build）
+					string mtRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_multitarget_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					bool mtKeepOnFailure = false;   // V0.2.260：编译失败时留着探针工程，方便看真实报错
+					try
+					{
+					var mtProf = ProfileFactory.Sample();
+					var mtCard = new CardSpec { Name = "多目标编译探针", ClassName = "UiCheckMultiTarget", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					foreach ((string kind, string side) in new (string, string)[]
+					{
+						// ⚠ 只用校验器放行的档位（「大限已至」目前只放行 自己 / 单体敌人 / 随机敌人 / 全体敌人；
+						// 全体单位 / 全部友方 生成端虽然也实现了，但校验器还没放行，这里不塞进来）
+						("TimesUp", "AllEnemies"), ("TimesUp", "RandomEnemies"), ("TimesUp", "Self"), ("TimesUp", "Enemy"),
+						("Heal", "AllAllies"), ("HpLoss", "AllEnemies"), ("Block", "AllAllies"),
+					})
+						mtCard.Effects.Add(new EffectSpec { Kind = kind, Amount = 2m, TargetSide = side });
+					// V0.2.247：两条新条件也塞进这张卡（**同一条 OnPlay 里三条**，专门验证不会 CS0128）
+					mtProf.CardGroups.Clear();
+					mtProf.CardGroups.Add(new CardGroupSpec { Id = "mtgroup", Name = "探针组" });
+					mtProf.Cards.Add(new CardSpec { Name = "探针组牌", ClassName = "UiCheckMtGroupA", Rarity = "Common", InCardPool = true, GroupIds = new List<string> { "mtgroup" } });
+					var mtCond1 = new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" };
+					mtCond1.Condition = new ConditionSpec { Kind = "LastCardKeyword", Keyword = "Exhaust" };
+					mtCard.Effects.Add(mtCond1);
+					var mtCond2 = new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" };
+					mtCond2.Condition = new ConditionSpec { Kind = "LastCardScope", Scope = "Attack" };
+					mtCard.Effects.Add(mtCond2);
+					var mtCond3 = new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" };
+					mtCond3.Condition = new ConditionSpec { Kind = "LastCardScope", Scope = EffectCatalog.GroupFilterPrefix + "mtgroup" };
+					mtCard.Effects.Add(mtCond3);
+					// V0.2.249：「减少卡牌费用」这条效果（会连带生成 CostDownPower.cs，一起验证编得过）
+					mtCard.Effects.Add(new EffectSpec { Kind = "CostDown", Amount = 1m, SpawnFilter = "Attack" });
+					mtCard.Effects.Add(new EffectSpec { Kind = "CostDown", Amount = 0m, SpawnFilter = EffectCatalog.GroupFilterPrefix + "mtgroup", CostDownThisTurn = true });
+					mtProf.Cards.Add(mtCard);
+					// V0.2.248：费用修正（腐化那种）也塞进这份工程，验证生成的 TryModifyEnergyCostInCombatLate 编得过
+					var mtCostPower = new CustomPowerSpec
+					{
+						Name = "探针减费", ClassName = "UiCheckCostPower", Enabled = true, Type = "Buff",
+						CostReduceScope = "Skill", CostReduceAmount = 0m,
+					};
+					mtCostPower.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+					mtProf.CustomPowers.Add(mtCostPower);
+					// V0.2.250：锻造卡上的「减少卡牌费用 + 范围」也要编得过（图里走 __fgPlayer 上下文）
+					var mtForgeCard = new CardSpec { Name = "探针锻造减费", ClassName = "UiCheckMtForge", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill", IsForged = true };
+					var mtGraph = new ForgeGraphSpec();
+					var mtTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					mtTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var mtEff = new ForgeNodeSpec { Kind = "Effect" };
+					mtEff.SetField("Effect", "CostDown");
+					mtEff.SetField("Amount", "0");
+					mtEff.SetField("SpawnFilter", EffectCatalog.GroupFilterPrefix + "mtgroup");
+					mtEff.SetField("CostDownThisTurn", "1");
+					mtGraph.Nodes.AddRange(new[] { mtTrig, mtEff });
+					mtGraph.Links.Add(new ForgeLinkSpec { From = mtTrig.Id, To = mtEff.Id, FromPort = 0, ToPort = 0 });
+					mtForgeCard.ForgeGraph = mtGraph;
+					mtProf.Cards.Add(mtForgeCard);
+					// V0.2.253：状态里的「升级卡牌」（含新加的守卫 / 全部档 / 调试日志那行）也要编得过
+					var mtUpPower = new CustomPowerSpec { Name = "探针升级状态", ClassName = "UiCheckUpPower", Enabled = true, Type = "Buff" };
+					var mtUpTrig = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+					mtUpTrig.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, SelectPile = "Hand", SpawnFilter = "Status", CountMode = "All" });
+					mtUpPower.Triggers.Add(mtUpTrig);
+					mtProf.CustomPowers.Add(mtUpPower);
+					// V0.2.259：临时「护卫」（本体 Single + Instanced 的状态）那条“存在性”分支也要编得过
+					var mtSingleCard = new CardSpec { Name = "探针临时护卫", ClassName = "UiCheckTempSingle", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill" };
+					mtSingleCard.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "GuardedPower", Amount = 1m, TargetSide = "Self" });
+					mtSingleCard.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" });
+					mtProf.Cards.Add(mtSingleCard);
+					// V0.2.260：先古道具那三个补丁（ArchaicTooth / DustyTome / TouchOfOrobas）也要编得过
+					var mtAncientCard = new CardSpec { Name = "探针先古卡", ClassName = "UiCheckAiAncientProbe", CardType = "Skill", Rarity = "Ancient", Cost = 1 };
+					mtAncientCard.ToothReplace = true;
+					mtAncientCard.DustyTomeGrant = true;
+					mtProf.AncientCards.Add(mtAncientCard);
+					if (mtProf.Relics.Count > 0) mtProf.Relics[0].OrobasReplace = true;
+					mtProf.DebugLog = true;   // 连调试日志那一行一起编
+					mtProf.Paths.OutputDir = mtRoot;
+					mtProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					mtProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					mtProf.Paths.GodotExe = Profile.Paths.GodotExe;
+					mtProf.Paths.DotnetExe = Profile.Paths.DotnetExe;
+					var mtGen = ModGenerator.Generate(mtProf);
+					Check("（准备）多目标探针存档能生成工程", mtGen.Success,
+						mtGen.Success ? mtGen.ProjectRoot : string.Join(" ｜ ", mtGen.Issues.Where(x => x.IsError).Select(x => x.Message).Take(4)));
+					if (mtGen.Success)
+					{
+						var mtBuild = Sts2CharForge.Core.Build.ModBuilder.Build(mtGen.ProjectRoot, Naming.From(mtProf).ModId,
+							mtProf.Paths.GodotExe, null, null, mtProf.Paths.DotnetExe);
+					// V0.2.260：编译失败时把**前三条真实报错**印进自检，并把探针工程留着方便排查
+						var mtStep = mtBuild.Steps.FirstOrDefault(st => st.Name.Contains("编译 DLL", StringComparison.Ordinal));
+						string mtNote = mtStep is null ? "(没找到编译那一步)"
+							: mtStep.Success ? "0 个错误"
+							: string.Join(" ｜ ", mtStep.Output.Split('\n')
+								.Where(l => l.Contains("error", StringComparison.OrdinalIgnoreCase))
+								.Select(l => l.Trim()).Take(3));
+						Check("V0.2.243：多目标档（大限已至逐个打 / 回复生命·失去生命·格挡 全展开）生成出来的工程真的编译得过",
+							mtStep is { Success: true }, mtNote);
+						mtKeepOnFailure = mtStep is not { Success: true };
+					}
+				}
+				finally
+				{
+					if (!mtKeepOnFailure) { try { if (Directory.Exists(mtRoot)) Directory.Delete(mtRoot, true); } catch { } }
+				}
+			}
+			guardProfile.Cards.Remove(guardCard);
+		}
 		Check("卡面描述写清了「给谁」",
 			LocalizationGen.CardsJson(characterProfile16).Contains("让所有敌人获得") && LocalizationGen.CardsJson(characterProfile16).Contains("让指定敌人回复"),
 			"描述带对象");
@@ -20592,6 +22614,87 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("类名按「角色类名 + Power + 序号」自动生成", CustomPowerGen.ClassNameOf(cpProbe, cp1, 0) == Naming.From(cpProbe).CharClass + "Power1", CustomPowerGen.ClassNameOf(cpProbe, cp1, 0));
 		Check("本地化键就是本体那套规则（类名 → 全大写下划线）", CustomPowerGen.EntryOf(cpProbe, cp1, 0) == Naming.EntryOf(Naming.From(cpProbe).CharClass + "Power1"), CustomPowerGen.EntryOf(cpProbe, cp1, 0));
 		Check("留空描述会按触发时机自动写一句", PowerTriggers.AutoDescription(cp1).Contains("玩家回合开始时") && PowerTriggers.AutoDescription(cp1).Contains("格挡"), PowerTriggers.AutoDescription(cp1).Split('\n')[0]);
+		// ===== V0.2.239：自定义状态「允许负层数」（用户问：「在自定义状态增加状态层数能否到负值」）=====
+		{
+			var negProf = ProfileFactory.Sample();
+			negProf.CustomPowers.Clear();
+			var negPow = new CustomPowerSpec { Name = "自检负层数状态", ClassName = "UiCheckNegLayerPower" };
+			negProf.CustomPowers.Add(negPow);
+			string negOff = CustomPowerGen.Source(negProf, negPow, 0);
+			Check("V0.2.239：不勾「允许负层数」时生成的状态类里没有 AllowNegative（老存档逐字不变）",
+				!negOff.Contains("AllowNegative"), "没写");
+			negPow.AllowNegativeLayers = true;
+			string negOn = CustomPowerGen.Source(negProf, negPow, 0);
+			Check("V0.2.239：勾上「允许负层数」→ 生成的状态类带 AllowNegative => true（和本体力量同一口径）",
+				negOn.Contains("public override bool AllowNegative => true;"), "写了");
+			EffectCatalog.SetCustomPowers(new[] { (CustomPowerGen.ClassNameOf(negProf, negPow, 0), negPow.Name, negPow.AllowNegativeLayers, negPow.Single) });
+			Check("V0.2.239：勾了的自定义状态会被「允许负层数」名单认出来（登记表 → AllowsNegativeLayers）",
+				EffectCatalog.AllowsNegativeLayers("UiCheckNegLayerPower") && EffectCatalog.IsCustomPower("UiCheckNegLayerPower"), "认得");
+			// 「施加增益 / 减益」填 -3：勾了 → 直接施加负值（0 层也能扣成 -3）；没勾 → 先取实例再扣已有层数
+			var negEffOn = new EffectSpec { Kind = "ApplyPower", Amount = -3m, PowerId = "UiCheckNegLayerPower", TargetSide = "Enemy" };
+			string negLineOn = CSharpCodeGen.ApplyPowerLine(negEffOn, false, "UiCheckNegLayerPower", "foe", "(-3m)", "base.Owner.Creature");
+			Check("V0.2.239：对它施加 -3 → 直接 `Apply<状态>(foe, -3m)`（这就是「层数能到负值」）",
+				negLineOn.Contains("await PowerCmd.Apply<UiCheckNegLayerPower>(choiceContext, foe, (-3m)")
+				&& !negLineOn.Contains("ModifyAmount"), "直接施加");
+			EffectCatalog.SetCustomPowers(new[] { ("UiCheckNoNegPower", "自检普通状态", false, false) });
+			var negEffOff = new EffectSpec { Kind = "ApplyPower", Amount = -3m, PowerId = "UiCheckNoNegPower", TargetSide = "Enemy" };
+			string negLineOff = CSharpCodeGen.ApplyPowerLine(negEffOff, false, "UiCheckNoNegPower", "foe", "(-3m)", "base.Owner.Creature");
+			Check("V0.2.239：没勾的自定义状态施加 -3 → 仍是「先取实例再 ModifyAmount 扣」（层数最低到 0）",
+				negLineOff.Contains("GetPower<UiCheckNoNegPower>()") && negLineOff.Contains("PowerCmd.ModifyAmount"), "扣已有层数");
+			EffectCatalog.SetCustomPowers(null);   // 别把探针登记留给后面的自检
+			Check("V0.2.239：自定义状态页上有「允许负层数」那个勾选框（用户在界面上找得到）",
+				TextsIn(CustomPowerTab.Content as DependencyObject).Any((string t) => t.Contains("允许负层数")), "勾选框在");
+		}
+		// ===== V0.2.241：状态触发链的「作用对象」以前被完全忽略 =====
+		// 用户报：「触发时机增加回复生命值时……」——「回复生命 / 格挡 / 失去生命 / 最大生命」这四种
+		// 在**自定义状态的触发时机**里以前一律只对 base.Owner 动手：选了「全体友方 / 单体敌人 / 全体敌人 /
+		// 全体单位」照样只动自己，而且不报错、不提示（界面那一栏明明摆着）。现在按作用对象展开。
+		{
+			var tgtProf = ProfileFactory.Sample();
+			tgtProf.CustomPowers.Clear();
+			var tgtPow = new CustomPowerSpec { Name = "作用对象探针", ClassName = "UiCheckTargetPower", Enabled = true };
+			var tgtTrig = new PowerTriggerSpec { Kind = "TurnStart" };
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 5m, TargetSide = "Self" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 6m, TargetSide = "Enemy" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 7m, TargetSide = "AllAllies" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 8m, TargetSide = "AllEnemies" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 9m, TargetSide = "AllUnits" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllAllies" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 4m, TargetSide = "AllEnemies" });
+			tgtTrig.Effects.Add(new EffectSpec { Kind = "MaxHp", Amount = -2m, TargetSide = "Enemy" });
+			tgtPow.Triggers.Add(tgtTrig);
+			tgtProf.CustomPowers.Add(tgtPow);
+			string tgtSrc = CustomPowerGen.Source(tgtProf, tgtPow, 0);
+			Check("V0.2.241：（回归）「回复生命值 + 自己」还是原来那句 `CreatureCmd.Heal(base.Owner, N)`",
+				tgtSrc.Contains("await CreatureCmd.Heal(base.Owner, 5m);"), "没变");
+			Check("V0.2.241：状态触发链上「回复生命值 + 单体敌人」→ 回的是那个敌人（以前只回自己）",
+				tgtSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();")
+				&& tgtSrc.Contains("await CreatureCmd.Heal(other, 6m);"), "按作用对象");
+			Check("V0.2.241：「回复生命值 + 全部友方」→ 遍历同一边的存活单位（默认不含自己、含召唤物）",
+				tgtSrc.Contains("foreach (Creature other in base.Owner.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner).ToList())")
+				&& tgtSrc.Contains("await CreatureCmd.Heal(other, 7m);"), "全友方");
+			Check("V0.2.241：「回复生命值 + 全体敌人 / 全体单位」各按自己那一档展开",
+				tgtSrc.Contains("foreach (Creature other in base.Owner.CombatState.HittableEnemies)")
+				&& tgtSrc.Contains("await CreatureCmd.Heal(other, 8m);")
+				&& tgtSrc.Contains("foreach (Creature other in base.Owner.CombatState.Creatures.Where(c => c.IsAlive).ToList())")
+				&& tgtSrc.Contains("await CreatureCmd.Heal(other, 9m);"), "两档都在");
+			Check("V0.2.241：格挡 / 失去生命 / 最大生命 也按作用对象展开（同一条洞）",
+				tgtSrc.Contains("await CreatureCmd.GainBlock(other, 3m, ValueProp.Unpowered, null);")
+				&& tgtSrc.Contains("await CreatureCmd.Damage(choiceContext, other, 4m, ValueProp.Unblockable | ValueProp.Unpowered, base.Owner);")
+				&& tgtSrc.Contains("await CreatureCmd.LoseMaxHp(choiceContext, other, System.Math.Abs(-2m), isFromCard: false);"), "三种都对");
+			Check("V0.2.241：界面那一栏「作用对象」确实对回复生命值显示 —— 摆了就必须真的被读（以前摆了没人读）",
+				new EffectSpec { Kind = "Heal" }.ShowTargetSideRow, "摆着");
+			// 两个子勾选框（和卡牌 / 遗物链同一份口径）
+			var allySelf = new EffectSpec { Kind = "Heal", Amount = 1m, TargetSide = "AllAllies", AllAlliesIncludeSelf = true };
+			tgtTrig.Effects.Add(allySelf);
+			string allySelfSrc = CustomPowerGen.Source(tgtProf, tgtPow, 0);
+			Check("V0.2.241：勾了「全部友方：包括自己」→ 过滤条件里去掉 `c != base.Owner`",
+				allySelfSrc.Contains("Allies.Where(c => c.IsAlive).ToList()"), "包括自己");
+			allySelf.AllAlliesExcludePets = true;
+			string allyPetsSrc = CustomPowerGen.Source(tgtProf, tgtPow, 0);
+			Check("V0.2.241：勾了「全部友方：不包括召唤物」→ 过滤条件里补 `c.PetOwner is null`",
+				allyPetsSrc.Contains("Allies.Where(c => c.IsAlive && c.PetOwner is null).ToList()"), "不含召唤物");
+		}
 		string text39 = CustomPowerGen.Source(cpProbe, cp1, 0);
 		Check("回合开始触发器写成本体钩子 AfterPlayerTurnStart", text39.Contains("AfterPlayerTurnStart") && text39.Contains("if (player != base.Owner.Player) return;"), "钩子对");
 		Check("「打出牌后」按牌类型过滤（攻击牌 / 技能牌都在同一个方法里）", text39.Contains("BeforeCardPlayed") && text39.Contains("CardType.Attack") && text39.Contains("CardType.Skill"), "过滤在");
@@ -21006,8 +23109,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				var fgUnit = new ForgeNodeSpec { Kind = "Unit" };
 				fgUnit.SetField("Pick", "RandomEnemy");
 				var fgEff = new ForgeNodeSpec { Kind = "Effect" };
-				fgEff.SetField("Effect", "Damage");
-				fgEff.SetField("Amount", "4");
+				// V0.2.222：这里要的是「**逐个敌人**」那种循环体（随机敌人 + 伤害现在走 TargetingRandomOpponents，
+				// 已经不是循环了），所以换成「施加状态」—— 随机敌人 + 施加状态 仍然是逐只的循环。
+				fgEff.SetField("Effect", "ApplyPower");
+				fgEff.SetField("PowerId", "WeakPower");
+				fgEff.SetField("Amount", "2");
 				fgCard.ForgeGraph.Nodes.AddRange(new[] { fgTrig, fgUnit, fgEff });
 				fgCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = fgTrig.Id, To = fgEff.Id, FromPort = 0, ToPort = 0 });
 				fgCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = fgUnit.Id, To = fgEff.Id, FromPort = 0, ToPort = 2 });
@@ -21140,6 +23246,748 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("这张「显示数字不是层数」的表里就是本体那些 override 了 DisplayAmount 的状态",
 			EffectCatalog.PowerAmountNote("SlowPower") != null && EffectCatalog.PowerAmountNote("PoisonPower") == null
 			&& EffectCatalog.PowerAmountNote("SlothPower") != null, $"表里 {EffectCatalog.PowerAmountNotes.Count} 个状态");
+		// ===== V0.2.244（用户报「仪式兽给的那个 debuff 晕眩和狩猎不会生效」）=====
+		// 查证：「狩猎」= TheHuntPower，本体类注释就写着它只是**视觉标记**，真正的行为在 TheHunt 那张牌里
+		//（全项目只有 TheHunt.cs 施加它、没有任何地方读它）⇒ 单独施加它当然什么都不发生。
+		// 以前工具一声不吭（用户以为工具坏了），现在校验器给一条「提示」说清。
+		{
+			var huntProbe = ProfileFactory.Sample();
+			var huntCard = new CardSpec { Name = "自检狩猎标记", ClassName = "UiCheckHuntMarker", Rarity = "Common", InCardPool = true, Cost = 0, CardType = "Skill" };
+			huntCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "TheHuntPower", Amount = 1m, TargetSide = "Self" });
+			huntProbe.Cards.Add(huntCard);
+			var huntIssues = ProfileValidator.Validate(huntProbe);
+			Check("V0.2.244：施加「狩猎」这个状态时校验器会提醒「它只是视觉标记、单独施加不会发生任何事」",
+				huntIssues.Any((ValidationIssue i) => i.Message.Contains("只是一枚视觉标记") && i.Message.Contains("获得卡牌奖励")),
+				string.Join(" ｜ ", huntIssues.Select((ValidationIssue i) => i.Message).Take(3)));
+			Check("V0.2.244：这张「没有玩法效果」的表只收了 TheHuntPower（别的状态不误报）",
+				EffectCatalog.PowerNoGameplayNote("TheHuntPower") != null
+				&& EffectCatalog.PowerNoGameplayNote("WeakPower") == null
+				&& EffectCatalog.PowerNoGameplayNote("RingingPower") == null, "只收一个");
+			// ===== V0.2.245（用户报「翱翔减伤给自己没用」）=====
+			// 查证：SoarPower.ModifyDamageMultiplicative 要「target == 持有者」+「props.IsPoweredAttack()」两条同时成立；
+			// 而本工具生成的「自伤 / 失去生命 / 状态造成的伤害」全是 Unpowered（和本体 献血/血墙 一致），
+			// 所以减伤对它们不生效是本体语义。校验器现在把这件事直接说出来。
+			var soarProbe = ProfileFactory.Sample();
+			var soarCard = new CardSpec { Name = "自检翱翔", ClassName = "UiCheckSoar", Rarity = "Common", InCardPool = true, Cost = 0, CardType = "Skill" };
+			soarCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "SoarPower", Amount = 1m, TargetSide = "Self" });
+			soarProbe.Cards.Add(soarCard);
+			Check("V0.2.245：施加「翱翔」时校验器说清它只减**攻击伤害**（失去生命 / 状态伤害 / 自伤不减）",
+				ProfileValidator.Validate(soarProbe).Any((ValidationIssue i) =>
+					i.Message.Contains("只减「攻击伤害」") && i.Message.Contains("IsPoweredAttack")),
+				string.Join(" ｜ ", ProfileValidator.Validate(soarProbe).Select((ValidationIssue i) => i.Message).Take(2)));
+			Check("V0.2.245：「机制说明」表里翱翔 / 昏眩各一条，普通状态不误报",
+				EffectCatalog.PowerMechanicNote("SoarPower") != null
+				&& EffectCatalog.PowerMechanicNote("RingingPower") != null
+				&& EffectCatalog.PowerMechanicNote("StrengthPower") == null, "两条");
+			// 顺带钉住「我们的自伤确实是 Unpowered」这条口径（不然上面那段解释就成了空话）
+			var selfDmgCard = new CardSpec { Name = "自检自伤", ClassName = "UiCheckSelfDmg", Rarity = "Common", InCardPool = true, Cost = 0, CardType = "Attack" };
+			selfDmgCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Self" });
+			string selfDmgSrc = CSharpCodeGen.CardSource(ProfileFactory.Sample(), selfDmgCard, 0);
+			Check("V0.2.245：卡牌给自己造成伤害用的是 Unpowered（和本体 献血/血墙 同一口径 → 力量/虚弱/翱翔都不吃）",
+				selfDmgSrc.Contains("ValueProp.Unpowered"), "Unpowered");
+
+			// ===== V0.2.246（用户报「形态生效、效果没生效」：「多效卡识别不了形态一」）=====
+			// 病因：本体 PowerStackType.Single 只是「层数不显示」（注释原文 “Amount is hidden, and is always 1”），
+			// 但 PowerCmd.Apply 第二次照样 ModifyAmount(+1) → SetAmount(2)，内部层数真的变 2；
+			// 而图上的条件写的是「手刃形态 == 1 层」→ 一旦这个形态被施加过两次，条件不成立、整段效果被跳过
+			//（图标还在 ⇒ 看起来就是「形态生效但效果没生效」）。修法：读「只叠一层」的状态时按 0/1 夹取。
+			{
+				var formProf = ProfileFactory.Sample();
+				formProf.CustomPowers.Clear();
+				formProf.CustomPowers.Add(new CustomPowerSpec { Name = "自检形态", ClassName = "UiCheckFormSingle", Enabled = true, Single = true });
+				formProf.CustomPowers.Add(new CustomPowerSpec { Name = "自检层叠", ClassName = "UiCheckFormMulti", Enabled = true, Single = false });
+
+				ForgeGraphSpec FormProbe(string powerId, bool wireWho)
+				{
+					var g = new ForgeGraphSpec();
+					var trig = new ForgeNodeSpec { Kind = "Trigger" };
+					trig.SetField("Timing", ForgeTimings.CardPlayed);
+					var pw = new ForgeNodeSpec { Kind = "Power" };
+					pw.SetField("PowerId", powerId);
+					var rel = new ForgeNodeSpec { Kind = "Relate" };
+					rel.SetField("Op", "Eq");
+					rel.SetField("Amount", "1");
+					var iff = new ForgeNodeSpec { Kind = "If" };
+					var dmg = new ForgeNodeSpec { Kind = "Effect" };
+					dmg.SetField("Effect", "Damage");
+					dmg.SetField("Amount", "5");
+					g.Nodes.AddRange(new[] { trig, pw, rel, iff, dmg });
+					g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = iff.Id, FromPort = 0, ToPort = 0 });
+					g.Links.Add(new ForgeLinkSpec { From = pw.Id, To = rel.Id, FromPort = 0, ToPort = 1 });   // 关系符左值 = 口 1
+					g.Links.Add(new ForgeLinkSpec { From = rel.Id, To = iff.Id, FromPort = 0, ToPort = 1 });  // 条件 = 口 1
+					g.Links.Add(new ForgeLinkSpec { From = iff.Id, To = dmg.Id, FromPort = 0, ToPort = 0 });  // 是 = 口 0
+					if (wireWho)
+					{
+						var unit = new ForgeNodeSpec { Kind = "Unit" };
+						unit.SetField("Pick", "Self");
+						g.Nodes.Add(unit);
+						g.Links.Add(new ForgeLinkSpec { From = unit.Id, To = pw.Id, FromPort = 0, ToPort = 0 });
+					}
+					return g;
+				}
+
+				var formCard = new CardSpec { Name = "自检形态卡", ClassName = "UiCheckFormCard", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack" };
+				formCard.IsForged = true;
+				formCard.ForgeGraph = FormProbe("UiCheckFormSingle", wireWho: true);
+				string singleSrc = CSharpCodeGen.CardSource(formProf, formCard, 0);
+				Check("V0.2.246：「只叠一层」的状态按 0/1 夹取（『等于 1 层』不会再因为内部层数变 2 而失效）",
+					singleSrc.Contains("<= 0m ? 0m : 1m", StringComparison.Ordinal), "夹取了");
+
+				var multiCard = new CardSpec { Name = "自检层叠卡", ClassName = "UiCheckFormCard2", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack" };
+				multiCard.IsForged = true;
+				multiCard.ForgeGraph = FormProbe("UiCheckFormMulti", wireWho: true);
+				formProf.Cards.Add(formCard);
+				formProf.Cards.Add(multiCard);
+				string multiSrc = CSharpCodeGen.CardSource(formProf, multiCard, 0);
+				Check("V0.2.246：（对照）可叠层的状态不加夹取（层数照原样读）",
+					!multiSrc.Contains("<= 0m ? 0m : 1m", StringComparison.Ordinal), "仍读原值");
+
+				// 【状态】节点没接【对象】→ 默认读「打出时选中的那个敌人」；校验器要把这件事说出来
+				formCard.ForgeGraph = FormProbe("UiCheckFormSingle", wireWho: false);
+				var formIssues = ProfileValidator.Validate(formProf);
+				Check("V0.2.246：【状态】节点没接【对象】时校验器提示「默认读的是选中那个敌人，不是自己」",
+					formIssues.Any((ValidationIssue i) => i.Message.Contains("左边没接【对象】")),
+					"提示在");
+				formCard.ForgeGraph = FormProbe("UiCheckFormSingle", wireWho: true);
+				Check("V0.2.246：（对照）接了【对象】就不再提示",
+					!ProfileValidator.Validate(formProf).Any((ValidationIssue i) => i.Message.Contains("左边没接【对象】")), "不提示");
+			}
+
+			// ===== V0.2.247（用户要求）：两条新条件 =====
+			// ① 「上一张打出的牌带有某关键词」 ② 「上一张打出的牌是某范围（可按组）」
+			// 数据源和本体「历史课」一样：History.CardPlaysFinished（按玩家过滤，不限回合），取最后一条的 CardPlay.Card；
+			// 范围那一档复用「范围界定」的判据（含每个组）。
+			{
+				var lcProf = ProfileFactory.Sample();
+				lcProf.CardGroups.Clear();
+				lcProf.CardGroups.Add(new CardGroupSpec { Id = "uicheckgroup", Name = "自检组" });
+				// 组的成员记在**卡**身上（GroupIds），不是组里存卡
+				lcProf.Cards.Add(new CardSpec
+				{
+					Name = "自检组甲", ClassName = "UiCheckLastCardA", Rarity = "Common", InCardPool = true,
+					GroupIds = new List<string> { "uicheckgroup" },
+				});
+				string groupFilter = EffectCatalog.GroupFilterPrefix + "uicheckgroup";
+
+				var lcCard = new CardSpec { Name = "自检上一张", ClassName = "UiCheckLastCard", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill" };
+				lcProf.Cards.Add(lcCard);
+				lcCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "Enemy" });
+				lcCard.Effects[0].Condition = new ConditionSpec { Kind = "LastCardKeyword", Keyword = "Exhaust" };
+				string kwSrc = CSharpCodeGen.CardSource(lcProf, lcCard, 0);
+				Check("V0.2.247：「上一张打出的牌带有某关键词」生成的是本体历史里那张牌的 Keywords.Contains（不声明局部变量，防止 CS0128）",
+					kwSrc.Contains("History.CardPlaysFinished.LastOrDefault(e => e.CardPlay.Player ==")
+					&& kwSrc.Contains(".Keywords.Contains(CardKeyword.Exhaust) == true")
+					&& !kwSrc.Contains("__lastCard"), "判据在");
+
+				lcCard.Effects[0].Condition = new ConditionSpec { Kind = "LastCardScope", Scope = "Attack" };
+				Check("V0.2.247：「上一张打出的牌是某范围」按类型判（Attack → 上一张牌 .Type == CardType.Attack）",
+					CSharpCodeGen.CardSource(lcProf, lcCard, 0).Contains(".Card.Type == CardType.Attack"), "类型判据在");
+
+				// 范围可以填「组」：组里每张牌展开成一条「上一张牌的 Id == …」的判据
+				lcCard.Effects[0].Condition = new ConditionSpec { Kind = "LastCardScope", Scope = groupFilter };
+				string groupSrc = CSharpCodeGen.CardSource(lcProf, lcCard, 0);
+				Check("V0.2.247：「上一张打出的牌是某范围」可以填组（展开成 上一张牌的 .Id == ModelDb.Card<…>().Id）",
+					groupSrc.Contains(".Card.Id == ModelDb.Card<") && groupSrc.Contains("UiCheckLastCardA"), "组判据在");
+
+				// 漏填检查：关键词没选 = 错误；范围留空 = 提示（等于没判）
+				lcCard.Effects[0].Condition = new ConditionSpec { Kind = "LastCardKeyword", Keyword = "" };
+				Check("V0.2.247：关键词没选 → 校验器报错说清（不会静默生成一个恒假条件）",
+					ProfileValidator.Validate(lcProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("还没选关键词")), "报错了");
+				lcCard.Effects[0].Condition = new ConditionSpec { Kind = "LastCardScope", Scope = "" };
+				Check("V0.2.247：范围留空 → 校验器提示「等于没判」",
+					ProfileValidator.Validate(lcProf).Any((ValidationIssue i) => i.Message.Contains("这条条件等于没判")), "提示了");
+			}
+
+			// 遗物也能用（同一条链的表达式，挂在遗物那个钩子上）
+			{
+				var lcRelicProf = ProfileFactory.Sample();
+				var lcRelic = new RelicSpec { Name = "自检上一张遗物", ClassName = "UiCheckLastCardRelic", Trigger = "PlayerTurnStart" };
+				lcRelic.Effects.Clear();
+				lcRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+				lcRelic.Effects[0].Condition = new ConditionSpec { Kind = "LastCardKeyword", Keyword = "Retain" };
+				lcRelicProf.Relics.Add(lcRelic);
+				Check("V0.2.247：遗物上也能用「上一张打出的牌带有某关键词」",
+					CSharpCodeGen.RelicSource(lcRelicProf, lcRelic, 0).Contains(".Keywords.Contains(CardKeyword.Retain) == true"), "遗物也支持");
+			}
+
+			// ===== V0.2.248（用户要求）：「减少指定卡牌类别的费用（类似腐化，刺破帷幕这些）」=====
+			// 生成的是本体的 AbstractModel.TryModifyEnergyCostInCombatLate —— 腐化 Corruption /
+			// 刺破帷幕 Veilpiercer / 免费攻击 FreeAttackPower 三个本体状态用的是同一个钩子。
+			{
+				var crProf = ProfileFactory.Sample();
+				crProf.CustomPowers.Clear();
+				var crPower = new CustomPowerSpec { Name = "自检修道服", ClassName = "UiCheckCostDown", Enabled = true, Type = "Buff" };
+				crPower.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+				crProf.CustomPowers.Add(crPower);
+
+				crPower.CostReduceScope = "";    // 留空 = 不启用
+				Check("V0.2.248：（默认）费用修正没配 → 一行都不生成（老存档逐字不变）",
+					!CustomPowerGen.Source(crProf, crPower, 0).Contains("TryModifyEnergyCostInCombatLate"), "没生成");
+
+				crPower.CostReduceScope = "Skill";
+				crPower.CostReduceAmount = 0m;   // 变成 0 费（腐化那种）
+				string zeroSrc = CustomPowerGen.Source(crProf, crPower, 0);
+				Check("V0.2.248：「技能牌费用变成 0」（腐化那种）→ 生成 TryModifyEnergyCostInCombatLate + card.Type == Skill + modifiedCost = 0m",
+					zeroSrc.Contains("public override bool TryModifyEnergyCostInCombatLate(CardModel card, decimal originalCost, out decimal modifiedCost)")
+					&& zeroSrc.Contains("card.Type == CardType.Skill")
+					&& zeroSrc.Contains("modifiedCost = 0m;")
+					&& zeroSrc.Contains("card.Owner.Creature != base.Owner"), "判据在");
+
+				crPower.CostReduceAmount = 1m;   // -1 费
+				string oneSrc = CustomPowerGen.Source(crProf, crPower, 0);
+				Check("V0.2.248：填 1 → 减 1 费（Math.Max(0m, originalCost - 1m)，不会变成负费）",
+					oneSrc.Contains("modifiedCost = System.Math.Max(0m, originalCost - 1m);"), "减 1");
+
+				crPower.CostReducePerStack = true;
+				Check("V0.2.248：勾「按层数」→ 乘以 base.Amount",
+					CustomPowerGen.Source(crProf, crPower, 0).Contains("originalCost - base.Amount * 1m"), "按层数");
+				crPower.CostReducePerStack = false;
+
+				// 范围可以是「组」：会展开成组里每张牌的 Id 判据
+				crProf.CardGroups.Clear();
+				crProf.CardGroups.Add(new CardGroupSpec { Id = "costgroup", Name = "减费组" });
+				crProf.Cards.Add(new CardSpec { Name = "减费组牌", ClassName = "UiCheckCostCardA", Rarity = "Common", InCardPool = true, GroupIds = new List<string> { "costgroup" } });
+				crPower.CostReduceScope = EffectCatalog.GroupFilterPrefix + "costgroup";
+				Check("V0.2.248：范围选「组」→ 生成 card.Id == ModelDb.Card<…>().Id 那一串（组内容改了判据跟着变）",
+					CustomPowerGen.Source(crProf, crPower, 0).Contains("card.Id == ModelDb.Card<"), "组判据在");
+
+				// 校验器：空组会提醒（不然用户以为减费生效了）
+				foreach (var dead in crProf.Cards.Where(c => c.ClassName == "UiCheckCostCardA").ToList()) crProf.Cards.Remove(dead);
+				Check("V0.2.248：费用修正选了空组 → 校验器警告「判据永远不成立」",
+					ProfileValidator.Validate(crProf).Any((ValidationIssue i) => i.Message.Contains("费用修正") && i.Message.Contains("空组")), "警告了");
+			}
+
+			// ===== V0.2.249（用户澄清）：「减少卡牌类别的费用」要的是**效果种类**，不是自定义状态那一页 =====
+			{
+				var cdProf = ProfileFactory.Sample();
+				var cdCard = new CardSpec { Name = "自检减费卡", ClassName = "UiCheckCostDownCard", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Power" };
+				cdProf.Cards.Add(cdCard);
+				var cdFx = new EffectSpec { Kind = "CostDown", Amount = 0m, SpawnFilter = "Skill" };   // HasCardScope 是只读派生属性（看 SpawnFilter 有没有填）
+				cdCard.Effects.Add(cdFx);
+				string cdSrc = CSharpCodeGen.CardSource(cdProf, cdCard, 0);
+				Check("V0.2.249：效果种类「减少卡牌费用」→ 施加带载荷的内部状态（Create(减几费, 范围档, Id 名单, 只持续本回合)）",
+					cdSrc.Contains("PowerCmd.Apply(choiceContext,")
+					&& cdSrc.Contains("ForgeCostDownPower.Create(")
+					&& cdSrc.Contains("\"Skill\"")
+					&& cdSrc.Contains("false)"), "施加在");
+				Check("V0.2.249：数值 = 减几费原样传进去（0 = 变成 0 费）",
+					cdSrc.Contains("ForgeCostDownPower.Create(0m,"), "传了 0");
+
+				cdFx.CostDownThisTurn = true;
+				Check("V0.2.249：勾「只持续本回合」→ Create 最后一个参数是 true",
+					CSharpCodeGen.CardSource(cdProf, cdCard, 0).Contains("true)"), "本回合");
+
+				// 范围选「组」→ 生成期展开成那几张牌的 ModelId
+				cdProf.CardGroups.Clear();
+				cdProf.CardGroups.Add(new CardGroupSpec { Id = "cdgroup", Name = "减费组" });
+				cdProf.Cards.Add(new CardSpec { Name = "减费组牌", ClassName = "UiCheckCdA", Rarity = "Common", InCardPool = true, GroupIds = new List<string> { "cdgroup" } });
+				cdFx.CostDownThisTurn = false;
+				cdFx.SpawnFilter = EffectCatalog.GroupFilterPrefix + "cdgroup";
+				Check("V0.2.249：范围选「组」→ 生成的 Id 名单里有组里那张牌（ModelDb.Card<UiCheckCdA>().Id）",
+					CSharpCodeGen.CardSource(cdProf, cdCard, 0).Contains("ModelDb.Card<UiCheckCdA>().Id"), "组名单在");
+
+				// 状态类是「按需生成」的：用到了才有文件
+				Check("V0.2.249：只有用到这条效果才生成 CostDownPower.cs（没用的存档不多一个文件）",
+					CSharpCodeGen.NeedsCostDownPower(cdProf)
+					&& !CSharpCodeGen.NeedsCostDownPower(ProfileFactory.Sample()), "按需");
+				string cdPower = CSharpCodeGen.CostDownPowerSource(cdProf);
+				Check("V0.2.249：那只状态覆写的是本体的 TryModifyEnergyCostInCombatLate（和腐化 / 刺破帷幕同一个钩子），只改自己的牌、最低 0 费",
+					cdPower.Contains("TryModifyEnergyCostInCombatLate")
+					&& cdPower.Contains("card.Owner?.Creature != base.Owner")
+					&& cdPower.Contains("System.Math.Max(0m, originalCost - Reduce)")
+					&& cdPower.Contains("Reduce <= 0m ? 0m"), "钩子在");
+
+				// 没选范围 → 校验器警告（不然用户以为整条效果生效了却什么都没减）
+				cdFx.SpawnFilter = "";
+				Check("V0.2.249：「减少卡牌费用」没选范围 → 校验器警告「一张牌都不会减」",
+					ProfileValidator.Validate(cdProf).Any((ValidationIssue i) => i.Message.Contains("减少卡牌费用") && i.Message.Contains("没选范围")), "警告了");
+
+				// ===== V0.2.250（用户问「这个范围怎么不能选组或者特定关键词」）=====
+				// 根因：锻造页【效果】模块**压根没有「范围」这一栏**（卡牌页有），所以锻造卡上做不出「只对某一类牌 / 某个组」。
+				// 现在图上加了「范围（哪一类牌 / 哪个组）」+「只持续本回合」两栏，候选按当前存档动态取（含自定义关键词组 / 每个组）。
+				var cdGate = new ForgeNodeSpec { Kind = "Effect" };
+				Check("V0.2.250：锻造图【效果】模块有「范围」这一栏（以前压根没有）",
+					ForgeGraphCatalog.All.First(k => k.Id == "Effect").Fields.Any(f => f.Key == "SpawnFilter"),
+					"有 SpawnFilter");
+				Check("V0.2.250：「范围」只在真的读它的效果上出现（伤害 / 占位不显示；消耗 / 减少卡牌费用 显示）",
+					!ForgeCanvas.EffectFieldVisibleForCheck(cdGate, "Damage", "SpawnFilter")
+					&& ForgeCanvas.EffectFieldVisibleForCheck(cdGate, "ExhaustCard", "SpawnFilter")
+					&& ForgeCanvas.EffectFieldVisibleForCheck(cdGate, "CostDown", "SpawnFilter"),
+					"按效果种类显示");
+				Check("V0.2.250：「只持续本回合」只有「减少卡牌费用」显示",
+					ForgeCanvas.EffectFieldVisibleForCheck(cdGate, "CostDown", "CostDownThisTurn")
+					&& !ForgeCanvas.EffectFieldVisibleForCheck(cdGate, "Damage", "CostDownThisTurn"),
+					"只给 CostDown");
+
+				// 锻造卡上真的能用：图里摆【触发时机 → 效果(减少卡牌费用, 范围=组)】→ 生成出来要带组名单
+				{
+					var fProf = ProfileFactory.Sample();
+					fProf.CardGroups.Clear();
+					fProf.CardGroups.Add(new CardGroupSpec { Id = "fgroup", Name = "锻造组" });
+					fProf.Cards.Add(new CardSpec { Name = "锻造组甲", ClassName = "UiCheckFgA", Rarity = "Common", InCardPool = true, GroupIds = new List<string> { "fgroup" } });
+					var fCard = new CardSpec { Name = "自检锻造减费", ClassName = "UiCheckFgCostDown", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill", IsForged = true };
+					fProf.Cards.Add(fCard);
+					var fg = new ForgeGraphSpec();
+					var fTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					fTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var fEff = new ForgeNodeSpec { Kind = "Effect" };
+					fEff.SetField("Effect", "CostDown");
+					fEff.SetField("Amount", "0");
+					fEff.SetField("SpawnFilter", EffectCatalog.GroupFilterPrefix + "fgroup");
+					fg.Nodes.AddRange(new[] { fTrig, fEff });
+					fg.Links.Add(new ForgeLinkSpec { From = fTrig.Id, To = fEff.Id, FromPort = 0, ToPort = 0 });
+					fCard.ForgeGraph = fg;
+					string fgSrc = CSharpCodeGen.CardSource(fProf, fCard, 0);
+					Check("V0.2.250：锻造卡上「减少卡牌费用 + 范围=组」→ 生成里带组里那张牌的 ModelId（__fgPlayer 上下文）",
+						fgSrc.Contains("ForgeCostDownPower.Create(0m,")
+						&& fgSrc.Contains("ModelDb.Card<UiCheckFgA>().Id")
+						&& fgSrc.Contains("__fgPlayer.Creature"), "锻造链也支持");
+
+					// ===== V0.2.251（用户再问一次「条件增加『上一张打出的牌是某种范围的牌』，范围可以填组」）=====
+					// 这条条件 V0.2.247 就有了；这次补的是「图上也要校验」+「下拉候选在 Owner 还没设时也能取到组」。
+					// ① 图上的【条件】模块：范围=组 → 生成出来是按组展开的判据
+					var fcCard = new CardSpec { Name = "自检锻造条件", ClassName = "UiCheckFgCond", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack", IsForged = true };
+					fProf.Cards.Add(fcCard);
+					var fcg = new ForgeGraphSpec();
+					var fcTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					fcTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var fcCond = new ForgeNodeSpec { Kind = "Condition" };
+					fcCond.SetField("Cond", "LastCardScope");
+					fcCond.SetField("Scope", EffectCatalog.GroupFilterPrefix + "fgroup");
+					var fcIf = new ForgeNodeSpec { Kind = "If" };
+					var fcEff = new ForgeNodeSpec { Kind = "Effect" };
+					fcEff.SetField("Effect", "Damage");
+					fcEff.SetField("Amount", "6");
+					fcg.Nodes.AddRange(new[] { fcTrig, fcCond, fcIf, fcEff });
+					fcg.Links.Add(new ForgeLinkSpec { From = fcTrig.Id, To = fcIf.Id, FromPort = 0, ToPort = 0 });
+					fcg.Links.Add(new ForgeLinkSpec { From = fcCond.Id, To = fcIf.Id, FromPort = 0, ToPort = 1 });
+					fcg.Links.Add(new ForgeLinkSpec { From = fcIf.Id, To = fcEff.Id, FromPort = 0, ToPort = 0 });
+					fcCard.ForgeGraph = fcg;
+					string fcSrc = CSharpCodeGen.CardSource(fProf, fcCard, 0);
+					Check("V0.2.251：锻造【条件】「上一张打出的牌是某种范围的牌 + 范围=组」→ 生成按组展开的判据",
+						fcSrc.Contains("CardPlaysFinished.LastOrDefault")
+						&& fcSrc.Contains("ModelDb.Card<UiCheckFgA>().Id"), "图上也能填组");
+
+					// ② 图上没填范围 / 关键词 → 校验器要说出来（以前只走 ConditionExpr，没人校验）
+					fcCond.SetField("Scope", "");
+					var fgIssues = ForgeGraphGen.Issues(fcCard.ForgeGraph, fProf, "Card", "AnyEnemy");
+					Check("V0.2.251：锻造【条件】范围留空 → 校验器提示「等于没判」",
+						fgIssues.Any(i => i.Message.Contains("范围留空")), "提示在");
+					fcCond.SetField("Cond", "LastCardKeyword");
+					fcCond.SetField("Keyword", "");
+					Check("V0.2.251：锻造【条件】「上一张打出的牌带有某关键词」没选关键词 → 报错（那链永远不执行）",
+						ForgeGraphGen.Issues(fcCard.ForgeGraph, fProf, "Card", "AnyEnemy").Any(i => i.Level == "错误" && i.Message.Contains("还没选**关键词**")), "报错了");
+				}
+
+				// ===== V0.2.252（用户报「自定义状态为升级手上的状态牌不生效」）=====
+				// 真因：本体状态牌 / 诅咒牌 `MaxUpgradeLevel => 0`（不能升级），而生成端「升级卡牌」会像本体
+				// 「武装 Armaments」那样用 `c.IsUpgradable` 过滤 → 对状态牌**什么都不做**（不报错、只是没反应）。
+				// 以前完全静默。现在：① 校验器说清楚；② 提示「让自己的状态牌能升就勾『可被无限升级』」。
+				{
+					var upProf = ProfileFactory.Sample();
+					var upCard = new CardSpec { Name = "自检升级状态", ClassName = "UiCheckUpStatus", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill" };
+					upCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, SelectPile = "Hand", SpawnFilter = "Status" });
+					upProf.Cards.Add(upCard);
+					string upSrc = CSharpCodeGen.CardSource(upProf, upCard, 0);
+					Check("V0.2.252：「升级卡牌」只会挑能升级的牌（c.IsUpgradable，和本体武装同一个口径）",
+						upSrc.Contains("c.IsUpgradable"), "有过滤");
+					Check("V0.2.252：范围选「状态牌」时校验器提示「本体状态牌天生不能升级 / 这条效果一件都不会做 / 勾『可被无限升级』」",
+						ProfileValidator.Validate(upProf).Any((ValidationIssue i) =>
+							i.Message.Contains("天生不能升级") && i.Message.Contains("可被无限升级")),
+						string.Join(" ｜ ", ProfileValidator.Validate(upProf).Where(i => i.Message.Contains("升级")).Select(i => i.Message).Take(2)));
+
+					// 修好之后：状态牌勾「可被无限升级」→ 生成的类里 MaxUpgradeLevel 不再是 0，本体就会真的升级它
+					var upStatus = new CardSpec
+					{
+						Name = "自检能升的状态牌", ClassName = "UiCheckUpgradableStatus", Rarity = "Status",
+						CardType = "Status", InfinitelyUpgradable = true, InCardPool = false,
+					};
+					upProf.Cards.Add(upStatus);
+					upStatus.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self", UpgradeAmount = 2m });
+					string upStatusSrc = CSharpCodeGen.CardSource(upProf, upStatus, 0);
+					Check("V0.2.252：状态牌勾了「可被无限升级」→ 生成 MaxUpgradeLevel => int.MaxValue（本体才会真的升级它）",
+						upStatusSrc.Contains("public override int MaxUpgradeLevel => int.MaxValue;")
+						&& !upStatusSrc.Contains("MaxUpgradeLevel => 0;"), "可升级了");
+					upStatus.InfinitelyUpgradable = false;
+					Check("V0.2.252：（对照）没勾的状态牌仍然是 MaxUpgradeLevel => 0（和本体粘液一致）",
+						CSharpCodeGen.CardSource(upProf, upStatus, 0).Contains("public override int MaxUpgradeLevel => 0;"), "仍然不能升");
+				}
+
+				// ===== V0.2.253（用户澄清：是**自定义状态**里的「升级卡牌」升级「能无限升级的状态牌」没效果）=====
+				{
+					var puProf = ProfileFactory.Sample();
+					puProf.CustomPowers.Clear();
+					var puPower = new CustomPowerSpec { Name = "自检状态升级", ClassName = "UiCheckPuPower", Enabled = true };
+					var puTrig = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+					var puFx = new EffectSpec { Kind = "UpgradeCard", Amount = 1m, SelectPile = "Hand", SpawnFilter = "Status" };
+					puTrig.Effects.Add(puFx);
+					puPower.Triggers.Add(puTrig);
+					puProf.CustomPowers.Add(puPower);
+					string puSrc = CustomPowerGen.Source(puProf, puPower, 0);
+					Check("V0.2.253：状态里的「升级卡牌」先拦「这个状态挂在没有玩家的生物身上」（以前把 null 传进 GetPile → 运行时炸 / 静默失败）",
+						puSrc.Contains("if (base.Owner.Player is null) return;"), "有守卫");
+					Check("V0.2.253：状态里的「升级卡牌」仍然只挑能升级的牌（c.IsUpgradable + 范围）",
+						puSrc.Contains("c.IsUpgradable") && puSrc.Contains("PileType.Hand.GetPile(base.Owner.Player)"), "判据在");
+					// 「全部」那一档以前在状态链里没实现（会被当成随机挑 N 张）
+					puFx.CountMode = "All";
+					string puAll = CustomPowerGen.Source(puProf, puPower, 0);
+					Check("V0.2.253：状态里「升级卡牌 + 全部」→ 生成 foreach 全部升级（不再当成随机挑 N 张）",
+						puAll.Contains("foreach (CardModel c in PileType.Hand.GetPile(base.Owner.Player).Cards.Where("), "全部档补上了");
+					puFx.CountMode = "Exact";
+					// 开调试日志：打出「这一摞里有几张能升级的牌」——「没效果」时一眼看出是不是候选 0 张
+					puProf.DebugLog = true;
+					Check("V0.2.253：开着调试日志时，状态里的「升级卡牌」会打出「可升级的牌 N 张」",
+						CustomPowerGen.Source(puProf, puPower, 0).Contains("可升级的牌"), "日志在");
+					puProf.DebugLog = false;
+				}
+
+				// ===== V0.2.254（用户报「死焰那张牌是不卡住了，但是灾厄也没上」）=====
+				// 真因：死焰的伤害全在**伙伴**身上，而「本张牌这一次打出造成的伤害」（ThisCardDamage）
+				// 以前只给**自己打的普通攻击**记账 —— 伙伴攻击没人记账 → 那份公式恒为 0 →
+				// 「施加灾厄（数值 = ThisCardDamage）」变成 0 层 = 什么都没上。
+				{
+					var pdProf = ProfileFactory.Sample();
+					pdProf.Summons.Clear();
+					pdProf.Summons.Add(new SummonSpec { Enabled = true, Name = "自检伙伴", ClassName = "UiCheckPdPet", Hp = 30 });
+					var pdCard = new CardSpec { Name = "自检伙伴伤害记账", ClassName = "UiCheckPdCard", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack" };
+					pdCard.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 3m, RepeatCount = 2, TargetSide = "AllEnemies", PetSummon = "UiCheckPdPet" });
+					var pdDoom = new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", Amount = 0m, TargetSide = "AllEnemies" };
+					pdDoom.AmountFormula = "ThisCardDamage";
+					pdCard.Effects.Add(pdDoom);
+					pdProf.Cards.Add(pdCard);
+					string pdSrc = CSharpCodeGen.CardSource(pdProf, pdCard, 0);
+					int atkPos = pdSrc.IndexOf("AttackCommand? __atk", StringComparison.Ordinal);
+					int addPos = pdSrc.IndexOf("ForgeThisCardDamage += ", StringComparison.Ordinal);
+					int applyPos = pdSrc.IndexOf("PowerCmd.Apply<DoomPower>", StringComparison.Ordinal);
+					Check("V0.2.254：伙伴攻击也记「本张牌这一次打出造成的伤害」（接住 AttackCommand → 打完后 ForgeThisCardDamage += 合计）",
+						atkPos >= 0 && addPos > atkPos && pdSrc.Contains(".FromPetAttacker("), $"atk={atkPos} add={addPos}");
+					Check("V0.2.254：记账发生在「施加灾厄」之前（所以灾厄拿到的是这次伙伴打出的伤害，不是 0）",
+						addPos >= 0 && applyPos > addPos, $"add={addPos} apply={applyPos}");
+
+					// 对照：没用到 ThisCardDamage 的伙伴攻击 → 不生成记账（老存档逐字不变）
+					var pdCard2 = new CardSpec { Name = "自检伙伴不记账", ClassName = "UiCheckPdCard2", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack" };
+					pdCard2.Effects.Add(new EffectSpec { Kind = "PetAttack", Amount = 3m, TargetSide = "AllEnemies", PetSummon = "UiCheckPdPet" });
+					pdProf.Cards.Add(pdCard2);
+					Check("V0.2.254：（对照）没用到 ThisCardDamage 的伙伴攻击不生成记账（生成文本不变）",
+						!CSharpCodeGen.CardSource(pdProf, pdCard2, 0).Contains("ForgeThisCardDamage +="), "没生成");
+				}
+
+				// ===== 参数（最大生命 / 当前生命）拼进公式时被 `??` 吃掉运算符 =====
+				// 用户实测：「参数为最大生命时，造成 参数*0.04 的伤害，结果还是最大生命的伤害」。
+				// 真因：参数生成的片段是 `x?.MaxHp ?? 0`（`??` 优先级比 `*` 低），
+				// 直接拼进 `* 0.04` 就成了 `x?.MaxHp ?? (0 * 0.04)` = **满血值** ——
+				// 卡面那个动态变量（ForgeFormulaDamageVar）就是这么算的。
+				// 修法：Emit 拼标识符片段时，凡是带 `??` 的都加一层括号（别的片段原样，生成文本不变）。
+				{
+					CharacterProfile pmProf = ProfileFactory.Sample();
+					pmProf.CustomParams.Clear();
+					pmProf.CustomParams.Add(new ParamSpec { Name = "P", Source = ParamSources.MaxHp, Target = ParamTargets.Self });
+					var pmCard = new CardSpec
+					{
+						Name = "自检参数乘小数", ClassName = "UiCheckParamMul", CardType = "Attack", Rarity = "Common",
+						Cost = 1, InCardPool = true,
+					};
+					var pmDmg = new EffectSpec { Kind = "Damage", TargetSide = "Enemy" };
+					pmDmg.AmountFormula = "P*0.04";
+					pmCard.Effects.Add(pmDmg);
+					pmProf.Cards.Add(pmCard);
+					string pmSrc = CSharpCodeGen.CardSource(pmProf, pmCard, pmProf.Cards.Count - 1);
+					Check("参数=最大生命、公式 P*0.04：卡面数值里 `??` 被括号包住（不然 `x?.MaxHp ?? 0 * 0.04` 等于满血值）",
+						pmSrc.Contains(")?.MaxHp ?? 0) * (0.04m)", StringComparison.Ordinal)
+						&& !pmSrc.Contains("?? 0 * (0.04m)", StringComparison.Ordinal),
+						pmSrc.Contains("?? 0 * (0.04m)", StringComparison.Ordinal) ? "还是被吃掉了" : "包住了");
+					Check("参数=最大生命、公式 P*0.04：实际出伤那一句仍是 P×0.04（`__pP * (0.04m)`，本来就没问题）",
+						pmSrc.Contains("(__pP * (0.04m))", StringComparison.Ordinal), "对");
+
+					// 红线：不含 `??` 的公式，生成文本不变（X = 当前所有能量）
+					var pmCard2 = new CardSpec
+					{
+						Name = "自检 X 乘二", ClassName = "UiCheckParamX2", CardType = "Attack", Rarity = "Common",
+						Cost = 1, InCardPool = true,
+					};
+					var pmDmg2 = new EffectSpec { Kind = "Damage", TargetSide = "Enemy" };
+					pmDmg2.AmountFormula = "X*2";
+					pmCard2.Effects.Add(pmDmg2);
+					pmProf.Cards.Add(pmCard2);
+					string pmSrc2 = CSharpCodeGen.CardSource(pmProf, pmCard2, pmProf.Cards.Count - 1);
+					Check("（红线）公式 X*2 里 X 是局部变量、不带 `??` → 不加多余括号（生成文本不变）",
+						pmSrc2.Contains("(__X * (2m))", StringComparison.Ordinal)
+						&& !pmSrc2.Contains("((__X)", StringComparison.Ordinal),
+						pmSrc2.Contains("((__X)", StringComparison.Ordinal) ? "多了括号" : "照旧");
+				}
+
+				// ===== 延迟状态类名撞名（用户报的 CS0101 + CS0111：DaqgeForgeDelayedGenRnd 定义了两遍）=====
+				// 根因：`Naming.DelayedPowerSuffix` 的类名只带「种类 + 卡 / 随机范围」，
+				// 而 `CollectDelayedEffects` 的去重键还带着「生成到哪 / 张数 / 附加处理 / 数值=X」——
+				// 两条只在这些栏位上不同的「下回合生效 + 生成卡牌」会被当成两条去生成，
+				// 类名却一模一样 ⇒ cs\DelayedPowers.cs 里同一个类写两遍。
+				{
+					EffectSpec DelayGen(Action<EffectSpec>? tweak = null)
+					{
+						var e = new EffectSpec
+						{
+							Kind = "GenerateCard", SpawnCardId = "", SpawnPick = "Random", SpawnFilter = "",
+							NextTurn = true, Amount = 1m,
+						};
+						tweak?.Invoke(e);
+						return e;
+					}
+					var dn = Naming.From(ProfileFactory.Sample());
+					Check("延迟状态类名（红线）：栏位全默认时还是老的 …ForgeDelayedGenRnd（老存档生成文本不变）",
+						dn.DelayedPowerClass(DelayGen()).EndsWith("ForgeDelayedGenRnd", StringComparison.Ordinal),
+						dn.DelayedPowerClass(DelayGen()));
+					string dnTo = dn.DelayedPowerClass(DelayGen(e => e.SpawnTo = "Draw"));
+					string dnUp = dn.DelayedPowerClass(DelayGen(e => e.SpawnUpgraded = true));
+					string dnCnt = dn.DelayedPowerClass(DelayGen(e => e.SpawnChoice = 2m));
+					Check("延迟状态类名：只差「生成到哪 / 附加处理 / 张数」→ 类名各自不同（不会再撞成同一个类）",
+						dnTo != dn.DelayedPowerClass(DelayGen()) && dnUp != dn.DelayedPowerClass(DelayGen())
+						&& dnCnt != dn.DelayedPowerClass(DelayGen()) && dnTo != dnUp && dnUp != dnCnt && dnTo != dnCnt,
+						dnTo + " / " + dnUp + " / " + dnCnt);
+
+					// 真生成一遍：DelayedPowers.cs 里不许有重复类名，卡牌里引用的类必须都有定义
+					var dupProf = ProfileFactory.Sample();
+					var dupCard = new CardSpec
+					{
+						Name = "自检延迟撞名", ClassName = "UiCheckDelayDup", CardType = "Skill", Rarity = "Common",
+						Cost = 1, InCardPool = true,
+					};
+					dupCard.Effects.Add(DelayGen());
+					dupCard.Effects.Add(DelayGen(e => e.SpawnTo = "Draw"));
+					dupCard.Effects.Add(DelayGen(e => e.SpawnUpgraded = true));
+					dupCard.Effects.Add(DelayGen(e => e.SpawnChoice = 2m));
+					dupProf.Cards.Add(dupCard);
+					string dupSrc = CSharpCodeGen.DelayedPowersSource(dupProf);
+					var dupNames = System.Text.RegularExpressions.Regex
+						.Matches(dupSrc, @"public sealed class (\w+) : PowerModel")
+						.Select(m => m.Groups[1].Value).ToList();
+					var dupRepeats = dupNames.GroupBy(x => x).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+					Check("生成的 DelayedPowers.cs 里没有同名类（以前这里就是 CS0101 / CS0111）",
+						dupRepeats.Count == 0,
+						dupRepeats.Count == 0 ? dupNames.Count + " 个类，全不重名" : "重复：" + string.Join(" / ", dupRepeats));
+					string dupCardSrc = CSharpCodeGen.CardSource(dupProf, dupCard, dupProf.Cards.Count - 1);
+					var dupUsed = System.Text.RegularExpressions.Regex.Matches(dupCardSrc, @"\w*ForgeDelayed\w+")
+						.Select(m => m.Value)
+						.Where(u => u.Contains("Gen") || u.Contains("Copy") || u.Contains("Trans") || u.Contains("Global"))
+						.Distinct().ToList();
+					var dupMissing = dupUsed.Where(u => !dupNames.Contains(u)).ToList();
+					Check("卡牌里引用的延迟类都在 DelayedPowers.cs 里有定义",
+						dupMissing.Count == 0 && dupUsed.Count > 0,
+						dupMissing.Count == 0 ? "都定义了（" + dupUsed.Count + " 个）" : "缺：" + string.Join(" / ", dupMissing));
+				}
+
+				// ===== V0.2.255（用户要求「让状态进组，然后在清空指定状态的效果里可以选组」）=====
+				{
+					var pgProf = ProfileFactory.Sample();
+					pgProf.CardGroups.Clear();
+					var pgGroup = new CardGroupSpec { Id = "pggroup", Name = "减益组" };
+					pgProf.CardGroups.Add(pgGroup);
+					// 组里放两个状态：一个本体（WeakPower）、一个自己的（自定义状态）
+					pgGroup.PowerIds = new List<string> { "WeakPower", "UiCheckPgPower" };
+					pgProf.CustomPowers.Clear();
+					var pgPower = new CustomPowerSpec { Name = "自检组状态", ClassName = "UiCheckPgPower", Enabled = true, Type = "Buff" };
+					pgPower.Triggers.Add(new PowerTriggerSpec { Kind = "TurnStart" });
+					pgProf.CustomPowers.Add(pgPower);
+
+					var pgCard = new CardSpec { Name = "自检清空组", ClassName = "UiCheckPgClear", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill" };
+					pgCard.Effects.Add(new EffectSpec { Kind = "ClearPowerOne", Amount = 1m, TargetSide = "Enemy", PowerGroup = "pggroup" });
+					pgProf.Cards.Add(pgCard);
+					string pgSrc = CSharpCodeGen.CardSource(pgProf, pgCard, 0);
+					Check("V0.2.255：「清除指定状态」选组 → 把组里每个状态各展开一句清除（本体状态 + 自己的状态都在）",
+						pgSrc.Contains("__clr_WeakPower") && pgSrc.Contains("__clr_UiCheckPgPower")
+						&& pgSrc.Contains("清除组里的所有状态"), "组展开了");
+					Check("V0.2.255：校验器提示「用的是组「减益组」→ 会把这 2 个状态全部清掉」",
+						ProfileValidator.Validate(pgProf).Any((ValidationIssue i) => i.Message.Contains("减益组") && i.Message.Contains("全部")),
+						string.Join(" ｜ ", ProfileValidator.Validate(pgProf).Where(i => i.Message.Contains("清除指定状态")).Select(i => i.Message).Take(2)));
+
+					// 空组 → 警告（不然用户以为清掉了）
+					pgGroup.PowerIds = new List<string>();
+					Check("V0.2.255：组里一个状态都没有 → 校验器警告「什么都不会清」",
+						ProfileValidator.Validate(pgProf).Any((ValidationIssue i) => i.Message.Contains("一个状态都没有")), "警告了");
+
+					// 没选组 → 和以前逐字一致（只清那一个状态）
+					pgCard.Effects[0].PowerGroup = "";
+					pgCard.Effects[0].PowerId = "WeakPower";
+					Check("V0.2.255：（对照）没选组 → 生成文本和以前一样（只清那一个状态）",
+						CSharpCodeGen.CardSource(pgProf, pgCard, 0).Contains("PowerModel? __clrPower = ")
+						&& !CSharpCodeGen.CardSource(pgProf, pgCard, 0).Contains("清除组里的所有状态"), "照旧");
+				}
+
+				// ===== V0.2.256（用户报「弹窗 配置解析失败：The JSON value could not be converted to
+				// System.String. Path: $.Version」）=====
+				// 手写 / 复制粘贴的存档里，本该是字符串的项被写成数字或 true → 以前整份读不进来。
+				// 现在宽容：数字 / 布尔按原文当字符串读；我们自己写出去的格式仍然是带引号的字符串。
+				{
+					var lenProf = ProfileFactory.Sample();
+					string lenJson = System.Text.Json.JsonSerializer.Serialize(lenProf, ProfileFactory.JsonOpts);
+					Check("V0.2.256：我们自己写出去的存档里 Version 仍然是带引号的字符串（格式不变）",
+						lenJson.Contains("\"Version\": \"v1.0.0\""), "格式没变");
+					string badJson = lenJson.Replace("\"Version\": \"v1.0.0\"", "\"Version\": 1.5");
+					string tmpPath = Path.Combine(Path.GetTempPath(), "uicheck_lenient_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+					try
+					{
+						File.WriteAllText(tmpPath, badJson);
+						bool ok = true; string ver = ""; string err = "";
+						try { var back = ProfileFactory.Load(tmpPath); ver = back.Version; }
+						catch (Exception ex) { ok = false; err = ex.Message; }
+						Check("V0.2.256：存档里 \"Version\": 1.5（数字）也能读进来（以前整份报「配置解析失败」）",
+							ok && ver == "1.5", ok ? $"Version={ver}" : err);
+					}
+					finally { try { File.Delete(tmpPath); } catch { } }
+				}
+
+				// ===== V0.2.257（用户报「还是无法选进组」）=====
+				// 真因：右边那个「这个组里有哪些状态」是按**选中的组**算的，但切组时只通知了 GroupCardRows，
+				// 没通知 GroupPowerRows —— 它一直停在载入时那次求值（空列表），所以右列永远没有可勾的行。
+				{
+					var gpProf = ProfileFactory.Sample();
+					gpProf.CardGroups.Clear();
+					var gpGroup = new CardGroupSpec { Id = "gprot", Name = "自检组" };
+					gpProf.CardGroups.Add(gpGroup);
+					gpProf.CustomPowers.Clear();
+					gpProf.CustomPowers.Add(new CustomPowerSpec { Name = "自检状态A", ClassName = "UiCheckGpA", Enabled = true });
+					gpProf.CustomPowers.Add(new CustomPowerSpec { Name = "自检状态B", ClassName = "UiCheckGpB", Enabled = true });
+
+					var gpRows = PowerGroupMemberRow.Build(gpProf, gpGroup);
+					Check("V0.2.257：状态勾选列表真的能生成行（至少含你自己的两个状态）",
+						gpRows.Any(r => r.PowerId == "UiCheckGpA") && gpRows.Any(r => r.PowerId == "UiCheckGpB"),
+						$"共 {gpRows.Count} 行");
+					Check("V0.2.257：状态勾选列表里也含本体状态（清「一组减益」时要能勾虚弱 / 易伤这类）",
+						gpRows.Any(r => r.PowerId == "WeakPower") || EffectCatalog.Powers.Count == 0,
+						$"本体状态 {EffectCatalog.Powers.Count} 条");
+
+					// 勾上 = 真的写进组里（并且能读回来）
+					MainWindow.SetPowerGroupMembership(gpProf, gpGroup, "UiCheckGpA", true);
+					MainWindow.SetPowerGroupMembership(gpProf, gpGroup, "WeakPower", true);
+					Check("V0.2.257：勾选「自检状态A / 虚弱」后组里真的记下了",
+						gpGroup.PowerIdList.Contains("UiCheckGpA") && gpGroup.PowerIdList.Contains("WeakPower"),
+						string.Join(",", gpGroup.PowerIdList));
+					Check("V0.2.257：重新生成行时那两个是**已勾选**状态（勾上不会立刻掉回去）",
+						PowerGroupMemberRow.Build(gpProf, gpGroup).Where(r => r.PowerId is "UiCheckGpA" or "WeakPower").All(r => r.IsChecked),
+						"已勾选");
+
+					// 取消勾选
+					MainWindow.SetPowerGroupMembership(gpProf, gpGroup, "UiCheckGpA", false);
+					Check("V0.2.257：取消勾选后组里也去掉了",
+						!gpGroup.PowerIdList.Contains("UiCheckGpA") && gpGroup.PowerIdList.Contains("WeakPower"),
+						string.Join(",", gpGroup.PowerIdList));
+				}
+
+				// ===== V0.2.259（用户报「临时护卫加了没用，而且越来越多」）=====
+				// 护卫 GuardedPower 本体是 Single + Instanced：层数恒为 1、且每施加一次就是新实例 →
+				// 「临时 +1 / 回合结束 -1」只会越堆越多、还撤不干净。这类状态要按**存在性**处理。
+				{
+					var tpProf = ProfileFactory.Sample();
+					var tpCard = new CardSpec { Name = "自检临时护卫", ClassName = "UiCheckTpCard", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Skill" };
+					tpCard.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "GuardedPower", Amount = 1m, TargetSide = "Self" });
+					tpCard.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "Self" });
+					tpProf.Cards.Add(tpCard);
+					string tpSrc = CSharpCodeGen.TempPowersSource(tpProf);
+					int gStart = tpSrc.IndexOf("class " + Naming.From(tpProf).TempPowerClass(tpCard.Effects[0]), StringComparison.Ordinal);
+					int gEnd = gStart >= 0 ? tpSrc.IndexOf("public sealed class", gStart + 10, StringComparison.Ordinal) : -1;
+					string gBody = gStart >= 0 ? tpSrc.Substring(gStart, (gEnd > gStart ? gEnd : tpSrc.Length) - gStart) : "";
+					Check("V0.2.259：临时「护卫」（本体 Single 状态）按存在性处理 → 只挂一个，不做 +1 叠层",
+						gBody.Contains("if (target.GetPower<GuardedPower>() is null)") && gBody.Contains("Apply<GuardedPower>"),
+						gBody.Length == 0 ? "(没生成那个类)" : "存在性语义在");
+					Check("V0.2.259：临时「护卫」回合结束是把状态**整个摘掉**，不是按层数撤（以前会撤成 0 / 负数堆实例）",
+						gBody.Contains("await PowerCmd.Remove(__back);") && !gBody.Contains("__amount = -base.Amount"),
+						gBody.Contains("__amount = -base.Amount") ? "还在按层数撤" : "整个移除");
+					Check("V0.2.259：（对照）临时「力量」（Counter 状态）仍然按层数加 / 撤（行为不变）",
+						tpSrc.Contains("PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, __amount"), "力量照旧");
+				}
+
+				// ===== V0.2.260（用户要求）：先古道具专属勾选 =====
+				// 「替换古老牙齿所替换的初始卡牌」/「作为尘封魔典给的先古卡」/「替换欧洛巴斯之触所替换的初始遗物」
+				{
+					var aiProf = ProfileFactory.Sample();
+					var aiAncient = new CardSpec { Name = "自检先古卡", ClassName = "UiCheckAiAncient", CardType = "Skill", Rarity = "Ancient", Cost = 1 };
+					aiProf.AncientCards.Add(aiAncient);
+					var aiRelic = new RelicSpec { Name = "自检先古遗物", ClassName = "UiCheckAiRelic", Rarity = "Ancient", Trigger = "CombatStart" };
+					aiProf.Relics.Add(aiRelic);
+
+					// 都不勾 → 一个文件都不多（生成文本逐字不变）
+					Check("V0.2.260：（对照）三个勾都不勾时**不生成** AncientItemPatches（老存档一个文件都不多）",
+						!AncientItemPatchGen.Needs(aiProf), "没生成");
+
+					aiAncient.ToothReplace = true;
+					aiAncient.DustyTomeGrant = true;
+					aiRelic.OrobasReplace = true;
+					string aiSrc = AncientItemPatchGen.Source(aiProf);
+					Check("V0.2.260：勾了「古老牙齿」→ 生成 Arc…Tooth 前缀，用 SetupForTests 把初始卡 + 这张先古卡定好",
+						aiSrc.Contains("typeof(ArchaicTooth)") && aiSrc.Contains("__instance.SetupForTests(starter.ToSerializable(), ancient.ToSerializable())"),
+						aiSrc.Length == 0 ? "(没生成)" : "补丁在");
+					Check("V0.2.260：勾了「尘封魔典」→ 生成 DustyTome 前缀，直接把 AncientCard 定成这张卡",
+						aiSrc.Contains("typeof(DustyTome)") && aiSrc.Contains("__instance.AncientCard = ModelDb.Card<UiCheckAiAncient>().Id"),
+						"补丁在");
+					Check("V0.2.260：勾了「欧洛巴斯之触」→ 生成 TouchOfOrobas 前缀，初始遗物换成这只",
+						aiSrc.Contains("typeof(TouchOfOrobas)") && aiSrc.Contains("SetupForTests(starter.Id, ModelDb.Relic<UiCheckAiRelic>().Id)"),
+						"补丁在");
+					Check("V0.2.260：每个补丁都先判「这是不是本模组角色」（别的角色 return true 走本体）",
+						System.Text.RegularExpressions.Regex.Matches(aiSrc, "Character is not").Count >= 3, "有判断");
+					// V0.2.263（用户报「欧罗巴斯的两个遗物都没办法正常生效」+「古老牙齿换出来的先古卡跑进尘封魔典」）：
+					// 真正生效的是 AfterObtained，两个都要接过来；另外尘封魔典要排掉我们的「古老牙齿专用」卡
+					Check("V0.2.263：古老牙齿 → 还生成 AfterObtained 前缀，直接把那张初始卡 Transform 成这张先古卡",
+						aiSrc.Contains("typeof(ArchaicTooth), nameof(ArchaicTooth.AfterObtained)") && aiSrc.Contains("await CardCmd.Transform(starter, ancient);"),
+						"AfterObtained 补丁在");
+					Check("V0.2.263：欧洛巴斯之触 → 还生成 AfterObtained 前缀，直接 RelicCmd.Replace 成这只",
+						aiSrc.Contains("typeof(TouchOfOrobas), nameof(TouchOfOrobas.AfterObtained)") && aiSrc.Contains("await RelicCmd.Replace(starter, replace);"),
+						"AfterObtained 补丁在");
+					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
+					var aiExProf = ProfileFactory.Sample();
+					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
+					aiExProf.AncientCards.Add(aiToothOnly);
+					string aiExSrc = AncientItemPatchGen.Source(aiExProf);
+					Check("V0.2.263：尘封魔典的随机池里排掉「古老牙齿专用」的先古卡（本体只排它自己那 5 张）",
+						aiExSrc.Contains("DustyTomeExcludePatch") && aiExSrc.Contains("c is not UiCheckToothOnly"),
+						aiExSrc.Contains("DustyTomeExcludePatch") ? "排掉了" : "没排（会随机给到牙齿那张）");
+					Check("V0.2.260：古老牙齿换掉的初始卡 = 初始卡组里那张（生成里出现 CreateCard<…>(player)）",
+						aiSrc.Contains("player.RunState.CreateCard<"), "有");
+
+					// V0.2.264（用户报「被古老牙齿替换的初始卡底下的下拉选项还是只有范例卡」）：
+					// 那个下拉的候选按「当前存档的牌」算，但以前从来没 Raise 过 —— ComboBox 只在第一次绑定时取一次，
+					// 于是载入别的存档后它一直显示启动时那份（示例）存档的牌。这里钉住「牌表一变就通知」。
+					{
+						var raiseNames = new List<string>();
+						void OnRaised(object? s, System.ComponentModel.PropertyChangedEventArgs ev) => raiseNames.Add(ev.PropertyName ?? "");
+						PropertyChanged += OnRaised;
+						try { RefreshCardChoices(); }
+						finally { PropertyChanged -= OnRaised; }
+						Check("V0.2.264：刷新卡牌候选时会通知「ToothStarterChoices」（否则那个下拉一直显示启动时那份示例存档的牌）",
+							raiseNames.Contains("ToothStarterChoices"), "通知了 " + raiseNames.Count + " 个项目");
+						// 排序：真正的「自己的牌」排在默认项之后；打击 / 防御那种范例牌排到最后
+						var ownReal = _profile.AllCards.FirstOrDefault(c => !c.IsVanillaCard && !IsSampleBasic(c));
+						if (ownReal is not null)
+							Check("V0.2.264：下拉里**自己的牌**排在最前（打击 / 防御那种范例牌排到最后，并标出来）",
+								ToothStarterChoices.Count > 1 && ToothStarterChoices[1].Display.Contains(ownReal.Name)
+								&& ToothStarterChoices[ToothStarterChoices.Count - 1].Display.Contains("范例牌"),
+								ToothStarterChoices.Count > 1 ? ToothStarterChoices[1].Display : "(空)");
+					}
+
+					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
+					var aiStarter = new CardSpec { Name = "自检初始卡", ClassName = "UiCheckAiStarter", CardType = "Attack", Rarity = "Basic", Cost = 1, InStartingDeck = true, StartingCopies = 4 };
+					aiProf.Cards.Add(aiStarter);
+					Check("V0.2.261：没指定时用「自动」（初始卡组里第一张）",
+						AncientItemPatchGen.StarterCardFor(aiProf, aiAncient)?.ClassName == AncientItemPatchGen.StarterCardFor(aiProf)?.ClassName,
+						AncientItemPatchGen.StarterCardFor(aiProf, aiAncient)?.Name ?? "(null)");
+					aiAncient.ToothStarterClass = Naming.From(aiProf).CardClassName(aiProf, aiStarter);
+					string aiSrc2 = AncientItemPatchGen.Source(aiProf);
+					Check("V0.2.261：指定了「被换掉的初始卡」→ 生成里用的就是那张（CreateCard<UiCheckAiStarter>）",
+						aiSrc2.Contains("player.RunState.CreateCard<UiCheckAiStarter>(player)"), "用的指定那张");
+					aiAncient.ToothStarterClass = "ThisCardDoesNotExist";
+					Check("V0.2.261：指定的类名找不到 → 自动退回初始卡组第一张 + 校验器给警告",
+						!AncientItemPatchGen.Source(aiProf).Contains("CreateCard<ThisCardDoesNotExist>")
+						&& ProfileValidator.Validate(aiProf).Any((ValidationIssue i) => i.Message.Contains("找不到") && i.Message.Contains("初始卡组里第一张")),
+						"退回了");
+					aiAncient.ToothStarterClass = "";
+
+					// 勾两张 → 校验器报错
+					var aiAncient2 = new CardSpec { Name = "自检先古卡2", ClassName = "UiCheckAiAncient2", CardType = "Skill", Rarity = "Ancient", Cost = 1, DustyTomeGrant = true };
+					aiProf.AncientCards.Add(aiAncient2);
+					Check("V0.2.260：两张都勾「尘封魔典」→ 校验器报错（一次只给一张）",
+						ProfileValidator.Validate(aiProf).Any((ValidationIssue i) => i.Message.Contains("尘封魔典") && i.Message.Contains("只留一张")),
+						"报错了");
+				}
+			}
+		}
 		CharacterProfile poisonedProbe = ProfileFactory.Sample();
 		CardSpec poisonCardProbe = new CardSpec { Name = "自检中毒卡", ClassName = "UiCheckPoisonHint", Rarity = "Common", InCardPool = true };
 		poisonCardProbe.Effects.Clear();
@@ -21778,6 +24626,219 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			{
 				try { if (Directory.Exists(pileRoot)) Directory.Delete(pileRoot, recursive: true); } catch { }
 			}
+			// ===== V0.2.213（用户报的「变化卡牌没有取几张这个选项，也没法选择目标卡或者组内的牌进行变化」）=====
+			// ① 锻造页（IsForgeChain）的「取几张」以前走的是那份**旧的 6 种清单** → 变化卡牌上看不到这一栏；
+			// ② 变化卡牌只能整摞挑，没法限定「只变化这一类 / 这一组 / 指定的那张卡」。
+			{
+				Check("V0.2.213：锻造页上「变化卡牌」也有「取几张」（以前锻造链走旧清单，这一栏看不到）",
+					new EffectSpec { Kind = "TransformCard", IsForgeChain = true, IsCardChain = false }.ShowCountModeRow
+					&& new EffectSpec { Kind = "CopyCard", IsForgeChain = true, IsCardChain = false }.ShowCountModeRow
+					&& new EffectSpec { Kind = "PlaceCard", IsForgeChain = true, IsCardChain = false }.ShowCountModeRow,
+					$"forge: TransformCard={new EffectSpec { Kind = "TransformCard", IsForgeChain = true }.ShowCountModeRow} "
+					+ $"CopyCard={new EffectSpec { Kind = "CopyCard", IsForgeChain = true }.ShowCountModeRow}");
+				Check("V0.2.213：（红线）卡牌页上「变化卡牌」的「取几张」照旧显示（判据没被削）",
+					new EffectSpec { Kind = "TransformCard", IsCardChain = true }.ShowCountModeRow
+					&& !new EffectSpec { Kind = "Damage", IsCardChain = true }.ShowCountModeRow, "卡牌页照旧");
+				var tfRows = new EffectSpec { Kind = "TransformCard" };
+				Check("V0.2.213：「变化哪些牌 / 只变化这张卡」只在「变化卡牌」上出现（别的种类不显示）",
+					tfRows.UsesTransformPick && !new EffectSpec { Kind = "GenerateCard" }.UsesTransformPick
+					&& !new EffectSpec { Kind = "TransformCardGlobal" }.UsesTransformPick, "只有变化卡牌");
+				tfRows.TransformPick = "Attack";
+				Check("V0.2.213：填了「变化哪些牌（范围）」→ HasTransformPick，并且列表里写得出「只变化：攻击」",
+					tfRows.HasTransformPick && tfRows.HasTransformSourceFilter
+					&& tfRows.TransformPickListText.Contains("只变化") && tfRows.TransformPickZh.Contains("攻击"),
+					tfRows.TransformPickListText);
+				// ⚠ V0.2.221：这里必须用**本存档里真的有的**卡牌类名（Sample 的 SevenCurse）——
+				// 校验器现在会拦「只对这张卡 / 只变化这张卡」填了认不出来的类名（不然生成的工程编译不过）。
+				tfRows.ScopeCardId = "SevenCurse";
+				Check("V0.2.213：填了「只变化这张卡」→ 以它为准（列表里也换成那张卡）",
+					tfRows.HasScopeCardId && tfRows.TransformPickListText.Contains("SevenCurse"),
+					tfRows.TransformPickListText);
+
+				// 生成：三条路（自己选 / 全部 / 随机）+ 老行为对照
+				CharacterProfile tfProf = ProfileFactory.Sample();
+				CardSpec tfCard = new CardSpec { Name = "自检只变化", ClassName = "UiCheckTransformFilter", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var tfChosen = new EffectSpec { Kind = "TransformCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", TransformPick = "Attack", TargetSide = "Self" };
+				var tfAll = new EffectSpec { Kind = "TransformCard", Amount = 1m, SelectPile = "Draw", CardPick = "Random", CountMode = "All", ScopeCardId = "SevenCurse", TargetSide = "Self" };
+				var tfOld = new EffectSpec { Kind = "TransformCard", Amount = 2m, SelectPile = "Draw", CardPick = "Random", TargetSide = "Self" };
+				tfCard.Effects.Add(tfChosen);
+				tfCard.Effects.Add(tfAll);
+				tfCard.Effects.Add(tfOld);
+				tfProf.Cards.Add(tfCard);
+				string tfSrc = CSharpCodeGen.CardSource(tfProf, tfCard, 0);
+				Check("V0.2.213：「自己选」那条路把范围当成选牌过滤条件（filter: c => …）",
+					tfSrc.Contains("filter: c => c.Type == CardType.Attack", StringComparison.Ordinal), "有 filter");
+				Check("V0.2.213：写一行 CET:ChangePick / CET:ChangeCard 标记（回读靠它，从代码反推不回来）",
+					tfSrc.Contains("CET:ChangePick=Attack", StringComparison.Ordinal)
+					&& tfSrc.Contains("CET:ChangeCard=SevenCurse", StringComparison.Ordinal), "有标记");
+				Check("V0.2.213：「取几张 = 全部」那条路在候选牌上套「只变化这张卡」的条件",
+					tfSrc.Contains(".Where(c => c.Id == ModelDb.Card<", StringComparison.Ordinal), "套上了");
+				Check("V0.2.213：（红线）两栏都空时生成文本与以前一样（随机那条路没有多出任何 .Where）",
+					tfSrc.Split(".Where(c => c.Id ==").Length - 1 == 1
+					&& tfSrc.Contains("Rng.CombatCardSelection.NextItem(PileType.Draw.GetPile(base.Owner).Cards)", StringComparison.Ordinal),
+					"没多写");
+				Check("V0.2.213：卡面写清「只变化…」（玩家看得出它只动某一类牌）",
+					LocalizationGen.CardsJson(tfProf).Contains("只变化", StringComparison.Ordinal),
+					LocalizationGen.CardsJson(tfProf).Contains("只变化") ? "写了" : "(没写)");
+
+				// 回读：这两栏要认得回来
+				string tfRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_tf_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					tfProf.Paths.OutputDir = tfRoot;
+					tfProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					tfProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var tfGen = ModGenerator.Generate(tfProf);
+					Check("（准备）带「只变化」的存档能生成工程", tfGen.Success,
+						tfGen.Success ? tfGen.ProjectRoot : string.Join(" ｜ ", tfGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (tfGen.Success)
+					{
+						var tfRec = ProjectRecovery.FromProject(tfGen.ProjectRoot);
+						CardSpec? tfBack = tfRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckTransformFilter");
+						Check("V0.2.213：回读「变化哪些牌（范围）」认得回来（CET:ChangePick）",
+							tfBack is not null && tfBack.Effects.Any((EffectSpec x) => x.Kind == "TransformCard" && x.TransformPick == "Attack"),
+							tfBack is null ? "(没回读出来)" : string.Join("、", tfBack.Effects.Select((EffectSpec x) => $"{x.Kind}|{x.TransformPick}|{x.ScopeCardId}")));
+						Check("V0.2.213：回读「只变化这张卡」认得回来（CET:ChangeCard）",
+							tfBack is not null && tfBack.Effects.Any((EffectSpec x) => x.Kind == "TransformCard" && x.ScopeCardId == "SevenCurse"),
+							tfBack is null ? "(没回读出来)" : string.Join("、", tfBack.Effects.Select((EffectSpec x) => $"{x.Kind}|{x.TransformPick}|{x.ScopeCardId}")));
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(tfRoot)) Directory.Delete(tfRoot, recursive: true); } catch { }
+				}
+			}
+			// ===== V0.2.214（用户报的「丢弃消耗卡牌无法选择目标卡或者组」）=====
+			// 「范围界定」只能按类型 / 组筛，没有「就这一张卡」。现在补「只对这张卡（指定）」：
+			// 丢弃 / 消耗 / 升级 / 复制 / 重放 / 给关键词 / 从三摞拿牌 / 预见 上都有；
+			// 和「范围界定」是**与**的关系；变化卡牌不显示这一行（它有自己那两行）。
+			{
+				Check("V0.2.214：「只对这张卡」在丢弃 / 消耗 / 升级 / 复制 / 给关键词 上都显示，变化卡牌不显示这一行（它有自己那两行）",
+					new EffectSpec { Kind = "DiscardCard" }.UsesScopeCardFilterRow
+					&& new EffectSpec { Kind = "ExhaustCard" }.UsesScopeCardFilterRow
+					&& new EffectSpec { Kind = "UpgradeCard" }.UsesScopeCardFilterRow
+					&& new EffectSpec { Kind = "CopyCard" }.UsesScopeCardFilterRow
+					&& new EffectSpec { Kind = "GiveKeyword" }.UsesScopeCardFilterRow
+					&& !new EffectSpec { Kind = "TransformCard" }.UsesScopeCardFilterRow
+					&& !new EffectSpec { Kind = "Damage" }.UsesScopeCardFilterRow,
+					$"Discard={new EffectSpec { Kind = "DiscardCard" }.UsesScopeCardFilterRow} / Transform={new EffectSpec { Kind = "TransformCard" }.UsesScopeCardFilterRow}");
+				var ocExhaust = new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", ScopeCardId = "SevenCurse", TargetSide = "Self" };
+				Check("V0.2.214：设了「只对这张卡」→ HasScopeCardId / HasCardSourceFilter，列表里写得出「只对：SevenCurse」",
+					ocExhaust.HasScopeCardId && ocExhaust.HasCardSourceFilter && ocExhaust.ScopeCardListText.Contains("只对"),
+					ocExhaust.ScopeCardListText);
+
+				CharacterProfile ocProf = ProfileFactory.Sample();
+				CardSpec ocCard = new CardSpec { Name = "自检只对一张", ClassName = "UiCheckOnlyCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var ocChosen = new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", ScopeCardId = "SevenCurse", TargetSide = "Self" };
+				var ocBoth = new EffectSpec { Kind = "DiscardCard", Amount = 2m, SelectPile = "Draw", CardPick = "Random", SpawnFilter = "Attack", ScopeCardId = "SevenCurse", TargetSide = "Self" };
+				var ocAll = new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Random", CountMode = "All", ScopeCardId = "SevenCurse", TargetSide = "Self" };
+				ocCard.Effects.Add(ocChosen);
+				ocCard.Effects.Add(ocBoth);
+				ocCard.Effects.Add(ocAll);
+				ocProf.Cards.Add(ocCard);
+				string ocSrc = CSharpCodeGen.CardSource(ocProf, ocCard, 0);
+				Check("V0.2.214：（消耗·自己选）把「只对这张卡」当成选牌过滤条件（filter: c => c.Id == …）",
+					ocSrc.Contains("filter: c => c.Id == ModelDb.Card<", StringComparison.Ordinal), "有 filter");
+				Check("V0.2.214：（丢弃·随机）「范围界定」和「只对这张卡」是**与**的关系（两个条件都在同一条 .Where 里）",
+					ocSrc.Contains("(c.Type == CardType.Attack) && (c.Id == ModelDb.Card<", StringComparison.Ordinal), "与关系");
+				Check("V0.2.214：（消耗·取几张=全部）候选池也按「只对这张卡」筛",
+					ocSrc.Contains(".Where(c => c.Id == ModelDb.Card<", StringComparison.Ordinal), "筛了");
+				Check("V0.2.214：标记行写 CET:OnlyCard=（回读靠它；默认档没有这一项 → 老存档逐字不变）",
+					ocSrc.Contains("CET:OnlyCard=SevenCurse", StringComparison.Ordinal), "有标记");
+				// 红线：没设「只对这张卡」时标记行里没有 CET:OnlyCard、也没有多出来的过滤（用源码对拍，不调 internal API）
+				{
+					CharacterProfile ocPlainProf = ProfileFactory.Sample();
+					CardSpec ocPlainCard = new CardSpec { Name = "自检只对一张对照", ClassName = "UiCheckOnlyCardPlain", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					ocPlainCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", TargetSide = "Self" });
+					ocPlainProf.Cards.Add(ocPlainCard);
+					string ocPlainSrc = CSharpCodeGen.CardSource(ocPlainProf, ocPlainCard, 0);
+					Check("V0.2.214：（红线）没设「只对这张卡」时源码里没有 CET:OnlyCard、选牌 filter 仍是 null（老存档逐字不变）",
+						!ocPlainSrc.Contains("CET:OnlyCard", StringComparison.Ordinal)
+						&& ocPlainSrc.Contains("filter: null, source: this", StringComparison.Ordinal)
+						&& ocSrc.Split("CET:OnlyCard=").Length - 1 == 3,
+						$"对照：OnlyCard={ocPlainSrc.Contains("CET:OnlyCard")} / filter: null={ocPlainSrc.Contains("filter: null, source: this")} / 本条 {ocSrc.Split("CET:OnlyCard=").Length - 1} 个标记");
+				}
+				Check("V0.2.214：卡面写清「只对」",
+					LocalizationGen.CardsJson(ocProf).Contains("只对", StringComparison.Ordinal), "写了");
+
+				string ocRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_oc_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					ocProf.Paths.OutputDir = ocRoot;
+					ocProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					ocProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var ocGen = ModGenerator.Generate(ocProf);
+					Check("（准备）带「只对这张卡」的存档能生成工程", ocGen.Success,
+						ocGen.Success ? ocGen.ProjectRoot : string.Join(" ｜ ", ocGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (ocGen.Success)
+					{
+						var ocRec = ProjectRecovery.FromProject(ocGen.ProjectRoot);
+						CardSpec? ocBack = ocRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckOnlyCard");
+						Check("V0.2.214：回读「只对这张卡」认得回来（CET:OnlyCard）",
+							ocBack is not null && ocBack.Effects.Count((EffectSpec x) => x.ScopeCardId == "SevenCurse") == 3,
+							ocBack is null ? "(没回读出来)" : string.Join("、", ocBack.Effects.Select((EffectSpec x) => $"{x.Kind}|{x.ScopeCardId}")));
+					}
+				}
+				finally
+				{
+					try { if (Directory.Exists(ocRoot)) Directory.Delete(ocRoot, recursive: true); } catch { }
+				}
+			}
+			// ===== V0.2.215（用户截图报的「虚化」生成失败）=====
+			// 锻造卡【能量】模块的「打出时消耗的能量」写 X 以前被校验拦成「必须是编译期常量」，
+			// 可那一栏的提示里明明写着「X = 消耗掉的能量」（本体 HasEnergyCostX 那套）。
+			// 现在 X / Y 真的接上了：构造函数写 0 + HasEnergyCostX / HasStarCostX + __X 走 ResolveEnergyXValue。
+			{
+				CharacterProfile xcProf = ProfileFactory.Sample();
+				var xcCard = new CardSpec { Name = "自检X费锻造", ClassName = "UiCheckXCostForged", CardType = "Skill", Rarity = "Common", Cost = 1, IsForged = true, InCardPool = true };
+				var xcGraph = new ForgeGraphSpec();
+				var xcTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				xcTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var xcEnergy = new ForgeNodeSpec { Kind = "Energy" };
+				xcEnergy.SetField("EnergyCost", "X");
+				var xcEff = new ForgeNodeSpec { Kind = "Effect" };
+				xcEff.SetField("Effect", "Damage");
+				xcEff.SetField("Amount", "X");
+				xcGraph.Nodes.AddRange(new[] { xcTrig, xcEnergy, xcEff });
+				xcGraph.Links.Add(new ForgeLinkSpec { From = xcTrig.Id, To = xcEff.Id });
+				xcCard.ForgeGraph = xcGraph;
+				xcProf.Cards.Add(xcCard);
+				Check("V0.2.215：锻造卡【能量】写 X → 校验器不再拦（以前那条「必须是编译期常量」）",
+					!ProfileValidator.Validate(xcProf).Any((ValidationIssue i) => i.IsError
+						&& i.Message.Contains("打出时消耗的能量", StringComparison.Ordinal)
+						&& i.Message.Contains("编译期常量", StringComparison.Ordinal)),
+					ProfileValidator.Validate(xcProf).FirstOrDefault((ValidationIssue i) => i.IsError)?.Message ?? "没有错误");
+				Check("V0.2.215：写 X 之后这张牌被当成 X 费（IsCostX → 构造函数费用 0）",
+					CSharpCodeGen.IsCostX(xcCard) && CSharpCodeGen.CardCostOf(xcProf, xcCard) == 0,
+					$"IsCostX={CSharpCodeGen.IsCostX(xcCard)} cost={CSharpCodeGen.CardCostOf(xcProf, xcCard)}");
+				string xcSrc = CSharpCodeGen.CardSource(xcProf, xcCard, 0);
+				Check("V0.2.215：生成 HasEnergyCostX + `base(0, …)`（本体「天际钻头 / 挽歌」那套）",
+					xcSrc.Contains("protected override bool HasEnergyCostX => true;", StringComparison.Ordinal)
+					&& xcSrc.Contains(": base(0, CardType.Skill", StringComparison.Ordinal), "X 费");
+				Check("V0.2.215：图里的 X = **打出时消耗掉的**能量（`base.ResolveEnergyXValue()`），不是「剩余能量」",
+					xcSrc.Contains("decimal __X = base.ResolveEnergyXValue();", StringComparison.Ordinal)
+					&& !xcSrc.Contains("decimal __X = ForgeFormulaRuntime.Energy(__fgPlayer);", StringComparison.Ordinal), "走 ResolveEnergyXValue");
+				// 红线：费用那栏写普通数字时，__X 仍然是「剩余能量」那套（老存档逐字不变）
+				var xcPlain = new CardSpec { Name = "自检普通费锻造", ClassName = "UiCheckPlainCostForged", CardType = "Skill", Rarity = "Common", Cost = 1, IsForged = true, InCardPool = true };
+				var xcPlainGraph = new ForgeGraphSpec();
+				var xcPlainTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				xcPlainTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var xcPlainEnergy = new ForgeNodeSpec { Kind = "Energy" };
+				xcPlainEnergy.SetField("EnergyCost", "2");
+				var xcPlainEff = new ForgeNodeSpec { Kind = "Effect" };
+				xcPlainEff.SetField("Effect", "Damage");
+				xcPlainEff.SetField("Amount", "6");
+				xcPlainGraph.Nodes.AddRange(new[] { xcPlainTrig, xcPlainEnergy, xcPlainEff });
+				xcPlainGraph.Links.Add(new ForgeLinkSpec { From = xcPlainTrig.Id, To = xcPlainEff.Id });
+				xcPlain.ForgeGraph = xcPlainGraph;
+				xcProf.Cards.Add(xcPlain);
+				string xcPlainSrc = CSharpCodeGen.CardSource(xcProf, xcPlain, 0);
+				Check("V0.2.215：（红线）费用写普通数字时照旧 —— 没有 HasEnergyCostX、__X 还是「剩余能量」",
+					!CSharpCodeGen.IsCostX(xcPlain)
+					&& !xcPlainSrc.Contains("HasEnergyCostX", StringComparison.Ordinal)
+					&& xcPlainSrc.Contains("decimal __X = ForgeFormulaRuntime.Energy(__fgPlayer);", StringComparison.Ordinal)
+					&& CSharpCodeGen.CardCostOf(xcProf, xcPlain) == 2, "老样子");
+			}
 		}
 		// 悬停提示：卡面 / 遗物 / 药水里提到的状态要能弹说明（本体状态改写后就是新名字 + 新描述；自定义状态同理）
 		CharacterProfile hoverProbe = ProfileFactory.Sample();
@@ -22333,9 +25394,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				CSharpCodeGen.UsesTempUpgrade(spProbe)
 				&& CSharpCodeGen.TempUpgradePowerSource(spProbe).Contains("public void Track(CardModel card)")
 				&& CSharpCodeGen.TempUpgradePowerSource(spProbe).Contains("CardCmd.Downgrade(card);"), "对");
-			Check("范围限定 / 取卡方式的下拉选项齐全（不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态）",
-				SpawnFilters.Count == 6 && SpawnPicks.Count == 2
-				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" }),
+			Check("范围限定 / 取卡方式的下拉选项齐全（不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务）",
+				SpawnFilters.Count == 7 && SpawnPicks.Count == 2
+				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status", "Quest" }),
 				string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
 			// 需求 ⑥：自定义状态的触发器也支持「按范围随机 / 生成出来的卡的附加处理 / 范围界定」
 			// —— 那条链（CustomPowerGen.EmitEffect 的 GenerateCard）改成复用卡牌那条链的
@@ -22386,7 +25447,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					Name = "自检默认档状态", ClassName = "UiCheckPwPlainPower",
 					Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "Shiv", SpawnTo = "Hand" } } } },
-				}, 0).Contains("await CardPileCmd.AddToCombatAndPreview<Shiv>(base.Owner, PileType.Hand, 1, base.Owner.Player);"), "对");
+				}, 0).Contains("await CardPileCmd.AddToCombatAndPreview<MegaCrit.Sts2.Core.Models.Cards.Shiv>(base.Owner, PileType.Hand, 1, base.Owner.Player);"), "对");
 			// （界面）自定义状态那一档也能看到这三样吗？**先核实**：那几行的显隐绑的是
 			// UsesSpawnOptions / ShowSpawnFilter / UsesSpawnOptions（附加处理那几行），判据只看效果种类（Kind），
 			// 和 ctx 无关；App.xaml 里自定义状态的 EffectEditorPower 模板也是 ContentTemplate=EffectCommon
@@ -22720,7 +25781,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			ArtSlots.Any((ArtSlot s) => s.Name == "选人界面背景大图"
 				&& s.Requirement.Contains("横图") && s.Requirement.Contains("1920×1080") && !s.Requirement.Contains("1000×1400")),
 			ArtSlots.FirstOrDefault((ArtSlot s) => s.Name == "选人界面背景大图")?.Requirement ?? "(没找到)");
-		EffectCatalog.SetCustomPowers(new(string, string)[1] { (CustomPowerGen.ClassNameOf(cpProbe, cp1, 0), cp1.Name) });
+		EffectCatalog.SetCustomPowers(new(string, string, bool, bool)[1] { (CustomPowerGen.ClassNameOf(cpProbe, cp1, 0), cp1.Name, cp1.AllowNegativeLayers, cp1.Single) });
 		RefreshPowerChoices();
 		Check("登记后卡牌效果能选到自定义状态（下拉里有）", AllPowers.Any((PowerEntry x) => x.Id == CustomPowerGen.ClassNameOf(cpProbe, cp1, 0)), "在下拉里");
 		CardSpec cardSpec21 = new CardSpec
@@ -22833,7 +25894,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& hpSrc.Contains("public static void Postfix(MegaCrit.Sts2.Core.Nodes.Combat.NHealthBar __instance)"), "Postfix");
 			Check("每个状态各用**自己的**覆盖条节点（A 和 B 能同时看见，不再互相覆盖）",
 				hpSrc.Contains("public static class ForgeHpBarOverlay") && hpSrc.Contains("NodePrefix + key")
-				&& hpSrc.Contains("var mine = (NinePatchRect)src.Duplicate();") && hpSrc.Contains("mask.AddChild(mine);"), "各自一个节点");
+				&& hpSrc.Contains("var mine = (NinePatchRect)template.Duplicate();") && hpSrc.Contains("mask.AddChild(mine);"), "各自一个节点");
+			// V0.2.185（用户实测「覆盖血条没显示出来」）：以前这条链上每一处「拿不到就 return」都是静默的，
+			// 日志里一个字都没有 → 分不清「存档里没填颜色」「补丁没打上」「打上了没触发」。现在两头都有日志。
+			Check("覆盖血条：加载时把「带了几条」打进日志（下次再报「没显示」先看这一行）",
+				HpBarOverlayGen.LoadSummary(hpProfile).Contains("带了 2 条")
+				&& HpBarOverlayGen.LoadSummary(hpProfile).Contains("#FF8800")
+				&& HpBarOverlayGen.LoadSummary(hpProfile).Contains("从右"), "加载日志");
+			Check("覆盖血条：运行时「没画 / 画上了」都有日志（一次性，不刷屏）",
+				hpSrc.Contains("private static void WarnOnce(int bit, string why)")
+				&& hpSrc.Contains("private static void NoteDrawn(int index, int amount, float from, float to, float barWidth, float maxHp)")
+				&& hpSrc.Contains("private static void NoteRanOnce(float barWidth)")
+				&& hpSrc.Contains("if (!anyDrawn) NoteRanOnce(parentWidth);")
+				&& hpSrc.Contains("[覆盖血条] 画上了："), "两向日志");
+			Check("覆盖血条：宽度有 12px 下限（跟本体 GetFgWidth 一样，层数少也看得见）",
+				hpSrc.Contains("if (width < 12f) width = 12f;"), "12px 下限");
+			Check("覆盖血条：两个入口都接（RefreshForeground + 它的调用方 RefreshValues，各打各的）",
+				hpSrc.Contains("ValuesTarget")
+				&& hpSrc.Contains("AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NHealthBar), \"RefreshValues\")")
+				&& PatchesGen.ModEntrySource(hpProfile).Contains("__hpValues"), "两个入口");
 			Check("补丁里几何：层数当血量、同一边依次往里堆、红条 = 中间剩下那一段",
 				hpSrc.Contains("float width = (float)amount / maxHp * maxFgWidth;")
 				&& hpSrc.Contains("a = Math.Max(rightEnd - width, leftEnd);")
@@ -22854,6 +25933,242 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& new CustomPowerSpec { HpBarColor = "FF0000", HpBarSide = "Left" }.HpBarSideZh == "从左边开始"
 				&& new CustomPowerSpec { HpBarColor = "FF0000", HpBarSide = "Mid" }.HpBarSide == HpBarSides.Right, "归一化");
 			customPowerSpec5.HpBarColor = "";
+			// V0.2.187：卡牌图鉴（本体 NCardLibrary）对 mod 角色的补丁。
+			// 用户实测日志：`KeyNotFoundException: ... 'CHARACTER.BUGKILLER' ...` 抛在本体
+			// `OnSubmenuOpened` 的 `_cardPoolFilters[characterModel]`（本体只给 5 个官方角色建了那张表）→ 图鉴卡死。
+			CharacterProfile libProfile = ProfileFactory.Sample();
+			string libSrc = CardLibraryGen.Source(libProfile);
+			Naming libNaming = Naming.From(libProfile);
+			Check("卡牌图鉴补丁：挂在本体 NCardLibrary.OnSubmenuOpened 上、只在这一局玩的是我方角色时才动手",
+				libSrc.Contains("HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary), nameof(MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary.OnSubmenuOpened))")
+				&& libSrc.Contains("if (me is not " + libNaming.CharClass + ") return;"), "只碰自己的角色");
+			Check("卡牌图鉴补丁：自己造一个筛选器按钮（本体同款场景 + 我们角色的头像 + 我们的卡池谓词）",
+				libSrc.Contains(CardLibraryGen.ToggleScenePath)
+				&& libSrc.Contains("character_icon_" + libNaming.CharSlug + ".png")
+				&& libSrc.Contains("c.Pool is " + libNaming.CardPoolClass)
+				&& libSrc.Contains("_cardPoolFilters"), "按钮 + 谓词");
+			Check("卡牌图鉴补丁：任何一步失败都退化成挂到本体「杂项」上（少一个按钮可以，崩不行）",
+				libSrc.Contains("%MiscPool") && libSrc.Contains("catch (Exception e)"), "有退路");
+			// V0.2.188：节点图的「目标卡」必须是**本体卡也认得出**。
+			// 用户实测（挖肉补疮 / BugkillerCard56）：两条效果的目标卡选的都是**本体卡**
+			//（「变化为昆虫防御」= MinionSacrifice、「生成 3 张感染」= Infection），
+			// 而生成端以前只在 p.AllCards（自己存档的卡）里找 → 找不到 →
+			// 「变化卡牌」退化成 `CardCmd.TransformToRandom`（随机变化）、「生成卡牌」整条被当成「缺必填的东西」丢掉。
+			{
+				var vtCard = new CardSpec { Name = "自检本体目标卡", ClassName = "UiCheckVanillaTarget", CardType = "Skill", Rarity = "Common", Cost = 1, IsForged = true, InCardPool = true };
+				var vtGraph = new ForgeGraphSpec();
+				var vtTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				vtTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var vtTrans = new ForgeNodeSpec { Kind = "Effect" };
+				vtTrans.SetField("Effect", "TransformCard");
+				vtTrans.SetField("Amount", "3");
+				vtTrans.SetField("Pick", "Chosen");
+				vtTrans.SetField("SpawnCardId", "MinionSacrifice");
+				vtTrans.SetField("SpawnTo", "Hand");
+				var vtGen = new ForgeNodeSpec { Kind = "Effect" };
+				vtGen.SetField("Effect", "GenerateCard");
+				vtGen.SetField("Amount", "3");
+				vtGen.SetField("SpawnCardId", "Infection");
+				vtGen.SetField("SpawnTo", "Discard");
+				vtGraph.Nodes.AddRange(new[] { vtTrig, vtTrans, vtGen });
+				vtGraph.Links.Add(new ForgeLinkSpec { From = vtTrig.Id, To = vtTrans.Id, FromPort = 0, ToPort = 0 });
+				vtGraph.Links.Add(new ForgeLinkSpec { From = vtTrans.Id, To = vtGen.Id, FromPort = 0, ToPort = 0 });
+				vtCard.ForgeGraph = vtGraph;
+				string vtSrc = CSharpCodeGen.CardSource(Profile, vtCard, 0);
+				Check("节点图「变化卡牌」的目标卡是本体卡时：生成的是本体那张卡（不再静默退化成随机变化）",
+					vtSrc.Contains("MegaCrit.Sts2.Core.Models.Cards.MinionSacrifice")
+					&& vtSrc.Contains("CardCmd.Transform(") && !vtSrc.Contains("TransformToRandom"), "认得出本体卡");
+				Check("节点图「生成卡牌」的目标卡是本体卡时：照常生成（不再当「缺必填的东西」整条丢掉）",
+					vtSrc.Contains("CreateCard<MegaCrit.Sts2.Core.Models.Cards.Infection>")
+					&& !vtSrc.Contains("缺必填的东西"), "生成了本体卡");
+				Check("校验器：节点图的「目标卡」写本体卡类名不报错（写错名字才报错）",
+					!ForgeGraphGen.Issues(vtGraph, Profile, "Card").Any(x => x.Level == "错误"),
+					string.Join(" / ", ForgeGraphGen.Issues(vtGraph, Profile, "Card").Select(x => x.Level + ":" + x.Message)));
+			}
+			// V0.2.189：用户报「最多N张和恰好N张都是恰好，最多怎么不能少选」——
+			// 「取几张 = 最多 / 任意」以前只有消耗 / 丢弃 / 升级 / 生成 那几条链真的读，
+			// 变化 / 复制 / 重放 / 回合结束自动打出 / 给予关键词 那几条**硬写了「恰好 N」的两参构造**
+			// ⇒ 界面上选了「最多 3 张」，游戏里还是要选满 3 张（少选就卡在选牌界面）。
+			{
+				string[] modeKinds = { "TransformCard", "CopyCard", "ReplayCard", "TurnEndPlay", "GiveKeyword", "ExhaustCard", "DiscardCard", "UpgradeCard", "TakeFromDraw" };
+				var stillExact = new List<string>();
+				var exactChanged = new List<string>();
+				foreach (string k in modeKinds)
+				{
+					string Make(string mode)
+					{
+						var c = new CardSpec { Name = "取几张探针" + k + mode, ClassName = "UiCheckCM" + k + mode, CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = false };
+						var e = new EffectSpec { Kind = k, Amount = 3m, CardPick = "Chosen", SelectPile = "Hand", CountMode = mode, TargetSide = "Self" };
+						if (k == "TransformCard") e.SpawnCardId = "MinionSacrifice";
+						if (k == "GiveKeyword") e.GivenKeyword = "Exhaust";
+						c.Effects.Add(e);
+						return CSharpCodeGen.CardSource(Profile, c, 0);
+					}
+					string up = Make("UpTo");
+					// 三参构造两种写法都算对：`(prompt, 0, N)` / `(prompt, minCount: 0, maxCount: N)`
+					if (!(up.Contains("minCount: 0") || up.Contains(", 0, "))) stillExact.Add(k);
+					string ex = Make("");
+					if (ex.Contains("minCount: 0") || ex.Contains(", 0, ")) exactChanged.Add(k);
+				}
+				Check("「取几张 = 最多 3 张」在支持它的每个种类上都生成 min=0 的三参构造（游戏里真的能少选）",
+					stillExact.Count == 0, stillExact.Count == 0 ? string.Join(" / ", modeKinds) : "还是「恰好」：" + string.Join(" / ", stillExact));
+				Check("「取几张 = 恰好 3 张」（默认档）生成结果一个字都没变",
+					exactChanged.Count == 0, exactChanged.Count == 0 ? "逐字一致" : "变了：" + string.Join(" / ", exactChanged));
+			}
+			// V0.2.190：用户实测「状态**失去格挡**还是没有正常生效」（存档里「疲劳」：回合结束时格挡 -6）——
+			// 状态链上「数值填负数 = 反向」以前**只有施加状态那种**做了，格挡 / 治疗 / 能量 / 金币 /
+			// 额外资源量全是「直接调本体那个 Gain*，而本体对非正数直接返回」⇒ 静默什么都不做。
+			{
+				var negOwner = ProfileFactory.Sample();
+				var negPower = new CustomPowerSpec { Name = "自检负数状态", ClassName = "UiCheckNegPower", Enabled = true };
+				var negTrigger = new PowerTriggerSpec { Kind = "PlayerTurnEnd" };
+				foreach (string kind in new[] { "Block", "Heal", "Energy", "Gold", "ExtraResource" })
+					negTrigger.Effects.Add(new EffectSpec { Kind = kind, Amount = -6m, TargetSide = "Self" });
+				negPower.Triggers.Add(negTrigger);
+				string negSrc = CustomPowerGen.Source(negOwner, negPower, 0);
+				Check("状态链：格挡填负数 → CreatureCmd.LoseBlock（本体 GainBlock 对非正数什么都不做）",
+					negSrc.Contains("CreatureCmd.LoseBlock(choiceContext, base.Owner, System.Math.Abs(-6m), base.Owner)"), "失去格挡");
+				Check("状态链：治疗填负数 → 改走失去生命（和卡牌 / 遗物 / 药水链同一口径）",
+					negSrc.Contains("CreatureCmd.Damage(choiceContext, base.Owner, System.Math.Abs(-6m), ValueProp.Unblockable | ValueProp.Unpowered"), "失去生命");
+				Check("状态链：能量填负数 → PlayerCmd.LoseEnergy",
+					negSrc.Contains("PlayerCmd.LoseEnergy(System.Math.Abs(-6m), base.Owner.Player)"), "失去能量");
+				Check("状态链：金币填负数 → PlayerCmd.LoseGold",
+					negSrc.Contains("PlayerCmd.LoseGold(System.Math.Abs(-6m), base.Owner.Player)"), "失去金币");
+				Check("状态链：额外资源量填负数 → PlayerCmd.LoseStars（本体 GainStars 对负数直接抛异常）",
+					negSrc.Contains("PlayerCmd.LoseStars(System.Math.Abs(-6m), base.Owner.Player)"), "失去额外资源量");
+			}
+			// V0.2.191（用户追问「所以现在失去金币能生效了吗」）：**锻造节点图**那条链上，
+			// 「负数 = 反向」原来只剩格挡做了（V0.2.174），金币 / 能量 / 额外资源量 / 回复生命 / 最大生命
+			// 都还是直接写 `Gain*`（本体对非正数直接返回；额外资源量那个更狠：本体 GainStars 对负数抛异常）。
+			{
+				var ngOwner = ProfileFactory.Sample();
+				string GraphSrcOf(string kind)
+				{
+					var card = new CardSpec
+					{
+						Name = "负数探针" + kind, ClassName = "UiCheckNegGraph" + kind, CardType = "Skill", Rarity = "Common",
+						Cost = 1, InCardPool = false, IsForged = true,
+					};
+					var g = new ForgeGraphSpec();
+					var t = new ForgeNodeSpec { Kind = "Trigger" };
+					t.SetField("Timing", ForgeTimings.CardPlayed);
+					var e = new ForgeNodeSpec { Kind = "Effect" };
+					e.SetField("Effect", kind);
+					e.SetField("Amount", "-6");
+					g.Nodes.AddRange(new[] { t, e });
+					g.Links.Add(new ForgeLinkSpec { From = t.Id, To = e.Id, FromPort = 0, ToPort = 0 });
+					card.ForgeGraph = g;
+					return CSharpCodeGen.CardSource(ngOwner, card, 0);
+				}
+				Check("节点图：金币填负数 → PlayerCmd.LoseGold（本体 GainGold 对非正数直接返回）",
+					GraphSrcOf("Gold").Contains("PlayerCmd.LoseGold(6m, __fgPlayer)"), "失去金币");
+				Check("节点图：能量填负数 → PlayerCmd.LoseEnergy",
+					GraphSrcOf("Energy").Contains("PlayerCmd.LoseEnergy(6m, __fgPlayer)"), "失去能量");
+				Check("节点图：额外资源量填负数 → PlayerCmd.LoseStars（本体 GainStars 对负数直接抛异常）",
+					GraphSrcOf("ExtraResource").Contains("PlayerCmd.LoseStars(6m, __fgPlayer)"), "失去额外资源量");
+				Check("节点图：回复生命填负数 → 改走失去生命（本体 Heal 对非正数什么都不做）",
+					GraphSrcOf("Heal").Contains("CreatureCmd.Damage(choiceContext, __fgFoe, 6m, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move"), "失去生命");
+				Check("节点图：最大生命填负数 → CreatureCmd.LoseMaxHp",
+					GraphSrcOf("MaxHp").Contains("CreatureCmd.LoseMaxHp(choiceContext, __fgFoe, 6m, isFromCard: true)"), "失去最大生命");
+			}
+			// V0.2.192（用户要求「在锻造增加状态列表」）：新模块【状态列表】——
+			// 看「一群状态」：个数 / 层数合计，还能按「只看增益 / 只看减益 / 只看某个状态」筛。
+			// 接【关系符】就能写「身上有任意减益」（个数 > 0）、「状态数 ≥ N」这类判断。
+			{
+				var plKind = ForgeGraphCatalog.Find(ForgeGraphCatalog.PowerListKind);
+				Check("【状态列表】模块在目录里（取值类：左边接「归属」对象、右边出「数值」）",
+					plKind is not null && plKind.Category == "取值"
+					&& plKind.Inputs.Count == 1 && plKind.Inputs[0].AcceptsKind == "Object"
+					&& plKind.Outputs.Count == 1 && plKind.Outputs[0].AcceptsKind == "Number",
+					plKind is null ? "(目录里没有)" : $"{plKind.Category} / 入 {plKind.Inputs.Count} / 出 {plKind.Outputs.Count}");
+				Check("【状态列表】的三栏：看哪些状态（4 档）/ 指定的那个状态 / 算哪一个（2 档）",
+					plKind is not null
+					&& plKind.Fields.Any(f => f.Key == "ListFilter" && f.OptionList.Count == 4)
+					&& plKind.Fields.Any(f => f.Key == "PowerId" && f.Searchable)
+					&& plKind.Fields.Any(f => f.Key == "ListWhat" && f.OptionList.Count == 2),
+					plKind is null ? "(目录里没有)" : string.Join(" / ", plKind.Fields.Select(f => f.Key)));
+				// V0.2.193（用户实测：「我怎么在锻造页没看到自定义状态列表」）：那一栏以前只在
+				// 「看哪些状态 = 只看指定状态」时才显示 → 默认档下整块模块里**一个状态都看不到**，
+				// 用户以为没有状态可挑。现在四种档位下「指定的那个状态」都摆着（生成端照样只在 One 档读它）。
+				{
+					var visNode = new ForgeNodeSpec { Kind = ForgeGraphCatalog.PowerListKind };
+					var hidden = new List<string>();
+					foreach (var opt in ForgeGraphCatalog.PowerListFilters)
+						if (!ForgeCanvas.PowerListFieldVisibleForCheck(visNode, opt.Id, "PowerId")) hidden.Add(opt.Id);
+					Check("【状态列表】：「指定的那个状态」那一栏在**四种档位下都显示**（不然用户找不到在哪选状态）",
+						hidden.Count == 0, hidden.Count == 0 ? "四种档位都显示" : "被藏起来的档位：" + string.Join(" / ", hidden));
+				}
+				// 生成端：把【状态列表】接到【效果】的「数值」上 → 生成 ForgeFormulaRuntime.PowerCount/PowerLayers
+				var plOwner = ProfileFactory.Sample();
+				(string Src, string Text) ListOf(string filter, string what, string? powerId, bool viaIf)
+				{
+					var card = new CardSpec
+					{
+						Name = "状态列表探针", ClassName = "UiCheckPowerList", CardType = "Skill", Rarity = "Common",
+						Cost = 1, InCardPool = false, IsForged = true,
+					};
+					var g = new ForgeGraphSpec();
+					var t = new ForgeNodeSpec { Kind = "Trigger" };
+					t.SetField("Timing", ForgeTimings.CardPlayed);
+					var lst = new ForgeNodeSpec { Kind = ForgeGraphCatalog.PowerListKind };
+					lst.SetField("ListFilter", filter);
+					lst.SetField("ListWhat", what);
+					if (powerId is not null) lst.SetField("PowerId", powerId);
+					g.Nodes.AddRange(new[] { t, lst });
+					if (!viaIf)
+					{
+						var eff = new ForgeNodeSpec { Kind = "Effect" };
+						eff.SetField("Effect", "Block");
+						g.Nodes.Add(eff);
+						g.Links.Add(new ForgeLinkSpec { From = t.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+						g.Links.Add(new ForgeLinkSpec { From = lst.Id, To = eff.Id, FromPort = 0, ToPort = 1 });
+					}
+					else
+					{
+						var rel = new ForgeNodeSpec { Kind = "Relate" };
+						rel.SetField("Op", "Gt");
+						rel.SetField("Amount", "3");
+						var iff = new ForgeNodeSpec { Kind = "If" };
+						var effTrue = new ForgeNodeSpec { Kind = "Effect" };
+						effTrue.SetField("Effect", "Draw");
+						effTrue.SetField("Amount", "1");
+						g.Nodes.AddRange(new[] { rel, iff, effTrue });
+						g.Links.Add(new ForgeLinkSpec { From = t.Id, To = iff.Id, FromPort = 0, ToPort = 0 });
+						g.Links.Add(new ForgeLinkSpec { From = rel.Id, To = iff.Id, FromPort = 0, ToPort = 1 });
+						g.Links.Add(new ForgeLinkSpec { From = iff.Id, To = effTrue.Id, FromPort = 0, ToPort = 0 });
+						g.Links.Add(new ForgeLinkSpec { From = lst.Id, To = rel.Id, FromPort = 0, ToPort = 1 });
+					}
+					card.ForgeGraph = g;
+					return (CSharpCodeGen.CardSource(plOwner, card, 0), LocalizationGen.GraphCardText(plOwner, g));
+				}
+				Check("节点图：状态列表「只看减益·状态数」→ PowerCount(目标, \"Debuff\", \"\")",
+					ListOf(ForgeGraphCatalog.PowerListFilterDebuff, ForgeGraphCatalog.PowerListWhatCount, null, false)
+						.Src.Contains("ForgeFormulaRuntime.PowerCount(__fgTarget, \"Debuff\", \"\")"), "个数");
+				Check("节点图：状态列表「只看指定状态·层数合计」→ PowerLayers(目标, \"One\", \"类名\")",
+					ListOf(ForgeGraphCatalog.PowerListFilterOne, ForgeGraphCatalog.PowerListWhatLayers, "VulnerablePower", true)
+						.Src.Contains("ForgeFormulaRuntime.PowerLayers(__fgTarget, \"One\", \"VulnerablePower\")"), "层数合计");
+				Check("节点图：状态列表接【关系符】+【if】→ 真的生成「个数 > 3」这一句，卡面也写得出来",
+					ListOf(ForgeGraphCatalog.PowerListFilterAny, ForgeGraphCatalog.PowerListWhatCount, null, true)
+						.Src.Contains("ForgeFormulaRuntime.PowerCount(__fgTarget, \"Any\", \"\")")
+					&& ListOf(ForgeGraphCatalog.PowerListFilterAny, ForgeGraphCatalog.PowerListWhatCount, null, true)
+						.Text.Contains("身上的状态数量"), "生成 + 卡面");
+				// 校验器：选了「只看指定状态」却没选状态 → 报错（生成端那一块整块不生成）
+				{
+					var bad = new CardSpec { Name = "状态列表缺状态", ClassName = "UiCheckPowerListBad", CardType = "Skill", Rarity = "Common", Cost = 1, IsForged = true };
+					var bg = new ForgeGraphSpec();
+					var bt = new ForgeNodeSpec { Kind = "Trigger" };
+					bt.SetField("Timing", ForgeTimings.CardPlayed);
+					var bl = new ForgeNodeSpec { Kind = ForgeGraphCatalog.PowerListKind };
+					bl.SetField("ListFilter", ForgeGraphCatalog.PowerListFilterOne);
+					bg.Nodes.AddRange(new[] { bt, bl });
+					bg.Links.Add(new ForgeLinkSpec { From = bt.Id, To = bl.Id, FromPort = 0, ToPort = 0 });
+					bad.ForgeGraph = bg;
+					var badIssues = ForgeGraphGen.Issues(bg, plOwner, "Card");
+					Check("校验器：【状态列表】选了「只看指定状态」却没选状态 → 报错说清",
+						badIssues.Any(x => x.Level == "错误" && x.Message.Contains("没选状态")),
+						string.Join(" / ", badIssues.Select(x => x.Level + ":" + x.Message)));
+				}
+			}
 		}
 		Profile.CustomPowers.Remove(customPowerSpec5);
 		EffectCatalog.SetCustomPowers(null);
@@ -22894,7 +26209,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			UpdateLayout();
 			Check("切成「按范围随机」后「范围限定（随机出什么）」就出现了，而且候选齐全",
 				VisibleTextsIn(cardTabRoot).Any((string t) => t.Contains("范围限定（随机出什么）"))
-				&& SpawnFilters.Count == 6, string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
+				&& SpawnFilters.Count == 7, string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
 			Profile.Cards.Remove(spawnUiCard);
 			// V0.2.140：列表里有空槽行了 —— 用对象本身选（空列表时 FirstOrDefault() = null = 取消选中），
 			// 别用 SelectedIndex = 0（真卡删光时行 0 是空槽，会进「选中了空槽」那个假状态）
@@ -23506,9 +26821,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				gkCustomSrc.Contains("this.AddGivenCustomKeyword(\"FATE\");")
 				&& gkCustomSrc.Contains("CET:GiveKeyword=custom:FATE"), "自定义");
 			string gkPatch = CSharpCodeGen.GivenKeywordPatchSource(gkCustom);
-			Check("补丁挂在 GetDescriptionForPile（卡面文字）和 get_ExtraHoverTips（悬停说明）上",
-				gkPatch.Contains("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"GetDescriptionForPile\")]")
-				&& gkPatch.Contains("[HarmonyLib.HarmonyPatch(typeof(CardModel), \"get_ExtraHoverTips\")]"), "两个补丁");
+			// ⚠ 这两个补丁**必须**由模组入口手动打（不能带 [HarmonyPatch]）：
+			//   本体 CardModel.GetDescriptionForPile 有 2 个重载，只写方法名的特性补丁会让 PatchAll 抛
+			//   "Ambiguous match"，而 PatchAll 一抛异常整个初始化器就中断 ⇒ 角色/卡池/遗物全没注册
+			//   （用户实测：「进游戏找不到这个角色」，日志里只有 `[ERROR] AinodiMod - 加载失败`）。
+			Check("补丁目标还是 GetDescriptionForPile（卡面文字）和 ExtraHoverTips（悬停说明），但**不再带 [HarmonyPatch]**",
+				!gkPatch.Contains("HarmonyPatch(typeof(CardModel)", StringComparison.Ordinal)
+				&& gkPatch.Contains("public static void After(CardModel __instance, ref string __result)", StringComparison.Ordinal)
+				&& gkPatch.Contains("public static void After(CardModel __instance, ref IEnumerable<IHoverTip> __result)", StringComparison.Ordinal),
+				"手动打：Postfix 公开、不带特性");
+			string gkEntry = PatchesGen.ModEntrySource(gkCustom);
+			Check("模组入口里逐个重载手动打这两个补丁（GetMethods + nameof(After)），且各自一个 try",
+				gkEntry.Contains("GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)", StringComparison.Ordinal)
+				&& gkEntry.Contains("nameof(GivenKeywordTextPatch.After)", StringComparison.Ordinal)
+				&& gkEntry.Contains("nameof(GivenKeywordHoverPatch.After)", StringComparison.Ordinal)
+				&& gkEntry.Contains("卡面描述补丁没打上", StringComparison.Ordinal),
+				"手动逐重载");
 			Check("注册表用 ConditionalWeakTable（牌没了自动清，不会吊住卡牌）",
 				gkPatch.Contains("ConditionalWeakTable<CardModel, List<string>>"), "弱表");
 			Check("补丁里查不到键会退回键名（不让补丁抛异常）",
@@ -23630,7 +26958,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("回合结束时把这次加的层数撤掉、然后自己消失（AfterSideTurnEnd）",
 				tempPowersSrc.Contains("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)")
 				&& tempPowersSrc.Contains("await PowerCmd.Remove(this);")
-				&& tempPowersSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, -base.Amount, base.Owner, null);"), "回合结束撤掉");
+				// V0.2.237：还原改成「先取实例 + 夹到不跨过 0」，不再盲写 -base.Amount
+				&& tempPowersSrc.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, base.Owner, __amount, base.Owner, null);"), "回合结束撤掉");
 			Check("没配临时增益时不会生成临时 Power（UsesTempPower = false）",
 				!CSharpCodeGen.UsesTempPower(ProfileFactory.Sample()), "不生成");
 			string tempPowerCards = LocalizationGen.CardsJson(tempPowerProbe);
@@ -24446,6 +27775,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (potionSpec3 is not null)
 		{
 		potionSpec3.Icon = "C:\\test\\potion_icon.png";
+		Raise("PotionIconHint");
+		Check("药水图标那一行会写出当前这瓶的文件名（V0.2.199）",
+			PotionIconHint.Contains("potion_icon.png"), PotionIconHint);
 		string path9 = Path.Combine(Path.GetTempPath(), "forge_uicheck_potion.json");
 		try
 		{
@@ -24465,7 +27797,38 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 		potionSpec3.Icon = null;
 		Raise("PotionIconPreview");
+		Raise("PotionIconHint");
 		Check("药水图标预览属性可用", PotionIconPreview == null, "未上传时应为 null");
+		Check("没传图标时那一行写「未上传」（V0.2.199）", PotionIconHint.Contains("未上传"), PotionIconHint);
+		// V0.2.199：换选中项后预览到底刷没刷新，**只能**靠 PropertyChanged 验
+		//（PotionIconPreview 的 getter 永远读当前选中项，所以它自己永远是对的）。
+		// 以前 SyncDetail 只发 RelicIconPreview、不发 PotionIconPreview —— 预览框绑的是
+		// Window.PotionIconPreview（RelativeSource=Window），换选中项不会让它重读，
+		// 于是「给第 1 瓶传了图标 → 点第 2 瓶」看起来就是「上传的图标出现在每一瓶药水上」。
+		{
+			List<string> raisedProps = new();
+			PropertyChangedEventHandler spy = (_, ev) =>
+			{
+				if (ev.PropertyName is { Length: > 0 } prop) raisedProps.Add(prop);
+			};
+			string spyNote;
+			PropertyChanged += spy;
+			try
+			{
+				SyncDetail();
+				spyNote = raisedProps.Contains("PotionIconPreview") ? "已通知" : "没通知";
+			}
+			catch (Exception ex)
+			{
+				spyNote = "SyncDetail 抛异常：" + ex.GetType().Name + "：" + ex.Message;
+			}
+			finally
+			{
+				PropertyChanged -= spy;
+			}
+			Check("换选中药水会通知「药水图标预览」重读（否则上一瓶的图标会一直显示在每一瓶药水上）",
+				raisedProps.Contains("PotionIconPreview"), spyNote);
+		}
 		}
 		Check("美术槽位不含「未解锁立绘」", !ArtSlots.Any((ArtSlot s) => s.Name.Contains("未解锁")));
 		// ===== 卡面 / 美术预览：按「游戏里的显示区域」画黑底，比例不对时能直接看到黑边 =====
@@ -24564,6 +27927,168 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			finally
 			{
 				try { Directory.Delete(ratioDir, true); } catch { }
+			}
+		}
+		// ===== V0.2.229：卡面「缩小档」重做（V0.2.228 那个勾选框实测等于没缩）=====
+		// 事实链：
+		//   · 工具原样拷贝、不压缩（下面用哈希钉死）；
+		//   · 游戏里卡面只画 250×190（先古卡 299×421，%AncientPortrait 598×842 × scale 0.5），
+		//     卡面纹理没有 mipmap（工程没有 .import → Godot 默认 mipmaps/generate=false、滤镜 Linear）；
+		//   · 引擎缩小 4 倍时 16 个纹素只采样 4 个 ⇒ 预缩到 4×（1000×760）和不缩**一模一样**
+		//     （探针 imgcmp 实测 RMSE 3.42 vs 3.42）；预缩 2× 是 0.27、1× 是 0.00。
+		// 所以这里钉：档位换算 / 各档目标尺寸 / 只缩不放大 / 原图不动 / 老勾选框映射成 2× / 说明文案。
+		{
+			string fitDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_cardfit_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			Directory.CreateDirectory(fitDir);
+			try
+			{
+				string fitBig = Path.Combine(fitDir, "big_2000x1520.png");
+				string fitSquare = Path.Combine(fitDir, "square_2000x2000.png");
+				string fitTiny = Path.Combine(fitDir, "tiny_320x243.png");
+				string fitAncient = Path.Combine(fitDir, "ancient_1196x1684.png");
+				ArtGenerator.WriteNeutralPng(fitBig, 2000, 1520);
+				ArtGenerator.WriteNeutralPng(fitSquare, 2000, 2000);
+				ArtGenerator.WriteNeutralPng(fitTiny, 320, 243);
+				ArtGenerator.WriteNeutralPng(fitAncient, 1196, 1684);
+				byte[] fitBigBytes = File.ReadAllBytes(fitBig);
+
+				// ① 档位换算 + 老存档兼容
+				var modeProbe = new ArtSpec { CardArtShrink = "2x" };
+				Check("V0.2.229：缩小档只有「原样 / 1× / 2× / 4×」，其它值一律当原样",
+					ArtGenerator.EffectiveCardArtShrink(modeProbe) == "2x"
+					&& ArtGenerator.EffectiveCardArtShrink(new ArtSpec { CardArtShrink = "4x" }) == "4x"
+					&& ArtGenerator.EffectiveCardArtShrink(new ArtSpec { CardArtShrink = "1X" }) == "1x"
+					&& ArtGenerator.EffectiveCardArtShrink(new ArtSpec { CardArtShrink = "3x" }) == ""
+					&& ArtGenerator.EffectiveCardArtShrink(new ArtSpec()) == "",
+					"档位对");
+				Check("V0.2.229：老存档那个勾选框（V0.2.228 的 FitCardArtToFrame = 缩到 1000×760）自动映射成 2×",
+					ArtGenerator.EffectiveCardArtShrink(new ArtSpec { FitCardArtToFrame = true }) == "2x"
+					&& ArtGenerator.EffectiveCardArtShrink(new ArtSpec { FitCardArtToFrame = true, CardArtShrink = "4x" }) == "4x",
+					"映射对了");
+				Check("V0.2.229：游戏里卡面的实际绘制尺寸 = 普通卡 250×190 / 先古卡 299×421",
+					ArtGenerator.CardFaceDisplaySize(false) == (250, 190)
+					&& ArtGenerator.CardFaceDisplaySize(true) == (299, 421),
+					$"{ArtGenerator.CardFaceDisplaySize(false)} / {ArtGenerator.CardFaceDisplaySize(true)}");
+
+				// ② 分辨率说明（上传图 vs 游戏显示区域）
+				string fitNoteOff = ResolutionNoteOf(fitBig, 1000, 760, "");
+				string fitNote2x = ResolutionNoteOf(fitBig, 1000, 760, "2x");
+				string fitNote4x = ResolutionNoteOf(fitBig, 1000, 760, "4x");
+				Check("V0.2.229：没缩时说明写清「引擎运行时缩掉的」+ 推荐 2×",
+					fitNoteOff.Contains("2000×1520") && fitNoteOff.Contains("引擎") && fitNoteOff.Contains("2 倍"),
+					fitNoteOff);
+				Check("V0.2.229：已经是 2× 时说「已设成 2×、生成时先缩好」",
+					fitNote2x.Contains("2×") && fitNote2x.Contains("已设成"), fitNote2x);
+				Check("V0.2.229：选了 4× 时明确说「和没缩几乎一样，想要区别请选 2×」",
+					fitNote4x.Contains("4×") && fitNote4x.Contains("几乎一样") && fitNote4x.Contains("2×"), fitNote4x);
+				Check("V0.2.229：正好等于显示区域 / 比它小 / 文件不在 → 不多写一行（空字符串）",
+					ResolutionNoteOf(fitBig, 2000, 1520, "").Length == 0
+					&& ResolutionNoteOf(fitTiny, 1000, 760, "2x").Length == 0
+					&& ResolutionNoteOf(Path.Combine(fitDir, "没有这个.png"), 1000, 760, "").Length == 0,
+					"空");
+
+				// ③ 原样 = 逐字节拷贝（工具里没有任何压缩）
+				CharacterProfile fitOff = ProfileFactory.Sample();
+				fitOff.Paths.OutputDir = Path.Combine(fitDir, "off");
+				fitOff.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				fitOff.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var fitOffCard = new CardSpec { Name = "自检大卡面", ClassName = "UiCheckBigArt", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				fitOff.Cards.Add(fitOffCard);
+				fitOff.Art.CardPortraits[Naming.From(fitOff).CardClassName(fitOff, fitOffCard)] = fitBig;
+				fitOff.Art.CardArtShrink = "";
+				var fitOffGen = ModGenerator.Generate(fitOff);
+				Check("V0.2.229：（准备）带大卡面的存档能生成工程（原样档）", fitOffGen.Success,
+					fitOffGen.Success ? fitOffGen.ProjectRoot : string.Join(" ｜ ", fitOffGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+				string fitOffPng = Path.Combine(fitOffGen.ProjectRoot!, "images/packed/card_portraits",
+					Naming.From(fitOff).PoolTitle, Naming.EntryOf("UiCheckBigArt").ToLowerInvariant() + ".png");
+				Check("V0.2.229：（红线）「原样拷贝」档下卡面和原图逐字节一致 ⇒ 工具没有压缩画质",
+					File.Exists(fitOffPng) && File.ReadAllBytes(fitOffPng).AsSpan().SequenceEqual(fitBigBytes),
+					File.Exists(fitOffPng) ? $"{new FileInfo(fitOffPng).Length} / {new FileInfo(fitBig).Length} 字节" : "(没有文件)");
+
+				// ④ 2× / 1× / 4× 各档的目标尺寸；只缩不放大；原图不动；日志写清
+				CharacterProfile fitOn = ProfileFactory.Sample();
+				fitOn.Paths.OutputDir = Path.Combine(fitDir, "on");
+				fitOn.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				fitOn.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var fitBigCard = new CardSpec { Name = "自检缩卡面", ClassName = "UiCheckFitBig", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var fitSquareCard = new CardSpec { Name = "自检方卡面", ClassName = "UiCheckFitSquare", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var fitTinyCard = new CardSpec { Name = "自检小卡面", ClassName = "UiCheckFitTiny", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var fitAncientCard = new CardSpec { Name = "自检先古卡面", ClassName = "UiCheckFitAncient", CardType = "Skill", Rarity = "Ancient", Cost = 1, InCardPool = true };
+				fitOn.Cards.Add(fitBigCard);
+				fitOn.Cards.Add(fitSquareCard);
+				fitOn.Cards.Add(fitTinyCard);
+				fitOn.AncientCards.Add(fitAncientCard);
+				var fitNaming = Naming.From(fitOn);
+				fitOn.Art.CardPortraits[fitNaming.CardClassName(fitOn, fitBigCard)] = fitBig;
+				fitOn.Art.CardPortraits[fitNaming.CardClassName(fitOn, fitSquareCard)] = fitSquare;
+				fitOn.Art.CardPortraits[fitNaming.CardClassName(fitOn, fitTinyCard)] = fitTiny;
+				fitOn.Art.CardPortraits[fitNaming.CardClassName(fitOn, fitAncientCard)] = fitAncient;
+				fitOn.Art.CardArtShrink = "2x";
+				var fitLog = new System.Collections.Generic.List<string>();
+				var fitOnGen = ModGenerator.Generate(fitOn, fitLog.Add);
+				Check("V0.2.229：（准备）带四张大卡面的存档能生成工程（2× 档）", fitOnGen.Success,
+					fitOnGen.Success ? fitOnGen.ProjectRoot : string.Join(" ｜ ", fitOnGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+				string PngOf(string root, CardSpec c) => Path.Combine(root, "images/packed/card_portraits",
+					c.IsColorless ? "colorless" : fitNaming.PoolTitle,
+					Naming.EntryOf(fitNaming.CardClassName(fitOn, c)).ToLowerInvariant() + ".png");
+				var fitBigSize = PngUtil.Decode(PngOf(fitOnGen.ProjectRoot!, fitBigCard));
+				var fitSquareSize = PngUtil.Decode(PngOf(fitOnGen.ProjectRoot!, fitSquareCard));
+				var fitTinySize = PngUtil.Decode(PngOf(fitOnGen.ProjectRoot!, fitTinyCard));
+				var fitAncientSize = PngUtil.Decode(PngOf(fitOnGen.ProjectRoot!, fitAncientCard));
+				Check("V0.2.229：2× 档把 2000×1520 缩成 500×380（= 显示尺寸 250×190 的 2 倍）",
+					fitBigSize is { } fb && fb.W == 500 && fb.H == 380,
+					fitBigSize is { } fb2 ? $"{fb2.W}×{fb2.H}" : "(没有文件)");
+				Check("V0.2.229：比例不一样时保持比例、盖满目标那一块（2000×2000 → 500×500）",
+					fitSquareSize is { } fs && fs.W == 500 && fs.H == 500,
+					fitSquareSize is { } fs2 ? $"{fs2.W}×{fs2.H}" : "(没有文件)");
+				Check("V0.2.229：比目标还小的图**不放大**（320×243 原样进工程）",
+					fitTinySize is { } fsm && fsm.W == 320 && fsm.H == 243,
+					fitTinySize is { } fsm2 ? $"{fsm2.W}×{fsm2.H}" : "(没有文件)");
+				Check("V0.2.229：先古卡按竖的显示尺寸算（1196×1684 → 598×842，= 299×421 的 2 倍）",
+					fitAncientSize is { } fa && fa.W == 598 && fa.H == 842,
+					fitAncientSize is { } fa2 ? $"{fa2.W}×{fa2.H}" : "(没有文件)");
+				Check("V0.2.229：生成日志里写清「缩了多少 → 多少」（不是默默改你的图）",
+					fitLog.Any((string m) => m.Contains("2000×1520 → 500×380")),
+					fitLog.FirstOrDefault((string m) => m.Contains("卡面 ")) ?? "(日志里没有卡面那行)");
+				Check("V0.2.229：上传的原图一个字都没被改（缩的是工程里那份副本）",
+					File.ReadAllBytes(fitBig).AsSpan().SequenceEqual(fitBigBytes), "原图未变");
+
+				// ⑤ 4× 档 = 1000×760（本体口径，实测和不缩观感一样）；1× 档 = 250×190
+				CharacterProfile fit4 = ProfileFactory.Sample();
+				fit4.Paths.OutputDir = Path.Combine(fitDir, "x4");
+				fit4.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				fit4.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var fit4Card = new CardSpec { Name = "自检四倍", ClassName = "UiCheckFitFour", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				fit4.Cards.Add(fit4Card);
+				fit4.Art.CardPortraits[Naming.From(fit4).CardClassName(fit4, fit4Card)] = fitBig;
+				fit4.Art.CardArtShrink = "4x";
+				var fit4Gen = ModGenerator.Generate(fit4);
+				string fit4Png = Path.Combine(fit4Gen.ProjectRoot!, "images/packed/card_portraits",
+					Naming.From(fit4).PoolTitle, Naming.EntryOf("UiCheckFitFour").ToLowerInvariant() + ".png");
+				var fit4Size = PngUtil.Decode(fit4Png);
+				Check("V0.2.229：4× 档 = 1000×760（本体素材口径）",
+					fit4Size is { } f4 && f4.W == 1000 && f4.H == 760,
+					fit4Size is { } f42 ? $"{f42.W}×{f42.H}" : "(没有文件)");
+
+				CharacterProfile fit1 = ProfileFactory.Sample();
+				fit1.Paths.OutputDir = Path.Combine(fitDir, "x1");
+				fit1.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				fit1.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var fit1Card = new CardSpec { Name = "自检一倍", ClassName = "UiCheckFitOne", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				fit1.Cards.Add(fit1Card);
+				fit1.Art.CardPortraits[Naming.From(fit1).CardClassName(fit1, fit1Card)] = fitBig;
+				fit1.Art.CardArtShrink = "1x";
+				var fit1Gen = ModGenerator.Generate(fit1);
+				string fit1Png = Path.Combine(fit1Gen.ProjectRoot!, "images/packed/card_portraits",
+					Naming.From(fit1).PoolTitle, Naming.EntryOf("UiCheckFitOne").ToLowerInvariant() + ".png");
+				var fit1Size = PngUtil.Decode(fit1Png);
+				Check("V0.2.229：1× 档 = 250×190（正好等于游戏画出来的像素）",
+					fit1Size is { } f1 && f1.W == 250 && f1.H == 190,
+					fit1Size is { } f12 ? $"{f12.W}×{f12.H}" : "(没有文件)");
+			}
+			finally
+			{
+				try { Directory.Delete(fitDir, true); } catch { }
 			}
 		}
 		// ===== 多人联机宝箱房：四个本体手势 + 我们自己的「拿取」  那句催促文本 =====
@@ -25275,6 +28800,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& atlasEntries.Count((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "potion_atlas") == atlasProbe.Potions.Count
 					&& atlasEntries.Count((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "potion_outline_atlas") == atlasProbe.Potions.Count,
 					$"{atlasEntries.Count} 条：" + string.Join(" / ", atlasEntries.Select((ArtGenerator.AtlasSpriteEntry e) => e.Atlas + ":" + e.Sprite)));
+				// V0.2.199：每瓶药水的精灵名必须各不相同、且各自指向自己那张图 ——
+				// 「上传的图标怎么在每一个药水都会显示」这条报错，先把「生成端有没有共用一张」钉死在这里。
+				var potionSprites = atlasEntries.Where((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "potion_atlas").ToArray();
+				Check("每瓶药水的图集精灵名互不相同、各自指向自己那张图（不允许共用一张）",
+					potionSprites.Select((ArtGenerator.AtlasSpriteEntry e) => e.Sprite).Distinct().Count() == potionSprites.Length
+					&& potionSprites.All((ArtGenerator.AtlasSpriteEntry e) => e.TexturePath.EndsWith("/" + e.Sprite + ".png", StringComparison.Ordinal)),
+					string.Join(" / ", potionSprites.Select((ArtGenerator.AtlasSpriteEntry e) => e.Sprite + "→" + Path.GetFileName(e.TexturePath))));
 				Check("能量图标用我们自己的图集页（不再指向本体 ui_atlas_0.png 里铁甲战士那一块），区域 74×74",
 					atlasEntries.Any((ArtGenerator.AtlasSpriteEntry e) => e.Atlas == "ui_atlas"
 						&& e.TexturePath.EndsWith($"{atlasNaming.EnergyColor}_energy_page_0.png", StringComparison.Ordinal) && e.W == 74 && e.H == 74),
@@ -25449,7 +28981,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			spawnProbe.Cards.Add(exhaustGen);
 			string exhaustSrc = CSharpCodeGen.CardSource(spawnProbe, exhaustGen, 0);
 			Check("生成到消耗牌堆 → 走本体那套 CardPileCmd + PileType.Exhaust（消耗牌堆也是战斗内牌堆，本体允许直接放）",
-				exhaustSrc.Contains("CardPileCmd.AddToCombatAndPreview<Shiv>(base.Owner.Creature, PileType.Exhaust, 2, base.Owner)"),
+				exhaustSrc.Contains("CardPileCmd.AddToCombatAndPreview<MegaCrit.Sts2.Core.Models.Cards.Shiv>(base.Owner.Creature, PileType.Exhaust, 2, base.Owner)"),
 				exhaustSrc.Contains("PileType.Exhaust") ? "对" : "没写 Exhaust");
 			Check("卡面描述写「放入消耗牌堆」", LocalizationGen.CardsJson(spawnProbe).Contains("放入消耗牌堆"), "描述对");
 			Check("校验器会提示「生成到消耗牌堆 = 不经过手牌 / 抽牌堆，抽不到它」",
@@ -26098,6 +29630,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						s => s.ShowSpawnFilter || s.ShowCardScopeFilter, "SpawnFilter", "范围限定 / 范围界定"),
 					((k, plain) => EffectFieldPolicy.UsesSpawnPick(k), s => s.ShowSpawnChosen, "SpawnChosen", "从范围里自己挑"),
 					((k, plain) => EffectFieldPolicy.UsesSpawnPick(k), s => s.ShowSpawnChoice, "SpawnChoice", "多选1"),
+					// V0.2.231：只有「播放音频文件」读它（勾了才改生成 —— 走 cs/ForgeSfx.cs）
+					((k, plain) => EffectFieldPolicy.UsesSfxReplace(k), s => s.ShowSfxReplaceRow, "SfxReplace", "被下一个自定义音频顶替"),
 				};
 				// 遗物 / 药水链上这两栏有**自己的入口**（「转化为先古遗物」那个专用编辑器里的
 				// 「要换掉哪个遗物 / 换成哪只遗物」，绑的就是 SpawnFilter / SpawnCardId）。
@@ -26145,6 +29679,897 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				foreach (string path in new[] { "ShowTargetSideRow", "ShowPowerRow", "ShowTargetCardRow", "ShowSpawnToRow",
 					"ShowCardPickRow", "ShowUpgradeAmountRow", "ShowCountModeRow", "ShowSpawnPickRow", "ShowAllowDuplicatesRow" })
 					Check($"V0.2.150：（界面）卡牌页有一行的显隐绑在 {path} 上", fxPanelPaths.Contains(path), "在");
+
+				// ===== V0.2.220：抽牌 / 拿牌时「为抽到的牌加永久 / 临时关键词」（用户要求）=====
+				// ② 清单 ↔ 机械测量（卡牌链逐条相等；遗物 / 药水链不许「藏了但生成端在读」）
+				foreach ((string field, string zh, bool temp) in new[]
+				{
+					("DrawnKeyword", "为抽到的牌加关键词", false),
+					("DrawnKeywordTemp", "抽到的牌的关键词是不是临时的", true),
+				})
+				{
+					var wrongKw = new List<string>();
+					foreach (string kind in fxAllKinds)
+					{
+						// 显隐要在「已经选了关键词」的档位上问（临时那个勾本来就跟着关键词出现）
+						var spec = new EffectSpec
+						{
+							Kind = kind, TargetSide = "Enemy", SpawnPick = "Random", IsCardChain = true, DrawnKeyword = "Retain",
+						};
+						bool visible = temp ? spec.ShowDrawnKeywordTempRow : spec.ShowDrawnKeywordRow;
+						bool read = fxRead[EffectFieldUsage.CardChain + "|" + kind + "|" + field];
+						bool policy = temp ? EffectFieldPolicy.UsesDrawnKeywordTemp(kind) : EffectFieldPolicy.UsesDrawnKeyword(kind);
+						if (visible != read) wrongKw.Add(kind + (visible ? "(摆了但没用)" : "(藏了但有用)"));
+						if (policy != visible) wrongKw.Add(kind + "(界面属性和清单不一致)");
+					}
+					Check($"V0.2.220：卡牌链「{zh}」——显示的都被生成端用到、藏起来的都没用到（{fxAllKinds.Length} 种逐条对）",
+						wrongKw.Count == 0, wrongKw.Count == 0 ? $"{fxAllKinds.Length} 种逐条相等" : string.Join(" / ", wrongKw.Take(8)));
+					var plainKwWrong = new List<string>();
+					foreach (string kind in fxAllKinds)
+						if (!EffectFieldPolicy.UsesDrawnKeyword(kind)
+							&& (fxRead[EffectFieldUsage.RelicChain + "|" + kind + "|" + field]
+								|| fxRead[EffectFieldUsage.PotionChain + "|" + kind + "|" + field]))
+							plainKwWrong.Add(kind);
+					Check($"V0.2.220：遗物 / 药水链「{zh}」——不许「藏起来但生成端在读」",
+						plainKwWrong.Count == 0, plainKwWrong.Count == 0 ? "没有" : string.Join(" / ", plainKwWrong.Take(8)));
+				}
+				Check("V0.2.220：这一栏只在「真的把牌拿进手」的那几档出现（抽牌 / 刮削 / 从三摞拿牌 / 填满手牌）",
+					EffectFieldPolicy.UsesDrawnKeyword("Draw") && EffectFieldPolicy.UsesDrawnKeyword("ScrapeDraw")
+					&& EffectFieldPolicy.UsesDrawnKeyword("TakeFromDraw") && EffectFieldPolicy.UsesDrawnKeyword("TakeFromDiscard")
+					&& EffectFieldPolicy.UsesDrawnKeyword("TakeFromExhaust") && EffectFieldPolicy.UsesDrawnKeyword("FillHand")
+					&& !EffectFieldPolicy.UsesDrawnKeyword("Damage") && !EffectFieldPolicy.UsesDrawnKeyword("Block")
+					&& !EffectFieldPolicy.UsesDrawnKeyword("GiveKeyword") && !EffectFieldPolicy.UsesDrawnKeyword("Scry"),
+					"六档在、别的都不在");
+
+				// ① 生成形状：没填关键词 = 老那一句（逐字）；填了才多出「接住抽到的牌 + 加关键词」
+				{
+					var kwCardBase = new CardSpec
+					{
+						Name = "自检抽牌关键词", ClassName = "UiCheckDrawnKw", CardType = "Skill", Rarity = "Common", Cost = 1,
+						InCardPool = true,
+					};
+					var plainDraw = new EffectSpec { Kind = "Draw", Amount = 2m, TargetSide = "Self", IsCardChain = true };
+					kwCardBase.Effects.Add(plainDraw);
+					var kwProfile = ProfileFactory.Sample();
+					kwProfile.Cards.Add(kwCardBase);
+					string plainSrc = CSharpCodeGen.CardSource(kwProfile, kwCardBase, kwProfile.Cards.Count - 1);
+					Check("V0.2.220：没选关键词时「抽牌」还是老那一句（不接抽牌结果、一个字符都不多）",
+						plainSrc.Contains("await CardPileCmd.Draw(choiceContext, base.DynamicVars.Cards.BaseValue, base.Owner);")
+						&& !plainSrc.Contains("__drawnBatch") && !plainSrc.Contains("__drawnKw"), "老那一句");
+
+					plainDraw.DrawnKeyword = "Retain";
+					string permSrc = CSharpCodeGen.CardSource(kwProfile, kwCardBase, kwProfile.Cards.Count - 1);
+					Check("V0.2.220：选了关键词 → 接住抽到的牌，再给这几张加关键词（永久 = 本体 AddKeyword）",
+						permSrc.Contains("IEnumerable<CardModel> __drawnBatch = await CardPileCmd.Draw(")
+						&& permSrc.Contains("foreach (CardModel __drawnKw in __drawnBatch)")
+						&& permSrc.Contains("__drawnKw.AddKeyword(CardKeyword.Retain);"), "接住了");
+					Check("V0.2.220：回读标记（关键词 + 是不是临时）写在抽牌那一句前面",
+						permSrc.Contains("// CET:DrawnKeyword=Retain CET:DrawnKeywordTemp=0"), "写了");
+
+					plainDraw.DrawnKeywordTemp = true;
+					string tempSrc = CSharpCodeGen.CardSource(kwProfile, kwCardBase, kwProfile.Cards.Count - 1);
+					Check("V0.2.220：勾「临时」→ 保留走本体的单回合标记（GiveSingleTurnRetain，回合末自动复位）",
+						tempSrc.Contains("__drawnKw.GiveSingleTurnRetain();")
+						&& tempSrc.Contains("// CET:DrawnKeyword=Retain CET:DrawnKeywordTemp=1"), "单回合");
+
+					// 自定义关键词：走 AddGivenCustomKeyword + 生成那个注册表 / 临时关键词 Power
+					plainDraw.DrawnKeyword = "FATE";
+					string customSrc = CSharpCodeGen.CardSource(kwProfile, kwCardBase, kwProfile.Cards.Count - 1);
+					Check("V0.2.220：自定义关键词走同一套（AddGivenCustomKeyword + 生成的临时关键词 Power）",
+						customSrc.Contains("__drawnKw.AddGivenCustomKeyword(\"FATE\");")
+						&& customSrc.Contains("ForgeTempKeywordPower"), "同一套");
+					Check("V0.2.220：配了「为抽到的牌加自定义关键词」→ 必须生成那个注册表（否则 AddGivenCustomKeyword 不存在）",
+						CSharpCodeGen.UsesGivenCustomKeyword(kwProfile)
+						&& CSharpCodeGen.UsesTempKeywordPower(kwProfile), "都会生成");
+					Check("V0.2.220：抽到的牌加关键词时，列表行里也写得出来",
+						plainDraw.Display.Contains("抽到的牌带上"), plainDraw.Display);
+					plainDraw.DrawnKeyword = "";
+					plainDraw.DrawnKeywordTemp = false;
+				}
+
+				// ① 生成形状：从三摞拿牌 / 填满手牌也能加（用的是那条效果真的拿到手的那批牌）
+				{
+					var takeCard = new CardSpec
+					{
+						Name = "自检拿牌关键词", ClassName = "UiCheckTakeKw", CardType = "Skill", Rarity = "Common", Cost = 1,
+						InCardPool = true,
+					};
+					var take = new EffectSpec
+					{
+						Kind = "TakeFromDiscard", Amount = 1m, TargetSide = "Self", IsCardChain = true,
+						CardPick = "Chosen", SelectPile = "Discard", DrawnKeyword = "Exhaust",
+					};
+					takeCard.Effects.Add(take);
+					var takeProfile = ProfileFactory.Sample();
+					takeProfile.Cards.Add(takeCard);
+					string takeSrc = CSharpCodeGen.CardSource(takeProfile, takeCard, takeProfile.Cards.Count - 1);
+					Check("V0.2.220：从弃牌堆拿牌 → 给拿到手的那几张加关键词（加在 Add 之后）",
+						takeSrc.Contains("foreach (CardModel __drawnKw in __taken)")
+						&& takeSrc.IndexOf("__drawnKw in __taken", StringComparison.Ordinal)
+							> takeSrc.IndexOf("await CardPileCmd.Add(__taken, PileType.Hand)", StringComparison.Ordinal),
+						"加在 Add 之后");
+					Check("V0.2.220：「全部」那一档也能加（用在那一摞里挑出来的全部牌）",
+						true, "（下面单独验）");
+					var all = new EffectSpec
+					{
+						Kind = "TakeFromExhaust", Amount = 1m, TargetSide = "Self", IsCardChain = true,
+						CardPick = "Random", SelectPile = "Exhaust", CountMode = "All", DrawnKeyword = "Retain",
+					};
+					takeCard.Effects.Clear();
+					takeCard.Effects.Add(all);
+					string allSrc = CSharpCodeGen.CardSource(takeProfile, takeCard, takeProfile.Cards.Count - 1);
+					Check("V0.2.220：「全部」那一档 → foreach (… in __fgAllTaken)",
+						allSrc.Contains("foreach (CardModel __drawnKw in __fgAllTaken)"), "对");
+
+					var fill = new EffectSpec
+					{
+						Kind = "FillHand", Amount = 0m, TargetSide = "Self", IsCardChain = true,
+						SpawnCardId = "Shiv", DrawnKeyword = "Retain",
+					};
+					takeCard.Effects.Clear();
+					takeCard.Effects.Add(fill);
+					string fillSrc = CSharpCodeGen.CardSource(takeProfile, takeCard, takeProfile.Cards.Count - 1);
+					Check("V0.2.220：用目标卡填满手牌 → 给填进来的那几张加关键词",
+						fillSrc.Contains("foreach (CardModel __drawnKw in __filled)"), "对");
+				}
+
+				// ② 校验器：「下回合生效」+ 加关键词 = 加不上，要说清；不抽牌的效果上配了它也要拦一句
+				{
+					var delayedDraw = new EffectSpec { Kind = "Draw", Amount = 1m, NextTurn = true, DrawnKeyword = "Retain" };
+					var delayedProfile = new CharacterProfile
+					{
+						Cards =
+						{
+							new CardSpec
+							{
+								Name = "自检延迟抽牌", ClassName = "UiCheckDrawnDelay", CardType = "Skill", Rarity = "Common", Cost = 1,
+								Effects = { delayedDraw },
+							},
+						},
+					};
+					Check("V0.2.220：校验器：「下回合生效」的抽牌配了加关键词 → 明确警告「这一项不会生效」",
+						ProfileValidator.Validate(delayedProfile).Any((ValidationIssue i) => i.Message.Contains("不会生效")
+							&& i.Message.Contains("下回合")),
+						"警告了");
+					var wrongKind = new EffectSpec { Kind = "Damage", Amount = 5m, TargetSide = "Enemy", DrawnKeyword = "Retain" };
+					var wrongProfile = new CharacterProfile
+					{
+						Cards =
+						{
+							new CardSpec
+							{
+								Name = "自检不抽牌", ClassName = "UiCheckDrawnWrong", CardType = "Attack", Rarity = "Common", Cost = 1,
+								Effects = { wrongKind },
+							},
+						},
+					};
+					Check("V0.2.220：校验器：把「加关键词」配到不抽牌的效果上 → 警告会被忽略（不静默）",
+						ProfileValidator.Validate(wrongProfile).Any((ValidationIssue i) => i.Message.Contains("不抽牌也不拿牌")),
+						"警告了");
+				}
+
+				// ③ 生成 → 回读：关键词 + 临时都要认得回来（不许变回「不加」）
+				{
+					var rtCard = new CardSpec
+					{
+						Name = "自检抽牌回读", ClassName = "UiCheckDrawnKwBack", CardType = "Skill", Rarity = "Common", Cost = 1,
+						InCardPool = true,
+					};
+					rtCard.Effects.Add(new EffectSpec
+					{
+						Kind = "Draw", Amount = 2m, TargetSide = "Self", IsCardChain = true,
+						DrawnKeyword = "Retain", DrawnKeywordTemp = true,
+					});
+					rtCard.Effects.Add(new EffectSpec
+					{
+						Kind = "TakeFromDraw", Amount = 1m, TargetSide = "Self", IsCardChain = true,
+						CardPick = "Chosen", SelectPile = "Draw", DrawnKeyword = "FATE",
+					});
+					var rtProfile = ProfileFactory.Sample();
+					rtProfile.Cards.Add(rtCard);
+					string rtRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_drawnkw_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+					try
+					{
+						rtProfile.Paths.OutputDir = rtRoot;
+						rtProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+						rtProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+						var rtGen = ModGenerator.Generate(rtProfile);
+						Check("V0.2.220：（准备）带「为抽到的牌加关键词」的存档能生成工程", rtGen.Success,
+							rtGen.Success ? rtGen.ProjectRoot : string.Join(" ｜ ", rtGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+						if (rtGen.Success)
+						{
+							var rtRec = ProjectRecovery.FromProject(rtGen.ProjectRoot);
+							CardSpec? rtBack = rtRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckDrawnKwBack");
+							EffectSpec? drawBack = rtBack?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "Draw");
+							EffectSpec? takeBack = rtBack?.Effects.FirstOrDefault((EffectSpec x) => x.Kind == "TakeFromDraw");
+							Check("V0.2.220：回读：抽牌的「关键词 + 临时」认得回来",
+								drawBack is not null && drawBack.DrawnKeyword == "Retain" && drawBack.DrawnKeywordTemp,
+								drawBack is null ? "(缺)" : $"{drawBack.DrawnKeyword} / 临时={drawBack.DrawnKeywordTemp}");
+							Check("V0.2.220：回读：拿牌的「自定义关键词」认得回来",
+								takeBack is not null && takeBack.DrawnKeyword == "FATE",
+								takeBack is null ? "(缺)" : takeBack.DrawnKeyword);
+							Check("V0.2.220：回读：加关键词那几行没有被当成「又一条给予关键词」（效果条数 / 未认出语句都要对）",
+								rtBack is not null && rtBack.Effects.Count == 2 && !rtRec.HasUnparsed,
+								rtRec.HasUnparsed ? (rtRec.Unparsed.FirstOrDefault() ?? "") : $"效果 {rtBack?.Effects.Count} 条");
+						}
+					}
+					finally
+					{
+						try { Directory.Delete(rtRoot, true); } catch { }
+					}
+				}
+
+				// ④ 界面：两行真的挂上去了（绑在 ShowDrawnKeywordRow / ShowDrawnKeywordTempRow 上），
+				//    下拉候选和「生成出来的卡加关键词」同源（第一项是「不加」）。
+				{
+					var uiPaths = CollectBoundPaths(SelectTabRoot("卡牌"));
+					foreach (string path in new[] { "ShowDrawnKeywordRow", "ShowDrawnKeywordTempRow" })
+						Check($"V0.2.220：（界面）卡牌页有一行的显隐绑在 {path} 上", uiPaths.Contains(path), "在");
+					Check("V0.2.220：（界面）下拉候选和「生成出来的卡加关键词」同源（第一项 = 不加）",
+						DrawnKeywordChoices.Count == SpawnKeywordChoices.Count
+						&& DrawnKeywordChoices[0].Id.Length == 0
+						&& DrawnKeywordChoices.Select((KeywordChoiceOption k) => k.Id)
+							.SequenceEqual(SpawnKeywordChoices.Select((KeywordChoiceOption k) => k.Id)),
+						$"{DrawnKeywordChoices.Count} 项");
+				}
+			}
+
+			// ===== V0.2.220（锻造页那一份）：【效果】模块上的「为抽到的牌加关键词」 =====
+			// 判据和卡牌页同一份（EffectFieldPolicy.UsesDrawnKeyword），所以这里验的是「图上真的生成得出来」：
+			// 桥（节点字段 ⇄ EffectSpec）、生成文本、（旧图）不填时一个字都不变。
+			{
+				var effectKindDef = ForgeGraphCatalog.Find("Effect");
+				var fxKeys = effectKindDef.Fields.Select((ForgeNodeField f) => f.Key).ToList();
+				Check("V0.2.220：锻造【效果】模块上有「为抽到的牌加关键词 / 是不是临时」两栏",
+					fxKeys.Contains("DrawnKeyword") && fxKeys.Contains("DrawnKeywordTemp"),
+					string.Join(" / ", fxKeys.Where((string k) => k.StartsWith("DrawnKeyword", StringComparison.Ordinal))));
+
+				var kwNode = new ForgeNodeSpec { Kind = "Effect" };
+				kwNode.SetField("Effect", "Draw");
+				kwNode.SetField("Amount", "2");
+				kwNode.SetField("DrawnKeyword", "Retain");
+				kwNode.SetField("DrawnKeywordTemp", "1");
+				var kwSpecFromNode = ForgeEffectBridge.FromFields(kwNode);
+				Check("V0.2.220：桥（节点 → 效果）：关键词 + 临时读得出来",
+					kwSpecFromNode.DrawnKeyword == "Retain" && kwSpecFromNode.DrawnKeywordTemp, $"{kwSpecFromNode.DrawnKeyword} / {kwSpecFromNode.DrawnKeywordTemp}");
+				kwNode.EffectSpec = kwSpecFromNode;
+				ForgeEffectBridge.MirrorToFields(kwNode);
+				Check("V0.2.220：桥（效果 → 节点）：关键词 + 临时回写得回去",
+					kwNode.Get("DrawnKeyword") == "Retain" && kwNode.Get("DrawnKeywordTemp") == "1",
+					$"{kwNode.Get("DrawnKeyword")} / {kwNode.Get("DrawnKeywordTemp")}");
+
+				// 图上生成：一张锻造卡 = 【触发时机：打出这张牌时】→【效果：抽牌 + 加关键词】
+				var gCard = new CardSpec
+				{
+					Name = "自检图抽牌关键词", ClassName = "UiCheckGraphDrawnKw", CardType = "Skill", Rarity = "Common",
+					Cost = 1, IsForged = true, InCardPool = true,
+				};
+				gCard.ForgeGraph = new ForgeGraphSpec();
+				var gTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				gTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var gEff = new ForgeNodeSpec { Kind = "Effect" };
+				gEff.SetField("Effect", "Draw");
+				gEff.SetField("Amount", "2");
+				gEff.SetField("DrawnKeyword", "Retain");
+				gCard.ForgeGraph.Nodes.AddRange(new[] { gTrig, gEff });
+				gCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = gTrig.Id, To = gEff.Id });
+				var gProfile = ProfileFactory.Sample();
+				gProfile.Cards.Clear();
+				for (int i = 1; i <= 4; i++)
+					gProfile.Cards.Add(new CardSpec
+					{
+						Name = "filler" + i, ClassName = "UiKwFiller" + i,
+						CardType = i % 2 == 1 ? "Attack" : "Skill", Rarity = i == 4 ? "Rare" : "Common", Cost = 1,
+						InCardPool = true,
+						Effects = { new EffectSpec { Kind = i % 2 == 1 ? "Damage" : "Block", Amount = 6m, TargetSide = i % 2 == 1 ? "Enemy" : "Self" } },
+					});
+				gProfile.Cards.Add(gCard);
+				string gSrc = CSharpCodeGen.CardSource(gProfile, gCard, gProfile.Cards.Count - 1);
+				Check("V0.2.220：锻造图里填了关键词 → 生成「接住抽到的牌 + foreach 加关键词」（用图自己的 __fgPlayer）",
+					gSrc.Contains("IEnumerable<CardModel> __drawnBatch = await CardPileCmd.Draw(choiceContext, (2m), __fgPlayer)")
+					&& gSrc.Contains("foreach (CardModel __drawnKw in __drawnBatch)")
+					&& gSrc.Contains("__drawnKw.AddKeyword(CardKeyword.Retain);"), "生成了");
+				// 旧图（没有这一栏）→ 还是老那一行（图上逐字不变）。
+				// ⚠ 要通过 spec 清（生成端读的就是这个 EffectSpec；界面上那一栏绑的也是它）
+				ForgeEffectBridge.Ensure(gEff).DrawnKeyword = "";
+				string gOldSrc = CSharpCodeGen.CardSource(gProfile, gCard, gProfile.Cards.Count - 1);
+				Check("V0.2.220：旧图（不填关键词）图上还是老那一行（不接抽牌结果）",
+					gOldSrc.Contains("await CardPileCmd.Draw(choiceContext, (2m), __fgPlayer)")
+					&& !gOldSrc.Contains("__drawnBatch") && !gOldSrc.Contains("__drawnKw"), "老那一行");
+			}
+
+			// ===== V0.2.221：消耗 / 丢弃 / 升级（以及从三摞拿牌 / 复制 / 变化 / 预见）
+			//       + 「只对这张卡（指定）」在**锻造图**上真的生效（用户报的「消耗丢弃升级指定卡没生效」）=====
+			// 真因：图上这几档是**自己内联**拼的选牌语句（EmitCardPick / TakeFrom / 变换 / 预见），
+			// 以前 `filter: null` 写死 / 随机挑牌不带 `.Where(...)` —— 界面上「范围界定 / 只对这张卡」
+			// 那两栏能填，生成端却一个谓词都没读，填了等于没填（静默失效）。
+			{
+				// 造一张只有一块【效果】的锻造卡（图：触发时机 → 效果）
+				string ForgeOneEffect(string kind, System.Action<EffectSpec>? tweak = null)
+				{
+					var card = new CardSpec
+					{
+						Name = "自检图指定卡" + kind, ClassName = "UiOcGraph" + kind, CardType = "Skill", Rarity = "Common",
+						Cost = 1, IsForged = true, InCardPool = true,
+					};
+					card.ForgeGraph = new ForgeGraphSpec();
+					var trig = new ForgeNodeSpec { Kind = "Trigger" };
+					trig.SetField("Timing", ForgeTimings.CardPlayed);
+					var eff = new ForgeNodeSpec { Kind = "Effect" };
+					eff.SetField("Effect", kind);
+					eff.SetField("Amount", "1");
+					var spec = ForgeEffectBridge.Author(eff);
+					spec.CardPick = "Chosen";
+					spec.SelectPile = "Hand";
+					tweak?.Invoke(spec);
+					card.ForgeGraph.Nodes.AddRange(new[] { trig, eff });
+					card.ForgeGraph.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id });
+					var prof = ProfileFactory.Sample();
+					prof.Cards.Clear();
+					for (int i = 1; i <= 4; i++)
+						prof.Cards.Add(new CardSpec
+						{
+							Name = "filler" + i, ClassName = "UiOcFiller" + i,
+							CardType = i % 2 == 1 ? "Attack" : "Skill", Rarity = i == 4 ? "Rare" : "Common", Cost = 1,
+							InCardPool = true,
+							Effects = { new EffectSpec { Kind = i % 2 == 1 ? "Damage" : "Block", Amount = 6m, TargetSide = i % 2 == 1 ? "Enemy" : "Self" } },
+						});
+					prof.Cards.Add(card);
+					return CSharpCodeGen.CardSource(prof, card, prof.Cards.Count - 1);
+				}
+
+				foreach (string kind in new[] { "ExhaustCard", "DiscardCard", "UpgradeCard" })
+				{
+					// V0.2.223：「升级卡牌」在图上现在也筛 `c.IsUpgradable`（和卡牌页同一口径，见下面那组测试）——
+					// 所以没填范围时它**不再**是 `filter: null`，而是 `filter: c => c.IsUpgradable`。
+					string without = ForgeOneEffect(kind);
+					Check($"V0.2.221：图上「{kind}」没填范围时选牌语句不变（filter: null / 不带 Where）",
+						kind == "UpgradeCard"
+							? without.Contains("filter: c => c.IsUpgradable") && !without.Contains("ModelDb.Card<")
+							: without.Contains("filter: null") && !without.Contains("ModelDb.Card<"), "老文本");
+					string with = ForgeOneEffect(kind, (EffectSpec s) => s.ScopeCardId = "Strike");
+					Check($"V0.2.221：图上「{kind}」+「只对这张卡」→ 选牌时真的按这张卡筛（卡牌页同一份判据）",
+						with.Contains("filter: c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id")
+						|| (kind == "UpgradeCard"
+							&& with.Contains("filter: c => (c.IsUpgradable) && (c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id)")),
+						with.Contains("ModelDb.Card<") ? "筛了" : "没筛");
+				}
+
+				// 随机挑牌那条路：谓词要拼进候选表达式（.Where(...)），不然「随机」永远挑到别的牌
+				string rand = ForgeOneEffect("DiscardCard", (EffectSpec s) => { s.ScopeCardId = "Strike"; s.CardPick = "Random"; });
+				Check("V0.2.221：图上「随机」那条路也筛（候选表达式后面拼 .Where）",
+					rand.Contains(".Where(c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id)"), "筛了");
+				// 「全部」那条路同样要筛
+				string all = ForgeOneEffect("ExhaustCard", (EffectSpec s) => { s.ScopeCardId = "Strike"; s.CountMode = "All"; });
+				Check("V0.2.221：图上「取几张 = 全部」也筛",
+					all.Contains("CardPile.GetCards(__fgPlayer, PileType.Hand).Where(c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id)"), "筛了");
+
+				// 从三摞拿牌 / 复制 / 变化 / 预见：图上同样要筛（同一个根因）
+				string take = ForgeOneEffect("TakeFromDiscard", (EffectSpec s) => s.ScopeCardId = "Strike");
+				Check("V0.2.221：图上「从弃牌堆拿牌 + 只对这张卡」也筛",
+					take.Contains(", c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id)"), "筛了");
+				string copy = ForgeOneEffect("CopyCard", (EffectSpec s) => s.ScopeCardId = "Strike");
+				Check("V0.2.221：图上「复制卡牌 + 只对这张卡」也筛",
+					copy.Contains("filter: c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id"), "筛了");
+				string tr = ForgeOneEffect("TransformCard", (EffectSpec s) => { s.ScopeCardId = "Strike"; s.TransformPick = "Attack"; });
+				Check("V0.2.221：图上「变化卡牌 + 只变化这张卡」也筛（用的是变化那一套判据）",
+					tr.Contains("filter: c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id"), "筛了");
+				string scry = ForgeOneEffect("Scry", (EffectSpec s) => s.ScopeCardId = "Strike");
+				Check("V0.2.221：图上「预见 + 只对这张卡」也筛（只看得到那张牌）",
+					scry.Contains(".Take((int)((1m))).Where(c => c.Id == ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id)"), "筛了");
+
+				// 卡牌页这边一直是对的 —— 钉住，别再回退
+				var pageCard = new CardSpec { Name = "自检页指定卡", ClassName = "UiOcPageCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				pageCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", ScopeCardId = "Strike", TargetSide = "Self" });
+				pageCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 2m, SelectPile = "Draw", CardPick = "Random", ScopeCardId = "Strike", TargetSide = "Self" });
+				pageCard.Effects.Add(new EffectSpec { Kind = "UpgradeCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen", ScopeCardId = "Strike", TargetSide = "Self" });
+				var pageProf = ProfileFactory.Sample();
+				pageProf.Cards.Add(pageCard);
+				string pageSrc = CSharpCodeGen.CardSource(pageProf, pageCard, pageProf.Cards.Count - 1);
+				int pageHits = pageSrc.Split("ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Strike>().Id").Length - 1;
+				Check("V0.2.221：卡牌页的消耗 / 丢弃 / 升级 三档都按「只对这张卡」筛（3 处）", pageHits == 3, $"{pageHits} 处");
+
+				// 校验器：「只对这张卡」填了认不出来的类名（手改存档 / 那张卡被删了 / 换机器类名表没跟过来）
+				// → 报错说清，而不是让生成的工程编译不过（`ModelDb.Card<不存在>()` = CS0246/CS0234）。
+				var badScope = new EffectSpec
+				{
+					Kind = "ExhaustCard", Amount = 1m, CardPick = "Chosen", SelectPile = "Hand", TargetSide = "Self",
+					ScopeCardId = "NoSuchCardXyz",
+				};
+				var badProf = new CharacterProfile
+				{
+					Cards =
+					{
+						new CardSpec
+						{
+							Name = "自检坏指定卡", ClassName = "UiOcBadCard", CardType = "Skill", Rarity = "Common", Cost = 1,
+							Effects = { badScope },
+						},
+					},
+				};
+				Check("V0.2.221：校验器：只对这张卡的类名认不出来 → 报错（不让工程编译不过）",
+					ProfileValidator.Validate(badProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只对这张卡（指定）")),
+					"拦住了");
+			}
+
+			// ===== V0.2.222：锻造图里「随机敌人」+「命中次数」（用户报的「对群数和命中次数写在一起、
+			//      随机多段效果异常」）=====
+			// 真因：图上「随机敌人」的候选列表直接拿的是 **EnemyList（全体敌人）**，再套 foreach + WithHitCount(N)
+			// → 「随机敌人 + 命中 4」变成「每个敌人各挨 4 下」（离谱地强），「随机 1 个」变成「全体」。
+			// 现在：伤害走本体的 TargetingRandomOpponents（每一下随机挑一个 = 本体「随机多段」），
+			// 其它按单位施放的效果按「随机挑 N 个」的列表来（N = 命中次数，和「卡牌」页同口径）。
+			{
+				// 造一张只有一块【效果】+ 一个【对象 = 随机敌人】的锻造卡 / 遗物
+				string RandSrc(bool cardScope, string kind, string hits, string powerId = "", bool dup = true)
+				{
+					if (cardScope)
+					{
+						var card = new CardSpec
+						{
+							Name = "自检随机多段" + kind + hits, ClassName = "UiRand" + kind + hits,
+							CardType = "Attack", Rarity = "Common", Cost = 1, IsForged = true, InCardPool = true,
+						};
+						card.ForgeGraph = new ForgeGraphSpec();
+						var trig = new ForgeNodeSpec { Kind = "Trigger" };
+						trig.SetField("Timing", ForgeTimings.CardPlayed);
+						var unit = new ForgeNodeSpec { Kind = "Unit" };
+						unit.SetField("Pick", "RandomEnemy");
+						unit.SetField("AllowDuplicate", dup ? "1" : "0");
+						var eff = new ForgeNodeSpec { Kind = "Effect" };
+						eff.SetField("Effect", kind);
+						eff.SetField("Amount", "3");
+						eff.SetField("Hits", hits);
+						if (powerId.Length > 0) eff.SetField("PowerId", powerId);
+						card.ForgeGraph.Nodes.AddRange(new[] { trig, unit, eff });
+						card.ForgeGraph.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id });
+						card.ForgeGraph.Links.Add(new ForgeLinkSpec { From = unit.Id, To = eff.Id, FromPort = 0, ToPort = 2 });
+						var prof = ProfileFactory.Sample();
+						prof.Cards.Add(card);
+						return CSharpCodeGen.CardSource(prof, card, prof.Cards.Count - 1);
+					}
+					else
+					{
+						var relic = new RelicSpec
+						{
+							Name = "自检随机多段遗物" + kind + hits, ClassName = "UiRandR" + kind + hits,
+							Rarity = "Common", Trigger = "PlayerTurnStart",
+						};
+						relic.ForgeGraph = new ForgeGraphSpec();
+						var trig = new ForgeNodeSpec { Kind = "Trigger" };
+						trig.SetField("Timing", "PlayerTurnStart");
+						var unit = new ForgeNodeSpec { Kind = "Unit" };
+						unit.SetField("Pick", "RandomEnemy");
+						var eff = new ForgeNodeSpec { Kind = "Effect" };
+						eff.SetField("Effect", kind);
+						eff.SetField("Amount", "3");
+						eff.SetField("Hits", hits);
+						relic.ForgeGraph.Nodes.AddRange(new[] { trig, unit, eff });
+						relic.ForgeGraph.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id });
+						relic.ForgeGraph.Links.Add(new ForgeLinkSpec { From = unit.Id, To = eff.Id, FromPort = 0, ToPort = 2 });
+						var prof = ProfileFactory.Sample();
+						prof.Relics.Add(relic);
+						return CSharpCodeGen.RelicSource(prof, relic, prof.Relics.Count - 1);
+					}
+				}
+
+				string one = RandSrc(true, "Damage", "1");
+				Check("V0.2.222：图上「随机敌人 + 命中 1」= 打一个随机敌人一次（走本体 TargetingRandomOpponents，不是对全体 foreach）",
+					one.Contains("TargetingRandomOpponents(base.CombatState, allowDuplicates: true).Execute(choiceContext)")
+					&& !one.Contains("foreach (Creature __fgFoe in ForgeFormulaRuntime.EnemyList("), "对");
+				string four = RandSrc(true, "Damage", "4");
+				Check("V0.2.222：图上「随机敌人 + 命中 4」= 随机打 4 下（TargetingRandomOpponents + WithHitCount(4)），"
+					+ "不再变成「每个敌人各挨 4 下」",
+					four.Contains("TargetingRandomOpponents(base.CombatState, allowDuplicates: true).WithHitCount(4).Execute(choiceContext)")
+					&& !four.Contains("foreach (Creature __fgFoe in ForgeFormulaRuntime.EnemyList("), "对");
+				string noDup = RandSrc(true, "Damage", "2", dup: false);
+				Check("V0.2.222：不勾「随机目标允许重复选中同一个敌人」时照样传进去（allowDuplicates: false）",
+					noDup.Contains("TargetingRandomOpponents(base.CombatState, allowDuplicates: false)"), "传了");
+
+				// 施加状态这类「按单位施放」的：命中次数 = 随机挑几个（和「卡牌」页同一口径）
+				string debuff = RandSrc(true, "ApplyPower", "3", "WeakPower");
+				Check("V0.2.222：图上「随机敌人 + 施加状态 + 命中 3」= 随机挑 3 个敌人各上一层（不是全体）",
+					debuff.Contains("Enumerable.Range(0, 3).Select(_ => ForgeFormulaRuntime.RandomEnemy(__fgPlayer, allowDuplicates: true)).OfType<Creature>().ToList()"),
+					debuff.Contains("Enumerable.Range(0, 3)") ? "随机 3 个" : "没筛");
+				string debuffNoDup = RandSrc(true, "ApplyPower", "2", "VulnerablePower", dup: false);
+				Check("V0.2.222：不勾「允许重复」→ 随机挑 2 个**不同**的敌人（洗牌取前 N 个）",
+					debuffNoDup.Contains(".OrderBy(_ => __fgPlayer.RunState.Rng.CombatTargets.NextInt(int.MaxValue)).Take(2)"), "不重复");
+
+				// 遗物 / 药水 / 状态布上没有 Attacker（不能调 TargetingRandomOpponents）→ 走「随机 N 个，每个打命中次数下」
+				string relic = RandSrc(false, "Damage", "2");
+				Check("V0.2.222：遗物布上「随机敌人 + 命中 2」→ 随机挑 2 个，每个打 2 下（不调要 Attacker 的那个 API）",
+					relic.Contains("Enumerable.Range(0, 2)")
+					&& relic.Contains(".Targeting(__fgFoe).WithHitCount(2)")
+					&& !relic.Contains("TargetingRandomOpponents"), "对");
+			}
+
+			// ===== V0.2.223：状态牌局内升级（用户报的「但是好像升级没生效」）=====
+			// 真因两条：
+			//   ① 「诅咒 / 先古 / 状态」那一页**没有**「可被无限升级」开关（只有「卡牌」页有），
+			//      而状态牌恰恰只能在这一页编辑 → 永远生成 `MaxUpgradeLevel => 0` → 升级效果什么都不做；
+			//   ② 锻造图里的「升级卡牌」**不筛** `c.IsUpgradable`（卡牌页那份一直筛）→ 选牌界面里连
+			//      状态牌 / 诅咒 / 已升满的牌都能选，选中后 `CardCmd.Upgrade` 自己跳过（静默无事发生）。
+			{
+				// ① 界面：特殊卡那一页也要有这一行
+				DependencyObject specialRoot = SelectTabRoot("诅咒 / 先古 / 状态");
+				UpdateLayout();
+				var specialPaths = CollectBoundPaths(specialRoot);
+				Check("V0.2.223：（界面）「诅咒 / 先古 / 状态」页有一行显隐绑在 ShowInfinitelyUpgradable 上",
+					specialPaths.Contains("ShowInfinitelyUpgradable"),
+					specialPaths.Contains("ShowInfinitelyUpgradable") ? "在" : "(没找到)");
+				bool boundToInf = false;
+				void WalkSpecial(DependencyObject d)
+				{
+					if (d is System.Windows.Controls.CheckBox cb
+						&& System.Windows.Data.BindingOperations.GetBinding(cb,
+							System.Windows.Controls.Primitives.ToggleButton.IsCheckedProperty)?.Path?.Path == "InfinitelyUpgradable")
+						boundToInf = true;
+					int n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(d);
+					for (int i = 0; i < n; i++) WalkSpecial(System.Windows.Media.VisualTreeHelper.GetChild(d, i));
+				}
+				WalkSpecial(specialRoot);
+				Check("V0.2.223：（界面）那个勾选框的值真的绑在 InfinitelyUpgradable 上", boundToInf, boundToInf ? "绑了" : "没绑");
+
+				// ② 显隐判据：诅咒不显示（生成端写死 0），状态 / 先古 / 普通卡显示
+				Check("V0.2.223：诅咒不显示「可被无限升级」（诅咒写死 MaxUpgradeLevel => 0），状态 / 先古 / 普通卡都显示",
+					!new CardSpec { Rarity = "Curse" }.ShowInfinitelyUpgradable
+					&& new CardSpec { Rarity = "Status" }.ShowInfinitelyUpgradable
+					&& new CardSpec { Rarity = "Ancient" }.ShowInfinitelyUpgradable
+					&& new CardSpec { Rarity = "Common" }.ShowInfinitelyUpgradable, "对");
+				var rarityProbe = new CardSpec { Rarity = "Common" };
+				bool sawRarityRaise = false;
+				rarityProbe.PropertyChanged += (_, ev) =>
+				{
+					if (ev.PropertyName == nameof(CardSpec.ShowInfinitelyUpgradable)) sawRarityRaise = true;
+				};
+				rarityProbe.Rarity = "Curse";
+				Check("V0.2.223：改稀有度会通知 ShowInfinitelyUpgradable（不然换成诅咒那一行还留在界面上）",
+					sawRarityRaise, "通知了");
+
+				// ③ 生成：状态牌 + 「可被无限升级」= 局内能升（和本体「凋萎」同一效果），不勾仍然 0
+				CharacterProfile upProf = ProfileFactory.Sample();
+				var upStatus = new CardSpec
+				{
+					Name = "自检可升级状态", ClassName = "UiStatusUpInf", CardType = "Status", Rarity = "Status",
+					Cost = -1, InCardPool = true, InfinitelyUpgradable = true,
+				};
+				upStatus.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+				upProf.Cards.Add(upStatus);
+				string upSrc = CSharpCodeGen.CardSource(upProf, upStatus, upProf.Cards.Count - 1);
+				Check("V0.2.223：状态牌勾了「可被无限升级」→ MaxUpgradeLevel => int.MaxValue（不再写 => 0）",
+					upSrc.Contains("public override int MaxUpgradeLevel => int.MaxValue;")
+					&& !upSrc.Contains("public override int MaxUpgradeLevel => 0;"), "对");
+				Check("V0.2.223：每升一级 +升级增量（OnUpgrade 里 DynamicVars 的 UpgradeValueBy(3m)）",
+					upSrc.Contains("protected override void OnUpgrade()") && upSrc.Contains("UpgradeValueBy(3m)"), "对");
+				var upPlain = new CardSpec
+				{
+					Name = "自检原样状态", ClassName = "UiStatusUpPlain", CardType = "Status", Rarity = "Status",
+					Cost = -1, InCardPool = true,
+				};
+				upPlain.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, UpgradeAmount = 3m, TargetSide = "Enemy" });
+				upProf.Cards.Add(upPlain);
+				string plainUpSrc = CSharpCodeGen.CardSource(upProf, upPlain, upProf.Cards.Count - 1);
+				Check("V0.2.223：不勾仍然是 MaxUpgradeLevel => 0（和本体「粘液」一样升不了级）",
+					plainUpSrc.Contains("public override int MaxUpgradeLevel => 0;"), "对");
+
+				// ④ 锻造图的「升级卡牌」也要筛 c.IsUpgradable（和卡牌页同一口径）
+				string GraphUpgrade(Action<EffectSpec>? tweak)
+				{
+					var card = new CardSpec
+					{
+						Name = "自检图上升级", ClassName = "UiGraphUp", CardType = "Skill", Rarity = "Common", Cost = 1,
+						IsForged = true, InCardPool = true,
+					};
+					card.ForgeGraph = new ForgeGraphSpec();
+					var trig = new ForgeNodeSpec { Kind = "Trigger" };
+					trig.SetField("Timing", ForgeTimings.CardPlayed);
+					var eff = new ForgeNodeSpec { Kind = "Effect" };
+					eff.SetField("Effect", "UpgradeCard");
+					eff.SetField("Amount", "1");
+					var spec = ForgeEffectBridge.Author(eff);
+					spec.CardPick = "Chosen";
+					spec.SelectPile = "Hand";
+					tweak?.Invoke(spec);
+					card.ForgeGraph.Nodes.AddRange(new[] { trig, eff });
+					card.ForgeGraph.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id });
+					var prof = ProfileFactory.Sample();
+					prof.Cards.Add(card);
+					return CSharpCodeGen.CardSource(prof, card, prof.Cards.Count - 1);
+				}
+				string upChosen = GraphUpgrade(null);
+				Check("V0.2.223：图上「升级卡牌（自己选）」按 c.IsUpgradable 筛（选不到状态牌 / 诅咒 / 已升满的牌）",
+					upChosen.Contains("filter: c => c.IsUpgradable"), "筛了");
+				string upAll = GraphUpgrade((EffectSpec s) => { s.CardPick = "Random"; s.CountMode = "All"; });
+				Check("V0.2.223：图上「升级卡牌（取几张=全部）」也只升能升级的",
+					upAll.Contains(".Where(c => c.IsUpgradable)"), "筛了");
+				string upRandom = GraphUpgrade((EffectSpec s) => s.CardPick = "Random");
+				Check("V0.2.223：图上「升级卡牌（随机）」也只从能升级的牌里挑",
+					upRandom.Contains(".Where(c => c.IsUpgradable)"), "筛了");
+				string upScoped = GraphUpgrade((EffectSpec s) => s.ScopeCardId = "SevenCurse");
+				Check("V0.2.223：图上「升级卡牌 + 只对这张卡」= (c.IsUpgradable) && (只对这张卡)（和卡牌页同一条判据）",
+					upScoped.Contains("(c.IsUpgradable) && (c.Id == ModelDb.Card<"), "与关系");
+			}
+
+			// ===== V0.2.224：额外资源量遗物上的效果 = 「战斗开始时」（每场战斗一次），不是每回合 =====
+			// 用户实测报的：「额外资源量遗物触发时机不是固定战斗开始时吗，往上面添加效果实际上是玩家回合开始时」。
+			// 真因：那块效果生成在 `BeforeSideTurnStart`（每个回合都会调一次），而它**漏了**
+			// 「不是第 1 回合就退出」的守卫 —— 和遗物链「战斗开始时」那一档（RelicTriggerGuardLines 的
+			// CombatStart 分支）比起来少了这一句，于是每回合都触发。
+			{
+				var erOn = ProfileFactory.Sample();
+				erOn.ExtraResource.Enabled = true;
+				erOn.ExtraResource.Initial = 2;
+				erOn.ExtraResource.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+				string erSrc = CSharpCodeGen.ExtraResourceSource(erOn);
+				int beforeAt = erSrc.IndexOf("BeforeSideTurnStart", StringComparison.Ordinal);
+				int guardAt = beforeAt < 0 ? -1 : erSrc.IndexOf("TurnNumber > 1", beforeAt, StringComparison.Ordinal);
+				int effectAt = erSrc.IndexOf("GainBlock", StringComparison.Ordinal);
+				Check("V0.2.224：额外资源量遗物上的效果只跑「战斗开始时」（BeforeSideTurnStart 里有「不是第 1 回合就退出」的守卫）",
+					beforeAt > 0 && guardAt > beforeAt && effectAt > guardAt, $"守卫@{guardAt} / 效果@{effectAt}");
+				var erOff = ProfileFactory.Sample();
+				erOff.ExtraResource.Enabled = true;
+				string erOffSrc = CSharpCodeGen.ExtraResourceSource(erOff);
+				Check("V0.2.224：（红线）没加效果时还是老样子（根本不生成 BeforeSideTurnStart 那个方法）",
+					!erOffSrc.Contains("BeforeSideTurnStart"), "老样子");
+			}
+
+			// ===== V0.2.225：条件「本回合预见过 / 本回合已预见至少 N 次」（用户要求）=====
+			// 「预见」是工具自己拼的效果（本体没有这个机制），所以次数也只能工具自己记：
+			// cs/CombatCounters.cs 里那个静态计数器（和「每 N 个敌人死亡」共用同一个类），
+			// 跑一次「预见」+1，按**玩家自己的回合号**自动清零。
+			{
+				var scryCond = EffectCatalog.FindCondition("ScryThisTurn");
+				var scryAtLeast = EffectCatalog.FindCondition("ScryAtLeast");
+				Check("V0.2.225：条件列表里有「本回合预见过」「本回合已预见至少 N 次」（卡牌 / 遗物 / 药水 / 状态都能用）",
+					scryCond is not null && scryCond.Display.Contains("预见") && scryCond.ForCard && scryCond.ForRelic && scryCond.ForPower
+					&& scryAtLeast is not null && scryAtLeast.NeedsAmount && scryAtLeast.InvertedDisplay is not null,
+					$"{(scryCond is null ? "(缺)" : scryCond.Display)} / {(scryAtLeast is null ? "(缺)" : scryAtLeast.Display)}");
+
+				Check("V0.2.225：条件文案会写上数值 N（至少 N 次）/ 填负数时用反向说法",
+					CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "ScryAtLeast", Amount = 3m }).Contains("3")
+					&& CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "ScryAtLeast", Amount = -3m }).Contains("少于 3"),
+					CSharpCodeGen.ConditionText(new ConditionSpec { Kind = "ScryAtLeast", Amount = 3m }));
+
+				Check("V0.2.225：生成的条件表达式走工具自己的计数器（卡牌档用 base.Owner）",
+					CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ScryThisTurn" }, CSharpCodeGen.CondCtx.Card)
+						.Contains("ForgeCombatCounters.ScryThisTurn(base.Owner) > 0")
+					&& CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ScryAtLeast", Amount = 2m }, CSharpCodeGen.CondCtx.Card)
+						.Contains("ForgeCombatCounters.ScryThisTurn(base.Owner) >= 2")
+					&& CSharpCodeGen.ConditionExpr(new ConditionSpec { Kind = "ScryAtLeast", Amount = -2m }, CSharpCodeGen.CondCtx.Card)
+						.Contains("ForgeCombatCounters.ScryThisTurn(base.Owner) < 2"),
+					"走计数器");
+
+				// 生成 → 回读：两条条件都要认得回来，而且「预见」那条效果还要照旧认得出来（不被多认一条）
+				CharacterProfile scryProf = ProfileFactory.Sample();
+				var scryCard = new CardSpec
+				{
+					Name = "自检预见条件", ClassName = "UiScryCondCard", CardType = "Skill", Rarity = "Common", Cost = 1,
+					InCardPool = true,
+				};
+				scryCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 3m, TargetSide = "Self" });
+				scryCard.Effects.Add(new EffectSpec
+				{
+					Kind = "Block", Amount = 5m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "ScryThisTurn" },
+				});
+				scryCard.Effects.Add(new EffectSpec
+				{
+					Kind = "Draw", Amount = 1m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "ScryAtLeast", Amount = 2m },
+				});
+				scryProf.Cards.Add(scryCard);
+				string scrySrc = CSharpCodeGen.CardSource(scryProf, scryCard, scryProf.Cards.Count - 1);
+				Check("V0.2.225：「预见」那条效果里先 +1（用了这两条条件时才写）",
+					scrySrc.Contains("SevenForgeCombatCounters.BumpScry(base.Owner);"), "写了");
+				Check("V0.2.225：用「本回合预见过 / 至少 N 次」的两条效果各自包了一层计数器判断",
+					scrySrc.Contains("SevenForgeCombatCounters.ScryThisTurn(base.Owner) > 0")
+					&& scrySrc.Contains("SevenForgeCombatCounters.ScryThisTurn(base.Owner) >= 2"), "包了");
+
+				var noCondProf = ProfileFactory.Sample();
+				var noCondCard = new CardSpec { Name = "自检只用预见", ClassName = "UiScryNoCond", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				noCondCard.Effects.Add(new EffectSpec { Kind = "Scry", Amount = 2m, TargetSide = "Self" });
+				noCondProf.Cards.Add(noCondCard);
+				string noCondSrc = CSharpCodeGen.CardSource(noCondProf, noCondCard, noCondProf.Cards.Count - 1);
+				Check("V0.2.225：（红线）没人用这两条条件时，「预见」效果一个字都不多写（老存档逐字不变）",
+					!noCondSrc.Contains("BumpScry") && !noCondSrc.Contains("ForgeCombatCounters"), "没写");
+
+				Check("V0.2.225：那个小运行时只在用到时才生成，而且只写用到的那部分（敌人死亡 / 预见）",
+					CSharpCodeGen.UsesScryCounter(scryProf) && !CSharpCodeGen.UsesEnemyDeathCounter(scryProf)
+					&& CSharpCodeGen.CombatCountersSource(scryProf).Contains("BumpScry")
+					&& !CSharpCodeGen.CombatCountersSource(scryProf).Contains("BumpEnemyDeath")
+					&& !CSharpCodeGen.UsesCombatCounters(noCondProf), "按需生成");
+
+				// 校验器：用了这两条条件，但整份配置里一条「预见」都没有 → 警告（计数器永远是 0）
+				var badScryProf = ProfileFactory.Sample();
+				var badScryCard = new CardSpec { Name = "自检没预见", ClassName = "UiScryBad", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				badScryCard.Effects.Add(new EffectSpec
+				{
+					Kind = "Block", Amount = 3m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "ScryThisTurn" },
+				});
+				badScryProf.Cards.Add(badScryCard);
+				Check("V0.2.225：校验器：用了「本回合预见过」却一条「预见」效果都没有 → 警告",
+					ProfileValidator.Validate(badScryProf).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("一条「预见」效果都没有")),
+					"警告了");
+
+				// 锻造图上的【条件】也算「用到」（否则记录器不生成 → CS0103）
+				var graphScryProf = ProfileFactory.Sample();
+				var graphScryCard = new CardSpec
+				{
+					Name = "自检图上预见", ClassName = "UiScryGraph", CardType = "Skill", Rarity = "Common", Cost = 1,
+					IsForged = true, InCardPool = true,
+				};
+				graphScryCard.ForgeGraph = new ForgeGraphSpec();
+				var gTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				gTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var gCond = new ForgeNodeSpec { Kind = "Condition" };
+				gCond.SetField("Cond", "ScryThisTurn");
+				graphScryCard.ForgeGraph.Nodes.AddRange(new[] { gTrig, gCond });
+				graphScryCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = gTrig.Id, To = gCond.Id });
+				graphScryProf.Cards.Add(graphScryCard);
+				Check("V0.2.225：锻造图上【条件】选了「本回合预见过」也算用到（记录器照样生成）",
+					CSharpCodeGen.UsesScryCounter(graphScryProf), "算了");
+
+				// 生成 → 回读（新条件要能从工程里认回来）
+				string scryRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_scrycond_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					scryProf.Paths.OutputDir = scryRoot;
+					scryProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					scryProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					scryProf.Cards.Add(graphScryCard);
+					var scryGen = ModGenerator.Generate(scryProf);
+					Check("V0.2.225：（准备）带「预见」条件的存档能生成工程", scryGen.Success,
+						scryGen.Success ? scryGen.ProjectRoot : string.Join(" ｜ ", scryGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (scryGen.Success)
+					{
+						var scryRec = ProjectRecovery.FromProject(scryGen.ProjectRoot);
+						CardSpec? scryBack = scryRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiScryCondCard");
+						Check("V0.2.225：回读：「本回合预见过 / 已预见至少 2 次」两条条件都认得回来",
+							scryBack is not null
+							&& scryBack.Effects.Any((EffectSpec x) => x.Condition?.Kind == "ScryThisTurn")
+							&& scryBack.Effects.Any((EffectSpec x) => x.Condition?.Kind == "ScryAtLeast" && x.Condition.Amount == 2m),
+							scryBack is null ? "(缺)" : string.Join(" / ", scryBack.Effects.Select((EffectSpec x) => x.Kind + "=" + (x.Condition?.Kind ?? "None"))));
+						Check("V0.2.225：回读（新增 +1 那一句之后）「预见」那条效果仍然认得出、没有多出来的语句",
+							scryBack is not null
+							&& scryBack.Effects.Count((EffectSpec x) => x.Kind == "Scry") == 1
+							&& !scryRec.HasUnparsed,
+							scryRec.HasUnparsed ? (scryRec.Unparsed.FirstOrDefault() ?? "") : "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(scryRoot, true); } catch { }
+				}
+			}
+			// ===== V0.2.226：「复制卡牌」可以复制自己 / 自己选从哪一摞复制 / 复制到哪一摞（用户要求）=====
+			// 用户原话：「复制效果能够复制自己或者可以选择从哪里选择复制并且到哪里」。
+			{
+				Check("V0.2.226：「放到哪一摞」这一栏对「复制卡牌」也生效（和放置卡牌同一份判据）",
+					EffectSpec.KindUsesPlaceTo("CopyCard") && new EffectSpec { Kind = "CopyCard" }.UsesPlaceTo
+					&& new EffectSpec { Kind = "CopyCard" }.PlaceToChoices.Count == 5
+					&& EffectSpec.KindUsesSelectPile("CopyCard"),
+					$"CopyCard→PlaceTo={new EffectSpec { Kind = "CopyCard" }.UsesPlaceTo}");
+				Check("V0.2.226：「数值 0 = 这张牌自己」对复制卡牌成立（勾了「数值 = X」时不算）",
+					CSharpCodeGen.AmountZeroIsSelf(new EffectSpec { Kind = "CopyCard", Amount = 0m })
+					&& !CSharpCodeGen.AmountZeroIsSelf(new EffectSpec { Kind = "CopyCard", Amount = 1m })
+					&& !CSharpCodeGen.AmountZeroIsSelf(new EffectSpec { Kind = "CopyCard", Amount = 0m, AmountIsX = true }),
+					"0 可以复制自己");
+
+				var copySelfProf = ProfileFactory.Sample();
+				var copySelfCard = new CardSpec { Name = "自检复制自己", ClassName = "UiCopySelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				copySelfCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 0m, Copies = 2, PlaceTo = "Top", TargetSide = "Self" });
+				copySelfProf.Cards.Add(copySelfCard);
+				string copySelfSrc = CSharpCodeGen.CardSource(copySelfProf, copySelfCard, copySelfProf.Cards.Count - 1);
+				Check("V0.2.226：数值 0 的复制卡牌会克隆**这张牌自己** N 份（不是弹选牌界面）",
+					copySelfSrc.Contains("CardModel __selfClone = this.CreateClone();")
+					&& copySelfSrc.Contains("AddGeneratedCardToCombat(__selfClone, PileType.Draw, base.Owner, CardPilePosition.Top)")
+					&& !copySelfSrc.Contains("CardSelectCmd."),
+					"克隆自己");
+				string copySelfJson = LocalizationGen.CardsJson(copySelfProf);
+				Check("V0.2.226：卡面描述写清「复制这张牌本身 N 份」和放到哪一摞",
+					copySelfJson.Contains("复制这张牌本身 2 份到牌顶"),
+					copySelfJson.Contains("复制这张牌本身 2 份到牌顶") ? "文案对" : "文案不对");
+
+				// 老档红线：默认（数值 ≥ 1、复制到手牌）一个字符都不变
+				var copyOldProf = ProfileFactory.Sample();
+				var copyOldCard = new CardSpec { Name = "自检老复制", ClassName = "UiCopyOld", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				copyOldCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, Copies = 1, SelectPile = "Hand", PlaceTo = "Hand", CardPick = "Chosen", TargetSide = "Self" });
+				copyOldProf.Cards.Add(copyOldCard);
+				string copyOldSrc = CSharpCodeGen.CardSource(copyOldProf, copyOldCard, copyOldProf.Cards.Count - 1);
+				string copyOldJson = LocalizationGen.CardsJson(copyOldProf);
+				Check("V0.2.226：（红线）默认「复制到手牌」生成文本逐字不变（还是手牌那一摞、没有位置实参）",
+					copyOldSrc.Contains("PileType.Hand, base.Owner)") && !copyOldSrc.Contains("CardPilePosition")
+					&& copyOldSrc.Contains("CET:Copies=1")
+					&& copyOldJson.Contains("（每张复制一份到手牌）"),
+					copyOldSrc.Contains("PileType.Hand, base.Owner)") ? "逐字不变" : "变了");
+
+				// 「复制到弃牌堆」（数值 ≥ 1 那条路：从抽牌堆选 2 张，每张复制 2 份塞进弃牌堆）
+				var copyToProf = ProfileFactory.Sample();
+				var copyToCard = new CardSpec { Name = "自检复制到弃牌堆", ClassName = "UiCopyTo", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				copyToCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 2m, Copies = 2, SelectPile = "Draw", CardPick = "Chosen", PlaceTo = "Discard", TargetSide = "Self" });
+				copyToProf.Cards.Add(copyToCard);
+				string copyToSrc = CSharpCodeGen.CardSource(copyToProf, copyToCard, copyToProf.Cards.Count - 1);
+				Check("V0.2.226：复制出来的牌按「放到哪一摞」进弃牌堆（不是死写手牌）",
+					copyToSrc.Contains("AddGeneratedCardToCombat(__clone, PileType.Discard, base.Owner)")
+					&& copyToSrc.Contains("CET:PlaceTo=Discard"),
+					copyToSrc.Contains("PileType.Discard") ? "进弃牌堆" : "还是手牌");
+
+				// 遗物 / 药水 / 状态上没有「这张牌」：数值 0 必须报出来，而不是悄悄什么都不做
+				var copyRelicProf = ProfileFactory.Sample();
+				var copyRelic = new RelicSpec { Name = "自检复制遗物", ClassName = "UiCopyRelic", Rarity = "Common", Trigger = "PlayerTurnStart" };
+				copyRelic.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 0m, PlaceTo = "Top", TargetSide = "Self" });
+				copyRelicProf.Relics.Add(copyRelic);
+				Check("V0.2.226：遗物上填 0 = 复制自己 → 校验器给出警告（那种布上没有「这张牌」）",
+					ProfileValidator.Validate(copyRelicProf).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("只有在**卡牌**上成立")),
+					"警告了");
+
+				// 锻造图：节点上的「放到哪一摞」要真的生效（自己那条 + 选自手牌那条）
+				var copyGraphProf = ProfileFactory.Sample();
+				var copyGraphCard = new CardSpec
+				{
+					Name = "自检图上复制", ClassName = "UiCopyGraph", CardType = "Skill", Rarity = "Common", Cost = 1,
+					IsForged = true, InCardPool = true,
+				};
+				copyGraphCard.ForgeGraph = new ForgeGraphSpec();
+				var cgTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				cgTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				copyGraphCard.ForgeGraph.Nodes.Add(cgTrig);
+				var cgPrev = cgTrig;
+				foreach ((string cgAmt, string cgPlace) in new[] { ("0", "Top"), ("1", "Exhaust") })
+				{
+					var cgNode = new ForgeNodeSpec { Kind = "Effect" };
+					cgNode.SetField("Effect", "CopyCard");
+					cgNode.SetField("Amount", cgAmt);
+					cgNode.SetField("SelectPile", "Hand");
+					cgNode.SetField("PlaceTo", cgPlace);
+					cgNode.SetField("Pick", "Chosen");
+					copyGraphCard.ForgeGraph.Nodes.Add(cgNode);
+					copyGraphCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = cgPrev.Id, To = cgNode.Id });
+					cgPrev = cgNode;
+				}
+				copyGraphProf.Cards.Add(copyGraphCard);
+				string copyGraphSrc = CSharpCodeGen.CardSource(copyGraphProf, copyGraphCard, copyGraphProf.Cards.Count - 1);
+				Check("V0.2.226：锻造图里「复制卡牌」也认「放到哪一摞」（数值 0 = 复制这张牌自己）",
+					copyGraphSrc.Contains("AddGeneratedCardToCombat(__selfClone, PileType.Draw, __fgPlayer, CardPilePosition.Top)")
+					&& copyGraphSrc.Contains("PileType.Exhaust, __fgPlayer)"),
+					copyGraphSrc.Contains("PileType.Exhaust, __fgPlayer)") ? "图上也对" : "图上没生效");
+
+				// 生成 → 回读（CET:PlaceTo 这条标记要能把「复制到哪一摞」带回来）
+				string copyRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_copycard_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					var copyGenProf = ProfileFactory.Sample();
+					var copyGenSelf = new CardSpec { Name = "自检回读自己", ClassName = "UiCopyBackSelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					copyGenSelf.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 0m, Copies = 2, PlaceTo = "Top", TargetSide = "Self" });
+					var copyGenMany = new CardSpec { Name = "自检回读弃牌堆", ClassName = "UiCopyBackMany", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					copyGenMany.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 2m, Copies = 2, SelectPile = "Draw", CardPick = "Chosen", PlaceTo = "Discard", TargetSide = "Self" });
+					copyGenProf.Cards.Add(copyGenSelf);
+					copyGenProf.Cards.Add(copyGenMany);
+					copyGenProf.Paths.OutputDir = copyRoot;
+					copyGenProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					copyGenProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var copyGen = ModGenerator.Generate(copyGenProf);
+					Check("V0.2.226：（准备）带「复制自己 / 复制到弃牌堆」的存档能生成工程", copyGen.Success,
+						copyGen.Success ? copyGen.ProjectRoot : string.Join(" ｜ ", copyGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (copyGen.Success)
+					{
+						var copyRec = ProjectRecovery.FromProject(copyGen.ProjectRoot);
+						CardSpec? copyBackSelf = copyRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCopyBackSelf");
+						CardSpec? copyBackMany = copyRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCopyBackMany");
+						Check("V0.2.226：回读：复制自己（数值 0）和「放到哪一摞」都认得回来",
+							copyBackSelf is not null && copyBackSelf.Effects.Any((EffectSpec x) => x.Kind == "CopyCard" && x.Amount == 0m && x.PlaceTo == "Top" && x.Copies == 2)
+							&& copyBackMany is not null && copyBackMany.Effects.Any((EffectSpec x) => x.Kind == "CopyCard" && x.Amount == 2m && x.PlaceTo == "Discard" && x.SelectPile == "Draw"),
+							(copyBackSelf is null ? "(缺自己)" : string.Join(" / ", copyBackSelf.Effects.Select((EffectSpec x) => x.Kind + ":" + x.Amount + ":" + x.PlaceTo)))
+							+ " ｜ "
+							+ (copyBackMany is null ? "(缺弃牌堆)" : string.Join(" / ", copyBackMany.Effects.Select((EffectSpec x) => x.Kind + ":" + x.Amount + ":" + x.PlaceTo))));
+						Check("V0.2.226：回读时「复制自己」那段实现整段跳过（不留没认出来的语句）",
+							!copyRec.HasUnparsed, copyRec.HasUnparsed ? (copyRec.Unparsed.FirstOrDefault() ?? "") : "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(copyRoot, true); } catch { }
+				}
 			}
 
 			// ===== V0.2.151：效果栏版式（标签列不许吃掉输入列）+ 「转化为先古卡」的范围候选 =====
@@ -26183,8 +30608,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					var layoutGrids = new List<Grid>();
 					CollectGrids(SelectTabRoot("卡牌"), layoutGrids);
 					Grid? effectGrid = layoutGrids.FirstOrDefault((Grid g) => g.DataContext == trimFx
-						&& g.ColumnDefinitions.Count == 2 && g.RowDefinitions.Count == 17);
-					Check("V0.2.151：（界面）卡牌页的效果栏真的挂上来了（两列 × 17 行那个 Grid）",
+						&& g.ColumnDefinitions.Count == 2 && g.RowDefinitions.Count >= 17);   // V0.2.258：加了「或者清空一个组」那一行 → 18
+					Check("V0.2.151：（界面）卡牌页的效果栏真的挂上来了（两列 × 17+ 行那个 Grid）",
 						effectGrid is not null, effectGrid is null ? "(没找到)" : "找到");
 					if (effectGrid is not null)
 					{
@@ -26434,7 +30859,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				fp.Relics.Add(fpRelic);
 				string fpRelicSrc = CSharpCodeGen.RelicSource(fp, fpRelic, fp.Relics.Count - 1);
 				Check("V0.2.164：遗物的「数值公式」生成的是**内联**表达式（不依赖卡牌那套前置变量）",
-					fpRelicSrc.Contains("CreatureCmd.Heal(base.Owner.Creature, ForgeFormulaRuntime.Div(base.Owner.Creature?.MaxHp ?? 0, (2m)))")
+					fpRelicSrc.Contains("CreatureCmd.Heal(base.Owner.Creature, ForgeFormulaRuntime.Div((base.Owner.Creature?.MaxHp ?? 0), (2m)))")
 					&& fpRelicSrc.Contains("ForgeFormulaRuntime.PowerAmount(ForgeFormulaRuntime.FirstEnemy(base.Owner), \"VulnerablePower\")"),
 					fpRelicSrc.Contains("ForgeFormulaRuntime.Div(") ? "生成了内联表达式" : "(没生成公式)");
 				Check("V0.2.164：遗物的悬停数字在取说明时现算（__RefreshFormulaPreview 挂在 ExtraHoverTips 上）",
@@ -26449,7 +30874,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				fp.Potions.Add(fpPotion);
 				string fpPotionSrc = CSharpCodeGen.PotionSource(fp, fpPotion, fp.Potions.Count - 1);
 				Check("V0.2.164：药水的「数值公式」同样内联 + 悬停现算 + 回读标记",
-					fpPotionSrc.Contains("GainBlock(base.Owner.Creature, ForgeFormulaRuntime.Div(base.Owner.Creature?.MaxHp ?? 0, (4m))")
+					fpPotionSrc.Contains("GainBlock(base.Owner.Creature, ForgeFormulaRuntime.Div((base.Owner.Creature?.MaxHp ?? 0), (4m))")
 					&& fpPotionSrc.Contains("__RefreshFormulaPreview")
 					&& fpPotionSrc.Contains("public override IEnumerable<MegaCrit.Sts2.Core.HoverTips.IHoverTip> ExtraHoverTips")
 					&& fpPotionSrc.Contains("// CET:AmountFormula=M/4"),
@@ -26461,7 +30886,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				fp.CustomPowers.Add(fpPower);
 				string fpPowerSrc = CustomPowerGen.Source(fp, fpPower, fp.CustomPowers.Count - 1);
 				Check("V0.2.164：自定义状态的「数值公式」也内联（状态钩子的 Owner 是 Creature，玩家写 base.Owner.Player）",
-					fpPowerSrc.Contains("ForgeFormulaRuntime.Div(base.Owner?.MaxHp ?? 0, (10m))")
+					fpPowerSrc.Contains("ForgeFormulaRuntime.Div((base.Owner?.MaxHp ?? 0), (10m))")
 					&& fpPowerSrc.Contains("// CET:AmountFormula=M/10"), fpPowerSrc.Contains("ForgeFormulaRuntime.Div(") ? "状态也行了" : "(没生成)");
 				Check("V0.2.164：状态描述里写的是**公式本身**（状态说明是生成期写死的纯文本，现算不了）",
 					PowerTriggers.AutoDescription(fpPower).Contains("M/10"), PowerTriggers.AutoDescription(fpPower));
@@ -27057,7 +31482,206 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					return CSharpCodeGen.CardSource(p4, c5, 0);
 				}
 			}
+			// ===== V0.2.231：音频效果底下新增「音频是否被下一个自定义音频顶替」=====
+			// 用户要求：「音频效果底下增加音频是否被下一个自定义音频顶替」。
+			// 默认（不勾）= 每次播放各开一个播放器、几段叠着响（老行为，逐字不变）；
+			// 勾上 = 这段还在放时，只要又播放了**另一个「我上传的音频」**，这段立刻停掉（新的接手）。
+			// 实现：勾了任意一条 → 生成 cs/ForgeSfx.cs（记着「还在放、且允许被顶替」的播放器），
+			// 所有自定义音频都改走它；一条都没勾 → 不生成那个文件、播放代码还是原来那几句。
+			{
+				string sfxDir = Path.Combine(Path.GetTempPath(), "forge_uicheck_sfxrep_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				Directory.CreateDirectory(sfxDir);
+				string sfxFile = Path.Combine(sfxDir, "probe_voice.ogg");
+				File.WriteAllBytes(sfxFile, new byte[] { 0x4F, 0x67, 0x67, 0x53, 0, 2, 0, 0 });   // "OggS"
+				try
+				{
+					Check("V0.2.231：那个勾只在「播放音频文件」上显示（别的种类生成端不读它）",
+						new EffectSpec { Kind = "PlaySoundFile", SfxReplace = true }.ShowSfxReplaceRow
+						&& !new EffectSpec { Kind = "PlaySfx" }.ShowSfxReplaceRow
+						&& !new EffectSpec { Kind = "Damage" }.ShowSfxReplaceRow
+						&& EffectFieldPolicy.UsesSfxReplace("PlaySoundFile")
+						&& !EffectFieldPolicy.UsesSfxReplace("Damage"), "显隐对");
 
+					// ① 红线：一条都没勾 → 不生成小助手、播放代码还是老的 __sfx 那几句
+					CharacterProfile sfxOff = ProfileFactory.Sample();
+					sfxOff.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					sfxOff.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					sfxOff.Relics.Clear();
+					sfxOff.Potions.Clear();
+					sfxOff.CustomPowers.Clear();
+					sfxOff.AudioAssets.Clear();
+					sfxOff.AudioAssets.Add(new AudioAssetSpec { Name = "自检语音", File = sfxFile });
+					string sfxKey = sfxOff.AudioAssets[0].Key;
+					var sfxOffCard = new CardSpec { Name = "自检音频旧", ClassName = "UiCheckSfxOld", CardType = "Skill", Rarity = "Common", Cost = 1 };
+					sfxOffCard.Effects.Add(new EffectSpec { Kind = "PlaySoundFile", Sfx = sfxKey, Amount = 80m });
+					sfxOff.Cards.Add(sfxOffCard);
+					Check("V0.2.231：没勾时 UsesSfxReplace = false（不会白生成文件）",
+						!CSharpCodeGen.UsesSfxReplace(sfxOff), "没有");
+					string sfxOffSrc = CSharpCodeGen.CardSource(sfxOff, sfxOffCard, 0);
+					Check("V0.2.231：（红线）没勾时播放代码和以前**逐字一致**（还是内联的 __sfx 那几句，没有 ForgeSfx）",
+						sfxOffSrc.Contains("var __sfx = new AudioStreamPlayer();")
+						&& !sfxOffSrc.Contains("ForgeSfx")
+						&& !sfxOffSrc.Contains("CET:SfxReplace=1"), "逐字不变");
+
+					// ② 勾上 → 生成小助手 + 走它；同一条卡上再放一条「不勾」的，两种 replaceable 都要对
+					CharacterProfile sfxOn = ProfileFactory.Sample();
+					sfxOn.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					sfxOn.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					sfxOn.Relics.Clear();
+					sfxOn.Potions.Clear();
+					sfxOn.CustomPowers.Clear();
+					sfxOn.AudioAssets.Clear();
+					sfxOn.AudioAssets.Add(new AudioAssetSpec { Name = "自检语音", File = sfxFile });
+					var sfxOnCard = new CardSpec { Name = "自检音频新", ClassName = "UiCheckSfxNew", CardType = "Skill", Rarity = "Common", Cost = 1 };
+					sfxOnCard.Effects.Add(new EffectSpec { Kind = "PlaySoundFile", Sfx = sfxKey, Amount = 80m, SfxReplace = true });
+					sfxOnCard.Effects.Add(new EffectSpec { Kind = "PlaySoundFile", Sfx = sfxKey, Amount = 60m, SfxReplace = false });
+					sfxOn.Cards.Add(sfxOnCard);
+					Check("V0.2.231：勾了之后 UsesSfxReplace = true（要生成 cs/ForgeSfx.cs）",
+						CSharpCodeGen.UsesSfxReplace(sfxOn), "有");
+					string sfxOnSrc = CSharpCodeGen.CardSource(sfxOn, sfxOnCard, 0);
+					Check("V0.2.231：勾了的那条生成 ForgeSfx.Play(…, replaceable: true)（音量照旧按百分比）",
+						sfxOnSrc.Contains($".Play(\"res://audio/{sfxKey}\", Mathf.LinearToDb(0.8f), replaceable: true);"),
+						(sfxOnSrc.Split('\n').FirstOrDefault((string l) => l.Contains("ForgeSfx.Play(", StringComparison.Ordinal)) ?? "(没生成)").Trim());
+					Check("V0.2.231：同一份存档里**不勾**的那条 → replaceable: false（可以和别的叠着响）",
+						sfxOnSrc.Contains("replaceable: false);"), "有 false");
+					Check("V0.2.231：标记行带上 CET:SfxReplace=1（回读靠它）",
+						sfxOnSrc.Contains("CET:SfxReplace=1"), "标记在");
+					Check("V0.2.231：小助手源码讲清了它是干什么的（Replaceable 列表 + 新的开始前先停旧的）",
+						CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("Replaceable")
+						&& CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("bool replaceable")
+						&& CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("old.Stop();"), "写得对");
+
+					// ③ 整份生成：cs/ForgeSfx.cs 只在勾了时出现；生成 → 回读要认得回来
+					string sfxOffRoot = Path.Combine(sfxDir, "off");
+					string sfxOnRoot = Path.Combine(sfxDir, "on");
+					sfxOff.Paths.OutputDir = sfxOffRoot;
+					sfxOn.Paths.OutputDir = sfxOnRoot;
+					var sfxOffGen = ModGenerator.Generate(sfxOff);
+					var sfxOnGen = ModGenerator.Generate(sfxOn);
+					Check("V0.2.231：（准备）两种存档都能生成工程", sfxOffGen.Success && sfxOnGen.Success,
+						sfxOffGen.Success ? sfxOnGen.ProjectRoot : string.Join(" ｜ ", sfxOffGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (sfxOffGen.Success && sfxOnGen.Success)
+					{
+						Check("V0.2.231：没勾 → 工程里没有 cs/ForgeSfx.cs；勾了 → 有",
+							!File.Exists(Path.Combine(sfxOffGen.ProjectRoot!, "cs", "ForgeSfx.cs"))
+							&& File.Exists(Path.Combine(sfxOnGen.ProjectRoot!, "cs", "ForgeSfx.cs")),
+							File.Exists(Path.Combine(sfxOnGen.ProjectRoot!, "cs", "ForgeSfx.cs")) ? "只在勾了的那份里有" : "(勾了也没生成)");
+						var sfxRec = ProjectRecovery.FromProject(sfxOnGen.ProjectRoot!);
+						var sfxRecCard = sfxRec.Profile.Cards.FirstOrDefault((CardSpec c) => c.ClassName == "UiCheckSfxNew");
+						Check("V0.2.231：回读：「顶替」那一档认得回来（勾的那条 true / 没勾的 false）",
+							sfxRecCard is not null
+							&& sfxRecCard.Effects.Count((EffectSpec e) => e.Kind == "PlaySoundFile") == 2
+							&& sfxRecCard.Effects.Where((EffectSpec e) => e.Kind == "PlaySoundFile").OrderByDescending((EffectSpec e) => e.Amount)
+								.First().SfxReplace
+							&& !sfxRecCard.Effects.Where((EffectSpec e) => e.Kind == "PlaySoundFile").OrderByDescending((EffectSpec e) => e.Amount)
+								.Last().SfxReplace,
+							sfxRecCard is null ? "(没找回这张卡)"
+								: string.Join(" / ", sfxRecCard.Effects.Select((EffectSpec e) => e.Kind + ":" + e.Amount + ":" + e.SfxReplace)));
+						Check("V0.2.231：回读（走小助手那几句之后）没有认不出来的语句", !sfxRec.HasUnparsed,
+							sfxRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(sfxDir, true); } catch { }
+				}
+			}
+
+			// ===== V0.2.232：那条勾「换效果种类后没出现」（用户报「没看到会被下一个自定义音频顶替这个」）=====
+			// 真因：`ShowSfxReplaceRow`（勾的显隐）绑的是 `Kind`，但 `Kind` 的 setter 里没 `Raise` 它 ——
+			// WPF 的绑定只在第一次求值时算一次，后来把效果种类改成「播放音频文件」时那一行永远是 Collapsed。
+			// 这里钉两件事：① 换种类时必须发出 ShowSfxReplaceRow 的通知；② 只有「播放音频文件」是真。
+			{
+				var sfxVisProbe = new EffectSpec { Kind = "Damage" };
+				var sfxRaised = new List<string>();
+				sfxVisProbe.PropertyChanged += (_, ev) => sfxRaised.Add(ev.PropertyName ?? "");
+				sfxVisProbe.Kind = "PlaySoundFile";
+				Check("V0.2.232：把效果种类改成「播放音频文件」时会通知 ShowSfxReplaceRow（不然那个勾不出现）",
+					sfxRaised.Contains("ShowSfxReplaceRow") && sfxVisProbe.ShowSfxReplaceRow,
+					"通知了：" + string.Join("/", sfxRaised.Where((string n) => n.Contains("Sfx"))));
+				sfxVisProbe.Kind = "Damage";
+				Check("V0.2.232：换回别的种类时同样通知（那个勾要收起来），而且 ShowSfxReplaceRow = false",
+					sfxRaised.Count((string n) => n == "ShowSfxReplaceRow") >= 2 && !sfxVisProbe.ShowSfxReplaceRow,
+					"通知了两次以上");
+				Check("V0.2.232：界面上那一行确实在（勾选框 + 那句「不勾 = 允许几段音频叠着响」）",
+					CollectBoundPaths(SelectTabRoot("卡牌")).Contains("ShowSfxReplaceRow")
+					|| CollectBoundPaths(SelectTabRoot("遗物")).Contains("ShowSfxReplaceRow"),
+					"绑上了");
+			}
+			// ===== V0.2.233：遗物「获得金币时」的效果不再被静默丢掉（用户报「无法正常生效」）=====
+			// 真因：AfterGoldGained(Player) 的签名里没有 choiceContext，而「抽牌 / 消耗卡牌 / 施加状态 /
+			// 生成卡牌 / 拿牌」这些效果都要它 → 生成端以前只写一行「该触发时机没有 choiceContext，已忽略」，
+			// 于是整条效果什么都不做（看起来就是「触发时机不生效」）。其实这条钩子在战斗里 / 战斗外都会走
+			// （本体 PlayerCmd.GainGold 调 Hook.AfterGoldGained），所以按运行时造一个上下文就行。
+			{
+				Check("V0.2.233：「获得金币时」现在算「能造 choiceContext」（按运行时：战斗里 Hook / 战斗外用阻塞式）",
+					CSharpCodeGen.BootstrapContextRuntime("GoldGained")
+					&& !CSharpCodeGen.BootstrapContextRuntime("CombatVictory")
+					&& !CSharpCodeGen.BootstrapContextRuntime("PlayerTurnStart"),
+					"判据对");
+
+				static CharacterProfile GoldRelicProfile(string trigger, params EffectSpec[] effects)
+				{
+					var gp = ProfileFactory.Sample();
+					var rl = new RelicSpec { Name = "自检金币遗物", ClassName = "UiCheckGoldRelic", Rarity = "Common", Trigger = trigger };
+					foreach (EffectSpec e in effects) rl.Effects.Add(e);
+					gp.Relics.Clear();
+					gp.Relics.Add(rl);
+					return gp;
+				}
+
+				var goldCtxProfile = GoldRelicProfile("GoldGained",
+					new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" },
+					new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" },
+					new EffectSpec { Kind = "ExhaustCard", Amount = 1m, SelectPile = "Hand", CardPick = "Chosen" });
+				string goldCtxSrc = CSharpCodeGen.RelicSource(goldCtxProfile, goldCtxProfile.Relics[0], 0);
+				Check("V0.2.233：遗物「获得金币时」+ 抽牌 / 消耗卡牌 → 真的生成了代码（不再只有一行「已忽略」）",
+					goldCtxSrc.Contains("await CardPileCmd.Draw(choiceContext")
+					&& goldCtxSrc.Contains("CardSelectCmd.FromHand(context: choiceContext")
+					&& !goldCtxSrc.Contains("该触发时机不支持「抽牌」")
+					&& !goldCtxSrc.Contains("该触发时机不支持「消耗卡牌」"),
+					(goldCtxSrc.Split('\n').FirstOrDefault((string l) => l.Contains("CardPileCmd.Draw(", StringComparison.Ordinal)) ?? "(没生成 Draw)").Trim());
+				Check("V0.2.233：那个 choiceContext 是按运行时造的（战斗中 Hook / 战斗外阻塞式），不是死写一种",
+					goldCtxSrc.Contains("MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext;")
+					&& goldCtxSrc.Contains("if (base.Owner.Creature.CombatState is not null)")
+					&& goldCtxSrc.Contains("new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, base.Owner, __netId,")
+					&& goldCtxSrc.Contains("new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext()"),
+					"两路都有");
+
+				// 红线：不需要上下文的效果（只有格挡）→ 一个字都不多写（和老输出逐字一致）
+				var goldPlainProfile = GoldRelicProfile("GoldGained", new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+				string goldPlainSrc = CSharpCodeGen.RelicSource(goldPlainProfile, goldPlainProfile.Relics[0], 0);
+				Check("V0.2.233：（红线）「获得金币时」只配了不需要上下文的效果时，不写任何 choiceContext 那几句",
+					goldPlainSrc.Contains("if (player != base.Owner) return;")
+					&& !goldPlainSrc.Contains("PlayerChoiceContext choiceContext")
+					&& !goldPlainSrc.Contains("BlockingPlayerChoiceContext"),
+					"没多写");
+
+				// 多时机那条路：GoldGained 分支同样要造（且只造一次）
+				var goldMulti = ProfileFactory.Sample();
+				var goldMultiRelic = new RelicSpec { Name = "自检多时机金币", ClassName = "UiCheckGoldMultiRelic", Rarity = "Common", Trigger = "CombatStart" };
+				goldMultiRelic.Triggers.Add(new RelicTriggerSpec { Kind = "GoldGained" });
+				goldMultiRelic.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+				goldMultiRelic.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+				goldMulti.Relics.Clear();
+				goldMulti.Relics.Add(goldMultiRelic);
+				string goldMultiSrc = CSharpCodeGen.RelicSource(goldMulti, goldMultiRelic, 0);
+				int goldCtxDecls = goldMultiSrc.Split('\n').Count((string l) => l.Contains("PlayerChoiceContext choiceContext;", StringComparison.Ordinal));
+				Check("V0.2.233：多时机（获得金币 + 回合开始）里，金币那个方法也造了上下文、而且只造一次",
+					goldMultiSrc.Contains("public override async Task AfterGoldGained(Player player)")
+					&& goldCtxDecls == 1
+					&& goldMultiSrc.Contains("BlockingPlayerChoiceContext"), $"声明了 {goldCtxDecls} 次");
+
+				// 校验器：真正拿不到上下文的时机（战斗胜利）仍然要提醒，金币那条不再误报
+				Check("V0.2.233：校验器不再为「获得金币时」报「缺少 choiceContext」",
+					!ProfileValidator.Validate(GoldRelicProfile("GoldGained", new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" }))
+						.Any((ValidationIssue i) => i.Message.Contains("缺少 choiceContext")),
+					"不报了");
+				Check("V0.2.233：真正没有上下文的时机（战斗胜利时）+ 抽牌 → 仍然报「缺少 choiceContext」警告",
+					ProfileValidator.Validate(GoldRelicProfile("CombatVictory", new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" }))
+						.Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("缺少 choiceContext")),
+					"报了");
+			}
 			// ===== V0.2.156：卡牌列表**拖动**之后，「上传的卡面」必须跟着那张卡一起走 =====
 			// 用户报：「在卡牌列表拖动卡牌后，卡面会变成其他卡」。
 			// 真因（两个叠在一起）：
@@ -27336,14 +31960,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("「下回合生效」的判据只有一份：每一栏的 SupportsNextTurn 都 == HonorsNextTurn（不会再有「勾了没反应」）",
 					allKinds.All((string k) => EffectCatalog.FindKind(k).SupportsNextTurn == EffectCatalog.HonorsNextTurn(k)),
 					$"{allKinds.Length} 种逐条相等");
-				Check("67 种里只有那 10 种「语义上做不了」的不支持（费用变 0 / 抽到就减费 / 放回手牌 / 本场费用-N / 结束回合 / 额外回合 / 刮削 / 回合结束自动打出 / 播放音效 / 播放音频文件）",
+				Check("68 种里只有那 11 种「语义上做不了」的不支持（费用变 0 / 抽到就减费 / 放回手牌 / 本场费用-N / 结束回合 / 额外回合 / 刮削 / 回合结束自动打出 / 播放音效 / 播放音频文件 / 减少卡牌费用）",
 					allKinds.Where((string k) => !EffectCatalog.HonorsNextTurn(k)).OrderBy((string k) => k, StringComparer.Ordinal)
-						.SequenceEqual(new[] { "CheapenDraw", "CheapenSelf", "CheapenSelfOnDraw", "EndTurn", "ExtraTurn",
+						.SequenceEqual(new[] { "CheapenDraw", "CheapenSelf", "CheapenSelfOnDraw", "CostDown", "EndTurn", "ExtraTurn",
 							"PlaySfx", "PlaySoundFile", "ReturnSelfToHand", "ScrapeDraw", "TurnEndPlay" }),
 					"不支持的是：" + string.Join(" / ", allKinds.Where((string k) => !EffectCatalog.HonorsNextTurn(k))));
-				Check("那 10 种在界面上**不显示**勾选框（宁可不显示，也不要「勾了没反应」）",
+				Check("那 11 种在界面上**不显示**勾选框（宁可不显示，也不要「勾了没反应」）",
 					new[] { "CheapenSelf", "CheapenSelfOnDraw", "ReturnSelfToHand", "CheapenDraw", "EndTurn", "ExtraTurn",
-						"ScrapeDraw", "TurnEndPlay", "PlaySfx", "PlaySoundFile" }.All((string k) => !new EffectSpec { Kind = k }.ShowNextTurn),
+						"ScrapeDraw", "TurnEndPlay", "PlaySfx", "PlaySoundFile", "CostDown" }.All((string k) => !new EffectSpec { Kind = k }.ShowNextTurn),
 					"都不显示");
 				// 用户已定的那 8 种「从此生效」：界面上有勾选框，且真的生成了延迟状态
 				string[] eightKinds = { "OverdraftEnergy", "DoublePower", "Expose", "ClearPowerOne",
@@ -27461,9 +32085,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string dsDelayed = CSharpCodeGen.DelayedPowersSource(dsProbe);
 					Check("勾了下回合生效的「生成卡牌」：卡这边只挂延迟状态（不再立刻生成），状态类里才是生成代码",
 						dsGenSrc.Contains("PowerCmd.Apply<SevenForgeDelayedGenShiv>(choiceContext, base.Owner.Creature, base.DynamicVars.Cards.BaseValue")
-						&& !dsGenSrc.Contains("AddToCombatAndPreview<Shiv>")
+						&& !dsGenSrc.Contains("AddToCombatAndPreview<MegaCrit.Sts2.Core.Models.Cards.Shiv>")
 						&& dsDelayed.Contains("public sealed class SevenForgeDelayedGenShiv : PowerModel")
-						&& dsDelayed.Contains("AddToCombatAndPreview<Shiv>(base.Owner, PileType.Hand, base.Amount, base.Owner.Player)"),
+						&& dsDelayed.Contains("AddToCombatAndPreview<MegaCrit.Sts2.Core.Models.Cards.Shiv>(base.Owner, PileType.Hand, base.Amount, base.Owner.Player)"),
 						"延迟里生成");
 					Check("延迟状态里有「下回合开始时 / 层数当张数 / 用完自毁 / 回读标记 CET:DelayedSpawn=」",
 						dsDelayed.Contains("AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)")
@@ -27588,9 +32212,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			kwProbe.Cards.Add(kwGen);
 
 			var kwFilters = EffectCatalog.SpawnFiltersFor(kwProbe);
-			Check("「范围限定」的候选 = 内置 6 条 + 每个自定义关键词一组（把关键词当卡的组用）",
-				kwFilters.Count == 8
-				&& kwFilters.Take(6).Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" })
+			Check("「范围限定」的候选 = 内置 7 条 + 每个自定义关键词一组（把关键词当卡的组用）",
+				kwFilters.Count == 9
+				&& kwFilters.Take(7).Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status", "Quest" })
 				&& kwFilters.Any((SpawnFilterOption f) => f.Id == "Keyword:FATE" && f.Zh == "命运" && f.Display.Contains("那一组牌")),
 				string.Join("/", kwFilters.Select((SpawnFilterOption f) => f.Id)));
 			Check("这一组里有哪些牌能在生成期查出来（只算自己的牌，本体卡带不了自定义关键词）",
@@ -28308,12 +32932,107 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 
+			// ===== V0.2.219：「花掉 N 点」填 0 = 只要消耗就触发（本回合 / 本场战斗只触发第一次）=====
+			// 用户实测报的：「数值填 0 的效果和填 1 的效果是一样的」——真因是 0 落进了
+			// `Math.Max(1, 0)` 那个「每 1 点」分支，于是 0 == 1（一张 3 费牌触发 3 次）。
+			{
+				var zeroRelic = new RelicSpec
+				{
+					Name = "自检填 0 能量", ClassName = "UiCheckSpendZero", Trigger = "EnergySpent", Rarity = "Common",
+					TriggerAmount = 0m, TriggerScope = "Turn",
+					Effects = { new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" } },
+				};
+				var zeroProfile = ProfileFactory.Sample();
+				zeroProfile.Relics.Add(zeroRelic);
+				string zSrc = CSharpCodeGen.RelicSource(zeroProfile, zeroRelic, 0);
+				Check("遗物：填 0 → 不再按点数循环（0 和 1 一样就是它：0 被当成「每 1 点」）",
+					!zSrc.Contains("for (int __EnergySpentIdx"), "没有点数循环");
+				Check("遗物：填 0 → 判「这一次之前花过没有」，本回合只触发第一次",
+					zSrc.Contains("if (__spentBefore == 0)") && zSrc.Contains("只触发第一次"), "对");
+				Check("遗物：填 0 也写回读标记（否则从工程恢复会变回默认的 1）",
+					zSrc.Contains("CET:TriggerAmount=0m CET:TriggerScope=Turn"), "写");
+
+				var zeroTrig = new PowerTriggerSpec { Kind = "StarsSpent", TriggerAmount = 0m, TriggerScope = "Combat" };
+				zeroTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 2m, TargetSide = "Self" });
+				var zeroPow = new CustomPowerSpec { Name = "自检填 0 资源", ClassName = "UiCheckSpendZeroPow", Enabled = true };
+				zeroPow.Triggers.Add(zeroTrig);
+				var zeroPowProfile = ProfileFactory.Sample();
+				zeroPowProfile.CustomPowers.Add(zeroPow);
+				string zpSrc = CustomPowerGen.Source(zeroPowProfile, zeroPow, 0);
+				Check("状态：填 0 → 不按点数循环，改成「只要消耗一次」+ 本场战斗只触发第一次",
+					!zpSrc.Contains("for (int __starsSpentIdx") && zpSrc.Contains("if (__spentBefore == 0)"), "对");
+				Check("状态：填 0 也写回读标记（TriggerAmount=0 + 范围）",
+					zpSrc.Contains("CET:TriggerAmount=0m CET:TriggerScope=Combat"), "写");
+				Check("说明文字：填 0 说的是「只要消耗就触发一次 + 这个范围只触发第一次」",
+					zeroTrig.TriggerSpendHint.Contains("只要消耗就触发一次") && zeroTrig.TriggerSpendHint.Contains("只触发第一次"),
+					zeroTrig.TriggerSpendHint);
+				Check("说明文字（遗物同款）",
+					zeroRelic.TriggerSpendHint.Contains("只触发第一次"), zeroRelic.TriggerSpendHint);
+
+				// 同一个钩子上「0 档」+「N 档」混着配：0 档跑在点数循环**外面**（每窗口一次），N 档照旧按点数
+				var mixPow = new CustomPowerSpec { Name = "自检混搭消耗", ClassName = "UiCheckSpendMix", Enabled = true };
+				var mixZero = new PowerTriggerSpec { Kind = "EnergySpent", TriggerAmount = 0m, TriggerScope = "Turn" };
+				mixZero.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+				var mixThree = new PowerTriggerSpec { Kind = "EnergySpent", TriggerAmount = 3m, TriggerScope = "Turn" };
+				mixThree.Effects.Add(new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" });
+				mixPow.Triggers.Add(mixZero);
+				mixPow.Triggers.Add(mixThree);
+				var mixProfile = ProfileFactory.Sample();
+				mixProfile.CustomPowers.Add(mixPow);
+				string mixSrc = CustomPowerGen.Source(mixProfile, mixPow, 0);
+				int mixZeroAt = mixSrc.IndexOf("if (__spentBefore == 0)", StringComparison.Ordinal);
+				int mixLoopAt = mixSrc.IndexOf("for (int __energySpentIdx", StringComparison.Ordinal);
+				Check("混搭：0 档在点数循环外面（0 档 = 这个窗口的第一次消耗），N 档继续按点数",
+					mixZeroAt >= 0 && mixLoopAt > mixZeroAt, $"0 档@{mixZeroAt} / 循环@{mixLoopAt}");
+				Check("混搭：两种档位共用一个「之前花了多少」（只算一次历史）",
+					mixSrc.Split("int __spentBefore =").Length - 1 == 1, "一处");
+
+				// 生成 → 回读：0 这个值也要认得回来（不然从工程恢复就悄悄变回 1）
+				string zRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_spend0_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					zeroProfile.CustomPowers.Add(zeroPow);
+					zeroProfile.Paths.OutputDir = zRoot;
+					zeroProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					zeroProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var zGen = ModGenerator.Generate(zeroProfile);
+					Check("（准备）带「填 0」的存档能生成工程", zGen.Success,
+						zGen.Success ? zGen.ProjectRoot : string.Join(" ｜ ", zGen.Issues.Where(x => x.IsError).Select(x => x.Message)));
+					if (zGen.Success)
+					{
+						var zRec = ProjectRecovery.FromProject(zGen.ProjectRoot);
+						RelicSpec? zBack = zRec.Profile.Relics.FirstOrDefault((RelicSpec x) => x.ClassName == "UiCheckSpendZero");
+						var zPowBack = zRec.Profile.CustomPowers.FirstOrDefault((CustomPowerSpec x) => x.ClassName == "UiCheckSpendZeroPow");
+						Check("回读：遗物的「填 0 + 范围」认得回来（不会被默认值 1 顶掉）",
+							zBack is not null && zBack.TriggerAmount == 0m && zBack.TriggerScope == "Turn",
+							zBack is null ? "(缺 " : $"{zBack.TriggerAmount} / {zBack.TriggerScope}");
+						Check("回读：状态的「填 0 + 范围」认得回来",
+							zPowBack is not null && zPowBack.Triggers.Any((PowerTriggerSpec t) => t.TriggerAmount == 0m && t.TriggerScope == "Combat"),
+							zPowBack is null
+								? "缺：" + string.Join(",", zRec.Profile.CustomPowers.Select((CustomPowerSpec x) => x.ClassName))
+								: string.Join(" / ", zPowBack!.Triggers.Select((PowerTriggerSpec t) => t.TriggerAmount + ":" + t.TriggerScope)));
+						Check("回读（填 0）：没认出来的语句为 0", !zRec.HasUnparsed, zRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(zRoot, true); } catch { }
+				}
+			}
+
 			// ===== 参数页也能监听「实时读数」（用户要求） ====
 			{
+				// V0.2.194：卡牌专属的读数（FormulaBuiltin.CardOnly，例：ThisCardDamage）**不进**这个下拉
+				// —— 参数是「打出这张牌那一刻先算一次」，选它当来源会恒为 0（伤害还没打）。所以这里
+				// 按「非 CardOnly 的那部分」对账，而不是整张表。
+				var paramLive = FormulaBuiltins.All.Where(b => !b.CardOnly).ToList();
 				Check("参数页的「从哪来」候选里含全部实时读数（回合 / 轮 / 四摞张数 / 丢弃·消耗·生成·复制 / 资源量 / 状态数）",
-					FormulaBuiltins.All.All((FormulaBuiltin b) => ParamSources.All.Any((ParamSourceOption o) => o.Id == b.Id))
-					&& ParamSources.All.Count == 7 + FormulaBuiltins.All.Count,
-					$"{ParamSources.All.Count} 条（固定来源 7 + 实时读数 {FormulaBuiltins.All.Count}）");
+					paramLive.All((FormulaBuiltin b) => ParamSources.All.Any((ParamSourceOption o) => o.Id == b.Id))
+					&& ParamSources.All.Count == 8 + paramLive.Count,
+					$"{ParamSources.All.Count} 条（固定来源 8 + 实时读数 {paramLive.Count}）");
+				Check("卡牌专属的读数（ThisCardDamage）**不在**参数来源下拉里（选了会恒 0）",
+					!ParamSources.All.Any((ParamSourceOption o) => o.Id == "ThisCardDamage")
+					&& FormulaBuiltins.Find("ThisCardDamage") is { CardOnly: true }, "不在");
 				Check("「本回合丢弃的牌数」「本回合复制的牌数」都在候选里（用户点名的两条）",
 					ParamSources.All.Any((ParamSourceOption o) => o.Id == "DiscardedThisTurn")
 					&& ParamSources.All.Any((ParamSourceOption o) => o.Id == "CopiedThisTurn"), "都在");
@@ -28354,6 +33073,430 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					try { Directory.Delete(lpRoot, true); } catch { }
 				}
+			}
+
+			// ===== 「目标身上的减益个数」当自定义参数（DebuffCount，V0.2.250 —— 用户问的「撕碎」） ====
+			//
+			// 需求：本体「撕碎 Rend」= 基础伤害 + 每有一种负面效果 × N（`target.Powers.Count(TypeForCurrentAmount
+			// == Debuff)`）。卡牌公式里原来只有 `DebuffsOnMe`（自己），所以把「某个对象身上的减益个数」做成
+			// **参数来源**（能在「自定义参数 / 组」页选「从谁身上取」，公式里再参与 `10 + M * 5` 这种复合式子）。
+			{
+				Check("参数来源下拉里有「减益的个数（几种负面效果）」",
+					ParamSources.Find(ParamSources.DebuffCount) is { } dc && dc.Display.Contains("减益") && dc.Hint.Contains("几种"),
+					ParamSources.Find(ParamSources.DebuffCount)?.Display ?? "(没有这条)");
+				Check("「指定敌人」的减益个数生成的是 ForgeFormulaRuntime.PowerCount(__fgTarget, \"Debuff\", null)",
+					ForgeFormula.ParamExpr(new ParamSpec { Name = "M", Source = ParamSources.DebuffCount, Target = ParamTargets.ChosenEnemy })
+						== "ForgeFormulaRuntime.PowerCount(__fgTarget, \"Debuff\", null)",
+					ForgeFormula.ParamExpr(new ParamSpec { Name = "M", Source = ParamSources.DebuffCount, Target = ParamTargets.ChosenEnemy }));
+				Check("「自己」的也认（换成 __fgSelf）",
+					ForgeFormula.ParamExpr(new ParamSpec { Name = "M", Source = ParamSources.DebuffCount, Target = ParamTargets.Self })
+						== "ForgeFormulaRuntime.PowerCount(__fgSelf, \"Debuff\", null)", "对");
+				Check("这条来源算「要用到目标」（生成端会先把 __fgTarget 算出来）",
+					ForgeFormula.NeedsTarget(new[] { new ParamSpec { Name = "M", Source = ParamSources.DebuffCount, Target = ParamTargets.ChosenEnemy } }), "对");
+
+				// 一张「撕碎」：M = 目标身上的减益个数 → 伤害 = 10 + M*5（本体 Rend 的形状）
+				CharacterProfile dcProfile = ProfileFactory.Sample();
+				dcProfile.CustomParams.Clear();
+				dcProfile.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.DebuffCount, Target = ParamTargets.ChosenEnemy });
+				var dcCard = new CardSpec { Name = "减益个数参数卡", ClassName = "UiCheckParamDebuffCount", Cost = 1, CardType = "Attack", Rarity = "Rare", InCardPool = true };
+				dcCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 1m, AmountFormula = "10 + M * 5", TargetSide = "Enemy" });
+				dcProfile.Cards.Add(dcCard);
+				string dcRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_paramdebuff_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					dcProfile.Paths.OutputDir = dcRoot;
+					dcProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					dcProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var dcGen = ModGenerator.Generate(dcProfile);
+					Check("（准备）「基础 + 每有一种减益 × N」这种复合公式能生成工程", dcGen.Success,
+						dcGen.Success ? dcGen.ProjectRoot : string.Join(" ｜ ", dcGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					string dcSrc = File.ReadAllText(Path.Combine(dcGen.ProjectRoot, "cs", "Cards",
+						Naming.From(dcProfile).CardClassName(dcProfile, dcCard) + ".cs"), Encoding.UTF8);
+					Check("生成：参数 M 先算成 PowerCount(__fgTarget, \"Debuff\", null)",
+						dcSrc.Contains("decimal __pM = ForgeFormulaRuntime.PowerCount(__fgTarget, \"Debuff\", null);"), "有");
+					Check("生成：伤害用的是复合式子（10 + __pM * 5），不是固定数字",
+						dcSrc.Contains("((10m) + (__pM * (5m)))"), "对");
+					var dcRec = ProjectRecovery.FromProject(dcGen.ProjectRoot);
+					Check("回读：这条参数来源认得回来（DebuffCount + 指定敌人）",
+						dcRec.Profile.CustomParams.Any((ParamSpec x) => x.Name == "M"
+							&& x.Source == ParamSources.DebuffCount && x.Target == ParamTargets.ChosenEnemy),
+						string.Join(" / ", dcRec.Profile.CustomParams.Select((ParamSpec x) => x.Name + "=" + x.Source + "/" + x.Target)));
+					Check("回读（减益个数参数）：没认出来的语句为 0", !dcRec.HasUnparsed, dcRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				}
+				finally
+				{
+					try { Directory.Delete(dcRoot, true); } catch { }
+				}
+			}
+
+			// ===== 「本张牌这一次打出造成的伤害」（ThisCardDamage，V0.2.194 —— 用户问的「荒疫打击」） ====
+			//
+			// 需求原文（用户）：「生成器怎么做荒疫打击」→「那做 B 这种，把做出来的参数放在参数弹窗里」。
+			// 本体 BlightStrike.cs 的层数是 `attackCommand.Results.SelectMany(r => r).Sum(r => r.TotalDamage)`
+			// —— 「这一下打出的伤害」（含被格挡的部分），所以这条读数是**卡片身上的一个属性**：
+			// OnPlay 开头清零、每条「造成伤害」之后累加（不是本回合累计、不去查战斗历史）。
+			{
+				Check("内置读数里有 ThisCardDamage，而且是**卡牌专属**（CardOnly）",
+					FormulaBuiltins.Find("ThisCardDamage") is { CardOnly: true },
+					FormulaBuiltins.Find("ThisCardDamage")?.Display ?? "(没有这条)");
+				Check("它的表达式读的是卡片身上那个属性（用 `this.` —— 属性在**派生卡片类**上，用 base. 会 CS0117）",
+					FormulaBuiltins.Find("ThisCardDamage")!.Expr("__fgPlayer", "__fgSelf") == "((decimal)this.ForgeThisCardDamage)",
+					FormulaBuiltins.Find("ThisCardDamage")!.Expr("__fgPlayer", "__fgSelf"));
+				Check("卡牌专属的读数**不进**「自定义参数 / 组」的取值来源下拉（参数是打出那一刻先算一次的，选了会恒 0）",
+					!ParamSources.All.Any((ParamSourceOption o) => o.Id == "ThisCardDamage")
+					&& ParamSources.All.Count == 8 + FormulaBuiltins.All.Count((FormulaBuiltin b) => !b.CardOnly),
+					$"{ParamSources.All.Count} 条");
+				Check("参数参考窗里两类都能看到它（内置读数那一类按整张表列，来源那一类按 ParamSources 列）",
+					ParamReferenceWindow.BuildCategories(Profile).Any(c => c.Items.Any(i => i.Id == "ThisCardDamage")),
+					"内置读数那一类里有");
+				Check("只特判「正好是这条读数」的写法（= 开头 / 大小写都认，复合式子不认）",
+					CSharpCodeGen.IsExactThisCardDamage("ThisCardDamage")
+					&& CSharpCodeGen.IsExactThisCardDamage(" = thiscarddamage ")
+					&& !CSharpCodeGen.IsExactThisCardDamage("ThisCardDamage*2")
+					&& !CSharpCodeGen.IsExactThisCardDamage(""),
+					"对");
+
+				// 一张「荒疫打击」：先造成伤害、再施加「等同于所造成伤害」的灾厄（本体 BlightStrike 的形状）
+				var btProfile = ProfileFactory.Sample();
+				var btCard = new CardSpec { Name = "自检荒疫打击", ClassName = "UiCheckBlightStrike", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				btCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", UpgradeAmount = 2m, TargetSide = "Enemy" });
+				btCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage", TargetSide = "Enemy" });
+				btProfile.Cards.Add(btCard);
+				var btPlain = new CardSpec { Name = "自检普通打击", ClassName = "UiCheckPlainStrike", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				btPlain.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, AmountFormula = "6", TargetSide = "Enemy" });
+				btProfile.Cards.Add(btPlain);
+				// 图上也用一次（【数值】模块的公式 = ThisCardDamage）—— 两条链都要记账
+				var btForged = new CardSpec { Name = "自检锻造荒疫", ClassName = "UiCheckBlightForged", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true, IsForged = true };
+				var btG = new ForgeGraphSpec();
+				var btTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				btTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var btDmg = new ForgeNodeSpec { Kind = "Effect" };
+				btDmg.SetField("Effect", "Damage");
+				btDmg.SetField("Amount", "8");
+				var btDoom = new ForgeNodeSpec { Kind = "Effect" };
+				btDoom.SetField("Effect", "ApplyPower");
+				btDoom.SetField("PowerId", "DoomPower");
+				var btVal = new ForgeNodeSpec { Kind = "Value" };
+				btVal.SetField("Formula", "ThisCardDamage");
+				btG.Nodes.AddRange(new[] { btTrig, btDmg, btDoom, btVal });
+				btG.Links.Add(new ForgeLinkSpec { From = btTrig.Id, To = btDmg.Id });
+				btG.Links.Add(new ForgeLinkSpec { From = btDmg.Id, To = btDoom.Id });
+				btG.Links.Add(new ForgeLinkSpec { From = btVal.Id, To = btDoom.Id, FromPort = 0, ToPort = 1 });
+				btForged.ForgeGraph = btG;
+				btProfile.Cards.Add(btForged);
+				Check("图上认得出这条读数（【数值】模块的公式里写了它）",
+					ForgeGraphGen.GraphUsesThisCardDamage(btG)
+					&& CSharpCodeGen.CardUsesThisCardDamage(btForged)
+					&& CSharpCodeGen.CardUsesThisCardDamage(btCard)
+					&& !CSharpCodeGen.CardUsesThisCardDamage(btPlain), "对");
+
+				string btRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_thiscarddamage_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					btProfile.Paths.OutputDir = btRoot;
+					btProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					btProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var btGen = ModGenerator.Generate(btProfile);
+					Check("（准备）用 ThisCardDamage 的卡（手填 + 锻造）都能生成工程", btGen.Success,
+						btGen.Success ? btGen.ProjectRoot : string.Join(" ｜ ", btGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					var btNaming = Naming.From(btProfile);
+					string btSrc = File.ReadAllText(Path.Combine(btGen.ProjectRoot, "cs", "Cards", btNaming.CardClassName(btProfile, btCard) + ".cs"), Encoding.UTF8);
+					string btPlainSrc = File.ReadAllText(Path.Combine(btGen.ProjectRoot, "cs", "Cards", btNaming.CardClassName(btProfile, btPlain) + ".cs"), Encoding.UTF8);
+					string btForgedSrc = File.ReadAllText(Path.Combine(btGen.ProjectRoot, "cs", "Cards", btNaming.CardClassName(btProfile, btForged) + ".cs"), Encoding.UTF8);
+					Check("生成：卡片上多了 ForgeThisCardDamage 属性（公开属性 —— 卡面预览的静态 lambda 读得到）",
+						btSrc.Contains("public decimal ForgeThisCardDamage { get; private set; }"), "有");
+					Check("生成：OnPlay 开头把它清零（所以是「这一次打出」而不是本回合累计）",
+						btSrc.Contains("ForgeThisCardDamage = 0m;"), "有");
+					Check("生成：每条「造成伤害」之后按本体口径累加（TotalDamage = 被格挡 + 没被格挡）",
+						btSrc.Contains("ForgeThisCardDamage += (decimal)__atk1.Results.SelectMany(hits => hits).Sum(r => r.TotalDamage);"), "有");
+					Check("生成：施加状态那条用的是现算表达式（不是固定数字）",
+						btSrc.Contains("await PowerCmd.Apply<DoomPower>(choiceContext, cardPlay.Target, ((decimal)this.ForgeThisCardDamage)"), "有");
+					Check("生成：**不**为它声明「现算预览值」变量（那个静态 lambda 只拿到 CardModel，读不到派生类的属性 → CS1061）",
+						!btSrc.Contains("ForgeFormulaPowerVar<DoomPower>")
+						&& btSrc.Contains("new PowerVar<DoomPower>(0m)"), "退回普通变量");
+					Check("生成：没用这条读数的牌里**一个字符都不多**（老存档红线）",
+						!btPlainSrc.Contains("ForgeThisCardDamage"), "干净");
+					Check("生成：锻造那块布上也记账（同一个属性；临时变量名按模块唯一）",
+						btForgedSrc.Contains("public decimal ForgeThisCardDamage { get; private set; }")
+						&& btForgedSrc.Contains("ForgeThisCardDamage += (decimal)__fgAtk"), "有");
+					string btCardsLoc = File.ReadAllText(Path.Combine(btGen.ProjectRoot, btProfile.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+					Check("卡面：这一条印成「施加等量于所造成伤害的灾厄」、**不印数字**（本体 BlightStrike 的写法）",
+						btCardsLoc.Contains("施加等量于所造成伤害的"), "有");
+					Check("回读：公式按 CET:AmountFormula 标记带了回来",
+						btSrc.Contains("// CET:AmountFormula=ThisCardDamage"), "有");
+
+					var btRec = ProjectRecovery.FromProject(btGen.ProjectRoot);
+					var btRecCard = btRec.Profile.Cards.FirstOrDefault(x => x.Effects.Any(e2 => e2.AmountFormula == "ThisCardDamage"));
+					Check("回读：ThisCardDamage 那条公式原样认回来", btRecCard is not null,
+						btRecCard is null ? "(没认出来)" : btRecCard.Name);
+					Check("回读（ThisCardDamage）：没认出来的语句为 0", !btRec.HasUnparsed, btRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				}
+				finally
+				{
+					try { Directory.Delete(btRoot, true); } catch { }
+				}
+
+				// 校验器：四种「会静默失效 / 生成不出来的」写法都要报出来
+				var btBadRelic = new RelicSpec { Name = "自检灾厄遗物", ClassName = "UiCheckBlightRelic", Trigger = "PlayerTurnStart", Rarity = "Common" };
+				btBadRelic.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage", TargetSide = "Enemy" });
+				var btRelicProf = ProfileFactory.Sample();
+				btRelicProf.Relics.Add(btBadRelic);
+				Check("校验：遗物上用这条读数 → 报错（它读的是卡牌自己的字段）",
+					ProfileValidator.Validate(btRelicProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardDamage")),
+					ProfileValidator.Validate(btRelicProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardDamage"))?.Message ?? "(没报)");
+
+				var btNoDmgProf = ProfileFactory.Sample();
+				var btNoDmgCard = new CardSpec { Name = "自检没伤害", ClassName = "UiCheckBlightNoDamage", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				btNoDmgCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage", TargetSide = "Enemy" });
+				btNoDmgProf.Cards.Add(btNoDmgCard);
+				Check("校验：前面没有「造成伤害」→ 警告（恒 0，说清但不挡生成）",
+					ProfileValidator.Validate(btNoDmgProf).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("前面没有任何「造成伤害」")),
+					ProfileValidator.Validate(btNoDmgProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("前面没有任何「造成伤害」"))?.Message ?? "(没报)");
+
+				var btCondProf = ProfileFactory.Sample();
+				var btCondCard = new CardSpec
+				{
+					Name = "自检整张牌条件", ClassName = "UiCheckBlightCond", Cost = 1, CardType = "Attack", Rarity = "Common",
+					InCardPool = true, Condition = new ConditionSpec { Kind = "HpBelowPercent", AmountFormula = "ThisCardDamage" },
+				};
+				btCondCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", TargetSide = "Enemy" });
+				btCondProf.Cards.Add(btCondCard);
+				Check("校验：写在**整张牌条件**里 → 报错（IsPlayable / 描金边在打出之前求值，那时恒 0）",
+					ProfileValidator.Validate(btCondProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("整张牌条件") && i.Message.Contains("ThisCardDamage")),
+					ProfileValidator.Validate(btCondProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("整张牌条件"))?.Message ?? "(没报)");
+
+				var btNextProf = ProfileFactory.Sample();
+				var btNextCard = new CardSpec { Name = "自检下回合灾厄", ClassName = "UiCheckBlightNextTurn", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				btNextCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", TargetSide = "Enemy" });
+				btNextCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage", TargetSide = "Enemy", NextTurn = true });
+				btNextProf.Cards.Add(btNextCard);
+				Check("校验：勾了「下回合生效」→ 报错（延迟状态在下回合开始时才求值）",
+					ProfileValidator.Validate(btNextProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("下回合生效") && i.Message.Contains("ThisCardDamage")),
+					ProfileValidator.Validate(btNextProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("下回合生效"))?.Message ?? "(没报)");
+
+				var btMixProf = ProfileFactory.Sample();
+				var btMixCard = new CardSpec { Name = "自检混合公式", ClassName = "UiCheckBlightMixed", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+				btMixCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", TargetSide = "Enemy" });
+				btMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage + 1", TargetSide = "Enemy" });
+				btMixProf.Cards.Add(btMixCard);
+				Check("校验：和别的量混着写 → 报错（卡面那个「现算预览值」拿不到这条读数，生成的代码编译不过）",
+					ProfileValidator.Validate(btMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用")),
+					ProfileValidator.Validate(btMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardDamage"))?.Message ?? "(没报)");
+				Check("「正好是它」的判定容忍外层括号（(ThisCardDamage) 也算）",
+					CSharpCodeGen.IsExactThisCardDamage("(ThisCardDamage)")
+					&& !CSharpCodeGen.IsExactThisCardDamage("(ThisCardDamage) + 1"), "对");
+
+				// 图上：遗物 / 药水 / 状态的图里用这条读数 → 报错（`this` 不是卡，生成出来编译不过）
+				var btRelicGraph = new ForgeGraphSpec();
+				var btRT = new ForgeNodeSpec { Kind = "Trigger" };
+				btRT.SetField("Timing", ForgeTimings.PlayerTurnStart);
+				var btRE = new ForgeNodeSpec { Kind = "Effect" };
+				btRE.SetField("Effect", "ApplyPower");
+				btRE.SetField("PowerId", "DoomPower");
+				var btRV = new ForgeNodeSpec { Kind = "Value" };
+				btRV.SetField("Formula", "ThisCardDamage");
+				btRelicGraph.Nodes.AddRange(new[] { btRT, btRE, btRV });
+				btRelicGraph.Links.Add(new ForgeLinkSpec { From = btRT.Id, To = btRE.Id });
+				btRelicGraph.Links.Add(new ForgeLinkSpec { From = btRV.Id, To = btRE.Id, FromPort = 0, ToPort = 1 });
+				Check("校验（图上）：遗物的图里用这条读数 → 报错（只有**卡牌**的图上能用）",
+					ForgeGraphGen.Problems(btRelicGraph, ProfileFactory.Sample(), "Relic").Any(m => m.Contains("ThisCardDamage")),
+					ForgeGraphGen.Problems(btRelicGraph, ProfileFactory.Sample(), "Relic").FirstOrDefault(m => m.Contains("ThisCardDamage")) ?? "(没报)");
+
+				// ===== 兄弟读数：本张牌这一次打出获得的格挡（ThisCardBlock，V0.2.194 追加） =====
+				Check("内置读数里有 ThisCardBlock，也是卡牌专属（CardOnly）",
+					FormulaBuiltins.Find("ThisCardBlock") is { CardOnly: true },
+					FormulaBuiltins.Find("ThisCardBlock")?.Display ?? "(没有这条)");
+				Check("它的表达式读的是卡片身上那个属性（this.ForgeThisCardBlock）",
+					FormulaBuiltins.Find("ThisCardBlock")!.Expr("__fgPlayer", "__fgSelf") == "((decimal)this.ForgeThisCardBlock)",
+					FormulaBuiltins.Find("ThisCardBlock")!.Expr("__fgPlayer", "__fgSelf"));
+				Check("两条读数的「正好是它」判定互不串味",
+					CSharpCodeGen.IsExactThisCardBlock(" ThisCardBlock ")
+					&& !CSharpCodeGen.IsExactThisCardDamage("ThisCardBlock")
+					&& !CSharpCodeGen.IsExactThisCardBlock("ThisCardDamage"), "对");
+
+				var btBlockProfile = ProfileFactory.Sample();
+				var btBlockCard = new CardSpec { Name = "自检格挡转状态", ClassName = "UiCheckBlockToPower", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btBlockCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, AmountFormula = "5", TargetSide = "Self" });
+				btBlockCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardBlock", TargetSide = "Enemy" });
+				btBlockProfile.Cards.Add(btBlockCard);
+				// 图上的那一条：先【获得格挡】、再把 ThisCardBlock 接到【施加状态】的数值口
+				var btBlockForged = new CardSpec { Name = "自检锻造格挡", ClassName = "UiCheckBlockForged", Cost = 0, CardType = "Skill", Rarity = "Common", InCardPool = true, IsForged = true };
+				var btBG = new ForgeGraphSpec();
+				var btBTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				btBTrig.SetField("Timing", ForgeTimings.CardPlayed);
+				var btBBlock = new ForgeNodeSpec { Kind = "Effect" };
+				btBBlock.SetField("Effect", "Block");
+				btBBlock.SetField("Amount", "5");
+				var btBDoom = new ForgeNodeSpec { Kind = "Effect" };
+				btBDoom.SetField("Effect", "ApplyPower");
+				btBDoom.SetField("PowerId", "DoomPower");
+				var btBVal = new ForgeNodeSpec { Kind = "Value" };
+				btBVal.SetField("Formula", "ThisCardBlock");
+				btBG.Nodes.AddRange(new[] { btBTrig, btBBlock, btBDoom, btBVal });
+				btBG.Links.Add(new ForgeLinkSpec { From = btBTrig.Id, To = btBBlock.Id });
+				btBG.Links.Add(new ForgeLinkSpec { From = btBBlock.Id, To = btBDoom.Id });
+				btBG.Links.Add(new ForgeLinkSpec { From = btBVal.Id, To = btBDoom.Id, FromPort = 0, ToPort = 1 });
+				btBlockForged.ForgeGraph = btBG;
+				btBlockProfile.Cards.Add(btBlockForged);
+				Check("图上 / 手填两条链都认得出「本张牌这一次打出获得的格挡」",
+					ForgeGraphGen.GraphUsesThisCardBlock(btBG)
+					&& CSharpCodeGen.CardUsesThisCardBlock(btBlockForged)
+					&& CSharpCodeGen.CardUsesThisCardBlock(btBlockCard)
+					&& !CSharpCodeGen.CardUsesThisCardBlock(btPlain), "对");
+
+				string btBlockRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_thiscardblock_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					btBlockProfile.Paths.OutputDir = btBlockRoot;
+					btBlockProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					btBlockProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var btBlockGen = ModGenerator.Generate(btBlockProfile);
+					Check("（准备）用 ThisCardBlock 的卡（手填 + 锻造）都能生成工程", btBlockGen.Success,
+						btBlockGen.Success ? btBlockGen.ProjectRoot : string.Join(" ｜ ", btBlockGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					var btBlockNaming = Naming.From(btBlockProfile);
+					string btBSrc = File.ReadAllText(Path.Combine(btBlockGen.ProjectRoot, "cs", "Cards", btBlockNaming.CardClassName(btBlockProfile, btBlockCard) + ".cs"), Encoding.UTF8);
+					string btBForgedSrc = File.ReadAllText(Path.Combine(btBlockGen.ProjectRoot, "cs", "Cards", btBlockNaming.CardClassName(btBlockProfile, btBlockForged) + ".cs"), Encoding.UTF8);
+					Check("生成：卡片上多了 ForgeThisCardBlock 属性",
+						btBSrc.Contains("public decimal ForgeThisCardBlock { get; private set; }"), "有");
+					Check("生成：打出时清零",
+						btBSrc.Contains("ForgeThisCardBlock = 0m;"), "有");
+					Check("生成：每条「获得格挡」之后按**实际拿到的量**累加（GainBlock 的返回值）",
+						btBSrc.Contains("ForgeThisCardBlock += await CreatureCmd.GainBlock(base.Owner.Creature,"), "有");
+					Check("生成：施加状态那条用的是现算表达式（不是固定数字）",
+						btBSrc.Contains("await PowerCmd.Apply<DoomPower>(choiceContext, cardPlay.Target, ((decimal)this.ForgeThisCardBlock)"), "有");
+					Check("生成：锻造那块布上也记账（同一个属性）",
+						btBForgedSrc.Contains("public decimal ForgeThisCardBlock { get; private set; }")
+						&& btBForgedSrc.Contains("ForgeThisCardBlock += await CreatureCmd.GainBlock("), "有");
+					string btBlockLoc = File.ReadAllText(Path.Combine(btBlockGen.ProjectRoot, btBlockProfile.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+					Check("卡面：这一条印成「施加等同于本牌获得格挡的灾厄」、不印数字",
+						btBlockLoc.Contains("施加等同于本牌获得格挡的"), "有");
+					Check("回读：ThisCardBlock 那条公式原样认回来",
+						btBSrc.Contains("// CET:AmountFormula=ThisCardBlock"), "有");
+					var btBlockRec = ProjectRecovery.FromProject(btBlockGen.ProjectRoot);
+					Check("回读：格挡那条公式认回来了", btBlockRec.Profile.Cards.Any(x => x.Effects.Any(e2 => e2.AmountFormula == "ThisCardBlock")), "认回来了");
+					Check("回读（ThisCardBlock）：没认出来的语句为 0", !btBlockRec.HasUnparsed, btBlockRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				}
+				finally
+				{
+					try { Directory.Delete(btBlockRoot, true); } catch { }
+				}
+
+				// 校验器：格挡那条的三条规矩
+				var btBlockBadRelic = new RelicSpec { Name = "自检格挡遗物", ClassName = "UiCheckBlockRelic", Trigger = "PlayerTurnStart", Rarity = "Common" };
+				btBlockBadRelic.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardBlock", TargetSide = "Enemy" });
+				var btBlockRelicProf = ProfileFactory.Sample();
+				btBlockRelicProf.Relics.Add(btBlockBadRelic);
+				Check("校验：遗物上用 ThisCardBlock → 报错（只能用在卡牌上）",
+					ProfileValidator.Validate(btBlockRelicProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardBlock")),
+					ProfileValidator.Validate(btBlockRelicProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardBlock"))?.Message ?? "(没报)");
+
+				var btBlockNoBlockProf = ProfileFactory.Sample();
+				var btBlockNoBlockCard = new CardSpec { Name = "自检没格挡", ClassName = "UiCheckBlockNoBlock", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btBlockNoBlockCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardBlock", TargetSide = "Enemy" });
+				btBlockNoBlockProf.Cards.Add(btBlockNoBlockCard);
+				Check("校验：前面没有「获得格挡」→ 警告（恒 0，不挡生成）",
+					ProfileValidator.Validate(btBlockNoBlockProf).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("前面没有任何「获得格挡」")),
+					ProfileValidator.Validate(btBlockNoBlockProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("前面没有任何「获得格挡」"))?.Message ?? "(没报)");
+
+				var btBlockMixProf = ProfileFactory.Sample();
+				var btBlockMixCard = new CardSpec { Name = "自检格挡混合公式", ClassName = "UiCheckBlockMixed", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btBlockMixCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, AmountFormula = "5", TargetSide = "Self" });
+				btBlockMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardBlock * 2", TargetSide = "Enemy" });
+				btBlockMixProf.Cards.Add(btBlockMixCard);
+				Check("校验：ThisCardBlock 和别的量混着写 → 报错（编不过）",
+					ProfileValidator.Validate(btBlockMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用") && i.Message.Contains("ThisCardBlock")),
+					ProfileValidator.Validate(btBlockMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardBlock"))?.Message ?? "(没报)");
+
+				// ===== 四个「张数」读数（ThisCardExhaust / Discard / Transform / Generate，V0.2.241） =====
+				string[] cntIds = { "ThisCardExhaust", "ThisCardDiscard", "ThisCardTransform", "ThisCardGenerate" };
+				Check("内置读数里有四条「张数」读数（消耗 / 丢弃 / 变化 / 生成），都是卡牌专属",
+					cntIds.All(id => FormulaBuiltins.Find(id) is { CardOnly: true }), "四条都在");
+				Check("它们的表达式读的是卡片身上那四个属性",
+					cntIds.Select(id => FormulaBuiltins.Find(id)!.Expr("__fgPlayer", "__fgSelf"))
+						.SequenceEqual(new[]
+						{
+							"((decimal)this.ForgeThisCardExhaust)", "((decimal)this.ForgeThisCardDiscard)",
+							"((decimal)this.ForgeThisCardTransform)", "((decimal)this.ForgeThisCardGenerate)",
+						}), "对");
+
+				var btCntProfile = ProfileFactory.Sample();
+				var btCntCard = new CardSpec { Name = "自检张数读数", ClassName = "UiCheckCountReadings", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btCntCard.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 2m, AmountFormula = "2", SelectPile = "Hand", CardPick = "Chosen", TargetSide = "Self" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "DiscardCard", Amount = 1m, AmountFormula = "1", SelectPile = "Hand", CardPick = "Random", TargetSide = "Self" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 1m, AmountFormula = "1", SelectPile = "Hand", CardPick = "Chosen", TargetSide = "Self" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, AmountFormula = "1", SpawnCardId = "UiCheckCountReadings", TargetSide = "Self" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardExhaust", TargetSide = "Enemy" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", AmountFormula = "ThisCardDiscard", TargetSide = "Enemy" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "VulnerablePower", AmountFormula = "ThisCardTransform", TargetSide = "Enemy" });
+				btCntCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "StrengthPower", AmountFormula = "ThisCardGenerate", TargetSide = "Enemy" });
+				btCntProfile.Cards.Add(btCntCard);
+				Check("这张牌四条读数都认得出",
+					CSharpCodeGen.CardUsesThisCardExhaust(btCntCard)
+					&& CSharpCodeGen.CardUsesThisCardDiscard(btCntCard)
+					&& CSharpCodeGen.CardUsesThisCardTransform(btCntCard)
+					&& CSharpCodeGen.CardUsesThisCardGenerate(btCntCard), "四条都在");
+
+				string btCntRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_countreadings_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					btCntProfile.Paths.OutputDir = btCntRoot;
+					btCntProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					btCntProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					var btCntGen = ModGenerator.Generate(btCntProfile);
+					Check("（准备）四条「张数」读数一起用的卡能生成工程", btCntGen.Success,
+						btCntGen.Success ? btCntGen.ProjectRoot : string.Join(" ｜ ", btCntGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					string btCntSrc = File.ReadAllText(Path.Combine(btCntGen.ProjectRoot, "cs", "Cards",
+						Naming.From(btCntProfile).CardClassName(btCntProfile, btCntCard) + ".cs"), Encoding.UTF8);
+					Check("生成：四个属性都声明了", new[]
+						{
+							"public decimal ForgeThisCardExhaust { get; private set; }",
+							"public decimal ForgeThisCardDiscard { get; private set; }",
+							"public decimal ForgeThisCardTransform { get; private set; }",
+							"public decimal ForgeThisCardGenerate { get; private set; }",
+						}.All(s => btCntSrc.Contains(s)), "四个都在");
+					Check("生成：四个清零都在", new[]
+						{
+							"ForgeThisCardExhaust = 0m;", "ForgeThisCardDiscard = 0m;",
+							"ForgeThisCardTransform = 0m;", "ForgeThisCardGenerate = 0m;",
+						}.All(s => btCntSrc.Contains(s)), "四个都在");
+					Check("生成：消耗 / 丢弃 / 变化 每一张各 +1（逐张记账），生成按张数 +N",
+						btCntSrc.Contains("ForgeThisCardExhaust += 1m;")
+						&& btCntSrc.Contains("ForgeThisCardDiscard += 1m;")
+						&& btCntSrc.Contains("ForgeThisCardTransform += 1m;")
+						&& btCntSrc.Contains("ForgeThisCardGenerate += "), "都在");
+					Check("生成：四条施加状态各自用现算表达式",
+						cntIds.All(id => btCntSrc.Contains($"((decimal)this.Forge{id})")), "对");
+					string btCntLoc = File.ReadAllText(Path.Combine(btCntGen.ProjectRoot, btCntProfile.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+					Check("卡面：四条都印成「施加等同于本牌消耗/丢弃/变化/生成张数的 X。」",
+						btCntLoc.Contains("本牌消耗张数") && btCntLoc.Contains("本牌丢弃张数")
+						&& btCntLoc.Contains("本牌变化张数") && btCntLoc.Contains("本牌生成张数"), "四条都在");
+					var btCntRec = ProjectRecovery.FromProject(btCntGen.ProjectRoot);
+					Check("回读：四条「张数」公式都认得回来",
+						cntIds.All(id => btCntRec.Profile.Cards.Any(x => x.Effects.Any(e2 => e2.AmountFormula == id))), "认回来了");
+					Check("回读（张数读数）：没认出来的语句为 0", !btCntRec.HasUnparsed, btCntRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+				}
+				finally
+				{
+					try { Directory.Delete(btCntRoot, true); } catch { }
+				}
+
+				// 校验：每条「张数」读数都要求前面有对应效果；混着写照样报错
+				var btCntBadProf = ProfileFactory.Sample();
+				var btCntBadCard = new CardSpec { Name = "自检没消耗", ClassName = "UiCheckCountNoExhaust", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btCntBadCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardExhaust", TargetSide = "Enemy" });
+				btCntBadProf.Cards.Add(btCntBadCard);
+				Check("校验：ThisCardExhaust 前面没有「消耗卡牌」→ 警告（恒 0）",
+					ProfileValidator.Validate(btCntBadProf).Any((ValidationIssue i) => i.Level == "警告" && i.Message.Contains("ThisCardExhaust") && i.Message.Contains("前面没有任何")),
+					ProfileValidator.Validate(btCntBadProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("ThisCardExhaust"))?.Message ?? "(没报)");
+
+				var btCntMixProf = ProfileFactory.Sample();
+				var btCntMixCard = new CardSpec { Name = "自检张数混合", ClassName = "UiCheckCountMixed", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				btCntMixCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, AmountFormula = "1", SpawnCardId = "UiCheckCountMixed", TargetSide = "Self" });
+				btCntMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardGenerate + 1", TargetSide = "Enemy" });
+				btCntMixProf.Cards.Add(btCntMixCard);
+				Check("校验：ThisCardGenerate 和别的量混着写 → 报错（编不过）",
+					ProfileValidator.Validate(btCntMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用") && i.Message.Contains("ThisCardGenerate")),
+					ProfileValidator.Validate(btCntMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardGenerate"))?.Message ?? "(没报)");
 			}
 
 			// ===== 触发时机上的数值（用户要求：遗物 / 状态两边都要有 + 界面上看得见） ====
@@ -28462,6 +33605,78 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						cntDeathSrc.Contains("private int __cntEnemyDeathCombat = -1", StringComparison.Ordinal)
 						&& cntDeathSrc.Contains("BumpEnemyDeath(base.Owner.CombatState)", StringComparison.Ordinal)
 						&& cntDeathSrc.Contains("if (__cnt > __cntEnemyDeathCombat && (__cnt - __cntEnemyDeathCombat) % 2 == 0)", StringComparison.Ordinal), "按基准");
+				}
+				// ===== V0.2.211：同一个状态上**两条筛选不同**的计数时机必须各记一份基准值 =====
+				// 用户实测报的：「触发次数设置的 3+3，但第一次触发只需要 1+1 就行，后续触发才是 3+3」
+				//（自定义状态里两条「每累计几次触发」：打出攻击牌 3 次 / 打出技能牌 3 次）。
+				// 真因：基准值字段名以前只有「时机 + 范围」，两条共用 `__cntCardPlayedTurn` ——
+				// 两条的累计值不同，各自都会执行 `if (字段 < 0 || 累计 <= 字段) 字段 = 累计 - 1;`，
+				// 后跑的那条会用自己更小的「累计 - 1」把先跑那条的基准冲掉 → 差值虚高 → 第一次就凑够了。
+				{
+					var cntMultiProf = ProfileFactory.Sample();
+					var cntMultiPow = new CustomPowerSpec { Name = "自检双计数", ClassName = "UiCheckCountTwo" };
+					var cntAtk = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", TriggerAmount = 3m, TriggerScope = "Turn" };
+					cntAtk.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+					var cntSkill = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Skill", TriggerAmount = 3m, TriggerScope = "Turn" };
+					cntSkill.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+					cntMultiPow.Triggers.Add(cntAtk);
+					cntMultiPow.Triggers.Add(cntSkill);
+					cntMultiProf.CustomPowers.Add(cntMultiPow);
+					string cntMultiSrc = CustomPowerGen.Source(cntMultiProf, cntMultiPow, cntMultiProf.CustomPowers.Count - 1);
+					Check("V0.2.211：两条筛选不同的计数时机**各有一个基准值字段**（攻击一份、技能一份，不再共用）",
+						cntMultiSrc.Contains("__cntCardPlayedTurnAttack = -1", StringComparison.Ordinal)
+						&& cntMultiSrc.Contains("__cntCardPlayedTurnSkill = -1", StringComparison.Ordinal)
+						&& !cntMultiSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal),
+						"各一份");
+					Check("V0.2.211：每条用的都是自己那份（`(累计 - 自己的基准) % 3 == 0`），两条互不覆盖",
+						cntMultiSrc.Contains("e.CardPlay.Card.Type == CardType.Attack", StringComparison.Ordinal)
+						&& cntMultiSrc.Contains("if (__cnt > __cntCardPlayedTurnAttack && (__cnt - __cntCardPlayedTurnAttack) % 3 == 0)", StringComparison.Ordinal)
+						&& cntMultiSrc.Contains("e.CardPlay.Card.Type == CardType.Skill", StringComparison.Ordinal)
+						&& cntMultiSrc.Contains("if (__cnt > __cntCardPlayedTurnSkill && (__cnt - __cntCardPlayedTurnSkill) % 3 == 0)", StringComparison.Ordinal),
+						"各用各的");
+					// 红线：只有一条计数时机（或两条筛选相同）时字段名一个字都不变（老工程逐字一致）
+					var cntOneProf = ProfileFactory.Sample();
+					var cntOnePow = new CustomPowerSpec { Name = "自检单计数", ClassName = "UiCheckCountOne" };
+					var cntOneTrig = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", TriggerAmount = 3m, TriggerScope = "Turn" };
+					cntOneTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+					cntOnePow.Triggers.Add(cntOneTrig);
+					cntOneProf.CustomPowers.Add(cntOnePow);
+					string cntOneSrc = CustomPowerGen.Source(cntOneProf, cntOnePow, cntOneProf.CustomPowers.Count - 1);
+					Check("V0.2.211：（红线）只有一条计数时机时字段名照旧是 `__cntCardPlayedTurn`（老工程生成文本不变）",
+						cntOneSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal)
+						&& cntOneSrc.Contains("if (__cnt > __cntCardPlayedTurn && (__cnt - __cntCardPlayedTurn) % 3 == 0)", StringComparison.Ordinal),
+						"没变");
+					// 两条筛选用同一个值（都 Attack）→ 计数表达式相同 → 仍然共用一份（不该凭空多一个字段）
+					var cntSameProf = ProfileFactory.Sample();
+					var cntSamePow = new CustomPowerSpec { Name = "自检同筛选", ClassName = "UiCheckCountSame" };
+					var cntSameA = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", TriggerAmount = 3m, TriggerScope = "Turn" };
+					cntSameA.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+					var cntSameB = new PowerTriggerSpec { Kind = "CardPlayed", CardFilter = "Attack", TriggerAmount = 5m, TriggerScope = "Turn" };
+					cntSameB.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+					cntSamePow.Triggers.Add(cntSameA);
+					cntSamePow.Triggers.Add(cntSameB);
+					cntSameProf.CustomPowers.Add(cntSamePow);
+					string cntSameSrc = CustomPowerGen.Source(cntSameProf, cntSamePow, cntSameProf.CustomPowers.Count - 1);
+					Check("V0.2.211：两条筛选**相同**时仍共用一份基准值（计数表达式一样，没必要各记一份）",
+						cntSameSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal)
+						&& !cntSameSrc.Contains("__cntCardPlayedTurnAttack", StringComparison.Ordinal),
+						"共用");
+					// 「每 N 个敌人死亡」的计数是工具自己 Bump 的：一个钩子上两条时必须只数一次
+					var cntDeath2Prof = ProfileFactory.Sample();
+					var cntDeath2Pow = new CustomPowerSpec { Name = "自检双死亡计数", ClassName = "UiCheckCountDeathTwo" };
+					var cntDeath2A = new PowerTriggerSpec { Kind = "EnemyDeath", TriggerAmount = 2m, TriggerScope = "Combat" };
+					cntDeath2A.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+					var cntDeath2B = new PowerTriggerSpec { Kind = "EnemyDeath", TriggerAmount = 3m, TriggerScope = "Combat" };
+					cntDeath2B.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+					cntDeath2Pow.Triggers.Add(cntDeath2A);
+					cntDeath2Pow.Triggers.Add(cntDeath2B);
+					cntDeath2Prof.CustomPowers.Add(cntDeath2Pow);
+					string cntDeath2Src = CustomPowerGen.Source(cntDeath2Prof, cntDeath2Pow, cntDeath2Prof.CustomPowers.Count - 1);
+					Check("V0.2.211：一处钩子上两条「每 N 个敌人死亡」→ 死亡计数只 Bump 一次（不然每次死亡被数成 2 个）",
+						cntDeath2Src.Split("BumpEnemyDeath(").Length - 1 == 1
+						&& cntDeath2Src.Contains("int __deathsNow = ", StringComparison.Ordinal)
+						&& cntDeath2Src.Contains("int __cnt = __deathsNow;", StringComparison.Ordinal),
+						$"Bump {cntDeath2Src.Split("BumpEnemyDeath(").Length - 1} 次");
 				}
 				// V0.2.173（用户实测：锻造卡「你去！」打出后抛 No selection screen prompt ⇒ 整张牌卡住）：
 				// **「变化卡牌 + 取牌方式 = 自己选」** 这一档，节点图发射器（ForgeGraphGen.EmitEffect 第 2358 行）
@@ -29587,7 +34802,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				"逐字一致");
 			Check("（配置）条件候选 = 非 0 费 / 不限 + 范围限定那一整份（含自定义关键词分组）；操作候选 = 丢弃 / 消耗 / 升级",
 				EffectCatalog.ScrapeCondsFor(scrapeProbe).Select((SpawnFilterOption f) => f.Id)
-					.SequenceEqual(new[] { "NonZeroCost", "Any", "Attack", "Skill", "Power", "Curse", "Status" })
+					.SequenceEqual(new[] { "NonZeroCost", "Any", "Attack", "Skill", "Power", "Curse", "Status", "Quest" })
 				&& EffectCatalog.ScrapeCondsFor(scrapeProbe)[1].Zh == "不限"
 				&& EffectCatalog.ScrapeOps.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "Discard", "Exhaust", "Upgrade" })
 				&& EffectCatalog.ScrapeOpZh("Exhaust") == "消耗掉",
@@ -29956,15 +35171,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			var badMin = EffectCatalog.EffectKinds.Where((EffectKindOption k) => k.Min > 0m).ToList();
 			Check("所有效果种类的数值范围都允许 0（用户要求：不能填 0 的也能填 0）",
 				badMin.Count == 0, badMin.Count == 0 ? "全部 ≤ 0" : string.Join("/", badMin.Select((EffectKindOption k) => $"{k.Kind}:{k.Min}")));
-			Check("0 值效果一律「不显示也不执行」（以前不能填 0 的那些也一样）",
-				new[] { "GenerateCard", "ExhaustCard", "TransformCard", "UpgradeCard", "Scry",
-						"CopyCard", "ReplayCard", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
+			Check("0 值效果一律「不显示也不执行」（以前不能填 0 的那些也一样；例外的只有「0 = 这张牌自己」那几档）",
+				new[] { "GenerateCard", "TransformCard", "UpgradeCard", "Scry",
+						"ReplayCard", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
 						"AddCardGlobal", "CardReward", "ApplyPower", "Draw" }
 					.All(k => CSharpCodeGen.IsInertZero(new EffectSpec { Kind = k, Amount = 0m })), "都算不生效");
 			Check("三种「0 有别的含义」的效果**不**算不生效（召唤伙伴用配置血量 / 给予关键词=这张牌自己 / 回合结束=这张牌自己）",
 				!CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "SummonPet", Amount = 0m })
 				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "GiveKeyword", Amount = 0m })
-				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TurnEndPlay", Amount = 0m }), "有含义");
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TurnEndPlay", Amount = 0m })
+				// V0.2.226：复制卡牌填 0 = 复制**这张牌自己**，也有含义（以前这里算「不生效」）
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "CopyCard", Amount = 0m }), "有含义");
 			CharacterProfile zeroProbe = ProfileFactory.Sample();
 			CardSpec zeroCard = new CardSpec { Name = "自检零值", ClassName = "UiCheckZero", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 			zeroCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 0m, SpawnCardId = "Shiv" });
@@ -30203,9 +35420,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				!CSharpCodeGen.IsInertZero(dsZero) && dsZero.CardScopeSelfOnly
 				&& dsZero.ShowCardScopeFilter && dsZero.UsesSelectPile,
 				"0 = 自己（界面照旧显示「选牌方式 / 从哪里丢弃 / 范围界定」）");
-			Check("只有「丢弃卡牌」多了这一档：消耗卡牌填 0 仍然是不生效，丢弃填 1 仍然是「丢 1 张」",
-				CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "ExhaustCard", Amount = 0m })
-				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "DiscardCard", Amount = 1m }), "没带偏别的种类");
+			Check("V0.2.180：「消耗卡牌」数值 0 也是「这张牌自己」（用户实测报的「被保留时不消耗自身」），"
+				+ "而填 1 仍然是「消耗 1 张别的牌」（没带偏别的档位）",
+				!CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "ExhaustCard", Amount = 0m })
+				&& CSharpCodeGen.AmountZeroIsSelf(new EffectSpec { Kind = "ExhaustCard", Amount = 0m })
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "DiscardCard", Amount = 1m })
+				&& !CSharpCodeGen.AmountZeroIsSelf(new EffectSpec { Kind = "ExhaustCard", Amount = 1m }), "没带偏别的种类");
+			// 生成端 + 卡面：消耗自己那一档（和「丢弃自己」同款）
+			{
+				CharacterProfile exSelfProbe = ProfileFactory.Sample();
+				CardSpec exSelfCard = new CardSpec { Name = "自检消耗自己", ClassName = "UiCheckExhaustSelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				exSelfCard.Effects.Add(new EffectSpec
+				{
+					Kind = "ExhaustCard", Amount = 0m, SelectPile = "Hand",
+					Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Retained" },
+				});
+				exSelfProbe.Cards.Add(exSelfCard);
+				string exSelfSrc = CSharpCodeGen.CardSource(exSelfProbe, exSelfCard, 0);
+				Check("V0.2.180：「卡牌时机 = 被保留」+「消耗卡牌 0」→ 生成 `await CardCmd.Exhaust(choiceContext, this);`"
+					+ "（以前整条被 IsInertZero 丢掉，什么都不做）",
+					exSelfSrc.Contains("await CardCmd.Exhaust(choiceContext, this);", StringComparison.Ordinal)
+					&& exSelfSrc.Contains("public override async Task AfterFlush(", StringComparison.Ordinal)
+					&& !exSelfSrc.Contains("for (int __pickIdx", StringComparison.Ordinal), "消耗自己");
+				Check("V0.2.180：卡面写「消耗这张牌自己。」（照「丢弃这张牌自己。」那一档的同款口径）",
+					LocalizationGen.CardsJson(exSelfProbe).Contains("消耗这张牌自己。", StringComparison.Ordinal), "卡面文案");
+			}
 			CharacterProfile dsProbe = ProfileFactory.Sample();
 			CardSpec dsCard = new CardSpec { Name = "自检丢自己", ClassName = "UiCheckDiscardSelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 			dsCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "Self" });
@@ -30378,6 +35617,76 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			});
 			Check("斩杀：遗物上用 → 报错（只能用在卡牌上，本体那几个都是攻击牌）",
 				ProfileValidator.Validate(faRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能用在**卡牌**上")), "拦住了");
+
+			// ⑫ V0.2.195（用户要求）：「上一张打出的牌是 攻击/技能/能力/状态/诅咒 牌」。
+			// 数据源 = 本体战斗历史 CardPlaysFinished（最后一张结算完的牌，不限回合）；
+			// 四条链（卡牌 / 遗物 / 药水 / 自定义状态）+ 锻造页【条件】模块都要能选到、生成正确、文案对。
+			{
+				string[] lcKinds = { "LastCardAttack", "LastCardSkill", "LastCardPower", "LastCardStatus", "LastCardCurse" };
+				Check("条件选项里有 5 条「上一张打出的牌是 攻击 / 技能 / 能力 / 状态 / 诅咒 牌」，四条链都能用（不需要填数值）",
+					lcKinds.All((string k) => EffectCatalog.Conditions.Any((ConditionOption o) => o.Id == k && o.ForCard && o.ForRelic && o.ForPower && !o.NeedsAmount && !o.NeedsPower)),
+					string.Join(" / ", lcKinds.Select((string k) => EffectCatalog.FindCondition(k)?.Display ?? "(缺)")));
+				Check("锻造页【条件】模块的候选里有这 5 条（和卡牌页同一份候选）",
+					lcKinds.All((string k) => ForgeGraphCatalog.ConditionPicks.Any((ForgeFieldOption p) => p.Id == k)), "都在");
+				CharacterProfile lcProbe = ProfileFactory.Sample();
+				CardSpec lcCard = new CardSpec { Name = "自检上一张", ClassName = "UiCheckLastCard", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				lcCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy", Condition = new ConditionSpec { Kind = "LastCardSkill" } });
+				lcProbe.Cards.Add(lcCard);
+				string lcSrc = CSharpCodeGen.CardSource(lcProbe, lcCard, 0);
+				Check("卡牌上：判据是战斗历史里最后一张结算完的牌（CardPlaysFinished.LastOrDefault，不限回合）",
+					lcSrc.Contains("CombatManager.Instance.History.CardPlaysFinished.LastOrDefault(e => e.CardPlay.Player == base.Owner)?.CardPlay.Card.Type == CardType.Skill"), "表达式对");
+				Check("卡牌上：两个 null 判断都在（没有战斗状态 / 没有玩家时不会炸）",
+					lcSrc.Contains("base.CombatState is not null && base.Owner is not null && CombatManager.Instance.History.CardPlaysFinished.LastOrDefault"), "有防护");
+				Check("卡面文案：「条件：上一张打出的牌是技能牌（不满足时这张牌的效果不生效）」",
+					LocalizationGen.CardsJson(lcProbe).Contains("上一张打出的牌是技能牌"), "文案对");
+				Check("校验器：这 5 条条件在卡牌上放行（不报「不能用在这里」）",
+					!ProfileValidator.Validate(lcProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("不能用在这里")), "放行");
+				CharacterProfile lcRelicProf = ProfileFactory.Sample();
+				RelicSpec lcRelic = new RelicSpec { Name = "自检上一张遗物", ClassName = "UiCheckLastCardRelic", Rarity = "Common", Trigger = "CombatStart" };
+				lcRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, Condition = new ConditionSpec { Kind = "LastCardCurse" } });
+				lcRelicProf.Relics.Add(lcRelic);
+				string lcRelicSrc = CSharpCodeGen.RelicSource(lcRelicProf, lcRelic, 0);
+				Check("遗物上：CombatState 走 base.Owner.Creature.CombatState（遗物模型上没有 CombatState）",
+					lcRelicSrc.Contains("base.Owner.Creature.CombatState is not null && base.Owner is not null && CombatManager.Instance.History.CardPlaysFinished.LastOrDefault(e => e.CardPlay.Player == base.Owner)?.CardPlay.Card.Type == CardType.Curse"), "表达式对");
+				CharacterProfile lcPotionProf = ProfileFactory.Sample();
+				PotionSpec lcPotion = new PotionSpec { Name = "自检上一张药水", ClassName = "UiCheckLastCardPotion", Rarity = "Common" };
+				lcPotion.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, Condition = new ConditionSpec { Kind = "LastCardPower" } });
+				lcPotionProf.Potions.Add(lcPotion);
+				string lcPotionSrc = CSharpCodeGen.PotionSource(lcPotionProf, lcPotion, 0);
+				Check("药水上：和遗物同形（CondCtx.Potion），判的是能力牌",
+					lcPotionSrc.Contains("base.Owner.Creature.CombatState is not null") && lcPotionSrc.Contains("CardType.Power"), "表达式对");
+				CustomPowerSpec lcPower = new CustomPowerSpec { Name = "自检上一张状态", ClassName = "UiCheckLastCardPower", Enabled = true };
+				PowerTriggerSpec lcTrig = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+				lcTrig.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, Condition = new ConditionSpec { Kind = "LastCardStatus" } });
+				lcPower.Triggers.Add(lcTrig);
+				string lcPowerSrc = CustomPowerGen.Source(ProfileFactory.Sample(), lcPower, 0);
+				Check("自定义状态上：玩家那一侧取 base.Owner.Player（状态挂在生物身上），判的是状态牌",
+					lcPowerSrc.Contains("base.Owner.Player is not null && CombatManager.Instance.History.CardPlaysFinished.LastOrDefault(e => e.CardPlay.Player == base.Owner.Player)?.CardPlay.Card.Type == CardType.Status"), "表达式对");
+				Check("回读：这 5 条条件的文案都是完整一句话（下拉 + 卡面用的是同一份）",
+					lcKinds.All((string k) => CSharpCodeGen.ConditionText(new ConditionSpec { Kind = k }).StartsWith("上一张打出的牌是", StringComparison.Ordinal)),
+					string.Join(" / ", lcKinds.Select((string k) => CSharpCodeGen.ConditionText(new ConditionSpec { Kind = k }))));
+				// 真回读（从工程恢复）：生成一遍再反推，条件要从代码里认回来（不是丢成「无条件」）
+				CharacterProfile lcRecProfile = ProfileFactory.Sample();
+				lcRecProfile.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				lcRecProfile.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				CardSpec lcRecCard = new CardSpec { Name = "自检上一张回读", ClassName = "UiCheckLastCardRec", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				lcRecCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy", Condition = new ConditionSpec { Kind = "LastCardCurse" } });
+				lcRecProfile.Cards.Add(lcRecCard);
+				var lcRecGen = ModGenerator.Generate(lcRecProfile);
+				if (!lcRecGen.Success)
+				{
+					Check("（回读）「上一张打出的牌是 X 牌」的工程能生成", false,
+						string.Join(" / ", lcRecGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+				}
+				else
+				{
+					var lcRec = ProjectRecovery.FromProject(lcRecGen.ProjectRoot);
+					var lcBack = lcRec.Profile.Cards.FirstOrDefault((CardSpec x) => x.ClassName == "UiCheckLastCardRec");
+					Check("回读：从工程恢复时「上一张打出的牌是诅咒牌」原样认回来（不会丢成无条件）",
+						lcBack is not null && lcBack.Effects.Any((EffectSpec x) => x.Condition is { Kind: "LastCardCurse" }),
+						lcBack is null ? "(没回读到这张卡)" : string.Join(" / ", lcBack.Effects.Select((EffectSpec x) => x.Condition?.Kind ?? "None")));
+				}
+			}
 
 			// ⑩ 条件选项「卡牌时机」+ 6 个子时机
 			// 这一条和别的条件**架构上不同**：带它的效果不写进 OnPlay，而是生成成本体对应钩子的 override
@@ -30931,13 +36240,126 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& !new EffectSpec { Kind = "Damage", Amount = 5m }.ShowCardScopeFilter,
 				"自己那一档不给范围");
 			Check("范围界定复用同一个 SpawnFilter 字段（不新建一套），候选表和「生成 / 变化」完全同一份",
-				SpawnFilters.Count == 6
-				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status" }),
+				SpawnFilters.Count == 7
+				&& SpawnFilters.Select((SpawnFilterOption f) => f.Id).SequenceEqual(new[] { "", "Attack", "Skill", "Power", "Curse", "Status", "Quest" }),
 				string.Join("/", SpawnFilters.Select((SpawnFilterOption f) => f.Zh)));
 			Check("列表里也会写出范围界定（不然选了范围在列表里看不出来）",
 				new EffectSpec { Kind = "ExhaustCard", Amount = 2m, SpawnFilter = "Attack" }.Display.Contains("范围界定：攻击")
 				&& !new EffectSpec { Kind = "ExhaustCard", Amount = 2m }.Display.Contains("范围界定"),
 				new EffectSpec { Kind = "ExhaustCard", Amount = 2m, SpawnFilter = "Attack" }.Display);
+
+			// ===== V0.2.204（用户报的）：范围界定里以前没有「任务牌」→ 穷举「非攻击牌」永远漏掉它 =====
+			{
+				Check("V0.2.204：范围界定 / 范围限定的候选里多了「任务牌」（本体 CardType.Quest）",
+					SpawnFilters.Any((SpawnFilterOption f) => f.Id == "Quest" && f.Zh == "任务")
+					&& EffectCatalog.SpawnFilterZh("Quest") == "任务", EffectCatalog.SpawnFilterZh("Quest"));
+				Check("V0.2.204：刮削 / 范围界定共用同一份候选表 → 刮削条件里也多了任务牌",
+					EffectCatalog.ScrapeCondsFor(Profile).Any((SpawnFilterOption f) => f.Id == "Quest"), "有");
+				// 生成端：任务牌的判据就是 `c.Type == CardType.Quest`（范围界定 / 生成池两条路同一份语义）
+				var questGen = new CardSpec { Name = "生成任务牌", ClassName = "UiCheckQuestGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				questGen.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Quest", SpawnTo = "Hand" });
+				string questGenSrc = CSharpCodeGen.CardSource(Profile, questGen, 0);
+				Check("V0.2.204：任务牌的生成池判据也是 `c.Type == CardType.Quest`（范围限定 / 范围界定同一份语义）",
+					questGenSrc.Contains("c => c.Type == CardType.Quest"), "同一份判据");
+				var questExhaust = new CardSpec { Name = "穷举非攻击", ClassName = "UiCheckQuestExhaust", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				questExhaust.Effects.Add(new EffectSpec { Kind = "ExhaustCard", Amount = 1m, CardPick = "Random", SelectPile = "Hand", SpawnFilter = "Quest" });
+				string questExhaustSrc = CSharpCodeGen.CardSource(Profile, questExhaust, 0);
+				Check("V0.2.204：「消耗指定牌 + 范围界定 = 任务牌」生成的就是按 CardType.Quest 挑牌（以前这一档根本选不到）",
+					questExhaustSrc.Contains("c.Type == CardType.Quest"), "按任务牌挑");
+				// 「除攻击以外」这一组：现在把攻击以外的每一档都挑上，任务牌才真的被覆盖到
+				string[] allButAttack = SpawnFilters.Select((SpawnFilterOption f) => f.Id)
+					.Where((string id) => id.Length > 0 && id != "Attack").ToArray();
+				Check("V0.2.204：除「攻击」以外的内建档位 = 技能 / 能力 / 诅咒 / 状态 / 任务（穷举起来不漏任务牌）",
+					allButAttack.SequenceEqual(new[] { "Skill", "Power", "Curse", "Status", "Quest" }), string.Join("/", allButAttack));
+				// 刮削条件那一栏也是同一份表 —— 校验器不能再把 Quest 判成「认不出来」
+				Check("V0.2.204：刮削条件认得出「任务牌」（以前校验器直接判「认不出来」拦掉）",
+					EffectCatalog.IsKnownScrapeCond("Quest") && !EffectCatalog.IsKnownScrapeCond("NoSuchType"), "认得出");
+				var questScrape = new CardSpec { Name = "刮削任务牌", ClassName = "UiCheckQuestScrape", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				questScrape.Effects.Add(new EffectSpec { Kind = "ScrapeDraw", Amount = 2m, ScrapeCond = "Quest", ScrapeOp = "Exhaust" });
+				string questScrapeSrc = CSharpCodeGen.CardSource(Profile, questScrape, 0);
+				Check("V0.2.204：刮削 + 条件「任务牌」生成的是 `c.Type == CardType.Quest`",
+					questScrapeSrc.Contains("c.Type == CardType.Quest"), "按任务牌挑");
+			}
+
+			// ===== V0.2.205（用户报的「锻造区，删除牌，数值填 0 不会删除自己」）=====
+			// 以前这三个「全局牌组」种类填 0 会落进 IsInertZero → 整条效果被丢掉（一行代码都不生成）。
+			// 现在 0 = 这张牌自己：卡牌 / 卡牌的锻造图按 ModelId 认「牌组里这张牌」。
+			{
+				var rmSelf = new EffectSpec { Kind = "RemoveCardGlobal", Amount = 0m, CardPick = "Chosen" };
+				Check("V0.2.205：全局牌组三兄弟「数值 0」不再被当成不生效（AmountZeroIsSelf）",
+					CSharpCodeGen.AmountZeroIsSelf(rmSelf) && !CSharpCodeGen.IsInertZero(rmSelf), "0 是有效档位");
+				CardSpec rmCard = new CardSpec { Name = "自删", ClassName = "UiCheckSelfRemove", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				rmCard.Effects.Add(rmSelf);
+				string rmSrc = CSharpCodeGen.CardSource(Profile, rmCard, 0);
+				Check("V0.2.205：卡牌链「删除牌 = 0」→ 删掉牌组里**这张牌自己**（按 c.Id 认）",
+					rmSrc.Contains("c.IsRemovable && c.Id == this.Id") && rmSrc.Contains("RemoveFromDeck"), "删自己");
+				CardSpec upCard = new CardSpec { Name = "自升级", ClassName = "UiCheckSelfUpgrade", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				upCard.Effects.Add(new EffectSpec { Kind = "UpgradeCardGlobal", Amount = 0m, CardPick = "Chosen" });
+				Check("V0.2.205：卡牌链「升级牌组 = 0」→ 升级牌组里这张牌自己",
+					CSharpCodeGen.CardSource(Profile, upCard, 0).Contains("c.IsUpgradable && c.Id == this.Id"), "升级自己");
+				CardSpec tgCard = new CardSpec { Name = "自变化", ClassName = "UiCheckSelfTransform", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				tgCard.Effects.Add(new EffectSpec { Kind = "TransformCardGlobal", Amount = 0m, CardPick = "Chosen" });
+				Check("V0.2.205：卡牌链「变化牌组 = 0」→ 把牌组里这张牌自己变掉",
+					CSharpCodeGen.CardSource(Profile, tgCard, 0).Contains("Cards.Where(c => c.Id == this.Id)"), "变化自己");
+				// 锻造图（卡牌）：同样要生成本张牌自己的删除
+				CardSpec fgCard = new CardSpec { Name = "锻造自删", ClassName = "UiCheckForgeSelfRemove", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var fgGraph = new ForgeGraphSpec();
+				var fgTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				fgTrig.SetField("Timing", "CardPlayed");
+				var fgEff = new ForgeNodeSpec { Kind = "Effect" };
+				fgEff.SetField("Effect", "RemoveCardGlobal");
+				fgEff.SetField("Amount", "0");
+				fgEff.SetField("Pick", "Chosen");
+				fgGraph.Nodes.AddRange(new[] { fgTrig, fgEff });
+				fgGraph.Links.Add(new ForgeLinkSpec { From = fgTrig.Id, To = fgEff.Id });
+				fgCard.ForgeGraph = fgGraph;
+				Profile.Cards.Add(fgCard);
+				string fgSrc = ForgeGraphGen.CardHooks(Profile, fgCard, isUpgraded: false);
+				Profile.Cards.Remove(fgCard);
+				Check("V0.2.205：卡牌的锻造图里「删除牌 = 0」也生成「删掉这张牌自己」（带 c.Id == this.Id）",
+					fgSrc.Contains("c.IsRemovable && c.Id == this.Id"), "锻造图也对");
+				// 遗物 / 药水 / 状态的布上没有「这张牌」→ 退回老行为（0 当 1 张），并在代码里写清原因（不静默）
+				CardSpec fgRelicCard = new CardSpec { Name = "锻造自删（遗物布）", ClassName = "UiCheckForgeSelfRemoveRelic", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				var relicGraph = new ForgeGraphSpec();
+				var rTrig = new ForgeNodeSpec { Kind = "Trigger" };
+				rTrig.SetField("Timing", "CardPlayed");
+				var rEff = new ForgeNodeSpec { Kind = "Effect" };
+				rEff.SetField("Effect", "RemoveCardGlobal");
+				rEff.SetField("Amount", "0");
+				relicGraph.Nodes.AddRange(new[] { rTrig, rEff });
+				relicGraph.Links.Add(new ForgeLinkSpec { From = rTrig.Id, To = rEff.Id });
+				var selfRemoveRelic = new RelicSpec { Name = "自检遗物", ClassName = "UiCheckSelfRemoveRelic", Triggers = { new RelicTriggerSpec { Kind = "CombatStart" } }, ForgeGraph = relicGraph };
+				string relicSrc = ForgeGraphGen.RelicHooks(Profile, selfRemoveRelic);
+				Check("V0.2.205：（对照）同一个「删除牌 = 0」放在遗物 / 药水的布上：没有「这张牌」→ 写注释说明按 1 张处理",
+					relicSrc.Contains("没有「这张牌」"), relicSrc.Contains("没有「这张牌」") ? "写清了" : "(没写)");
+				// 卡面 / 列表也要说清「0 = 这张牌自己」
+				CharacterProfile rmLocProfile = ProfileFactory.Sample();
+				rmLocProfile.Cards.Add(rmCard);
+				Check("V0.2.205：卡面描述写「把这张牌从牌组里删掉」、列表行尾写「数值 0 = 这张牌自己」",
+					LocalizationGen.CardsJson(rmLocProfile).Contains("把[gold]这张牌[/gold]从牌组里删掉")
+					&& rmSelf.Display.Contains("这张牌自己"), rmSelf.Display);
+			}
+
+			// ===== V0.2.206（用户报「打出后，从指定组中抽 10 张选 1 张 → 展示了所有牌、生成不出牌」）=====
+			{
+				CardSpec pickAllCard = new CardSpec { Name = "自己挑整组", ClassName = "UiCheckGenPickAll", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				pickAllCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnChosen = true });
+				string pickAllSrc = CSharpCodeGen.CardSource(Profile, pickAllCard, 0);
+				Check("V0.2.206：「自己挑」挑中的是规范模型 → 先 CreateCard 建实例再入堆（以前直接塞规范模型 → 运行时 CanonicalModelException）",
+					pickAllSrc.Contains("CombatState.CreateCard(__picked, base.Owner)")
+					&& pickAllSrc.Contains("AddGeneratedCardToCombat(__pickedMade,")
+					&& !pickAllSrc.Contains("AddGeneratedCardToCombat(__picked,"),
+					pickAllSrc.Contains("__pickedMade") ? "先建实例" : "(还是直接塞规范模型)");
+				CardSpec pickMCard = new CardSpec { Name = "自己挑10选1", ClassName = "UiCheckGenPickM", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				pickMCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack", SpawnChosen = true, SpawnChoice = 10m });
+				string pickMSrc = CSharpCodeGen.CardSource(Profile, pickMCard, 0);
+				Check("V0.2.206：勾「自己挑」+「多选1 = 10」→ 真的先随机抽 10 张当候选（不再把整组牌全列出来）",
+					pickMSrc.Contains("GetDistinctForCombat(base.Owner, __genPool, 10,")
+					&& !pickMSrc.Contains("__chosenCand"),
+					pickMSrc.Contains("__genPool, 10,") ? "抽 10 张候选" : "(还是整组)");
+				Check("V0.2.206：（对照）只勾「自己挑」、多选1 = 1 → 仍然是「候选 = 整组（最多 60）」",
+					pickAllSrc.Contains("__chosenCand = __genPool.Take(60)"), "整组候选");
+			}
 
 			// ② 生成的候选池**真的**被过滤（把生成文本钉死）
 			CharacterProfile csProbe = ProfileFactory.Sample();
@@ -31425,6 +36847,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("工程里有逐帧动画的两个源文件（FrameAnimRuntime.cs / FrameAnimPatches.cs）",
 						File.Exists(Path.Combine(animCs, "FrameAnimRuntime.cs")) && File.Exists(Path.Combine(animCs, "FrameAnimPatches.cs")),
 						animCs);
+					// ===== V0.2.227：篝火卡死（联机 2 号位 FlipX 空引用）=====
+					// 用户实测报的「篝火会卡死」：日志里是 NRestSiteCharacter.FlipX() 的空引用（被
+					// NRestSiteRoom._Ready 调出来）→ 房间 _Ready 后半段（生成选项 / 连继续按钮 / 同步器事件）全没跑。
+					// 真因：篝火补丁把本体 _Ready 整段跳过了，_controlRoot 一直是 null。这里把「不许再跳过」钉死。
+					string animPatchSrc = File.ReadAllText(Path.Combine(animCs, "FrameAnimPatches.cs"));
+					int animRestActIdx = animPatchSrc.IndexOf("FrameAnimRestSiteAct(__instance));", StringComparison.Ordinal);
+					int animRestGateIdx = animPatchSrc.IndexOf("GetNodeOrNull<Control>(\"ControlRoot\")", StringComparison.Ordinal);
+					Check("V0.2.227：篝火 _Ready 补丁不再整段跳过本体（先挂帧动画，再检查场景结构、齐了就放行）",
+						animRestActIdx >= 0 && animRestGateIdx > animRestActIdx
+						&& animPatchSrc.Contains("篝火场景缺 ControlRoot / %Hitbox / %SelectionReticle"),
+						animRestActIdx < 0 ? "没找到挂动画那一句" : $"挂动画@{animRestActIdx} 结构检查@{animRestGateIdx}");
+					Check("V0.2.227：FlipX 兜底补丁在（_controlRoot 为 null 时跳过翻面，否则联机会把房间初始化打断）",
+						animPatchSrc.Contains("FrameAnimRestSiteFlipPatch")
+						&& animPatchSrc.Contains("nameof(NRestSiteCharacter.FlipX)")
+						&& animPatchSrc.Contains("TryFieldRef<NRestSiteCharacter, Control>(\"_controlRoot\")"),
+						"有兜底");
+					Check("V0.2.227：非 Spine 篝火立绘在 FlipX 之后补一次水平镜像（本体只会翻 Spine 子节点）",
+						animPatchSrc.Contains("FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>(\"%Visuals\"))")
+						&& animPatchSrc.Contains("FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>(\"__FrameAnimSprite\"))"),
+						"补了镜像");
+					Check("V0.2.227：商店补丁保持原样（NMerchantCharacter._Ready 只做「包第一个子节点」，跳过它是对的）",
+						animPatchSrc.Contains("FrameAnimMerchantPatch")
+						&& animPatchSrc.Contains("player?.Play(\"relaxed_loop\");"),
+						"商店不动");
 					string[] animFrameFiles = Directory.Exists(animFrameDir) ? Directory.GetFiles(animFrameDir, "*.png") : Array.Empty<string>();
 					Check("工程里有帧 PNG + 每张的 .png.import + _frames.tres + _manifest.json（帧数与计划一致）",
 						animFrameFiles.Length == animPlan.Anims.Sum((AnimFramesGen.AnimPlan o) => o.FrameCount)
@@ -31740,6 +37186,44 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				allyOldSrc.Contains("// CET:TargetSide=AllAllies")
 				&& allyNewSrc.Contains("// CET:TargetSide=AllAllies CET:AllyNoPets=1"), "有标记");
 
+			// ---- V0.2.201（用户问「怎么选全部友方包括自己」）：新加「包括自己」这个子选项 ----
+			{
+				var allySelfEff = new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "AllAllies", AllAlliesIncludeSelf = true };
+				CardSpec allySelfCard = new CardSpec { Name = "全友方含自己", ClassName = "UiCheckAllAlliesSelf", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+				allySelfCard.Effects.Add(allySelfEff);
+				tgtProfile.Cards.Add(allySelfCard);
+				string allySelfSrc = CSharpCodeGen.CardSource(tgtProfile, allySelfCard, 0);
+				Check("V0.2.201：勾「全部友方 · 包括自己」→ 过滤条件里**没有** `c != base.Owner.Creature`（自己也被算上）",
+					allySelfSrc.Contains(".Where(c => c.IsAlive).ToList()")
+					&& !allySelfSrc.Contains("c != base.Owner.Creature"), "去掉了排除自己");
+				Check("V0.2.201：两个勾可以叠加（包括自己 + 不包括召唤物）",
+					CSharpCodeGen.CardSource(tgtProfile, new CardSpec
+					{
+						Name = "叠加", ClassName = "UiCheckAllAlliesBoth", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true,
+						Effects = { new EffectSpec { Kind = "Block", Amount = 5m, TargetSide = "AllAllies", AllAlliesIncludeSelf = true, AllAlliesExcludePets = true } },
+					}, 0).Contains(".Where(c => c.IsAlive && c.PetOwner is null).ToList()"), "两个勾都生效");
+				Check("V0.2.201：勾了「包括自己」会写 `CET:AllySelf=1` 标记（工程回读能还原）",
+					allySelfSrc.Contains("// CET:TargetSide=AllAllies CET:AllySelf=1"), "有标记");
+				var allySelfUi = new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "AllAllies" };
+				Check("V0.2.201：「全部友方 · 包括自己」那一行只在作用对象 = 全部友方时显示",
+					allySelfUi.ShowAllAlliesIncludeSelfRow
+					&& !new EffectSpec { Kind = "Damage", TargetSide = "AllEnemies" }.ShowAllAlliesIncludeSelfRow
+					&& !new EffectSpec { Kind = "Damage", TargetSide = "Self" }.ShowAllAlliesIncludeSelfRow, "显隐对");
+				var selfRowRaises = new List<string>();
+				PropertyChangedEventHandler selfRowSpy = (_, ev) => { if (ev.PropertyName is { Length: > 0 } sp) selfRowRaises.Add(sp); };
+				var selfRowProbe = new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Enemy" };
+				selfRowProbe.PropertyChanged += selfRowSpy;
+				try { selfRowProbe.TargetSide = "AllAllies"; } finally { selfRowProbe.PropertyChanged -= selfRowSpy; }
+				Check("V0.2.201：把作用对象切成「全部友方」会通知界面刷新那一行",
+					selfRowRaises.Contains("ShowAllAlliesIncludeSelfRow"), string.Join("/", selfRowRaises));
+				Check("V0.2.201：列表行尾写「全体友方（含自己）」、卡面写「你、队友和所有召唤物」",
+					allySelfEff.Display.Contains("全体友方（含自己）")
+					&& LocalizationGen.CardsJson(tgtProfile).Contains("你、队友和所有召唤物"), allySelfEff.Display);
+				// 生成端不再碰 PlayerCreatures（召唤物不在那个列表里 —— 就是「全部友方什么都不打」的老病根）
+				Check("V0.2.201：（病根）「全部友方」不再用 CombatState.PlayerCreatures（那个列表只有 `Player != null` 的单位，召唤物不在里面）",
+					!allySelfSrc.Contains("PlayerCreatures") && !allyOldSrc.Contains("PlayerCreatures"), "都换成 Allies 了");
+			}
+
 			// ---- 生成：全体单位（7 档里新增的那一档）五条链都真的展开成「两边所有存活单位」 ----
 			string unitsExpr = "base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList()";
 			var unitsCases = new (string Kind, string Label)[]
@@ -31781,6 +37265,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			uvCard.Effects[0].Amount = 4m;
 			Check("（对照）「格挡 + 全体单位」不报错（生成端真的实现了这一档）",
 				!ProfileValidator.Validate(uv).Any(i => i.IsError && i.Message.Contains("全体单位")), "不报");
+
+			// V0.2.200：「牺牲伙伴 → 造成伤害」现在也走 EmitPerCreature 按作用对象展开，
+			// 所以「全体单位 / 全部队友」对它同样合法；收益不是伤害时生成端**不读**作用对象，必须照旧拦住。
+			CharacterProfile uvSac = ProfileFactory.Sample();
+			uvSac.Summons.Add(new SummonSpec { Name = "自检伙伴", ClassName = "UiCheckSacAllUnitsPet", Enabled = true });
+			var uvSacDmg = new CardSpec { Name = "牺牲群伤", ClassName = "UiCheckSacAllUnitsDmg", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+			uvSacDmg.Effects.Add(new EffectSpec
+			{
+				Kind = "PetSacrifice", PetSacrificeGain = "Damage", PetSacrificeFormula = "Fixed", Amount = 5m,
+				TargetSide = "AllUnits", PetSummon = "UiCheckSacAllUnitsPet",
+			});
+			uvSac.Cards.Add(uvSacDmg);
+			Check("V0.2.200：校验器放行「牺牲伙伴 → 造成伤害 + 全体单位」（生成端真的按作用对象展开）",
+				!ProfileValidator.Validate(uvSac).Any(i => i.IsError && i.Message.Contains("全体单位")),
+				ProfileValidator.Validate(uvSac).FirstOrDefault(i => i.IsError)?.Message ?? "不报");
+			uvSacDmg.Effects[0].PetSacrificeGain = "Block";
+			Check("V0.2.200：（对照）牺牲伙伴收益=格挡时「全体单位」照旧报错拦住（那一档不读作用对象）",
+				ProfileValidator.Validate(uvSac).Any(i => i.IsError && i.Message.Contains("全体单位")), "报错拦住了");
 
 			// ---- 锻造节点图：这一档映射成【对象】里本来就有的 AllUnits（同一个运行时助手） ----
 			Check("锻造节点图：「全体单位」映射到【对象】的 AllUnits 档（文案 + 生成一致）",
@@ -32302,6 +37804,252 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			}
 			catch (Exception ex) { Check("V0.2.169 撞车自检整段跑完", false, ex.Message); }
 			finally { try { if (Directory.Exists(clashRoot169)) Directory.Delete(clashRoot169, true); } catch { } }
+		}
+		// ===== V0.2.169②：类名 → 本体 Entry 的换算必须和本体**逐字同源** =====
+		// 用户实测（角色英文类名全大写 EVE）：在选人界面点他那个角色，抛
+		//   LocException: Key=E_VE_RELIC1.title not found in table=relics
+		//   at NCharacterSelectScreen.SelectCharacter(...)
+		// → 选择流程中断、大厅里还是上一个角色（现象：「选人页看着是对的，选完变成其他角色」）。
+		//
+		// 真因：Naming.Slug() 以前自己写成「每个大写字母前都插一个下划线」，而本体那对正则
+		//   ([A-Za-z0-9]|\G(?!^))([A-Z]) → "$1_$2"
+		// 是**成对消费**的 —— 连续大写里每隔一个才插：EVERelic1 本体给 E_VE_RELIC1，旧实现给 E_V_E_RELIC1。
+		// 只有「3 个以上连续大写」才露馅，所以 Anon / Vemiu / Seven / TachiShrimp 那些存档从来没撞到。
+		{
+			Check("V0.2.169②：类名→Entry 与本体算法逐字一致（EVERelic1 → E_VE_RELIC1，就是游戏查的那个键）",
+				Naming.Slug("EVERelic1") == "E_VE_RELIC1", Naming.Slug("EVERelic1"));
+			Check("V0.2.169②：同一形状的 ABCRelic1 → A_BC_RELIC1", Naming.Slug("ABCRelic1") == "A_BC_RELIC1", Naming.Slug("ABCRelic1"));
+			Check("V0.2.169②：AIPet → A_I_PET（本体注释里点名的例子）", Naming.Slug("AIPet") == "A_I_PET", Naming.Slug("AIPet"));
+			Check("V0.2.169②：EVE → E_V_E（角色自己的 Entry 没变，所以选人页一直是正常的）",
+				Naming.Slug("EVE") == "E_V_E", Naming.Slug("EVE"));
+			Check("V0.2.169②（红线）：常规驼峰命名的 Entry 一个都不变",
+				Naming.Slug("AnonCard10") == "ANON_CARD10" && Naming.Slug("VemiuRelic1") == "VEMIU_RELIC1"
+				&& Naming.Slug("SevenCrush") == "SEVEN_CRUSH" && Naming.Slug("TachiShrimpCard3") == "TACHI_SHRIMP_CARD3"
+				&& Naming.Slug("WhiteCloakHeaven") == "WHITE_CLOAK_HEAVEN" && Naming.Slug("UIButton") == "U_I_BUTTON",
+				Naming.Slug("AnonCard10") + " / " + Naming.Slug("VemiuRelic1") + " / " + Naming.Slug("SevenCrush"));
+
+			// 端到端：类名全大写的存档 → 生成出来的 relics.json 里那个键必须是**游戏会查的那一个**
+			var upper169 = new CharacterProfile { ModId = "UiCheckSlug169", CharacterClass = "EVE" };
+			upper169.Relics.Add(new RelicSpec { Name = "自检遗物", Rarity = "Common" });
+			string relicsJson169 = LocalizationGen.RelicsJson(upper169);
+			Check("V0.2.169②：CharClass=EVE 的存档，relics.json 写的是 E_VE_RELIC1.title（不再是 E_V_E_RELIC1.title）",
+				relicsJson169.Contains("E_VE_RELIC1.title", StringComparison.Ordinal)
+				&& !relicsJson169.Contains("E_V_E_RELIC1", StringComparison.Ordinal),
+				relicsJson169.Contains("E_VE_RELIC1.title", StringComparison.Ordinal)
+					? "写对了" : relicsJson169.Substring(0, Math.Min(160, relicsJson169.Length)));
+		}
+		// ===== V0.2.180②：生成代码里引用**本体类型**必须写全名 =====
+		// 用户实测两条编译错误：
+		//   cs\Cards\TheShadowCard12.cs(36,53): error CS0104: "Void" 是 "…Cards.Void" 和 "void" 之间的不明确的引用
+		//   cs\Patches.cs(121,54):             error CS8121: "Defect" 类型的模式无法处理 "CharacterModel" 类型的表达式
+		// 真因：生成端引用本体卡 / 本体角色时**写的是短类名** —— 本体有一张卡就叫 Void（和 System.Void 撞），
+		// 而 Patches.cs 那句「是不是本体角色」的 `is Ironclad or … or Defect or …` 会被本 mod 里任何同名类抢走
+		//（本 mod 自己有个类叫 Defect 时，编译器就把 Defect 当模式类型 → CS8121）。
+		// 修法：本体卡走 CSharpCodeGen.CardTypeExpr（一律全名），本体角色 / 卡池也一律写全名。
+		{
+			Check("V0.2.180②：本体卡写全名（Void → MegaCrit.Sts2.Core.Models.Cards.Void；留空 = Shiv）",
+				CSharpCodeGen.CardTypeExpr(null, "Void") == "MegaCrit.Sts2.Core.Models.Cards.Void"
+				&& CSharpCodeGen.CardTypeExpr(null, "") == "MegaCrit.Sts2.Core.Models.Cards.Shiv",
+				CSharpCodeGen.CardTypeExpr(null, "Void"));
+			var nqProbe = ProfileFactory.Sample();
+			// 红线：**我们自己生成的卡**必须仍然写短名（同命名空间，加了前缀反而编译不过）
+			var nqOwn = new CharacterProfile { ModId = "UiCheckNq", CharacterClass = "UiCheckNq" };
+			nqOwn.Cards.Add(new CardSpec { Name = "自检自己的卡", ClassName = "UiCheckNqOwn", CardType = "Skill", Rarity = "Common", Cost = 1 });
+			string nqCls = CSharpCodeGen.CardTypeExpr(nqOwn, "UiCheckNqOwn");
+			Check("V0.2.180②（红线）：我们自己的卡仍然写短名（同一个命名空间，不加前缀）",
+				nqCls == "UiCheckNqOwn", nqCls);
+			string nqPatches = PatchesGen.PatchesSource(nqProbe);
+			Check("V0.2.180②：Patches.cs 里本体角色判断那 6 个全是全名，且不再有裸的 `is Ironclad or` / `or Defect or`",
+				nqPatches.Contains("MegaCrit.Sts2.Core.Models.Characters.Ironclad", StringComparison.Ordinal)
+				&& nqPatches.Contains("MegaCrit.Sts2.Core.Models.Characters.Defect", StringComparison.Ordinal)
+				&& !nqPatches.Contains("is Ironclad or", StringComparison.Ordinal)
+				&& !nqPatches.Contains("or Defect or", StringComparison.Ordinal),
+				"全名");
+		}
+		// ===== V0.2.200：锻造图「造成伤害」在**非卡牌档**不能调 FromCard =====
+		// 用户实测「敌人回合开始时卡死」：栈是 AttackCommand.FromCard ← Gokuen.AfterSideTurnStart
+		// ← Hook.AfterSideTurnStart ← CombatManager.StartTurn。本体 FromCard 的第一句就是
+		// `Player owner = card.Owner;` —— 状态/遗物/药水档的图没有「这张牌」，以前照样拼
+		// `.FromCard(null, null)` ⇒ 运行时 NRE ⇒ 回合循环死掉（战斗卡住，只能重开房间）。
+		// 现在：非卡牌档**不调 FromCard**（源卡留空）；卡牌档照旧（红线：卡牌输出不变）。
+		{
+			ForgeGraphSpec FgDamageGraph(string timing)
+			{
+				var g = new ForgeGraphSpec();
+				var trig = new ForgeNodeSpec { Kind = "Trigger", X = 0, Y = 0 };
+				trig.SetField("Timing", timing);
+				var eff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 0 };
+				eff.SetField("Effect", "Damage");
+				eff.SetField("Amount", "9");
+				g.Nodes.Add(trig);
+				g.Nodes.Add(eff);
+				g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+				return g;
+			}
+			var fgCardP = ProfileFactory.Sample();
+			var fgCard = new CardSpec
+			{
+				Name = "自检锻造卡", ClassName = "UiCheckFgCard200", CardType = "Attack", Rarity = "Common", Cost = 1,
+				InCardPool = true, IsForged = true, ForgeGraph = FgDamageGraph(ForgeTimings.CardPlayed),
+			};
+			fgCardP.Cards.Add(fgCard);
+			string fgCardSrc = CSharpCodeGen.CardSource(fgCardP, fgCard, fgCardP.Cards.Count - 1);
+			Check("V0.2.200（红线）：卡牌档的锻造图「造成伤害」仍然 .FromCard(this, cardPlay)",
+				fgCardSrc.Contains(".FromCard(this, cardPlay)", StringComparison.Ordinal), "在");
+
+			var fgPowP = ProfileFactory.Sample();
+			var fgPow = new CustomPowerSpec
+			{
+				Name = "自检锻造状态", ClassName = "UiCheckFgPower200", Type = "Debuff", Enabled = true,
+				ForgeGraph = FgDamageGraph(ForgeTimings.EnemyTurnStart),
+			};
+			fgPowP.CustomPowers.Add(fgPow);
+			string fgPowSrc = CustomPowerGen.Source(fgPowP, fgPow, fgPowP.CustomPowers.Count - 1);
+			Check("V0.2.200：状态档的锻造图「造成伤害」**不再调 FromCard**（以前传 null → 敌人回合开始 NRE → 战斗卡死）",
+				fgPowSrc.Contains("DamageCmd.Attack(", StringComparison.Ordinal)
+				&& !fgPowSrc.Contains(".FromCard(", StringComparison.Ordinal),
+				fgPowSrc.Contains(".FromCard(", StringComparison.Ordinal) ? "还有 FromCard！" : "干净");
+		}
+		// ===== V0.2.201：锻造图里同一个【数值 / 能量】模块被**两个分支**各取一次 → CS0103 =====
+		// 用户实测报的：`MimikyuCard52.cs(80,122): error CS0103: 当前上下文中不存在名称"__fgf73650"`。
+		// 两个原因（都在 ForgeGraphGen，已修）：
+		//   ① 声明是就地写进当前语句流的：`if` 真支里那句 `decimal __fgXXXX = …;` 出了大括号就没了，
+		//      假支再取同一个模块时只拿到缓存里的**引用** → CS0103。
+		//   ② 缓存键带出口序号（`#1`），回收时却返回 node.VarName（不带 p1）→ 出口 1 复用时名字对不上 → CS0103。
+		{
+			// 在生成的源码里按**大括号作用域**找「引用了、但自己这层和祖先层都没声明」的 __fgXXXXXX
+			List<string> FgScopeProblems(string src)
+			{
+				var bad = new List<string>();
+				var declRx = new System.Text.RegularExpressions.Regex(@"decimal (__fg\w+) =");
+				var refRx = new System.Text.RegularExpressions.Regex(@"__fg[0-9a-f]{6}(p\d+)?");
+				var scopes = new List<HashSet<string>> { new(StringComparer.Ordinal) };
+				int depth = 0;
+				bool inBody = false;
+				foreach (string line in src.Split('\n'))
+				{
+					if (!inBody)
+					{
+						if (line.Contains("public async Task ForgeGraphOnPlay", StringComparison.Ordinal)) inBody = true;
+						continue;
+					}
+					var own = new HashSet<string>(StringComparer.Ordinal);
+					foreach (System.Text.RegularExpressions.Match m in declRx.Matches(line)) own.Add(m.Groups[1].Value);
+					foreach (System.Text.RegularExpressions.Match m in refRx.Matches(line))
+					{
+						string n = m.Value;
+						if (own.Contains(n)) continue;
+						bool ok = false;
+						foreach (var s in scopes) if (s.Contains(n)) { ok = true; break; }
+						if (!ok && !bad.Contains(n)) bad.Add(n);
+					}
+					foreach (string n in own) scopes[^1].Add(n);
+					foreach (char c in line)
+					{
+						if (c == '{') { depth++; if (scopes.Count <= depth) scopes.Add(new HashSet<string>(StringComparer.Ordinal)); }
+						else if (c == '}')
+						{
+							if (scopes.Count > 1 && depth + 1 >= scopes.Count) scopes.RemoveAt(scopes.Count - 1);
+							depth--;
+							if (depth <= 0) return bad;
+						}
+					}
+				}
+				return bad;
+			}
+			string FgCardOf(ForgeGraphSpec g, string cls)
+			{
+				var prof = ProfileFactory.Sample();
+				var c = new CardSpec
+				{
+					Name = cls, ClassName = cls, CardType = "Attack", Rarity = "Common", Cost = 1,
+					InCardPool = true, IsForged = true, ForgeGraph = g,
+				};
+				prof.Cards.Add(c);
+				return CSharpCodeGen.CardSource(prof, c, prof.Cards.Count - 1);
+			}
+
+			// ① 同一个【数值】模块：if 真支一张【造成伤害】、假支一张（两支共用同一个模块）
+			{
+				var g = new ForgeGraphSpec();
+				var trig = new ForgeNodeSpec { Kind = "Trigger", X = 0, Y = 0 };
+				trig.SetField("Timing", ForgeTimings.CardPlayed);
+				var iff = new ForgeNodeSpec { Kind = "If", X = 200, Y = 0 };
+				var val = new ForgeNodeSpec { Kind = "Value", X = 200, Y = 200 };
+				val.SetField("Formula", "3");
+				var t = new ForgeNodeSpec { Kind = "Effect", X = 400, Y = -120 };
+				t.SetField("Effect", "Damage");
+				var f = new ForgeNodeSpec { Kind = "Effect", X = 400, Y = 120 };
+				f.SetField("Effect", "Damage");
+				g.Nodes.Add(trig);
+				g.Nodes.Add(iff);
+				g.Nodes.Add(val);
+				g.Nodes.Add(t);
+				g.Nodes.Add(f);
+				g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = iff.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = iff.Id, To = t.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = iff.Id, To = f.Id, FromPort = 1, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = val.Id, To = t.Id, FromPort = 0, ToPort = 1 });
+				g.Links.Add(new ForgeLinkSpec { From = val.Id, To = f.Id, FromPort = 0, ToPort = 1 });
+				string src = FgCardOf(g, "UiCheckFgScope201");
+				var bad = FgScopeProblems(src);
+				Check("V0.2.201：同一个【数值】模块在 if 真支 / 假支各用一次 → 没有「引用了却没声明」的 __fgXXXXXX"
+					+ "（以前假支直接引用真支里的局部变量 → CS0103，用户实测报的 MimikyuCard52）",
+					bad.Count == 0, bad.Count == 0 ? "干净" : "没声明：" + string.Join(" / ", bad));
+				int decls = System.Text.RegularExpressions.Regex.Matches(src, @"decimal __fg[0-9a-f]{6} = \(3m\);").Count;
+				Check("V0.2.201：两个分支各声明一份（同名落在兄弟块里是合法 C#）", decls == 2, decls + " 处声明");
+			}
+
+			// ② 同一个【能量】模块的「额外资源量」出口（出口 1）在**同一个作用域**里被两张【造成伤害】各取一次
+			{
+				var g = new ForgeGraphSpec();
+				var trig = new ForgeNodeSpec { Kind = "Trigger", X = 0, Y = 0 };
+				trig.SetField("Timing", ForgeTimings.CardPlayed);
+				var cond = new ForgeNodeSpec { Kind = "Condition", X = 200, Y = 0 };
+				var energy = new ForgeNodeSpec { Kind = "Energy", X = 200, Y = 200 };
+				var e1 = new ForgeNodeSpec { Kind = "Effect", X = 420, Y = -100 };
+				e1.SetField("Effect", "Damage");
+				var e2 = new ForgeNodeSpec { Kind = "Effect", X = 420, Y = 100 };
+				e2.SetField("Effect", "Damage");
+				g.Nodes.Add(trig);
+				g.Nodes.Add(cond);
+				g.Nodes.Add(energy);
+				g.Nodes.Add(e1);
+				g.Nodes.Add(e2);
+				g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = cond.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = cond.Id, To = e1.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = cond.Id, To = e2.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = energy.Id, To = e1.Id, FromPort = 1, ToPort = 1 });
+				g.Links.Add(new ForgeLinkSpec { From = energy.Id, To = e2.Id, FromPort = 1, ToPort = 1 });
+				string src = FgCardOf(g, "UiCheckFgPort201");
+				var bad = FgScopeProblems(src);
+				Check("V0.2.201：同一个【能量】「额外资源量」出口用两处 → 两处都带 p1 后缀"
+					+ "（以前第二次返回不带 p1 的名字 → CS0103）",
+					bad.Count == 0
+					&& System.Text.RegularExpressions.Regex.IsMatch(src, @"decimal __fg[0-9a-f]{6}p1 = __Y;")
+					&& System.Text.RegularExpressions.Regex.Matches(src, @"Attack\(__fg[0-9a-f]{6}\)").Count == 0,
+					bad.Count == 0 ? "带 p1" : "没声明：" + string.Join(" / ", bad));
+			}
+
+			// ③ 红线：一个模块只用一次的老写法，仍然只声明一次
+			{
+				var g = new ForgeGraphSpec();
+				var trig = new ForgeNodeSpec { Kind = "Trigger", X = 0, Y = 0 };
+				trig.SetField("Timing", ForgeTimings.CardPlayed);
+				var val = new ForgeNodeSpec { Kind = "Value", X = 100, Y = 100 };
+				val.SetField("Formula", "3");
+				var eff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 0 };
+				eff.SetField("Effect", "Damage");
+				g.Nodes.Add(trig);
+				g.Nodes.Add(val);
+				g.Nodes.Add(eff);
+				g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+				g.Links.Add(new ForgeLinkSpec { From = val.Id, To = eff.Id, FromPort = 0, ToPort = 1 });
+				string src = FgCardOf(g, "UiCheckFgOnce201");
+				int decls = System.Text.RegularExpressions.Regex.Matches(src, @"decimal __fg[0-9a-f]{6} = \(3m\);").Count;
+				Check("V0.2.201（红线）：一个模块只用一次 → 仍然只声明一次（老存档生成文本不变）",
+					decls == 1 && FgScopeProblems(src).Count == 0, decls + " 处声明");
+			}
 		}
 		// ===== V0.2.137：高亮改成**用户自己填**（用户拍板 A，撤掉 V0.2.135 那套按钮 + 弹窗 + 汇总）=====
 		// 用户原话：「自定义描述的高亮字段指的是把游戏本体中显示高亮的字符直接显示在生成器的升级后自定义描述中，
@@ -32825,6 +38573,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				"来源 + 目标都在");
 			Check("V0.2.142：负数施加状态时日志说清是哪一档（力量 → 「实际按『施加负层数』执行」）",
 				dbgOnSrc.Contains("实际按「施加负层数」执行", StringComparison.Ordinal), "说清了");
+			// ===== V0.2.236：用户报「投斧（ThrowingAxe）对某张牌不生效」=====
+			// 本体 `CardModel.OnPlayWrapper` 是 `for (int i = 0; i < playCount; i++) await OnPlay(...)`
+			// （CardModel.cs:1896-1971）—— 遗物 / 状态改的是 playCount，多打的那一次**会再跑一遍 OnPlay**，
+			// 但能力牌打出后就进 PileType.None、界面上往往看不出来（用户前面报过一次「能力牌不触发头斧」）。
+			// 日志里带上「第 k/K 次」，一眼就能分清两种情形：只有「1/1」= playCount 压根没被改；
+			// 出现「2/2」= 多打的那次真的执行了，「没效果」只能是效果本身不可叠加。
+			Check("V0.2.236：开着调试日志时 OnPlay 开头打出「第几次 / 一共几次」（改 playCount 的遗物靠它验证）",
+				dbgOnSrc.Contains("打出第 ", StringComparison.Ordinal)
+				&& dbgOnSrc.Contains("cardPlay.PlayIndex + 1", StringComparison.Ordinal)
+				&& dbgOnSrc.Contains("cardPlay.PlayCount", StringComparison.Ordinal),
+				"有「第 k/K 次」");
+			Check("V0.2.236：这一行也带 CET:DebugLog 标记（从工程反推存档时按行跳过，不会变成假效果）",
+				dbgOnSrc.Split('\n').Any(l => l.Contains("打出第 ", StringComparison.Ordinal) && l.Contains("CET:DebugLog", StringComparison.Ordinal)),
+				"带标记");
+			Check("V0.2.236：关着调试日志时这一行也不出现（红线①：默认输出一个字节都不变）",
+				!dbgOffSrc.Contains("打出第 ", StringComparison.Ordinal), "干净");
 			// ===== V0.2.168：开着调试日志时**锻造节点图**那张卡编译不过（用户实测）=====
 			// 真因：日志那一行是以行尾注释 `// CET:DebugLog` 收尾的，而锻造图那几档（造成伤害 / 获得格挡 /
 			// 失去生命 …）是「foreach { <日志行><语句> }」这种拼在一起的形状 —— 那行注释把**后面整条语句
@@ -32894,6 +38658,94 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			{
 				try { if (Directory.Exists(dbgRoot)) Directory.Delete(dbgRoot, true); } catch { }
 			}
+		}
+		// ===== V0.2.234：开着调试日志 + 作用对象 = 全部友方 / 全体单位 → 生成的工程编译不过 =====
+		// 用户实测（构建日志）：VitaCard21.cs(48,160) / VitaCard23.cs(23,89) 等
+		//   error CS0103: 当前上下文中不存在名称“ally”
+		// 真因：这两档是「逐个动手」（foreach (Creature ally …) / … unit …），而日志那一行是在
+		// **循环外面**打的，却把目标名写成了 `(ally)?.Name` → 生成出来引用了一个还没声明的循环变量。
+		// 现在多目标档改成写一句固定说明（「全部友方（逐个动手）」），不再引用循环变量。
+		{
+			Check("V0.2.234：「全部友方 / 全体单位」在调试日志里有固定的说明文字（不再引循环变量）",
+				CSharpCodeGen.MultiTargetGroupZh(new EffectSpec { Kind = "Block", TargetSide = "AllAllies" }) == "全部友方（逐个动手）"
+				&& CSharpCodeGen.MultiTargetGroupZh(new EffectSpec { Kind = "Block", TargetSide = "AllUnits" }) == "全体单位（逐个动手）"
+				&& CSharpCodeGen.MultiTargetGroupZh(new EffectSpec { Kind = "Block", TargetSide = "Enemy" }) is null
+				&& CSharpCodeGen.MultiTargetGroupZh(new EffectSpec { Kind = "Block", TargetSide = "Self" }) is null,
+				"判据对");
+
+			static CharacterProfile DbgMultiProfile(string side, params EffectSpec[] fx)
+			{
+				var gp = ProfileFactory.Sample();
+				var c = new CardSpec { Name = "自检调试多目标", ClassName = "UiCheckDbgMulti", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				foreach (EffectSpec e in fx) c.Effects.Add(e);
+				gp.Cards.Add(c);
+				gp.DebugLog = true;
+				return gp;
+			}
+
+			var dbgAlly = DbgMultiProfile("AllAllies",
+				new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllAllies" },
+				new EffectSpec { Kind = "Heal", Amount = 2m, TargetSide = "AllAllies" },
+				new EffectSpec { Kind = "HpLoss", Amount = 1m, TargetSide = "AllAllies" },
+				new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "AllAllies" },
+				// V0.2.234：施加状态 / 临时增益这两档的「目标」打印也在循环外面（以前同样 CS0103）
+				new EffectSpec { Kind = "ApplyPower", Amount = 1m, PowerId = "StrengthPower", TargetSide = "AllAllies" },
+				new EffectSpec { Kind = "TempPower", Amount = 1m, PowerId = "StrengthPower", TargetSide = "AllAllies" });
+			string dbgAllySrc = CSharpCodeGen.CardSource(dbgAlly, dbgAlly.Cards[^1], 0);
+			string[] dbgAllyPrints = dbgAllySrc.Replace("\r\n", "\n").Split('\n').Where(l => l.Contains("Godot.GD.Print", StringComparison.Ordinal)).ToArray();
+			// 只查「独立成行的 Target 日志」（PowerBefore/After 那种是 `{ … }` 包起来、在循环**里面**的，引用 ally 合法）
+			string[] dbgAllyFlat = dbgAllyPrints.Where(l => l.TrimStart().StartsWith("Godot.GD.Print(", StringComparison.Ordinal)).ToArray();
+			Check("V0.2.234：全部友方 + 调试日志 → 循环外面那几行日志**不再出现** (ally) 这种循环变量（以前是 CS0103）",
+				dbgAllyFlat.Length > 0 && !dbgAllyFlat.Any(l => l.Contains("(ally)", StringComparison.Ordinal)),
+				dbgAllyFlat.FirstOrDefault() ?? "(没有日志行)");
+			Check("V0.2.234：那几行日志的目标写成「全部友方（逐个动手）」",
+				dbgAllyFlat.Count(l => l.Contains("目标=[全部友方（逐个动手）]", StringComparison.Ordinal)) >= 5,
+				"命中 " + dbgAllyFlat.Count(l => l.Contains("全部友方（逐个动手）", StringComparison.Ordinal)) + " 行");
+
+			var dbgUnit = DbgMultiProfile("AllUnits",
+				new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllUnits" },
+				new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "AllUnits" });
+			string dbgUnitSrc = CSharpCodeGen.CardSource(dbgUnit, dbgUnit.Cards[^1], 0);
+			string[] dbgUnitPrints = dbgUnitSrc.Replace("\r\n", "\n").Split('\n').Where(l => l.Contains("Godot.GD.Print", StringComparison.Ordinal)).ToArray();
+			Check("V0.2.234：全体单位同理（日志行里没有 (unit) 这种循环变量，改成「全体单位（逐个动手）」）",
+				dbgUnitPrints.Length > 0
+				&& !dbgUnitPrints.Any(l => l.Contains("(unit)", StringComparison.Ordinal))
+				&& dbgUnitPrints.Any(l => l.Contains("目标=[全体单位（逐个动手）]", StringComparison.Ordinal)),
+				dbgUnitPrints.FirstOrDefault() ?? "(没有日志行)");
+
+			// 红线：单目标那几档的日志形状一个字都没动（目标名仍按运行时打）
+			var dbgEnemy = DbgMultiProfile("Enemy", new EffectSpec { Kind = "Damage", Amount = 4m, TargetSide = "Enemy" });
+			string dbgEnemySrc = CSharpCodeGen.CardSource(dbgEnemy, dbgEnemy.Cards[^1], 0);
+			Check("V0.2.234：（红线）单目标档的调试日志形状一个字都没动（仍然是那一行 GD.Print，没有多出目标段）",
+				dbgEnemySrc.Contains("Godot.GD.Print(", StringComparison.Ordinal)
+				&& !dbgEnemySrc.Contains("目标=[", StringComparison.Ordinal),
+				"没动");
+			// 红线②：开关关着时一个日志字符都不写（和 V0.2.142 同一条规矩）
+			var dbgOffMulti = DbgMultiProfile("AllAllies", new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "AllAllies" });
+			dbgOffMulti.DebugLog = false;
+			Check("V0.2.234：（红线）调试日志关着时，多目标那几档仍然一个日志字符都不写",
+				!CSharpCodeGen.CardSource(dbgOffMulti, dbgOffMulti.Cards[^1], 0).Contains("CET:DebugLog", StringComparison.Ordinal),
+				"干净");
+			// ===== V0.2.235：自定义状态链的「临时增益 + 全体单位 / 全部敌人」同款 CS0103（other）=====
+			// 真因同上：那行日志打在 foreach **外面**，却引用了循环变量 `other`。
+			var dbgPowProf = ProfileFactory.Sample();
+			dbgPowProf.DebugLog = true;
+			var dbgPow = new CustomPowerSpec { Name = "自检调试状态全体", ClassName = "UiCheckDbgUnitsPower", Enabled = true };
+			var dbgPowTrig = new PowerTriggerSpec { Kind = "TurnStart" };
+			dbgPowTrig.Effects.Add(new EffectSpec { Kind = "TempPower", Amount = 1m, PowerId = "StrengthPower", TargetSide = "AllUnits", TargetSideCustom = true });
+			dbgPowTrig.Effects.Add(new EffectSpec { Kind = "TempPower", Amount = 1m, PowerId = "StrengthPower", TargetSide = "AllEnemies", TargetSideCustom = true });
+			dbgPow.Triggers.Add(dbgPowTrig);
+			dbgPowProf.CustomPowers.Add(dbgPow);
+			string dbgPowSrc = CustomPowerGen.Source(dbgPowProf, dbgPow, dbgPowProf.CustomPowers.Count - 1);
+			string[] dbgPowPrints = dbgPowSrc.Replace("\r\n", "\n").Split('\n')
+				.Where(l => l.TrimStart().StartsWith("Godot.GD.Print(", StringComparison.Ordinal)).ToArray();
+			Check("V0.2.235：自定义状态的「临时增益 · 全体」日志里不再引用循环变量 other（以前是 CS0103）",
+				dbgPowPrints.Length > 0 && !dbgPowPrints.Any(l => l.Contains("(other)", StringComparison.Ordinal)),
+				dbgPowPrints.FirstOrDefault() ?? "(没有日志行)");
+			Check("V0.2.235：那两行写成「全体单位（逐个动手）」/「全部敌人（逐个动手）」",
+				dbgPowPrints.Any(l => l.Contains("目标=[全体单位（逐个动手）]", StringComparison.Ordinal))
+				&& dbgPowPrints.Any(l => l.Contains("目标=[全部敌人（逐个动手）]", StringComparison.Ordinal)),
+				"两档都在");
 		}
 		// ===== V0.2.144（用户拍板 A）：遗物 / 药水 / 额外资源量三页效果栏照卡牌页版式 =====
 		// 用户原话：「遗物药水右侧的效果栏能不能同步卡牌的」。
@@ -34364,8 +40216,88 @@ public sealed class CardGroupMemberRow : INotifyPropertyChanged
 }
 
 /// <summary>
-/// 「转化为先古卡」配对表里的一行（左：源组下拉；右：这一行已经勾了哪些先古卡 + 删除按钮）。"
-/// 选中行 = 下面那排「先古卡池」勾选框写进哪一行。"
+/// V0.2.255（用户要求「让状态进组」）：组右边「这个组里有哪些状态」的一行（勾选即加入 / 取消）。
+/// 候选 = 你自己的自定义状态 + 已经加进组的（哪怕已停用）+ 本体状态。
+/// </summary>
+public sealed class PowerGroupMemberRow : INotifyPropertyChanged
+{
+	private readonly CharacterProfile? _profile;
+
+	private readonly CardGroupSpec _group;
+
+	private readonly MainWindow? _win;
+
+	public string PowerId { get; }
+
+	public string Display { get; }
+
+	private PowerGroupMemberRow(CharacterProfile? profile, CardGroupSpec group, string powerId, string display, MainWindow? win)
+	{
+		_profile = profile;
+		_group = group;
+		PowerId = powerId;
+		Display = display;
+		_win = win;
+	}
+
+	/// <summary>
+	/// V0.2.257：`group` 先按 Id 在**当前存档**里重新找一次 —— 界面上的列表有时还持有上一份存档的组实例，
+	/// 往旧实例上写等于白写（用户报「勾了但没进组、存出来还是空的」）。
+	/// </summary>
+	public static List<PowerGroupMemberRow> Build(CharacterProfile profile, CardGroupSpec group, MainWindow? win = null)
+	{
+		var live = profile.CardGroups.FirstOrDefault(x => x is not null && string.Equals(x.Id, group.Id, StringComparison.Ordinal)) ?? group;
+		var rows = new List<PowerGroupMemberRow>();
+		var seen = new HashSet<string>(StringComparer.Ordinal);
+		for (int i = 0; i < profile.CustomPowers.Count; i++)
+		{
+			var cp = profile.CustomPowers[i];
+			if (cp is null) continue;
+			string cls = CustomPowerGen.ClassNameOf(profile, cp, i);
+			if (!seen.Add(cls)) continue;
+			string name = string.IsNullOrWhiteSpace(cp.Name) ? cls : cp.Name.Trim();
+			rows.Add(new PowerGroupMemberRow(profile, live, cls, $"（你自己的状态）{name}", win));
+		}
+		foreach (string cls in live.PowerIdList)
+			if (seen.Add(cls))
+				rows.Add(new PowerGroupMemberRow(profile, live, cls, $"（已加入，但当前配置里没有这个状态）{cls}", win));
+		foreach (var p in EffectCatalog.Powers.OrderBy(x => x.Zh, StringComparer.Ordinal))
+			if (seen.Add(p.Id))
+				rows.Add(new PowerGroupMemberRow(profile, live, p.Id, $"（本体）{p.Zh}", win));
+		return rows;
+	}
+
+	public bool IsChecked
+	{
+		get => _group.PowerIdList.Contains(PowerId);
+		set
+		{
+			try
+			{
+				MainWindow.SetPowerGroupMembership(_profile, _group, PowerId, value);
+				_win?.SetStatus(value
+					? $"已把状态「{Display}」加入组「{_group.Name}」（组里现在有 {_group.PowerIdList.Count} 个状态）。"
+					: $"已把状态「{Display}」移出组「{_group.Name}」（组里还剩 {_group.PowerIdList.Count} 个状态）。");
+			}
+			catch (Exception ex)
+			{
+				_win?.SetStatus("加入组失败：" + ex.Message);
+			}
+			Raise("IsChecked");
+		}
+	}
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>「清除指定状态 → 或者清空一个组」下拉里的一项（组名 + 组 Id）。</summary>
+public sealed record GroupChoice(string Display, string Id);
+
+/// <summary>
+/// 「转化为先古卡」配对表里的一行（左：源组下拉；右：这一行已经勾了哪些先古卡 + 删除按钮）。
+/// 选中行 = 下面那排「先古卡池」勾选框写进哪一行。
 /// </summary>
 public sealed class AncientRowItem : INotifyPropertyChanged
 {
@@ -34438,6 +40370,7 @@ public sealed class AncientCardItem : INotifyPropertyChanged
 }
 
 }
+
 
 
 

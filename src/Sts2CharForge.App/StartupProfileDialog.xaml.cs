@@ -31,6 +31,14 @@ public partial class StartupProfileDialog : Window
     public StartupProfileDialog(string folder)
     {
         InitializeComponent();
+        // V0.2.240：小屏幕适配 —— 默认 760×480 一般够，但极小的屏（< 800×560）上还是会被裁
+        try
+        {
+            Rect work = SystemParameters.WorkArea;
+            if (Width > work.Width - 16) Width = Math.Max(420, work.Width - 16);
+            if (Height > work.Height - 16) Height = Math.Max(320, work.Height - 16);
+        }
+        catch { /* 适配失败也不能挡住启动 */ }
         _folder = folder;
         Refresh();
     }
@@ -44,6 +52,9 @@ public partial class StartupProfileDialog : Window
             {
                 foreach (string f in Directory.GetFiles(_folder, "*.json"))
                 {
+                    // V0.2.256：`*.forge_classmap.json` 是生成器自己存的「锻造卡片 → 类名」对照表，
+                    // **不是存档** —— 以前它也会出现在这个列表里，点开就弹「配置解析失败」。
+                    if (f.EndsWith(".forge_classmap.json", StringComparison.OrdinalIgnoreCase)) continue;
                     string who = "", cards = "";
                     try
                     {
