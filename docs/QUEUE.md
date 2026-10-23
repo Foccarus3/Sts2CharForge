@@ -1,4 +1,18 @@
-# 待办队列（用户要求「全做完，不用一步步报备」）
+﻿# 待办队列（用户要求「全做完，不用一步步报备」）
+
+## 第 166 批需求（V0.2.273：**「从消耗牌堆拿牌」的范围界定真的生效**）
+
+> 用户报：「从消耗牌堆拿牌限制了仅状态牌，还是可以拿其他的牌」，并纠正我上一版把原因归到「锻造图」上。
+> 核对：`TheShadowPower9` / `TheShadowCard99` 的 `ForgeGraph` 都是 null ——**不是锻造图**（详见 `docs/RELEASE_NOTES_V0.2.273.md`）。
+>
+> **真因**：`CustomPowerGen.cs` 里「从某一摞拿牌到手牌」那一档拼 `CardSelectorPrefs` 时**没有传过滤谓词**
+> （同文件别的选牌档都传了），范围界定整段被丢掉 → 选牌界面什么牌都能选。
+>
+> **修复**：该档改为 `CardScopePredicate(e, p)` 一并传进 `FromCombatPile` 的第 5 个参数；
+> 没设范围时不传（老存档逐字不变）。
+>
+> **验收**：自检 **4436 PASS / 0 FAIL**（+2）；用用户 `Shadow.json` 生成确认那一行带上了
+> `c => c.Type == CardType.Status || c.Rarity == CardRarity.Status`；对拍逐字节相同。
 
 ## 第 165 批需求（V0.2.272：**「仅状态牌」过滤 / 状态牌变 0 费 / 独立概率**，用户给了 `Shadow.json`）
 

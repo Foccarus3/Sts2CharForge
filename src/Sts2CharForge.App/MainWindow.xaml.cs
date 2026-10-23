@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -24358,6 +24358,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							$"{EffectCatalog.SpawnFiltersFor(dcProf).Count} 项");
 					}
 
+					// ===== V0.2.273（用户报「从消耗牌堆拿牌限制了仅状态牌，还是可以拿其他的牌」）=====
+					{
+						var tkProf = ProfileFactory.Sample();
+						var tkPow = new CustomPowerSpec { Name = "自检拿牌", ClassName = "UiCheckTakeScope", Enabled = true, Type = "Buff" };
+						var tkTrig = new PowerTriggerSpec { Kind = "Shuffle" };
+						var tkEff = new EffectSpec { Kind = "TakeFromExhaust", Amount = 1m, SelectPile = "Exhaust", SpawnFilter = "Status" };
+						tkTrig.Effects.Add(tkEff);
+						tkPow.Triggers.Add(tkTrig);
+						tkProf.CustomPowers.Add(tkPow);
+						string tkSrc = CustomPowerGen.Source(tkProf, tkPow, 0);
+						Check("V0.2.273：状态链「从消耗牌堆拿牌 + 范围界定 = 状态」→ 选牌调用带上了过滤谓词",
+							tkSrc.Contains("c => c.Type == CardType.Status"), "带上了");
+						Check("V0.2.273：（对照）没设范围 → 调用维持原样（不多传参数，老存档逐字不变）",
+							!CustomPowerGen.Source(tkProf, new CustomPowerSpec
+							{
+								Name = "自检拿牌2",
+								ClassName = "UiCheckTakeScope2",
+								Enabled = true,
+								Type = "Buff",
+								Triggers = new System.Collections.ObjectModel.ObservableCollection<PowerTriggerSpec>
+								{
+									new PowerTriggerSpec { Kind = "Shuffle", Effects = new System.Collections.ObjectModel.ObservableCollection<EffectSpec>
+									{
+										new EffectSpec { Kind = "TakeFromExhaust", Amount = 1m, SelectPile = "Exhaust" },
+									} },
+								},
+							}, 0).Contains("c => c.Type == CardType.Status"), "没多传");
+					}
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
 					var aiStarter = new CardSpec { Name = "自检初始卡", ClassName = "UiCheckAiStarter", CardType = "Attack", Rarity = "Basic", Cost = 1, InStartingDeck = true, StartingCopies = 4 };
 					aiProf.Cards.Add(aiStarter);

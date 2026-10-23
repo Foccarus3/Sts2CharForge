@@ -1945,8 +1945,13 @@ public static class CustomPowerGen
                 // V0.2.220：「为拿到的牌加关键词」的回读标记（要写在这条效果的识别行 `var __fgTake = …` 前面）
                 string kwMark = CSharpCodeGen.DrawnKeywordMarker(e);
                 if (kwMark.Length > 0) w.Line(kwMark);
-                w.Line($"// 从{EffectCatalog.SelectPileZh(e.SelectPile == "Hand" ? "Discard" : e.SelectPile)}拿 {(e.AmountIsStack ? "本状态层数" : Lit.Int(e.Amount))} 张到手牌");
-                w.Line($"var __fgTake = (await CardSelectCmd.FromCombatPile(choiceContext, {pile}.GetPile(base.Owner.Player), base.Owner.Player, new CardSelectorPrefs({prompt}, (int)({amt})))).ToList();");
+                // V0.2.273（用户报「从消耗牌堆拿牌限制了仅状态牌，还是可以拿其他的牌」）：
+                // 这里以前**一个谓词都没传** —— 范围界定 / 只对这张卡整段被丢掉，选牌界面里什么牌都能选。
+                // 判据和别的链共用 `CardScopePredicate`（同一份实现，不会两边漂）。
+                string? takePred = CSharpCodeGen.CardScopePredicate(e, p);
+                w.Line($"// 从{EffectCatalog.SelectPileZh(e.SelectPile == "Hand" ? "Discard" : e.SelectPile)}拿 {(e.AmountIsStack ? "本状态层数" : Lit.Int(e.Amount))} 张到手牌"
+                    + (takePred is null ? "" : "（只列符合范围界定的牌）"));
+                w.Line($"var __fgTake = (await CardSelectCmd.FromCombatPile(choiceContext, {pile}.GetPile(base.Owner.Player), base.Owner.Player, new CardSelectorPrefs({prompt}, (int)({amt})){(takePred is null ? "" : ", " + takePred)})).ToList();");
                 w.Open("foreach (CardModel __fgTook in __fgTake)");
                 w.Line("await CardPileCmd.Add(__fgTook, PileType.Hand);");
                 w.Close();
