@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Generation;
+﻿using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Effects;
@@ -50,8 +50,8 @@ public static class EffectFieldUsage
         new("Times", "生效次数", s => s.Times = 116),
         new("TimesFormula", "生效次数（公式）", s => s.TimesFormula = "117"),
         new("ChanceEnabled", "概率生效（勾选）", s => s.ChanceEnabled = true),
-        new("ChancePercent", "概率生效（百分比）", s => { s.ChanceEnabled = true; s.ChancePercent = 118m; }),
-        new("ChanceIndependent", "概率各自独立", s => { s.ChanceEnabled = true; s.ChancePercent = 50m; s.ChanceIndependent = true; }),
+        new("ChancePercent", "概率生效（百分比）", s => { s.ChanceEnabled = true; s.ChancePercent = 100m; }),
+        new("ChanceIndependent", "概率各自独立", s => { s.ChanceEnabled = true; s.ChancePercent = 100m; s.ChanceIndependent = true; }),
         new("ChanceFormula", "概率（公式）", s => { s.ChanceEnabled = true; s.ChanceFormula = "120"; }),
         new("NextTurn", "下回合生效", s => s.NextTurn = true),
         new("PowerId", "增益 / 减益", s => s.PowerId = "VulnerablePower"),

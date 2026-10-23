@@ -387,16 +387,15 @@ public static class ProfileFactory
     /// </summary>
     public static CharacterProfile Normalize(CharacterProfile p)
     {
-        // V0.2.272（用户报「独立概率生效好像也有的问题」）：存档里出现过「ChancePercent=50 但 ChanceEnabled=false」——
-        // 界面上「概率生效」和「概率各自独立」是两栏，只填百分比不勾勾选就整段不生成（看起来就是「概率没生效」）。
-        // 读存档时统一归一化：填了 1~99 的百分比、或写了概率公式 → 一律视为开启。
+        // V0.2.275（用户报「为什么效果全默认勾选概率生效了」）：V0.2.272 这里做过「百分比在 1~99 就自动开启概率」，
+        // 但 `EffectSpec.ChancePercent` 的**默认值就是 50**（「概率各自独立」那个预设写进去的），
+        // 结果**每一条**效果读档后都变成「概率生效」，生成时全都掷一次 50% 骰子 —— 撤回。
+        // 现在口径：概率必须**显式勾选**才生效。
+        // 另外把「没勾却留着 50 / 80 这种百分比」的行**归一到 100** —— 那些值都是旧默认值（默认曾经是 50），
+        // 不勾本来就不掷骰，界面上留着 50% 只会让人以为「全部效果都 50% 概率」（用户报的就是这个）。
         foreach (var fx in CSharpCodeGen.AllEffects(p))
-        {
-            if (fx is null || fx.ChanceEnabled) continue;
-            bool hasFormula = !string.IsNullOrWhiteSpace(fx.ChanceFormula);
-            if (!hasFormula && fx.ChancePercent is <= 0m or >= 100m) continue;
-            fx.ChanceEnabled = true;
-        }
+            if (fx is not null && !fx.ChanceEnabled && fx.ChancePercent != 100m)
+                fx.ChancePercent = 100m;
         // 自定义关键词：卡牌上的引用统一成「当前的本地化键」（用户改过英文标识后，老引用要跟着走）
         KeywordGen.Normalize(p);
 

@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -1715,7 +1715,7 @@ public sealed class EffectSpec : SpecBase
     public bool ShowSpawnPickHint => ShowSpawnPickRow && !IsSpawnRandom;
 
     private bool _chanceEnabled;
-    private decimal _chancePercent = 50m;
+    private decimal _chancePercent = 100m;   // V0.2.275：默认 100 = 必定（以前 50 会让「没勾也不想掷骰」的效果看起来像 50%）
 
     /// <summary>
     /// 概率生效：勾上以后这一条效果只有这么多机会会真的执行（不满足时这条效果直接跳过，

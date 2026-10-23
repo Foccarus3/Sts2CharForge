@@ -1442,6 +1442,22 @@ public static class ProfileValidator
         // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
         ValidateAnimation(issues, p);
 
+        // ===== V0.2.275（用户报「概率填了百分比却没生效 / 又全被自动勾成 50%」）=====
+        // 概率必须**显式勾选**才生效（V0.2.272 那版「自动开启」会把每一条都变成 50% 掷骰，已撤回）。
+        // 填了 1~99 的百分比或写了概率公式却没勾 → 提示一句，免得又是静默不生效。
+        foreach (var fx in CSharpCodeGen.AllEffects(p))
+        {
+            if (fx is null || fx.ChanceEnabled) continue;
+            bool hasFormula2 = !string.IsNullOrWhiteSpace(fx.ChanceFormula);
+            bool hasPercent2 = fx.ChancePercent is > 0m and < 100m;
+            if (!hasFormula2 && !hasPercent2) continue;
+            string what2 = hasFormula2
+                ? $"概率公式「{fx.ChanceFormula}」"
+                : $"{fx.ChancePercent.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}%";
+            issues.Add(new("提示", $"有一条「{EffectCatalog.FindKind(fx.Kind)?.Display ?? fx.Kind}」写了{what2}，"
+                + "但**没勾**「概率生效」—— 这一条不会掷骰子（等于每次都生效）。想真的按概率判定就把那个勾打上。"));
+        }
+
         // ===== V0.2.265（用户要求）：音频进组 + 「仅能被下个同组音频顶替」 =====
         // ① 勾了「仅能被下个同组音频顶替」但没勾「被下一个自定义音频顶替」→ 它永远不会被顶替，说明白；
         // ② 勾了「仅能被下个同组音频顶替」但这个音频**没加入任何组** → 也没有同组音频能顶替它；
