@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
@@ -224,6 +224,21 @@ public static class ForgeEffectBridge
         {
             e.ChanceFormula = chance;
             e.ChanceEnabled = true;
+        }
+
+        // V0.2.272（用户报「限制了仅状态牌还是可以拿其他的牌」）：
+        // 侧栏效果编辑器改的「范围界定 / 只对这张卡」如果还没回写到布上的老字段（node 的 SpawnFilter 是空的），
+        // 生成端读的却是这里 `FromFields` 建出来的 spec —— 于是过滤谓词整段丢掉（选牌界面里什么牌都能选）。
+        // 兜底：老字段空、而模块上绑着的 spec 有 → 用 spec 的。只补空值，老图（两边都空）生成结果逐字不变。
+        if (node.EffectSpec is { } bound)
+        {
+            // UseCardScopeFilter 是按效果种类算出来的（只读），只要 SpawnFilter 非空且这个种类支持，就自动生效
+            if ((e.SpawnFilter ?? "").Trim().Length == 0
+                && bound.HasCardScope
+                && !string.IsNullOrWhiteSpace(bound.SpawnFilter))
+                e.SpawnFilter = bound.SpawnFilter;
+            if ((e.ScopeCardId ?? "").Trim().Length == 0 && bound.HasScopeCardId)
+                e.ScopeCardId = bound.ScopeCardId;
         }
         return e;
     }

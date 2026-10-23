@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Text.Json;
 using Sts2CharForge.Core.Profile;
 
@@ -387,6 +387,16 @@ public static class ProfileFactory
     /// </summary>
     public static CharacterProfile Normalize(CharacterProfile p)
     {
+        // V0.2.272（用户报「独立概率生效好像也有的问题」）：存档里出现过「ChancePercent=50 但 ChanceEnabled=false」——
+        // 界面上「概率生效」和「概率各自独立」是两栏，只填百分比不勾勾选就整段不生成（看起来就是「概率没生效」）。
+        // 读存档时统一归一化：填了 1~99 的百分比、或写了概率公式 → 一律视为开启。
+        foreach (var fx in CSharpCodeGen.AllEffects(p))
+        {
+            if (fx is null || fx.ChanceEnabled) continue;
+            bool hasFormula = !string.IsNullOrWhiteSpace(fx.ChanceFormula);
+            if (!hasFormula && fx.ChancePercent is <= 0m or >= 100m) continue;
+            fx.ChanceEnabled = true;
+        }
         // 自定义关键词：卡牌上的引用统一成「当前的本地化键」（用户改过英文标识后，老引用要跟着走）
         KeywordGen.Normalize(p);
 

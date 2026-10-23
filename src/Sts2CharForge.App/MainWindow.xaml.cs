@@ -23560,9 +23560,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					!CustomPowerGen.Source(crProf, crPower, 0).Contains("TryModifyEnergyCostInCombatLate"), "没生成");
 
 				crPower.CostReduceScope = "Skill";
-				crPower.CostReduceAmount = 0m;   // 变成 0 费（腐化那种）
+				// V0.2.272（用户报「开了这个效果会让状态牌变成 0 费」）：0 = 不修正；**负数** = 变成 0 费
+				crPower.CostReduceAmount = 0m;
+				Check("V0.2.272：费用修正填 0 → 什么都不生成（不再把这类牌全变成 0 费）",
+					!CustomPowerGen.Source(crProf, crPower, 0).Contains("TryModifyEnergyCostInCombatLate"), "没生成");
+				crPower.CostReduceAmount = -1m;
 				string zeroSrc = CustomPowerGen.Source(crProf, crPower, 0);
-				Check("V0.2.248：「技能牌费用变成 0」（腐化那种）→ 生成 TryModifyEnergyCostInCombatLate + card.Type == Skill + modifiedCost = 0m",
+				Check("V0.2.272：费用修正填负数（-1）= 变成 0 费（腐化那种）→ 生成 TryModifyEnergyCostInCombatLate + card.Type == Skill + modifiedCost = 0m",
 					zeroSrc.Contains("public override bool TryModifyEnergyCostInCombatLate(CardModel card, decimal originalCost, out decimal modifiedCost)")
 					&& zeroSrc.Contains("card.Type == CardType.Skill")
 					&& zeroSrc.Contains("modifiedCost = 0m;")

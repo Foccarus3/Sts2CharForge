@@ -897,7 +897,11 @@ public static class CustomPowerGen
         if (cond is null) return;   // 认不出来的范围 Id：校验器会报错，这里不生成（不静默生成错判据）
         decimal amount = power.CostReduceAmount;
         string expr;
-        if (amount <= 0m)
+        // V0.2.272（用户报「开了这个效果会让状态牌变成 0 费」）：以前 **0 也算「变成 0 费」**，
+        // 而界面上的数字框留空 / 留 0 是最常见的手势 —— 于是「只想减 1 费」直接变成「这类牌全部 0 费」。
+        // 现在：0 = 不修正（什么都不生成）；**负数** = 变成 0 费（腐化 / 刺破帷幕那档）。
+        if (amount == 0m) return;
+        if (amount < 0m)
             expr = "0m";        // 变成 0 费（腐化 / 刺破帷幕那档）
         else
         {
@@ -909,7 +913,7 @@ public static class CustomPowerGen
         string scopeZh = EffectCatalog.SpawnFilterZhFor(profile, scope);
         w.Line();
         w.Line("/// <summary>");
-        w.Line($"/// 费用修正（V0.2.248）：「{scopeZh}」这类牌在你手上时 {(amount <= 0m ? "费用变成 0" : $"费用 -{amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}")}"
+        w.Line($"/// 费用修正（V0.2.248）：「{scopeZh}」这类牌在你手上时 {(amount < 0m ? "费用变成 0" : $"费用 -{amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}")}"
             + (power.CostReducePerStack && amount > 0m ? " × 层数" : "") + "。");
         w.Line("/// 用的是本体的 TryModifyEnergyCostInCombatLate —— 腐化 Corruption / 刺破帷幕 Veilpiercer 同一个钩子。");
         w.Line("/// </summary>");
