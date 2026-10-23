@@ -1,5 +1,53 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 159 批需求（V0.2.265：**音频也能加入组 + 「仅能被下个同组音频顶替」**）
+
+> 用户要求：「音频也能加入组，并且音频效果下新增勾选项『仅能被下个同组音频顶替』，
+> 确保这个勾选项不会重叠导致看不见，以及在组那边确实能看到音频能加入组」。（详见 `docs/RELEASE_NOTES_V0.2.265.md`）
+>
+> **① 组页面**：`CardGroupSpec.AudioIds`（存音频 Key）+ 第三列「这个组里有哪些音频」
+> （`AudioGroupMemberRow.Build` / `SetAudioGroupMembership`；切组 / 改名 / 勾选变化都会 `Raise`）。
+>
+> **② 效果**：`EffectSpec.SfxSameGroupOnly`；`App.xaml` 里**独占第 18 行**（网格真的加到了 19 行 ——
+> 上次「重叠」就是行号超界被 WPF 折回最后一行）。
+>
+> **③ 生成**：`SfxRegistrySource` 里加 `GroupsOf` / `SameGroupOnly` 两张写死的表 + `SameGroup(a,b)`；
+> `Playing` 记录 key；顶替循环里 `if (SameGroupOnly.Contains(old.Key) && !SameGroup(old.Key, key)) continue;`。
+> 调用处签名不变（仍 3 个参数）；没勾任何一条时逐字不变。
+>
+> **④ 校验器**：勾了「仅同组」但没勾「会被顶替」→ 提示；音频没进任何组 → 警告；组里记的音频 Key 找不到 → 警告。
+>
+> **验收**：自检 **4398 PASS / 0 FAIL**（+9）；探针工程现场写最小 `.wav` 走真编译 **0 error**；对拍逐字节相同。
+
+## 第 158 批需求（**「本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)`」这条报错要能自证** —— 顺带修 `HasMethod` 的误判风险）
+
+> 用户转来别人的构建日志（`构建日志_20261023_003718.txt`），并说明：**那个人用的是 Steam 公开版游戏，不是 beta**。
+> 日志里 8 次「一键构建」的错误从 6 条一条条减到 1 条，最后卡在：
+> ```
+> [错误] 本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)` 这个重载（工具生成的所有攻击牌都按这个签名写）
+>        —— 你这份游戏的版本和本工具假设的不一样 …
+> ```
+> 这正对应用户的说法：**公开版和 beta 的本体签名不一样**（工具是按 0.111.x beta 写的；本机 v0.111.0 上
+> `AttackCommand.FromCard(CardModel, CardPlay)` 是有的，探针实测）。
+>
+> **这批不是改生成端，而是把「版本不对」这件事做成一看就懂、而且不用来回问 dll：**
+> 1. `Sts2Metadata.MethodOverloads(dll, 类型, 方法)`：把**用户那份 dll 里真实的重载**打出来
+>    （形参类型串，例 `FromCard(CardModel, CardPlay)`）→ 那条报错现在直接附「实际只有：…」。
+> 2. `Sts2Metadata.HasMethod` 修一处**误判风险**：以前碰到第一个同名类型就 `return false`；
+>    本体里同名类型不止一个（换命名空间 / mock / 内部类）时会把「其实有」错判成「漂移」→ 用户版本对却被拦。
+>    现在扫完**所有**同名类型，都对不上才算漂移；类型一个都没找到仍然返回 `null`（不知道，不报错）。
+> 3. 新增**游戏版本核对**：读游戏目录的 `release_info.json`（本机 `v0.111.0`），
+>    和 `Sts2Metadata.SupportedGameVersion`（`v0.111.0`）比**前两位**；不一致给一条警告说清两边版本
+>    （`0.111.x` 之间的小修订不打扰）。
+>
+> **验收**：探针 `_probe/sigdrift` **6/6 PASS**（本机 `HasMethod`=true、`MethodOverloads` 打出
+> `FromCard(CardModel, CardPlay)`、方法不在=false / 类型不在=null、版本读得到、只比前两位、
+> 拿本机路径跑校验器既不报 FromCard 错也不报版本警告）；
+> `dotnet build` 全解决方案 **0 error**；`--uicheck` **4389 PASS / 0 FAIL**（新增 5 条：签名核对 ×3、版本核对 ×2）。
+>
+> **给那个人的答复**：这条是游戏版本问题 —— 在 Steam「属性 → 测试版」切到工具对应的 0.111.x，
+> 或者把 `data_sts2_windows_x86_64\sts2.dll` 发过来适配；他日志里其余 5 条都已按提示改完（见下）。
+
 ## 第 157 批需求（V0.2.264：**「替换初始卡」下拉还是只显示范例卡** —— 候选没刷新 + 范例牌排最前）
 
 > 用户报：「被古老牙齿替换的初始卡底下的下拉选项还是只有范例卡」。（详见 `docs/RELEASE_NOTES_V0.2.264.md`）

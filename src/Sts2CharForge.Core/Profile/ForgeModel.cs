@@ -430,6 +430,30 @@ public sealed class CardGroupSpec : SpecBase
     [JsonIgnore]
     public List<string> PowerIdList =>
         PowerIds.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();
+
+    private List<string> _audioIds = new();
+
+    /// <summary>
+    /// V0.2.265（用户要求「音频也能加入组」）：这个组里的**音频** ——
+    /// 存的是「美术资源」页上传的那些音频的 <c>Key</c>（= <c>res://audio/&lt;Key&gt;</c> 里那个文件名，
+    /// 也就是 <see cref="EffectSpec.Sfx"/> 里存的东西）。
+    ///
+    /// <para>用处：「播放音频文件」那条效果勾了「仅能被下个同组音频顶替」时，
+    /// 生成端按这张表判断「新播的这段音频和它是不是同组」—— 同组才允许顶替。</para>
+    /// </summary>
+    public List<string> AudioIds
+    {
+        get => _audioIds;
+        set { if (Set(ref _audioIds, value ?? new List<string>())) Raise(nameof(AudioIdList)); }
+    }
+
+    /// <summary>去掉空值 / 重复之后的音频 Key（大小写不敏感去重：Windows 上文件名本来就不分大小写）。</summary>
+    [JsonIgnore]
+    public List<string> AudioIdList =>
+        AudioIds.Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 }
 
 /// <summary>

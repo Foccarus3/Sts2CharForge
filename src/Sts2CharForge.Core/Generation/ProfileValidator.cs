@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1365,12 +1365,36 @@ public static class ProfileValidator
         {
             string sts2 = Path.Combine(p.Paths.GameDataDir ?? "", "sts2.dll");
             if (File.Exists(sts2) && Sts2Metadata.HasMethod(sts2, "AttackCommand", "FromCard", 2) == false)
+            {
+                // 把**他这份 dll 里真实的签名**打出来：本体改成了什么一眼就能看见，
+                // 不用再问用户「你的 dll 发我一下」（用户报过：只有这一条错，来回问一轮太慢）。
+                var overloads = Sts2Metadata.MethodOverloads(sts2, "AttackCommand", "FromCard");
+                string found = overloads.Count == 0
+                    ? "连 FromCard 这个方法都没找到"
+                    : "实际只有：" + string.Join(" / ", overloads);
                 issues.Add(new("错误", "本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)` 这个重载"
-                    + "（工具生成的所有攻击牌都按这个签名写）—— **你这份游戏的版本和本工具假设的不一样**："
+                    + $"（{found}）"
+                    + " —— **你这份游戏的版本和本工具假设的不一样**："
                     + "生成出来的代码会在编译期报 `CS1501 FromCard 方法没有采用 2 个参数的重载`。"
                     + "请换用与本工具匹配的游戏版本，或把 `data_sts2_*\\sts2.dll` 发给工具作者适配。"));
+            }
         }
         catch { /* 只是核对，读不出来就算了 */ }
+
+        // 游戏版本核对（和上面那条签名抽查配套）：release_info.json 里写着本体版本，
+        // 和工具支持的版本前两位对不上就直接说清楚 —— 现在只有「FromCard 签名不对」这一处能暴露版本问题，
+        // 本体改别的地方时用户只会看到一堆莫名其妙的编译错。
+        try
+        {
+            string dataDir = (p.Paths.GameDataDir ?? "").TrimEnd('\\', '/');
+            string? gameDir = dataDir.Length == 0 ? null : Directory.GetParent(dataDir)?.FullName;
+            string? gameVer = Sts2Metadata.GameVersion(gameDir);
+            if (gameVer is not null && Sts2Metadata.VersionMismatch(gameVer))
+                issues.Add(new("警告", $"你这份游戏的版本是 {gameVer}，本工具按 {Sts2Metadata.SupportedGameVersion} 写的"
+                    + " —— 生成出来的代码可能出现编译错误（本体方法签名变了）。"
+                    + "先在 Steam「属性 → 测试版」里切回匹配的版本，或把 `data_sts2_*\\sts2.dll` 发给工具作者适配。"));
+        }
+        catch { /* 只是核对 */ }
 
         // 生成 / 存档目录落在游戏的 mods\ 里面（V0.2.167）：本体是按目录扫 *.json 找模组清单的，
         // 存档（和 _备份 里的副本）会被当成模组去加载 → 日志里一串
@@ -1395,6 +1419,40 @@ public static class ProfileValidator
 
         // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
         ValidateAnimation(issues, p);
+
+        // ===== V0.2.265（用户要求）：音频进组 + 「仅能被下个同组音频顶替」 =====
+        // ① 勾了「仅能被下个同组音频顶替」但没勾「被下一个自定义音频顶替」→ 它永远不会被顶替，说明白；
+        // ② 勾了「仅能被下个同组音频顶替」但这个音频**没加入任何组** → 也没有同组音频能顶替它；
+        // ③ 组里记的音频 Key 在「美术资源」页找不到 → 提一句（改名 / 删掉了）。
+        {
+            var audioKeys = p.AudioAssets.Where(a => a is not null)
+                .Select(a => (a.Key ?? "").Trim()).Where(k => k.Length > 0)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var groupedAudio = p.CardGroups.Where(g => g is not null)
+                .SelectMany(g => g.AudioIdList).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in CSharpCodeGen.AllEffects(p))
+            {
+                if (e is not { Kind: "PlaySoundFile" }) continue;
+                string key = (e.Sfx ?? "").Trim();
+                if (!e.SfxSameGroupOnly) continue;
+                if (!e.SfxReplace)
+                    issues.Add(new("提示", $"有一条「播放音频文件（{key}）」勾了「仅能被下个同组音频顶替」，"
+                        + "但**没勾**「被下一个自定义音频顶替」—— 不勾那一个的话它根本不允许被顶替，"
+                        + "所以这个「同组」限制不会起作用。"));
+                else if (key.Length > 0 && !groupedAudio.Contains(key))
+                    issues.Add(new("警告", $"「播放音频文件（{key}）」勾了「仅能被下个同组音频顶替」，"
+                        + "但这个音频**没有加入任何组** → 永远不会有同组音频来顶替它（等于不顶替）。"
+                        + "到「组」页那个「这个组里有哪些音频」里勾上它。"));
+            }
+            foreach (var g in p.CardGroups)
+            {
+                if (g is null) continue;
+                foreach (string k in g.AudioIdList)
+                    if (!audioKeys.Contains(k))
+                        issues.Add(new("警告", $"组「{g.Name}」里的音频 `{k}` 在「美术资源」页找不到"
+                            + "（可能改名 / 删掉了）—— 这一条不会参与「同组顶替」判断。"));
+            }
+        }
 
         // ===== V0.2.260（用户要求）：先古道具专属勾选（古老牙齿 / 尘封魔典 / 欧洛巴斯之触）=====
         // ① 同一种勾选最多一个（本体那三件道具每次只给一个东西）；

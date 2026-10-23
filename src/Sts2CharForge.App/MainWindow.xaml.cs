@@ -518,6 +518,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("GroupCardRows");
 		// V0.2.257：组增删 / 改名之后，「这个组里有哪些状态」和「清除指定状态 → 选组」的下拉都要重新求值
 		Raise("GroupPowerRows");
+		Raise("GroupAudioRows");   // V0.2.265：音频那一列同理
 		Raise("PowerGroupChoices");
 	}
 
@@ -546,6 +547,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		// 组的 PowerIds 变了 → 右边那个状态勾选列表重算（勾上 / 取消立刻反映）
 		Raise("PowerGroupChoices");
 		Raise("GroupPowerRows");
+		Raise("GroupAudioRows");   // V0.2.265：组的 AudioIds 变了 → 音频勾选列表重算
 	}
 
 	/// <summary>
@@ -2107,6 +2109,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// V0.2.257（用户报「还是无法选进组」）：右边那个「这个组里有哪些状态」也是按**选中的组**算的，
 		// 切组时没通知就不会重新求值 —— 它一直是载入时那次（空列表），所以永远看不到状态、也勾不了。
 		Raise("GroupPowerRows");
+		Raise("GroupAudioRows");   // V0.2.265：切换组时音频那一列也要重算（同一个坑）
 	}
 
 
@@ -2187,6 +2190,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			if (!(GroupList?.SelectedItem is CardGroupSpec g)) return Array.Empty<PowerGroupMemberRow>();
 			return PowerGroupMemberRow.Build(_profile, g, this);
+		}
+	}
+
+	/// <summary>
+	/// V0.2.265（用户要求「音频也能加入组」）：组右边第三列「这个组里有哪些音频」的勾选列表。
+	/// 成员记在组身上（<c>CardGroupSpec.AudioIds</c>，存的是音频的 Key），候选 = 这个存档里上传的全部音频。
+	/// </summary>
+	public IReadOnlyList<AudioGroupMemberRow> GroupAudioRows
+	{
+		get
+		{
+			if (!(GroupList?.SelectedItem is CardGroupSpec g)) return Array.Empty<AudioGroupMemberRow>();
+			return AudioGroupMemberRow.Build(_profile, g, this);
 		}
 	}
 
@@ -2353,6 +2369,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (member) list.Add(id);
 		else list.Remove(id);
 		target.PowerIds = list;
+	}
+
+	/// <summary>
+	/// V0.2.265（用户要求「音频也能加入组」）：把一个**音频**加进 / 移出一个组。
+	/// 存的 key 是音频的 <see cref="AudioAssetSpec.Key"/>（= <c>res://audio/&lt;Key&gt;</c> 那个文件名，
+	/// 也就是「播放音频文件」效果里存的东西）。和状态一样写进**当前存档里同 Id 的组**。
+	/// </summary>
+	internal static void SetAudioGroupMembership(CharacterProfile? profile, CardGroupSpec group, string audioKey, bool member)
+	{
+		string key = (audioKey ?? "").Trim();
+		if (key.Length == 0) return;
+		var target = group;
+		if (profile is not null)
+		{
+			var live = profile.CardGroups.FirstOrDefault(x => x is not null && string.Equals(x.Id, group.Id, StringComparison.Ordinal));
+			if (live is not null) target = live;
+		}
+		var list = new List<string>(target.AudioIdList);
+		bool has = list.Contains(key, StringComparer.OrdinalIgnoreCase);
+		if (member == has) return;
+		if (member) list.Add(key);
+		else list.RemoveAll(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase));
+		target.AudioIds = list;
 	}
 	/// <summary>参数列表变了（增到 / 改名 / 改来源）之后要把所有算出来的候选重新通知一遍」 /summary>
 	private void RaiseParamsChanged()
@@ -17223,6 +17262,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						powers.Any(t => t.Name == "VulnerablePower") && powers.Any(t => t.Name == "WeakPower")
 						&& powers.Any(t => t.Name == "StrengthPower"), "在");
 					Check("元数据读取没有报错", Sts2Metadata.LastError is null, Sts2Metadata.LastError ?? "无错误");
+
+					// 签名漂移核对那两条（用户报的「只有一条 FromCard 签名错、来回问 dll 太慢」）：
+					// ① HasMethod 对真 dll 要能说「有」；② 说「没有」时，MethodOverloads 要把**真实签名**打出来
+					Check("签名核对：本机 sts2.dll 上 AttackCommand.FromCard 有 2 参重载（工具生成端就是这么写死的）",
+						Sts2Metadata.HasMethod(realDll, "AttackCommand", "FromCard", 2) == true,
+						Sts2Metadata.HasMethod(realDll, "AttackCommand", "FromCard", 2)?.ToString() ?? "读不到");
+					var fromCardOverloads = Sts2Metadata.MethodOverloads(realDll, "AttackCommand", "FromCard");
+					Check("签名核对：漂移时能把「实际有哪些重载」打出来（不用再问用户要 dll）",
+						fromCardOverloads.Count > 0
+						&& fromCardOverloads.All(s => s.StartsWith("FromCard(", StringComparison.Ordinal))
+						&& fromCardOverloads.Any(s => s.Contains("CardModel", StringComparison.Ordinal)),
+						string.Join(" / ", fromCardOverloads));
+					Check("签名核对：类型在但方法不在 → 明确 false（这才是「漂移」，不能拿 read 失败当 false）",
+						Sts2Metadata.HasMethod(realDll, "AttackCommand", "NoSuchMethodXYZ", 2) == false
+						&& Sts2Metadata.HasMethod(realDll, "NoSuchTypeXYZ", "FromCard", 2) == null,
+						"方法不在=false / 类型不在=null");
+
+					// 游戏版本核对：release_info.json → v0.111.0 这种；前两位不同才提示
+					string? gameDir = Path.GetDirectoryName(Path.GetDirectoryName(realDll));
+					string? gameVer = Sts2Metadata.GameVersion(gameDir);
+					Check("版本核对：能从 release_info.json 读出本体版本",
+						gameVer is not null && gameVer.StartsWith("v0.", StringComparison.OrdinalIgnoreCase), gameVer ?? "读不到");
+					Check("版本核对：只比前两位（0.111.x 之间不打扰；0.112 才算不匹配）",
+						!Sts2Metadata.VersionMismatch("v0.111.9") && Sts2Metadata.VersionMismatch("v0.112.0")
+						&& !Sts2Metadata.VersionMismatch(null), "前两位比");
 				}
 				else Check("（跳过）本机没有 sts2.dll，元数据读取未实测", true, "跳过");
 			}
@@ -21795,6 +21859,42 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					mtAncientCard.DustyTomeGrant = true;
 					mtProf.AncientCards.Add(mtAncientCard);
 					if (mtProf.Relics.Count > 0) mtProf.Relics[0].OrobasReplace = true;
+					// V0.2.265：音频进组 + 「仅能被下个同组音频顶替」那条生成的 cs/ForgeSfx.cs 也要编得过
+					// （这里现场写一个最小的合法 .wav，免得依赖本机任何素材）
+					{
+						string auDir = Path.Combine(mtRoot + "_audio");
+						Directory.CreateDirectory(auDir);
+						string auPath = Path.Combine(auDir, "probe_audio.wav");
+						using (var fs = new FileStream(auPath, FileMode.Create, FileAccess.Write))
+						using (var bw = new BinaryWriter(fs))
+						{
+							const int samples = 16, rate = 8000;
+							bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+							bw.Write(36 + samples);
+							bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVEfmt "));
+							bw.Write(16);           // fmt chunk 大小
+							bw.Write((short)1);     // PCM
+							bw.Write((short)1);     // 单声道
+							bw.Write(rate);
+							bw.Write(rate);         // byte rate（8bit 单声道 = rate）
+							bw.Write((short)1);     // block align
+							bw.Write((short)8);     // bits per sample
+							bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+							bw.Write(samples);
+							for (int i = 0; i < samples; i++) bw.Write((byte)128);   // 静音
+						}
+						mtProf.AudioAssets.Add(new AudioAssetSpec { Name = "探针音频", File = auPath });
+						string auKey = mtProf.AudioAssets[mtProf.AudioAssets.Count - 1].Key;
+						var mtAuGroup = new CardGroupSpec { Id = "probeaudio", Name = "探针音频组" };
+						mtAuGroup.AudioIds = new List<string> { auKey };
+						mtProf.CardGroups.Add(mtAuGroup);
+						var mtSfxCard = new CardSpec { Name = "探针BGM", ClassName = "UiCheckSfxProbe", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						var mtSfxFx = new EffectSpec { Kind = "PlaySoundFile", Sfx = auKey };
+						mtSfxFx.SfxReplace = true;
+						mtSfxFx.SfxSameGroupOnly = true;
+						mtSfxCard.Effects.Add(mtSfxFx);
+						mtProf.Cards.Add(mtSfxCard);
+					}
 					mtProf.DebugLog = true;   // 连调试日志那一行一起编
 					mtProf.Paths.OutputDir = mtRoot;
 					mtProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
@@ -23960,6 +24060,68 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								ToothStarterChoices.Count > 1 && ToothStarterChoices[1].Display.Contains(ownReal.Name)
 								&& ToothStarterChoices[ToothStarterChoices.Count - 1].Display.Contains("范例牌"),
 								ToothStarterChoices.Count > 1 ? ToothStarterChoices[1].Display : "(空)");
+					}
+
+					// ===== V0.2.265（用户要求）：音频进组 + 「仅能被下个同组音频顶替」 =====
+					{
+						var auProf = ProfileFactory.Sample();
+						auProf.AudioAssets.Clear();
+						auProf.AudioAssets.Add(new AudioAssetSpec { Name = "开场曲", File = @"D:\自检\open.ogg" });
+						auProf.AudioAssets.Add(new AudioAssetSpec { Name = "战斗曲", File = @"D:\自检\battle.ogg" });
+						string keyOpen = auProf.AudioAssets[0].Key;
+						string keyBattle = auProf.AudioAssets[1].Key;
+						auProf.CardGroups.Clear();
+						var auGroup = new CardGroupSpec { Id = "aubgm", Name = "背景乐" };
+						auProf.CardGroups.Add(auGroup);
+
+						// 组页面：音频能勾进组（写进 AudioIds）
+						var auRows = AudioGroupMemberRow.Build(auProf, auGroup);
+						Check("V0.2.265：音频列表能生成行（存档里上传的每个音频一行）",
+							auRows.Count >= 2 && auRows.Any(r => r.AudioKey == keyOpen), $"共 {auRows.Count} 行");
+						MainWindow.SetAudioGroupMembership(auProf, auGroup, keyOpen, true);
+						MainWindow.SetAudioGroupMembership(auProf, auGroup, keyBattle, true);
+						Check("V0.2.265：勾选音频后组里真的记下了（AudioIds）",
+							auGroup.AudioIdList.Contains(keyOpen) && auGroup.AudioIdList.Contains(keyBattle),
+							string.Join(",", auGroup.AudioIdList));
+						Check("V0.2.265：重新生成行时这两个音频是**已勾选**状态",
+							AudioGroupMemberRow.Build(auProf, auGroup)
+								.Where(r => r.AudioKey == keyOpen || r.AudioKey == keyBattle).All(r => r.IsChecked), "已勾选");
+						MainWindow.SetAudioGroupMembership(auProf, auGroup, keyBattle, false);
+						Check("V0.2.265：取消勾选后组里也去掉了",
+							!auGroup.AudioIdList.Contains(keyBattle) && auGroup.AudioIdList.Contains(keyOpen),
+							string.Join(",", auGroup.AudioIdList));
+
+						// 生成端：同组表 + 同组顶替逻辑
+						var auCard = new CardSpec { Name = "自检BGM", ClassName = "UiCheckAuCard", CardType = "Skill", Rarity = "Common", Cost = 1 };
+						var auFx = new EffectSpec { Kind = "PlaySoundFile", Sfx = keyOpen };
+						auFx.SfxReplace = true;
+						auFx.SfxSameGroupOnly = true;
+						auCard.Effects.Add(auFx);
+						auProf.Cards.Add(auCard);
+						string auSrc = CSharpCodeGen.SfxRegistrySource(auProf);
+						Check("V0.2.265：生成的音频播放器里有「组归属表」和「仅同组可顶替」名单",
+							auSrc.Contains("GroupsOf") && auSrc.Contains("SameGroupOnly")
+							&& auSrc.Contains($"[\"{keyOpen}\"] = new[]"), auSrc.Length > 0 ? "有" : "(空)");
+						Check("V0.2.265：顶替判定写成「勾了同组限制的 → 只有同组才顶替」",
+							auSrc.Contains("if (SameGroupOnly.Contains(old.Key) && !SameGroup(old.Key, key)) continue;"), "判定在");
+						Check("V0.2.265：只勾「仅同组顶替」也会生成这个文件（不然那条勾等于没生效）",
+							CSharpCodeGen.UsesSfxReplace(auProf), "会生成");
+
+						// 校验器：没勾「会被顶替」/ 没进任何组 都要说出来
+						var auProf2 = ProfileFactory.Sample();
+						auProf2.CardGroups.Clear();
+						var auCard2 = new CardSpec { Name = "自检BGM2", ClassName = "UiCheckAuCard2", CardType = "Skill", Rarity = "Common", Cost = 1 };
+						var auFx2 = new EffectSpec { Kind = "PlaySoundFile", Sfx = "x.ogg" };
+						auFx2.SfxSameGroupOnly = true;
+						auCard2.Effects.Add(auFx2);
+						auProf2.Cards.Add(auCard2);
+						Check("V0.2.265：勾了「仅同组顶替」但没勾「会被顶替」→ 校验器提示",
+							ProfileValidator.Validate(auProf2).Any((ValidationIssue i) => i.Message.Contains("没勾") && i.Message.Contains("不会起作用")),
+							"提示了");
+						auFx2.SfxReplace = true;
+						Check("V0.2.265：勾了「仅同组顶替」但音频没进任何组 → 校验器警告",
+							ProfileValidator.Validate(auProf2).Any((ValidationIssue i) => i.Message.Contains("没有加入任何组")),
+							"警告了");
 					}
 
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
@@ -31549,7 +31711,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.231：小助手源码讲清了它是干什么的（Replaceable 列表 + 新的开始前先停旧的）",
 						CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("Replaceable")
 						&& CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("bool replaceable")
-						&& CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("old.Stop();"), "写得对");
+						// V0.2.265：列表元素从 AudioStreamPlayer 换成 Playing（要记 key 才能判同组）
+						&& CSharpCodeGen.SfxRegistrySource(sfxOn).Contains("old.Player.Stop();"), "写得对");
 
 					// ③ 整份生成：cs/ForgeSfx.cs 只在勾了时出现；生成 → 回读要认得回来
 					string sfxOffRoot = Path.Combine(sfxDir, "off");
@@ -40282,6 +40445,76 @@ public sealed class PowerGroupMemberRow : INotifyPropertyChanged
 			catch (Exception ex)
 			{
 				_win?.SetStatus("加入组失败：" + ex.Message);
+			}
+			Raise("IsChecked");
+		}
+	}
+
+	public event PropertyChangedEventHandler? PropertyChanged;
+
+	private void Raise(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+}
+
+/// <summary>
+/// V0.2.265（用户要求「音频也能加入组」）：组右边第三列「这个组里有哪些音频」的一行（勾选即加入 / 取消）。
+/// 成员记在组身上（<see cref="CardGroupSpec.AudioIds"/>，存的是音频 Key）。
+/// </summary>
+public sealed class AudioGroupMemberRow : INotifyPropertyChanged
+{
+	private readonly CharacterProfile? _profile;
+
+	private readonly CardGroupSpec _group;
+
+	private readonly MainWindow? _win;
+
+	public string AudioKey { get; }
+
+	public string Display { get; }
+
+	private AudioGroupMemberRow(CharacterProfile? profile, CardGroupSpec group, string audioKey, string display, MainWindow? win)
+	{
+		_profile = profile;
+		_group = group;
+		AudioKey = audioKey;
+		Display = display;
+		_win = win;
+	}
+
+	/// <summary>和状态那边一样：先按 Id 在**当前存档**里重新找一次组，往旧实例上写等于白写。</summary>
+	public static List<AudioGroupMemberRow> Build(CharacterProfile profile, CardGroupSpec group, MainWindow? win = null)
+	{
+		var live = profile.CardGroups.FirstOrDefault(x => x is not null && string.Equals(x.Id, group.Id, StringComparison.Ordinal)) ?? group;
+		var rows = new List<AudioGroupMemberRow>();
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		foreach (var a in profile.AudioAssets)
+		{
+			if (a is null) continue;
+			string key = (a.Key ?? "").Trim();
+			if (key.Length == 0 || !seen.Add(key)) continue;
+			string name = string.IsNullOrWhiteSpace(a.Name) ? key : a.Name.Trim();
+			rows.Add(new AudioGroupMemberRow(profile, live, key, $"（音频）{name}  ｜ {key}", win));
+		}
+		foreach (string key in live.AudioIdList)
+			if (seen.Add(key))
+				rows.Add(new AudioGroupMemberRow(profile, live, key, $"（已加入，但「美术资源」页里没有这个音频）{key}", win));
+		return rows;
+	}
+
+	public bool IsChecked
+	{
+		get => _group.AudioIdList.Contains(AudioKey, StringComparer.OrdinalIgnoreCase);
+		set
+		{
+			try
+			{
+				MainWindow.SetAudioGroupMembership(_profile, _group, AudioKey, value);
+				_win?.SetStatus(value
+					? $"已把音频「{Display}」加入组「{_group.Name}」（组里现在有 {_group.AudioIdList.Count} 个音频）。"
+					: $"已把音频「{Display}」移出组「{_group.Name}」（组里还剩 {_group.AudioIdList.Count} 个音频）。");
+			}
+			catch (Exception ex)
+			{
+				_win?.SetStatus("音频加入组失败：" + ex.Message);
 			}
 			Raise("IsChecked");
 		}

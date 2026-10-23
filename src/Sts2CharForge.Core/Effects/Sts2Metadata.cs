@@ -96,6 +96,45 @@ public static class Sts2Metadata
             using var fs = File.OpenRead(dllPath);
             using var pe = new System.Reflection.PortableExecutable.PEReader(fs);
             var md = pe.GetMetadataReader();
+            bool sawType = false;
+            foreach (var th in md.TypeDefinitions)
+            {
+                var td = md.GetTypeDefinition(th);
+                if (!string.Equals(md.GetString(td.Name), typeSimpleName, StringComparison.Ordinal)) continue;
+                sawType = true;
+                foreach (var mh in td.GetMethods())
+                {
+                    var m = md.GetMethodDefinition(mh);
+                    if (!string.Equals(md.GetString(m.Name), methodName, StringComparison.Ordinal)) continue;
+                    // 形参数 = 参数表的行数（不用解码签名，够用了）
+                    if (m.GetParameters().Count == paramCount) return true;
+                }
+                // ⚠ 这里**不能**直接 return false：本体里同名类型可能不止一个
+                //（换了命名空间、或某个 mock / 内部类也叫这个名字），
+                // 取第一个就下结论会把「其实有」错判成「漂移」→ 用户明明版本对却被拦住。
+                // 继续扫完所有同名类型，全都对不上才算漂移。
+            }
+            return sawType ? false : null;   // 类型在、但没一个重载对得上 → 明确的漂移
+        }
+        catch { /* 读不出来就当「不知道」 */ }
+        return null;
+    }
+
+    /// <summary>
+    /// 某个类型下某个方法的**所有重载**（形参类型串，例：<c>FromCard(CardModel, CardPlay?)</c>）。
+    /// 给「本体签名漂移」那条报错用：直接把用户那份 dll 里真实的签名打出来，
+    /// 一眼就能看出本体改成了什么，不用来回问「你的 dll 发我一下」。
+    /// 读不到就返回空表（调用方别据此下结论）。
+    /// </summary>
+    public static IReadOnlyList<string> MethodOverloads(string? dllPath, string typeSimpleName, string methodName)
+    {
+        var list = new List<string>();
+        if (string.IsNullOrWhiteSpace(dllPath) || !File.Exists(dllPath)) return list;
+        try
+        {
+            using var fs = File.OpenRead(dllPath);
+            using var pe = new System.Reflection.PortableExecutable.PEReader(fs);
+            var md = pe.GetMetadataReader();
             foreach (var th in md.TypeDefinitions)
             {
                 var td = md.GetTypeDefinition(th);
@@ -104,14 +143,82 @@ public static class Sts2Metadata
                 {
                     var m = md.GetMethodDefinition(mh);
                     if (!string.Equals(md.GetString(m.Name), methodName, StringComparison.Ordinal)) continue;
-                    // 形参数 = 参数表的行数（不用解码签名，够用了）
-                    if (m.GetParameters().Count == paramCount) return true;
+                    var sig = m.DecodeSignature(new SigNames(), null);
+                    string ps = string.Join(", ", sig.ParameterTypes);
+                    string one = $"{md.GetString(m.Name)}({ps})";
+                    if (!list.Contains(one)) list.Add(one);
                 }
-                return false;      // 类型在、方法/重载不在 → 明确的漂移
             }
         }
-        catch { /* 读不出来就当「不知道」 */ }
-        return null;
+        catch { /* 读不出来就算了 */ }
+        return list;
+    }
+
+    /// <summary>把签名里的类型名解成短名（给 <see cref="MethodOverloads"/> 用；不做完整解析，够读就行）。</summary>
+    private sealed class SigNames : ISignatureTypeProvider<string, object?>
+    {
+        public string GetPrimitiveType(PrimitiveTypeCode c) => c.ToString();
+        public string GetTypeFromDefinition(MetadataReader r, TypeDefinitionHandle h, byte raw) =>
+            r.GetString(r.GetTypeDefinition(h).Name);
+        public string GetTypeFromReference(MetadataReader r, TypeReferenceHandle h, byte raw) =>
+            r.GetString(r.GetTypeReference(h).Name);
+        public string GetTypeFromSpecification(MetadataReader r, object? g, TypeSpecificationHandle h, byte raw) => "?";
+        public string GetSZArrayType(string e) => e + "[]";
+        public string GetArrayType(string e, ArrayShape s) => e + "[…]";
+        public string GetByReferenceType(string e) => "ref " + e;
+        public string GetPointerType(string e) => e + "*";
+        public string GetGenericInstantiation(string g, System.Collections.Immutable.ImmutableArray<string> a) =>
+            g + "<" + string.Join(", ", a) + ">";
+        public string GetGenericMethodParameter(object? g, int i) => "!!" + i;
+        public string GetGenericTypeParameter(object? g, int i) => "!" + i;
+        public string GetFunctionPointerType(MethodSignature<string> s) => "fnptr";
+        public string GetModifiedType(string m, string u, bool r) => u;
+        public string GetPinnedType(string e) => e;
+    }
+
+    /// <summary>
+    /// 本工具是照着哪个游戏版本写的（生成端把一些本体方法签名写死了，只在标明过的版本上保证对得上）。
+    /// 游戏更新后这个数字要跟着改 —— 改了之后 <see cref="VersionMismatch"/> 才会对旧版游戏报提示。
+    /// </summary>
+    public const string SupportedGameVersion = "v0.111.0";
+
+    /// <summary>
+    /// 读游戏目录里的 <c>release_info.json</c> 拿本体版本（形如 <c>v0.111.0</c>）；读不到返回 null。
+    /// 用户报「版本不匹配」时，光看这一处签名抽查容易一头雾水 —— 有这个就能直接把两边版本都报出来。
+    /// </summary>
+    public static string? GameVersion(string? gameDir)
+    {
+        if (string.IsNullOrWhiteSpace(gameDir)) return null;
+        try
+        {
+            string f = Path.Combine(gameDir, "release_info.json");
+            if (!File.Exists(f)) return null;
+            string text = File.ReadAllText(f);
+            var m = System.Text.RegularExpressions.Regex.Match(text, "\"version\"\\s*:\\s*\"([^\"]+)\"");
+            return m.Success ? m.Groups[1].Value.Trim() : null;
+        }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// 游戏版本和工具支持的版本是不是**前两位**对不上（<c>0.111.x</c> 之间的小修订不算）。
+    /// 任一边解析不出来就返回 false —— 不确定的时候不打扰用户。
+    /// </summary>
+    public static bool VersionMismatch(string? gameVersion, string? supported = null)
+    {
+        static int[]? Parts(string? v)
+        {
+            if (string.IsNullOrWhiteSpace(v)) return null;
+            string s = v.Trim().TrimStart('v', 'V');
+            var bits = s.Split('.');
+            if (bits.Length < 2) return null;
+            if (!int.TryParse(bits[0], out int a) || !int.TryParse(bits[1], out int b)) return null;
+            return new[] { a, b };
+        }
+        var g = Parts(gameVersion);
+        var t = Parts(supported ?? SupportedGameVersion);
+        if (g is null || t is null) return false;
+        return g[0] != t[0] || g[1] != t[1];
     }
 
     public static IReadOnlyList<Sts2TypeInfo> Powers(string? dllPath) => DerivedFrom(dllPath, PowerBase);

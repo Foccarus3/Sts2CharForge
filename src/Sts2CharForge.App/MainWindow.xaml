@@ -1216,9 +1216,11 @@
                                     </StackPanel>
                                     <Grid Grid.Row="1" Margin="0,10,0,0">
                                         <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="3*" MinWidth="200"/>
+                                            <ColumnDefinition Width="3*" MinWidth="180"/>
                                             <ColumnDefinition Width="10"/>
-                                            <ColumnDefinition Width="2*" MinWidth="180"/>
+                                            <ColumnDefinition Width="2*" MinWidth="150"/>
+                                            <ColumnDefinition Width="10"/>
+                                            <ColumnDefinition Width="2*" MinWidth="150"/>
                                         </Grid.ColumnDefinitions>
                                         <DockPanel Grid.Column="0">
                                             <TextBlock DockPanel.Dock="Top" Text="这个组里有哪些牌（勾选即加入 / 取消）"
@@ -1243,6 +1245,23 @@
                                                        Foreground="#0A5"/>
                                             <ListBox x:Name="GroupPowerList"
                                                      ItemsSource="{Binding GroupPowerRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                                <ListBox.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <CheckBox Style="{StaticResource Check}" Content="{Binding Display}"
+                                                                  IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                                    </DataTemplate>
+                                                </ListBox.ItemTemplate>
+                                            </ListBox>
+                                        </DockPanel>
+
+                                        <!-- V0.2.265（用户要求「音频也能加入组」）：这一列才让音频能进组。
+                                             播放音频那条效果勾了「仅能被下个同组音频顶替」时，就靠这里勾的同组关系判断。 -->
+                                        <DockPanel Grid.Column="4">
+                                            <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,4" FontWeight="Bold"
+                                                       Text="这个组里有哪些音频（勾选即加入 —— 「播放音频文件」勾了「仅能被下个同组音频顶替」时靠它判断同组）"
+                                                       Foreground="#A50"/>
+                                            <ListBox x:Name="GroupAudioList"
+                                                     ItemsSource="{Binding GroupAudioRows, RelativeSource={RelativeSource AncestorType=Window}}">
                                                 <ListBox.ItemTemplate>
                                                     <DataTemplate>
                                                         <CheckBox Style="{StaticResource Check}" Content="{Binding Display}"

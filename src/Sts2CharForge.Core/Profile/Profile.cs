@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -541,6 +541,7 @@ public sealed class EffectSpec : SpecBase
                 // V0.2.232：音频底下那个「会被下一个自定义音频顶替」的勾也是按种类显隐的 ——
                 // 不通知的话把效果种类改成「播放音频文件」时**它不会出现**（用户实测报的「没看到这个」）。
                 Raise(nameof(ShowSfxReplaceRow));
+                Raise(nameof(ShowSfxSameGroupRow));
                 // 「刮削」那两行（条件 / 操作）的显隐绑的就是它 —— 换成别的效果种类时要跟着消失。
                 Raise(nameof(ShowScrapeOptions));
                 // 需求 ⑨：「获得药水」的「取药方式 / 目标药水」两行的显隐绑的就是这两个 ——
@@ -2165,6 +2166,33 @@ public sealed class EffectSpec : SpecBase
     /// <summary>界面用：「被下一个自定义音频顶替」那个勾只在「播放音频文件」这一档显示。</summary>
     [JsonIgnore]
     public bool ShowSfxReplaceRow => IsPlaySoundFile;
+
+    private bool _sfxSameGroupOnly;
+
+    /// <summary>
+    /// V0.2.265（用户要求）：「仅能被**下个同组音频**顶替」。
+    ///
+    /// <para>配合 <see cref="SfxReplace"/> 使用：勾了「被下一个自定义音频顶替」之后，这一段音频还在响时，
+    /// 默认**任何**下一段自定义音频都会把它停掉；再勾上这个，就只有**和它同属一个组**的音频能顶替它
+    /// （组在「组」页那个「这个组里有哪些音频」里勾）。</para>
+    ///
+    /// <para>它属于哪一组不写在这一条效果上：同一个音频文件可能在多处播放，所以归属记在
+    /// <see cref="CardGroupSpec.AudioIds"/>（组那边）—— 生成时写死进 <c>cs/ForgeSfx.cs</c> 的对照表。</para>
+    /// </summary>
+    public bool SfxSameGroupOnly
+    {
+        get => _sfxSameGroupOnly;
+        set
+        {
+            if (!Set(ref _sfxSameGroupOnly, value)) return;
+            Raise(nameof(Display));
+            Raise(nameof(ShowSfxSameGroupRow));
+        }
+    }
+
+    /// <summary>界面用：「仅能被下个同组音频顶替」这个勾同样只在「播放音频文件」这一档显示。</summary>
+    [JsonIgnore]
+    public bool ShowSfxSameGroupRow => IsPlaySoundFile;
 
     /// <summary>这条音效的中文名（没选 = 「（没选音效）」，不在候选表里就原样显示路径）。</summary>
     [JsonIgnore]
