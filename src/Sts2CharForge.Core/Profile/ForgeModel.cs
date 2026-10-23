@@ -57,6 +57,14 @@ public sealed class ParamSpec : SpecBase
         set
         {
             if (!Set(ref _source, ParamSources.Normalize(value))) return;
+            // V0.2.267：换到自己专属的来源时，把「从谁身上取」收回「自己」
+            //（否则界面上留着一个看不见的旧选择，列表里就会印出「指定敌人的自己当前格挡」）
+            if (ParamSources.SelfOnly(_source) && _target != ParamTargets.Self)
+            {
+                _target = ParamTargets.Self;
+                Raise(nameof(Target));
+                Raise(nameof(TargetZh));
+            }
             Raise(nameof(IsValue));
             Raise(nameof(IsPower));
             Raise(nameof(NeedsTarget));
@@ -80,7 +88,9 @@ public sealed class ParamSpec : SpecBase
     /// </summary>
     public string Target
     {
-        get => _target;
+        // V0.2.267：自己专属的来源（金币 / 能量 / 「自己的当前格挡」这类实时读数）一律按「自己」算 ——
+        // 老存档里残留的「指定敌人」不会再让列表显示成「指定敌人的自己当前格挡」那种糊话。
+        get => ParamSources.SelfOnly(_source) ? ParamTargets.Self : _target;
         set
         {
             if (!Set(ref _target, ParamTargets.Normalize(value))) return;
@@ -148,10 +158,13 @@ public sealed class ParamSpec : SpecBase
     /// <summary>来源是不是「增益 / 减益」（界面：要不要显示状态下拉）。</summary>
     [JsonIgnore] public bool IsPower => ParamSources.Normalize(_source) == ParamSources.Power;
 
-    /// <summary>这一种来源要不要选「从谁身上取」（固定数值不用；能量 / 金币只能是自己）。</summary>
+    /// <summary>
+    /// 这一种来源要不要选「从谁身上取」。V0.2.267（用户报「监听格挡 + 指定敌人 → 界面稀里糊涂」）：
+    /// 改成「**不是自己专属的来源才要选**」，判据只有一份（<see cref="ParamSources.SelfOnly"/>）——
+    /// 以前这里是手写枚举，漏了「减益的个数」（它的下拉被藏起来，列表里却还印着「指定敌人的…」）。
+    /// </summary>
     [JsonIgnore]
-    public bool NeedsTarget => ParamSources.Normalize(_source) is
-        ParamSources.CurrentHp or ParamSources.MaxHp or ParamSources.Power;
+    public bool NeedsTarget => !ParamSources.SelfOnly(_source);
 
     /// <summary>界面上参数名后面跟的那个「=」（只读，给绑定用）。</summary>
     [JsonIgnore] public string Label => _name + "=";
@@ -160,8 +173,8 @@ public sealed class ParamSpec : SpecBase
     [JsonIgnore]
     public string SourceZh => ParamSources.Zh(_source);
 
-    /// <summary>「从谁身上取」的中文名。</summary>
-    [JsonIgnore] public string TargetZh => ParamTargets.Zh(_target);
+    /// <summary>「从谁身上取」的中文名（自己专属的来源永远显示「自己」）。</summary>
+    [JsonIgnore] public string TargetZh => ParamTargets.Zh(Target);
 
     /// <summary>界面列表里那一行：<c>M= ｜ 自己最大生命</c> 这种；被指定成给予量时把那一句也带上。</summary>
     [JsonIgnore]
@@ -186,6 +199,10 @@ public sealed class ParamSpec : SpecBase
             {
                 ParamSources.Value => $"固定数值 {val}",
                 ParamSources.Power => $"{TargetZh}的{Effects.EffectCatalog.PowerName(_powerId, "（还没选状态）")}层数",
+                // V0.2.267：来源名自己就以「自己」开头的（「自己的当前格挡」这类实时读数）不再加「XX的」前缀 ——
+                // 否则会印出「指定敌人的自己当前格挡」/「自己的自己当前格挡」这种糊话。
+                // 金币 / 能量 / 手牌张数那种（名字里没「自己」）照旧印「自己的金币数」，老存档文案逐字不变。
+                _ when ParamSources.Zh(src).StartsWith("自己", StringComparison.Ordinal) => ParamSources.Zh(src),
                 _ => $"{TargetZh}的{ParamSources.Zh(src)}",
             };
         }
@@ -250,6 +267,21 @@ public static class ParamSources
 
     public static ParamSourceOption? Find(string? v) =>
         All.FirstOrDefault(o => string.Equals(o.Id, Normalize(v), StringComparison.Ordinal));
+
+    /// <summary>
+    /// V0.2.267（用户报「自定义参数页监听格挡时在其他参数选择指定敌人，再选择监听格挡，
+    /// 会出现使人稀里糊涂的 UI 错误」）：这个来源是不是**只可能是自己**的
+    /// （生成出来的表达式里根本用不到「从谁身上取」）——
+    /// 固定数值 / 金币 / 能量 / 最大能量，以及「数值公式」那张实时读数表里的每一条
+    /// （回合数、丢弃张数、身上的状态数、自己的当前格挡…）。
+    /// 其余（当前血量 / 最大生命 / 状态层数 / 减益个数）才需要目标。
+    /// </summary>
+    public static bool SelfOnly(string? id)
+    {
+        string src = Normalize(id);
+        if (src is Value or Gold or Energy or MaxEnergy) return true;
+        return Generation.FormulaBuiltins.Find(src) is not null;
+    }
 }
 
 /// <summary>一条参数来源候选项（界面下拉用）。</summary>

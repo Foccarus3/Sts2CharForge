@@ -24172,6 +24172,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							$"{TriggerDirections.Count} 项");
 					}
 
+					// ===== V0.2.267（用户报「自定义参数页监听格挡 + 指定敌人 → 界面稀里糊涂」）=====
+					{
+						// 「自己的当前格挡」这种实时读数：不可能是别人身上的 → 不显示「从谁身上取」，也不算「指定敌人的…」
+						var selfParam = new ParamSpec { Name = "C", Source = "MyBlock", Target = ParamTargets.ChosenEnemy };
+						Check("V0.2.267：自己专属的来源（自己的当前格挡）不再保留「指定敌人」",
+							selfParam.Target == ParamTargets.Self, selfParam.Target);
+						Check("V0.2.267：列表那一行不再印「指定敌人的自己当前格挡」",
+							!selfParam.Display.Contains("指定敌人") && selfParam.Display.Contains("自己当前格挡"),
+							selfParam.Display);
+						Check("V0.2.267：这种来源不显示「从谁身上取」那一栏",
+							!selfParam.NeedsTarget && !ParamSources.SelfOnly("CurrentHp"), "藏起来了");
+						// 换个来源 → 收回「自己」
+						var flip = new ParamSpec { Name = "D", Source = ParamSources.CurrentHp, Target = ParamTargets.ChosenEnemy };
+						Check("V0.2.267：（对照）当前血量仍然可以选「指定敌人」",
+							flip.NeedsTarget && flip.Display.Contains("指定敌人"), flip.Display);
+						flip.Source = "MyBlock";
+						Check("V0.2.267：切成「自己的当前格挡」后，目标自动收回「自己」",
+							flip.Target == ParamTargets.Self && flip.TargetZh == "自己", flip.Summary);
+						// 「减益的个数」要能选目标（以前那一栏被藏起来，列表却印「指定敌人的…」）
+						var debuffParam = new ParamSpec { Name = "B", Source = ParamSources.DebuffCount, Target = ParamTargets.ChosenEnemy };
+						Check("V0.2.267：「减益的个数」现在会显示「从谁身上取」（以前被藏了）",
+							debuffParam.NeedsTarget && debuffParam.Display.Contains("指定敌人"), debuffParam.Display);
+						// 金币 / 能量这种也是自己专属
+						Check("V0.2.267：金币 / 能量 / 最大能量都算自己专属",
+							ParamSources.SelfOnly("Gold") && ParamSources.SelfOnly("Energy") && ParamSources.SelfOnly("MaxEnergy"),
+							"都算");
+					}
+
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
 					var aiStarter = new CardSpec { Name = "自检初始卡", ClassName = "UiCheckAiStarter", CardType = "Attack", Rarity = "Basic", Cost = 1, InStartingDeck = true, StartingCopies = 4 };
 					aiProf.Cards.Add(aiStarter);

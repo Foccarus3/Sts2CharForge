@@ -5365,9 +5365,14 @@ public sealed class PowerTriggerSpec : SpecBase
             if (Kind == "CardPlayed" && CardFilter != "Any")
                 opt += CardFilter switch { "Attack" => "（攻击牌）", "Skill" => "（技能牌）", "Power" => "（能力牌）", _ => "" };
             if (Kind == "PowerChanged")
+            {
                 opt += string.IsNullOrWhiteSpace(PowerId)
                     ? $"（盯：{PowerTriggers.WatchTargetZh(PowerTarget)}的任意状态）"
                     : $"（盯：{PowerTriggers.WatchTargetZh(PowerTarget)}的{EffectCatalog.PowerName(PowerId, PowerId)}）";
+                // V0.2.266：细分了「上升 / 下降」，列表那一行也要跟着说出来（不然看不出这条只管掉层）
+                if (PowerDirection == "Up") opt += "（只在上升时）";
+                else if (PowerDirection == "Down") opt += "（只在下降时）";
+            }
             string fx = Effects.Count == 0 ? "（还没加效果）" : string.Join("，", Effects.Select(e => e.Display));
             return $"{opt} → {fx}";
         }
