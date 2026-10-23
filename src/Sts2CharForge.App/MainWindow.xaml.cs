@@ -2213,6 +2213,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			.ToList();
 
 	/// <summary>
+	/// V0.2.266（用户要求「某个状态层数变化后能不能细分是上升了还是下降」）：
+	/// 「层数变化方向」那一栏的候选（空 = 都算，Up = 只要上升，Down = 只要下降）。
+	/// </summary>
+	public IReadOnlyList<GroupChoice> TriggerDirections { get; } = new List<GroupChoice>
+	{
+		new("上升 / 下降都算（默认）", ""),
+		new("只在**上升**时触发", "Up"),
+		new("只在**下降**时触发", "Down"),
+	};
+
+	/// <summary>
 	/// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：先古卡页「被替换的初始卡」下拉的候选。
 	/// 第一项 = 「（自动：初始卡组里第一张）」（Id 为空）。
 	///
@@ -24122,6 +24133,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("V0.2.265：勾了「仅同组顶替」但音频没进任何组 → 校验器警告",
 							ProfileValidator.Validate(auProf2).Any((ValidationIssue i) => i.Message.Contains("没有加入任何组")),
 							"警告了");
+					}
+
+					// ===== V0.2.266（用户要求）：层数变化细分「上升 / 下降」 =====
+					{
+						var dirProf = ProfileFactory.Sample();
+						string DirSrc(string dir)
+						{
+							var pw = new CustomPowerSpec { Name = "方向" + dir, ClassName = "UiDir" + (dir.Length == 0 ? "Both" : dir), Enabled = true, Type = "Buff" };
+							var tr = new PowerTriggerSpec { Kind = "PowerChanged", PowerId = "StrengthPower", PowerDirection = dir };
+							tr.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+							pw.Triggers.Add(tr);
+							dirProf.CustomPowers.Add(pw);
+							return CustomPowerGen.Source(dirProf, pw, dirProf.CustomPowers.Count - 1);
+						}
+						Check("V0.2.266：状态链「层数变化 + 只要上升」→ 守卫里带 amount > 0m",
+							DirSrc("Up").Contains("&& amount > 0m"), "带上上升条件");
+						Check("V0.2.266：状态链「层数变化 + 只要下降」→ 守卫里带 amount < 0m",
+							DirSrc("Down").Contains("&& amount < 0m"), "带上下降条件");
+						Check("V0.2.266：（对照）不选方向 → 守卫里一个 amount 判定都没有（老存档逐字不变）",
+							!DirSrc("").Contains("amount > 0m") && !DirSrc("").Contains("amount < 0m"), "没多写");
+
+						// 遗物链
+						var dirRelic = new RelicSpec { Name = "方向遗物", ClassName = "UiDirRelic", Trigger = "PowerChanged" };
+						dirRelic.TriggerPowerId = "StrengthPower";
+						dirRelic.TriggerPowerDirection = "Down";
+						dirRelic.Effects.Clear();
+						dirRelic.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+						dirProf.Relics.Add(dirRelic);
+						string relicSrc = CSharpCodeGen.RelicSource(dirProf, dirRelic, 0);
+						Check("V0.2.266：遗物链「层数变化 + 只要下降」→ 生成 if (amount >= 0m) return;",
+							relicSrc.Contains("if (amount >= 0m) return;"), "遗物也细分了");
+						dirRelic.TriggerPowerDirection = "Up";
+						Check("V0.2.266：遗物链「层数变化 + 只要上升」→ 生成 if (amount <= 0m) return;",
+							CSharpCodeGen.RelicSource(dirProf, dirRelic, 0).Contains("if (amount <= 0m) return;"), "上升版在");
+						Check("V0.2.266：下拉候选三项（都算 / 只看上升 / 只看下降）",
+							TriggerDirections.Count == 3 && TriggerDirections[1].Id == "Up" && TriggerDirections[2].Id == "Down",
+							$"{TriggerDirections.Count} 项");
 					}
 
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」

@@ -824,8 +824,14 @@ public static class CustomPowerGen
                     else
                     {
                         string guard = want is null ? ownerGuard : $"({ownerGuard}) && (power is {want})";
+                        // V0.2.266（用户要求）：细分「层数上升 / 下降」—— amount 是这次变化的增量
+                        if (string.Equals(t.PowerDirection, "Up", StringComparison.Ordinal))
+                            guard += " && amount > 0m";
+                        else if (string.Equals(t.PowerDirection, "Down", StringComparison.Ordinal))
+                            guard += " && amount < 0m";
                         string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
-                        w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}");
+                        string dirZh = t.PowerDirection == "Up" ? "（只要上升）" : t.PowerDirection == "Down" ? "（只要下降）" : "";
+                        w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}{dirZh}");
                         w.Open($"if ({guard})");
                         EmitEffects(w, t, p: p);
                         w.Close();
@@ -1252,8 +1258,14 @@ public static class CustomPowerGen
                     string ownerGuard = PowerWatchGuard(t, p, excludeSelf: true);
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
                     string guard = want is null ? ownerGuard : $"({ownerGuard}) && (power is {want})";
+                    // V0.2.266（用户要求）：细分「层数上升 / 下降」—— amount 是这次变化的增量
+                    if (string.Equals(t.PowerDirection, "Up", StringComparison.Ordinal))
+                        guard += " && amount > 0m";
+                    else if (string.Equals(t.PowerDirection, "Down", StringComparison.Ordinal))
+                        guard += " && amount < 0m";
                     string what = want is null ? "任意状态" : EffectCatalog.PowerName(want, want);
-                    w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}");
+                    string dirZh2 = t.PowerDirection == "Up" ? "（只要上升）" : t.PowerDirection == "Down" ? "（只要下降）" : "";
+                    w.Line($"// 盯：{PowerTriggers.WatchTargetZh(t.PowerTarget)}的{what}{dirZh2}");
                     w.Open($"if ({guard})");
                     EmitEffects(w, t, p: p);
                     w.Close();

@@ -4019,6 +4019,23 @@ public sealed class RelicTriggerSpec : SpecBase
         set { if (Set(ref _powerId, value)) { Raise(nameof(Hint)); Raise(nameof(Summary)); Raise(nameof(Display)); } }
     }
 
+    private string _powerDirection = "";
+
+    /// <summary>
+    /// V0.2.266（用户要求「发时机的某个状态层数变化后能不能细分是上升了还是下降」）：
+    /// 只有「某个状态层数变化后」用得到 —— 空 = 上升 / 下降都算（老行为），
+    /// <c>Up</c> = 只在层数**上升**时触发，<c>Down</c> = 只在层数**下降**时触发。
+    /// </summary>
+    public string PowerDirection
+    {
+        get => _powerDirection;
+        set { if (Set(ref _powerDirection, value ?? "")) { Raise(nameof(Summary)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>界面用：方向那一栏只在「某个状态层数变化后」显示。</summary>
+    [JsonIgnore]
+    public bool ShowPowerDirectionField => Kind == "PowerChanged";
+
     /// <summary>触发时机上的数值：每累计 N 次 / 每 N 点 / 数值 ≥ N / 到达 N 层（按种类换含义）。</summary>
     public decimal Amount
     {
@@ -4364,6 +4381,22 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     {
         get => First.PowerId;
         set { if (!string.Equals(First.PowerId, value, StringComparison.Ordinal)) { First.PowerId = value; Raise(nameof(TriggerHint)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>
+    /// V0.2.266（用户要求）：层数变化只看「上升」还是只看「下降」（代理到第 1 条时机，
+    /// 和 <see cref="TriggerPowerId"/> 同一个写法）。空 = 上升 / 下降都算。
+    /// </summary>
+    public string TriggerPowerDirection
+    {
+        get => First.PowerDirection;
+        set
+        {
+            if (string.Equals(First.PowerDirection, value, StringComparison.Ordinal)) return;
+            First.PowerDirection = value;
+            Raise(nameof(TriggerHint));
+            Raise(nameof(Display));
+        }
     }
 
     /// <summary>
@@ -5124,6 +5157,7 @@ public sealed class PowerTriggerSpec : SpecBase
             Raise(nameof(Display));
             Raise(nameof(Summary));
             Raise(nameof(NeedsPower));
+            Raise(nameof(ShowPowerDirectionField));
             Raise(nameof(NeedsCardFilter));
             // 和遗物那边同一个坑：这两栏的显隐 / 标题 / 说明都是按触发时机算出来的，换了时机得通知
             //（不然「到达 N 层」/「每累计几次触发」那栏不会当场出现）。
@@ -5158,6 +5192,22 @@ public sealed class PowerTriggerSpec : SpecBase
         get => _powerTarget;
         set { if (Set(ref _powerTarget, string.IsNullOrWhiteSpace(value) ? "Self" : value)) { Raise(nameof(Display)); Raise(nameof(Summary)); } }
     }
+
+    private string _powerDirection = "";
+
+    /// <summary>
+    /// V0.2.266（用户要求）：只有「某个状态层数变化后」用得到 ——
+    /// 空 = 上升 / 下降都算（老行为），<c>Up</c> = 只在层数**上升**时触发，<c>Down</c> = 只在层数**下降**时触发。
+    /// </summary>
+    public string PowerDirection
+    {
+        get => _powerDirection;
+        set { if (Set(ref _powerDirection, value ?? "")) { Raise(nameof(Summary)); Raise(nameof(Display)); } }
+    }
+
+    /// <summary>界面用：方向那一栏只在「某个状态层数变化后」显示。</summary>
+    [JsonIgnore]
+    public bool ShowPowerDirectionField => Kind == "PowerChanged";
 
     [JsonIgnore] public bool NeedsPower => Kind is "PowerChanged" or "PowerReached" or "PowerRemoved";
     /// <summary>「到达 N 层」那一栏要不要显示（用户要求：两边触发时机菜单相同 → 状态这边也要能填 N）。</summary>

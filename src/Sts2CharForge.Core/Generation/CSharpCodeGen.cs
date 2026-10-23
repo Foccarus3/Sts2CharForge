@@ -11207,7 +11207,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 守卫那一大段 switch 抽成了 RelicTriggerGuardLines（下面那个方法）——**文本一个字都没动**：
         // 单条时机这条路径仍然把它们原样写进方法体（return 式守卫），红线（逐字不变）不受影响；
         // 多条时机那条路径用同一份行文本改写成 if 块（见 EmitRelicMultiTriggerHook）。
-        foreach (string guardLine in RelicTriggerGuardLines(trigger.Id, r.TriggerPowerId, r.TriggerAmount, r.TriggerCardFilter, p))
+        foreach (string guardLine in RelicTriggerGuardLines(trigger.Id, r.TriggerPowerId, r.TriggerAmount, r.TriggerCardFilter, p, r.TriggerPowerDirection))
             w.Line(guardLine);
 
         // 触发时机上的数值（用户要求：遗物 / 状态两边都要有）：
@@ -11523,7 +11523,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     /// <param name="triggerCardFilter">「打出一张牌后」只对哪类牌生效（遗物页那一栏；`Any` = 不过滤）。</param>
     public static IReadOnlyList<string> RelicTriggerGuardLines(string triggerId, string? triggerPowerId,
-        decimal triggerAmount, string? triggerCardFilter, CharacterProfile p)
+        decimal triggerAmount, string? triggerCardFilter, CharacterProfile p, string? powerDirection = null)
     {
         var lines = new List<string>();
         switch (triggerId)
@@ -11617,6 +11617,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 lines.Add("if (power.Owner is null || power.Owner != base.Owner.Creature) return;   // 只看自己身上的状态");
                 if (!string.IsNullOrWhiteSpace(triggerPowerId))
                     lines.Add($"if (power is not {Lit.Identifier(triggerPowerId, "VulnerablePower")}) return;   // 只盯「{EffectCatalog.PowerName(triggerPowerId, triggerPowerId)}」");
+                // V0.2.266（用户要求）：细分「层数上升 / 下降」—— amount 是这次变化的增量
+                if (string.Equals(powerDirection, "Up", StringComparison.Ordinal))
+                    lines.Add("if (amount <= 0m) return;   // 只要「层数上升」那一下（下降 / 不变都不算）");
+                else if (string.Equals(powerDirection, "Down", StringComparison.Ordinal))
+                    lines.Add("if (amount >= 0m) return;   // 只要「层数下降」那一下（上升 / 不变都不算）");
                 break;
             // 「某个状态被移除时」（用户要求）：走工具自己打的补丁（见 PowerRemovalSource）——
             // 补丁会把「谁身上哪个状态被移除了」传进来，这里只做归属 + 盯哪个状态的过滤。
@@ -11725,14 +11730,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「每累计花掉 N 次」那一条**根本没写**，触发时机数值静默失效）。
     /// </summary>
     private static List<string> RelicTriggerPreludeLines(string triggerId, string? powerId, decimal amount,
-        string scope, string? cardFilter, CharacterProfile p)
+        string scope, string? cardFilter, CharacterProfile p, string? powerDirection = null)
     {
         var w2 = new CodeWriter();
         if (triggerId == "PowerReached")
             w2.Line($"// CET:PowerWatch={Lit.Identifier(powerId ?? "", "")} CET:PowerReach={Lit.Dec(Math.Max(0m, amount))}");
         else if (triggerId == "PowerRemoved")
             w2.Line($"// CET:PowerWatch={Lit.Identifier(powerId ?? "", "")}");
-        foreach (string g in RelicTriggerGuardLines(triggerId, powerId, amount, cardFilter, p)) w2.Line(g);
+        foreach (string g in RelicTriggerGuardLines(triggerId, powerId, amount, cardFilter, p, powerDirection)) w2.Line(g);
         w2.Line(RelicAmountSentinel);
         // ⚠ 这里必须传这条时机自己的 Scope（以前写死 "Turn" —— 数值那行注释里的范围会错，回读就认错）
         foreach (string a in TriggerAmountLines(triggerId, amount, scope,

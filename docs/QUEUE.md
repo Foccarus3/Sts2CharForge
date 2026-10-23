@@ -1,5 +1,18 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 160 批需求（V0.2.266：**「某个状态层数变化后」细分上升 / 下降**）
+
+> 用户要求：「发时机的某个状态层数变化后能不能细分是上升了还是下降」。（详见 `docs/RELEASE_NOTES_V0.2.266.md`）
+>
+> **做法**：`PowerTriggerSpec.PowerDirection` / `RelicTriggerSpec.PowerDirection`（++ `RelicSpec.TriggerPowerDirection`
+> 代理到第 1 条时机，和 `TriggerPowerId` 同一个写法；空 = 都算 / `Up` / `Down`）+ 两处 UI 下拉
+> （遗物页 & 状态页的触发时机编辑器，只在「某个状态层数变化后」显示，单独一行）。
+>
+> **生成**：状态链守卫后面接 `&& amount > 0m` / `&& amount < 0m`；遗物链（`RelicTriggerGuardLines`）
+> 加 `if (amount <= 0m) return;` / `if (amount >= 0m) return;`。不选方向时一个字都不多写。
+>
+> **验收**：自检 **4404 PASS / 0 FAIL**（+6）；对拍 Sample 113 / WhiteCloak 412 逐字节相同。
+
 ## 第 159 批需求（V0.2.265：**音频也能加入组 + 「仅能被下个同组音频顶替」**）
 
 > 用户要求：「音频也能加入组，并且音频效果下新增勾选项『仅能被下个同组音频顶替』，
