@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -2849,7 +2849,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static string RepeatExpr(EffectSpec e, bool useX)
     {
         if (CountFormulaExpr(_formulaOwner, e, "Repeat", out _) is { } rf)
-            return $"(int)System.Math.Clamp({rf}, 1m, 20m)";
+            return $"(int)System.Math.Clamp({rf}, 0m, 20m)";
         return useX && e.RepeatIsX ? XVar : Math.Max(1, e.RepeatCount).ToString();
     }
 
@@ -6866,7 +6866,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         int times = Math.Max(1, Math.Min(20, e.ReplayTimes));
         string timesExpr = times.ToString();
         if (CountFormulaExpr(_formulaOwner, e, "Replay", out _) is { } rf)
-            timesExpr = $"(int)System.Math.Clamp({rf}, 1m, 20m)";
+            timesExpr = $"(int)System.Math.Clamp({rf}, 0m, 20m)";
         int timesForMarker = times;
         bool timesIsFormula = timesExpr != timesForMarker.ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
@@ -7103,7 +7103,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         var (destPile, destPos, destZh) = CopyDest(e);
         int copies = Math.Max(1, Math.Min(20, e.Copies));
         string copiesExpr = CountFormulaExpr(_formulaOwner, e, "Copies", out _) is { } cf
-            ? $"(int)System.Math.Clamp({cf}, 1m, 20m)"
+            ? $"(int)System.Math.Clamp({cf}, 0m, 20m)"
             : copies.ToString();
         w.Line($"// 数值 0 = 这张牌自己：把它本身复制 {copiesExpr} 份，放进{destZh}");
         w.Open($"for (int __copyIdx = 0; __copyIdx < {copiesExpr}; __copyIdx++)");
@@ -7121,7 +7121,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「复制的份数」写了公式（用户要求⑦）：现算，夹到 1~20（和固定值那条同一个上限）
         int copies = Math.Max(1, Math.Min(20, e.Copies));
         string copiesExpr = CountFormulaExpr(_formulaOwner, e, "Copies", out _) is { } cf
-            ? $"(int)System.Math.Clamp({cf}, 1m, 20m)"
+            ? $"(int)System.Math.Clamp({cf}, 0m, 20m)"
             : copies.ToString();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         // V0.2.226：「复制出来的放到哪一摞」——默认手牌（老输出逐字不变）
@@ -8415,7 +8415,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             : CountFormulaExpr(_formulaOwner, e, "Times", out _);
         if (timesExpr is not null)
         {
-            w.Open($"for (int i = 0; i < (int)System.Math.Clamp({timesExpr}, 1m, 20m); i++)");
+            w.Open($"for (int i = 0; i < (int)System.Math.Clamp({timesExpr}, 0m, 20m); i++)");
             w.Open("");
             body(w);
             w.Close();

@@ -12433,10 +12433,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				cfEff.ShowTimesFormulaBox && cfEff.ShowRepeatFormulaBox && !cfEff.ShowCopiesFormulaBox && !cfEff.ShowReplayFormulaBox,
 				$"{cfEff.ShowTimesFormulaBox}/{cfEff.ShowRepeatFormulaBox}/{cfEff.ShowCopiesFormulaBox}/{cfEff.ShowReplayFormulaBox}");
 			string cfSrc = CSharpCodeGen.CardSource(cfProfile, cfCard, 0);
-			Check("「生效次数」公式 → 循环上界现算（夹到 1~20，不会让公式算出 999 把一局卡死）",
-				cfSrc.Contains("for (int i = 0; i < (int)System.Math.Clamp((__fgPlayer?.PlayerCombatState?.TurnNumber ?? 0), 1m, 20m); i++)"), "对");
-			Check("「命中次数」公式 → WithHitCount 里现算（夹到 1~20）",
-				cfSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + (decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0)), 1m, 20m))"), "对");
+			Check("「生效次数」公式 → 循环上界现算（夹到 0~20，不会让公式算出 999 把一局卡死）",
+				cfSrc.Contains("for (int i = 0; i < (int)System.Math.Clamp((__fgPlayer?.PlayerCombatState?.TurnNumber ?? 0), 0m, 20m); i++)"), "对");
+			Check("「命中次数」公式 → WithHitCount 里现算（夹到 0~20）",
+				cfSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + (decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0)), 0m, 20m))"), "对");
 			Check("生成时写一行回读标记（CET:CountFormulas=…，键=公式、| 分隔）",
 				cfSrc.Contains("// CET:CountFormulas=Times=Turn|Repeat=2 + HandCount"), "有标记");
 			Check("卡面印的是公式本身（不是那个固定次数）",
@@ -12460,7 +12460,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				hcProfile.Cards.Add(hitCard);
 				string hitSrc = CSharpCodeGen.CardSource(hcProfile, hitCard, 0);
 				Check("指定敌人的伤害 + 命中次数公式 → 生成 .WithHitCount(现算)（以前整条都不写，只打一下）",
-					hitSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + __pA), 1m, 20m))"), "打 N 下");
+					hitSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + __pA), 0m, 20m))"), "打 N 下");
 				Check("公式用到的参数（A = 自己身上的易伤层数）在卡里先算好，用的是本体 API",
 					hitSrc.Contains("decimal __pA = ForgeFormulaRuntime.PowerAmount(__fgSelf, \"VulnerablePower\");"), "有 __pA");
 				Check("卡面印的是公式本身（现在和实际打出去的次数一致了）",
@@ -12477,7 +12477,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string aoeSrc2 = CSharpCodeGen.CardSource(aoeProfile2, aoeCard2, 0);
 				Check("全体敌人的伤害 + 命中次数公式 → 也写 .WithHitCount(现算)",
 					aoeSrc2.Contains(".TargetingAllOpponents(base.CombatState)")
-					&& aoeSrc2.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + __pA), 1m, 20m))"), "对");
+					&& aoeSrc2.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + __pA), 0m, 20m))"), "对");
 				Check("（红线）固定 1 次且没写公式时，一个 WithHitCount 都不多",
 					!CSharpCodeGen.CardSource(ProfileFactory.Sample(), new CardSpec
 					{
@@ -12493,7 +12493,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			copyCard.Effects.Add(copyEff);
 			cf2.Cards.Add(copyCard);
 			string copySrc = CSharpCodeGen.CardSource(cf2, copyCard, 0);
-			Check("「复制的份数」公式 → 复制循环上界现算（夹到 1~20）",
+			Check("「复制的份数」公式 → 复制循环上界现算（夹到 0~20）",
 				copySrc.Contains("for (int __copyIdx = 0; __copyIdx < (int)System.Math.Clamp(")
 				&& copySrc.Contains("CardDiscardedEntry"), "对");
 			Check("（回归）分子公式时不再写死份数的 CET 标记（改由次数标记带走）",
@@ -12505,8 +12505,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			replayCard.Effects.Add(replayEff);
 			cf3.Cards.Add(replayCard);
 			string replaySrc = CSharpCodeGen.CardSource(cf3, replayCard, 0);
-			Check("「重放次数」公式 → BaseReplayCount += 现算（夹到 1~20）",
-				replaySrc.Contains("__replayCard.BaseReplayCount += (int)System.Math.Clamp((decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0), 1m, 20m);"), "对");
+			Check("「重放次数」公式 → BaseReplayCount += 现算（夹到 0~20）",
+				replaySrc.Contains("__replayCard.BaseReplayCount += (int)System.Math.Clamp((decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0), 0m, 20m);"), "对");
 			// 默认档逐字不变：没写次数公式的卡一个字符都不多
 			CharacterProfile cfPlain = ProfileFactory.Sample();
 			var plainCard = new CardSpec { Name = "普通次数卡", ClassName = "UiCheckCountPlain", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
@@ -26903,9 +26903,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			eqCard.Effects.Clear(); eqCard.Effects.Add(timesFlag);
 			string timesByFlag2 = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
 			Check("「生效次数 = X」等价性：「次数公式 · 生效次数」框写 X 与老勾选框都会生成「按 X 循环」",
-				timesByFormula.Contains("for (int i = 0; i < (int)System.Math.Clamp(__X, 1m, 20m); i++)")
+				timesByFormula.Contains("for (int i = 0; i < (int)System.Math.Clamp(__X, 0m, 20m); i++)")
 				&& timesByFlag2.Contains("for (int i = 0; i < x; i++)"),
-				"新写法夹到 1~20（既有公式通道的规矩），老写法直接用 x —— 值一样");
+				"新写法夹到 0~20（既有公式通道的规矩），老写法直接用 x —— 值一样");
 			// ④ 命中次数 / 对群数 = X
 			var repNew = new EffectSpec { Kind = "Damage", Amount = 6m, RepeatFormula = "X", TargetSide = "Enemy" };
 			eqCard.Effects.Clear(); eqCard.Effects.Add(repNew);
@@ -26914,9 +26914,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			eqCard.Effects.Clear(); eqCard.Effects.Add(repFlag);
 			string repByFlag2 = CSharpCodeGen.CardSource(eqProfile, eqCard, 0);
 			Check("「命中次数 = X」等价性：「次数公式 · 命中次数」框写 X 与老勾选框都会生成 WithHitCount(X)",
-				repByFormula.Contains(".WithHitCount((int)System.Math.Clamp(__X, 1m, 20m))")
+				repByFormula.Contains(".WithHitCount((int)System.Math.Clamp(__X, 0m, 20m))")
 				&& repByFlag2.Contains(".WithHitCount(x)"),
-				"同一件事，新写法多一层 1~20 夹取（既有公式通道的规矩）");
+				"同一件事，新写法多一层 1~20 夹取（0~20，既有公式通道的规矩）");
 			// ⑤ 老存档那三个字段一个都没删：老配置照旧读得回来、生成得出来
 			var legacy2 = new EffectSpec { Kind = "Damage", Amount = 6m, AmountIsX = true, TimesIsX = true, RepeatIsX = true, TargetSide = "Enemy" };
 			eqCard.Effects.Clear(); eqCard.Effects.Add(legacy2);
@@ -33282,9 +33282,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				repOkEff.RepeatFormula = "Turn";
 				repOkCard.Effects.Add(repOkEff);
 				repOkProfile.Cards.Add(repOkCard);
-				Check("生成端：会用到的那条把公式写进 .WithHitCount（夹到 1~20）",
+				Check("生成端：会用到的那条把公式写进 .WithHitCount（夹到 0~20）",
 					CSharpCodeGen.CardSource(repOkProfile, repOkCard, 0)
-						.Contains(".WithHitCount((int)System.Math.Clamp((__fgPlayer?.PlayerCombatState?.TurnNumber ?? 0), 1m, 20m))"), "对");
+						.Contains(".WithHitCount((int)System.Math.Clamp((__fgPlayer?.PlayerCombatState?.TurnNumber ?? 0), 0m, 20m))"), "对");
 			}
 
 			// ===== 「花掉 N 点」的数值 + 本回合 / 本场战斗（用户要求）=====
