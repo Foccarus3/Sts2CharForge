@@ -221,6 +221,63 @@ public static class Sts2Metadata
         return g[0] != t[0] || g[1] != t[1];
     }
 
+    /// <summary>
+    /// 这份 <c>sts2.dll</c> 自己的版本串（<c>ProductVersion</c>，形如 <c>0.1.0+41cef1ea…</c>）。
+    ///
+    /// <para>为什么看它：本体的 <c>release_info.json</c> 里写着 <c>commit</c>（例如 <c>41cef1ea</c>），
+    /// 而 dll 的 ProductVersion 就是 <c>0.1.0+&lt;commit&gt;</c> —— 两边一对就知道「这份 dll 是不是这次构建出来的」。
+    /// 用户问过「会不会解包/反编译拿的是公开版的文件」，靠这个就能查：公测版和 beta 版的 commit 不一样。</para>
+    ///
+    /// <para>读不到（没有版本资源 / 文件不在）返回 null。</para>
+    /// </summary>
+    public static string? DllProductVersion(string? dllPath)
+    {
+        if (string.IsNullOrWhiteSpace(dllPath) || !File.Exists(dllPath)) return null;
+        try
+        {
+            var vi = System.Diagnostics.FileVersionInfo.GetVersionInfo(dllPath);
+            string? v = vi.ProductVersion;
+            if (string.IsNullOrWhiteSpace(v)) v = vi.FileVersion;
+            return string.IsNullOrWhiteSpace(v) ? null : v.Trim();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>从 dll 的 ProductVersion（<c>0.1.0+&lt;commit&gt;</c>）里摘出 commit；摘不出来返回 null。</summary>
+    public static string? CommitOf(string? productVersion)
+    {
+        if (string.IsNullOrWhiteSpace(productVersion)) return null;
+        int plus = productVersion.IndexOf('+');
+        return plus >= 0 && plus + 1 < productVersion.Length ? productVersion[(plus + 1)..].Trim() : null;
+    }
+
+    /// <summary>
+    /// 两个 commit 是不是同一个（dll 里是全 40 位、<c>release_info.json</c> 里只有前 8 位，所以按前缀比）。
+    /// 任一边为空 / 太短（&lt; 7 位）就返回 false —— 不知道的时候不下结论。
+    /// </summary>
+    public static bool SameCommit(string? a, string? b)
+    {
+        if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
+        string x = a.Trim(), y = b.Trim();
+        if (x.Length < 7 || y.Length < 7) return false;
+        return x.StartsWith(y, StringComparison.OrdinalIgnoreCase)
+            || y.StartsWith(x, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>读游戏目录 <c>release_info.json</c> 里的 <c>commit</c>（和 <see cref="GameVersion"/> 配套）；读不到返回 null。</summary>
+    public static string? GameCommit(string? gameDir)
+    {
+        if (string.IsNullOrWhiteSpace(gameDir)) return null;
+        try
+        {
+            string f = Path.Combine(gameDir, "release_info.json");
+            if (!File.Exists(f)) return null;
+            var m = System.Text.RegularExpressions.Regex.Match(File.ReadAllText(f), "\"commit\"\\s*:\\s*\"([^\"]+)\"");
+            return m.Success ? m.Groups[1].Value.Trim() : null;
+        }
+        catch { return null; }
+    }
+
     public static IReadOnlyList<Sts2TypeInfo> Powers(string? dllPath) => DerivedFrom(dllPath, PowerBase);
     public static IReadOnlyList<Sts2TypeInfo> Cards(string? dllPath) => DerivedFrom(dllPath, CardBase);
     public static IReadOnlyList<Sts2TypeInfo> Potions(string? dllPath) => DerivedFrom(dllPath, PotionBase);

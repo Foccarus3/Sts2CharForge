@@ -68,6 +68,9 @@ public sealed class ParamSpec : SpecBase
             Raise(nameof(IsValue));
             Raise(nameof(IsPower));
             Raise(nameof(NeedsTarget));
+            Raise(nameof(ShowDeckFilter));
+            Raise(nameof(DeckFilterZh));
+            Raise(nameof(DeckFilter));
             Raise(nameof(SourceZh));
             Raise(nameof(Summary));
             Raise(nameof(Display));
@@ -110,9 +113,49 @@ public sealed class ParamSpec : SpecBase
         set { if (Set(ref _powerId, value)) { Raise(nameof(Summary)); Raise(nameof(Display)); } }
     }
 
+    private string _deckFilter = "";
+
+    /// <summary>
+    /// V0.2.271（用户要求）：<see cref="ParamSpec.Source"/> = 「牌组里某种牌的数量」时，
+    /// 数的是**哪一种**牌 —— 值来自 <see cref="Effects.EffectCatalog.SpawnFiltersFor"/> 那一份范围限定：
+    /// 空串 = 不限（整副牌）/ Attack / Skill / Power / Curse / Status / <c>Keyword:关键词</c> / <c>Group:组Id</c>。
+    /// 关键词和组在游戏里没有对应枚举，所以生成期把它们解析成**类名清单**写进代码（和「生成卡牌」那一套同一个口径）。
+    /// </summary>
+    public string DeckFilter
+    {
+        get => _deckFilter;
+        set
+        {
+            if (!Set(ref _deckFilter, value ?? "")) return;
+            Raise(nameof(DeckFilterZh));
+            Raise(nameof(Summary));
+            Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>界面用：「哪种牌」那一栏只在来源是「牌组里某种牌的数量」时显示。</summary>
+    [JsonIgnore] public bool ShowDeckFilter => ParamSources.Normalize(_source) == ParamSources.DeckCountOf;
+
+    /// <summary>「哪种牌」的中文名（界面列表里显示）。</summary>
+    [JsonIgnore]
+    public string DeckFilterZh
+    {
+        get
+        {
+            // 组：参数模型里没有整份配置可查，拿不到组名时至少标出「组：」前缀
+            //（不然参数列表里只剩一串 Guid，看不出这是在数某一组）
+            string? gid = Effects.EffectCatalog.CardGroupFilterId(_deckFilter);
+            if (!string.IsNullOrWhiteSpace(gid))
+            {
+                string name = Effects.EffectCatalog.CardGroupFilterName(null, _deckFilter);
+                return name == gid ? "组：" + gid : name;
+            }
+            return Effects.EffectCatalog.SpawnFilterZh(_deckFilter);
+        }
+    }
+
     /// <summary>
     /// 「这个参数给予多少**能量**」的指定（需求：上方为自定义参数，默认显示「给予 X 参数给能量」）。
-    /// 取值见 <see cref="ParamGrants"/>：None = 不给予；
     /// 另一个参数名 = 战斗开始时按那个参数的值给能量。
     /// </summary>
     public string EnergyGrant
@@ -199,6 +242,8 @@ public sealed class ParamSpec : SpecBase
             {
                 ParamSources.Value => $"固定数值 {val}",
                 ParamSources.Power => $"{TargetZh}的{Effects.EffectCatalog.PowerName(_powerId, "（还没选状态）")}层数",
+                // V0.2.271：牌组里某种牌的数量（范围含自定义关键词 / 组）
+                ParamSources.DeckCountOf => $"牌组里「{DeckFilterZh}」的牌数",
                 // V0.2.267：来源名自己就以「自己」开头的（「自己的当前格挡」这类实时读数）不再加「XX的」前缀 ——
                 // 否则会印出「指定敌人的自己当前格挡」/「自己的自己当前格挡」这种糊话。
                 // 金币 / 能量 / 手牌张数那种（名字里没「自己」）照旧印「自己的金币数」，老存档文案逐字不变。
@@ -233,6 +278,13 @@ public static class ParamSources
     /// </summary>
     public const string DebuffCount = "DebuffCount";
 
+    /// <summary>
+    /// V0.2.271（用户要求「自定义参数页增加牌组里某种牌数，某种可以选择范围包括自定义关键词和组」）：
+    /// 牌组里**符合某个范围**的牌数 —— 范围用 <see cref="EffectCatalog.SpawnFiltersFor"/> 那一整份
+    /// （不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 每个自定义关键词 / 每个组），存在 <see cref="ParamSpec.DeckFilter"/>。
+    /// </summary>
+    public const string DeckCountOf = "DeckCountOf";
+
     /// <summary>界面下拉的候选（顺序就是用户需求里点名的顺序）。</summary>
     public static IReadOnlyList<ParamSourceOption> All { get; } = new[]
     {
@@ -244,6 +296,8 @@ public static class ParamSources
         new ParamSourceOption(MaxEnergy,  "最大能量数",             "每回合回满后的能量上限"),
         new ParamSourceOption(Power,      "增益/减益（状态层数）",   "目标身上某个状态的层数"),
         new ParamSourceOption(DebuffCount, "减益的个数（几种负面效果）", "目标身上有**几种**减益，和层数无关（每种算 1）"),
+        // V0.2.271：牌组里某种牌的数量（范围可含自定义关键词 / 组）—— 见 ParamSpec.DeckFilter
+        new ParamSourceOption(DeckCountOf, "牌组里某种牌的数量", "整副牌里符合某个范围（攻击 / 技能 / 关键词 / 组…）的牌有几张"),
     }
     // ===== 「实时读数」（用户要求：参数页也要能监听这些）=====
     // 直接复用「数值公式」那份内置只读量清单（Generation.FormulaBuiltins.All）——
@@ -279,7 +333,7 @@ public static class ParamSources
     public static bool SelfOnly(string? id)
     {
         string src = Normalize(id);
-        if (src is Value or Gold or Energy or MaxEnergy) return true;
+        if (src is Value or Gold or Energy or MaxEnergy or DeckCountOf) return true;
         return Generation.FormulaBuiltins.Find(src) is not null;
     }
 }

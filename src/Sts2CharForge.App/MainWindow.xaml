@@ -1129,6 +1129,17 @@
                                               SelectedValue="{Binding Target}"
                                               Visibility="{Binding NeedsTarget, Converter={StaticResource BoolToVis}}"/>
 
+                                    <!-- V0.2.271（用户要求「参数页增加牌组里某种牌数，范围包括自定义关键词和组」）：
+                                         只有来源选「牌组里某种牌的数量」时才出现；候选 = 范围限定那一整份
+                                         （不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 每个自定义关键词 / 每个组）。 -->
+                                    <TextBlock Text="数牌组里的哪种牌" Style="{StaticResource Label}"
+                                               Visibility="{Binding ShowDeckFilter, Converter={StaticResource BoolToVis}}"/>
+                                    <ComboBox Style="{StaticResource Pick}" DisplayMemberPath="Display" SelectedValuePath="Id"
+                                              ItemsSource="{Binding DeckFilterOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              SelectedValue="{Binding DeckFilter}"
+                                              Visibility="{Binding ShowDeckFilter, Converter={StaticResource BoolToVis}}"
+                                              ToolTip="数的是**整副牌组**（跨战斗那一副，不是战斗里的抽牌堆）里符合这个范围的牌有几张。&#10;范围能选攻击 / 技能 / 能力 / 诅咒 / 状态，也能选「自定义关键词」页加的关键词，以及「组」页建的组里的牌。"/>
+
                                     <TextBlock Text="增益 / 减益（选了「增益/减益（状态层数）」时用）" Style="{StaticResource Label}"
                                                Visibility="{Binding IsPower, Converter={StaticResource BoolToVis}}"/>
                                     <!-- 和「本体状态改写」页同一个可搜索下拉（本体 200+ 个状态，不打字很难找） -->

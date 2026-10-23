@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -1504,7 +1504,7 @@ public static class ForgeGraphGen
         foreach (var param in UsedParams(p, g))
         {
             string name = ParamNames.Normalize(param.Name);
-            sb.AppendLine($"        decimal {ForgeFormula.ParamVar(name)} = {ForgeFormula.ParamExpr(param)};   // {name}= {param.Summary}");
+            sb.AppendLine($"        decimal {ForgeFormula.ParamVar(name)} = {ForgeFormula.ParamExpr(param, p)};   // {name}= {param.Summary}");
         }
 
         // X = 当前所有能量 / Y = 当前所有额外资源量。
@@ -2376,7 +2376,7 @@ public static class ForgeGraphGen
             .Select(param =>
             {
                 string name = ParamNames.Normalize(param.Name);
-                return $"decimal {ForgeFormula.ParamVar(name)} = {ForgeFormula.ParamExpr(param)};   // {name}= {param.Summary}";
+                return $"decimal {ForgeFormula.ParamVar(name)} = {ForgeFormula.ParamExpr(param, p)};   // {name}= {param.Summary}";
             })
             .ToList();
 

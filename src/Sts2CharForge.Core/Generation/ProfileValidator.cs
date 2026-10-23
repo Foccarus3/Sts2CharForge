@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1364,19 +1364,41 @@ public static class ProfileValidator
         try
         {
             string sts2 = Path.Combine(p.Paths.GameDataDir ?? "", "sts2.dll");
-            if (File.Exists(sts2) && Sts2Metadata.HasMethod(sts2, "AttackCommand", "FromCard", 2) == false)
+            if (File.Exists(sts2))
             {
-                // 把**他这份 dll 里真实的签名**打出来：本体改成了什么一眼就能看见，
-                // 不用再问用户「你的 dll 发我一下」（用户报过：只有这一条错，来回问一轮太慢）。
-                var overloads = Sts2Metadata.MethodOverloads(sts2, "AttackCommand", "FromCard");
-                string found = overloads.Count == 0
-                    ? "连 FromCard 这个方法都没找到"
-                    : "实际只有：" + string.Join(" / ", overloads);
-                issues.Add(new("错误", "本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)` 这个重载"
-                    + $"（{found}）"
-                    + " —— **你这份游戏的版本和本工具假设的不一样**："
-                    + "生成出来的代码会在编译期报 `CS1501 FromCard 方法没有采用 2 个参数的重载`。"
-                    + "请换用与本工具匹配的游戏版本，或把 `data_sts2_*\\sts2.dll` 发给工具作者适配。"));
+                string dataDir = (p.Paths.GameDataDir ?? "").TrimEnd('\\', '/');
+                string? gameDir = dataDir.Length == 0 ? null : Directory.GetParent(dataDir)?.FullName;
+                string? dllVer = Sts2Metadata.DllProductVersion(sts2);
+                string? dllCommit = Sts2Metadata.CommitOf(dllVer);
+                string? relVer = Sts2Metadata.GameVersion(gameDir);
+                string? relCommit = Sts2Metadata.GameCommit(gameDir);
+                // 「我读的是哪份 dll」也一起写出来（用户问过「会不会拿的是反编译/解包那份公开版」——
+                // 这条报错只看「游戏 data 目录」，把路径 + dll 自己的版本串摆出来就能自查）
+                string readInfo = $"读的是 {sts2}，dll 版本 {dllVer ?? "(无版本信息)"}"
+                    + (relVer is null ? "" : $"，游戏目录 release_info = {relVer}");
+
+                if (Sts2Metadata.HasMethod(sts2, "AttackCommand", "FromCard", 2) == false)
+                {
+                    // 把**他这份 dll 里真实的签名**打出来：本体改成了什么一眼就能看见，
+                    // 不用再问用户「你的 dll 发我一下」（用户报过：只有这一条错，来回问一轮太慢）。
+                    var overloads = Sts2Metadata.MethodOverloads(sts2, "AttackCommand", "FromCard");
+                    string found = overloads.Count == 0
+                        ? "连 FromCard 这个方法都没找到"
+                        : "实际只有：" + string.Join(" / ", overloads);
+                    issues.Add(new("错误", "本体没有 `AttackCommand.FromCard(CardModel, CardPlay?)` 这个重载"
+                        + $"（{found}；{readInfo}）"
+                        + " —— **你这份游戏的版本和本工具假设的不一样**："
+                        + "生成出来的代码会在编译期报 `CS1501 FromCard 方法没有采用 2 个参数的重载`。"
+                        + "请换用与本工具匹配的游戏版本，或把 `data_sts2_*\\sts2.dll` 发给工具作者适配。"));
+                }
+
+                // dll 和游戏目录的 release_info.json 不是同一次构建 → 多半是「游戏 data 目录」指错了：
+                // 指到解包/反编译出来的那份、或者某份旧副本（用户问过：会不会拿的是公开版的文件）。
+                // dll 的 ProductVersion 是 `0.1.0+<commit>`，release_info 里正好也写着 commit，一对就知道。
+                if (!Sts2Metadata.SameCommit(dllCommit, relCommit))
+                    issues.Add(new("警告", $"「游戏 data 目录」里这份 sts2.dll 是**另一次构建**（dll 里记的 commit {dllCommit}，"
+                        + $"游戏目录 release_info.json 记的是 {relCommit}）—— 多半是这个目录指到了旧副本 / 解包（反编译）出来的那份。"
+                        + $"换回游戏自己的 `{(gameDir ?? "<游戏目录>")}\\data_sts2_windows_x86_64` 再试。"));
             }
         }
         catch { /* 只是核对，读不出来就算了 */ }

@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -1466,6 +1466,32 @@ public static class EffectCatalog
         {
             if (c is null || c.IsVanillaCard) continue;
             if (c.GroupIdList.Contains(id, StringComparer.Ordinal)) list.Add(c);
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// V0.2.271（用户要求「自定义参数页增加牌组里某种牌数，某种可以选择范围包括自定义关键词和组」）：
+    /// 按范围限定拿到**牌列表**（组 / 自定义关键词 / 内置牌型都能认）。
+    /// 内置牌型（攻击 / 技能 / 能力 / 诅咒 / 状态）返回该类型里的自己的牌 ——
+    /// 生成端对内置牌型走运行时 <c>c.Type</c> 判据，这里只是给「这个范围是空的」这类判断用。
+    /// </summary>
+    public static List<CardSpec> CardSetForFilter(CharacterProfile? p, string? filterId)
+    {
+        var list = new List<CardSpec>();
+        if (p is null) return list;
+        string v = (filterId ?? "").Trim();
+        if (IsCardGroupFilter(v)) return CardGroupCards(p, v);
+        if (IsKeywordFilter(v)) return KeywordGroupCards(p, v);
+        foreach (var c in p.AllCards)
+        {
+            if (c is null || c.IsVanillaCard) continue;
+            if (v.Length == 0 || string.Equals(v, "Any", StringComparison.Ordinal))
+            {
+                list.Add(c);
+                continue;
+            }
+            if (string.Equals(c.CardType, v, StringComparison.Ordinal)) list.Add(c);
         }
         return list;
     }

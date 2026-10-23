@@ -2224,6 +2224,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	};
 
 	/// <summary>
+	/// V0.2.271（用户要求「参数页增加牌组里某种牌数，范围包括自定义关键词和组」）：
+	/// 「数牌组里的哪种牌」下拉的候选 = 那一整份范围限定（不限 / 攻击 / 技能 / 能力 / 诅咒 / 状态 /
+	/// 每个自定义关键词 / 每个组）。每次取值现算，所以新建关键词 / 组之后下拉里马上就有。
+	/// </summary>
+	public IReadOnlyList<SpawnFilterOption> DeckFilterOptions =>
+		EffectCatalog.SpawnFiltersFor(_profile);
+
+	/// <summary>
 	/// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：先古卡页「被替换的初始卡」下拉的候选。
 	/// 第一项 = 「（自动：初始卡组里第一张）」（Id 为空）。
 	///
@@ -17298,6 +17306,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("版本核对：只比前两位（0.111.x 之间不打扰；0.112 才算不匹配）",
 						!Sts2Metadata.VersionMismatch("v0.111.9") && Sts2Metadata.VersionMismatch("v0.112.0")
 						&& !Sts2Metadata.VersionMismatch(null), "前两位比");
+
+					// 「这份 dll 是不是这次构建的」——dll 的 ProductVersion 是 `0.1.0+<commit>`，
+					// 游戏目录 release_info.json 里也写着 commit：两边一对就知道有没有指到旧副本 / 解包那份
+					string? dllVer = Sts2Metadata.DllProductVersion(realDll);
+					string? dllCommit = Sts2Metadata.CommitOf(dllVer);
+					string? relCommit = Sts2Metadata.GameCommit(gameDir);
+					Check("dll 自查：ProductVersion 读得到、里面带 commit（形如 0.1.0+41cef1ea…）",
+						dllVer is not null && dllCommit is not null, $"{dllVer} → commit {dllCommit ?? "(没摘出来)"}");
+					Check("dll 自查：本机 dll 的 commit 和游戏目录 release_info.json 一致（= 同一次构建；不一致就是路径指错了）",
+						Sts2Metadata.SameCommit(dllCommit, relCommit)
+						&& Sts2Metadata.SameCommit("41cef1ea4657c524", "41cef1ea")          // 长 × 短 → 同一个
+						&& !Sts2Metadata.SameCommit("41cef1ea4657c524", "deadbee0"),        // 不同 → false
+						$"dll {dllCommit ?? "?"} / release_info {relCommit ?? "?"}");
+					Check("dll 自查：摘不出 commit 时不瞎报（0.1.0 → null；反过来也返回 null）",
+						Sts2Metadata.CommitOf("0.1.0") is null && Sts2Metadata.CommitOf(null) is null
+						&& Sts2Metadata.GameCommit(Path.Combine(Path.GetTempPath(), "不存在的目录XYZ")) is null, "对");
 				}
 				else Check("（跳过）本机没有 sts2.dll，元数据读取未实测", true, "跳过");
 			}
@@ -24282,6 +24306,52 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						dirTrigNode.SetField("PowerDirection", "Down");
 						Check("V0.2.270：改成「只在下降时」→ if (amount >= 0m) return;",
 							CSharpCodeGen.RelicSource(dirProf2, dirRelic2, dirProf2.Relics.Count - 1).Contains("if (amount >= 0m) return;"), "生效了");
+					}
+
+					// ===== V0.2.271（用户要求）：参数页「牌组里某种牌的数量」，范围可含自定义关键词 / 组 =====
+					{
+						var dcProf = ProfileFactory.Sample();
+						var dcA = new CardSpec { Name = "自检甲斩", ClassName = "UiDeckProbeA", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+						var dcB = new CardSpec { Name = "自检乙防", ClassName = "UiDeckProbeB", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						dcProf.Cards.Add(dcA);
+						dcProf.Cards.Add(dcB);
+						dcProf.CardGroups.Clear();
+						var dcGroup = new CardGroupSpec { Id = "dcgrp", Name = "数牌组组" };
+						dcProf.CardGroups.Add(dcGroup);
+						dcA.GroupIds = new List<string> { "dcgrp" };
+						const string dcKw = "数牌组关键词";
+						dcProf.CustomKeywords.Add(new CustomKeywordSpec { Name = dcKw });
+						dcB.KeywordIds = new List<string> { dcKw };
+
+						string DcExpr(string filter)
+						{
+							var ps = new ParamSpec { Name = "Z", Source = ParamSources.DeckCountOf, DeckFilter = filter };
+							return ForgeFormula.ParamExpr(ps, dcProf) + "  // " + ps.Summary;
+						}
+						Check("V0.2.271：来源里有「牌组里某种牌的数量」",
+							ParamSources.All.Any(o => o.Id == ParamSources.DeckCountOf), ParamSources.Zh(ParamSources.DeckCountOf));
+						Check("V0.2.271：「哪种牌」那一栏只在选了这个来源时显示",
+							new ParamSpec { Source = ParamSources.DeckCountOf }.ShowDeckFilter
+							&& !new ParamSpec { Source = ParamSources.CurrentHp }.ShowDeckFilter, "只在这一档");
+						Check("V0.2.271：不限 → 直接数整副牌",
+							DcExpr("").Contains("__fgPlayer.Deck.Cards.Count"), DcExpr(""));
+						Check("V0.2.271：内置牌型（攻击）→ 运行时按 CardType 判",
+							DcExpr("Attack").Contains("__fgC.Type == CardType.Attack"), DcExpr("Attack"));
+						string dcGroupExpr = DcExpr("Group:dcgrp");
+						Check("V0.2.271：组 → 生成期解析成类名清单（c is UiDeckProbeA）",
+							dcGroupExpr.Contains("is UiDeckProbeA") && dcGroupExpr.Contains("牌组里"), dcGroupExpr);
+						string dcKwExpr = DcExpr("Keyword:" + dcKw);
+						Check("V0.2.271：自定义关键词 → 也解析成类名清单（c is UiDeckProbeB）",
+							dcKwExpr.Contains("is UiDeckProbeB") && dcKwExpr.Contains("牌组里「" + dcKw + "」的牌数"), dcKwExpr);
+						Check("V0.2.271：这个来源算「自己专属」（不显示「从谁身上取」）",
+							ParamSources.SelfOnly(ParamSources.DeckCountOf)
+							&& !new ParamSpec { Source = ParamSources.DeckCountOf }.NeedsTarget, "自己专属");
+						Check("V0.2.271：下拉候选里既有内置牌型，也有自定义关键词和组",
+							EffectCatalog.SpawnFiltersFor(dcProf).Any(o => o.Id == "Attack")
+							&& EffectCatalog.SpawnFiltersFor(dcProf).Any(o => o.Id.StartsWith("Keyword:", StringComparison.Ordinal))
+							&& EffectCatalog.SpawnFiltersFor(dcProf).Any(o => o.Id.StartsWith("Group:", StringComparison.Ordinal))
+							&& DeckFilterOptions.Count > 0,
+							$"{EffectCatalog.SpawnFiltersFor(dcProf).Count} 项");
 					}
 
 					// V0.2.261（用户问「那我如何决定是哪张牌被替换呢」）：可以先古卡上自己指定「被换掉的那张初始卡」
@@ -33351,8 +33421,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				var paramLive = FormulaBuiltins.All.Where(b => !b.CardOnly).ToList();
 				Check("参数页的「从哪来」候选里含全部实时读数（回合 / 轮 / 四摞张数 / 丢弃·消耗·生成·复制 / 资源量 / 状态数）",
 					paramLive.All((FormulaBuiltin b) => ParamSources.All.Any((ParamSourceOption o) => o.Id == b.Id))
-					&& ParamSources.All.Count == 8 + paramLive.Count,
-					$"{ParamSources.All.Count} 条（固定来源 8 + 实时读数 {paramLive.Count}）");
+					&& ParamSources.All.Count == 9 + paramLive.Count,   // 9 = 8 个固定来源 + V0.2.271 的「牌组里某种牌的数量」
+					$"{ParamSources.All.Count} 条（固定来源 9 + 实时读数 {paramLive.Count}）");
 				Check("卡牌专属的读数（ThisCardDamage）**不在**参数来源下拉里（选了会恒 0）",
 					!ParamSources.All.Any((ParamSourceOption o) => o.Id == "ThisCardDamage")
 					&& FormulaBuiltins.Find("ThisCardDamage") is { CardOnly: true }, "不在");
@@ -33467,7 +33537,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					FormulaBuiltins.Find("ThisCardDamage")!.Expr("__fgPlayer", "__fgSelf"));
 				Check("卡牌专属的读数**不进**「自定义参数 / 组」的取值来源下拉（参数是打出那一刻先算一次的，选了会恒 0）",
 					!ParamSources.All.Any((ParamSourceOption o) => o.Id == "ThisCardDamage")
-					&& ParamSources.All.Count == 8 + FormulaBuiltins.All.Count((FormulaBuiltin b) => !b.CardOnly),
+					&& ParamSources.All.Count == 9 + FormulaBuiltins.All.Count((FormulaBuiltin b) => !b.CardOnly),
 					$"{ParamSources.All.Count} 条");
 				Check("参数参考窗里两类都能看到它（内置读数那一类按整张表列，来源那一类按 ParamSources 列）",
 					ParamReferenceWindow.BuildCategories(Profile).Any(c => c.Items.Any(i => i.Id == "ThisCardDamage")),

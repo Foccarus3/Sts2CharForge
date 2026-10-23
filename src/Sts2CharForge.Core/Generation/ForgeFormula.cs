@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -966,14 +966,14 @@ public static class ForgeFormula
             ? builtin.Expr(playerExpr, selfExpr)
             : (p.CustomParams.FirstOrDefault(x => x is not null
                     && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)) is { } param
-                ? InlineParam(param, playerExpr, selfExpr, targetExpr)
+                ? InlineParam(param, playerExpr, selfExpr, targetExpr, p)
                 : null),
     };
 
     /// <summary>把参数表达式里的局部变量替换成内联写法（见 <see cref="ConditionResolver"/> / <see cref="InlineResolver"/>）。</summary>
-    private static string InlineParam(ParamSpec p, string playerExpr, string selfExpr, string? targetExpr)
+    private static string InlineParam(ParamSpec p, string playerExpr, string selfExpr, string? targetExpr, CharacterProfile? profile = null)
     {
-        string expr = ParamExpr(p);
+        string expr = ParamExpr(p, profile);
         expr = expr.Replace("__fgSelf", selfExpr, StringComparison.Ordinal)
                    .Replace("__fgPlayer", playerExpr, StringComparison.Ordinal);
         if (expr.Contains("__fgTarget", StringComparison.Ordinal))
@@ -1011,7 +1011,7 @@ public static class ForgeFormula
     /// 把一条自定义参数翻成运行时求值的 C# 表达式（**打出牌的那一刻现算**）。
     /// 需求里点名的几种：自己最大生命 / 指定敌人的易伤层数 / 金币数 / 能量数…
     /// </summary>
-    public static string ParamExpr(ParamSpec p)
+    public static string ParamExpr(ParamSpec p, CharacterProfile? profile = null)
     {
         string src = ParamSources.Normalize(p.Source);
         string target = TargetExpr(p.Target);
@@ -1034,12 +1034,47 @@ public static class ForgeFormula
             // 本体「撕碎 Rend」的倍率就是这个数（`target.Powers.Count(TypeForCurrentAmount == Debuff)`），
             // 直接复用锻造页【状态列表】用的那个运行时帮手（同一个判据，不用写第二份）。
             case ParamSources.DebuffCount: return $"ForgeFormulaRuntime.PowerCount({target}, \"Debuff\", null)";
+        // V0.2.271（用户要求）：牌组里某种牌的数量（范围可含自定义关键词 / 组）
+        case ParamSources.DeckCountOf: return DeckCountExpr(p, profile);
         }
         // 用户要求：参数页也能监听那些「实时读数」（回合数 / 丢弃·消耗·生成·复制张数 / 拿到的资源量 /
         // 身上状态数…）—— 它们就是公式内置量那张表（界面 / 生成 / 回读同一份），直接借它的表达式。
         if (FormulaBuiltins.Find(src) is { } builtin)
             return builtin.Expr("__fgPlayer", "__fgSelf");
         return p.Value.ToString("0.############################", CultureInfo.InvariantCulture) + "m";
+    }
+
+    /// <summary>
+    /// V0.2.271（用户要求「牌组里某种牌数，范围可以是自定义关键词和组」）：
+    /// 牌组里符合某个范围的牌数。
+    ///
+    /// <para>内置牌型（攻击 / 技能 / 能力 / 诅咒 / 状态）走运行时判据 <c>c.Type == CardType.X</c>；
+    /// 自定义关键词 / 组在游戏里没有对应枚举，只能在**生成期**把成员解析成类名清单，写成
+    /// <c>c is A or B or …</c>（和「生成卡牌」那套范围同一个口径：生成期查表，运行时不再过滤）。</para>
+    /// </summary>
+    public static string DeckCountExpr(ParamSpec p, CharacterProfile? profile)
+    {
+        string filter = (p.DeckFilter ?? "").Trim();
+        if (filter.Length == 0 || string.Equals(filter, "Any", StringComparison.Ordinal))
+            return "(decimal)(__fgPlayer.Deck.Cards.Count)";
+        if (filter is "Attack" or "Skill" or "Power" or "Status" or "Curse")
+            return $"(decimal)(__fgPlayer.Deck.Cards.Where(__fgC => __fgC.Type == CardType.{filter}).Count())";
+        if (profile is null) return "0m";
+        var cards = Effects.EffectCatalog.CardSetForFilter(profile, filter);
+        if (cards.Count == 0) return "0m";
+        var n = Naming.From(profile);
+        var names = new List<string>();
+        foreach (var c in cards)
+        {
+            if (c is null) continue;
+            string cls = n.CardClassName(profile, c);
+            if (cls.Length > 0 && !names.Contains(cls)) names.Add(cls);
+        }
+        if (names.Count == 0) return "0m";
+        // 整副牌都是这些牌时不用逐个判（生成出来的表达式短一点）
+        int owned = profile.AllCards.Count(c => c is not null && !c.IsVanillaCard);
+        if (owned > 0 && names.Count >= owned) return "(decimal)(__fgPlayer.Deck.Cards.Count)";
+        return $"(decimal)(__fgPlayer.Deck.Cards.Count(__fgC => __fgC is {string.Join(" or ", names)}))";
     }
 
     /// <summary>

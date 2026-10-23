@@ -1,5 +1,23 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 164 批需求（V0.2.271：**参数页新增「牌组里某种牌的数量」，范围含自定义关键词 / 组**）
+
+> 用户要求：「自定义参数页增加牌组里某种牌数，某种可以选择范围包括自定义关键词和组」。
+> （详见 `docs/RELEASE_NOTES_V0.2.271.md`）
+>
+> **模型**：`ParamSources.DeckCountOf`（`SelfOnly` 为 true）+ `ParamSpec.DeckFilter`（范围限定 Id，
+> 空 = 不限）+ `ParamSpec.ShowDeckFilter`（只在选这个来源时显示那一栏）。
+>
+> **生成**：`ForgeFormula.DeckCountExpr` —— 不限 → `Deck.Cards.Count`；内置牌型 → 运行时
+> `c.Type == CardType.X`；自定义关键词 / 组 → **生成期**解析成类名清单，写 `c is A or B`
+> （复用 `EffectCatalog.CardSetForFilter` → `CardGroupCards` / `KeywordGroupCards`，口径只有一份）。
+> `ParamExpr` 因此多了一个 `CharacterProfile?` 参数（三个调用点都传了）。
+>
+> **界面**：参数编辑器新增「数牌组里的哪种牌」下拉，候选 = `EffectCatalog.SpawnFiltersFor(存档)`。
+>
+> **验收**：自检 **4430 PASS / 0 FAIL**（+8）；对拍 Sample 113 / WhiteCloak 412 逐字节相同
+> （中途发现「组名回退成 组：id」会改动两处生成注释，已改回原样，只在参数列表里补前缀）。
+
 ## 第 163 批需求（V0.2.269 + V0.2.270：**「层数变化方向」到底在哪 / 为什么不出现**）
 
 > 用户报：「触发时机『某个状态层数变化后』没看到栏『层数变化方向』」→ 修完后「锻造处也没看到」。
