@@ -1,4 +1,57 @@
-﻿# 待办队列（用户要求「全做完，不用一步步报备」）
+# 待办队列（用户要求「全做完，不用一步步报备」）
+
+## 第 171 批需求（**锻造图「仅本回合升级」→ 生成的代码 CS0103（声明写死 `__fgTempUp`，引用带节点哈希）**；已修，待发版）
+
+> 用户转来别人的构建失败截图（`DarkVinci` 这个模组）：
+> ```
+> cs\Cards\DarkVinciSwingPoint.cs(40,17): error CS0103: 当前上下文中不存在名称"__fgTempUpda676"
+> cs\Cards\DarkVinciSwingPoint.cs(40,47): error CS0103: 当前上下文中不存在名称"__fgTempUpda676"
+> ```
+>
+> **真因**：锻造图里的「仅本回合升级」附加处理（`SpawnUpgradedThisTurn`）会生成一句
+> `var __fgTempUp<6位哈希> = await PowerCmd.Apply<<角色>ForgeTempUpgradePower>(…)`，
+> 后面再用这个变量把升级「挂」到新卡上。两侧的变量名来自**两个不同地方**：
+> * 引用侧：`ForgeGraphGen.GraphTempUpVar(node, spec)` → `UniqueVar(node, "__fgTempUp")`，带节点哈希
+>   （同一张图上多处「仅本回合升级」才不会互相覆盖）；
+> * 声明侧：`ForgeGraphGen.EmitGraphTempUpgradeApply` 里**写死**了 `"__fgTempUp"` ——
+>   于是生成 `var __fgTempUp = …;` 但后面引用 `__fgTempUpda676` → CS0103（两处，都在同一行）。
+>
+> **修法**：`EmitGraphTempUpgradeApply` 增加 `string? tempUpVar` 参数，用**调用方算好的那个名字**去声明；
+> 4 个调用点传 `cvTempUp`，「生成卡牌」那条传 `genTempUp`。名字为空就不写（和以前一样）。
+> 没有勾「仅本回合升级」时一个字符都不变（红线）。
+>
+> **验收**：
+> * 探针 `_probe/tempupvar` **6/6 PASS**（合成 / 复制 / 变化三种都断言「声明名 == 引用名」且没有裸 `var __fgTempUp =`）；
+> * 同一份探针挂到**已发布 V0.2.277 的 Core.dll** 上跑 → **6 条 FAIL**，复现
+>   `变量：__fgTempUp / __fgTempUpd6de64`、`声明：__fgTempUp`（正是用户那条 CS0103）；
+> * `dotnet build` 全解决方案 **0 error**；`--uicheck` 见下（新增 4 条：三种效果 + 红线）。
+>
+> **给那位作者的答复**：不是他配置写错 —— 用修好的版本重新生成一次即可；勾了「仅本回合升级」的
+> 「生成 / 复制 / 变化卡牌」都会撞上这个。
+
+## 第 170 批需求（V0.2.277：**自定义描述里填能量图标**）
+
+> 用户要求：「就只需要在自定义描述能够填入能量图标，比如获得 2 点能量，在卡牌描述中能量的显示是图标而不是单纯『能量』二字」。
+> （详见 `docs/RELEASE_NOTES_V0.2.277.md`）
+>
+> **做法**：新增占位符 `{能量图标}`（`LocalizationGen.EnergyIconToken`），生成期替换成
+> `[img]res://images/packed/sprite_fonts/<角色 EnergyColor>_energy_icon.png[/img]`（本体 `EnergyIconsFormatter.cs:86`
+> 就是这种标记）。「填入参数…」菜单额外多这一条（`MainWindow.ExtraInsertTokens`，界面层，不进 `ParamHints`）。
+> 卡 / 遗物 / 药水三处自定义描述都走 `LocalizationGen.ResolveDescTokens`。
+>
+> **验收**：自检 **4441 PASS / 0 FAIL**（+3）；探针：`获得 2 点{能量图标}` → 生成
+> `获得 2 点[img]…/seven_energy_icon.png[/img]`。
+
+## 第 169 批需求（V0.2.276：**自定义描述能填能量图标**）
+
+> 用户要求：「能不能再自定义描述增加填入能量图标的公式」。（详见 `docs/RELEASE_NOTES_V0.2.276.md`）
+>
+> **做法**：`MainWindow.OnInsertParam` 额外追加一条 `{Energy:energyIcons()}`（卡 / 遗物 / 药水共用的「填入参数…」菜单）。
+> 写在本体 `EnergyIconsFormatter` 上 —— 按角色能量颜色画，不写死资源路径（本体卡片文案就是 `Gain {Energy:energyIcons()}.`）。
+> 特意加在**界面层**：`CSharpCodeGen.ParamHints` 代表「这条效果真的声明过的变量」，校验器拿它比对卡面占位符，
+> 混进去会误报。校验器另加提示：遗物描述里用了它 → 取不到值时卡面会原样印花括号。
+>
+> **验收**：自检 **4438 PASS / 0 FAIL**（+2）。
 
 ## 第 168 批需求（V0.2.275：**撤回「概率自动开启」回归 —— 不再全是 50%**）
 

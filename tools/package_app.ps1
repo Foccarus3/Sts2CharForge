@@ -63,7 +63,8 @@ New-Item -ItemType Directory -Force $prog | Out-Null
 
 Step "发布自包含版（Release / win-x64）"
 dotnet publish (Join-Path $T3 "src\Sts2CharForge.App\Sts2CharForge.App.csproj") `
-    -c Release -r win-x64 --self-contained true -p:DebugType=none `
+    -c Release -r win-x64 --self-contained true -p:DebugType=none -p:DebugSymbols=false `
+    "-p:PathMap=$T3\=/_src/" `
     -o $prog -v q
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish 失败（exit $LASTEXITCODE）" }
 

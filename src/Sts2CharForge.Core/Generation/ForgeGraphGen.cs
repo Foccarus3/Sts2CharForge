@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -3125,7 +3125,7 @@ public static class ForgeGraphGen
                     return;
                 }
                 // 「仅本回合升级」要先挂那个临时状态（和下面非 0 那条路同一个调用）
-                EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, indent);
+                EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, indent, cvTempUp);
                 ViaCodeWriterAppend(sb, indent, w => CSharpCodeGen.EmitCopySelfPublic(w, p, cvE,
                     ctx.CardSelfExpr, "__fgPlayer", "__fgSelf", cvTempUp));
                 return;
@@ -3150,7 +3150,7 @@ public static class ForgeGraphGen
                     }
                     else
                     {
-                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind, cvTempUp);
                         sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
                         sb.AppendLine(__ind + "{");
                         sb.AppendLine(__ind + $"    for (int __fgCopy = 0; __fgCopy < {copies}; __fgCopy++)");
@@ -3169,7 +3169,7 @@ public static class ForgeGraphGen
                     else
                     {
                         // 变化是**新建一张再把原卡移掉**，只有返回值里的 cardAdded 才是变出来的那张（卡牌那条链同款写法）
-                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind, cvTempUp);
                         sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
                         sb.AppendLine(__ind + "{");
                         sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.TransformToRandom({selVar}C, __fgPlayer.RunState.Rng.CombatCardSelection);");
@@ -3187,7 +3187,7 @@ public static class ForgeGraphGen
                         sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
                     else
                     {
-                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind);
+                        EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind, cvTempUp);
                         sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
                         sb.AppendLine(__ind + "{");
                         sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
@@ -3286,7 +3286,7 @@ public static class ForgeGraphGen
             string? genTempUp = GraphTempUpVar(node, genSpec);
             EmitRepeatLoop(sb, indent, timesExpr, __ind2 =>
             {
-                EmitGraphTempUpgradeApply(sb, p, genSpec, ctx, __ind2);
+                EmitGraphTempUpgradeApply(sb, p, genSpec, ctx, __ind2, genTempUp);
                 sb.AppendLine(__ind2 + $"for (int __fgN = 0; __fgN < (int)({amount}); __fgN++)");
                 sb.AppendLine(__ind2 + "{");
                 sb.AppendLine(__ind2 + $"    CardModel __gen = {combatState}.CreateCard<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(__fgPlayer);");
@@ -3976,11 +3976,16 @@ public static class ForgeGraphGen
     /// 和 <see cref="CSharpCodeGen.EmitGenerateCard"/> 的 <c>tempUpSource</c> 是同一个约定。
     /// </summary>
     private static void EmitGraphTempUpgradeApply(StringBuilder sb, CharacterProfile p, EffectSpec? spec,
-        EmitCtx ctx, string indent)
+        EmitCtx ctx, string indent, string? tempUpVar)
     {
         if (spec is not { SpawnUpgradedThisTurn: true }) return;
+        // ⚠ 变量名必须和**用它的那一句**一致：`GraphTempUpVar` 给的是 `__fgTempUp` + 节点哈希
+        //（同一张图上多处「仅本回合升级」才不会互相覆盖），而这里以前**写死了** `__fgTempUp` ——
+        // 于是生成 `var __fgTempUp = …;` 但后面引用 `__fgTempUp<hash>` → CS0103
+        //（用户实测报的 `DarkVinciSwingPoint.cs(40,17) 当前上下文中不存在名称 __fgTempUpda676`）。
+        if (string.IsNullOrEmpty(tempUpVar)) return;
         var w = new CodeWriter();
-        CSharpCodeGen.EmitTempUpgradePowerApply(w, "__fgTempUp", ctx.CardSelfExpr, "__fgSelf");
+        CSharpCodeGen.EmitTempUpgradePowerApply(w, tempUpVar, ctx.CardSelfExpr, "__fgSelf");
         foreach (string line in w.ToString().Replace("\r\n", "\n").Split('\n'))
         {
             string t = line.Trim();

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -824,6 +824,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// 卡牌给 <c>{Damage:diff()}</c> 这种（升级后显示升级值），遗物 / 药水给 <c>{Damage}</c>。
 	/// 一个候选就直接插，多个弹一个菜单让你挑。
 	/// </summary>
+	/// <summary>
+	/// 自检用（V0.2.276）：「填入参数…」菜单里到底会不会多出「能量图标」那一条。
+	/// 直接调界面那段逻辑太重（要真按钮 + 选中卡），所以这里把「界面额外加的那一条」抽成可读的常量集合。
+	/// </summary>
+	private static bool InsertParamMenuHasEnergyIcon() =>
+		ExtraInsertTokens.Any(t => t.Token == "{Energy:energyIcons()}");
+
+	/// <summary>「填入参数…」菜单里**界面额外加**的占位符（不属于「效果声明过的变量」）。</summary>
+	private static readonly List<(string Token, string Desc)> ExtraInsertTokens = new()
+	{
+		(LocalizationGen.EnergyIconToken, "能量图标（换成一个你角色颜色的能量图标；可以写在「获得 2 点」后面）"),
+	};
 	private void OnInsertParam(object sender, RoutedEventArgs e)
 	{
 		if (sender is not Button btn || btn.Tag is not TextBox box) return;
@@ -836,6 +848,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		};
 		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
 		var hints = CSharpCodeGen.ParamHints(effects ?? Enumerable.Empty<EffectSpec>(), isCard);
+		// V0.2.276（用户要求「自定义描述里能填能量图标」）：本体卡面描述用的就是 SmartFormat 的
+		// `{Energy:energyIcons()}`（本体 ADRENALINE / ALIGNMENT：`Gain {Energy:energyIcons()}.`）——
+		// 图标由本体 EnergyIconsFormatter 按**你角色的能量颜色**画，所以这里只给写法、不塞资源路径。
+		// 特意加在**界面这一层**：CSharpCodeGen.ParamHints 是「这条效果真的声明过的变量」，
+		// 校验器拿它比对卡面占位符，混进一条非变量会让校验误报。
+		hints.AddRange(ExtraInsertTokens);
 		// ⚠ V0.2.130：原来这里给卡牌多塞三个「牌堆实时张数」占位符
 		//   （{DrawPile} / {DiscardPile} / {ExhaustPile}，配「卡面显示牌堆张数」那个勾选框）。
 		//   用户要求整块去掉 → 那三个候选、那句「先去勾它」的提示、以及那个勾选框一起删了。
@@ -23914,6 +23932,58 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						dupMissing.Count == 0 ? "都定义了（" + dupUsed.Count + " 个）" : "缺：" + string.Join(" / ", dupMissing));
 				}
 
+				// ===== 锻造图「仅本回合升级」的变量名：声明写死了 `__fgTempUp`，引用却带节点哈希 =====
+				// 用户实测报的：`DarkVinciSwingPoint.cs(40,17) error CS0103: 当前上下文中不存在名称 __fgTempUpda676`。
+				// 真因：`GraphTempUpVar(node, spec)` 给的是 `__fgTempUp` + 节点哈希（同一张图上多处「仅本回合升级」
+				// 才不会互相覆盖），而 `EmitGraphTempUpgradeApply` 声明时**写死**了 `__fgTempUp`。
+				{
+					string TempUpCard(string kind, bool toggle)
+					{
+						var prof = ProfileFactory.Sample();
+						prof.Cards.Add(new CardSpec
+						{
+							Name = "目标卡", ClassName = "UiTempUpTarget", CardType = "Attack", Rarity = "Common",
+							Cost = 1, InCardPool = true,
+						});
+						var g = new ForgeGraphSpec();
+						var trig = new ForgeNodeSpec { Kind = "Trigger" };
+						trig.SetField("Timing", ForgeTimings.CardPlayed);
+						var eff = new ForgeNodeSpec { Kind = "Effect" };
+						eff.SetField("Effect", kind);
+						eff.SetField("SpawnPick", "Fixed");
+						eff.SetField("SpawnCardId", "UiTempUpTarget");
+						if (toggle) eff.SetField("SpawnUpgradedThisTurn", "1");   // 「仅本回合升级」
+						g.Nodes.Add(trig);
+						g.Nodes.Add(eff);
+						g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+						var c = new CardSpec
+						{
+							Name = "自检本回合升级", ClassName = "UiTempUp" + kind, CardType = "Skill", Rarity = "Common",
+							Cost = 1, InCardPool = true, IsForged = true, ForgeGraph = g,
+						};
+						prof.Cards.Add(c);
+						return CSharpCodeGen.CardSource(prof, c, prof.Cards.Count - 1);
+					}
+					void TempUpAudit(string tag, string src)
+					{
+						var used = System.Text.RegularExpressions.Regex.Matches(src, @"__fgTempUp\w*")
+							.Select(m => m.Value).Distinct().ToList();
+						var declared = System.Text.RegularExpressions.Regex
+							.Matches(src, @"var (__fgTempUp\w*) = await PowerCmd\.Apply<")
+							.Select(m => m.Groups[1].Value).ToHashSet();
+						var missing = used.Where(n => !declared.Contains(n)).ToList();
+						Check($"{tag}：「仅本回合升级」声明的变量名 == 引用名（不会再 CS0103 当前上下文中不存在）",
+							missing.Count == 0 && declared.Count > 0,
+							missing.Count == 0 ? string.Join(" / ", declared) : "没声明：" + string.Join(" / ", missing));
+					}
+					TempUpAudit("锻造图「生成卡牌 + 仅本回合升级」", TempUpCard("GenerateCard", true));
+					TempUpAudit("锻造图「复制卡牌 + 仅本回合升级」", TempUpCard("CopyCard", true));
+					TempUpAudit("锻造图「变化卡牌 + 仅本回合升级」", TempUpCard("TransformCard", true));
+					// 红线：没勾「仅本回合升级」时不该冒出这个变量（生成文本不变）
+					Check("（红线）没勾「仅本回合升级」→ 不生成 __fgTempUp 变量",
+						!TempUpCard("GenerateCard", false).Contains("__fgTempUp", StringComparison.Ordinal), "没生成");
+				}
+
 				// ===== V0.2.255（用户要求「让状态进组，然后在清空指定状态的效果里可以选组」）=====
 				{
 					var pgProf = ProfileFactory.Sample();
@@ -24358,6 +24428,35 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							$"{EffectCatalog.SpawnFiltersFor(dcProf).Count} 项");
 					}
 
+					// ===== V0.2.276（用户要求「自定义描述里能填能量图标」）=====
+					{
+						// V0.2.276：Core 的 ParamHints 只给「真的声明过的变量」（校验器拿它比对占位符）；
+						// 能量图标是**额外**的一行，加在界面那层（ExtraInsertTokens）。
+						Check("V0.2.276：Core 的 ParamHints 不混入能量图标（它不是「声明过的变量」）",
+							!CSharpCodeGen.ParamHints(new List<EffectSpec> { new EffectSpec { Kind = "Damage", Amount = 6m } }, true)
+								.Any(h => h.Token.Contains("energyIcons")), "没混入");
+						Check("V0.2.277：「填入参数…」菜单里会多一条能量图标（界面那层加）",
+							ExtraInsertTokens.Any(x => x.Token == LocalizationGen.EnergyIconToken), LocalizationGen.EnergyIconToken);
+					}
+					// ===== V0.2.277（用户要求：自定义描述里「获得 2 点能量」的能量显示成图标）=====
+					{
+						var eiProf = ProfileFactory.Sample();
+						var eiCard = new CardSpec
+						{
+							Name = "自检能量卡", ClassName = "UiEnergyIconCard", CardType = "Skill", Rarity = "Common", Cost = 1,
+							InCardPool = true, CustomDescription = "获得 2 点" + LocalizationGen.EnergyIconToken, CustomDescriptionReplaces = true,
+						};
+						eiProf.Cards.Add(eiCard);
+						string eiJson = LocalizationGen.CardsJson(eiProf);
+						Check("V0.2.277：自定义描述里的 {能量图标} → 生成成你角色颜色的 [img]…_energy_icon.png[/img]",
+							eiJson.Contains("_[Naming]" ) == false
+							&& eiJson.Contains(Environment.NewLine.Length > 0 ? "获得 2 点[img]res://images/packed/sprite_fonts/" : ""),
+							"手写占位符被换成了图标标记");
+						Check("V0.2.277：换出来的颜色前缀 = 这个角色自己的 EnergyColor（不是写死 ironclad）",
+							eiJson.Contains($"/{Naming.From(eiProf).EnergyColor}_energy_icon.png[/img]"), Naming.From(eiProf).EnergyColor);
+						Check("V0.2.277：没写占位符的卡描述一个字都不变（不会平白插图标）",
+							!LocalizationGen.CardsJson(ProfileFactory.Sample()).Contains("_energy_icon.png"), "没插");
+					}
 					// ===== V0.2.273（用户报「从消耗牌堆拿牌限制了仅状态牌，还是可以拿其他的牌」）=====
 					{
 						var tkProf = ProfileFactory.Sample();

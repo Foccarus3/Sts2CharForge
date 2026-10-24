@@ -108,8 +108,8 @@ public static class LocalizationGen
             string keywordText = keywordBase;
             bool keywordDiffers = !string.Equals(keywordBase, keywordUp, StringComparison.Ordinal);
             // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
-            string customDesc = (c.CustomDescription ?? "").Trim();
-            string customUp = (c.UpgradedCustomDescription ?? "").Trim();
+            string customDesc = ResolveDescTokens((c.CustomDescription ?? "").Trim(), p);
+            string customUp = ResolveDescTokens((c.UpgradedCustomDescription ?? "").Trim(), p);
             // 自动描述：普通卡 = 效果栏自动写的那段；锻造卡 = 从**节点图**写出来的（以前这种卡是空的）。
             // 升级前 / 升级后各算一次：两段不一样（或你给升级后单独写了自定义描述）时，
             // 用本体的 {IfUpgraded:show:升级后|没升级} 包起来，游戏里按有没有升级自动显示对应那一版。
@@ -186,6 +186,27 @@ public static class LocalizationGen
     }
 
     /// <summary>自动描述 + 自定义描述（勾了「替换」就只用自定义那段）。</summary>
+    /// <summary>
+    /// V0.2.277（用户要求「自定义描述里能填能量图标」）：把自定义描述里的 <c>{能量图标}</c> 换成**真正**的图标标记。
+    ///
+    /// <para>本体卡面文案里的能量图标是 <c>[img]res://images/packed/sprite_fonts/&lt;颜色前缀&gt;_energy_icon.png[/img]</c>
+    /// （见本体 <c>EnergyIconsFormatter.cs:86</c>），颜色前缀由卡池的 <c>EnergyColorName</c> 决定 ——
+    /// 也就是<b>你角色的</b>能量颜色（生成期就知道：<c>Naming.EnergyColor</c>）。</para>
+    ///
+    /// <para>为什么不在描述里直接用本体那个 <c>{Energy:energyIcons()}</c>：它要求描述变量里真有 <c>Energy</c>
+    /// （只有带能量效果才有），否则会原样印出花括号；而用户要的只是「把这几个字换成图标」，
+    /// 所以这里在**生成期**就替换掉，任何卡 / 遗物 / 药水都能用。</para>
+    /// </summary>
+    private static string ResolveDescTokens(string text, CharacterProfile p)
+    {
+        if (text.Length == 0 || !text.Contains(EnergyIconToken, StringComparison.Ordinal)) return text;
+        string color = Naming.From(p).EnergyColor;
+        string icon = $"[img]res://images/packed/sprite_fonts/{color}_energy_icon.png[/img]";
+        return text.Replace(EnergyIconToken, icon, StringComparison.Ordinal);
+    }
+
+    /// <summary>自定义描述里那个「能量图标」占位符（界面上「填入参数…」插的就是它）。</summary>
+    public const string EnergyIconToken = "{能量图标}";
     private static string MergeAutoAndCustom(string auto, string custom, bool replaces)
     {
         if (custom.Length == 0) return auto;
@@ -571,7 +592,7 @@ public static class LocalizationGen
                 relicBody = RelicSingleTriggerBody(r.First, relicAllEffects, p, literalAmount: relicLiteral);
             }
             relicBody += ConditionSuffix(r.Condition, isCard: false, p);
-            string relicCustom = (r.CustomDescription ?? "").Trim();
+            string relicCustom = ResolveDescTokens((r.CustomDescription ?? "").Trim(), p);
             if (relicCustom.Length > 0)
                 relicBody = r.CustomDescriptionReplaces
                     ? relicCustom
@@ -1006,7 +1027,7 @@ public static class LocalizationGen
                 dict[$"{entry}.selectionScreenPrompt"] = SelectPromptText(potionPromptEffects);
             // 药水自定义描述（用户要求）：留空 = 自动那段；写了就追加（勾「替换」就整段换掉）
             string potionBody = Describe(s.Effects, p, PotionTargetPhrase(s.TargetType));
-            string potionCustom = (s.CustomDescription ?? "").Trim();
+            string potionCustom = ResolveDescTokens((s.CustomDescription ?? "").Trim(), p);
             dict[$"{entry}.description"] = potionCustom.Length == 0
                 ? potionBody
                 : (s.CustomDescriptionReplaces

@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1442,6 +1442,21 @@ public static class ProfileValidator
         // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
         ValidateAnimation(issues, p);
 
+        // ===== V0.2.276（用户要求「自定义描述里能填能量图标」）=====
+        // 「填入参数…」里现在有 `{Energy:energyIcons()}`。它依赖本体卡面描述变量里那个 Energy ——
+        // 卡牌一定有；遗物 / 药水 / 状态的描述变量集不一样，取不到值时会**原样印出** `{Energy:energyIcons()}`。
+        // 所以这里只对非卡牌的自定义描述给一句提示（卡牌不打扰）。
+        {
+            foreach (var r in p.Relics)
+            {
+                if (r is null) continue;
+                string d = r.CustomDescription ?? "";
+                if (d.Contains("{Energy", StringComparison.Ordinal))
+                    issues.Add(new("提示", $"遗物「{r.Name}」的自定义描述里用了 `{{Energy:energyIcons()}}`（能量图标）——"
+                        + "遗物描述的变量集不一定有 Energy，取不到时卡面上会原样印出那段花括号。"
+                        + "如果悬停时看到花括号，就把它改成普通文字。"));
+            }
+        }
         // ===== V0.2.275（用户报「概率填了百分比却没生效 / 又全被自动勾成 50%」）=====
         // 概率必须**显式勾选**才生效（V0.2.272 那版「自动开启」会把每一条都变成 50% 掷骰，已撤回）。
         // 填了 1~99 的百分比或写了概率公式却没勾 → 提示一句，免得又是静默不生效。
