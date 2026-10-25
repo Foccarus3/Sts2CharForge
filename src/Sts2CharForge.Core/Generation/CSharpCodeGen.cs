@@ -9262,7 +9262,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
     }
 
+    /// <summary>
+    /// V0.2.283：命中次数来自 X 时，X = 0 就整条跳过（本体对 WithHitCount(0) 仍会结算一下）。
+    /// 其它情况直接交给 EmitAttackCore（老存档生成的文本逐字不变）。
+    /// </summary>
     private static void EmitAttack(CodeWriter w, EffectSpec e, string amt, bool useX = false, bool captureFatal = false,
+        CardReadings capture = CardReadings.None)
+    {
+        if (useX && e.RepeatIsX)
+        {
+            w.Open("if (x > 0)   // X = 0（零费打出）：这条攻击一次都不执行");
+            EmitAttackCore(w, e, amt, useX, captureFatal, capture);
+            w.Close();
+            return;
+        }
+        EmitAttackCore(w, e, amt, useX, captureFatal, capture);
+    }
+
+    private static void EmitAttackCore(CodeWriter w, EffectSpec e, string amt, bool useX = false, bool captureFatal = false,
         CardReadings capture = CardReadings.None)
     {        // 斩杀条件要用「上一条攻击的结果」：把 AttackCommand 记到 __lastAttack，
         // 并在打之前记下「目标的 Power 允许触发斩杀」（本体 Feed / HandOfGreed / TheHunt 都是这个顺序：
