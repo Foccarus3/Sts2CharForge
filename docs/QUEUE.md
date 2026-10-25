@@ -1,5 +1,22 @@
 ﻿# 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 172 批需求（V0.2.280：**IfUpgraded 嵌套占位符炸卡面 / 中文花括号 / 先古牙齿不显示**）
+
+> 用户贴 godot 日志问「为什么在先古之民房间不显示先古牙齿」。日志里没有 Archaic 记录，但有 28 条本地化错误。
+> （详见 `docs/RELEASE_NOTES_V0.2.280.md`）
+>
+> **① 卡面文案炸**：`{IfUpgraded:show:A|B}` 里套了 `{ColorXingtai:diff()}` → SmartFormat 报
+> 「too many closing braces」，整段描述渲染失败。修法：两版文案含 `{` 时不套 IfUpgraded，用没升级那版。
+>
+> **② 中文花括号**：`每回合生成{刺你！}` → 「Invalid character in the selector」。校验器新增警告：
+> 自定义描述里「花括号内不是已知变量」→ 提示改用「」或去掉花括号。
+>
+> **③ 先古牙齿不显示（真因）**：本体 `ArchaicTooth.SetupForPlayer` **返回 bool**，房间据此判断能不能给这个角色；
+> 我们的 Prefix 跳过本体却没写 `__result`，于是返回 **false** = 「这角色不可用」→ 房间不显示。
+> 修法：三个 SetupForPlayer 补丁补 `__result = true;`（`AfterObtained` 那两个是 Task，不能加 —— 探针真编译抓到 CS0029 已修）。
+>
+> **验收**：自检 **4453 PASS / 0 FAIL**（含真编译探针）。
+
 ## 第 171 批需求（V0.2.279：**两块【触发时机】落同一个钩子 → 合并生成，两块都跑**）
 
 > 用户贴了工具那条「第 2 块白配了」的提示并要求「做完」。（详见 `docs/RELEASE_NOTES_V0.2.279.md`）
