@@ -2805,6 +2805,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal const string XVar = "x";
 
     /// <summary>
+    /// V0.2.286（用户报「猩红创痕」的锻造图里【变化卡牌】数值填 0 会卡死）：这个「张数」表达式是不是**字面 0**。
+    /// 本体 <c>CardSelectorPrefs(提示, 0)</c> 的选择界面会一直等一个不可能成立的确认（卡死），
+    /// 所以字面 0 的效果整条跳过。认得的写法：<c>0</c> / <c>(0m)</c> / <c>0m</c> / <c>(0)</c>；
+    /// 公式 / 变量（<c>x</c>、<c>(base.Amount)</c>…）一律不算，走原来的路（生成文本逐字不变）。
+    /// </summary>
+    private static bool IsZeroCount(string n)
+    {
+        string s = n.Replace("(int)", "").Replace("(decimal)", "").Replace("(0m)", "0")
+            .Replace("(", "").Replace(")", "").Replace("m", "").Replace(".", "").Replace(" ", "").Trim();
+        return s.Length > 0 && s.All(ch => ch == '0');
+    }
+
+    /// <summary>
     /// 注释里写的人类可读张数：填了升级增量时写成 <c>2（升级后 3）</c>，别把
     /// <c>(int)base.DynamicVars.Cards.BaseValue</c> 这种表达式印进注释（用户会读到生成代码）。
     /// </summary>
@@ -6153,6 +6166,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 自定义状态那条链的默认档传的 playerExpr 直接就是 Creature（base.Owner），这时调用方会显式给 creatureExpr。
         creatureExpr ??= playerExpr + ".Creature";
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pile = e.SpawnToPile;
         string? tempUp = e.SpawnUpgradedThisTurn ? "__tempUp" : null;
@@ -6273,6 +6289,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? countExpr = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string nText = countExpr is null ? $" {n} 瓶" : "（瓶数 = 本状态的层数）";
         string? potion = string.IsNullOrWhiteSpace(e.PotionId) ? null : e.PotionId!.Trim();
@@ -6502,6 +6521,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
 
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string pileExpr = PileExpr(e, playerExpr);
@@ -6729,6 +6751,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -6812,6 +6837,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             return;
         }
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -6875,6 +6903,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string playerExpr = "base.Owner", string choiceExpr = "choiceContext", string sourceExpr = "this")
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         // 「重放次数」写了公式（用户要求⑦）：现算，夹到 1~20（和固定值那条同一个上限）
         int times = Math.Max(1, Math.Min(20, e.ReplayTimes));
@@ -6977,6 +7008,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
 
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? pred = CardScopePredicate(e, p);
         if (e.CountIsAll)
@@ -7131,6 +7165,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature", string sourceExpr = "this")
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         // 「复制的份数」写了公式（用户要求⑦）：现算，夹到 1~20（和固定值那条同一个上限）
         int copies = Math.Max(1, Math.Min(20, e.Copies));
@@ -7225,6 +7262,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitUpgradeCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
         string? scope = CardScopeMarker(e);
@@ -7280,6 +7320,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitScry(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string? scope = CardScopeMarker(e);
         if (scope is not null) w.Line(scope);
@@ -7541,6 +7584,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string combatStateExpr = "base.CombatState", string choiceExpr = "choiceContext", string? countInto = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string? target = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
         string pileZh = EffectCatalog.SelectPileZh(e.SelectPile);
@@ -7754,6 +7800,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string creatureExpr = "base.Owner.Creature", string sourceExpr = "null")
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
+        // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
+        if (IsZeroCount(n)) { w.Line("// 张数 = 0：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）"); return; }
         string nC = CountComment(e, n);   // 注释里写人类可读的张数（升级后带上「升级后 N 张」）
         string pileZh = PileZh(pile);
         string expr = $"PileType.{pile}.GetPile(base.Owner)";
