@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -938,6 +938,9 @@ public static class EffectCatalog
         // 所以它不在上面的增益/减益列表里。本体卡「口哨 Whistle」就是 CreatureCmd.Stun(cardPlay.Target)，
         // 我们照它生成：被打晕的敌人这一回合什么都不做。
         new EffectKindOption(Kind: "Stun", Display: "击晕（敌人本回合不行动）", Unit: "—", Min: 0, Max: 0, NeedsTarget: true),
+        // V0.2.278（用户要求「效果加个即死」）：直接杀掉目标 —— 本体 CreatureCmd.Kill（CreatureCmd.cs:446）。
+        // 走本体那套判定（不吃格挡、不看层数，但「瓶中仙女」这类续命效果照样能挡 —— 和本体一致）。
+        new EffectKindOption(Kind: "InstantKill", Display: "即死（直接杀死目标）", Unit: "—", Min: 0, Max: 0, NeedsTarget: true),
     // 翻倍当前特定状态（用户要求的新效果）：数值 = 倍数（2 = 翻倍），
     // 「增益 / 减益」那一栏填要翻倍的状态。生成的是先 GetPower<T>() 取那份实例，再
     // PowerCmd.ModifyAmount(choiceContext, 实例, 实例.Amount * (倍数 - 1), 施加者, this)

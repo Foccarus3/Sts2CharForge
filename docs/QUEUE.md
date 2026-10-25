@@ -1,6 +1,57 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
-## 第 171 批需求（**锻造图「仅本回合升级」→ 生成的代码 CS0103（声明写死 `__fgTempUp`，引用带节点哈希）**；已修，待发版）
+## 第 172 批需求（**锻造图【效果】/【条件】的数值栏直接写 `ThisCardDamage` → 卡牌类没生成那个属性（CS1061）+ `CardPile` 当 `PileType` 传（CS1503）**；已发版 V0.2.278）
+
+> 用户转来别人的构建日志（`CarmenMod`）。日志里 **12 条** `CS1061`，全在 `cs\Cards\CarmenCobaltScar.cs`：
+> ```
+> error CS1061: “CarmenCobaltScar”未包含“ForgeThisCardDamage”的定义
+> ```
+> （同一份日志还有 **111 条** `CS1503: 参数 2 无法从 CardPile 转换为 PileType`，见下面的「另一条」——那条不是这版代码能生成的。）
+>
+> **真因**：决定「卡牌类上要不要 `public decimal ForgeThisCardDamage`」的判据是
+> `CSharpCodeGen.CardUsesReading` → `MentionsReading(卡牌的条件 / 各条效果)` + `ForgeGraphGen.GraphMentionsReading(两块布)`；
+> 而 `GraphMentionsReading` **只扫【数值】模块（`Kind == "Value"`）的 `Formula` 栏**。
+> 可图上【效果】/【条件】/【触发时机】的「数值 / 生效次数 / 命中次数 / 概率」这些栏**也能直接写公式**
+> （和【数值】模块同一套语法，见 `ForgeNumbers.NumberFields`）——直接写 `ThisCardDamage` 时：
+> 生成代码照常展开成 `((decimal)this.ForgeThisCardDamage)`，但属性没被判成「要用」→ 不生成 → CS1061。
+>
+> **修法**：`GraphMentionsReading` 除了【数值】的 `Formula`，再把 `ForgeNumbers.NumberFields`
+> 里每种模块的那几栏也扫一遍（`Effect.Amount/Times/Hits/Chance`、`Condition.Amount/Amount2`、
+> `Trigger.HpThreshold/PowerAmount/CountLimit`、`Relate.Amount`）。没写这些读数的图/卡一个字都不变。
+>
+> **验收**：
+> * 探针 `_probe/graphreading` **6/6 PASS**（① 图【效果】数值栏写 → 生成属性 + 清零；② 图【条件】数值 N 栏写 → 也生成；
+>   ③（老路）【数值】模块仍然生成；④ 两条红线：数值填常数 / 普通卡都不生成）
+> * `dotnet build` 全解决方案 **0 error**；`--uicheck` **4448 PASS / 0 FAIL**（新增 3 条，含两条红线）
+>
+> **另一条（同一份日志的 CS1503，111 条）—— 也修了**：`参数 2: 无法从 CardPile 转换为 PileType`
+> （`CarmenCrimsonScar` / `CarmenNihil` / `CarmenCobaltScar`）。
+> 用户后来把存档 `CarmenMod.json` 发来，用当前生成端**原样复现**出来了，是这样一行：
+> ```csharp
+> foreach (CardModel __fgCard in (CardPile.GetCards(__fgPlayer, PileType.Draw.GetPile(__fgPlayer))
+>     .Where(c => …)).ToList()) await CardCmd.Discard(choiceContext, __fgCard);
+> ```
+> `CardPile.GetCards(玩家, PileType)` 的第二参要的是**枚举**，而 `GraphAllPickExpr` / `GraphRandomPickExpr`
+> 把 `GraphPileExpr()`（返回 `PileType.X.GetPile(玩家)` = `CardPile`）塞了进去 → CS1503。
+> **修法**：新增 `GraphPileTypeExpr(s)`（返回 `PileType.Hand/Draw/Discard/Exhaust`），
+> 上面两处改用它；`GraphPileExpr` 仍然只给 `CardSelectCmd.FromCombatPile`（那条要的就是 `CardPile`）。
+>
+> **用他的存档验收（这是最硬的证据）**：
+> * 复现：修之前，`CarmenNihil` / `CarmenCrimsonScar` / `CarmenCobaltScar` 共 12 处
+>   `CardPile.GetCards(__fgPlayer, PileType.X.GetPile(__fgPlayer))`；修之后 **0 处**；
+> * 把这份存档的 **81 份生成源**（卡牌 49 + 遗物 5 + 药水 1 + 状态 26）全扫一遍：
+>   ① 没有一处「`CardPile` 当 `PileType`」；② 没有一处「引用了 `this.ForgeXxx` 却没声明」；
+>   ③ `CarmenCobaltScar` 现在会生成 `ForgeThisCardDamage` 属性（原来 CS1061 的那张）；
+> * 探针 `_probe/graphreading` **6/6 PASS**；`dotnet build` 全解决方案 **0 error**；`--uicheck` **4448 PASS / 0 FAIL**。
+> * 备注：本机没有装 Godot mono SDK，没法把他整份工程真正 `dotnet build` 一遍（`Godot.NET.Sdk/4.5.1` 解析不到）；
+>   他那边的构建日志才是最终判据。
+>
+> **发版**：`V0.2.278`（部署 `程序文件\Sts2CharForge.exe` 21:26 / 更新包
+> `D:\ds\s\Sts2CharForge_更新包_V0.2.278.zip` 60.9 MB / 发版说明 `docs/RELEASE_NOTES_V0.2.278.md`，
+> 同版带上第 171 批；旧包 V0.2.275、V0.2.277 按规矩删了）。
+> 部署版自检 **4447 PASS / 0 FAIL**（Debug 版 4448，差的那条是版本相关的，0 FAIL）。
+
+## 第 171 批需求（**锻造图「仅本回合升级」→ 生成的代码 CS0103（声明写死 `__fgTempUp`，引用带节点哈希）**；已发版 V0.2.278）
 
 > 用户转来别人的构建失败截图（`DarkVinci` 这个模组）：
 > ```
@@ -24,7 +75,8 @@
 > * 探针 `_probe/tempupvar` **6/6 PASS**（合成 / 复制 / 变化三种都断言「声明名 == 引用名」且没有裸 `var __fgTempUp =`）；
 > * 同一份探针挂到**已发布 V0.2.277 的 Core.dll** 上跑 → **6 条 FAIL**，复现
 >   `变量：__fgTempUp / __fgTempUpd6de64`、`声明：__fgTempUp`（正是用户那条 CS0103）；
-> * `dotnet build` 全解决方案 **0 error**；`--uicheck` 见下（新增 4 条：三种效果 + 红线）。
+> * `dotnet build` 全解决方案 **0 error**；`--uicheck` **4445 PASS / 0 FAIL**（新增 4 条：
+>   「生成卡牌 / 复制卡牌 / 变化卡牌 + 仅本回合升级」各一条断言「声明名 == 引用名」，外加红线「没勾就不生成这个变量」）。
 >
 > **给那位作者的答复**：不是他配置写错 —— 用修好的版本重新生成一次即可；勾了「仅本回合升级」的
 > 「生成 / 复制 / 变化卡牌」都会撞上这个。

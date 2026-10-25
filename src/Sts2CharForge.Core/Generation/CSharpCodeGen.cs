@@ -9038,6 +9038,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line(GainEnergyLine(e, amt, useX, "base.Owner"));
                 break;
 
+            // V0.2.278（用户要求「效果加个即死」）：直接杀掉目标（本体 CreatureCmd.Kill，CreatureCmd.cs:446）
+            case "InstantKill":
+                EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
+                    c => $"await CreatureCmd.Kill({c});");
+                break;
+
             case "Heal":
                 DebugLogGen.Target(w, e, ChainTargetExpr(e, "cardPlay.Target", "base.Owner.Creature"),
                     IsNegativeAmount(e, useX) ? (-e.Amount).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + "m" : amt,
@@ -12832,6 +12838,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
                 break;
 
+            // V0.2.278：即死（遗物 / 药水共用这条链的写法）
+            case "InstantKill":
+                EmitPerCreature(w, e, useX: false, "base.Owner.Creature", null, "base.Owner.Creature.CombatState.HittableEnemies",
+                    c => $"await CreatureCmd.Kill({c});");
+                break;
+
             case "Heal":
                 DebugLogGen.Target(w, e, RelicAttackTargetExpr(e),
                     e.Amount < 0 ? Lit.Dec(-e.Amount) : amt, groupZh: MultiTargetGroupZh(e) ?? "");
@@ -14247,6 +14259,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 else
                     w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
                 break;
+            // V0.2.278：即死（药水链）
+            case "InstantKill":
+                EmitPotionPerCreature(w, potionTarget, allEnemies, c => $"await CreatureCmd.Kill({c});");
+                break;
+
             case "Heal":
                 DebugLogGen.Target(w, e, PotionAttackTargetExpr(potionTarget, allEnemies),
                     e.Amount < 0 ? Lit.Dec(-e.Amount) : amt, inLoop: potionTarget == "AllEnemies");

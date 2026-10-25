@@ -1442,6 +1442,15 @@ public static class ProfileValidator
         // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
         ValidateAnimation(issues, p);
 
+        // ===== V0.2.278（用户要求「效果加个即死」）=====
+        // 「即死」目前在卡牌 / 遗物 / 药水三条链上都生成了；锻造页的【效果】模块走的是另一套字段，
+        // 还没接这个种类 —— 与其静默不生效，不如在这里明确拦住（用户最烦静默失效）。
+        foreach (var g in ForgeEffectBridge.GraphsOf(p))
+            foreach (var nd in g.Nodes)
+                if (ForgeEffectBridge.IsEffectNode(nd)
+                    && string.Equals((nd.Get("Effect") ?? "").Trim(), "InstantKill", StringComparison.Ordinal))
+                    issues.Add(new("警告", $"锻造页的【效果】模块里用了「即死」—— 这条链暂时还没有它，"
+                        + "生成出来不会执行。想用即死请把它配在卡牌 / 遗物 / 药水的效果栏里。"));
         // ===== V0.2.276（用户要求「自定义描述里能填能量图标」）=====
         // 「填入参数…」里现在有 `{Energy:energyIcons()}`。它依赖本体卡面描述变量里那个 Energy ——
         // 卡牌一定有；遗物 / 药水 / 状态的描述变量集不一样，取不到值时会**原样印出** `{Energy:energyIcons()}`。

@@ -3932,9 +3932,25 @@ public static class ForgeGraphGen
     /// 属性声明与打出时的清零在 <c>CSharpCodeGen.CardSourceCore</c> 里统一做
     /// （那边判据也走这里 —— 两块布都算）。</para>
     /// </summary>
-    public static bool GraphMentionsReading(ForgeGraphSpec? g, string id) =>
-        g?.Nodes is not null && g.Nodes.Any(n => n is not null && n.Kind == "Value"
-            && ForgeFormula.MentionsIdentifier(n.Get("Formula", ""), id));
+    public static bool GraphMentionsReading(ForgeGraphSpec? g, string id)
+    {
+        if (g?.Nodes is null) return false;
+        foreach (var n in g.Nodes)
+        {
+            if (n is null) continue;
+            // ① 【数值】模块自己的公式栏
+            if (ForgeFormula.MentionsIdentifier(n.Get("Formula", ""), id)) return true;
+            // ② 【效果】/【条件】/【触发时机】/【关系符】上那些「数值 / 生效次数 / 命中次数 / 概率」栏
+            //    也能**直接写公式**（和【数值】模块同一套语法，见 ForgeNumbers.NumberFields）。
+            //    以前这里只扫 ① —— 于是「在【效果】的数值栏直接写 ThisCardDamage」时，
+            //    卡牌类上那个 `ForgeThisCardDamage` 属性**不会生成**，可生成代码又引用了它 → CS1061
+            //（用户实测报的 `CarmenCobaltScar`：`未包含 ForgeThisCardDamage 的定义`）。
+            foreach (var (kind, key, _) in ForgeNumbers.NumberFields)
+                if (string.Equals(n.Kind, kind, StringComparison.Ordinal)
+                    && ForgeFormula.MentionsIdentifier(n.Get(key, ""), id)) return true;
+        }
+        return false;
+    }
 
     /// <summary>这张图里有没有用「本张牌这一次打出造成的伤害」。</summary>
     public static bool GraphUsesThisCardDamage(ForgeGraphSpec? g) =>
@@ -4015,6 +4031,22 @@ public static class ForgeGraphGen
         _ => $"PileType.Hand.GetPile({player})",
     };
 
+    /// <summary>
+    /// 同一摞牌的**枚举**写法（<c>PileType.Hand</c> / <c>PileType.Draw</c> …），给
+    /// <c>CardPile.GetCards(player, PileType)</c> 这类**第二参要 PileType** 的 API 用。
+    ///
+    /// <para>⚠ 别把 <see cref="GraphPileExpr"/> 塞进这种地方：那个返回的是 <c>CardPile</c>
+    /// （`PileType.X.GetPile(player)`），第二参要枚举 → `CS1503 参数 2: 无法从 CardPile 转换为 PileType`
+    /// （用户实测报的 `CarmenCrimsonScar` / `CarmenNihil` / `CarmenCobaltScar`，111 条）。</para>
+    /// </summary>
+    private static string GraphPileTypeExpr(EffectSpec? s) => s?.SelectPile switch
+    {
+        "Draw" or "Top" => "PileType.Draw",
+        "Discard" => "PileType.Discard",
+        "Exhaust" => "PileType.Exhaust",
+        _ => "PileType.Hand",
+    };
+
     /// <summary>这个效果是不是「从手牌里挑」（没设 / 手牌 → 老写法；别的三摞 → FromCombatPile）。</summary>
     private static bool IsHandPick(EffectSpec? s) =>
         s is null || string.IsNullOrWhiteSpace(s.SelectPile) || string.Equals(s.SelectPile, "Hand", StringComparison.OrdinalIgnoreCase);
@@ -4083,7 +4115,7 @@ public static class ForgeGraphGen
 
     /// <summary>「取几张 = 全部」那一摞的全部牌（不弹选牌界面；手牌 / 别的三摞都是这个写法）。</summary>
     private static string GraphAllPickExpr(EffectSpec? s) =>
-        $"CardPile.GetCards(__fgPlayer, {(IsHandPick(s) ? "PileType.Hand" : GraphPileExpr(s))})";
+        $"CardPile.GetCards(__fgPlayer, {GraphPileTypeExpr(s)})";
 
     /// <summary>
     /// 「取几张」不是默认档（最多 N / 任意张 / 全部）时写一行标记 —— 回读靠它还原
@@ -4103,7 +4135,7 @@ public static class ForgeGraphGen
     {
         if (s is not null && string.Equals(s.SelectPile, "Top", StringComparison.OrdinalIgnoreCase))
             return $"{GraphPileExpr(s)}.Cards.Take((int)({amount})).ToList()";
-        return $"CardPile.GetCards(__fgPlayer, {(IsHandPick(s) ? "PileType.Hand" : GraphPileExpr(s))})"
+        return $"CardPile.GetCards(__fgPlayer, {GraphPileTypeExpr(s)})"
              + $".OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList()";
     }
 

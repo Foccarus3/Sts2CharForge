@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -23932,6 +23932,62 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						dupMissing.Count == 0 ? "都定义了（" + dupUsed.Count + " 个）" : "缺：" + string.Join(" / ", dupMissing));
 				}
 
+				// ===== 锻造图里「效果模块的数值栏直接写 ThisCardDamage」→ 属性没生成（CS1061）=====
+				// 用户实测报的：`CarmenCobaltScar.cs(128,52) error CS1061: 未包含 ForgeThisCardDamage 的定义`。
+				// 真因：`GraphMentionsReading` 只扫【数值】模块（Kind == "Value"）的公式栏；
+				// 而【效果】/【条件】的「数值 / 生效次数 / 命中次数 / 概率」栏**也能直接写公式**（ForgeNumbers 同一套）
+				// → 生成代码里用了 `this.ForgeThisCardDamage`，但那个属性没被判定为「要用」→ 没生成。
+				{
+					string ReadingGraphCard(string nodeKind, string key)
+					{
+						var prof = ProfileFactory.Sample();
+						var g = new ForgeGraphSpec();
+						var trig = new ForgeNodeSpec { Kind = "Trigger" };
+						trig.SetField("Timing", ForgeTimings.CardPlayed);
+						var node = new ForgeNodeSpec { Kind = nodeKind };
+						if (nodeKind == "Effect") node.SetField("Effect", "Damage");
+						node.SetField(key, "ThisCardDamage");
+						g.Nodes.Add(trig);
+						g.Nodes.Add(node);
+						g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = node.Id, FromPort = 0, ToPort = 0 });
+						var c = new CardSpec
+						{
+							Name = "自检图读数", ClassName = "UiCheckGraphReading" + nodeKind, CardType = "Attack",
+							Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true, ForgeGraph = g,
+						};
+						prof.Cards.Add(c);
+						return CSharpCodeGen.CardSource(prof, c, prof.Cards.Count - 1);
+					}
+					Check("锻造图【效果】模块的「数值」栏直接写 ThisCardDamage → 卡牌类上会生成 ForgeThisCardDamage 属性（不再 CS1061）",
+						ReadingGraphCard("Effect", "Amount").Contains("public decimal ForgeThisCardDamage { get; private set; }", StringComparison.Ordinal),
+						"有属性");
+					Check("锻造图【条件】模块的「数值 N」栏写 ThisCardDamage → 同样生成属性（以前也一样漏）",
+						ReadingGraphCard("Condition", "Amount").Contains("public decimal ForgeThisCardDamage { get; private set; }", StringComparison.Ordinal),
+						"有属性");
+					{
+						// 真·红线：把数值换成常数，属性不该出现
+						var prof = ProfileFactory.Sample();
+						var g = new ForgeGraphSpec();
+						var trig = new ForgeNodeSpec { Kind = "Trigger" };
+						trig.SetField("Timing", ForgeTimings.CardPlayed);
+						var node = new ForgeNodeSpec { Kind = "Effect" };
+						node.SetField("Effect", "Damage");
+						node.SetField("Amount", "6");
+						g.Nodes.Add(trig);
+						g.Nodes.Add(node);
+						g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = node.Id, FromPort = 0, ToPort = 0 });
+						var c = new CardSpec
+						{
+							Name = "自检图常数", ClassName = "UiCheckGraphPlain", CardType = "Attack", Rarity = "Common",
+							Cost = 1, InCardPool = true, IsForged = true, ForgeGraph = g,
+						};
+						prof.Cards.Add(c);
+						Check("（红线）图里数值填常数 6 → 不生成 ForgeThisCardDamage",
+							!CSharpCodeGen.CardSource(prof, c, prof.Cards.Count - 1).Contains("ForgeThisCardDamage", StringComparison.Ordinal),
+							"干净");
+					}
+				}
+
 				// ===== 锻造图「仅本回合升级」的变量名：声明写死了 `__fgTempUp`，引用却带节点哈希 =====
 				// 用户实测报的：`DarkVinciSwingPoint.cs(40,17) error CS0103: 当前上下文中不存在名称 __fgTempUpda676`。
 				// 真因：`GraphTempUpVar(node, spec)` 给的是 `__fgTempUp` + 节点哈希（同一张图上多处「仅本回合升级」
@@ -24437,6 +24493,28 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								.Any(h => h.Token.Contains("energyIcons")), "没混入");
 						Check("V0.2.277：「填入参数…」菜单里会多一条能量图标（界面那层加）",
 							ExtraInsertTokens.Any(x => x.Token == LocalizationGen.EnergyIconToken), LocalizationGen.EnergyIconToken);
+					}
+					// ===== V0.2.278（用户要求「效果加个即死」）=====
+					{
+						var ikKind = EffectCatalog.FindKind("InstantKill");
+						Check("V0.2.278：效果种类里有「即死」",
+							ikKind.Kind == "InstantKill" && ikKind.Display.Contains("即死"), ikKind.Display);
+						var ikProf = ProfileFactory.Sample();
+						var ikCard = new CardSpec { Name = "自检即死", ClassName = "UiKillCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						ikCard.Effects.Add(new EffectSpec { Kind = "InstantKill", TargetSide = "Enemy" });
+						ikProf.Cards.Add(ikCard);
+						Check("V0.2.278：卡牌链「即死 + 指定敌人」→ 生成 CreatureCmd.Kill(cardPlay.Target)",
+							CSharpCodeGen.CardSource(ikProf, ikCard, ikProf.Cards.Count - 1).Contains("await CreatureCmd.Kill(cardPlay.Target);"), "生成了");
+						var ikRelic = new RelicSpec { Name = "自检即死遗物", ClassName = "UiKillRelic", Trigger = "PlayerTurnStart" };
+						ikRelic.Effects.Add(new EffectSpec { Kind = "InstantKill", TargetSide = "AllEnemies" });
+						ikProf.Relics.Add(ikRelic);
+						Check("V0.2.278：遗物链「即死 + 全体敌人」→ 循环里逐个 Kill(foe)",
+							CSharpCodeGen.RelicSource(ikProf, ikRelic, ikProf.Relics.Count - 1).Contains("await CreatureCmd.Kill(foe);"), "生成了");
+						var ikCardSelf = new CardSpec { Name = "自检即死自己", ClassName = "UiKillCardSelf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						ikCardSelf.Effects.Add(new EffectSpec { Kind = "InstantKill", TargetSide = "Self" });
+						ikProf.Cards.Add(ikCardSelf);
+						Check("V0.2.278：（对照）选「自己」→ 杀自己（不串目标）",
+							CSharpCodeGen.CardSource(ikProf, ikCardSelf, ikProf.Cards.Count - 1).Contains("await CreatureCmd.Kill(base.Owner.Creature);"), "对");
 					}
 					// ===== V0.2.277（用户要求：自定义描述里「获得 2 点能量」的能量显示成图标）=====
 					{
