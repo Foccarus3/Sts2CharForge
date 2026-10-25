@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -123,7 +123,9 @@ public static class LocalizationGen
             // 正文那段（不含关键词行）：升级前后一样就直接用，不一样才包 {IfUpgraded}
             string cardBody = string.Equals(bodyBase, bodyUp, StringComparison.Ordinal)
                 ? bodyBase
-                : IfUpgradedText(bodyUp, bodyBase);
+                    : (bodyBase.Contains('{') || bodyUp.Contains('{'))   // V0.2.280：含占位符就不套 IfUpgraded（内层 } 会破坏结构）
+                        ? bodyBase
+                        : IfUpgradedText(bodyUp, bodyBase);
             if (keywordDiffers)
             {
                 // 关键词那行也要按升级前后分叉 → 整段（关键词 + 正文）一起包进 {IfUpgraded:show:升级后|没升级}。

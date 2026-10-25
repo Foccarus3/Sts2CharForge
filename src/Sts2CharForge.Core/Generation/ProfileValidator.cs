@@ -1442,6 +1442,39 @@ public static class ProfileValidator
         // 逐帧动画（动图拆帧）：勾了总开关却没待机 / 素材不是 GIF / 数值越界
         ValidateAnimation(issues, p);
 
+        // ===== V0.2.280（用户日志：「每回合生成{刺你！}」→ Invalid character in the selector）=====
+        // 自定义描述 / 状态描述里写中文花括号会被本体的 SmartFormat 当成占位符，整段渲染失败。
+        // 这里只挑「花括号里不是已知变量名」的那种报提示（已知变量 / 内置读数放过）。
+        {
+            var known = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in FormulaBuiltins.All) known.Add(b.Id);
+            foreach (var o in ParamSources.All) known.Add(o.Id);
+            foreach (var cp in p.CustomParams) if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
+            foreach (string v in new[] { "Damage", "Block", "Cards", "Energy", "IfUpgraded", "Value", "Heal", "MaxHp" }) known.Add(v);
+            void CheckBraces(string? text, string who)
+            {
+                if (string.IsNullOrWhiteSpace(text)) return;
+                foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(text, @"\{([^{}:]+)(:[^{}]*)?\}"))
+                {
+                    string name = m.Groups[1].Value.Trim();
+                    if (name.Length == 0) continue;
+                    if (known.Contains(name)) continue;
+                    if (name.All(ch => char.IsLetterOrDigit(ch) || ch is '_' or ' ')) continue;   // 英数名：可能是本体变量，放过
+                    issues.Add(new("警告", $"{who} 里写了 `{m.Value}` —— 花括号会被本体当成占位符，"
+                        + "中文这种名字会让整段描述渲染失败（日志里是 `Invalid character in the selector`）。"
+                        + "想显示文字请改用「」或者去掉花括号；想插数值请用「填入参数…」里的写法。"));
+                }
+            }
+            foreach (var c in p.Cards)
+            {
+                if (c is null) continue;
+                CheckBraces(c.CustomDescription, $"卡牌「{c.Name}」的自定义描述");
+                CheckBraces(c.UpgradedCustomDescription, $"卡牌「{c.Name}」的升级后自定义描述");
+            }
+            foreach (var r in p.Relics) if (r is not null) CheckBraces(r.CustomDescription, $"遗物「{r.Name}」的自定义描述");
+            foreach (var s in p.Potions) if (s is not null) CheckBraces(s.CustomDescription, $"药水「{s.Name}」的自定义描述");
+            foreach (var cp in p.CustomPowers) if (cp is not null) CheckBraces(cp.Description, $"状态「{cp.Name}」的说明");
+        }
         // ===== V0.2.278（用户要求「效果加个即死」）=====
         // 「即死」目前在卡牌 / 遗物 / 药水三条链上都生成了；锻造页的【效果】模块走的是另一套字段，
         // 还没接这个种类 —— 与其静默不生效，不如在这里明确拦住（用户最烦静默失效）。
