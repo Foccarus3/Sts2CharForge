@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -473,16 +473,25 @@ public static class ForgeGraphGen
     /// </summary>
     private static (List<HookPlan> Keep, List<HookPlan> Skipped) SplitByHook(List<HookPlan> plans)
     {
-        var keep = new List<HookPlan>();
-        var skipped = new List<HookPlan>();
-        var hooks = new HashSet<string>(StringComparer.Ordinal);
+        // V0.2.279（用户报「两块【触发时机】落在同一个钩子上，第 2 块白配了」）：一个都不丢 ——
+        // 同一个钩子上的多块由 EmitHook 合并进同一个方法体（每块各包一层 { }）。
+        return (plans, new List<HookPlan>());
+    }
+
+    /// <summary>
+    /// 按**本体钩子**分组（同钩子的多块合成一个方法；组之间保持图上出现的先后顺序）。
+    /// V0.2.279：两块都落在同一个钩子上时，正确语义就是「那一刻两块都跑」，所以是合并不是二选一。
+    /// </summary>
+    private static List<List<HookPlan>> GroupByHook(List<HookPlan> plans)
+    {
+        var groups = new List<List<HookPlan>>();
+        var index = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var pl in plans)
         {
-            // Timing.Hook 正是 Signature 用的那个键，重复 = 同一个 override 写两遍
-            if (hooks.Add(pl.Timing.Hook)) keep.Add(pl);
-            else skipped.Add(pl);
+            if (index.TryGetValue(pl.Timing.Hook, out int at)) groups[at].Add(pl);
+            else { index[pl.Timing.Hook] = groups.Count; groups.Add(new List<HookPlan> { pl }); }
         }
-        return (keep, skipped);
+        return groups;
     }
 
     /// <summary>被跳过的那些【触发时机】写一段注释（说清为什么没生成 + 怎么办）。</summary>
@@ -518,7 +527,10 @@ public static class ForgeGraphGen
         var g = GraphOf(card, isUpgraded);
         var all = Plans(g, "Card");
         if (all.Count == 0 || g is null) return "";
-        var (plans, skipped) = SplitByHook(all);
+        var (plans0, skipped) = SplitByHook(all);
+        var plans = new List<HookPlan>();
+        var groups = GroupByHook(plans0);
+        foreach (var grp in groups) plans.Add(grp[0]);   // 每个钩子只发一块（其余走 extra 合并）
         // ⚠ V0.2.180：这里是「这张牌的图上，**被嵌进卡自己钩子**的那几块」。
         // 词用的是 CardOwnHookNames（卡自己会生成哪些钩子）**而不是**「图里用了哪些钩子」——
         // 单块布时图里那一块**自己写 override**（老规矩，输出逐字不变）。
@@ -548,10 +560,11 @@ public static class ForgeGraphGen
             sb.AppendLine(plans.Count == 1
                 ? $"    // ===== 锻造节点图（{(isUpgraded ? "升级后" : "升级前")}）：{plan.Timing.Display} ====="
                 : $"    // ===== 锻造节点图（{(isUpgraded ? "升级后" : "升级前")}）第 {i + 1} 块【触发时机】：{plan.Timing.Display} =====");
+            var __extras = groups.Count > i ? groups[i].Skip(1).ToList() : new List<HookPlan>();
             EmitHook(sb, p, g, plan,
                 new EmitCtx("Card", "cardPlay", "this", isUpgraded, PlanIdx: i,
                     NoHookParams: method is not null && plan.Timing.Hook != "OnPlay"),
-                method);
+                method, __extras);
         }
         AppendSkippedNotes(sb, skipped);
         return sb.ToString();
@@ -703,7 +716,10 @@ public static class ForgeGraphGen
         var g = potion.ForgeGraph;
         var all = Plans(g, "Potion");
         if (all.Count == 0 || g is null) return "";
-        var (plans, skipped) = SplitByHook(all);
+        var (plans0, skipped) = SplitByHook(all);
+        var plans = new List<HookPlan>();
+        var groups = GroupByHook(plans0);
+        foreach (var grp in groups) plans.Add(grp[0]);   // 每个钩子只发一块（其余走 extra 合并）
         var sb = new StringBuilder();
         for (int i = 0; i < plans.Count; i++)
         {
@@ -821,7 +837,10 @@ public static class ForgeGraphGen
         var g = relic.ForgeGraph;
         var all = Plans(g, "Relic");
         if (all.Count == 0 || g is null) return "";
-        var (plans, skipped) = SplitByHook(all);
+        var (plans0, skipped) = SplitByHook(all);
+        var plans = new List<HookPlan>();
+        var groups = GroupByHook(plans0);
+        foreach (var grp in groups) plans.Add(grp[0]);   // 每个钩子只发一块（其余走 extra 合并）
         var sb = new StringBuilder();
         for (int i = 0; i < plans.Count; i++)
         {
@@ -837,7 +856,8 @@ public static class ForgeGraphGen
             sb.AppendLine(plans.Count == 1
                 ? $"    // ===== 锻造节点图：{plan.Timing.Display} ====="
                 : $"    // ===== 锻造节点图第 {i + 1} 块【触发时机】：{plan.Timing.Display} =====");
-            EmitHook(sb, p, g, plan, new EmitCtx("Relic", "null", "null", CtxFrom: RelicCtxFrom(plan, nest), PlanIdx: i), method);
+            var __extrasR = groups.Count > i ? groups[i].Skip(1).ToList() : new List<HookPlan>();
+            EmitHook(sb, p, g, plan, new EmitCtx("Relic", "null", "null", CtxFrom: RelicCtxFrom(plan, nest), PlanIdx: i), method, __extrasR);
         }
         AppendSkippedNotes(sb, skipped);
         return sb.ToString();
@@ -989,7 +1009,8 @@ public static class ForgeGraphGen
             // 「获得时」是遗物专属的：CustomPowerGen 那一档**不写方法**（只留一句注释），
             // 所以这里也不能产出正文（校验器会给一条错误拦住这个组合）。
             if (string.Equals(timing.Id, "Obtained", StringComparison.Ordinal)) continue;
-            if (map.ContainsKey(timing.Hook)) continue;
+            // V0.2.279（用户报「两块【触发时机】落在同一个钩子上，第 2 块白配」）：不再丢块 ——
+            // 同一个钩子上的多块**合并进同一个方法体**（每块各包一层 { }，局部变量同名也不冲突）。
             var plan = new HookPlan(trigger, timing);
             var (_, hasReward) = WalkChain(g, trigger);
             var sb = new StringBuilder();
@@ -1002,7 +1023,10 @@ public static class ForgeGraphGen
                 HasRoom: string.Equals(timing.Hook, "CombatVictory", StringComparison.Ordinal),
                 PlanIdx: idx);
             EmitHookBody(sb, p, g, plan, ctx, hookHasPlay: false, deferGate: false, hasCardReward: hasReward);
-            map[timing.Hook] = sb.ToString();
+            string body2 = sb.ToString();
+            map[timing.Hook] = map.TryGetValue(timing.Hook, out string? prevBody)
+                ? prevBody + "        // ---- 同一个时刻的第 " + (idx + 1) + " 块 ----\n" + "        {\n" + body2 + "        }\n"
+                : body2;
             idx++;
         }
         }
@@ -1304,7 +1328,7 @@ public static class ForgeGraphGen
     }
 
     private static void EmitHook(StringBuilder sb, CharacterProfile p, ForgeGraphSpec g, HookPlan plan,
-        EmitCtx ctx, string? methodName = null)
+        EmitCtx ctx, string? methodName = null, IReadOnlyList<HookPlan>? extra = null)
     {
         // 【卡牌奖励】只能挂在「战斗胜利时」那一支上（那一支的钩子签名里带 CombatRoom room）
         var (chainEffects, hasCardReward) = WalkChain(g, plan.Trigger);
@@ -1420,6 +1444,24 @@ public static class ForgeGraphGen
         //     复用同一份正文；方法壳那条链由 CustomPowerGen 写，见 ForgePowerGraph.PowerHookBodies）。
         //      对卡牌 / 药水 / 遗物来说，这一句 = 原来那整段，文本一个字符都不变。
         EmitHookBody(sb, p, g, plan, ctx, hookHasPlay, deferGate, hasCardReward);
+
+        // V0.2.279（用户报「两块【触发时机】落在同一个钩子上，第 2 块白配了」）：同一个本体钩子上的
+        // 其余几块**合并进这一个方法体**，每块各包一层 { }（局部变量同名也不冲突）。两块都会执行 ——
+        // 「每回合开始时」这种时刻，正确语义本来就是那一刻两块都跑。
+        if (extra is not null)
+        {
+            for (int __ex = 0; __ex < extra.Count; __ex++)
+            {
+                var exPlan = extra[__ex];
+                var (_, exReward) = WalkChain(g, exPlan.Trigger);
+                bool exPlay = HookHasCardPlay(exPlan.Timing) && !ctx.NoHookParams;
+                sb.AppendLine($"        // ---- 同一个时刻（{exPlan.Timing.Display}）的第 {__ex + 2} 块 ----");
+                sb.AppendLine("        {");
+                EmitHookBody(sb, p, g, exPlan, ctx with { PlanIdx = __ex + 1 }, exPlay, false,
+                    exReward && string.Equals(exPlan.Timing.Hook, "AfterCombatVictory", StringComparison.Ordinal));
+                sb.AppendLine("        }");
+            }
+        }
 
         // 卡牌档挂在**没有 cardPlay 参数**的钩子上、而且生成出来的代码真的用到了它（DamageCmd 的 FromCard /
         // CreatureCmd.GainBlock 的来源卡参数…）：补一句 `CardPlay? cardPlay = null;`
@@ -4452,11 +4494,11 @@ public static class ForgeGraphGen
                 if (byHook.TryGetValue(o.Hook, out int first))
                 {
                     string hookZh = ForgeTimings.For(scope).FirstOrDefault(x => string.Equals(x.Hook, o.Hook, StringComparison.Ordinal))?.Display ?? o.Display;
-                    list.Add(("错误", $"这块布上第 {first + 1} 块和第 {i + 1} 块【触发时机】落在**同一个本体钩子**上"
-                        + $"（「{hookZh}」和「{o.Display}」其实是同一个时刻）——"
-                        + "生成出来会是同一个类里两个签名一样的方法（整个模组编译不过），所以**只会生成第 "
-                        + $"{first + 1} 块**，第 {i + 1} 块白配了。"
-                        + "要两件事都做：把它们合成一块（用【条件】/【if】区分），或者把这一块换成别的触发时机。"));
+                    list.Add(("提示", $"这块布上第 {first + 1} 块和第 {i + 1} 块【触发时机】落在**同一个本体钩子**上"
+                        + $"（「{hookZh}」和「{o.Display}」其实是同一个时刻）—— V0.2.279 起这两块会**合并进同一个方法**，"
+                        + "各自包一层 { } 各跑各的，不需要再手动合成一块（想区分它们的话，用【条件】/【if】把两条链分开即可）。"));
+
+
                 }
                 else byHook[o.Hook] = i;
             }
@@ -5104,3 +5146,4 @@ public static class ForgeFormulaRuntime
         w.Close();
     }
 }
+

@@ -18753,10 +18753,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 								clashGraph.Links.Add(new ForgeLinkSpec { From = ct.Id, To = ce.Id, FromPort = 0, ToPort = 0 });
 							}
 							var clashIssues = ForgeGraphGen.Issues(clashGraph, Profile, "Card", null);
-							Check("两块【触发时机】落在**同一个本体钩子**上 → 校验器报错说清（否则是同一个类里两个同名 override，整个模组编译不过）",
-								clashIssues.Any(x => x.Level == "错误" && x.Message.Contains("同一个本体钩子", StringComparison.Ordinal)),
-								string.Join(" / ", clashIssues.Select(x => x.Level + ":" + x.Message[..Math.Min(40, x.Message.Length)])));
-							// 遗物档：两块各嵌进遗物自己的一个触发钩子 → 两个私有方法（不能都叫 ForgeGraphOnTrigger）
+					Check("V0.2.279：两块【触发时机】落在**同一个本体钩子**上 → 不再报错拦住（会自动合并进同一个方法，两块都跑）",
+						clashIssues.All(x => x.Level != "错误")
+						&& clashIssues.Any(x => x.Message.Contains("同一个本体钩子", StringComparison.Ordinal)),
+						string.Join(" / ", clashIssues.Select(x => x.Level + ":" + x.Message[..Math.Min(30, x.Message.Length)])));
 							var mtRelic = new RelicSpec { Name = "自检双时机遗物", ClassName = "UiCheckMultiTrigRelic", Rarity = "Common", IsForged = true };
 							mtRelic.Triggers.Clear();
 							mtRelic.Triggers.Add(new RelicTriggerSpec { Kind = ForgeTimings.CombatStart });
