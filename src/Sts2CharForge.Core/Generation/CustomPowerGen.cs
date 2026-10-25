@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -992,18 +992,21 @@ public static class CustomPowerGen
 
             case "CardExhausted":
                 w.Open("public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)");
+                w.Line("if (card?.Owner?.Creature != base.Owner) return;   // V0.2.282: only my own cards (co-op teammates excluded)");
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
 
             case "CardDrawn":
                 w.Open("public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)");
+                w.Line("if (card?.Owner?.Creature != base.Owner) return;   // V0.2.282: only my own cards (co-op teammates excluded)");
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
 
             case "CardDiscarded":
                 w.Open("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)");
+                w.Line("if (card?.Owner?.Creature != base.Owner) return;   // V0.2.282: only my own cards (co-op teammates excluded)");
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
