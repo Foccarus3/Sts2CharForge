@@ -3272,6 +3272,19 @@ public sealed class CardSpec : SpecBase, ISlotRow
     /// </summary>
     public bool ToothReplace { get => _toothReplace; set => Set(ref _toothReplace, value); }
 
+    private bool _autoPlayTurnEnd;
+
+    /// <summary>
+    /// V0.2.284（用户要求「加一个回合结束自动打出的效果」）：勾上 = **回合结束时自动打出这张牌自己**
+    /// （只在自己这一侧回合结束、且这张牌还在手牌里时才打；打出去就进弃牌堆，不会自己循环）。
+    /// 生成端用本体的 <c>CardCmd.AutoPlay(choiceContext, this, target)</c>（CardCmd.cs:51）。
+    /// </summary>
+    public bool AutoPlayAtTurnEnd
+    {
+        get => _autoPlayTurnEnd;
+        set { if (Set(ref _autoPlayTurnEnd, value)) { Raise(nameof(Display)); } }
+    }
+
     private string _toothStarterClass = "";
 
     /// <summary>

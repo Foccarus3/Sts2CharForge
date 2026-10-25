@@ -5367,7 +5367,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Close();
 
         // 需求⑩：卡牌时机的效果 —— 挂到本体对应钩子的 override 上（不在 OnPlay 里）
-        if (hasTiming) EmitCardTimingHooks(w, p, c, timingGroups, cardVars, CostXPlus(c));
+        if (hasTiming || c.AutoPlayAtTurnEnd) EmitCardTimingHooks(w, p, c, timingGroups, cardVars, CostXPlus(c));   // V0.2.284：自动打出的钩子也走这段
         // 「将此牌放回手牌」：打完牌之后把它搬回手牌（本体 MakeItSo 用的就是 AfterCardPlayedLate）
         if (hasSelfReturn) EmitSelfReturnHook(w, p, c.Effects, cardVars);
         // 「抽到这张牌时它本场战斗费用 -N」：卡自己的 AfterCardDrawn（本体 KinglyKick 用的就是它）
@@ -5769,6 +5769,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Close();
                     break;
             }
+        }
+
+        // V0.2.284（用户要求）：勾了「回合结束自动打出自己」→ 自己这一侧回合结束时把手牌里的这张牌自动打出。
+        // 只在还在手牌里时动手（打出去的牌在弃牌堆，不会自己循环）；目标取「可打的第一个敌人」。
+        if (c.AutoPlayAtTurnEnd && !groups.Any(g => string.Equals(g.Timing, "PlayerTurnEnd", StringComparison.Ordinal)))
+        {
+            w.Line();
+            w.Line("// ===== 回合结束自动打出这张牌（卡页勾了「回合结束自动打出自己」）=====");
+            w.Open("public override async Task AfterSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)");
+            w.Line("if (participants is null || !participants.Contains(base.Owner.Creature)) return;   // 只在自己这一侧的回合结束时");
+            w.Line("if (base.Pile is null || base.Pile.Type != PileType.Hand) return;                  // 不在这张牌手牌里就不打（避免自己循环）");
+            w.Line("Creature? __autoTarget = base.Owner.Creature.CombatState?.HittableEnemies?.FirstOrDefault();");
+            w.Line("await CardCmd.AutoPlay(choiceContext, this, __autoTarget);   // 本体 CardCmd.AutoPlay（CardCmd.cs:51）");
+            w.Close();
         }
     }
 

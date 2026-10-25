@@ -1,4 +1,4 @@
-<Window x:Class="Sts2CharForge.App.MainWindow"
+﻿<Window x:Class="Sts2CharForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sts2CharForge.App"
@@ -25,6 +25,10 @@
                 <TextBlock Text="英文类名（留空 = 自动生成）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                 <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                 <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsChecked="{Binding InCardPool}"/>
+                        <!-- V0.2.284（用户要求）：回合结束时自动打出这张牌自己 -->
+                        <CheckBox Style="{StaticResource Check}" Content="回合结束时自动打出这张牌（只在自己回合结束、且它还在手牌里时）"
+                                  IsChecked="{Binding AutoPlayAtTurnEnd, Mode=TwoWay}"
+                                  ToolTip="勾上：你的回合结束时，如果这张牌还在手牌里，就自动把它打出一次（目标取可打的第一个敌人）。&#10;打出去它就进弃牌堆，不会自己循环；被消耗 / 已经打出过的不会重复触发。"/>
                 <TextBlock Text="卡牌关键字" Style="{StaticResource Label}" FontWeight="Bold" Margin="0,8,0,0"/>
                 <WrapPanel>
                     <CheckBox Content="消耗" Style="{StaticResource Check}" IsChecked="{Binding Exhausts}"/>
