@@ -1740,6 +1740,29 @@ public static class ForgeGraphGen
                 return;      // 两个分支已经各自走完，别再顺出口走一遍
             }
 
+            // V0.2.285（用户要求）：【While】= 条件成立就一直重复「循环」那条子链；条件每轮重新求值。
+            // 上限 50 轮（玩家条件很容易永远成立 → 必须防卡死）。「结束」出口接循环之后的流程。
+            case "While":
+            {
+                string cond = BoolExpr(p, g, node, "Cond", st, sb, indent, "false", ctx.Scope);
+                if (!HasOut(g, node, "Loop"))
+                {
+                    sb.AppendLine($"{indent}// 【while】「循环」出口没接线：这一块什么都不做");
+                    EmitInScope(sb, p, g, node, "Done", ctx, st, indent);
+                    return;
+                }
+                sb.AppendLine(indent + "// 【while】条件成立就一直跑「循环」那条子链（最多 50 轮，防卡死）");
+                sb.AppendLine(indent + "int __fgLoopGuard = 0;");
+                sb.AppendLine(indent + $"while ({cond})");
+                sb.AppendLine(indent + "{");
+                sb.AppendLine(indent + "    if (++__fgLoopGuard > 50) { MegaCrit.Sts2.Core.Logging.Log.Warn(\"[模组调试] 【while】跑了 50 轮还没结束，强制跳出（检查你的条件）\"); break; }");
+                EmitInScope(sb, p, g, node, "Loop", ctx, st, indent + "    ");
+                sb.AppendLine(indent + "}");
+                // 循环之后：「结束」出口那条链继续（没接就到此为止）
+                if (HasOut(g, node, "Done")) EmitInScope(sb, p, g, node, "Done", ctx, st, indent);
+                return;
+            }
+
             case "And" or "Or":
             {
                 // ⚠ V0.2.216（用户实测报的「处于二形态时触发不了多效卡效果只能打24的基础效果」）：

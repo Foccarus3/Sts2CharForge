@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Sts2CharForge.Core.Effects;
@@ -627,6 +627,25 @@ public static class ForgeGraphCatalog
             {
                 new ForgePort("True", "是", "条件成立时走这条", false),
                 new ForgePort("False", "否", "条件不成立时走这条", false),
+            },
+            Array.Empty<ForgeNodeField>()),
+
+        // V0.2.285（用户要求「锻造里加一个 While 循环模块」）：【While】= 条件成立就一直跑「循环」那条子链。
+        // 结构：左边「接入」+「条件」两个入口；右边「循环」（子链，每轮重跑）与「结束」（循环之后的流程）两个出口。
+        // 生成端带一个上限计数（默认 50 轮）防卡死 —— 玩家的条件很容易永远成立。
+        new ForgeNodeKind(
+            "While", "while", "流程", "#8A4FB5",
+            "条件成立就一直重复执行「循环」那条子链；条件每轮重新求值。达到 50 轮会强行跳出（防卡死）。"
+            + "「结束」出口接循环之后的流程（可不接）。",
+            new[]
+            {
+                new ForgePort("In", "接入", "接触发时机 / 指向对象 / 别的分支", true),
+                new ForgePort("Cond", "条件", "接【条件】/【且】/【或】/【关系符】的结果", true, "Bool"),
+            },
+            new[]
+            {
+                new ForgePort("Loop", "循环", "每轮执行的子链（接这一条）", false),
+                new ForgePort("Done", "结束", "循环结束后继续走这里", false),
             },
             Array.Empty<ForgeNodeField>()),
 

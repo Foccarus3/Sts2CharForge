@@ -14,7 +14,10 @@ param(
     # 默认发布到工作区里的一个中性目录（不带任何本机路径）；实际用的时候用 -App 显式指定部署目录
     [string]$App = (Join-Path (Split-Path -Parent $PSScriptRoot) "_app_out"),
     # 空 = 按 csproj 里的版本号自动取名（杀戮尖塔2角色生成器<V0.0.1>.zip）
-    [string]$ZipName = ""
+    [string]$ZipName = "",
+    # V0.2.285（用户要求「不需要打包整合包，只需要更新包就够了」）：传 -NoBundle 只发布「程序文件」，
+    # 跳过那个 372MB 的整合包 zip（更新包由 tools\make_update.ps1 单独打）。
+    [switch]$NoBundle
 )
 
 $ErrorActionPreference = "Stop"
@@ -216,6 +219,8 @@ Write-Host ("  清掉 {0} 个（自检结果 / 崩溃日志）" -f $junk.Count)
 
 # 5) 打 zip：跳过用户数据、.lnk、所有 zip 和日志类文件
 #    （踩过的坑：目录里如果留着上一次的 zip，会被一起打进新 zip，体积直接翻倍）
+# V0.2.285：传了 -NoBundle 就整段跳过（用户只要更新包，不要那个 372MB 的整合包）
+if (-not $NoBundle) {
 Step "打 zip（排除 自定义角色存档 / *.lnk / *.zip / 日志）"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $tmpZip = Join-Path $env:TEMP $ZipName
@@ -255,3 +260,4 @@ Remove-Item $finalZip -Force -ErrorAction SilentlyContinue  # 生成物已在上
 Move-Item $tmpZip $finalZip -Force
 
 Write-Host ("完成：{0}  （{1:N1} MB，{2} 个文件，跳过 {3} 个）" -f $finalZip, ((Get-Item $finalZip).Length / 1MB), $count, $skipped)
+}   # ← -NoBundle 的收尾
