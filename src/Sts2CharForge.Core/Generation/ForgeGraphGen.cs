@@ -2114,6 +2114,17 @@ public static class ForgeGraphGen
     }
 
     /// <summary>这个模块会不会产出一个布尔（能接到【if】/【且】/【或】/【关系符】的条件入口上）。</summary>
+    /// <summary>
+    /// V0.2.286：这个「张数」表达式是不是**字面 0**（锻造图那条路的写法是 <c>(0m)</c> / <c>(int)((0m))</c>）。
+    /// 是 → 这个效果模块整块跳过（本体选 0 张的界面会一直等 → 卡死）。公式 / 变量一律不算。
+    /// </summary>
+    private static bool IsZeroGraphCount(string n)
+    {
+        string s = n.Replace("(int)", "").Replace("(decimal)", "").Replace("(", "").Replace(")", "")
+            .Replace("m", "").Replace(".", "").Replace(" ", "").Trim();
+        return s.Length > 0 && s.All(ch => ch == '0');
+    }
+
     private static bool IsBoolProducer(ForgeNodeSpec? node) =>
         node is not null && node.Kind is "Condition" or "And" or "Or" or "If" or "Relate";
 
@@ -3164,6 +3175,14 @@ public static class ForgeGraphGen
             }
             bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
             // 变量名按模块 Id 取，**每条效果一套** —— 同一条链上有两个同种效果时不会撞名（编译期就报 CS0128）
+        // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：这条链上的「取几张」是**字面 0** 时，
+        // 整个效果模块跳过 —— 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认。
+        // ⚠ 只对「必须弹选择框」的这几档生效：复制卡牌 / 生成卡牌 的 0 有专门含义（= 这张牌自己），不能跳过。
+        if (kind is "TransformCard" or "TransformCardGlobal" or "UpgradeCard" or "Scry" && IsZeroGraphCount(amount))
+        {
+            sb.AppendLine($"{indent}// fg:{node.Id}【{def.Display}】取 0 张：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）");
+            return;
+        }
             string selVar = UniqueVar(node, "__fgSel");
             string? cvTempUp = GraphTempUpVar(node, cvSpec);
             int copies = kind == "CopyCard" ? Math.Max(1, cvSpec?.Copies ?? 1) : 1;
