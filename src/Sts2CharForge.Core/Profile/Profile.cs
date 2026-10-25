@@ -643,7 +643,8 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>这个效果种类能不能用「数值公式」（见上面那段注释里为什么只有这 5 种）。</summary>
     public static bool FormulaSupports(string? kind) =>
-        kind is "Damage" or "Block" or "HpLoss" or "Heal" or "ApplyPower";
+        kind is "Damage" or "Block" or "HpLoss" or "Heal" or "ApplyPower"
+        or "Gold";   // V0.2.281（用户问「金币怎么不能填公式」）：获得金币也支持「数值公式」
 
     /// <summary>
     /// 公式的「显示 / 解析」统一写法：去掉首尾空格、去掉用户习惯写在最前面的那个 <c>=</c>。

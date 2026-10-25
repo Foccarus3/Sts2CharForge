@@ -11280,9 +11280,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("卡牌上的这 5 种效果（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）不再显示「数值」框",
 				!boxCard.ShowAmountBox && !new EffectSpec { Kind = "Block", Amount = 3m, IsCardChain = true }.ShowAmountBox
 				&& !new EffectSpec { Kind = "ApplyPower", Amount = 2m, IsCardChain = true }.ShowAmountBox, "收起来了");
-			Check("不支持公式的种类照旧显示「数值」框（例：抽牌 / 金币 / 生成卡牌）",
-				boxDraw.ShowAmountBox && new EffectSpec { Kind = "Gold", Amount = 10m, IsCardChain = true }.ShowAmountBox
-				&& new EffectSpec { Kind = "GenerateCard", Amount = 1m, IsCardChain = true }.ShowAmountBox, "照旧显示");
+					Check("V0.2.281：金币也支持公式了（数值框收起，改由「数值公式」填）；抽牌 / 生成卡牌照旧显示「数值」框",
+						boxDraw.ShowAmountBox && !new EffectSpec { Kind = "Gold", Amount = 10m, IsCardChain = true }.ShowAmountBox
+						&& new EffectSpec { Kind = "GenerateCard", Amount = 1m, IsCardChain = true }.ShowAmountBox, "金币收起了");
 			Check("遗物 / 药水 / 状态上的效果照旧显示「数值」框（公式只做在卡牌上，收起来就没法填了）",
 				boxRelic.ShowAmountBox, "照旧显示");
 			Check("「数值公式」的说明改成「留空 = 0（不显示也不执行）」",
