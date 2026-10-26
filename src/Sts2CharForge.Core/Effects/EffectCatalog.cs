@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -275,7 +275,12 @@ public static class EffectCatalog
         // V0.2.290（用户报：状态选的是「百分比增伤」，却被提示「未填入状态」）：
         // 四个内置「百分比」状态不在本体 Powers 那份清单里，只查 Powers 就会把它们判成「未选择」。
         : Powers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal))
-          ?? PercentPowers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal));
+          ?? PercentPowers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal))
+          // V0.2.291：读档时 PowerId 会被解析成生成端的类名（SparklePercentDamageUpPower），
+          // 这里也得认回来，否则界面上会显示成「没选状态」。
+          ?? (Generation.PercentPowers.CanonicalIdOf(id) is { } canon
+              ? PercentPowers.FirstOrDefault(p => string.Equals(p.Id, canon, StringComparison.Ordinal))
+              : null);
 
     // ==================== 本体状态改写（改名 / 描述 / 血条颜色）用的辅助 ====================
     /// <summary>

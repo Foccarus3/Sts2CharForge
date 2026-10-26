@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Text.Json;
 using Sts2CharForge.Core.Profile;
 
@@ -387,6 +387,14 @@ public static class ProfileFactory
     /// </summary>
     public static CharacterProfile Normalize(CharacterProfile p)
     {
+        // V0.2.291（用户实测 CS0246「未能找到类型 PercentDamageUp / SparklePercentDamageUpPower」）：
+        // 四个内置「百分比」状态：把存档里的 PowerId 就地解析成**生成端的类名**。
+        // 这样所有发射点（PowerVar / ForgeFormulaPowerVar / HoverTipFactory.FromPower /
+        // DynamicVars 的键 / PowerCmd.Apply）拿到的都是同一个名字，不会一半别名一半类名。
+        foreach (var e in CSharpCodeGen.AllEffects(p))
+            if (e is not null && PercentPowers.ClassOf(e.PowerId, p) is { } pctCls)
+                e.PowerId = pctCls;
+
         // V0.2.275（用户报「为什么效果全默认勾选概率生效了」）：V0.2.272 这里做过「百分比在 1~99 就自动开启概率」，
         // 但 `EffectSpec.ChancePercent` 的**默认值就是 50**（「概率各自独立」那个预设写进去的），
         // 结果**每一条**效果读档后都变成「概率生效」，生成时全都掷一次 50% 骰子 —— 撤回。

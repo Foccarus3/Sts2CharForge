@@ -31,16 +31,40 @@ public static class PercentPowers
     /// <summary>正在生成哪个存档（深层发射器拿不到 profile 时用它拼类名前缀）。</summary>
     public static CharacterProfile? Current;
 
-    public static bool IsPercent(string? id) =>
-        id is not null && All.Any(x => string.Equals(x.Id, id.Trim(), StringComparison.OrdinalIgnoreCase));
+    /// <summary>四个后缀（类名去掉前缀后长这样）—— 用来把「已解析的类名」也认出来。</summary>
+    private static readonly string[] ClassSuffixes =
+        { "PercentVulnPower", "PercentTakenReducePower", "PercentDamageUpPower", "PercentDamageReducePower" };
+
+    public static bool IsPercent(string? id)
+    {
+        string s = (id ?? "").Trim();
+        if (s.Length == 0) return false;
+        if (All.Any(x => string.Equals(x.Id, s, StringComparison.OrdinalIgnoreCase))) return true;
+        return ClassSuffixes.Any(x => s.EndsWith(x, StringComparison.Ordinal));
+    }
+
+    /// <summary>把「别名 / 已解析的类名」都归一成别名（PercentVuln …）。</summary>
+    public static string? CanonicalIdOf(string? id)
+    {
+        string s = (id ?? "").Trim();
+        if (s.Length == 0) return null;
+        foreach (var x in All)
+            if (string.Equals(x.Id, s, StringComparison.OrdinalIgnoreCase)) return x.Id;
+        foreach (string suf in ClassSuffixes)
+            if (s.EndsWith(suf, StringComparison.Ordinal))
+                return All.First(a => suf.StartsWith(a.Id, StringComparison.OrdinalIgnoreCase)
+                                      || string.Equals(a.Id + "Power", suf, StringComparison.OrdinalIgnoreCase)).Id;
+        return null;
+    }
 
     public static string? ClassOf(string? id) => Current is null ? null : ClassOf(id, Current);
 
     public static string? ClassOf(string? id, CharacterProfile p)
     {
-        if (!IsPercent(id)) return null;
+        string? canon = CanonicalIdOf(id);
+        if (canon is null) return null;
         string prefix = Naming.From(p).CharClass;
-        string key = id!.Trim();
+        string key = canon;
         if (string.Equals(key, Vuln, StringComparison.OrdinalIgnoreCase)) return prefix + "PercentVulnPower";
         if (string.Equals(key, TakenReduce, StringComparison.OrdinalIgnoreCase)) return prefix + "PercentTakenReducePower";
         if (string.Equals(key, DamageUp, StringComparison.OrdinalIgnoreCase)) return prefix + "PercentDamageUpPower";
@@ -63,8 +87,9 @@ public static class PercentPowers
             if (effects is null) return;
             foreach (var e in effects)
             {
-                if (e is null || !IsPercent(e.PowerId)) continue;
-                string key = e.PowerId!.Trim();
+                if (e is null) continue;
+                string? key = CanonicalIdOf(e.PowerId);
+                if (key is null) continue;
                 if (!used.Contains(key)) used.Add(key);
             }
         }
