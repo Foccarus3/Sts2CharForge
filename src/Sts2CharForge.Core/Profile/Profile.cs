@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -953,8 +953,12 @@ public sealed class EffectSpec : SpecBase
     {
         get
         {
+            // V0.2.297（用户要求）：公式**实时**算出结果，就写在这一行小字最前面。
+            string __preview = Generation.ForgeFormula.Preview(_amountFormula, Generation.PercentPowers.Current);
+            string __prefix = __preview.Length == 0 ? "" : __preview + "\n";
+
             if (!FormulaSupports(Kind))
-                return $"「{EffectCatalog.FindKind(Kind).Display}」的数值要在生成的时候就得定下来"
+                return __prefix + $"「{EffectCatalog.FindKind(Kind).Display}」的数值要在生成的时候就得定下来"
                      + "（抽几张 / 生成几张这类要提前分配变量和选牌上限），所以这一栏**只认两种写法**："
                      + "① 一个**纯数字 / 能折成常数的式子**（例：1、2+3）—— 它就是左边的固定数值（工具会自动折好）；"
                      + "② 光秃秃一个 X = 原来的「数值 = X」那个勾选框（打出这张牌那一刻消耗掉的能量，费用框里也要填 X）。"
@@ -969,7 +973,7 @@ public sealed class EffectSpec : SpecBase
                       + "（遗物 / 药水悬停时显示的数字也跟着现算；自定义状态的说明里会直接写公式本身）。"
                       + "⚠ 这几条链上没有「打出这张牌」那一刻：X / Y 读的是**当前**能量 / 额外资源量，"
                       + "「指定敌人」来源的参数取的是**可打的第一个敌人**。";
-            return chain
+            return __prefix + chain
                  + "可用参数名（M / N…，「自定义参数 / 组」页里定义的那几个）、X = 当前能量、Y = 当前额外资源量；"
                  // V0.2.182：以前这里把 80 条清单**整串**拼进提示文案（那一大片就是用户说的「占面积」）。
                  // 现在只点几个代表 + 指向参考窗（清单只在 ParamReferenceWindow 里看）——

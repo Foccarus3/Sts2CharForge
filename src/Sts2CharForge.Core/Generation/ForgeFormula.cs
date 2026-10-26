@@ -472,6 +472,37 @@ public static class ForgeFormula
     ///
     /// <paramref name="constOf"/>：把一个标识符换成常数（认不出来返回 null）。
     /// </summary>
+    /// <summary>
+    /// V0.2.297（用户要求「公式得出的数值能不能实时显示」）：界面上那一行小字用的预览。
+    ///
+    /// <para>只含**固定数值参数**的公式 → 直接算出结果（`= 12`）；
+    /// 含运行时量（X / Y / 内置只读量 / 没有固定值的参数）→ 说明「打出时才算」；
+    /// 公式语法错 → 直接把错因写出来（比等校验器报错快）。</para>
+    /// </summary>
+    public static string Preview(string? formula, CharacterProfile? p)
+    {
+        string text = EffectSpec.FormulaText(formula);
+        if (text.Length == 0) return "";
+        Node? root = TryParse(text, out string parseError);
+        if (root is null) return "⚠ 公式有误：" + parseError;
+        var ids = Identifiers(root);
+        if (ids.Count == 0)
+            return TryEvalConst(root, _ => null, out decimal v0, out _)
+                ? "= " + v0.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)
+                : "";
+        // 只把「有固定值」的参数当常量；其余（X / Y / 内置读数 / 运行时参数）留空 → 算不出来
+        decimal? ConstOf(string id)
+        {
+            if (p is null) return null;
+            var param = p.CustomParams?.FirstOrDefault(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase));
+            if (param is null) return null;
+            // 「取值来源 = 固定数值」才算常量；别的来源都要等打出那一刻
+            return string.Equals(param.Source, ParamSources.Value, StringComparison.OrdinalIgnoreCase) ? param.Value : null;
+        }
+        if (TryEvalConst(root, ConstOf, out decimal v, out _))
+            return "= " + v.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        return "＝出牌时现算（含 X / 状态层数 / 手牌数这类运行时量）";
+    }
     public static bool TryEvalConst(Node? root, Func<string, decimal?> constOf, out decimal value, out string error)
     {
         value = 0m;
