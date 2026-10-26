@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Text.Json;
 using Sts2CharForge.Core.Profile;
 
@@ -391,9 +391,37 @@ public static class ProfileFactory
         // 四个内置「百分比」状态：把存档里的 PowerId 就地解析成**生成端的类名**。
         // 这样所有发射点（PowerVar / ForgeFormulaPowerVar / HoverTipFactory.FromPower /
         // DynamicVars 的键 / PowerCmd.Apply）拿到的都是同一个名字，不会一半别名一半类名。
-        foreach (var e in CSharpCodeGen.AllEffects(p))
-            if (e is not null && PercentPowers.ClassOf(e.PowerId, p) is { } pctCls)
-                e.PowerId = pctCls;
+        {
+            foreach (var e in CSharpCodeGen.AllEffects(p))
+                if (e is not null && PercentPowers.ClassOf(e.PowerId, p) is { } pctCls)
+                    e.PowerId = pctCls;
+        }
+
+        // V0.2.292（用户实测：改了 PowerId 之后，卡面描述里的 {PercentDamageUp:diff()} 变成「没声明过的变量」）：
+        // 描述里的占位符也跟着换成键名（= 类名去掉结尾的 Power）。
+        {
+            var renames = new List<(string From, string To)>();
+            foreach (var (pid, _) in PercentPowers.All)
+            {
+                string? cls = PercentPowers.ClassOf(pid, p);
+                if (cls is null) continue;
+                string key = cls.EndsWith("Power", StringComparison.Ordinal) ? cls[..^"Power".Length] : cls;
+                renames.Add(("{" + pid, "{" + key));
+            }
+            string? Fix(string? s)
+            {
+                if (string.IsNullOrEmpty(s)) return s;   // 描述可能是 null
+                foreach (var (from, to) in renames) s = s.Replace(from, to, StringComparison.Ordinal);
+                return s;
+            }
+            foreach (var c in p.Cards)
+            {
+                if (c is null) continue;
+                c.CustomDescription = Fix(c.CustomDescription);
+                c.UpgradedCustomDescription = Fix(c.UpgradedCustomDescription);
+            }
+            foreach (var cp in p.CustomPowers) if (cp is not null) cp.Description = Fix(cp.Description);
+        }
 
         // V0.2.275（用户报「为什么效果全默认勾选概率生效了」）：V0.2.272 这里做过「百分比在 1~99 就自动开启概率」，
         // 但 `EffectSpec.ChancePercent` 的**默认值就是 50**（「概率各自独立」那个预设写进去的），
