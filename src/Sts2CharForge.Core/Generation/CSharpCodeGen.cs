@@ -9388,7 +9388,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         if (useX && e.RepeatIsX)
         {
-            w.Open("if (x > 0)   // X = 0（零费打出）：这条攻击一次都不执行");
+            // V0.2.295（用户日志：SerenCard6 报 CS1519「成员声明中的标记 } 无效」）：
+            // 注释**不能**和 { 写在同一句 Open 里 —— 那样 { 会落在注释后面被注释掉，
+            // 于是 if 的块体没打开、后面的 } 反而把方法提前关掉，整个类结构错位。
+            w.Line("// X = 0（零费打出）：这条攻击一次都不执行");
+            w.Open("if (x > 0)");
             EmitAttackCore(w, e, amt, useX, captureFatal, capture);
             w.Close();
             return;
