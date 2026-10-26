@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -4223,7 +4223,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		try
 		{
-			List<PowerEntry> list = EffectCatalog.Buffs.Concat(EffectCatalog.Debuffs).Concat(EffectCatalog.CustomPowerEntries).ToList();
+            // V0.2.289：四个内置「百分比」状态也进下拉（受伤害 ±N% / 造成伤害 ±N%）
+            List<PowerEntry> list = EffectCatalog.Buffs.Concat(EffectCatalog.Debuffs)
+                .Concat(EffectCatalog.PercentPowers).Concat(EffectCatalog.CustomPowerEntries).ToList();
 			for (int i = 0; i < list.Count; i++)
 			{
 				if (i >= AllPowers.Count || !(AllPowers[i].Id == list[i].Id) || !(AllPowers[i].Display == list[i].Display))

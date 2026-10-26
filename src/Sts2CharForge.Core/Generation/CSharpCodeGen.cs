@@ -2220,6 +2220,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static string ApplyPowerInstr(EffectSpec e, bool useX, string? type, string targetExpr, string amt,
         string applierExpr, string cardSourceExpr, string ctxVar)
     {
+        // V0.2.289（用户要求）：四个内置「百分比」状态 —— 类名换成生成端写的那个，
+        // 数值也不走 base.DynamicVars["..."]（PowerVar<T> 的键由类名推导，键名对不上会 KeyNotFoundException）。
+        if (PercentPowers.IsPercent(type))
+        {
+            type = PercentPowers.ClassOf(type) ?? type;
+            amt = e.AmountIsXEffective ? "x" : Lit.Dec(e.Amount);
+        }
         string core = ApplyPowerLine(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr, ctxVar);
         if (!DebugLogGen.On) return core;
         return DebugLogGen.PowerBefore(e, targetExpr, type ?? "PowerModel", amt)
@@ -4240,9 +4247,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "ExtraResource" => $"new StarsVar({prefix}{Lit.Int(e.Amount)})",
             // 「增加额外资源量上限值」：普通 DynamicVar（键 = ResourceCap），升级增量走 UpgradeValueBy
             "RaiseResourceCap" => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
-            "ApplyPower" => $"new PowerVar<{e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
+            "ApplyPower" => $"new PowerVar<{PercentPowers.ClassOf(e.PowerId) ?? e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
             // 临时增益：同样用那个状态的 PowerVar（卡面数字随升级变），只是打出去时施加的是生成的临时 Power
-            "TempPower" => $"new PowerVar<{e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
+            "TempPower" => $"new PowerVar<{PercentPowers.ClassOf(e.PowerId) ?? e.PowerId}>({prefix}{Lit.Dec(e.Amount)})",
             // 强化指定卡牌：用普通 DynamicVar（键 = Boost）—— 打出的其实是**生成的**强化 Power，
             // 而 PowerVar<T> 会去 ModelDb 里找 T 的预览值，普通 DynamicVar 更直接、也不会多一次模型查询。
             "BoostCard" => $"new DynamicVar({Lit.Str(name)}, {Lit.Dec(e.Amount)})",
@@ -4858,6 +4865,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     public static string CardSource(CharacterProfile p, CardSpec c, int index)
     {
+        PercentPowers.Current = p;   // V0.2.289：深层发射器拼「百分比状态」类名用
         // 「数值公式 / 次数类公式 / 条件数值公式」（用户要求⑦）求值都要 __fgPlayer / __fgSelf，
         // 而这些公式会被埋在很深的发射器里（效果体 / 条件守卫 / 各个钩子）——
         // 所以整张卡生成期间都把「当前是哪张卡」放在那个生成期变量里（见 _formulaOwner）。
@@ -11262,6 +11270,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     public static string RelicSource(CharacterProfile p, RelicSpec r, int index)
     {
+        PercentPowers.Current = p;   // V0.2.289：深层发射器拼「百分比状态」类名用
         // 「生成调试日志」（V0.2.142）用的临时变量序号：每次生成一个源文件从头开始
         //（「同一份存档生成两次文本逐字节相同」是既有红线，见 DebugLogGen._seq）。
         DebugLogGen.Reset();
@@ -13174,6 +13183,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     // ==================== 药水 ====================
     public static string PotionSource(CharacterProfile p, PotionSpec s, int index)
     {
+        PercentPowers.Current = p;   // V0.2.289：深层发射器拼「百分比状态」类名用
         var n = Naming.From(p);
         string cls = n.PotionClassName(s, index);
         // 「生成调试日志」（V0.2.142）用的临时变量序号：每次生成一个源文件从头开始

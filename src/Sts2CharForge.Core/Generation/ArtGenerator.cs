@@ -158,6 +158,7 @@ public static class ArtGenerator
         WriteExtraResourceIcon(p, projectRoot, log);
         WriteVanillaPowerIcons(p, projectRoot, log);
         WriteGeneratedPowerIcons(p, projectRoot, log);
+        WritePercentPowerIcons(p, projectRoot, log);   // V0.2.289：百分比状态的图标染紫
         WriteStaticCharacterScenes(p, projectRoot, log);
         WriteGrabGesture(p, projectRoot, log);
         WriteTransitionMaterial(p, projectRoot);
@@ -1075,6 +1076,36 @@ region = Rect2(0, 0, {rw}, {rh})
     /// 这里**不看**「用本体素材占位」那个勾选项：它是管角色立绘 / 背景的，而状态图标没有「中性占位」这种
     /// 说法（一个纯色方块还不如本体图直观）。本体里找不到那张图（没解包工程）才写中性占位图。
     /// </summary>
+    /// <summary>
+    /// V0.2.289（用户要求「用原版易伤/虚弱/力量/敏捷的图标，但渲成紫色」）：
+    /// 把上面刚复制过来的那四张本体图标**就地染成紫色**。
+    ///
+    /// <para>目标文件名必须和本体一致：<c>images/powers/&lt;Id.Entry&gt;.png</c>（= slug(类名) 小写），
+    /// 否则游戏里是「Missing sprite ... in power_atlas」+ 紫色占位问号。</para>
+    ///
+    /// <para>染色失败（格式不认识）就保持原色，不产出坏图。</para>
+    /// </summary>
+    private static void WritePercentPowerIcons(CharacterProfile p, string projectRoot, Action<string>? log)
+    {
+        var used = PercentPowers.UsedIn(p);
+        if (used.Count == 0) return;
+        int tinted = 0;
+        foreach (string id in used)
+        {
+            string cls = PercentPowers.ClassOf(id, p)!;
+            string icon = PercentPowers.VanillaIconOf(id);
+            string src = Path.Combine(p.Paths.VanillaProject, "images", "powers", icon + "_power.png");
+            string dst = Path.Combine(projectRoot, "images", "powers", EffectCatalog.SlugFor(cls).ToLowerInvariant() + ".png");
+            if (!File.Exists(src)) { log?.Invoke($"⚠ 找不到本体图标 {icon}_power.png → 这个状态图标没法染紫"); continue; }
+            byte[]? bytes = PngTint.Purple(File.ReadAllBytes(src));
+            if (bytes is null) { log?.Invoke($"⚠ {icon}_power.png 格式不认识 → 图标保持原色"); continue; }
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            File.WriteAllBytes(dst, bytes);
+            tinted++;
+        }
+        if (tinted > 0) log?.Invoke($"  百分比状态图标：{tinted} 张已染成紫色");
+    }
+
     private static void WriteGeneratedPowerIcons(CharacterProfile p, string projectRoot, Action<string>? log)
     {
         var n = Naming.From(p);
@@ -1126,6 +1157,11 @@ region = Rect2(0, 0, {rw}, {rh})
             wanted.Add((CustomPowerGen.EntryOf(p, cp, p.CustomPowers.IndexOf(cp)), "",
                 "状态：" + (string.IsNullOrWhiteSpace(cp.Name) ? cp.ClassName : cp.Name)));
         }
+
+        // V0.2.289（用户要求）：四个「百分比」状态 —— 图标先用本体那四张（易伤/虚弱/力量/敏捷），
+        // 下面复制完之后由 WritePercentPowerIcons 就地染成紫色。
+        foreach (string pctId in PercentPowers.UsedIn(p))
+            wanted.Add((PercentPowers.ClassOf(pctId, p)!, PercentPowers.VanillaIconOf(pctId) + "_power.png", "百分比：" + pctId));
 
         int copied = 0, neutral = 0, customNeutral = 0;
         foreach (var (entry, vanillaIcon, why) in wanted.DistinctBy(w => w.Entry))

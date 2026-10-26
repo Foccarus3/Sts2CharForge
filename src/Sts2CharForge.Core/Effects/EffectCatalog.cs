@@ -244,6 +244,22 @@ public static class EffectCatalog
     /// <summary>效果库（增益/减益列表）。启动时由 <see cref="Initialize"/> 从玩家本机的游戏文件里读出。</summary>
     public static IReadOnlyList<PowerEntry> Powers { get; private set; } = LoadEmbedded();
 
+    /// <summary>
+    /// V0.2.289（用户要求）：四个「百分比」状态也进「施加增益/减益」的下拉。
+    /// 它们不是本体 Power、也不是用户自定义状态，而是生成端内置写的四个类（见 PercentPowers）。
+    /// </summary>
+    public static IReadOnlyList<PowerEntry> PercentPowers { get; } = new[]
+    {
+        new PowerEntry(Generation.PercentPowers.Vuln, "percent_vuln", "Debuff", "Counter",
+            "百分比易伤（受到伤害 +N%）", "Percent Vulnerable"),
+        new PowerEntry(Generation.PercentPowers.TakenReduce, "percent_taken_reduce", "Buff", "Counter",
+            "百分比减伤（受到伤害 −N%）", "Percent Damage Taken Down"),
+        new PowerEntry(Generation.PercentPowers.DamageUp, "percent_damage_up", "Buff", "Counter",
+            "百分比增伤（造成伤害 +N%）", "Percent Damage Up"),
+        new PowerEntry(Generation.PercentPowers.DamageReduce, "percent_damage_reduce", "Debuff", "Counter",
+            "百分比减弱（造成伤害 −N%）", "Percent Damage Down"),
+    };
+
     /// <summary>效果库数据是从哪儿来的（显示在界面上，方便排查「列表是空的」）。</summary>
     public static string CatalogStatus { get; private set; } =
         Powers.Count > 0 ? "使用内置的开发用 powers_catalog.json" : "尚未加载效果库";

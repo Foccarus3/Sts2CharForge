@@ -301,6 +301,11 @@ public static class ModGenerator
         if (CSharpCodeGen.UsesExtraTurn(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "ExtraTurnPower.cs"), CSharpCodeGen.ExtraTurnPowerSource(profile));
+
+        // V0.2.289（用户要求）：四个「百分比」状态的类 —— 存档里用到哪个就写哪个
+        foreach (string pct in PercentPowers.UsedIn(profile))
+            ProjectFilesGen.WriteText(Path.Combine(cs, "Powers", PercentPowers.ClassOf(pct, profile) + ".cs"),
+                PercentPowers.Source(profile, pct));
             Log("  已生成「额外获得一回合」用的 ForgeExtraTurnPower");
         }
 
