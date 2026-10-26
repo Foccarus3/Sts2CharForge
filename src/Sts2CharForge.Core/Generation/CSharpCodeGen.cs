@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -1229,6 +1229,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "ScryThisTurn" => $"{player} is not null && {CountersClassForConditions()}.ScryThisTurn({player}) > 0",
             // V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：只有工具生成的「预见」丢牌那一瞬间为 true
             "DiscardedByScry" => $"{CountersClassForConditions()}.__inScryDiscard",
+            // V0.2.288（用户要求「条件增加『指定敌人的意图为（）』，参考原版故障机器人「眼部攻击」」）：
+            // 本体 GoForTheEyes 只判「是否攻击」（MonsterModel.IntendsToAttack）；这里按 IntentType 判任意意图。
+            // NextMove 可能为 null（沉睡 / 刚出生），所以写成模式匹配，不裸调。
+            // 目标取「可打的第一个敌人」（技能 / 遗物上没有「选中的目标」这个概念，和别的条件一个口径）
+            "EnemyIntent" => $"(({player}.Creature.CombatState?.HittableEnemies?.FirstOrDefault())?.Monster?.NextMove?.Intents?.Any(i => i.IntentType == MegaCrit.Sts2.Core.MonsterMoves.Intents.IntentType.{IntentIdOf(c)}) ?? false)",
             "ScryAtLeast" => $"{player} is not null && {CountersClassForConditions()}.ScryThisTurn({player}) {(inverted ? "<" : ">=")} {ni}",
             "NoHurtThisTurn" =>
                 $"{st} is not null && !CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>().Any(e => e.Receiver == {ownerCreature} && e.Result.UnblockedDamage > 0 && e.HappenedThisTurn({st}))",
@@ -2812,6 +2817,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 所以字面 0 的效果整条跳过。认得的写法：<c>0</c> / <c>(0m)</c> / <c>0m</c> / <c>(0)</c>；
     /// 公式 / 变量（<c>x</c>、<c>(base.Amount)</c>…）一律不算，走原来的路（生成文本逐字不变）。
     /// </summary>
+    /// <summary>
+    /// V0.2.288：条件里的「意图」Id（本体 IntentType 的名字）。认不出来就退回 Attack ——
+    /// 绝不把用户填的任意字符串直接写进生成代码（那会 CS0117，整个模组编译不过）。
+    /// </summary>
+    private static string IntentIdOf(ConditionSpec c)
+    {
+        string id = (c.Intent ?? "").Trim();
+        return EffectCatalog.Intents.Any(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase))
+            ? EffectCatalog.Intents.First(x => string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase)).Id
+            : "Attack";
+    }
     private static bool IsZeroCount(string n)
     {
         string s = n.Replace("(int)", "").Replace("(decimal)", "").Replace("(0m)", "0")

@@ -83,7 +83,9 @@ public sealed record ConditionOption(string Id, string Display, bool ForCard, bo
     bool NeedsTiming = false,
     // V0.2.247（用户要求）：底下还要再选「某个本体关键词」/「某个范围（可按组）」吗
     bool NeedsKeyword = false,
-    bool NeedsScope = false);
+    bool NeedsScope = false,
+    // V0.2.288（用户要求「条件增加『指定敌人的意图为（）』」）：底下还要再选「敌人的哪种意图」吗
+    bool NeedsIntent = false);
 
 /// <summary>
 /// 「卡牌时机」的一个子时机（需求⑩）。
@@ -95,6 +97,15 @@ public sealed record CardTimingOption(string Id, string Display);
 
 /// <summary>条件的「指向对象」一条：看自己 / 任意一个敌人 / 全部敌人。</summary>
 public sealed record ConditionTargetOption(string Id, string Display);
+
+/// <summary>
+/// V0.2.288（用户要求「条件增加『指定敌人的意图为（）』，参考原版故障机器人「眼部攻击」」）：
+/// 「意图」下拉的一条。Id 就是本体 <c>IntentType</c> 的枚举名（生成端直接写 <c>IntentType.&lt;Id&gt;</c>），
+/// Display 是中文，名字照本体那套（攻击 / 增益 / 减益 / 强减益 / 防御 …）。
+/// </summary>
+public sealed record IntentOption(string Id, string Display);
+
+
 
 /// <summary>「从哪里选牌」一条：手牌 / 抽牌堆 / 弃牌堆。</summary>
 public sealed record PileChoiceOption(string Id, string Display);
@@ -1766,6 +1777,31 @@ public static class EffectCatalog
     /// 牺牲（Osty 存活）、Clash / GrandFinale（IsPlayable 条件 = 不能打出）、
     /// 怀表（上一回合打出的牌数）、不休陀螺（手牌为空）、百年积木（每场战斗只触发一次）。
     /// </summary>
+    /// <summary>V0.2.288：意图下拉的全部选项（顺序照本体 IntentType 的声明顺序）。</summary>
+    public static IReadOnlyList<IntentOption> Intents { get; } = new[]
+    {
+        new IntentOption("Attack", "攻击"),
+        new IntentOption("Buff", "增益"),
+        new IntentOption("Debuff", "减益"),
+        new IntentOption("DebuffStrong", "强减益"),
+        new IntentOption("Defend", "防御"),
+        new IntentOption("Escape", "逃跑"),
+        new IntentOption("Heal", "治疗"),
+        new IntentOption("Hidden", "隐藏"),
+        new IntentOption("Summon", "召唤"),
+        new IntentOption("Sleep", "睡眠"),
+        new IntentOption("Stun", "眩晕"),
+        new IntentOption("StatusCard", "塞状态牌"),
+        new IntentOption("CardDebuff", "卡牌减益"),
+        new IntentOption("DeathBlow", "斩杀"),
+        new IntentOption("Unknown", "未知"),
+    };
+
+    /// <summary>意图 Id → 中文（认不出来就原样返回；空 = 攻击）。</summary>
+    public static string IntentZh(string? id) =>
+        Intents.FirstOrDefault(x => string.Equals(x.Id, (id ?? "").Trim(), StringComparison.OrdinalIgnoreCase))?.Display
+        ?? ((id ?? "").Trim() is { Length: > 0 } s ? s : "攻击");
+
     public static IReadOnlyList<ConditionOption> Conditions { get; } = new[]
     {
         new ConditionOption("None", "无条件（默认）", true, true, false, false, "不做任何判断，效果一定生效。", true),
@@ -1869,10 +1905,16 @@ public static class EffectCatalog
         new ConditionOption("ScryThisTurn", "本回合预见过", true, true, false, false,
             "本回合（按你自己的回合数算）用过一次「预见」就成立。"
             + "数据源是工具自己记的计数器：只有**工具生成的「预见」效果**会让它 +1（本体没有预见这个机制），"
-            + "而且换回合自动清零。", true),
+            + "而且换回合自动清零。", true),
         // V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：
         // 「预见」是工具自己拼的效果（本体没有这个机制），丢牌那一刻会打一个静态标记 ——
         // 所以这条条件只认**工具生成的预见**丢掉的牌；本体 / 别的模组的丢弃不会成立。
+        // V0.2.288（用户要求「条件增加『指定敌人的意图为（）』，参考原版故障机器人「眼部攻击」」）：
+        // 本体判据是 MonsterModel.IntendsToAttack（只看「是否攻击」），这里扩成任意意图：
+        //   target.Monster.NextMove.Intents.Any(i => i.IntentType == IntentType.X)
+        new ConditionOption("EnemyIntent", "指定敌人的意图为（）", true, true, false, false,
+            "看目标敌人「下一次行动」的意图（参考本体「眼部攻击」：它只判是否攻击）。技能 / 遗物上用这个条件时，"
+            + "目标取「可打的第一个敌人」。", ForPower: true, NeedsTarget: true, NeedsIntent: true),
         new ConditionOption("DiscardedByScry", "这张牌是因「预见」被丢弃的", true, true, false, false,
             "只在「预见」把牌丢进弃牌堆的那一刻成立。挂在「一张牌被丢弃后」这类钩子上用。", true),
         new ConditionOption("ScryAtLeast", "本回合已预见至少 N 次", true, true, true, false,

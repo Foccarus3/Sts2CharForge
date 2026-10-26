@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -5428,6 +5428,8 @@ public sealed class ConditionSpec : SpecBase
     // V0.2.247：「上一张打出的牌带有某关键词 / 是某范围」用得到（默认空串 = 没填）
     private string _keyword = "";
     private string _scope = "";
+    // V0.2.288（用户要求「条件增加『指定敌人的意图为（）』」）：下拉选的那个意图（本体 IntentType 的名字）
+    private string _intent = "Attack";
 
     /// <summary>条件种类（EffectCatalog.Conditions 里的 Id；None = 无条件）</summary>
     public string Kind
@@ -5444,6 +5446,7 @@ public sealed class ConditionSpec : SpecBase
                 Raise(nameof(NeedsTiming));
                 Raise(nameof(NeedsKeyword));
                 Raise(nameof(NeedsScope));
+            Raise(nameof(NeedsIntent));
                 Raise(nameof(IsNone));
                 Raise(nameof(IsInverted));
                 Raise(nameof(IsOutsideRange));
@@ -5650,6 +5653,21 @@ public sealed class ConditionSpec : SpecBase
 
     /// <summary>界面用：这个条件底下要不要再显示「范围（可按组）」下拉（V0.2.247）。</summary>
     [JsonIgnore] public bool NeedsScope => EffectCatalog.FindCondition(_kind)?.NeedsScope == true;
+    /// <summary>V0.2.288：这个条件底下要不要再选「敌人的哪种意图」。</summary>
+    [JsonIgnore] public bool NeedsIntent => EffectCatalog.FindCondition(_kind)?.NeedsIntent == true;
+
+    /// <summary>V0.2.288：选中的意图（本体 <c>IntentType</c> 的名字：Attack / Defend / Buff …）。</summary>
+    public string Intent
+    {
+        get => _intent;
+        set
+        {
+            if (Set(ref _intent, (value ?? "").Trim())) { Raise(nameof(IntentZh)); Raise(nameof(DisplayShort)); Raise(nameof(Summary)); }
+        }
+    }
+
+    /// <summary>意图的中文（界面上显示用）。</summary>
+    [JsonIgnore] public string IntentZh => EffectCatalog.IntentZh(_intent);
 
     /// <summary>子时机的中文名（界面上那个下拉里显示的就是它）。</summary>
     [JsonIgnore] public string TimingZh => EffectCatalog.CardTimingZh(_timing);
