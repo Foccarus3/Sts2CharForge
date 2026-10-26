@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -1148,6 +1148,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	/// <summary>遗物页「整只遗物」的触发条件。</summary>
 	public IReadOnlyList<ConditionOption> RelicConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForRelic).ToList();
+
+	/// <summary>V0.2.288（用户要求「条件增加『指定敌人的意图为（）』」）：意图下拉的选项（本体 IntentType 那 15 个）。</summary>
+	public IReadOnlyList<IntentOption> IntentOptions { get; } = EffectCatalog.Intents;
 
 	/// <summary>遗物 / 自定义状态的「每条效果自己的条件」（不能用「这张牌」类条件）。</summary>
 	public IReadOnlyList<ConditionOption> PlainEffectConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForRelic && c.ForPower).ToList();

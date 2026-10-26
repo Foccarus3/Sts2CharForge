@@ -1,4 +1,4 @@
-﻿<Window x:Class="Sts2CharForge.App.MainWindow"
+<Window x:Class="Sts2CharForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sts2CharForge.App"
@@ -1681,12 +1681,25 @@
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
                                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                                        <!-- V0.2.288：条件「指定敌人的意图为（）」那一行 -->
+                                        <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
                                     <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
                                     <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
                                               ItemsSource="{Binding RelicConditions, RelativeSource={RelativeSource AncestorType=Window}}"
                                               DisplayMemberPath="Display" SelectedValuePath="Id"
                                               SelectedValue="{Binding Condition.Kind}"/>
+
+                                    <!-- V0.2.288（用户要求「条件增加『指定敌人的意图为（）』」）：意图下拉，
+                                         参考本体故障机器人的「眼部攻击」（它只判「是否攻击」，这里按 IntentType 判任意意图） -->
+                                    <TextBlock Grid.Row="3" Grid.Column="0" Text="意图" Style="{StaticResource Label}"
+                                               Visibility="{Binding Condition.NeedsIntent, Converter={StaticResource BoolToVis}}"/>
+                                    <ComboBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                                              ItemsSource="{Binding IntentOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                                              Visibility="{Binding Condition.NeedsIntent, Converter={StaticResource BoolToVis}}"
+                                              SelectedValue="{Binding Condition.Intent}"
+                                              ToolTip="看目标敌人「下一次行动」的意图。目标取可打的第一个敌人。"/>
 
                                     <TextBlock Grid.Row="1" Grid.Column="0" Text="数值 N" Style="{StaticResource Label}"
                                                Visibility="{Binding Condition.NeedsAmount, Converter={StaticResource BoolToVis}}"/>
