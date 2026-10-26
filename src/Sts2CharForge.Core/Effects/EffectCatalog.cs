@@ -1079,6 +1079,11 @@ public static class EffectCatalog
         // 升级卡牌：从手牌 / 抽牌堆 / 弃牌堆里挑 N 张升级（本体「武装 Armaments」的升级部分 + 自选牌堆）。
         // 生成的是 CardCmd.Upgrade（本体自己也是这么升级卡牌的：Apotheosis / Armaments / Whetstone）。
         new EffectKindOption(Kind: "UpgradeCard", Display: "升级卡牌", Unit: "张", Min: 0, Max: 9, NeedsTarget: false),
+
+        // V0.2.296（用户要求「效果增加『升级本场战斗中临时增加的牌』」）：
+        // 本体有现成的流水：CombatManager.Instance.History.Entries.OfType<CardGeneratedEntry>()（记本场战斗里生成的牌）。
+        // 数值 = 最多升几张（0 / 空 = 不限）。
+        new EffectKindOption(Kind: "UpgradeGenerated", Display: "升级本场战斗中临时增加的牌", Unit: "张", Min: 0, Max: 20, NeedsTarget: false),
         // 复制卡牌（用户要求的新效果）：数值 = 从牌堆里**选几张**，下面「复制的份数」= 每一张复制几份。
         // 走的是本体「二刀流 DualWield」的做法（那个界面就是「选 1 张、复制 N 份」）：
         // CardSelectCmd.FromHand / FromCombatPile 选出原牌 → card.CreateClone() → CardPileCmd.AddGeneratedCardToCombat(手牌)。

@@ -7297,6 +7297,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 选牌时也带上 <c>c =&gt; c.IsUpgradable</c> 过滤，免得玩家选到升不了的牌（选了也是白选）。
     /// 战斗里的卡是牌组卡的**克隆**，所以这里升级只影响本场战斗（本体机制，不用我们处理）。
     /// </summary>
+    /// <summary>
+    /// V0.2.296（用户要求「升级本场战斗中临时增加的牌」）：
+    /// 遍历 <c>CombatManager.Instance.History.Entries</c> 里的 <c>CardGeneratedEntry</c>（本场生成的牌），
+    /// 逐张升级「还能升的」。数值 = 最多升几张，0 = 不限。
+    /// </summary>
+    private static void EmitUpgradeGenerated(CodeWriter w, EffectSpec e, bool useX)
+    {
+        int cap = useX ? 0 : (int)Math.Max(0, e.Amount);
+        w.Line("// 升级本场战斗中临时增加的牌（本体 History.CardGenerated 的流水）");
+        w.Line("int __upgGen = 0;");
+        w.Open("foreach (var __gen in MegaCrit.Sts2.Core.Combat.CombatManager.Instance.History.Entries.OfType<MegaCrit.Sts2.Core.Combat.History.Entries.CardGeneratedEntry>().ToList())");
+        w.Line("CardModel? __genCard = __gen.Card;");
+        w.Line("if (__genCard is null || __genCard.IsUpgraded || !__genCard.IsUpgradable) continue;   // 升过的、不能升的跳过");
+        if (cap > 0)
+            w.Line($"if (__upgGen >= {cap}) break;   // 最多升 {cap} 张");
+        w.Line("CardCmd.Upgrade(__genCard);");
+        w.Line("__upgGen++;");
+        w.Close();
+    }
+
     private static void EmitUpgradeCard(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
@@ -8908,6 +8928,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitTransformCard(w, e, useX, p, countExpr: CountExprAt(e, varMap, useX),
                     countInto: capture.HasFlag(CardReadings.Transform) ? ThisCardTransformField : null);
                 break;
+
+                // V0.2.296（用户要求）：升级本场战斗中「临时增加」的牌（本体 History 里的 CardGeneratedEntry）
+                case "UpgradeGenerated":
+                    EmitUpgradeGenerated(w, e, useX);
+                    break;
 
             case "UpgradeCard":
                 EmitUpgradeCard(w, p, e, useX, CountExprAt(e, varMap, useX));
@@ -12774,6 +12799,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitDiscardCard(w, p, e);
                 break;
 
+                // V0.2.296（用户要求）：升级本场战斗中「临时增加」的牌（本体 History 里的 CardGeneratedEntry）
+                case "UpgradeGenerated":
+                EmitUpgradeGenerated(w, e, useX: false);
+                    break;
+
             case "UpgradeCard":
                 if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，升级卡牌无法实现）"); break; }
                 EmitUpgradeCard(w, p, e);
@@ -14305,6 +14335,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "DiscardCard":
                 EmitDiscardCard(w, p, e);
                 break;
+
+                // V0.2.296（用户要求）：升级本场战斗中「临时增加」的牌（本体 History 里的 CardGeneratedEntry）
+                case "UpgradeGenerated":
+                EmitUpgradeGenerated(w, e, useX: false);
+                    break;
 
             case "UpgradeCard":
                 EmitUpgradeCard(w, p, e);
