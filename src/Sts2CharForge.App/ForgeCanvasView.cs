@@ -957,6 +957,16 @@ public sealed class ForgeCanvasView : Grid
                 row.Children.Add(insert);
                 row.Children.Add(box);
                 wrap.Children.Add(row);
+                // V0.2.298（用户要求「公式得出的数值能不能实时显示，包括锻造方面」）：
+                // 这一栏下面再放一行小字，当场写出算出来的值（能定就写数字，含运行时量就说明，写错红字）。
+                var livePreview = new TextBlock
+                {
+                    FontSize = 10,
+                    Margin = new Thickness(6, 0, 4, 3),
+                    TextWrapping = TextWrapping.Wrap,
+                    Foreground = new SolidColorBrush(Color.FromRgb(0x44, 0x55, 0x66)),
+                };
+                wrap.Children.Add(livePreview);
                 void Revalidate()
                 {
                     if (Owner is null) return;                       // 没有配置时（构造期）不判，免得误报
@@ -971,24 +981,34 @@ public sealed class ForgeCanvasView : Grid
                         box.BorderBrush = Brushes.Firebrick;
                         box.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF0, 0xF0));
                         box.ToolTip = tip + "\n\n❌ " + r.Error;
+                        livePreview.Text = "⚠ " + r.Error;
+                        livePreview.Foreground = Brushes.Firebrick;
                     }
                     else if (costX)
                     {
                         box.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
                         box.Background = new SolidColorBrush(Color.FromRgb(0xF1, 0xF8, 0xE9));
                         box.ToolTip = tip + $"\n\n✓ {(field.Key == "ResourceCost" ? "Y 费：打出时消耗全部额外资源量（本体 HasStarCostX）" : "X 费：打出时消耗全部能量（本体 HasEnergyCostX）")}";
+                        livePreview.Text = "= 打出时消耗全部" + (field.Key == "ResourceCost" ? "额外资源量" : "能量");
+                        livePreview.Foreground = new SolidColorBrush(Color.FromRgb(0x2E, 0x7D, 0x32));
                     }
                     else if (r.Runtime)
                     {
                         box.BorderBrush = new SolidColorBrush(Color.FromRgb(0x2A, 0x6F, 0xB5));
                         box.Background = new SolidColorBrush(Color.FromRgb(0xF0, 0xF7, 0xFF));
                         box.ToolTip = tip + $"\n\n✓ 运行时才算：{r.Text} → {r.Expr}";
+                        livePreview.Text = "＝触发时现算：" + r.Text;
+                        livePreview.Foreground = new SolidColorBrush(Color.FromRgb(0x2A, 0x6F, 0xB5));
                     }
                     else
                     {
                         box.ClearValue(TextBox.BorderBrushProperty);
                         box.ClearValue(TextBox.BackgroundProperty);
                         box.ToolTip = tip;
+                        // 纯数字 / 能折成常数的式子：直接把算出来的值写出来
+                        string pv = Core.Generation.ForgeFormula.Preview(box.Text, Owner);
+                        livePreview.Text = pv.StartsWith("=", StringComparison.Ordinal) ? pv : (pv.Length > 0 ? pv : "");
+                        livePreview.Foreground = new SolidColorBrush(Color.FromRgb(0x44, 0x55, 0x66));
                     }
                 }
                 box.TextChanged += (_, _) => { node.SetField(field.Key, box.Text); Revalidate(); };
