@@ -2220,13 +2220,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static string ApplyPowerInstr(EffectSpec e, bool useX, string? type, string targetExpr, string amt,
         string applierExpr, string cardSourceExpr, string ctxVar)
     {
-        // V0.2.289（用户要求）：四个内置「百分比」状态 —— 类名换成生成端写的那个，
-        // 数值也不走 base.DynamicVars["..."]（PowerVar<T> 的键由类名推导，键名对不上会 KeyNotFoundException）。
-        if (PercentPowers.IsPercent(type))
-        {
-            type = PercentPowers.ClassOf(type) ?? type;
-            amt = e.AmountIsXEffective ? "x" : Lit.Dec(e.Amount);
-        }
+        // V0.2.293（用户实测「增伤有状态但效果没生效」）：这里**不能**把数值改成固定字面 ——
+        // 那张牌的「数值公式」是 100，而 Amount 只是 1；改成字面就变成 +1%，等于没生效。
+        // 现在只换类名，数值仍旧走原来的（公式 / DynamicVars / X）。
+        if (PercentPowers.IsPercent(type)) type = PercentPowers.ClassOf(type) ?? type;
         string core = ApplyPowerLine(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr, ctxVar);
         if (!DebugLogGen.On) return core;
         return DebugLogGen.PowerBefore(e, targetExpr, type ?? "PowerModel", amt)

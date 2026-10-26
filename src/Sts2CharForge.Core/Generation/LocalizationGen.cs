@@ -1090,6 +1090,18 @@ public static class LocalizationGen
     public static string PowersJson(CharacterProfile p)
     {
         var dict = new Dictionary<string, string>();
+        // V0.2.293（用户实测：百分比状态在状态栏里标题是一串英文、描述也没有）：
+        // 这四个状态是生成端内置写的类，不走「自定义状态」那条本地化，得在这里补 title / description / smartDescription。
+        foreach (string pctId in PercentPowers.UsedIn(p))
+        {
+            string pctCls = PercentPowers.ClassOf(pctId, p)!;
+            string pctEntry = Naming.EntryOf(pctCls);
+            string pctZh = PercentPowers.All.First(a => string.Equals(a.Id, pctId, StringComparison.OrdinalIgnoreCase)).Zh;
+            dict[$"{pctEntry}.title"] = pctZh.Split('（')[0];
+            dict[$"{pctEntry}.description"] = pctZh + "：层数就是百分比（50 = 50%），只作用于有来源的攻击。";
+            dict[$"{pctEntry}.smartDescription"] = pctZh.Replace("N", "{Amount}", StringComparison.Ordinal);
+        }
+
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p))
         {
             string entry = Naming.EntryOf(CSharpCodeGen.DelayedPowerClassName(e, p));
