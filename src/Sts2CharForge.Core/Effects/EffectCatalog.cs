@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -271,7 +271,11 @@ public static class EffectCatalog
         Powers.Where(p => !p.IsBuff).OrderByDescending(p => p.Recommended).ThenBy(p => p.Zh, StringComparer.Ordinal).ToList();
 
     public static PowerEntry? FindPower(string? id) =>
-        id is null ? null : Powers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal));
+        id is null ? null
+        // V0.2.290（用户报：状态选的是「百分比增伤」，却被提示「未填入状态」）：
+        // 四个内置「百分比」状态不在本体 Powers 那份清单里，只查 Powers 就会把它们判成「未选择」。
+        : Powers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal))
+          ?? PercentPowers.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal));
 
     // ==================== 本体状态改写（改名 / 描述 / 血条颜色）用的辅助 ====================
     /// <summary>
