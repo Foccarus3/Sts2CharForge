@@ -1869,7 +1869,12 @@ public static class EffectCatalog
         new ConditionOption("ScryThisTurn", "本回合预见过", true, true, false, false,
             "本回合（按你自己的回合数算）用过一次「预见」就成立。"
             + "数据源是工具自己记的计数器：只有**工具生成的「预见」效果**会让它 +1（本体没有预见这个机制），"
-            + "而且换回合自动清零。", true),
+            + "而且换回合自动清零。", true),
+        // V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：
+        // 「预见」是工具自己拼的效果（本体没有这个机制），丢牌那一刻会打一个静态标记 ——
+        // 所以这条条件只认**工具生成的预见**丢掉的牌；本体 / 别的模组的丢弃不会成立。
+        new ConditionOption("DiscardedByScry", "这张牌是因「预见」被丢弃的", true, true, false, false,
+            "只在「预见」把牌丢进弃牌堆的那一刻成立。挂在「一张牌被丢弃后」这类钩子上用。", true),
         new ConditionOption("ScryAtLeast", "本回合已预见至少 N 次", true, true, true, false,
             "同「本回合预见过」，这里是次数：填 N = 本回合至少预见 N 次。填负数 = 反向（少于 N 次）。"
             + "数据源同上（只算工具生成的「预见」效果，换回合清零）。",

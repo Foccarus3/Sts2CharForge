@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -1227,6 +1227,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 计数器在 cs/CombatCounters.cs（和「每 N 个敌人死亡」共用那个类，见 CombatCountersSource）。
             // 换回合 / 换玩家自动从 0 重新数，所以这里不需要自己判回合。
             "ScryThisTurn" => $"{player} is not null && {CountersClassForConditions()}.ScryThisTurn({player}) > 0",
+            // V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：只有工具生成的「预见」丢牌那一瞬间为 true
+            "DiscardedByScry" => $"{CountersClassForConditions()}.__inScryDiscard",
             "ScryAtLeast" => $"{player} is not null && {CountersClassForConditions()}.ScryThisTurn({player}) {(inverted ? "<" : ">=")} {ni}",
             "NoHurtThisTurn" =>
                 $"{st} is not null && !CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>().Any(e => e.Receiver == {ownerCreature} && e.Result.UnblockedDamage > 0 && e.HappenedThisTurn({st}))",
@@ -3031,6 +3033,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line("/// <summary>本场战斗已经死了几个敌人（没开始数就是 0）。</summary>")
              .Line("public static int EnemyDeaths(MegaCrit.Sts2.Core.Combat.ICombatState? state) => ReferenceEquals(__state, state) ? __deaths : 0;");
         }
+        if (UsesScryDiscardCond(p))
+        {
+            if (death || scry) w.Line();
+            w.Line("/// <summary>V0.2.287：「正在因预见丢牌」标记 —— 只有工具生成的「预见」会在丢牌那一瞬间置 true。</summary>")
+                .Line("public static bool __inScryDiscard;");
+        }
         if (scry)
         {
             if (death) w.Line();
@@ -3066,9 +3074,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     public static bool UsesScryCounter(CharacterProfile p) => UsesCondition(p, "ScryThisTurn", "ScryAtLeast");
 
+    /// <summary>
+    /// V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：用不用得到那个「正在因预见丢牌」的标记。
+    /// 用到才在「预见」那段外面加 try/finally 打标记，老存档生成文本逐字不变。
+    /// </summary>
+    public static bool UsesScryDiscardCond(CharacterProfile p) => UsesCondition(p, "DiscardedByScry");
+
+    /// <summary>「因预见被丢弃」那个标记的读写（静态字段，在「预见」丢牌那一小段时间里为 true）。</summary>
+    public static string ScryDiscardFlag(CharacterProfile p) => CombatCountersClass(p) + ".__inScryDiscard";
+
     /// <summary>工具自己记的战斗计数器（敌人死亡 / 预见次数）用不用得到 —— 用到才生成那个小运行时。</summary>
     public static bool UsesCombatCounters(CharacterProfile p) =>
-        UsesEnemyDeathCounter(p) || UsesScryCounter(p);
+        UsesEnemyDeathCounter(p) || UsesScryCounter(p) || UsesScryDiscardCond(p);
 
     /// <summary>
     /// 「获得的能量」那个小运行时的类名。**固定**（不是每个角色一份）：因为内置量表
@@ -7337,7 +7354,23 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Open("if (__scryTop.Count > 0)");
         w.Line("var __scryDiscard = (await CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))).ToList();");
         w.Open("if (__scryDiscard.Count > 0)");
-        w.Line("await CardCmd.Discard(choiceContext, __scryDiscard);");
+        if (p is not null && UsesScryDiscardCond(p))
+        {
+            // V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：丢牌这一小段打标记，
+            // 让「一张牌被丢弃后」那些钩子能分辨「这是被预见丢的」。
+            w.Line("// 打标记：下面这一小段里的丢弃都算「因预见被丢弃」（条件靠它分辨）");
+            w.Line($"{ScryDiscardFlag(p)} = true;");
+            w.Open("try");
+            w.Line("await CardCmd.Discard(choiceContext, __scryDiscard);");
+            w.Close();
+            w.Open("finally");
+            w.Line($"{ScryDiscardFlag(p)} = false;");
+            w.Close();
+        }
+        else
+        {
+            w.Line("await CardCmd.Discard(choiceContext, __scryDiscard);");
+        }
         w.Close();
         w.Close();
     }
