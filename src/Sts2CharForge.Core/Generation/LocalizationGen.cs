@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -343,6 +343,23 @@ public static class LocalizationGen
         var e = EffectSpecOfNode(p, g, node);
         var (side, targetPhrase, whoPhrase) = UnitPhrases(pick);
         e.TargetSide = side;
+        // V0.2.306：「获得能量 / 金币」只作用在**玩家**身上（召唤物没有能量 / 金币）——
+        // 队友那两档要用「指定队友 / 所有队友」的说法，不能沿用【对象】模块那套「召唤物」措辞。
+        if (e.Kind is "Energy" or "Gold")
+        {
+            if (pick == "ChosenAlly")
+            {
+                e.TargetSide = "Ally";
+                targetPhrase = null;
+                whoPhrase = "指定队友";
+            }
+            else if (pick == "AllAllies")
+            {
+                e.TargetSide = "AllAllies";
+                targetPhrase = null;
+                whoPhrase = node.EffectSpec is { AllAlliesIncludeSelf: true } ? "你和所有队友" : "所有队友";
+            }
+        }
         if (summonId.Length > 0) e.PetSummon = summonId;
         string amountText = AmountTextOf(g, node);
         if (decimal.TryParse(amountText, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal parsed))
@@ -426,6 +443,12 @@ public static class LocalizationGen
         if (hitsN.Runtime) spec.RepeatFormula = hitsN.Text;
         if (timesN.Runtime) spec.TimesFormula = timesN.Text;
         if (chanceN.Runtime) spec.ChanceFormula = chanceN.Text;
+        // V0.2.306：「获得能量 / 金币」现在能选队友了 —— 图上的「作用对象」存在模块那份 spec 里，
+        // 文案要按它写（「让指定队友获得 N 点能量」）。**只对这两种生效**：
+        // 其它种类的中文规则以前就不认这一栏（图上靠【对象】模块决定打谁），抄过来会改掉老卡的卡面。
+        // ⚠ 老图的 spec.TargetSide 恒为默认的 "Enemy"（那一栏以前对这两种不显示）= 「没填」，不参与文案。
+        if (spec.Kind is "Energy" or "Gold" && node.EffectSpec is { } ts && ts.TargetSide is not ("" or "Enemy"))
+            spec.TargetSide = ts.TargetSide;
         return spec;
     }
 
@@ -1528,6 +1551,20 @@ public static class LocalizationGen
                 _ => "",
             });
         string forWho = who.Length == 0 ? "" : $"让{who}";
+        // V0.2.306：能量 / 金币只作用在**玩家**身上（召唤物没有能量 / 金币收入）：
+        //   · 「全部友方」的措辞不能沿用「队友和所有召唤物」那一套；
+        //   · 其余档位（含老存档里那个默认值 "Enemy"）就是「自己」，**不写对象** ——
+        //     卡面必须与旧版逐字相同（「获得 2 点能量。」不会变成「让指定敌人获得 2 点能量。」）。
+        if (e.Kind is "Energy" or "Gold")
+        {
+            who = e.TargetSide switch
+            {
+                "Ally" => "指定队友",
+                "AllAllies" => e.AllAlliesIncludeSelf ? "你和所有队友" : "所有队友",
+                _ => "",
+            };
+            forWho = who.Length == 0 ? "" : $"让{who}";
+        }
 
         string text = e.Kind switch
         {
@@ -1559,9 +1596,10 @@ public static class LocalizationGen
             // 透支：现在拿 N 点，下回合少 N 点（走生成的负债 Power —— 本体 GainEnergy 会忽略负数）
             "OverdraftEnergy" => $"{repeat}{when}获得 {var} 点能量，下回合少 {var} 点能量。",
             // 负数 = 失去（生成的是 LoseEnergy：本体 GainEnergy 对非正数直接返回）
+            // V0.2.306：作用对象能选队友了 —— 不是自己时要写清给谁（「自己」那一档输出逐字不变）
             "Energy" => e.Amount < 0 && var != "X"
-                ? $"{repeat}{when}失去 {-e.Amount} 点能量。"
-                : $"{repeat}{when}获得 {var} 点能量。",
+                ? (who.Length == 0 ? $"{repeat}{when}失去 {-e.Amount} 点能量。" : $"{repeat}{when}{forWho}失去 {-e.Amount} 点能量。")
+                : (who.Length == 0 ? $"{repeat}{when}获得 {var} 点能量。" : $"{repeat}{when}{forWho}获得 {var} 点能量。"),
             "Heal" => e.Amount < 0 && var != "X" && formulaText is null
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点生命。" : $"{forWho}失去 {-e.Amount} 点生命。")
                 : (who.Length == 0 ? $"{repeat}回复 {var} 点生命。" : $"{repeat}{forWho}回复 {var} 点生命。"),
@@ -1570,9 +1608,10 @@ public static class LocalizationGen
                 ? (who.Length == 0 ? $"失去 {-e.Amount} 点最大生命。" : $"{forWho}失去 {-e.Amount} 点最大生命。")
                 : (who.Length == 0 ? $"{repeat}获得 {var} 点最大生命。" : $"{repeat}{forWho}获得 {var} 点最大生命。"),
             // 负数 = 扣除（生成的是 LoseGold：本体 GainGold 对非正数直接返回）
+            // V0.2.306：作用对象能选队友了 —— 不是自己时要写清给谁（「自己」那一档输出逐字不变）
             "Gold" => e.Amount < 0
-                ? $"失去 {-e.Amount} 枚金币。"
-                : $"获得 {var} 枚金币。",
+                ? (who.Length == 0 ? $"失去 {-e.Amount} 枚金币。" : $"{forWho}失去 {-e.Amount} 枚金币。")
+                : (who.Length == 0 ? $"获得 {var} 枚金币。" : $"{forWho}获得 {var} 枚金币。"),
             // 增加额外资源量上限值：数值 = 抬多少（卡面用 {ResourceCap:diff()}，升级后会自动显示升级值）
             "RaiseResourceCap" => $"{ResourceName(p)}上限 +{(e.AmountIsXEffective && isCard ? "X" : "{ResourceCap:diff()}")}。",
             // 卡牌上的负数 = 这张牌的费用（费用数字显示在卡面星级费用处），遗物/药水上的负数 = 直接扣；

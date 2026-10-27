@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -958,14 +958,14 @@ public static class EffectCatalog
         new EffectKindOption(Kind: "Draw", Display: "抽牌", Unit: "张", Min: 0, Max: 10, NeedsTarget: false),
         // 负数 = 失去 N 点能量（本体的 PlayerCmd.GainEnergy 第一句就是 `if (!(amount > 0m)) return;` ——
         // 非正数什么都不做，所以负数必须改走 PlayerCmd.LoseEnergy，见 CSharpCodeGen.IsNegativeAmount）。
-        new EffectKindOption(Kind: "Energy", Display: "获得能量（负数 = 失去）", Unit: "点", Min: -10, Max: 10, NeedsTarget: false),
+        new EffectKindOption(Kind: "Energy", Display: "获得能量（负数 = 失去）", Unit: "点", Min: -10, Max: 10, NeedsTarget: true),
         // 透支：现在拿 N 点能量，下回合少 N 点（本体的 GainEnergy 会忽略负数，所以走我们生成的负债 Power）
         new EffectKindOption(Kind: "OverdraftEnergy", Display: "透支能量（下回合少）", Unit: "点", Min: 0, Max: 10, NeedsTarget: false),
         new EffectKindOption(Kind: "Heal", Display: "回复生命", Unit: "点", Min: -999, Max: 999, NeedsTarget: true),
         new EffectKindOption(Kind: "HpLoss", Display: "失去生命", Unit: "点", Min: 0, Max: 999, NeedsTarget: true),
         new EffectKindOption(Kind: "MaxHp", Display: "获得最大生命（负数 = 失去）", Unit: "点", Min: -999, Max: 999, NeedsTarget: true),
         // 负数 = 扣除 N 枚金币（同上：GainGold 对非正数直接 return，负数走 PlayerCmd.LoseGold，会夹到 0）
-        new EffectKindOption(Kind: "Gold", Display: "获得金币（负数 = 扣除）", Unit: "枚", Min: -999, Max: 999, NeedsTarget: false),
+        new EffectKindOption(Kind: "Gold", Display: "获得金币（负数 = 扣除）", Unit: "枚", Min: -999, Max: 999, NeedsTarget: true),
             // 额外资源量（本体的星星计数器）：正数 = 获得、负数 = 卡牌费用（花费）。
         // 支持「下回合生效」：正数走本体的 StarNextTurnPower（AfterEnergyReset 里 GainStars + 自毁）。
         new EffectKindOption(Kind: "ExtraResource", Display: "获得额外资源量", Unit: "点", Min: -999, Max: 999, NeedsTarget: false),
@@ -2451,6 +2451,20 @@ public static class EffectCatalog
     /// </summary>
     public static IReadOnlyList<string> TargetSides { get; } =
         new[] { "Self", "Ally", "AllAllies", "Enemy", "RandomEnemies", "AllEnemies", "AllUnits" };
+
+    /// <summary>
+    /// V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）：
+    /// 「获得能量 / 获得金币」作用在**玩家**身上，所以只有这三档说得通（自己 / 指定队友 / 全部友方）——
+    /// 「单体敌人 / 随机敌人 / 全部敌人 / 全体单位」摆出来只会让用户选一个根本做不到的东西。
+    /// </summary>
+    public static IReadOnlyList<string> PlayerOnlyTargetSides { get; } = new[] { "Self", "Ally", "AllAllies" };
+
+    /// <summary>
+    /// 这一种效果的「作用对象」下拉该给哪些候选（V0.2.306）。
+    /// 默认就是全部七档（老行为）；只有「作用在玩家身上」的那两种收窄成 <see cref="PlayerOnlyTargetSides"/>。
+    /// </summary>
+    public static IReadOnlyList<string> TargetSidesFor(string? kind) =>
+        kind is "Energy" or "Gold" ? PlayerOnlyTargetSides : TargetSides;
 
     /// <summary>
     /// 作用对象的**中文名**（界面提示 / 校验消息 / 卡面文案共用一份，免得三处各写一套）。

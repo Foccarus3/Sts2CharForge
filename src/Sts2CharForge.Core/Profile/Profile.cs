@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -517,6 +517,8 @@ public sealed class EffectSpec : SpecBase
                 // 升级增量 / 取几张 / 取卡方式 / 下回合生效）—— 换种类时都要当场出现或收起，
                 // 少 Raise 一个就会「换成这个种类了那一行却不出来」（用户报过这类 bug）。
                 Raise(nameof(ShowTargetSideRow));
+                // V0.2.306：「作用对象」的候选也按种类走（能量 / 金币只给 自己 / 指定队友 / 全部友方）
+                Raise(nameof(TargetSideChoices));
                 Raise(nameof(ShowPowerRow));
                 Raise(nameof(ShowTargetCardRow));
                 Raise(nameof(ShowSpawnToRow));
@@ -1090,7 +1092,12 @@ public sealed class EffectSpec : SpecBase
     /// 例外是「牺牲伙伴 → 造成伤害」：那一下真的打在敌人身上，必须写。
     /// </summary>
     [JsonIgnore]
-    public bool ShowsTargetSideSuffix => UsesTargetSideEffective && (!PetAction || IsPetSacrificeDamage);
+    public bool ShowsTargetSideSuffix => UsesTargetSideEffective
+        // V0.2.306：能量 / 金币的「作用对象」默认值仍然是 "Enemy"（那一栏以前对它们不显示）=
+        // 「没填」，列表尾巴不许写成「→ 单体敌人」（V0.2.161 那条断言盯的就是这个）。
+        // 只有真的选了队友那两档才写。
+        && !(Kind is "Energy" or "Gold" && TargetSide is not ("Ally" or "AllAllies"))
+        && (!PetAction || IsPetSacrificeDamage);
 
     /// <summary>「增益 / 减益」那一行的显隐（选哪个状态施加 / 翻倍 / 清除 / 暴露）。</summary>
     [JsonIgnore]
@@ -1789,6 +1796,29 @@ public sealed class EffectSpec : SpecBase
             Raise(nameof(ShowAllowDuplicatesRow));
             RaiseCountFormulaBoxes();
             Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>
+    /// 界面上「作用对象」下拉的候选（V0.2.306，用户要求「让回能和获得金币的对象能指定队友」）。
+    ///
+    /// <para>默认 = 全部七档（老行为，一个字都没变）；「获得能量 / 获得金币」作用在**玩家**身上，
+    /// 只给「自己 / 指定队友 / 全部友方」三档（见 <see cref="EffectCatalog.TargetSidesFor"/>）。</para>
+    ///
+    /// <para>⚠ 换过效果种类时旧值可能不在这份候选里（例：先填了「全体敌人」再改成「获得能量」）——
+    /// 这时把旧值**补在最后**，别让下拉变成空白（用户会以为配置丢了）；它在生成端不生效，
+    /// 校验器会明确报出来。</para>
+    /// </summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> TargetSideChoices
+    {
+        get
+        {
+            var list = EffectCatalog.TargetSidesFor(Kind);
+            if (list.Any(x => string.Equals(x, TargetSide, StringComparison.Ordinal))) return list;
+            var withStale = list.ToList();
+            withStale.Add(TargetSide);
+            return withStale;
         }
     }
 

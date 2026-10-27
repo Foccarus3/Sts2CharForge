@@ -1,4 +1,4 @@
-﻿namespace Sts2CharForge.Core.Effects;
+namespace Sts2CharForge.Core.Effects;
 
 /// <summary>
 /// 「某一种效果该显示哪些栏位」的**唯一一份**允许清单。
@@ -28,7 +28,10 @@ public static class EffectFieldPolicy
         or "Stun" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
         or "ForbidBlock" or "ForbidHeal" or "TempPower" or "TimesUp"
         or "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
-        or "InstantKill";   // V0.2.278：即死也要选「对谁生效」（自己 / 指定敌人 / 全体敌人…）
+        or "InstantKill"   // V0.2.278：即死也要选「对谁生效」（自己 / 指定敌人 / 全体敌人…）
+        // V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）：这两种作用在**玩家**身上，
+        // 只给「自己 / 指定队友 / 全部友方」三档（候选见 EffectCatalog.TargetSidesFor）。
+        or "Energy" or "Gold";
 
     /// <summary>
     /// 「牺牲伙伴」的「作用对象」：**只有收益 = 造成伤害**时才有得选（V0.2.200，用户要求）。

@@ -21760,6 +21760,83 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("校验器：还没实现队友目标的种类（例：抽牌）→ 拦住并列出支持名单（不静默成「对自己」）",
 				ProfileValidator.Validate(allyBadProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("还没有实现队友目标")),
 				"拦住了");
+			// ===== V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）=====
+			{
+				Check("V0.2.306：获得能量 / 获得金币也能选「作用对象」了（只给 自己 / 指定队友 / 全部友方 三档）",
+					EffectFieldPolicy.UsesTargetSide("Energy") && EffectFieldPolicy.UsesTargetSide("Gold")
+					&& EffectCatalog.FindKind("Energy").NeedsTarget && EffectCatalog.FindKind("Gold").NeedsTarget
+					&& EffectCatalog.TargetSidesFor("Energy").SequenceEqual(new[] { "Self", "Ally", "AllAllies" })
+					&& EffectCatalog.TargetSidesFor("Gold").SequenceEqual(new[] { "Self", "Ally", "AllAllies" })
+					&& EffectCatalog.TargetSidesFor("Damage").Count == EffectCatalog.TargetSides.Count,
+					string.Join(" / ", EffectCatalog.TargetSidesFor("Energy")));
+				// 换过种类时老值要补进候选里（下拉不能变空白）
+				var staleSpec = new EffectSpec { Kind = "Energy", TargetSide = "AllEnemies" };
+				Check("V0.2.306：（对照）换种类留下的旧档位仍然出现在候选里（下拉不变空白，校验器会说清它不生效）",
+					staleSpec.TargetSideChoices.Contains("AllEnemies") && staleSpec.TargetSideChoices.Count == 4,
+					string.Join(" / ", staleSpec.TargetSideChoices));
+
+				var aeProf = ProfileFactory.Sample();
+				var aeAlly = new CardSpec { Name = "自检给队友回能", ClassName = "UiCheckAllyEnergy", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				aeAlly.Effects.Add(new EffectSpec { Kind = "Energy", Amount = 2m, TargetSide = "Ally" });
+				var aeAll = new CardSpec { Name = "自检全队金币", ClassName = "UiCheckAllAlliesGold", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				aeAll.Effects.Add(new EffectSpec { Kind = "Gold", Amount = 5m, TargetSide = "AllAllies" });
+				var aePlain = new CardSpec { Name = "自检普通回能", ClassName = "UiCheckPlainEnergy", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				aePlain.Effects.Add(new EffectSpec { Kind = "Energy", Amount = 2m });   // 默认档（老存档就是这种）
+				aeProf.Cards.Add(aeAlly);
+				aeProf.Cards.Add(aeAll);
+				aeProf.Cards.Add(aePlain);
+				string aeAllySrc = CSharpCodeGen.CardSource(aeProf, aeAlly, 0);
+				string aeAllSrc = CSharpCodeGen.CardSource(aeProf, aeAll, 0);
+				string aePlainSrc = CSharpCodeGen.CardSource(aeProf, aePlain, 0);
+				Check("V0.2.306：卡牌「回能给指定队友」= 拿 cardPlay.Target.Player 去 GainEnergy，目标类型变 AnyAlly",
+					CSharpCodeGen.TargetTypeOf(aeAlly) == "AnyAlly"
+					&& aeAllySrc.Contains("cardPlay.Target.Player is { } __allyPlayer")
+					&& aeAllySrc.Contains("PlayerCmd.GainEnergy(base.DynamicVars.Energy.BaseValue, __allyPlayer)"),
+					aeAllySrc.Split('\n').FirstOrDefault(l => l.Contains("GainEnergy", StringComparison.Ordinal))?.Trim() ?? "(没生成)");
+				Check("V0.2.306：卡牌「金币给全部友方」= 遍历 Allies 里**玩家本体**（c.IsPlayer）逐个 GainGold",
+					CSharpCodeGen.TargetTypeOf(aeAll) == "AllAllies"
+					&& aeAllSrc.Contains(".Allies.Where(c => c.IsAlive && c != base.Owner.Creature && c.IsPlayer)")
+					&& aeAllSrc.Contains("PlayerCmd.GainGold(base.DynamicVars[\"Gold\"].BaseValue, __allyPlayer)"),
+					"循环 + GainGold 都在");
+				Check("V0.2.306：（红线）默认档（老存档）一个字都不变：`GainEnergy(…, base.Owner)`、没有 __allyPlayer",
+					aePlainSrc.Contains("PlayerCmd.GainEnergy(base.DynamicVars.Energy.BaseValue, base.Owner)")
+					&& !aePlainSrc.Contains("__allyPlayer"), "没变");
+
+				// 卡面文案：队友要写清给谁；默认档照旧
+				string aeLoc = LocalizationGen.CardsJson(aeProf);
+				Check("V0.2.306：卡面写清给谁（「让指定队友获得…点能量」/「让所有队友获得…枚金币」）",
+					aeLoc.Contains("让指定队友获得") && aeLoc.Contains("让所有队友获得"), "文案对");
+				Check("V0.2.306：（红线）默认档的卡面照旧是「获得 {Energy:diff()} 点能量。」（不写对象）",
+					aeLoc.Contains("description\": \"获得 {Energy:diff()} 点能量。\""), "没变");
+
+				// 遗物 / 状态链：全部友方也支持，而且回读认得回来
+				var aeRelic = new RelicSpec { Name = "自检队友回能遗物", ClassName = "UiCheckAllyEnergyRelic", Rarity = "Common", Trigger = "PlayerTurnStart" };
+				aeRelic.Effects.Add(new EffectSpec { Kind = "Energy", Amount = 1m, TargetSide = "AllAllies" });
+				aeProf.Relics.Add(aeRelic);
+				string aeRelicSrc = CSharpCodeGen.RelicSource(aeProf, aeRelic, aeProf.Relics.Count - 1);
+				Check("V0.2.306：遗物「回能给全部友方」也能生成（遍历 Allies 里的玩家本体），并写了回读标记",
+					aeRelicSrc.Contains("base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner.Creature && c.IsPlayer)")
+					&& aeRelicSrc.Contains("CET:TargetSide=AllAllies"), "生成 + 标记都在");
+				var aeBadRelic = new RelicSpec { Name = "自检队友回能遗物坏档", ClassName = "UiCheckAllyEnergyRelicBad", Rarity = "Common", Trigger = "PlayerTurnStart" };
+				aeBadRelic.Effects.Add(new EffectSpec { Kind = "Energy", Amount = 1m, TargetSide = "Ally" });
+				aeProf.Relics.Add(aeBadRelic);
+				Check("V0.2.306：遗物 / 药水 / 状态上选「指定队友」→ 校验器拦住（那里没有玩家选中的目标）",
+					ProfileValidator.Validate(aeProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("指定队友") && i.Message.Contains("只能做在卡牌上")),
+					"拦住了");
+				aeProf.Relics.Remove(aeBadRelic);
+
+				var aePower = new CustomPowerSpec { Name = "自检队友回能状态", ClassName = "UiCheckAllyEnergyPower", Enabled = true };
+				aePower.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "TurnStart",
+					Effects = { new EffectSpec { Kind = "Energy", Amount = 1m, TargetSide = "AllAllies" } },
+				});
+				aeProf.CustomPowers.Add(aePower);
+				string aePowerSrc = CustomPowerGen.Source(aeProf, aePower, aeProf.CustomPowers.Count - 1);
+				Check("V0.2.306：自定义状态「回能给全部友方」也能生成（状态钩子里 base.Owner 是 Creature）",
+					aePowerSrc.Contains("base.Owner.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner && c.IsPlayer)")
+					&& aePowerSrc.Contains("CET:TargetSide=AllAllies"), "生成 + 标记都在");
+			}
 			// 生成 → 回读：队友这两档的「作用对象」要认得回来（生成代码和「指定敌人」长得一样，靠标记）
 			string allyRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_ally_" + Guid.NewGuid().ToString("N").Substring(0, 8));
 			try
@@ -31346,7 +31423,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					var probe = new EffectSpec { Kind = opt.Kind, TargetSide = "Enemy" };
 					bool shows = probe.Display.Contains(" → 单体敌人");
-					bool expected = EffectFieldPolicy.UsesTargetSide(opt.Kind) && !probe.PetAction;
+					bool expected = EffectFieldPolicy.UsesTargetSide(opt.Kind) && !probe.PetAction
+						// V0.2.306：能量 / 金币的默认档 "Enemy" 等于「没填」—— 行尾和卡面都不写它
+						//（见 EffectSpec.ShowsTargetSideSuffix；它们读作用对象，但只认自己 / 指定队友 / 全部友方）
+						&& !(opt.Kind is "Energy" or "Gold" && probe.TargetSide is not ("Ally" or "AllAllies"));
 					if (shows != expected) contradict.Add($"{opt.Kind}(显示={shows}/应={expected})");
 				}
 				Check("V0.2.161：每一种效果的列表行尾「→ 谁」都和「作用对象」那一行的显隐**同进同出**",

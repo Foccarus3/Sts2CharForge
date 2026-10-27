@@ -1,4 +1,4 @@
-﻿<Application x:Class="Sts2CharForge.App.App"
+<Application x:Class="Sts2CharForge.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Sts2CharForge.App">
@@ -142,7 +142,7 @@
                            Visibility="{Binding ShowTargetSideRow, Converter={StaticResource BoolToVis}}"/>
                 <ComboBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Pick}"
                           Visibility="{Binding ShowTargetSideRow, Converter={StaticResource BoolToVis}}"
-                          ItemsSource="{Binding TargetSides, RelativeSource={RelativeSource AncestorType=Window}}"
+                          ItemsSource="{Binding TargetSideChoices}"
                           SelectedItem="{Binding TargetSide}"/>
 
                 <!-- 需求右侧④：「全部友方（可以选择包不包括召唤物）」—— 只有选了「全部友方」才摆这一行。

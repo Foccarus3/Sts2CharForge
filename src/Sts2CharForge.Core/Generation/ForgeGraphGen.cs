@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -3417,6 +3417,28 @@ public static class ForgeGraphGen
         string fromCard = string.Equals(ctx.CardSelfExpr, "null", StringComparison.Ordinal)
             ? ""
             : $".FromCard({ctx.CardSelfExpr}, {ctx.CardPlayExpr})";
+        // V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）：这两档作用在**玩家**身上，
+        // 按这个【效果】节点的「作用对象」分三路 —— 自己 / 指定队友（打出时选中的那个队友）/
+        // 全部友方（同一边的**玩家本体**逐个来；召唤物 / 怪物的 Player 是 null，必须跳过，不然空引用）。
+        // <paramref name="call"/> 里用 {0} 占位「那个玩家的表达式」；「自己」那一档生成文本与旧版逐字节相同。
+        string PlayerPass(string call)
+        {
+            var pe = EffectFromNode(node);
+            string With(string player) => string.Format(call, player);
+            switch (pe.TargetSide)
+            {
+                case "Ally" when !string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal):
+                    // 和 CSharpCodeGen.EmitPerPlayer 同一套守卫：不是自己、和我同一边、真的是个玩家
+                    return $"if (({ctx.CardPlayExpr})?.Target is {{ }} __fgAllyUnit && __fgAllyUnit != __fgSelf"
+                        + " && __fgAllyUnit.Side == __fgSelf.Side && __fgAllyUnit.Player is { } __fgAllyP)"
+                        + $" {{ {With("__fgAllyP")} }}";
+                case "AllAllies":
+                    return $"if (__fgSelf.CombatState is not null) {{ foreach (Creature __fgAllyUnit in __fgSelf.CombatState.Allies.Where({CSharpCodeGen.AllyLoopWhere(pe, "__fgSelf")} && c.IsPlayer).ToList())"
+                        + $" {{ if (__fgAllyUnit.Player is {{ }} __fgAllyP) {{ {With("__fgAllyP")} }} }} }}";
+                default:
+                    return With("__fgPlayer");
+            }
+        }
         using (DebugLogGen.Begin(p, ctx.Scope switch { "Relic" => "锻造遗物图", "Potion" => "锻造药水图", ForgeTimings.PowerScope => "锻造状态图", _ => "锻造卡牌图" },
                    $"{DebugLogMainName(ctx)}【效果】{def.Display}(fg:{node.Id})", DebugLogMainClass(ctx), "__fgSelf"))
         body = kind switch
@@ -3546,11 +3568,11 @@ public static class ForgeGraphGen
                 //   生成的工程直接 CS0117（探针真编译时踩到）。和卡牌 / 遗物那条老链同一个写法（CSharpCodeGen）。
                 : $"await CardPileCmd.Draw({ctx.ChoiceVar}, {amount}, __fgPlayer);",
             "Gold" when !amountN.Runtime && amountN.Value < 0m =>
-                $"await PlayerCmd.LoseGold({Lit(Math.Abs((double)amountN.Value))}m, __fgPlayer);   // 负数 = 失去金币（本体 GainGold 对非正数直接返回）",
-            "Gold" => $"await PlayerCmd.GainGold({amount}, __fgPlayer);",
+                PlayerPass($"await PlayerCmd.LoseGold({Lit(Math.Abs((double)amountN.Value))}m, {{0}});   // 负数 = 失去金币（本体 GainGold 对非正数直接返回）"),
+            "Gold" => PlayerPass($"await PlayerCmd.GainGold({amount}, {{0}});"),
             "Energy" when !amountN.Runtime && amountN.Value < 0m =>
-                $"await PlayerCmd.LoseEnergy({Lit(Math.Abs((double)amountN.Value))}m, __fgPlayer);   // 负数 = 失去能量（本体 GainEnergy 对非正数直接返回）",
-            "Energy" => $"await PlayerCmd.GainEnergy({amount}, __fgPlayer);",
+                PlayerPass($"await PlayerCmd.LoseEnergy({Lit(Math.Abs((double)amountN.Value))}m, {{0}});   // 负数 = 失去能量（本体 GainEnergy 对非正数直接返回）"),
+            "Energy" => PlayerPass($"await PlayerCmd.GainEnergy({amount}, {{0}});"),
             "ExtraResource" when !amountN.Runtime && amountN.Value < 0m =>
                 $"await PlayerCmd.LoseStars({Lit(Math.Abs((double)amountN.Value))}m, __fgPlayer);   // 负数 = 失去额外资源量（本体 GainStars 对负数直接抛异常）",
             "ExtraResource" => $"await PlayerCmd.GainStars({amount}, __fgPlayer);",

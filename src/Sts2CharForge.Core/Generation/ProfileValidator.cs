@@ -2855,18 +2855,24 @@ public static class ProfileValidator
                 // `base.Owner.Creature` 那一套（AllAllies）—— 状态钩子里 base.Owner 本身是 Creature，
                 // 放行会生成出 CS1061 的代码（宁可在校验器说清，也不给一个编译不过的工程）。
                 bool kindOk = e.Kind is "Damage" or "ApplyPower" or "TempPower" or "Block" or "Heal" or "HpLoss" or "MaxHp"
-                    || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage" && ctx is "Card" or "Curse");
+                    || (e.Kind == "PetSacrifice" && e.PetSacrificeGain == "Damage" && ctx is "Card" or "Curse")
+                    // V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）：
+                    // 这两档作用在**玩家**身上（生成端读 Creature.Player），队友那两档也算支持
+                    || e.Kind is "Energy" or "Gold";
                 if (!kindOk)
                 {
                     issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」的作用对象选了「{sideZh}」，"
                         + "但这个效果种类还没有实现队友目标（生成端会把它当成「自己」）—— 目前支持队友目标的只有："
-                        + "造成伤害 / 施加增益减益 / 临时增益 / 获得格挡 / 回复生命 / 失去生命 / 最大生命。"));
+                        + "造成伤害 / 施加增益减益 / 临时增益 / 获得格挡 / 回复生命 / 失去生命 / 最大生命 / 获得能量 / 获得金币。"));
                 }
-                else if (e.TargetSide == "Ally" && ctx is "Relic" or "Potion")
+                else if (e.TargetSide == "Ally" && (ctx is "Relic" or "Potion"
+                    // V0.2.306：能量 / 金币也一样 —— 遗物 / 药水 / 自定义状态没有「玩家选中的目标」，
+                    // 「指定队友」会退回自己（与其静默变成给自己加能量，不如在这里拦住）
+                    || (e.Kind is "Energy" or "Gold" && ctx is not "Card")))
                 {
                     issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」的作用对象选了「指定队友」，"
-                        + "但遗物 / 药水**没有「玩家选中的目标」**（本体只有卡牌会在打出时弹目标选择）—— "
-                        + "「指定队友」只能做在卡牌上；想让遗物 / 药水影响全队，请改用「全部队友」。"));
+                        + "但遗物 / 药水 / 自定义状态**没有「玩家选中的目标」**（本体只有卡牌会在打出时弹目标选择）—— "
+                        + "「指定队友」只能做在卡牌上；想让遗物 / 药水 / 状态影响全队，请改用「全部友方」。"));
                 }
             }
             // 作用对象 = 「全体单位」（V0.2.132 新增的第 7 档）：生成端真的实现了的种类有限 ——
@@ -2906,6 +2912,25 @@ public static class ProfileValidator
             if (e.Kind is "Energy" or "Gold" && e.Amount < 0 && e.AmountIsXEffective)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」数值 = X 且填了负数：X 要到打出时才知道正负，"
                     + "所以这条会按「获得 X」生成（负数被忽略）。"));
+            // V0.2.306（用户要求「让回能和获得金币的对象能指定队友」）：
+            //   · 「下回合生效」那一档挂的是延迟状态（挂在谁身上就是谁），目前**只支持自己** ——
+            //     选了队友会退回自己，要说清（不然用户以为队友下回合能拿到能量）；
+            //   · 这两档作用在**玩家**身上，「单体敌人 / 随机敌人 / 全部敌人 / 全体单位」那几档做不到，
+            //     生成端按「自己」处理 —— 界面里已经只给三档候选，这里兜住手改 JSON / 换种类留下的旧值。
+            if (e.Kind is "Energy" or "Gold")
+            {
+                // ⚠ 老存档里这两个种类的「作用对象」一律是**默认值 "Enemy"**（那一栏以前根本不显示）——
+                // 它等于「没填」，别拿它报警（不然每个用到回能 / 金币的老存档都会凭空多一条提示）。
+                bool untouched = string.Equals(e.TargetSide, "Enemy", StringComparison.Ordinal);
+                if (!untouched && e.NextTurn && e.TargetSide != "Self")
+                    issues.Add(new("警告", $"{owner} 的「{kind.Display}」勾了「下回合生效」，作用对象却是"
+                        + $"「{EffectCatalog.TargetSideZh(e.TargetSide)}」—— 这一档挂的是延迟状态，"
+                        + "**只作用于自己**（挂在你身上、下回合开始时给你加）；队友那一栏对「下回合生效」不生效。"));
+                if (!untouched && e.TargetSide is not ("Self" or "Ally" or "AllAllies"))
+                    issues.Add(new("提示", $"{owner} 的「{kind.Display}」作用对象是"
+                        + $"「{EffectCatalog.TargetSideZh(e.TargetSide)}」—— 能量 / 金币只作用在**玩家**身上，"
+                        + "生成端按「自己」处理。可选：自己 / 指定队友 / 全部友方。"));
+            }
             // ===== V0.2.141：「升级增量把数值抵成了 0」→ **警告**（不是错误）=====
             //
             // 用户实测报的 BUG：「在生成器填负值的力量不生效」。查下来是两件事叠在一起：

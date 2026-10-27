@@ -2246,6 +2246,61 @@ public static class ExtraResourceEnergyCounterDiagPatch
             : $"await PlayerCmd.GainGold({amt}, {ownerExpr});";
 
     /// <summary>
+    /// 把「对某个**玩家**做一件事」（获得能量 / 金币）按作用对象展开（V0.2.306，用户要求
+    /// 「让回能和获得金币的对象能指定队友」）。
+    ///
+    /// <para><b>为什么不能复用 <see cref="EmitPerCreature"/></b>：本体这几个 API
+    ///（<c>PlayerCmd.GainEnergy / LoseEnergy / GainGold / LoseGold</c>）收的是 **Player**，
+    /// 不是 Creature —— 队友要按 <c>Creature.Player</c> 取；召唤物 / 怪物的 <c>Player</c> 是 null
+    ///（它们只有 <c>PetOwner</c>），必须跳过，不然运行时空引用。</para>
+    ///
+    /// <list type="bullet">
+    /// <item><c>Self</c> → <paramref name="selfPlayerExpr"/>（各条链的「自己那个玩家」）；</item>
+    /// <item><c>Ally</c>（指定队友）→ 打出这张牌时选中的那个队友（<paramref name="cardTargetExpr"/>）的
+    ///   <c>.Player</c>；遗物 / 药水 / 状态没有「玩家选中的目标」→ 退回自己（校验器会把它报出来，不静默）；</item>
+    /// <item><c>AllAllies</c>（全部友方）→ 同一边的**玩家本体**逐个来一遍（<c>c.IsPlayer</c> 就是 <c>Player != null</c>），
+    ///   默认不含自己 / 含召唤物那两个子选项和别的效果共用 <see cref="AllyLoopWhere"/> —— 召唤物会被
+    ///   <c>c.IsPlayer</c> 一并筛掉（它们没有能量 / 金币）。</item>
+    /// </list>
+    ///
+    /// <para>「自己」那一档生成出来的文本与旧版**逐字节相同**（就是把同一行写进去）。</para>
+    /// </summary>
+    internal static void EmitPerPlayer(CodeWriter w, EffectSpec e, string selfPlayerExpr, string selfCreatureExpr,
+        string? cardTargetExpr, Func<string, string> body)
+    {
+        switch (e.TargetSide)
+        {
+            case "Ally" when cardTargetExpr is not null:
+                // 和 EmitPerCreature 的「指定队友」同一套守卫：不是自己、和我同一边、而且真的是个玩家
+                w.Open($"if ({cardTargetExpr} is not null && {cardTargetExpr} != {selfCreatureExpr}"
+                     + $" && {cardTargetExpr}.Side == {selfCreatureExpr}.Side"
+                     + $" && {cardTargetExpr}.Player is {{ }} __allyPlayer)")
+                 .Line(body("__allyPlayer"))
+                 .Close();
+                break;
+
+            case "Ally":
+                // 遗物 / 药水 / 状态触发链没有「玩家选中的目标」→ 退回自己（校验器会报错说清）
+                w.Line(body(selfPlayerExpr));
+                break;
+
+            case "AllAllies":
+                w.Open($"if ({selfCreatureExpr}.CombatState is not null)")
+                 .Open($"foreach (Creature __allyUnit in {selfCreatureExpr}.CombatState.Allies.Where({AllyLoopWhere(e, selfCreatureExpr)} && c.IsPlayer).ToList())")
+                 .Open("if (__allyUnit.Player is { } __allyPlayer)")
+                 .Line(body("__allyPlayer"))
+                 .Close()
+                 .Close()
+                 .Close();
+                break;
+
+            default:
+                w.Line(body(selfPlayerExpr));
+                break;
+        }
+    }
+
+    /// <summary>
     /// 存档里**所有**效果：普通卡 + 诅咒 + 先古卡 + 遗物 + 药水 + 自定义状态的触发器。
     ///
     /// 为什么要有这个统一入口：生成那些「只在用到时才生成」的辅助类（负债 Power / 额外回合 /
@@ -4495,9 +4550,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 按需加两条过滤：<c>c != 自己</c>（除非勾了「包括自己」）、<c>c.PetOwner is null</c>（勾了「不包括召唤物」）。
     /// 默认档（不含自己、含召唤物）与「本意」一致；老存档里这一档以前是空转，只有它真的开始生效。</para>
     /// </summary>
-    internal static string AllyLoopWhere(EffectSpec e) =>
+    internal static string AllyLoopWhere(EffectSpec e, string selfCreatureExpr = "base.Owner.Creature") =>
         "c => c.IsAlive"
-        + (e.AllAlliesIncludeSelf ? "" : " && c != base.Owner.Creature")
+        + (e.AllAlliesIncludeSelf ? "" : $" && c != {selfCreatureExpr}")
         + AllyFilterSuffix(e);
 
     /// <summary>
@@ -4639,7 +4694,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 现在两处共用这一份判据（<see cref="NeedsChosenTarget"/> ⇒ <c>TargetType</c> 一定是 AnyEnemy/AnyAlly）。</para>
     /// </summary>
     public static bool NeedsChosenTarget(EffectSpec e) =>
-        !IsInertZero(e) && e.TargetSide is "Enemy" or "Ally" && HitsEnemyKind(e);
+        !IsInertZero(e) && e.TargetSide is "Enemy" or "Ally" && NeedsChosenUnit(e);
+
+    /// <summary>
+    /// 这一种效果在「指定某个单位」那一档上要不要 <c>cardPlay.Target</c>（决定卡牌 TargetType +
+    /// 打出前要不要判空）。
+    ///
+    /// <para>V0.2.306：「获得能量 / 获得金币」也能选「指定队友」了 —— 它们作用在**玩家**身上
+    ///（<c>CardModel.cs</c> 里 AnyAlly 选中的队友同样落在 <c>cardPlay.Target</c>），所以也算进来，
+    /// 否则那张牌的 TargetType 不会是 <c>AnyAlly</c>、<c>cardPlay.Target</c> 恒为 null，效果静默不生效。</para>
+    /// </summary>
+    internal static bool NeedsChosenUnit(EffectSpec e) =>
+        HitsEnemyKind(e) || e.Kind is "Energy" or "Gold";
 
     /// <summary>
     /// 这张牌要不要在本体给出目标之前先 <c>ThrowIfNull(cardPlay.Target)</c>。
@@ -6102,7 +6168,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ⚠ V0.2.217：判据统一走 <see cref="HitsEnemyKind"/> / <see cref="NeedsChosenTarget"/>
         // （和 NeedsTargetNullCheck 同一份）—— 以前这里单独写了一份，两边的「数值 0 不生成」过滤还不一致，
         // 会推出「TargetType 不弹选目标、代码里却 ThrowIfNull(cardPlay.Target)」的牌（打出去直接卡死）。
-        bool HitsEnemy(EffectSpec e) => HitsEnemyKind(e);
+        bool HitsEnemy(EffectSpec e) => NeedsChosenUnit(e);
 
         // 「数值 0 且升级也不加数值」的效果整条不生成（用户要求），所以它也不该让这张牌变成「要选目标」的
         bool effectChosenEnemy = c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "Enemy");
@@ -9175,11 +9241,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (e.NextTurn)
                     // 下回合生效：正数用本体的 EnergyNextTurnPower；负数（下回合少 N 点）它做不到
                     // （AfterEnergyReset 走的还是 GainEnergy，负数被忽略）→ 用我们生成的负债 Power。
+                    // V0.2.306：这一档还是只作用于**自己**（延迟状态挂在谁身上就是谁，校验器会把「选了队友」报出来）。
                     w.Line(IsNegativeAmount(e, useX)
                         ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>(choiceContext, base.Owner.Creature, {AbsExpr(amt)}, base.Owner.Creature, this);   // 下回合少 N 点能量"
                         : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, this);");
                 else
-                    w.Line(GainEnergyLine(e, amt, useX, "base.Owner"));
+                    // V0.2.306：作用对象能选队友了（自己 / 指定队友 / 全部友方）；「自己」那一档输出逐字不变
+                    EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", "cardPlay.Target",
+                        player => GainEnergyLine(e, amt, useX, player));
                 break;
 
             // V0.2.278（用户要求「效果加个即死」）：直接杀掉目标（本体 CreatureCmd.Kill，CreatureCmd.cs:446）
@@ -9219,7 +9288,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Gold":
-                w.Line(GainGoldLine(e, amt, useX, "base.Owner"));
+                // V0.2.306：作用对象能选队友了（自己 / 指定队友 / 全部友方）；「自己」那一档输出逐字不变
+                EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", "cardPlay.Target",
+                    player => GainGoldLine(e, amt, useX, player));
                 break;
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。
@@ -12345,6 +12416,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // V0.2.201：「全部友方 · 包括自己」单独勾也要能回读（老存档不会写这行）
             else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesIncludeSelf)
                 w.Line("// CET:TargetSide=AllAllies CET:AllySelf=1");
+            // V0.2.306：「获得能量 / 金币」的队友那两档在遗物链上**没有别的目标档标记**，
+            // 不写这一行，回读就会退回默认的「单体敌人」（生成时等同于「自己」）。
+            // 只在真的选了队友时写 —— 老存档（默认 "Enemy"）一个字符都不多。
+            else if (e.Kind is "Energy" or "Gold" && e.TargetSide is "Ally" or "AllAllies")
+                w.Line($"// CET:TargetSide={e.TargetSide}");
             EmitRelicEffect(w, p, e, hasContext, relicVars, roomVar, petAllGroup, relicEffectIndex++);
             if (cond is not null) w.Close();
         }
@@ -13060,7 +13136,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 }
                 else
-                    w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
+                    // V0.2.306：作用对象能选队友了；遗物没有「玩家选中的目标」→「指定队友」那一档退回自己
+                    //（校验器会把「遗物 / 药水上选了指定队友」报出来），「全部友方」照常逐个队友来一遍。
+                    EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", null,
+                        player => GainEnergyLine(e, amt, useX: false, player));
                 break;
 
             // V0.2.278：即死（遗物 / 药水共用这条链的写法）
@@ -13105,7 +13184,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Gold":
-                w.Line(GainGoldLine(e, amt, useX: false, "base.Owner"));
+                // V0.2.306：作用对象能选队友了（遗物链没有「玩家选中的目标」→「指定队友」退回自己）
+                EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", null,
+                    player => GainGoldLine(e, amt, useX: false, player));
                 break;
 
             case "ExtraResource":
@@ -14492,7 +14573,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         ? $"await PowerCmd.Apply<{Naming.From(p).EnergyNextTurnDebtPowerClass}>(choiceContext, base.Owner.Creature, {AbsExpr(amt)}, base.Owner.Creature, null);   // 下回合少 N 点能量"
                         : $"await PowerCmd.Apply<EnergyNextTurnPower>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
                 else
-                    w.Line(GainEnergyLine(e, amt, useX: false, "base.Owner"));
+                    // V0.2.306：作用对象能选队友了（药水按本体的目标档只有「自己 / 敌人」，没有「玩家选中的队友」→
+                    // 「指定队友」那一档退回自己；校验器会把这件事报出来）
+                    EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", null,
+                        player => GainEnergyLine(e, amt, useX: false, player));
                 break;
             // V0.2.278：即死（药水链）
             case "InstantKill":
@@ -14523,7 +14607,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     EmitPotionPerCreature(w, potionTarget, allEnemies, c => $"await CreatureCmd.GainMaxHp({c}, {amt});");
                 break;
             case "Gold":
-                w.Line(GainGoldLine(e, amt, useX: false, "base.Owner"));
+                // V0.2.306：作用对象能选队友了（药水没有「玩家选中的队友」→「指定队友」退回自己）
+                EmitPerPlayer(w, e, "base.Owner", "base.Owner.Creature", null,
+                    player => GainGoldLine(e, amt, useX: false, player));
                 break;
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。药水没有费用概念，负数直接扣（不会扣成负数）。

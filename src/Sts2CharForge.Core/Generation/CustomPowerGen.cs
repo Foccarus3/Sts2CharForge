@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1595,6 +1595,10 @@ public static class CustomPowerGen
             w.Line("// CET:TargetSide=AllUnits");
         else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesExcludePets)
             w.Line("// CET:TargetSide=AllAllies CET:AllyNoPets=1");
+        // V0.2.306：「获得能量 / 金币」的队友那两档在状态链上也没有别的标记，
+        // 不写这一行，回读会退回默认的「单体敌人」（生成时等同于「自己」）。
+        else if (e.Kind is "Energy" or "Gold" && e.TargetSide is "Ally" or "AllAllies")
+            w.Line($"// CET:TargetSide={e.TargetSide}");
         if (loop) w.Open($"for (int __rep = 0; __rep < {(e.TimesIsStack ? "(int)base.Amount" : timesFormula is not null ? $"(int)System.Math.Clamp({timesFormula}, 1m, 20m)" : times.ToString())}; __rep++)");
 
         switch (e.Kind)
@@ -1631,9 +1635,12 @@ public static class CustomPowerGen
 
             case "Energy":
                 // 负数 = 失去能量（本体 GainEnergy 对非正数直接返回；和卡牌链 GainEnergyLine 同一口径）
-                w.Line(CSharpCodeGen.IsNegativeAmount(e, useX: false)
-                    ? $"await PlayerCmd.LoseEnergy({CSharpCodeGen.AbsExpr(amt)}, base.Owner.Player);   // 负数 = 失去能量（本体 GainEnergy 对非正数直接返回）"
-                    : $"await PlayerCmd.GainEnergy({amt}, base.Owner.Player);");
+                // V0.2.306：作用对象能选「全部友方」了（状态触发链没有「玩家选中的目标」→「指定队友」退回自己，
+                // 校验器会报出来）；「自己」那一档的输出逐字不变。
+                CSharpCodeGen.EmitPerPlayer(w, e, "base.Owner.Player", "base.Owner", null,
+                    player => CSharpCodeGen.IsNegativeAmount(e, useX: false)
+                        ? $"await PlayerCmd.LoseEnergy({CSharpCodeGen.AbsExpr(amt)}, {player});   // 负数 = 失去能量（本体 GainEnergy 对非正数直接返回）"
+                        : $"await PlayerCmd.GainEnergy({amt}, {player});");
                 break;
 
             case "Heal":
@@ -1677,9 +1684,11 @@ public static class CustomPowerGen
 
             case "Gold":
                 // 负数 = 失去金币（本体 GainGold 对非正数直接返回；和卡牌链 GainGoldLine 同一口径）
-                w.Line(CSharpCodeGen.IsNegativeAmount(e, useX: false)
-                    ? $"await PlayerCmd.LoseGold({CSharpCodeGen.AbsExpr(amt)}, base.Owner.Player);   // 负数 = 失去金币（本体 GainGold 对非正数直接返回）"
-                    : $"await PlayerCmd.GainGold({amt}, base.Owner.Player);");
+                // V0.2.306：作用对象能选「全部友方」了（「指定队友」在状态链上退回自己，校验器会报出来）
+                CSharpCodeGen.EmitPerPlayer(w, e, "base.Owner.Player", "base.Owner", null,
+                    player => CSharpCodeGen.IsNegativeAmount(e, useX: false)
+                        ? $"await PlayerCmd.LoseGold({CSharpCodeGen.AbsExpr(amt)}, {player});   // 负数 = 失去金币（本体 GainGold 对非正数直接返回）"
+                        : $"await PlayerCmd.GainGold({amt}, {player});");
                 break;
 
             case "ExtraResource":
