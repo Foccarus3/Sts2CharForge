@@ -2090,6 +2090,8 @@ public static class ForgeGraphGen
                         // V0.2.247（用户要求）：「上一张打出的牌带有某关键词 / 是某范围（可按组）」
                         Keyword = node.Get("Keyword") ?? "",
                         Scope = node.Get("Scope") ?? "",
+            // V0.2.300（用户报「锻造的条件模块怎么没修」）：条件「指定敌人的意图为（）」在图上也要有「意图」下拉
+            Intent = node.Get("Intent") ?? "Attack",
                     };
                     return CSharpCodeGen.ConditionExpr(spec, ctxKind, inOnPlay: ctxKind == CSharpCodeGen.CondCtx.Card);
                 }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -885,7 +885,9 @@ public sealed class ForgeCanvasView : Grid
                     // 关键词 = 本体 CardKeyword 那 7 个；范围 = 和「范围界定」同一份候选（含每个组）。
                     "Keyword" => EffectCatalog.VanillaKeywordChoices
                         .Select(k => new ForgeFieldOption(k.Id, k.Display)).ToList(),
-                    "Scope" => EffectCatalog.SpawnFiltersFor(Owner ?? EffectCatalog.DisplayProfile)
+                    // V0.2.300：条件「指定敌人的意图为（）」的意图下拉（本体 IntentType 那 15 个）
+            "Intent" => EffectCatalog.Intents.Select(x => new ForgeFieldOption(x.Id, x.Display)).ToList(),
+            "Scope" => EffectCatalog.SpawnFiltersFor(Owner ?? EffectCatalog.DisplayProfile)
                         .Select(f => new ForgeFieldOption(f.Id, f.Display)).ToList(),
                     // V0.2.250：图上【效果】模块的「范围（哪一类牌 / 哪个组）」—— 候选要**按当前存档动态取**
                     //（`SpawnFiltersFor` 里才有「自定义关键词：…」和「组：…」；ForgeNodeField 的 Options 是
