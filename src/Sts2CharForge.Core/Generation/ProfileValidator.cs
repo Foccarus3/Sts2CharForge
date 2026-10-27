@@ -121,6 +121,10 @@ public static class ProfileValidator
         ValidateHideCarrierRelic(issues, p, n);
         // 「获得时」+ 战斗内效果：开局那一刻还没有战斗 → 生成出来必 NRE（见方法注释）
         ValidateObtainedCombatEffects(issues, p);
+        // V0.2.307（用户报「状态是生成一张牌造成一伤害，加了三层，但是还是 1 伤害」）：
+        // 自定义状态的**层数不会自动乘到效果上** —— 必须勾「数值 = 本状态的层数」或「生效次数 = 本状态的层数」。
+        // 当某处会按 ≥2 层（或升级后变多）给它叠层、而它的效果完全没用层数时，给一条提示说清。
+        ValidatePowerLayerUsage(issues, p);
 
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
@@ -2360,6 +2364,83 @@ public static class ProfileValidator
     /// <summary>触发时机的显示名（错误信息里用；认不出来就退回 id）。</summary>
     private static string RelicTriggerName(string kind) =>
         EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == kind)?.Display ?? kind;
+
+    /// <summary>
+    /// 自定义状态的「层数」到底有没有被用到（V0.2.307）。
+    ///
+    /// <para>用户报的现象：「状态是生成一张牌造成一伤害，加了三层，但是还是 1 伤害」。查下来那个状态
+    /// （「墨水飞溅」：生成卡牌时 → 造成 1 点伤害）里两个勾都没勾，所以生成的是
+    /// <c>CreatureCmd.Damage(choiceContext, other, 1m, …)</c> —— 叠到几层都是 1 点。
+    /// 这是**有意**的（很多状态层数只表示「还剩几次」，不该自动乘到效果上），但用户几乎总是想让层数起作用，
+    /// 所以这里在「有地方会按 ≥2 层 / 升级后层数会变」的情况下给一条提示，把两栏的名字和后果写清楚。</para>
+    ///
+    /// <para>不报警的情形：状态里已经勾了任一层数开关（`AmountIsStack` / `TimesIsStack` / `RepeatIsStack`）、
+    /// 没有触发时机或效果、用的是锻造节点图（图上那份「数值 = 层数」由模块自己管）、
+    /// 或者全份配置里只按 1 层（升级也不加层）施加它。</para>
+    /// </summary>
+    private static void ValidatePowerLayerUsage(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        // 全份配置里所有「施加状态」的地方（卡牌 / 遗物 / 药水 / 其它状态的效果）
+        var appliers = new List<(string Where, EffectSpec Fx)>();
+        foreach (var c in p.AllCards)
+            foreach (var e in c.Effects)
+                if (e is { Kind: "ApplyPower" }) appliers.Add(($"卡牌「{c.Name}」", e));
+        foreach (var r in p.Relics)
+            foreach (var e in r.Effects)
+                if (e is { Kind: "ApplyPower" }) appliers.Add(($"遗物「{r.Name}」", e));
+        foreach (var s in p.Potions)
+            foreach (var e in s.Effects)
+                if (e is { Kind: "ApplyPower" }) appliers.Add(($"药水「{s.Name}」", e));
+        foreach (var cp0 in p.CustomPowers)
+            foreach (var t in cp0.Triggers)
+                foreach (var e in t.Effects)
+                    if (e is { Kind: "ApplyPower" }) appliers.Add(($"自定义状态「{cp0.Name}」", e));
+
+        for (int i = 0; i < p.CustomPowers.Count; i++)
+        {
+            var cp = p.CustomPowers[i];
+            if (cp is null || !cp.Enabled) continue;
+            // 图上那份由模块自己管「数值 = 层数」，这里不掺和（避免误报）
+            if (cp.ForgeGraph is not null) continue;
+            var fx = cp.Triggers.Where(t => t is not null).SelectMany(t => t.Effects)
+                .Where(e => e is not null && !CSharpCodeGen.IsInertZero(e)).ToList();
+            if (fx.Count == 0) continue;
+            if (fx.Any(e => e.AmountIsStack || e.TimesIsStack || e.RepeatIsStack)) continue;
+
+            string cls = CustomPowerGen.ClassNameOf(p, cp, i);
+            // 这一处施加的层数（常数）：纯数字公式先折进来，认不出来的公式一律跳过（不乱猜，免得刷屏）
+            static decimal? LayersOf(EffectSpec fx)
+            {
+                string f = (fx.AmountFormula ?? "").Trim();
+                if (f.Length > 0)
+                {
+                    if (decimal.TryParse(f, System.Globalization.NumberStyles.Float,
+                            System.Globalization.CultureInfo.InvariantCulture, out decimal fv)) return fv;
+                    return null;
+                }
+                return fx.Amount;
+            }
+
+            var variable = appliers.Where(a =>
+                    string.Equals((a.Fx.PowerId ?? "").Trim(), cls, StringComparison.Ordinal)
+                    && LayersOf(a.Fx) is { } n0 && n0 + a.Fx.UpgradeAmount >= 2m)
+                .ToList();
+            if (variable.Count == 0) continue;
+
+            var first = variable[0];
+            decimal baseLayers = LayersOf(first.Fx) ?? 1m;
+            string stacks = $"{baseLayers:0.##} 层";
+            string up = first.Fx.UpgradeAmount != 0m
+                ? $"（升级后 {Math.Max(1m, baseLayers + first.Fx.UpgradeAmount):0.##} 层）"
+                : "";
+            issues.Add(new("提示", $"自定义状态「{cp.Name}」的层数**现在对它的效果没有任何作用**："
+                + $"{string.Join("、", variable.Select(v => v.Where).Distinct().Take(3))} 会给它叠 {stacks}{up}，"
+                + "但状态里的效果没勾「数值 = 本状态的层数」也没勾「生效次数 = 本状态的层数」——"
+                + "所以叠到几层，效果都还是按固定数值来一次（例：伤害永远 1 点）。"
+                + "想让层数决定强度就勾「数值 = 本状态的层数」（3 层 = 3 点伤害）；想让层数决定次数就勾「生效次数 = 本状态的层数」。"
+                + "（这两栏在「状态」页那条效果上面；勾上之后「数值」那一栏就不用了。）"));
+        }
+    }
 
     /// <summary>
     /// 这个遗物触发时机**可能根本不在战斗里**（→ 召唤伙伴 / 战斗内的状态层数这类实现不了）。

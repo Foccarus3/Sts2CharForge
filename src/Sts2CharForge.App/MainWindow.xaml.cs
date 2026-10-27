@@ -21837,6 +21837,38 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					aePowerSrc.Contains("base.Owner.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner && c.IsPlayer)")
 					&& aePowerSrc.Contains("CET:TargetSide=AllAllies"), "生成 + 标记都在");
 			}
+			// ===== V0.2.307（用户报「状态是生成一张牌造成一伤害，加了三层，但是还是 1 伤害」）=====
+			// 真因：自定义状态的**层数不会自动乘到效果上** —— 必须勾「数值 = 本状态的层数」或「生效次数 = 本状态的层数」。
+			// 这本身是有意的（很多状态层数只表示剩余次数），但用户几乎总是想让层数起作用，
+			// 所以当某处会给它叠 ≥2 层（含升级）而效果完全没用层数时，校验器要提示一句。
+			{
+				var lyrProf = ProfileFactory.Sample();
+				var lyrPower = new CustomPowerSpec { Name = "自检层数状态", ClassName = "UiCheckLayerPower", Enabled = true };
+				var lyrTrig = new PowerTriggerSpec { Kind = "CardGenerated" };
+				lyrTrig.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 1m, TargetSide = "RandomEnemies" });
+				lyrPower.Triggers.Add(lyrTrig);
+				lyrProf.CustomPowers.Add(lyrPower);
+				var lyrCard = new CardSpec { Name = "自检层数卡", ClassName = "UiCheckLayerCard", CardType = "Power", Rarity = "Common", Cost = 1, InCardPool = true };
+				lyrCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "UiCheckLayerPower", Amount = 1m, UpgradeAmount = 2m, TargetSide = "Self" });
+				lyrProf.Cards.Add(lyrCard);
+				bool hinted = ProfileValidator.Validate(lyrProf)
+					.Any((ValidationIssue i) => i.Message.Contains("自检层数状态") && i.Message.Contains("层数**现在对它的效果没有任何作用**"));
+				Check("V0.2.307：状态效果没用层数、而某张牌会给它叠 ≥2 层（含升级）→ 提示「层数对效果没有任何作用」", hinted,
+					"提示了（1 层 → 升级后 3 层，伤害永远 1 点就是它）");
+				// 勾上「数值 = 本状态的层数」→ 不再提示，而且生成的是 base.Amount（3 层 = 3 点）
+				lyrTrig.Effects[0].AmountIsStack = true;
+				Check("V0.2.307：勾了「数值 = 本状态的层数」→ 提示消失", !ProfileValidator.Validate(lyrProf)
+					.Any((ValidationIssue i) => i.Message.Contains("自检层数状态") && i.Message.Contains("层数**现在")), "不提示了");
+				string lyrSrc = CustomPowerGen.Source(lyrProf, lyrPower, lyrProf.CustomPowers.Count - 1);
+				Check("V0.2.307：勾了之后生成的是「按当前层数」的伤害（base.Amount，3 层 = 3 点）",
+					lyrSrc.Contains("CreatureCmd.Damage(choiceContext, other, base.Amount,"), "用了 base.Amount");
+				// 对照：只按 1 层、升级也不加层 → 不该刷这条提示
+				lyrTrig.Effects[0].AmountIsStack = false;
+				lyrCard.Effects[0].UpgradeAmount = 0m;
+				Check("V0.2.307：（对照）只给 1 层、升级也不加层的状态不报这条提示（不刷屏）",
+					!ProfileValidator.Validate(lyrProf)
+						.Any((ValidationIssue i) => i.Message.Contains("自检层数状态") && i.Message.Contains("层数**现在")), "没报");
+			}
 			// 生成 → 回读：队友这两档的「作用对象」要认得回来（生成代码和「指定敌人」长得一样，靠标记）
 			string allyRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_ally_" + Guid.NewGuid().ToString("N").Substring(0, 8));
 			try
