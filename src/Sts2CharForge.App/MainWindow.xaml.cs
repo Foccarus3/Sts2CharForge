@@ -33991,6 +33991,72 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					try { Directory.Delete(btMulRoot, true); } catch { }
 				}
 
+				// ===== V0.2.305（交接待办②）：遗物链上「拿牌 / 选牌类」效果被静默丢掉 / 编不过 =====
+				// 用户报的现象是「从牌堆/消耗堆拿牌 + 范围界定 只有状态链生效」。查下来是**遗物链**：
+				//   · `TakeFromExhaust` 根本没列进 `RelicNeedsChoiceContext` → 打出一张牌时整条被「已忽略」；
+				//   · `TurnEndPlay` / `Outbreak` / 下回合生效 那一档反过来：**没守卫却写 choiceContext** → CS0103；
+				//   · 还有 ScrapeDraw / CheapenDraw / PlaceCard / 重放（自己选）漏在同一份清单外。
+				// 现在清单补齐 + 那几条没有守卫的分支补上守卫，并且用 70 个效果种类 × 2 个时机 × 6 种配置全表扫一遍。
+				{
+					var rcProf = ProfileFactory.Sample();
+					var rcRelic = new RelicSpec { Name = "自检拿牌遗物", ClassName = "UiCheckTakeRelic", Rarity = "Common", Trigger = "CardPlayed" };
+					rcRelic.Effects.Add(new EffectSpec { Kind = "TakeFromExhaust", Amount = 1m, SpawnFilter = "Skill" });
+					rcProf.Relics.Add(rcRelic);
+					string rcSrc = CSharpCodeGen.RelicSource(rcProf, rcRelic, rcProf.Relics.Count - 1);
+					Check("V0.2.305：遗物（打出一张牌时）+「从消耗牌堆拿牌」不再被整条丢掉，而且带上范围界定谓词",
+						rcSrc.Contains("CardSelectCmd.FromCombatPile", StringComparison.Ordinal)
+						&& rcSrc.Contains("c => c.Type == CardType.Skill", StringComparison.Ordinal)
+						&& !rcSrc.Contains("已忽略", StringComparison.Ordinal),
+						rcSrc.Split('\n').FirstOrDefault(l => l.Contains("FromCombatPile", StringComparison.Ordinal))?.Trim() ?? "(没生成)");
+					Check("V0.2.305：那条效果自己先造了 choiceContext（BeforeCardPlayed 本体不给上下文）",
+						rcSrc.Contains("HookPlayerChoiceContext", StringComparison.Ordinal),
+						"造了 HookPlayerChoiceContext");
+
+					// 全表扫描：70 个效果种类 ×「打出一张牌时 / 战斗胜利时」× 6 种配置 ——
+					// 「代码里出现 choiceContext 却没先声明」→ 真编译就是 CS0103，这里一条都不许有。
+					var rcKinds = EffectCatalog.EffectKinds.Select(k => k.Kind).Distinct().ToList();
+					var rcVariants = new (string Name, Action<EffectSpec> Apply)[]
+					{
+						("默认", _ => { }),
+						("负数", x => x.Amount = -1m),
+						("下回合", x => x.NextTurn = true),
+						("自己选", x => x.CardPick = "Chosen"),
+						("全部", x => x.CountMode = "All"),
+						("范围=技能", x => x.SpawnFilter = "Skill"),
+					};
+					var rcBad = new List<string>();
+					foreach (string rcTrigger in new[] { "CardPlayed", "CombatVictory" })
+						foreach (string rcKind in rcKinds)
+							foreach (var rcVar in rcVariants)
+							{
+								try
+								{
+									var r2 = new RelicSpec { Name = "自检" + rcKind, ClassName = "UiCheckRcX", Rarity = "Common", Trigger = rcTrigger };
+									var e2 = new EffectSpec { Kind = rcKind, Amount = 1m };
+									rcVar.Apply(e2);
+									r2.Effects.Add(e2);
+									string s2 = CSharpCodeGen.RelicSource(rcProf, r2, 0);
+									string code2 = string.Join("\n", s2.Split('\n').Where(l => !l.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+									if (!code2.Contains("choiceContext", StringComparison.Ordinal)) continue;
+									if (code2.Contains("PlayerChoiceContext choiceContext", StringComparison.Ordinal)
+										|| code2.Contains("choiceContext = new ", StringComparison.Ordinal)) continue;
+									rcBad.Add($"{rcTrigger}/{rcKind}/{rcVar.Name}");
+								}
+								catch (Exception ex) { rcBad.Add($"{rcTrigger}/{rcKind}/{rcVar.Name} 异常 {ex.GetType().Name}"); }
+							}
+					Check($"V0.2.305：遗物链全表扫描（{rcKinds.Count} 个效果种类 × 2 个时机 × 6 种配置）—— 没有「用了 choiceContext 却没声明」的组合",
+						rcBad.Count == 0, rcBad.Count == 0 ? "0 条" : string.Join("、", rcBad.Take(8)));
+
+					// 「下回合生效」那一档：它挂的是 Delayed 状态（不分种类都写 choiceContext）——
+					// 以前不在清单里，战斗胜利这种钩子上生成出来就是 CS0103。
+					Check("V0.2.305：遗物「下回合生效」在拿不到上下文的钩子上（战斗胜利）被说清、不生成引用不到变量的代码",
+						CSharpCodeGen.RelicSource(rcProf, new RelicSpec
+						{
+							Name = "自检下回合", ClassName = "UiCheckRcNext", Rarity = "Common", Trigger = "CombatVictory",
+							Effects = { new EffectSpec { Kind = "Gold", Amount = 1m, NextTurn = true } },
+						}, 0).Contains("「下回合生效」无法实现", StringComparison.Ordinal), "报出来了");
+				}
+
 				// 图上：遗物 / 药水 / 状态的图里用这条读数 → 报错（`this` 不是卡，生成出来编译不过）
 				var btRelicGraph = new ForgeGraphSpec();
 				var btRT = new ForgeNodeSpec { Kind = "Trigger" };

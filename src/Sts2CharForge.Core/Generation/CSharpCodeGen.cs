@@ -12728,13 +12728,29 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 这条效果在**遗物**上会不会用到 choiceContext（决定「获得时」要不要自己造一个）。
     /// 拿不准就返回 true：多造一个没用上的局部变量最多是个编译警告，少造一个是编译错误（CS0103）。
     /// </summary>
-    public static bool RelicNeedsChoiceContext(EffectSpec e) => e.Kind switch
+    public static bool RelicNeedsChoiceContext(EffectSpec e) =>
+        // V0.2.305：「下回合生效」那一档**不分种类**，一律挂 `PowerCmd.Apply<Delayed…>(choiceContext, …)`
+        //（见 EmitRelicEffectOnce 开头那个分支）—— 所以它比下面这张表优先级更高。
+        UsesDelayedEffectBranch(e) || RelicNeedsChoiceContextCore(e);
+
+    private static bool RelicNeedsChoiceContextCore(EffectSpec e) => e.Kind switch
     {
-        "Block" or "Energy" or "ExtraResource" => e.NextTurn,
+        // V0.2.305（交接待办②）：这一份清单**以前漏了几档**，落在「本体钩子不给 choiceContext」的触发时机上时，
+        // 要么整条效果被丢掉（`TakeFromExhaust` / `ScrapeDraw` / `CheapenDraw` / `PlaceCard`），
+        // 要么生成出来的代码直接引用了一个没声明的 `choiceContext` → **CS0103、整个模组编不过**
+        //（`TurnEndPlay` / `Outbreak` 就是这种 —— 探针 sacprobe relicctx 把 70 个效果种类全扫了一遍抓出来的）。
+        // 规矩照这个方法自己的注释：**拿不准就算「要」**（多造一个没用上的局部变量无害，少造一个就是编译错误）。
+        "Block" => e.NextTurn || IsNegativeAmount(e, useX: false),   // 负数 = 失去格挡（LoseBlock 也收 choiceContext）
+        "Energy" or "ExtraResource" => e.NextTurn,
         "Heal" or "MaxHp" => e.Amount < 0,
         "Draw" or "Damage" or "HpLoss" or "EndTurn" or "ExtraTurn" or "GenerateCard" or "ExhaustCard"
             or "DiscardCard" or "UpgradeCard" or "Scry" or "TransformCard" or "TakeFromDraw" or "TakeFromDiscard"
             or "ApplyPower" or "TempPower" or "SummonPet" or "CardReward" or "GiveKeyword" or "BoostCard" => true,
+        // V0.2.305 补的那几档（都真的写 choiceContext，见 EmitRelicEffectOnce 里各自的分支）
+        "TakeFromExhaust" or "ScrapeDraw" or "CheapenDraw" or "PlaceCard" or "TurnEndPlay" or "Outbreak" => true,
+        // 重放卡牌只有「自己从牌堆挑」那条路弹选牌界面（随机 / 牌顶走 Rng，一个字都不写 choiceContext）——
+        // 加粗了会让「随机重放」在没上下文的钩子上凭空多三行 bootstrap，破坏「默认档生成文本逐字不变」。
+        "ReplayCard" => !e.CountIsAll && e.CardPick == "Chosen" && !IsPileTop(e),
         // 转化为先古卡：改牌组 + 弹预览界面，按「拿不准就 true」的规矩算需要（漏了会让「获得时」不造
         // 阻塞式 context → 生成出来只有一行「已忽略」，用户实测踩过这条）。
         "AncientTranscend" => true,
@@ -12763,6 +12779,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「下回合生效」的新支持种类（V0.2.133）：遗物链也接上（老存档里这些种类勾不上，见别处说明）。
         if (UsesDelayedEffectBranch(e))
         {
+            // V0.2.305：这一档挂的是 `PowerCmd.Apply<Delayed…>(choiceContext, …)`，**无条件**写 choiceContext。
+            // 以前没有守卫 —— 落在「既不给上下文、也造不出来」的钩子上（战斗胜利 / 战斗结束）就是 CS0103，
+            // 整个模组编不过（探针 sacprobe relicctx 把「下回合生效 × 70 个种类」全扫了一遍抓出来的）。
+            if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「下回合生效」无法实现）"); return; }
             EmitDelayedPowerApply(w, p, e, "base.Owner.Creature", "base.Owner.Creature");
             return;
         }
@@ -12851,6 +12871,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 毒性爆发：只要拿到玩家和敌人列表就行（本体 PoisonPower 那一下伤害 dealer 是 null）
             case "Outbreak":
+                // V0.2.305：这句 `PowerCmd.Apply<PoisonPower>(choiceContext, …)` 是**无条件**写 choiceContext 的 ——
+                // 以前没有守卫，落在「既不给上下文、也造不出来」的钩子（战斗胜利 / 战斗结束）上就是 CS0103，
+                // 整个模组编不过（探针 sacprobe relicctx 全表扫描抓出来的）。
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，毒性爆发无法实现）"); break; }
                 EmitOutbreak(w, e, Lit.Dec(e.Amount), "null");
                 break;
 
@@ -12899,11 +12923,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 重放卡牌：遗物可以（「每回合让手里的一张牌重放一次」这类很常见），选牌走本体接口
             case "ReplayCard":
+                // V0.2.305：「自己从牌堆挑」那条路要 choiceContext（随机 / 牌顶不要）—— 需要而拿不到时
+                // 以前会生成引用不到变量的代码（CS0103），现在只说清、不生成。
+                if (!hasContext && RelicNeedsChoiceContext(e))
+                {
+                    Warn(w, e, "（该触发时机没有 choiceContext，「自己选牌重放」无法实现 —— 改成「随机」/「牌顶」，或换一个战斗里的触发时机）");
+                    break;
+                }
                 EmitReplayCard(w, p, e);
                 break;
 
             // 回合结束时自动打出：遗物上只能填 1 以上（数值 0 = 这张牌自己，遗物没有「自己这张牌」）
             case "TurnEndPlay":
+                // V0.2.305：它挂状态时写的是 `PowerCmd.Apply(choiceContext, …)`（无条件）—— 老代码没守卫，
+                // 落在战斗胜利 / 战斗结束这种钩子上就是 CS0103。
+                if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「回合结束时自动打出」无法实现）"); break; }
                 EmitTurnEndPlay(w, e, p, selfExpr: null, cardSource: "null");
                 break;
 
@@ -12986,10 +13020,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 DebugLogGen.Target(w, e, RelicAttackTargetExpr(e),
                     IsNegativeAmount(e, useX: false) ? AbsExpr(amt) : blockAmt, groupZh: MultiTargetGroupZh(e) ?? "");
                 if (IsNegativeAmount(e, useX: false))
+                {
+                    // V0.2.305：`CreatureCmd.LoseBlock(choiceContext, …)` 也收上下文 —— 以前这条分支没有守卫。
+                    if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「失去格挡」无法实现）"); break; }
                     // 负数 = 失去 N 点格挡（本体 GainBlock 对非正数什么都不做，得走 LoseBlock；
                     // remover 传我们这边，本体用它记「谁削掉的」）
                     EmitPerCreature(w, e, useX: false, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
                         c => $"await CreatureCmd.LoseBlock(choiceContext, {c}, {AbsExpr(amt)}, base.Owner.Creature);   // 负数 = 失去格挡");
+                }
                 else if (e.NextTurn)
                 {
                     if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「下回合格挡」无法实现）"); break; }
@@ -13075,7 +13113,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 这里用字面量而不是 DynamicVar：ExtraResource 不声明变量，访问 DynamicVars 会抛 KeyNotFoundException。
                 // 下回合生效：正数走本体的 StarNextTurnPower（它的 GainStars 拒绝负数）。
                 if (e.NextTurn && e.Amount > 0)
+                {
+                    // V0.2.305：这条分支也写 choiceContext（`PowerCmd.Apply<StarNextTurnPower>`），以前没守卫。
+                    if (!hasContext) { Warn(w, e, "（该触发时机没有 choiceContext，「下回合生效」的额外资源量无法实现）"); break; }
                     w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {Lit.Dec(e.Amount)}, base.Owner.Creature, null);   // 下回合开始时获得 {Lit.Dec(e.Amount)} 点额外资源量");
+                }
                 else if (e.Amount >= 0)
                     w.Line($"await PlayerCmd.GainStars({Lit.Dec(e.Amount)}, base.Owner);");
                 else
@@ -14486,6 +14528,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "ExtraResource":
                 // 额外资源量 = 本体的星星资源。药水没有费用概念，负数直接扣（不会扣成负数）。
                 // 下回合生效：正数走本体的 StarNextTurnPower（它的 GainStars 拒绝负数）。
+                //（药水链的钩子**一定**带 choiceContext，所以这里不需要守卫；遗物链那份在 13102 附近。）
                 if (e.NextTurn && e.Amount > 0)
                     w.Line($"await PowerCmd.Apply<StarNextTurnPower>(choiceContext, base.Owner.Creature, {Lit.Dec(e.Amount)}, base.Owner.Creature, null);   // 下回合开始时获得 {Lit.Dec(e.Amount)} 点额外资源量");
                 else if (e.Amount >= 0)
