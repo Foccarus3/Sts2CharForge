@@ -19,7 +19,7 @@
       节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …）；
       **只有用户明确说「发布」时才一次性跳到 V0.2.0**（tools\release_all.ps1 -Version V0.2.0）。
     -->
-    <InformationalVersion>V0.2.301</InformationalVersion>
+    <InformationalVersion>V0.2.302</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!--
       CET（Intel 硬件强制堆栈保护）必须显式关掉，否则在【没打全补丁的 Windows】上双击就闪退：

@@ -1206,6 +1206,16 @@ public static class CustomPowerGen
                 break;
 
             // ===== 用户要求「触发时机合并成同一套」后补上的两条（遗物那边早就有了）=====
+            // V0.2.302（用户要求「突破格挡时」，参考本体「手钻」HandDrill.AfterBlockBroken）
+            case "BlockBroken":
+                w.Open("public override async Task AfterBlockBroken(PlayerChoiceContext choiceContext, Creature target, Creature? breaker)");
+                EmitChoiceContextBootstrap(w, "BlockBroken", items);
+                w.Line("if (target.IsPlayer) return;                                   // 只认敌人的格挡被打穿");
+                w.Line("if (!(breaker == base.Owner || breaker?.PetOwner?.Creature == base.Owner)) return;   // 只认自己或自己的召唤物打的（照抄手钻）");
+                EmitItemsWithAmountGate(w, items, p);
+                w.Close();
+                break;
+
             case "GoldGained":
                 w.Open("public override async Task AfterGoldGained(Player player)");
                 EmitChoiceContextBootstrap(w, "GoldGained", items);

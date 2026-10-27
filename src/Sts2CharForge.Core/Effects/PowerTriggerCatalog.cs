@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Generation;
+﻿using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Effects;
@@ -83,6 +83,8 @@ public static class PowerTriggers
         // ===== 用户要求「遗物 / 状态 / 卡牌的触发时机合并成同一套」后补上的（遗物那边早就有的两条）=====
         // 获得金币时：本体 AfterGoldGained(player)——钩子**不带 choiceContext**（生成端自己造一个）。
         new PowerTriggerOption("GoldGained", "获得金币时", "AfterGoldGained：拿到金币时触发（结算 / 事件给的钱也算）"),
+        // V0.2.302（用户要求「突破格挡时」，参考本体「手钻」HandDrill.AfterBlockBroken）
+        new PowerTriggerOption("BlockBroken", "突破格挡时", "AfterBlockBroken(choiceContext, target, breaker)：只认自己（或自己的召唤物）打穿敌人格挡那一下"),
         // 抽牌堆打乱洗牌时：本体 AfterShuffle(choiceContext, shuffler)——只认自己洗的牌（本体「大～抱抱」那套）。
         new PowerTriggerOption("Shuffle", "抽牌堆打乱洗牌时", "AfterShuffle：战斗中途洗牌时触发（开局那次洗牌不算）"),
         // ===== 用户要求「所有触发时机下拉菜单包含的内容相同」：遗物侧还有的这三条也列进来 =====

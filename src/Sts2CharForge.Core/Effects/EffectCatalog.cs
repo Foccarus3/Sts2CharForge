@@ -2527,6 +2527,8 @@ public static class EffectCatalog
         // 而且它同样带 choiceContext（AttackContext / AttackCommand 都把它传下去了）。
         new TriggerOption("Attacked",       "自己受到攻击后（连击只算一次）", "AfterAttack(choiceContext, command)"),
         new TriggerOption("GoldGained",     "获得金币时",   "AfterGoldGained(player)"),
+        // V0.2.302（用户要求「突破格挡时」，参考本体「手钻」HandDrill.AfterBlockBroken）
+        new TriggerOption("BlockBroken", "突破格挡时", "AfterBlockBroken(choiceContext, target, breaker)"),
         // ===== 用户要求新增的五条（都对着本体 AbstractModel 的钩子签名核过）=====
         // 造成伤害时（每一下）= 本体 AfterDamageGiven：**每一下命中都触发**（本体的多段攻击 = 多次）。
         // 和「受到伤害时（每一下）」是同一对钩子（`DamageReceived`）；想「一次攻击只算一次」用 AfterAttack

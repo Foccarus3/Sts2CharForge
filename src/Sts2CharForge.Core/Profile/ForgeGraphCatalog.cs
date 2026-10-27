@@ -47,6 +47,8 @@ public static class ForgeTimings
     public const string PowerReached = "PowerReached";
     public const string HpLost = "HpLost";
     public const string BlockGained = "BlockGained";
+        // V0.2.302（用户要求「突破格挡时」，参考本体遗物「手钻」HandDrill.AfterBlockBroken）
+        public const string BlockBroken = "BlockBroken";
     public const string EnemyDeath = "EnemyDeath";
     public const string EnemyTurnStart = "EnemyTurnStart";
     public const string EnemyTurnEnd = "EnemyTurnEnd";
@@ -152,6 +154,9 @@ public static class ForgeTimings
             "本体 AfterCurrentHpChanged：delta 为正是回血，只有掉血那一下才算。"),
         new TimingOption(BlockGained, "自己获得格挡后", "Relic", "AfterBlockGained",
             "本体 AfterBlockGained：只认自己拿到格挡。"),
+        // V0.2.302：突破格挡时（本体 AfterBlockBroken(choiceContext, target, breaker)；手钻用的就是这个钩子）
+        new TimingOption(BlockBroken, "突破格挡时（自己或自己的召唤物打穿敌方格挡）", "Relic", "AfterBlockBroken",
+            "本体 AfterBlockBroken(choiceContext, target, breaker)：target 是被打穿格挡的那个，breaker 是动手的人（含召唤物）。"),
         new TimingOption(EnemyDeath, "一个敌人死亡后", "Relic", "AfterDeath",
             "本体 AfterDeath：只认敌人死亡（自己人死了不算）。"),
         new TimingOption(EnemyTurnStart, "敌人回合开始时", "Relic", "AfterSideTurnStart",

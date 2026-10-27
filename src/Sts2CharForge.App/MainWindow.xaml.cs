@@ -18251,6 +18251,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						(ForgeTimings.Attacked, "if (__takenThisAttack <= 0) return;"),
 						(ForgeTimings.GoldGained, "if (player != base.Owner) return;"),
 						(ForgeTimings.DamageDealt, "if (dealer != base.Owner.Creature) return;"),
+        // V0.2.302：突破格挡时（本体 AfterBlockBroken；守卫照抄「手钻」HandDrill）
+        (ForgeTimings.BlockBroken, "if (!(breaker == base.Owner.Creature || breaker?.PetOwner?.Creature == base.Owner.Creature)) return;"),
 						(ForgeTimings.EnergySpent, "if (amount <= 0 || card?.Owner?.Creature != base.Owner.Creature) return;"),
 						(ForgeTimings.StarsSpent, "if (amount <= 0 || spender != base.Owner) return;"),
 						(ForgeTimings.CardGenerated, "if (creator is null || creator != base.Owner) return;"),

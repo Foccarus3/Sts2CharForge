@@ -11554,6 +11554,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "GoldGained":
                 lines.Add("if (player != base.Owner) return;");
                 break;
+            // V0.2.302（突破格挡时，照本体 HandDrill.AfterBlockBroken）：只认自己 / 召唤物打穿的、且不是玩家自己的格挡
+            case "BlockBroken":
+                lines.Add("if (target.IsPlayer) return;   // 只认敌人的格挡被打穿");
+                lines.Add("if (!(breaker == base.Owner.Creature || breaker?.PetOwner?.Creature == base.Owner.Creature)) return;   // 只认自己或自己的召唤物打的");
+                break;
+
             case "DamageDealt":
                 lines.Add("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
                 // 「失去生命」不算「受到伤害」，也就不算「自己造成伤害」（同上：本体 DamageProps.cardHpLoss =
@@ -11759,6 +11765,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
             // 造成伤害时（每一下）：只认自己造成的伤害。**不判「有没有真的打穿格挡」**——
             // 和自定义状态那条「自己造成伤害后」口径一致（本体 AfterDamageGiven 是每一下命中都调）。
+            // V0.2.302（突破格挡时，照本体 HandDrill.AfterBlockBroken）：只认自己 / 召唤物打穿的、且不是玩家自己的格挡
+            case "BlockBroken":
+                lines.Add("if (target.IsPlayer) return;   // 只认敌人的格挡被打穿");
+                lines.Add("if (!(breaker == base.Owner.Creature || breaker?.PetOwner?.Creature == base.Owner.Creature)) return;   // 只认自己或自己的召唤物打的");
+                break;
+
             case "DamageDealt":
                 lines.Add("if (dealer != base.Owner.Creature) return;   // 只认自己造成的伤害");
                 // 「失去生命」不算「受到伤害」，也就不算「自己造成伤害」（同上：本体 DamageProps.cardHpLoss =
@@ -12572,6 +12584,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 战斗结束时（房间结算之前）：本体 AfterCombatEnd —— 比 AfterCombatVictory 早，
         // 跑在 room.OnCombatEnded() / 发奖励 / 存档 **之前**（见 CombatManager.EndCombatInternal 的顺序）。
         "CombatEnd" => "public override async Task AfterCombatEnd(CombatRoom room)",
+            // V0.2.302（突破格挡时，照本体 HandDrill）
+            "BlockBroken" => "public override async Task AfterBlockBroken(PlayerChoiceContext choiceContext, Creature target, Creature? breaker)",
         "DamageReceived" => "public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)",
         // 受到攻击后：本体 AfterAttack（multi-attack 时它在所有命中结束后只跑一次 —— 见 AbstractModel 注释）。
         // AttackCommand 在 MegaCrit.Sts2.Core.Commands.Builders，而生成的 GlobalUsings 里没有那个命名空间
@@ -12633,7 +12647,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         or "EnemyTurnEnd" or "EnemyDamaged" or "EnemyDealtDamage" or "PowerChanged"
         // V0.2.157：「打出一张牌时」的钩子 BeforeCardPlayed **不带** choiceContext，所以要造一个；
         // 「一张牌结算完毕时」（AfterCardPlayedLate）带 ✓
-        or "CardResolved";
+            or "CardResolved"
+            // V0.2.302：突破格挡时（AfterBlockBroken 自带 choiceContext）
+            or "BlockBroken";
 
     /// <summary>
     /// 这一条触发时机的钩子**在战斗里但没有 choiceContext**，需要时生成端按本体 <c>Hook.cs</c> 的做法
