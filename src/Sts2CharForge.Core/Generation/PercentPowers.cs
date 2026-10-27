@@ -79,26 +79,24 @@ public static class PercentPowers
         : "dexterity";
 
     /// <summary>这个存档用过哪几个百分比状态（用到哪个就生成哪个类 / 哪张图）。</summary>
+    /// <summary>
+    /// 这个存档用过哪几个百分比状态（用到哪个就生成哪个类 / 哪张图 / 哪三条本地化）。
+    ///
+    /// <para>V0.2.301（用户报「自定义状态里给百分比增伤，描述变英文且不生效」）：
+    /// 以前只扫卡牌 / 遗物 / 药水，**漏了自定义状态的触发效果和锻造图** —— 于是类没生成、
+    /// 本地化也没写，游戏里就显示成一串英文键名。现在直接用 <see cref="CSharpCodeGen.AllEffects"/>（同一份口径）。</para>
+    /// </summary>
     public static List<string> UsedIn(CharacterProfile p)
     {
         var used = new List<string>();
-        void Scan(IEnumerable<EffectSpec>? effects)
+        foreach (var e in CSharpCodeGen.AllEffects(p))
         {
-            if (effects is null) return;
-            foreach (var e in effects)
-            {
-                if (e is null) continue;
-                string? key = CanonicalIdOf(e.PowerId);
-                if (key is null) continue;
-                if (!used.Contains(key)) used.Add(key);
-            }
+            if (e is null) continue;
+            string? key = CanonicalIdOf(e.PowerId);
+            if (key is not null && !used.Contains(key)) used.Add(key);
         }
-        foreach (var c in p.Cards) Scan(c?.Effects);
-        foreach (var r in p.Relics) Scan(r?.Effects);
-        foreach (var s in p.Potions) Scan(s?.Effects);
         return used;
     }
-
     /// <summary>一个百分比状态的源码。</summary>
     public static string Source(CharacterProfile p, string id)
     {

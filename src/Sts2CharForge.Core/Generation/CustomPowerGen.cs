@@ -92,6 +92,7 @@ public static class CustomPowerGen
     /// <summary>生成一个自定义状态的 PowerModel 子类。</summary>
     public static string Source(CharacterProfile profile, CustomPowerSpec power, int index)
     {
+        PercentPowers.Current = profile;   // V0.2.301：状态链里的「百分比状态」也要能拼出类名
         var n = Naming.From(profile);
         string cls = ClassNameOf(profile, power, index);
         bool debuff = power.Type == "Debuff";

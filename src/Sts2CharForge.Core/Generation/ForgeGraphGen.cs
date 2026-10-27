@@ -524,6 +524,7 @@ public static class ForgeGraphGen
     /// <summary>卡牌的钩子代码（OnPlay 那一支会生成 <c>ForgeGraphOnPlay</c>，由 OnPlay 末尾调用）。</summary>
     public static string CardHooks(CharacterProfile p, CardSpec card, bool isUpgraded)
     {
+        PercentPowers.Current = p;   // V0.2.301：锻造图上用到的「百分比状态」也要能拼出类名
         var g = GraphOf(card, isUpgraded);
         var all = Plans(g, "Card");
         if (all.Count == 0 || g is null) return "";
@@ -834,6 +835,7 @@ public static class ForgeGraphGen
     /// <summary>遗物的钩子代码。</summary>
     public static string RelicHooks(CharacterProfile p, RelicSpec relic)
     {
+        PercentPowers.Current = p;   // V0.2.301：锻造图上用到的「百分比状态」也要能拼出类名
         var g = relic.ForgeGraph;
         var all = Plans(g, "Relic");
         if (all.Count == 0 || g is null) return "";
