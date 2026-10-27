@@ -1,4 +1,4 @@
-<Application x:Class="Sts2CharForge.App.App"
+﻿<Application x:Class="Sts2CharForge.App.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:Sts2CharForge.App">
@@ -853,6 +853,7 @@
                         <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                     <TextBlock Grid.Row="0" Grid.Column="0" Text="条件" Style="{StaticResource Label}"/>
                     <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
@@ -936,6 +937,17 @@
                               ToolTip="「上一张打出的牌带有某关键词」用得到：本体关键词（消耗 / 虚无 / 固有 / 保留 / 不能被打出 / 奇巧 / 永恒）。要判自定义关键词请用右边的「牌的范围」。"/>
                     <TextBlock Grid.Row="4" Grid.Column="2" Text="牌的范围" Style="{StaticResource Label}"
                                Visibility="{Binding Condition.NeedsScope, Converter={StaticResource BoolToVis}}"/>
+
+                    <!-- V0.2.299（用户实测：「指定敌人的意图为（）」在效果条件里根本选不到意图）：
+                         这条条件的「意图」下拉以前只加在遗物页那个模板上，卡牌 / 状态的效果条件模板漏了 → 这里补上。 -->
+                    <TextBlock Grid.Row="5" Grid.Column="0" Text="意图" Style="{StaticResource Label}"
+                               Visibility="{Binding Condition.NeedsIntent, Converter={StaticResource BoolToVis}}"/>
+                    <ComboBox Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="3" Style="{StaticResource Pick}"
+                              ItemsSource="{Binding IntentOptions, RelativeSource={RelativeSource AncestorType=Window}}"
+                              DisplayMemberPath="Display" SelectedValuePath="Id"
+                              Visibility="{Binding Condition.NeedsIntent, Converter={StaticResource BoolToVis}}"
+                              SelectedValue="{Binding Condition.Intent}"
+                              ToolTip="看目标敌人「下一次行动」的意图（参考本体「眼部攻击」）。目标取可打的第一个敌人。"/>
                     <ComboBox Grid.Row="4" Grid.Column="3" Margin="4,0,0,0" Style="{StaticResource Pick}"
                               Visibility="{Binding Condition.NeedsScope, Converter={StaticResource BoolToVis}}"
                               ItemsSource="{Binding SpawnFilters, RelativeSource={RelativeSource AncestorType=Window}}"
