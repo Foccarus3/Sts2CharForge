@@ -46,6 +46,19 @@ Write-Host "版本号：$Version（更新包 $([System.IO.Path]::GetFileName($Ou
 $progDir = Join-Path $Root $progName
 if (-not (Test-Path (Join-Path $progDir "Sts2CharForge.exe"))) { throw "找不到程序：$progDir\Sts2CharForge.exe（先跑 tools\package_app.ps1 发布一份）" }
 
+# V0.2.304：程序文件里如果冒出老位置的「自定义角色」（部署目录跑完 --uicheck 会生成一个角色工程），
+# 它带着 libs\sts2.dll / 0Harmony.dll —— 打进包会被下面的自检当成「包里混了游戏文件」直接失败、打不出更新包
+#（V0.2.303 / V0.2.304 两次都撞上）。它不属于程序文件，整份挪到根目录「自定义角色存档」下的备份目录：
+# 不删、也不进包（更新包只收「程序文件\」和启动器），需要的话自己拿回来。
+$legacyInProg = Join-Path $progDir "自定义角色"
+if (Test-Path $legacyInProg) {
+    $leftoverRoot = Join-Path $Root "自定义角色存档\_旧位置残留_同名没搬"
+    if (Test-Path $leftoverRoot) { Remove-Item $leftoverRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Item -ItemType Directory -Force $leftoverRoot | Out-Null
+    Move-Item $legacyInProg (Join-Path $leftoverRoot "自定义角色") -Force
+    Write-Host "  程序文件里有老位置的「自定义角色」（跑的 --uicheck 留下的工程），已挪到 $leftoverRoot（不删、不进包）"
+}
+
 # 「包里绝不能出现」的字符串：本机开发/打包目录 + 本机用户名（和整合包同一套规则）
 # 注意：**不写字面本机路径**，改成按脚本自身位置算出来（在别人机器上跑就按他的目录算）。
 $userName = Split-Path $env:USERPROFILE -Leaf

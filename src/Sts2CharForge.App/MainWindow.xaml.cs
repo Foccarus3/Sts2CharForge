@@ -19646,6 +19646,51 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("（对照）卡牌档的下拉里照旧有【能量】",
 					cardHasEnergy, cardHasEnergy ? "有" : "没有（错）");
 
+				// ②b V0.2.304（交接待办①）：【条件】模块上那些「只有某一档条件才用得到」的栏位按条件显隐。
+				// 用户报的现象：「锻造的条件模块怎么没修」→ V0.2.300 只补了「意图」下拉，那一栏却一直**常显**
+				//（每一档条件都把 数值 M / 状态 / 关键词 / 范围 / 意图 一起摊开）。判据和四处条件编辑器同一份。
+				{
+					var probeCond = new ForgeNodeSpec { Kind = "Condition" };
+					bool intentForHand = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "HandAtLeast", "Intent");
+					bool intentForIntent = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "EnemyIntent", "Intent");
+					Check("V0.2.304：条件 =「手牌至少 N 张」时【条件】模块上**没有**「意图」那一栏（不再常显）",
+						!intentForHand, intentForHand ? "还显示着（错）" : "藏起来了");
+					Check("V0.2.304：条件换成「指定敌人的意图为（）」→「意图」那一栏出现",
+						intentForIntent, intentForIntent ? "出现了" : "没出现（错）");
+					bool powerForPower = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "HasPowerAtLeast", "PowerId");
+					bool powerForIntent = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "EnemyIntent", "PowerId");
+					Check("V0.2.304：「状态」那一栏只在真的读它的条件上显示（拥有某状态至少 N 层 / 层数刚好达到 N 层）",
+						powerForPower && !powerForIntent, $"{powerForPower} / {powerForIntent}");
+					bool a2ForRange = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "HpInRange", "Amount2");
+					bool a2ForIntent = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "EnemyIntent", "Amount2");
+					Check("V0.2.304：「数值 M（生命区间用）」只在「生命值在 N%~M% 之间」上显示",
+						a2ForRange && !a2ForIntent, $"{a2ForRange} / {a2ForIntent}");
+					bool kwForKw = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "LastCardKeyword", "Keyword");
+					bool kwForIntent = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "EnemyIntent", "Keyword");
+					Check("V0.2.304：「关键词」那一栏只在「上一张打出的牌带有某关键词」上显示",
+						kwForKw && !kwForIntent, $"{kwForKw} / {kwForIntent}");
+					bool scopeForScope = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "LastCardScope", "Scope");
+					bool scopeForKeyword = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "LastCardKeyword", "Scope");
+					Check("V0.2.304：「范围」那一栏只在「上一张打出的牌是某种范围的牌」上显示",
+						scopeForScope && !scopeForKeyword, $"{scopeForScope} / {scopeForKeyword}");
+					bool amtForHand = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "HandAtLeast", "Amount");
+					bool amtForFatal = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "Fatal", "Amount");
+					Check("V0.2.304：「数值 N」只在真的读 N 的条件上显示（「斩杀」这种不读 N 的藏起来）",
+						amtForHand && !amtForFatal, $"{amtForHand} / {amtForFatal}");
+					bool amtForNone = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "None", "Amount");
+					bool intentForNone = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "None", "Intent");
+					Check("V0.2.304：（对照）条件还没选（None）时那些子栏位一个都不显示，只留「条件」自己",
+						!amtForNone && !intentForNone, $"{amtForNone} / {intentForNone}");
+					// 「不满足时」那一栏的显隐是**按档位**判的（只有卡牌布上才有「打不出去」），
+					// 所以要先把这块布切到卡牌档再量，量完切回去。
+					var scopeBeforeWhenUnmet = ForgeCanvas.Scope;
+					ForgeCanvas.ScopeForCheck("Card");
+					bool whenUnmetForIntent = ForgeCanvas.ConditionFieldVisibleForCheck(probeCond, "EnemyIntent", "WhenUnmet");
+					ForgeCanvas.ScopeForCheck(scopeBeforeWhenUnmet);
+					Check("V0.2.304：（对照）「不满足时」那一栏照旧任何条件下都显示（它不属于子栏位）",
+						whenUnmetForIntent, whenUnmetForIntent ? "显示" : "没显示（错）");
+				}
+
 				// ③ 红线：有老内容（「自定义状态」页配过触发时机）又没图的状态，选中它**绝对不许自动建布**
 				// —— 布上一旦有【触发时机】就不算空（ForgeGraphSpec.IsEmpty 判的是「一个模块都没有」），
 				// 生成端立刻切成「图说了算」，老配置的触发时机 / 效果全丢。只能用户自己按那个按钮搬。

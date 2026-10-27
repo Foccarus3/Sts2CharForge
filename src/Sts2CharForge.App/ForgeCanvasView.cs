@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -767,12 +767,46 @@ public sealed class ForgeCanvasView : Grid
         _ => true,
     };
 
+    /// <summary>
+    /// 【条件】模块上这一栏跟当前选的条件有没有关系 —— 没关系就不显示（V0.2.304）。
+    ///
+    /// <para>判据只有一份：<see cref="EffectCatalog.FindCondition"/> 上的 <c>NeedsAmount</c> /
+    /// <c>NeedsAmount2</c> / <c>NeedsPower</c> / <c>NeedsKeyword</c> / <c>NeedsScope</c> / <c>NeedsIntent</c>，
+    /// 也就是卡牌 / 遗物 / 药水 / 状态四页条件编辑器（模板里绑 <c>Condition.Needs*</c>）用的那几个属性。
+    /// 两边共用同一份，才不会出现「卡牌页有、锻造页没有」或者反过来的老毛病。</para>
+    /// <para>不认识的栏位（「条件」下拉自己、「不满足时」）一律显示。</para>
+    /// </summary>
+    private static bool ConditionFieldApplies(string key, string cond)
+    {
+        var opt = EffectCatalog.FindCondition(cond);
+        return key switch
+        {
+            "Amount" => opt?.NeedsAmount == true,
+            "Amount2" => opt?.NeedsAmount2 == true,
+            "PowerId" => opt?.NeedsPower == true,
+            "Keyword" => opt?.NeedsKeyword == true,
+            "Scope" => opt?.NeedsScope == true,
+            "Intent" => opt?.NeedsIntent == true,
+            _ => true,
+        };
+    }
+
     /// <summary>模块上的一个字段（下拉 / 公式 / 数字 / 勾选）。</summary>
     private FrameworkElement? BuildField(ForgeNodeSpec node, ForgeNodeKind kind, ForgeNodeField field)
     {
         // 【效果】：只显示与当前效果种类有关的那几栏
         if (string.Equals(kind.Id, "Effect", StringComparison.Ordinal)
             && !EffectFieldApplies(field.Key, node.Get("Effect", "Damage")))
+            return null;
+        // V0.2.304（交接待办① / 用户报「锻造的条件模块怎么没修」：V0.2.300 只补了「意图」下拉，没管显隐）：
+        // 【条件】模块上那些「只有某一档条件才用得到」的栏位，按**条件本身**显隐 ——
+        // 判据和「卡牌 / 遗物 / 药水 / 状态」页那四处条件编辑器**同一份**
+        //（ConditionOption 的 Needs* → ConditionSpec.NeedsAmount / NeedsAmount2 / NeedsPower / NeedsKeyword / NeedsScope / NeedsIntent）。
+        // 以前这几栏是**常显**的（每一档条件都把「数值 M / 状态 / 关键词 / 范围 / 意图」一起摊开），
+        // 用户根本看不出哪一栏跟自己选的条件有关系。
+        // ⚠ 只藏界面，数据（Fields）照旧留着：换回对应条件时之前填的还在（和【效果】那套一个口径）。
+        if (string.Equals(kind.Id, "Condition", StringComparison.Ordinal)
+            && !ConditionFieldApplies(field.Key, node.Get("Cond", "None")))
             return null;
         // 「不满足时 = 整张牌打不出去」（V0.2.218）：只有卡牌布上有意义（遗物 / 药水 / 状态没有「打出」）
         if (string.Equals(field.Key, "WhenUnmet", StringComparison.Ordinal)
@@ -1073,6 +1107,18 @@ public sealed class ForgeCanvasView : Grid
         var kind = ForgeGraphCatalog.Find("Trigger");
         var field = kind?.Fields.FirstOrDefault(f => f.Key == fieldKey);
         return field is not null && BuildField(trigger, kind!, field) is not null;
+    }
+
+    /// <summary>
+    /// 自检用：【条件】模块上某一栏在给定的条件种类下会不会显示（V0.2.304）。
+    /// 和 <see cref="EffectFieldVisibleForCheck"/> 一个套路 —— 光看代码量不出「那一栏到底显不显示」。
+    /// </summary>
+    public bool ConditionFieldVisibleForCheck(ForgeNodeSpec node, string cond, string fieldKey)
+    {
+        node.SetField("Cond", cond);
+        var kind = ForgeGraphCatalog.Find("Condition");
+        var field = kind?.Fields.FirstOrDefault(f => f.Key == fieldKey);
+        return field is not null && BuildField(node, kind!, field) is not null;
     }
 
     /// <summary>
