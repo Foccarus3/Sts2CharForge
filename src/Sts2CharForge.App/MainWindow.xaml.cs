@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -33888,12 +33888,63 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				btMixCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", TargetSide = "Enemy" });
 				btMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage + 1", TargetSide = "Enemy" });
 				btMixProf.Cards.Add(btMixCard);
-				Check("校验：和别的量混着写 → 报错（卡面那个「现算预览值」拿不到这条读数，生成的代码编译不过）",
-					ProfileValidator.Validate(btMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用")),
-					ProfileValidator.Validate(btMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardDamage"))?.Message ?? "(没报)");
+				Check("校验：和别的量混着写 → 只**提示**（不挡生成）：说清「能参与四则运算」+ 顺序 + 卡面印 0",
+					ProfileValidator.Validate(btMixProf).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("能参与四则运算") && i.Message.Contains("之后") && i.Message.Contains("自定义描述"))
+					&& !ProfileValidator.Validate(btMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardDamage")),
+					ProfileValidator.Validate(btMixProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("能参与四则运算"))?.Message ?? "(没报)");
 				Check("「正好是它」的判定容忍外层括号（(ThisCardDamage) 也算）",
 					CSharpCodeGen.IsExactThisCardDamage("(ThisCardDamage)")
 					&& !CSharpCodeGen.IsExactThisCardDamage("(ThisCardDamage) + 1"), "对");
+
+				// ===== V0.2.303：ThisCardDamage 参与四则运算（用户：「不能进行 +-*/ 的计算吗」→ 回「要」）=====
+				// 以前这里报**错误**直接挡生成，理由是「生成的代码会编译不过」。探针（sacprobe tcdmul）查明
+				// 后半句是错的：打出时当场取属性现算，本来就不走卡面那个静态 lambda。现在只提示，
+				// 所以这里要把「真的能生成 + 真的编译得过 + 回读认得回来」三条钉住。
+				string btMulRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_tcdmul_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					var btMulProf = ProfileFactory.Sample();
+					var btMulCard = new CardSpec { Name = "自检半伤灾厄", ClassName = "UiCheckHalfDoom", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+					btMulCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 8m, AmountFormula = "8", TargetSide = "Enemy" });
+					btMulCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardDamage * 0.5", TargetSide = "Enemy" });
+					btMulProf.Cards.Add(btMulCard);
+					btMulProf.Paths.OutputDir = btMulRoot;
+					btMulProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					btMulProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					btMulProf.Paths.DotnetExe = Profile.Paths.DotnetExe;
+					var btMulGen = ModGenerator.Generate(btMulProf);
+					Check("V0.2.303：`ThisCardDamage * 0.5` **不再挡住生成**（校验器只给提示）", btMulGen.Success,
+						btMulGen.Success ? btMulGen.ProjectRoot : string.Join(" ｜ ", btMulGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (btMulGen.Success)
+					{
+						var btMulNaming = Naming.From(btMulProf);
+						string btMulSrc = File.ReadAllText(Path.Combine(btMulGen.ProjectRoot, "cs", "Cards", btMulNaming.CardClassName(btMulProf, btMulCard) + ".cs"), Encoding.UTF8);
+						Check("V0.2.303：生成的是**当场取属性**的表达式（`this.ForgeThisCardDamage`) * 0.5m`，不是快照局部变量）",
+							btMulSrc.Contains("(((decimal)this.ForgeThisCardDamage) * (0.5m))", StringComparison.Ordinal),
+							btMulSrc.Split('\n').FirstOrDefault(l => l.Contains("PowerCmd.Apply<DoomPower>", StringComparison.Ordinal))?.Trim() ?? "(没找到那一句)");
+						Check("V0.2.303：公式里那条读数**没有**被取成方法开头的快照局部变量（不然读到的是 0）",
+							!btMulSrc.Contains("decimal __fgThisCard", StringComparison.Ordinal)
+							&& !btMulSrc.Split('\n').Any(l => l.TrimStart().StartsWith("decimal", StringComparison.Ordinal)
+								&& l.Contains("ForgeThisCardDamage", StringComparison.Ordinal)),
+							"没有快照变量");
+						Check("V0.2.303：卡面预览退回普通变量（静态 lambda 里没有 this，生成 ForgeFormulaPowerVar 会 CS1061）",
+							!btMulSrc.Contains("ForgeFormulaPowerVar", StringComparison.Ordinal), "退回普通变量");
+						var btMulBuild = Sts2CharForge.Core.Build.ModBuilder.Build(btMulGen.ProjectRoot, btMulNaming.ModId,
+							null, null, null, btMulProf.Paths.DotnetExe);
+						var btMulDll = btMulBuild.Steps.FirstOrDefault(st => st.Name.Contains("编译 DLL", StringComparison.Ordinal));
+						Check("V0.2.303：用它生成出来的工程**真的编译得过**（dotnet build 0 错误）", btMulDll is { Success: true },
+							btMulDll is null ? "(没找到编译那一步)" : btMulDll.Output.Split('\n').LastOrDefault(l => l.Contains("个错误", StringComparison.Ordinal)) ?? btMulDll.Name);
+						var btMulRec = ProjectRecovery.FromProject(btMulGen.ProjectRoot);
+						Check("V0.2.303：回读把 `ThisCardDamage * 0.5` 原样认回来",
+							btMulRec.Profile.Cards.Any(x => x.Effects.Any(e2 => e2.AmountFormula == "ThisCardDamage * 0.5")),
+							btMulRec.Profile.Cards.SelectMany(x => x.Effects).FirstOrDefault(e2 => e2.AmountFormula.Contains("ThisCardDamage"))?.AmountFormula ?? "(没认出来)");
+						Check("V0.2.303：回读（复合公式）没认出来的语句为 0", !btMulRec.HasUnparsed, btMulRec.Unparsed.FirstOrDefault() ?? "全部认出来了");
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(btMulRoot, true); } catch { }
+				}
 
 				// 图上：遗物 / 药水 / 状态的图里用这条读数 → 报错（`this` 不是卡，生成出来编译不过）
 				var btRelicGraph = new ForgeGraphSpec();
@@ -34012,9 +34063,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				btBlockMixCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m, AmountFormula = "5", TargetSide = "Self" });
 				btBlockMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardBlock * 2", TargetSide = "Enemy" });
 				btBlockMixProf.Cards.Add(btBlockMixCard);
-				Check("校验：ThisCardBlock 和别的量混着写 → 报错（编不过）",
-					ProfileValidator.Validate(btBlockMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用") && i.Message.Contains("ThisCardBlock")),
-					ProfileValidator.Validate(btBlockMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardBlock"))?.Message ?? "(没报)");
+				Check("校验：ThisCardBlock 和别的量混着写 → 只提示（V0.2.303 起允许四则运算，不再挡生成）",
+					ProfileValidator.Validate(btBlockMixProf).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("能参与四则运算") && i.Message.Contains("ThisCardBlock"))
+					&& !ProfileValidator.Validate(btBlockMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardBlock")),
+					ProfileValidator.Validate(btBlockMixProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("ThisCardBlock"))?.Message ?? "(没报)");
 
 				// ===== 四个「张数」读数（ThisCardExhaust / Discard / Transform / Generate，V0.2.241） =====
 				string[] cntIds = { "ThisCardExhaust", "ThisCardDiscard", "ThisCardTransform", "ThisCardGenerate" };
@@ -34103,9 +34155,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				btCntMixCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, AmountFormula = "1", SpawnCardId = "UiCheckCountMixed", TargetSide = "Self" });
 				btCntMixCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "DoomPower", AmountFormula = "ThisCardGenerate + 1", TargetSide = "Enemy" });
 				btCntMixProf.Cards.Add(btCntMixCard);
-				Check("校验：ThisCardGenerate 和别的量混着写 → 报错（编不过）",
-					ProfileValidator.Validate(btCntMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能光秃秃地单独用") && i.Message.Contains("ThisCardGenerate")),
-					ProfileValidator.Validate(btCntMixProf).FirstOrDefault((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardGenerate"))?.Message ?? "(没报)");
+				Check("校验：ThisCardGenerate 和别的量混着写 → 只提示（V0.2.303 起允许四则运算，不再挡生成）",
+					ProfileValidator.Validate(btCntMixProf).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("能参与四则运算") && i.Message.Contains("ThisCardGenerate"))
+					&& !ProfileValidator.Validate(btCntMixProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("ThisCardGenerate")),
+					ProfileValidator.Validate(btCntMixProf).FirstOrDefault((ValidationIssue i) => i.Message.Contains("ThisCardGenerate"))?.Message ?? "(没报)");
 			}
 
 			// ===== 触发时机上的数值（用户要求：遗物 / 状态两边都要有 + 界面上看得见） ====

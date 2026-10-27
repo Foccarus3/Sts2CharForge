@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -4187,8 +4187,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         //   走这个「现算预览值」—— 预览 lambda 的参数类型是 **CardModel**（`static (card, target) => …`），
         //   而这两条读数读的是**派生卡片类**上的属性（`this.Forge…`）：`(card).Forge…` 直接 CS1061
         //   「CardModel 未包含该定义」（探针真编译抓出来的）。所以含它们的公式退回**普通变量**
-        //   （和没写公式时同一个声明，值 0）—— 卡面那半句本来就不印数字（见 LocalizationGen），
-        //   校验器也会拦住复合式子（那种照样编不过）。
+        //   （和没写公式时同一个声明，值 0）—— 卡面那半句本来就不印数字（见 LocalizationGen）。
+        //   V0.2.303：也正因为**不声明预览变量**、打出时是当场取属性（见 FormulaBuiltins 的表达式），
+        //   这组读数**可以参与四则运算**（`ThisCardDamage * 0.5` 生成 `((decimal)this.ForgeThisCardDamage) * 0.5m`，
+        //   探针 sacprobe tcdmul 真编译通过）；校验器只提示「卡面会印 0 / 排到对应效果之后」。
         bool thisCardFormula = CardReadingsAll.Any(r => ForgeFormula.MentionsIdentifier(e.AmountFormula, r.Id));
         if (e.UsesAmountFormula && p is not null && FormulaVarClassOf(e.Kind) is { } fxCls && !thisCardFormula)
         {

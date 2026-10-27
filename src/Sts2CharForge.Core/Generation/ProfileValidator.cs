@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -2654,7 +2654,8 @@ public static class ProfileValidator
     ///   那些钩子跑的时候「打出那一刻」的清零早就过去了，读到的是上一次打出留下的数；</item>
     /// <item>写它的那一条效果**前面没有任何对应的效果**（伤害那条要有「造成伤害」、格挡那条要有「获得格挡」）→ 恒 0；</item>
     /// <item>勾了「下回合生效」（延迟状态在下回合开始时才求值，同上）；</item>
-    /// <item>和别的量混着写（复合式子编不过 —— 它没有卡面预览变量）。</item>
+    /// <item>和别的量混着写（<c>ThisCardDamage * 0.5</c>…）：V0.2.303 起**允许**（当场现算、编得过），
+    /// 只报一条「提示」说清顺序和卡面（卡面会印 0）。</item>
     /// </list>
     /// </summary>
     private static void ValidateCardReadings(List<ValidationIssue> issues, string owner, EffectSpec e,
@@ -2698,19 +2699,20 @@ public static class ProfileValidator
             // 「格挡那条」要排除负数（负数走的是失去格挡，不记账）
             bool before = needKind is not null && prior.Any(x => x is not null && x.Kind == needKind
                 && (needKind != "Block" || x.Amount >= 0m) && !CSharpCodeGen.IsInertZero(x));
+            // 说人话的短名（不用 EffectKindOption.Display —— 那个带「（负数 = 失去）」这种括号）
+            // 「混着写」那条提示也要用它（V0.2.303），所以提到 if 外面。
+            string what = needKind switch
+            {
+                "Damage" => "造成伤害",
+                "Block" => "获得格挡",
+                "ExhaustCard" => "消耗卡牌",
+                "DiscardCard" => "丢弃卡牌",
+                "TransformCard" => "变化卡牌",
+                "GenerateCard" => "生成卡牌",
+                _ => "对应的效果",
+            };
             if (!before)
             {
-                // 说人话的短名（不用 EffectKindOption.Display —— 那个带「（负数 = 失去）」这种括号）
-                string what = needKind switch
-                {
-                    "Damage" => "造成伤害",
-                    "Block" => "获得格挡",
-                    "ExhaustCard" => "消耗卡牌",
-                    "DiscardCard" => "丢弃卡牌",
-                    "TransformCard" => "变化卡牌",
-                    "GenerateCard" => "生成卡牌",
-                    _ => "对应的效果",
-                };
                 issues.Add(new("警告", $"{where} 用了 {zh}，但它**前面没有任何「{what}」**——"
                     + $"这条读数记的是「这一次打出到目前为止{what}攒下来的量」，前面没有就是 0。"
                     + $"照打出顺序排：先「{what}」，后面那一条再读它（本体「荒疫打击」就是「先伤害、再读伤害」）。"));
@@ -2720,11 +2722,21 @@ public static class ProfileValidator
                 issues.Add(new("警告", $"{where} 用了 {zh}，同时「生效次数 / 命中次数」大于 1 ——"
                     + "重复执行时后一次会把前一次刚记下的量一起读进去（越滚越多）。"
                     + "想「只算一条」就把重复次数填 1；想「每次重复各算各的」得拆成两条效果。"));
-            if (e.Kind == "ApplyPower" && !CSharpCodeGen.IsExactReading(e.AmountFormula, r.Id))
-                issues.Add(new("提示", $"{where} 的公式写的是「{ForgeFormula.DisplayText(e.AmountFormula)}」（不是光秃秃的 {r.Id}）："
-                    + "卡面会照「现算预览值」印数字，而那个值只是**上一次打出**留下的数（卡面上会不准）。"
-                    + $"想要本体「荒疫打击」那种观感，把公式改成正好是 {r.Id}，或者用这张牌的「自定义描述」自己写卡面句子。"));
-            // 别的种类（伤害 / 格挡 / 生命…）**能生效**，但卡面印的是那个 0 值变量 —— 提醒一句，
+            // 复合式子（ThisCardDamage * 0.5 / ThisCardBlock + 2…）。
+            //
+            // V0.2.303（用户原话：「自定义参数的『这张卡造成的伤害』不能进行 +-*/ 的计算吗」→ 回「要」）：
+            // 以前这里报**错误**、直接挡住生成，理由是「卡面那个现算预览值拿不到这条读数，生成的代码会编译不过」。
+            // 探针真编译（sacprobe tcdmul）查明后半句**是错的**：生成端本来就是打出这张牌时**当场取属性**
+            //（`((decimal)this.ForgeThisCardDamage) * 0.5m`），没走「现算预览值」那条静态 lambda
+            //（VarDeclarationCore 对含这组读数的公式退回普通变量），所以四则运算**编得过、也算得对**。
+            // 于是降成「提示」，只把两件真事说清：顺序（前面得先有对应效果，否则当场取到 0）、卡面（印 0）。
+            if (EffectSpec.FormulaSupports(e.Kind) && !CSharpCodeGen.IsExactReading(e.AmountFormula, r.Id))
+                issues.Add(new("提示", $"{where} 的「数值公式」里把 {zh} 和别的量一起用了"
+                    + $"（{ForgeFormula.DisplayText(e.AmountFormula)}）—— 这条读数**能参与四则运算**"
+                    + "（打出这张牌时当场现算，和 X / 参数 / 其它读数一起写都行，生成的代码编得过）。"
+                    + $"注意两件事：① 请把这条效果排在「{what}」**之后**，否则当场取到的是 0（每次{what}之后才记账）；"
+                    + "② 卡面那一栏会印成 0（它没有「现算预览值」）—— 想让人看懂就用这张牌的「自定义描述」自己写句子。"));
+            // 光秃秃一条、但种类不是「施加状态」：**能生效**，卡面印的是那个 0 值变量 —— 提醒一句，
             // 别让玩家以为「这张牌只造成 0 点伤害」。其中「伤害 = 本牌获得格挡」有专门的卡面文案（全身撞击那种）。
             if (EffectSpec.FormulaSupports(e.Kind) && e.Kind != "ApplyPower"
                 && CSharpCodeGen.IsExactReading(e.AmountFormula, r.Id)
@@ -2732,16 +2744,6 @@ public static class ProfileValidator
                 issues.Add(new("提示", $"{where} 的「数值公式」是 {r.Id}：**能生效**，但卡面那一栏印的是变量占位（0）——"
                     + "这张牌进游戏后卡面会写成「0 点」。想让人看懂就给它配一段「自定义描述」"
                     + "（「卡牌」页 → 卡面预览下面的自定义描述），或者改用「施加状态」那一档（那一档有专门的卡面文案）。"));
-            // 复合式子（ThisCardDamage + 2 / ThisCardBlock*2…）**编不过**：这两条读数读的是派生卡片类上的属性，
-            // 而卡面那个「现算预览值」的 lambda 只拿到 CardModel（生成端已经在 VarDeclarationCore 里退回普通变量，
-            // 没有预览变量可用）—— 与其生成一个编译不过的工程，不如在这里拦住并说清。
-            if (EffectSpec.FormulaSupports(e.Kind)
-                && ForgeFormula.MentionsIdentifier(e.AmountFormula, r.Id)
-                && !CSharpCodeGen.IsExactReading(e.AmountFormula, r.Id))
-                issues.Add(new("错误", $"{where} 的「数值公式」里把 {CSharpCodeGen.ReadingZh(r.Id)} 和别的量混在一起用了"
-                    + $"（{ForgeFormula.DisplayText(e.AmountFormula)}）—— 这条读数**只能光秃秃地单独用**："
-                    + "它读的是这张牌自己的属性，卡面那个「现算预览值」拿不到它（生成的代码会编译不过）。"
-                    + "想加别的量请在卡面用「自定义描述」写，或者把这条效果拆成两条。"));
         }
     }
 
