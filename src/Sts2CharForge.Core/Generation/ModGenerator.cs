@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -665,6 +665,11 @@ public static class ModGenerator
         ProjectFilesGen.WriteText(Path.Combine(cs, "AtlasSpritePatch.cs"), ArtGenerator.AtlasSpritePatchSource(profile, root));
         Log($"  已生成图集精灵补丁：能量图标 + 药水图标由本模组自己的图供给（{ArtGenerator.AtlasSpriteEntries(profile, root).Count} 条，不再改本体的图集精灵表）");
         ProjectFilesGen.CopyLocalDependencies(profile, root, Log);
+        // V0.2.315：插件自带的文件也进工程（CsFiles → cs/Plugins/<插件 id>/ 一起编译；
+        // AssetFiles → plugin_assets/<插件 id>/），于是它们和 mod 一起打包（需求③）。没插件时一行不写。
+        int pluginFiles = Plugins.PluginGen.CopyInto(root);
+        if (pluginFiles > 0)
+            Log($"  插件自带文件：{pluginFiles} 个已拷进工程（cs/Plugins/<插件 id>/ 与 plugin_assets/<插件 id>/）");
         ProjectFilesGen.WriteText(Path.Combine(root, "README.md"), Readme(profile, n));
 
         Log("生成完成 ✅");

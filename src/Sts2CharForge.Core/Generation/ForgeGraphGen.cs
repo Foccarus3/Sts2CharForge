@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -2911,6 +2912,13 @@ public static class ForgeGraphGen
             amount = amtVar;
         }
         else amount = "(" + Lit((double)amountN.Value) + "m)";
+
+        // V0.2.315：插件贡献的效果种类 —— 模板渲染后整段写进来（不是插件种类时什么都不做）
+        if (PluginGen.TryEmit(sb, indent, EffectFromNode(node), new PluginGen.PluginCtx(
+                Self: "__fgSelf", Player: "__fgPlayer",
+                Foe: "ForgeFormulaRuntime.TargetOrFirst(__fgTarget, __fgPlayer).FirstOrDefault()",
+                Choice: ctx.ChoiceVar, AmountOverride: amount)))
+            return;
 
         // V0.2.194：**状态那一档**支持「= 本状态层数」那几个开关（EffectSpec.AmountIsStack /
         // TimesIsStack / RepeatIsStack）—— 那是「自定义状态」页效果编辑器上的开关（用户 31 只状态里

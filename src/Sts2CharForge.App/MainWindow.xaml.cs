@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -31,6 +31,7 @@ using Sts2CharForge.Core;
 using Sts2CharForge.Core.Build;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Generation;
+using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.App;
@@ -628,7 +629,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
 	public IReadOnlyList<string> TargetSides => EffectCatalog.TargetSides;
 
-	public IReadOnlyList<EffectKindOption> Kinds => EffectCatalog.EffectKinds;
+	/// <summary>下拉里能选的效果种类 = 自带 65 种 + 插件贡献的（V0.2.315）。</summary>
+	public IReadOnlyList<EffectKindOption> Kinds => EffectCatalog.AllEffectKinds;
 
 	/// <summary>
 	/// 【自定义状态专用】的效果种类候选：只列**状态触发器里能用**的那些。"
@@ -3649,6 +3651,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		string text = MigrateLegacyProfileFolder();
 		NormalizeOutputDir();
 		base.DataContext = this;
+		// V0.2.315：先加载插件（插件贡献的效果种类要进「效果种类」下拉，所以必须在 ReloadCatalog 之前）
+		LoadPlugins();
 		ReloadCatalog();
 		RefreshAll();
 		RefreshProfiles();
@@ -6302,8 +6306,128 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private static bool HasDuplicateVarKeys(string source) =>
 		VarKeysOf(source).GroupBy(k => k, StringComparer.Ordinal).Any(g => g.Count() > 1);
 
-	private void OnOpenOutput(object sender, RoutedEventArgs e)
+	// ==================== 插件（V0.2.315） ====================
+
+	/// <summary>
+	/// 插件放在 <c>&lt;程序目录&gt;\plugins\</c> 下（每个插件一个子目录 + <c>plugin.json</c>）。
+	/// 只认 JSON 清单里的字符串 + C# 代码模板，**不加载 DLL** —— 编辑器升级后老插件照样能用（需求②）。
+	/// 插件坏掉只影响它自己（清单里 <c>Problems</c> 标出来），编辑器照常启动。
+	/// </summary>
+	private void LoadPlugins()
 	{
+		try
+		{
+			PluginRegistry.Load(AppContext.BaseDirectory);
+		}
+		catch (Exception ex)
+		{
+			try { PluginStatusText.Text = "加载插件失败：" + ex.Message; } catch { }
+		}
+		RefreshPluginList();
+	}
+
+	private void RefreshPluginList()
+	{
+		PluginList.Items.Clear();
+		foreach (PluginSpec p in PluginRegistry.Plugins) PluginList.Items.Add(new PluginListItem(p));
+		int ok = PluginRegistry.Plugins.Count(x => x.Problems.Count == 0);
+		PluginStatusText.Text = PluginRegistry.Plugins.Count == 0
+			? $"还没有插件。放插件的位置：{PluginRegistry.PluginsDirOf(AppContext.BaseDirectory)}（扫描于 {PluginRegistry.LastScan}）"
+			: $"共 {PluginRegistry.Plugins.Count} 个插件（{ok} 个可用）；插件贡献了 {PluginRegistry.EffectKinds.Count} 种效果种类。扫描于 {PluginRegistry.LastScan}";
+		if (PluginList.Items.Count > 0) PluginList.SelectedIndex = 0;
+		else PluginDetailBox.Text = "（还没有插件。把插件文件夹放进 "
+			+ PluginRegistry.PluginsDirOf(AppContext.BaseDirectory) + " 后点「重新加载插件」；写法见 docs\\插件开发规范.md）";
+	}
+
+	private sealed class PluginListItem
+	{
+		public PluginListItem(PluginSpec spec) { Spec = spec; }
+		public PluginSpec Spec { get; }
+		public override string ToString() => (Spec.Problems.Count > 0 ? "⚠ " : "") + Spec.Display;
+	}
+
+	private void OnPluginSelected(object sender, SelectionChangedEventArgs e)
+	{
+		if (PluginList.SelectedItem is not PluginListItem item) return;
+		PluginDetailBox.Text = DescribePlugin(item.Spec);
+	}
+
+	private static string DescribePlugin(PluginSpec p)
+	{
+		var sb = new StringBuilder();
+		sb.AppendLine($"【{p.Display}】  插件 id：{p.Id}");
+		sb.AppendLine($"清单版本 apiVersion：{p.ApiVersion}    作者：{(string.IsNullOrWhiteSpace(p.Author) ? "(没填)" : p.Author)}");
+		sb.AppendLine($"目录：{p.Dir}");
+		if (!string.IsNullOrWhiteSpace(p.Description)) { sb.AppendLine(); sb.AppendLine(p.Description); }
+		if (p.Problems.Count > 0)
+		{
+			sb.AppendLine();
+			sb.AppendLine("⚠ 这个插件有问题（它贡献的内容不会被使用）：");
+			foreach (string prob in p.Problems) sb.AppendLine("  · " + prob);
+		}
+		sb.AppendLine();
+		sb.AppendLine($"效果种类 {p.Effects.Count} 个" + (p.Effects.Count == 0 ? "" : "："));
+		foreach (var fx in p.Effects)
+			sb.AppendLine($"  · {fx.Display}（{fx.Kind}）  数值 {fx.Min}~{fx.Max}{fx.Unit}"
+				+ (fx.NeedsTarget ? "  需要目标" : "") + (fx.NeedsPower ? "  需要状态" : "") + (fx.NeedsCard ? "  需要目标卡" : ""));
+		if (p.Triggers.Count > 0)
+		{
+			sb.AppendLine($"触发时机 {p.Triggers.Count} 个（本版**只登记显示**，生成端接线在下一版）：");
+			foreach (var tr in p.Triggers) sb.AppendLine($"  · {tr.Display}（{tr.Id}）→ 钩子 {tr.Hook}");
+		}
+		if (p.Conditions.Count > 0)
+		{
+			sb.AppendLine($"条件 {p.Conditions.Count} 个（本版只登记显示）：");
+			foreach (var c in p.Conditions) sb.AppendLine($"  · {c.Display}（{c.Id}）：{c.Expr}");
+		}
+		if (p.ForgeModules.Count > 0)
+		{
+			sb.AppendLine($"锻造模块 {p.ForgeModules.Count} 个（本版只登记显示）：");
+			foreach (var m in p.ForgeModules) sb.AppendLine($"  · {m.Display}（{m.Kind}）");
+		}
+		if (p.CsFiles.Count + p.AssetFiles.Count > 0)
+		{
+			sb.AppendLine("随 mod 一起打包的自带文件：");
+			foreach (string f in p.CsFiles) sb.AppendLine("  · cs → cs/Plugins/" + p.Id + "/" + Path.GetFileName(f));
+			foreach (string f in p.AssetFiles) sb.AppendLine("  · 资源 → plugin_assets/" + p.Id + "/" + Path.GetFileName(f));
+		}
+		if (!string.IsNullOrWhiteSpace(p.Readme))
+		{
+			sb.AppendLine();
+			sb.AppendLine("———— 插件自述 ————");
+			sb.AppendLine(p.Readme.Trim());
+		}
+		foreach (var page in p.Pages)
+		{
+			sb.AppendLine();
+			sb.AppendLine($"———— {page.Title} ————");
+			sb.AppendLine((page.Markdown ?? "").Trim());
+		}
+		return sb.ToString();
+	}
+
+	private void OnReloadPlugins(object sender, RoutedEventArgs e)
+	{
+		LoadPlugins();
+		ReloadCatalog();   // 插件效果种类要重新进下拉
+		SetStatus($"插件已重新加载：{PluginRegistry.Plugins.Count} 个（可用 {PluginRegistry.Plugins.Count(x => x.Problems.Count == 0)} 个）");
+	}
+
+	private void OnOpenPluginFolder(object sender, RoutedEventArgs e)
+	{
+		string dir = PluginRegistry.PluginsDirOf(AppContext.BaseDirectory);
+		try
+		{
+			Directory.CreateDirectory(dir);
+			Process.Start(new ProcessStartInfo("explorer.exe", "\"" + dir + "\"") { UseShellExecute = true });
+		}
+		catch (Exception ex)
+		{
+			SetStatus("打不开插件文件夹：" + ex.Message);
+		}
+	}
+
+	private void OnOpenOutput(object sender, RoutedEventArgs e)	{
 		// 和生成器用同一套目录规则（存档名 = 目录名），别再拼 OutputDir\ModId
 		string text = ModGenerator.ProjectRootOf(_profile);
 		if (!Directory.Exists(text))
@@ -40122,6 +40246,79 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 			SelectTabRoot("遗物");
+		}
+
+		// ===== V0.2.315：插件机制（清单扫描 / 效果种类注册 / 模板生成 / 随 mod 打包）=====
+		{
+			string pluginRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_plugins_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				// ① 写一个能用的插件（新效果种类 + 自带 cs）
+				string good = Path.Combine(pluginRoot, "plugins", "uiCheck");
+				Directory.CreateDirectory(Path.Combine(good, "cs"));
+				File.WriteAllText(Path.Combine(good, "plugin.json"), """
+				{
+				  "id": "uicheck",
+				  "name": "自检插件",
+				  "version": "1.0",
+				  "apiVersion": "1",
+				  "effects": [
+				    { "kind": "UiCheckPluginFx", "display": "自检插件效果", "unit": "点", "min": 0, "max": 99,
+				      "emit": "await CreatureCmd.Heal({self}, {amount});" }
+				  ],
+				  "csFiles": [ "cs/UiCheckPluginHelper.cs" ]
+				}
+				""", new UTF8Encoding(false));
+				File.WriteAllText(Path.Combine(good, "cs", "UiCheckPluginHelper.cs"), "public static class UiCheckPluginHelper { }", new UTF8Encoding(false));
+				// ② 再写一个坏的（apiVersion 不认识）—— 它不该影响上面那个，更不该让编辑器崩
+				string bad = Path.Combine(pluginRoot, "plugins", "uiCheckBad");
+				Directory.CreateDirectory(bad);
+				File.WriteAllText(Path.Combine(bad, "plugin.json"),
+					"{ \"id\": \"uicheckbad\", \"name\": \"坏插件\", \"apiVersion\": \"999\", \"effects\": [] }", new UTF8Encoding(false));
+
+				int loaded = PluginRegistry.Load(pluginRoot);
+				Check("V0.2.315：能扫描 plugins 目录、装载合法插件（坏的只标问题不影响别人）",
+					loaded == 1 && PluginRegistry.Plugins.Count == 2
+					&& PluginRegistry.Plugins.Any(pp => pp.Id == "uicheckbad" && pp.Problems.Count > 0), $"loaded={loaded}");
+				Check("V0.2.315：插件贡献的效果种类进了「效果种类」下拉（AllEffectKinds）",
+					EffectCatalog.AllEffectKinds.Any(kk => kk.Kind == "UiCheckPluginFx")
+					&& EffectCatalog.AllEffectKinds.Count == EffectCatalog.EffectKinds.Count + 1, "进下拉了");
+				Check("V0.2.315：FindKind 认得出插件种类（不是退回「造成伤害」）",
+					EffectCatalog.FindKind("UiCheckPluginFx").Display == "自检插件效果", EffectCatalog.FindKind("UiCheckPluginFx").Kind);
+				Check("V0.2.315：插件效果的字段开关来自清单（needsTarget/needsPower 默认关）",
+					!EffectFieldPolicy.UsesTargetSide("UiCheckPluginFx") && !EffectFieldPolicy.UsesPower("UiCheckPluginFx"), "没乱开");
+
+				// ③ 模板生成：卡牌链 / 状态链都要能出代码
+				var plugProf = ProfileFactory.Sample();
+				var plugCard = new CardSpec { Name = "自检插件卡", ClassName = "UiCheckPluginCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				plugCard.Effects.Add(new EffectSpec { Kind = "UiCheckPluginFx", Amount = 3m });
+				plugProf.Cards.Add(plugCard);
+				string plugSrc = CSharpCodeGen.CardSource(plugProf, plugCard, plugProf.Cards.Count - 1);
+				Check("V0.2.315：插件效果的模板真的生成了代码（{self} / {amount} 都替换掉了）",
+					plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, 3m);") || plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, 3);"), "卡牌链生成了");
+				var plugPow = new CustomPowerSpec { Name = "自检插件状态", ClassName = "UiCheckPluginPow", Enabled = true };
+				plugPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "UiCheckPluginFx", Amount = 2m } },
+				});
+				plugProf.CustomPowers.Add(plugPow);
+				Check("V0.2.315：状态链也认得插件效果（{self} 换成 base.Owner）",
+					CustomPowerGen.Source(plugProf, plugPow, plugProf.CustomPowers.Count - 1).Contains("await CreatureCmd.Heal(base.Owner, 2m);"), "状态链生成了");
+
+				// ④ 随 mod 打包：自带 cs 要拷进生成工程
+				string projRoot = Path.Combine(pluginRoot, "proj");
+				Directory.CreateDirectory(projRoot);
+				Check("V0.2.315：插件自带 .cs 会拷进生成工程（cs/Plugins/<id>/，随 mod 一起编译打包）",
+					PluginGen.CopyInto(projRoot) == 1
+					&& File.Exists(Path.Combine(projRoot, "cs", "Plugins", "uicheck", "UiCheckPluginHelper.cs")), "拷进去了");
+			}
+			finally
+			{
+				try { Directory.Delete(pluginRoot, true); } catch { }
+				// 还原成程序目录里的真实插件（否则插件种类会留在下拉里污染后面的断言）
+				try { PluginRegistry.Load(AppContext.BaseDirectory); } catch { }
+			}
 		}
 
 		Close();

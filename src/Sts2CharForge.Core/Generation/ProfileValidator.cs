@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -2838,7 +2838,9 @@ public static class ProfileValidator
         foreach (var e in effectList)
         {
             index++;
-            if (!EffectCatalog.EffectKinds.Any(k => k.Kind == e.Kind))
+            // V0.2.315：插件贡献的效果种类也算合法（否则插件效果会被这里拦下）
+            if (!EffectCatalog.EffectKinds.Any(k => k.Kind == e.Kind)
+                && !Plugins.PluginRegistry.IsPluginEffect(e.Kind))
             {
                 issues.Add(new("错误", $"{owner} 的效果种类非法：{e.Kind}"));
                 continue;

@@ -1,3 +1,5 @@
+﻿using Sts2CharForge.Core.Plugins;
+
 namespace Sts2CharForge.Core.Effects;
 
 /// <summary>
@@ -23,7 +25,7 @@ namespace Sts2CharForge.Core.Effects;
 public static class EffectFieldPolicy
 {
     /// <summary>「作用对象」那一栏（本条效果对谁生效）。</summary>
-    public static bool UsesTargetSide(string? kind) => kind is
+    public static bool UsesTargetSide(string? kind) => PluginRegistry.EffectOf(kind) is { } __pt ? __pt.NeedsTarget : kind is
         "Damage" or "Block" or "Heal" or "HpLoss" or "MaxHp" or "ApplyPower"
         or "Stun" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
         or "ForbidBlock" or "ForbidHeal" or "TempPower" or "TimesUp"
@@ -44,7 +46,7 @@ public static class EffectFieldPolicy
         string.Equals(gain, "Damage", StringComparison.Ordinal);
 
     /// <summary>「增益 / 减益」那一栏（要施加 / 翻倍 / 清除 / 暴露哪个状态）。</summary>
-    public static bool UsesPower(string? kind) => kind is
+    public static bool UsesPower(string? kind) => PluginRegistry.EffectOf(kind) is { } __pp ? __pp.NeedsPower : kind is
         "ApplyPower" or "DoublePower" or "Expose" or "ClearPowerOne" or "TempPower" or "PetApplyPower";
 
     /// <summary>
@@ -55,7 +57,7 @@ public static class EffectFieldPolicy
     /// V0.2.176 起卡牌链也能用「转化为先古遗物」了（生成端读同一个 <c>SpawnCardId</c>），
     /// 所以两条链都显示这一栏。</para>
     /// </summary>
-    public static bool UsesTargetCard(string? kind, bool plainChain = false) =>
+    public static bool UsesTargetCard(string? kind, bool plainChain = false) => PluginRegistry.EffectOf(kind) is { } __pc ? __pc.NeedsCard :
         kind is "BoostCard" or "GenerateCard" or "TransformCard" or "FillHand"
             or "AddCardGlobal" or "TransformCardGlobal"
         // 「转化为先古遗物」的**目标遗物**也走这一栏 —— 只有遗物 / 药水链有它自己的编辑器
@@ -78,7 +80,7 @@ public static class EffectFieldPolicy
     /// 放回手牌 / 抽到就本场减费 / 结束回合 / 额外回合 / 获得药水 / 回合结束自动打出 / 填满手牌 /
     /// 给予关键词 / 四种全局牌组 / 卡牌奖励 / 伙伴承伤开关。
     /// </summary>
-    public static bool UsesUpgradeAmount(string? kind) => kind is not (
+    public static bool UsesUpgradeAmount(string? kind) => PluginRegistry.EffectOf(kind) is not null ? false : kind is not (
         "Stun" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
         or "ForbidBlock" or "ForbidHeal" or "CheapenDraw" or "ReturnSelfToHand" or "CheapenSelfOnDraw"
         or "EndTurn" or "ExtraTurn" or "GainPotion" or "TurnEndPlay" or "FillHand" or "GiveKeyword"

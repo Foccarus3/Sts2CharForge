@@ -1,0 +1,31 @@
+{
+  "id": "example",
+  "name": "示例插件（可删）",
+  "version": "1.0",
+  "apiVersion": "1",
+  "author": "Sts2CharForge",
+  "description": "演示插件怎么写：给编辑器加一个新效果种类（回复生命并给等量格挡），再带一个工具类一起编进模组。不需要就整份删掉。",
+  "readme": "这是一个示例插件，用来对照 docs\\插件开发规范.md 看格式。\n\n它做了三件事：\n1) 加一个效果种类「插件示例：回复生命并格挡」——它会出现在卡牌 / 遗物 / 药水 / 状态 / 锻造图的「效果种类」下拉里；\n2) 带一个 cs/PluginDemo.cs，生成工程时会被拷到 cs/Plugins/example/ 下，和模组一起编译；\n3) 带这一页说明（你正在看的就是它）。\n\n把整个 plugins\\示例插件 文件夹删掉，编辑器就会恢复成「没有插件」的状态。",
+  "effects": [
+    {
+      "kind": "PluginHealAndBlock",
+      "display": "插件示例：回复生命并给等量格挡",
+      "unit": "点",
+      "min": 0,
+      "max": 99,
+      "needsTarget": false,
+      "note": "模板里的 {self} 是「自己」、{amount} 是数值框里的数字。",
+      "emit": "// 来自插件 example（PluginHealAndBlock）\nawait CreatureCmd.Heal({self}, {amount});\nawait CreatureCmd.GainBlock({self}, {amount}, ValueProp.Move, null);"
+    }
+  ],
+  "pages": [
+    {
+      "id": "howto",
+      "title": "怎么写自己的插件",
+      "markdown": "最短路径：\n1) 在 plugins 文件夹里新建一个目录（名字随便）；\n2) 放一个 plugin.json，最少要有 id / name / apiVersion / effects；\n3) 效果的 emit 里写 C# 语句，可用 {amount} {self} {player} {foe} {choice} {cardSelf} {power} {card} 这些占位符；\n4) 回到编辑器「插件」页点「重新加载插件」。\n\n详细规范（含占位符含义、打包规则、版本兼容约定）见程序目录下的 docs\\插件开发规范.md。"
+    }
+  ],
+  "csFiles": [
+    "cs/PluginDemo.cs"
+  ]
+}

@@ -1,5 +1,6 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -9045,6 +9046,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         // ⚠ 延迟状态那条路传进来的 blockAmt 是**已经折好的字面量**（那里没有 base.DynamicVars）。
         string blockAmt = blockAmtOverride ?? BlockValueAccess(varMap, e);
+        // V0.2.315：插件贡献的效果种类 —— 模板渲染后直接写进来（不是插件种类时什么都不做）
+        if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
+                Self: "base.Owner.Creature", Player: "base.Owner", Foe: "cardPlay.Target",
+                Choice: "choiceContext", CardSelf: "this", AmountOverride: Lit.Dec(e.Amount))))
+            return;
         switch (e.Kind)
         {
             case "EndTurn":
@@ -12985,6 +12991,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                           ?? BlockValueAccess(varMap, e);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用），amount 为 0 时本体直接不挂状态
         if (IsSlowPercentEffect(e)) amt = "1m";
+        // V0.2.315：插件效果种类（这条链没有「玩家选中的目标」→ {foe} 是「可打的第一个敌人」）
+        if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
+                Self: "base.Owner.Creature", Player: "base.Owner",
+                Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
+                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: Lit.Dec(e.Amount))))
+            return;
         switch (e.Kind)
         {
             case "EndTurn":
@@ -14546,6 +14558,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                           ?? BlockValueAccess(varMap, e);
         // 「直接把缓慢设成 N%」：本体做法是只施加 1 层（层数对「缓慢」没有作用）
         if (IsSlowPercentEffect(e)) amt = "1m";
+        // V0.2.315：插件效果种类（药水链同样按「可打的第一个敌人」兜底）
+        if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
+                Self: "base.Owner.Creature", Player: "base.Owner",
+                Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
+                Choice: "choiceContext", AmountOverride: Lit.Dec(e.Amount))))
+            return;
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";
         // V0.2.132：药水这条链也把新档位写一行回读标记（只在**新档位**出现时才写；
         // 药水实际打谁仍由药水自己的「作用目标」决定，这一栏只影响卡面描述 —— 校验器会提示）。

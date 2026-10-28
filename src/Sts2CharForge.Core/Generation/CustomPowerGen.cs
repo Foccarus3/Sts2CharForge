@@ -1,4 +1,5 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1602,6 +1603,14 @@ public static class CustomPowerGen
         else if (e.Kind is "Energy" or "Gold" && e.TargetSide is "Ally" or "AllAllies")
             w.Line($"// CET:TargetSide={e.TargetSide}");
         if (loop) w.Open($"for (int __rep = 0; __rep < {(e.TimesIsStack ? "(int)base.Amount" : timesFormula is not null ? $"(int)System.Math.Clamp({timesFormula}, 1m, 20m)" : times.ToString())}; __rep++)");
+
+        // V0.2.315：插件效果种类（状态链：base.Owner 本身就是 Creature；「指定敌人」按触发器的目标兜底）
+        if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
+                Self: "base.Owner", Player: "base.Owner.Player",
+                Foe: foeFrom ?? "base.Owner.CombatState?.HittableEnemies.FirstOrDefault()",
+                Choice: "choiceContext",
+                AmountOverride: e.AmountIsStack ? "(int)base.Amount" : Lit.Dec(e.Amount))))
+            return;
 
         switch (e.Kind)
         {

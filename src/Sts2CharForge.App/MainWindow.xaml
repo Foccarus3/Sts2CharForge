@@ -3406,6 +3406,26 @@
                 </Grid>
             </TabItem>
 
+            <!-- ============ 插件（V0.2.315） ============ -->
+            <TabItem x:Name="PluginTab" Header="插件">
+                <Grid Margin="8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300"/><ColumnDefinition Width="10"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <DockPanel Grid.Column="0">
+                        <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
+                                   Text="插件放在程序目录的「plugins」文件夹里（每个插件一个子目录 + plugin.json）。插件自带的效果种类会直接出现在「效果种类」下拉里；自带的 .cs 会一起编进模组。"/>
+                        <Button DockPanel.Dock="Top" Content="重新加载插件" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnReloadPlugins"/>
+                        <Button DockPanel.Dock="Top" Content="打开插件文件夹" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnOpenPluginFolder"/>
+                        <TextBox DockPanel.Dock="Bottom" x:Name="PluginStatusText" IsReadOnly="True" TextWrapping="Wrap"
+                                 BorderThickness="0" Background="Transparent" Foreground="#0A7" Margin="0,6,0,0"/>
+                        <ListBox x:Name="PluginList" SelectionChanged="OnPluginSelected"/>
+                    </DockPanel>
+                    <TextBox Grid.Column="2" x:Name="PluginDetailBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="（左边选一个插件看详情）"/>
+                </Grid>
+            </TabItem>
+
             <!-- ============ 构建 ============ -->
             <TabItem x:Name="BuildTab" Header="构建 / 日志">
                 <Grid Margin="8">

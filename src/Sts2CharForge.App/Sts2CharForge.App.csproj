@@ -19,7 +19,7 @@
       节奏：开发 / 生成阶段用 patch 递增（V0.1.1 → V0.1.2 → …）；
       **只有用户明确说「发布」时才一次性跳到 V0.2.0**（tools\release_all.ps1 -Version V0.2.0）。
     -->
-    <InformationalVersion>V0.2.314</InformationalVersion>
+    <InformationalVersion>V0.2.315</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <!--
       CET（Intel 硬件强制堆栈保护）必须显式关掉，否则在【没打全补丁的 Windows】上双击就闪退：
@@ -44,6 +44,15 @@
   <ItemGroup>
     <!-- 窗口/任务栏图标（同一个文件也作为 exe 图标） -->
     <Resource Include="waku.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- V0.2.315：插件目录跟着程序走（每个插件一个子目录 + plugin.json）。
+         开发输出目录和发布目录都会带一份「plugins\示例插件」；用户自己的插件丢进同一层即可。 -->
+    <None Include="plugins\**\*" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 插件规范 + AI 提示词也随程序发布（用户 / AI 直接读 程序目录\docs\ 下这两份） -->
+    <None Include="..\..\docs\插件开发规范.md" Link="docs\插件开发规范.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\插件AI提示词.md" Link="docs\插件AI提示词.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

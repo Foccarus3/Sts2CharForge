@@ -1,7 +1,9 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
+
+using Sts2CharForge.Core.Plugins;
 
 namespace Sts2CharForge.Core.Effects;
 
@@ -1797,8 +1799,18 @@ public static class EffectCatalog
         new SpawnPickOption("Random", "随机药水（本体「炼制药水」那种随机）"),
     };
 
+    /// <summary>
+    /// 界面上的「效果种类」全表 = 编辑器自带的 65 种 + 插件贡献的（V0.2.315）。
+    /// 插件那部分由 <see cref="PluginRegistry"/> 扫描插件时填（没插件时和 <see cref="EffectKinds"/> 完全相同）。
+    /// </summary>
+    public static IReadOnlyList<EffectKindOption> AllEffectKinds =>
+        PluginRegistry.EffectKinds.Count == 0 ? EffectKinds : EffectKinds.Concat(PluginRegistry.EffectKinds).ToList();
+
+    /// <summary>按 id 找效果种类：先找自带的，再找插件给的（都找不到退回「造成伤害」）。</summary>
     public static EffectKindOption FindKind(string kind) =>
-        EffectKinds.FirstOrDefault(k => string.Equals(k.Kind, kind, StringComparison.OrdinalIgnoreCase)) ?? EffectKinds[0];
+        EffectKinds.FirstOrDefault(k => string.Equals(k.Kind, kind, StringComparison.OrdinalIgnoreCase))
+        ?? PluginRegistry.EffectKinds.FirstOrDefault(k => string.Equals(k.Kind, kind, StringComparison.OrdinalIgnoreCase))
+        ?? EffectKinds[0];
 
     // ==================== 条件选项 ====================
     /// <summary>
