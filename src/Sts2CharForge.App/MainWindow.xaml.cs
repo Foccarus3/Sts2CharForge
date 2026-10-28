@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -37349,6 +37349,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string rmSrc = CSharpCodeGen.CardSource(Profile, rmCard, 0);
 				Check("V0.2.205：卡牌链「删除牌 = 0」→ 删掉牌组里**这张牌自己**（按 c.Id 认）",
 					rmSrc.Contains("c.IsRemovable && c.Id == this.Id") && rmSrc.Contains("RemoveFromDeck"), "删自己");
+				// V0.2.313（用户报「删除卡牌（全局）会把牌组中的所有同名牌删除」）：数值 0 = 删「这张牌」，
+				// 只该删**一张**副本 —— 以前 Where(...Id == this.Id) 后面没有 Take(1)，同名副本全没了。
+				Check("V0.2.313：数值 0 只删一张同名副本（Take(1)），不是整批删光",
+					rmSrc.Contains(".Where(c => c.IsRemovable && c.Id == this.Id).Take(1)"), "只删一张");
+				// 对照：「全部」那一档仍然是整批删（那是显式要求）
+				var rmAllFx = new EffectSpec { Kind = "RemoveCardGlobal", Amount = 1m, CardPick = "Chosen", CountMode = "All" };
+				CardSpec rmAllCard = new CardSpec { Name = "自删全部", ClassName = "UiCheckSelfRemoveAll", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				rmAllCard.Effects.Add(rmAllFx);
+				string rmAllSrc = CSharpCodeGen.CardSource(Profile, rmAllCard, 0);
+				Check("V0.2.313：（对照）勾了「全部」才整批删牌组里能删的牌",
+					rmAllSrc.Contains("Cards.Where(c => c.IsRemovable).ToList()") && !rmAllSrc.Contains(".Take(1)"), "全部照旧");
 				CardSpec upCard = new CardSpec { Name = "自升级", ClassName = "UiCheckSelfUpgrade", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 				upCard.Effects.Add(new EffectSpec { Kind = "UpgradeCardGlobal", Amount = 0m, CardPick = "Chosen" });
 				Check("V0.2.205：卡牌链「升级牌组 = 0」→ 升级牌组里这张牌自己",

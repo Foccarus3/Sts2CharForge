@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -1425,10 +1425,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     // 数值 0 = 这张牌自己（V0.2.205，用户报的「删除牌，数值填 0 不会删除自己」）：
                     // 把**牌组里**这张牌删掉。战斗里打出的那张是副本，牌组里那份才是永久的那张 ——
-                    // 按 ModelId 认（同名的副本、升级 / 未升级都算同一张牌）。
+                    // 按 ModelId 认（升级 / 未升级都算同一张牌）。
+                    //
+                    // V0.2.313（用户报「删除卡牌（全局）会把牌组中的所有同名牌删除」）：以前这里按 Id 匹配后
+                    // **整批**删掉，同名副本全没了。数值 0 的语义是「删掉这张牌」，只该删**一张**副本
+                    //（想一次删光用「全部」那个勾选框）。Take(1) 保留原来那行的形状（回读按它认这一档）。
                     w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
-                    w.Line("// 数值 0 = 这张牌自己：把牌组里这张牌（同名的副本都算）删掉");
-                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsRemovable && c.Id == {cardSelfExpr}.Id).ToList()) await CardPileCmd.RemoveFromDeck(c);");
+                    w.Line("// 数值 0 = 这张牌自己：从牌组里删掉**一张**（同名副本只删一张；要全删请勾「全部」）");
+                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsRemovable && c.Id == {cardSelfExpr}.Id).Take(1).ToList()) await CardPileCmd.RemoveFromDeck(c);");
                     break;
                 }
                 if (selfFallback)
