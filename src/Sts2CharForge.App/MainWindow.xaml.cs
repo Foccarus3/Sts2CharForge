@@ -18017,6 +18017,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("「从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌」三档在**状态触发器**里也能用（用户报的用例：追忆「回合开始时从弃牌堆拿 1 张」）",
 						PowerTriggers.Supports("TakeFromDiscard") && PowerTriggers.Supports("TakeFromDraw")
 						&& PowerTriggers.Supports("TakeFromExhaust"), "状态里支持了");
+					// ===== V0.2.310（用户构建日志：「自定义状态「操控现实」的『生成卡牌时』第 1 条效果是
+					//       『升级本场战斗中临时增加的牌』，生成端还没给自定义状态那条链实现」）=====
+					{
+						Check("V0.2.310：「升级本场战斗中临时增加的牌」在状态触发器里也能用了（还有节点图那张布）",
+							PowerTriggers.Supports("UpgradeGenerated")
+							&& ForgeGraphGen.SupportedEffectKinds.Contains("UpgradeGenerated"), "两处都放行了");
+						var upgProf = ProfileFactory.Sample();
+						var upgPow = new CustomPowerSpec { Name = "自检操控现实", ClassName = "UiCheckUpgGenPow", Enabled = true };
+						upgPow.Triggers.Add(new PowerTriggerSpec
+						{
+							Kind = "CardGenerated",
+							Effects = { new EffectSpec { Kind = "UpgradeGenerated", Amount = 1m } },
+						});
+						upgProf.CustomPowers.Add(upgPow);
+						var upgIssues = ProfileValidator.Validate(upgProf);
+						Check("V0.2.310：校验器不再拦它（以前整次生成被这一条挡住）",
+							!upgIssues.Any((ValidationIssue i) => i.IsError
+								&& (i.Message.Contains("UpgradeGenerated") || i.Message.Contains("升级本场战斗中临时增加的牌"))), "不拦了");
+						string upgSrc = CustomPowerGen.Source(upgProf, upgPow, upgProf.CustomPowers.Count - 1);
+						Check("V0.2.310：状态链生成的是本体的 CardCmd.Upgrade（读战斗历史里的 CardGeneratedEntry）",
+							upgSrc.Contains("CardGeneratedEntry") && upgSrc.Contains("CardCmd.Upgrade("), "生成在");
+						// 勾了「数值 = 本状态的层数」→ 上界换成 base.Amount
+						upgPow.Triggers[0].Effects[0].AmountIsStack = true;
+						string upgSrc2 = CustomPowerGen.Source(upgProf, upgPow, upgProf.CustomPowers.Count - 1);
+						Check("V0.2.310：勾了「数值 = 本状态的层数」→ 最多升几张按当前层数算",
+							upgSrc2.Contains("if (__upgGen >= (int)base.Amount) break;"), "按层数");
+					}
 
 					// 新一批效果（变化 / 复制 / 预见 / 药水 / 卡牌奖励）"
 					string SrcFor(string fx, params (string K, string V)[] fields)

@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -7417,7 +7417,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 遍历 <c>CombatManager.Instance.History.Entries</c> 里的 <c>CardGeneratedEntry</c>（本场生成的牌），
     /// 逐张升级「还能升的」。数值 = 最多升几张，0 = 不限。
     /// </summary>
-    private static void EmitUpgradeGenerated(CodeWriter w, EffectSpec e, bool useX)
+    /// <summary>
+    /// 「升级本场战斗中临时增加的牌」（本体 History 里 CardGeneratedEntry 的流水）。
+    ///
+    /// <para>V0.2.310：卡牌链早就有这一档，但**自定义状态那条链**没实现（`PowerTriggers.Supports` 也没放行）
+    /// → 用户存档里「自定义状态「操控现实」的『生成卡牌时』第 1 条效果是升级临时牌」直接把整次生成拦住。
+    /// 这段本体 API 不碰任何卡牌上下文（只读战斗历史 + <c>CardCmd.Upgrade</c>），状态钩子里照样能用，
+    /// 所以开到 <c>internal</c> 给状态链复用同一份实现（不抄第二遍）。</para>
+    ///
+    /// <paramref name="capExpr"/> 非空时用它当「最多升几张」的上界表达式（状态链勾了「数值 = 本状态的层数」
+    /// 就传 <c>(int)base.Amount</c>）；null 时照旧用固定数值（卡牌链的行为逐字不变）。</summary>
+    internal static void EmitUpgradeGenerated(CodeWriter w, EffectSpec e, bool useX, string? capExpr = null)
     {
         int cap = useX ? 0 : (int)Math.Max(0, e.Amount);
         w.Line("// 升级本场战斗中临时增加的牌（本体 History.CardGenerated 的流水）");
@@ -7425,7 +7435,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Open("foreach (var __gen in MegaCrit.Sts2.Core.Combat.CombatManager.Instance.History.Entries.OfType<MegaCrit.Sts2.Core.Combat.History.Entries.CardGeneratedEntry>().ToList())");
         w.Line("CardModel? __genCard = __gen.Card;");
         w.Line("if (__genCard is null || __genCard.IsUpgraded || !__genCard.IsUpgradable) continue;   // 升过的、不能升的跳过");
-        if (cap > 0)
+        if (capExpr is not null)
+            w.Line($"if (__upgGen >= {capExpr}) break;   // 最多升这么多张");
+        else if (cap > 0)
             w.Line($"if (__upgGen >= {cap}) break;   // 最多升 {cap} 张");
         w.Line("CardCmd.Upgrade(__genCard);");
         w.Line("__upgGen++;");

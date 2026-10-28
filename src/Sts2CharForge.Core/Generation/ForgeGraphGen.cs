@@ -3553,6 +3553,11 @@ public static class ForgeGraphGen
             "InstantKill" => FoeLoop(foes,
                 DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
                 "await CreatureCmd.Kill(__fgFoe);", alwaysBraces: false),
+            // V0.2.310：「升级本场战斗中临时增加的牌」—— 复用卡牌 / 状态那条链的同一份实现
+            //（`CSharpCodeGen.EmitUpgradeGenerated`；它声明 `__upgGen`，所以包一层块作用域，
+            //  同一张图上放两块也不会 CS0128）。
+            "UpgradeGenerated" => ViaCodeWriterScoped(w =>
+                CSharpCodeGen.EmitUpgradeGenerated(w, EffectFromNode(node), useX: false)),
             "ForbidBlock" => $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<NoBlockPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
             // ---------- 对**召唤物**动手 ----------
             // 目标是召唤物，**不能**用 unit.Foes（那默认是「指定敌人」）。哪一只由【对象】模块决定：
@@ -4278,6 +4283,8 @@ public static class ForgeGraphGen
         "ApplyPower", "Stun", "DoublePower", "ClearPowerOne", "ClearPowerDebuffs", "ForbidBlock",
         // V0.2.309：即死（用户报「卡牌「监视」的即死节点图里还没接上」）—— 生成 CreatureCmd.Kill
         "InstantKill",
+        // V0.2.310：「升级本场战斗中临时增加的牌」（状态链 / 卡牌链都有，图上也补上；包一层块作用域避免重复声明 __upgGen）
+        "UpgradeGenerated",
         "TempPower", "EndTurn",
         // ---------- 牌堆 / 选牌类 ----------
         "GenerateCard", "GainPotion", "ExhaustCard", "DiscardCard", "TransformCard", "UpgradeCard",

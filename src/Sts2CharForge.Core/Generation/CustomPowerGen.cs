@@ -2080,6 +2080,15 @@ public static class CustomPowerGen
             // 状态里 base.Owner 是 **Creature** —— 生成端只给卡牌实现了它，校验器就把状态拦下了。
             // 本体自己证明状态里完全能做（EntropyPower / ToolsOfTheTradePower / TyrannyPower 都这么写），
             // 差别只是玩家要从 base.Owner.Player 取（同文件里 TakeFromDraw 那条早就是这么取的）。
+            // V0.2.310（用户构建日志：「自定义状态「操控现实」的『生成卡牌时』第 1 条效果是
+            // 『升级本场战斗中临时增加的牌』，生成端还没给自定义状态那条链实现」）：
+            // 这一段本来就不碰卡牌上下文（只读战斗历史 + CardCmd.Upgrade），复用卡牌链同一份实现。
+            // 勾了「数值 = 本状态的层数」时上界换成 base.Amount（和别的种类同一套语义）。
+            case "UpgradeGenerated":
+                CSharpCodeGen.EmitUpgradeGenerated(w, e, useX: false,
+                    capExpr: e.AmountIsStack ? "(int)base.Amount" : null);
+                break;
+
             case "UpgradeCard":
             {
                 string pile = e.SelectPile switch

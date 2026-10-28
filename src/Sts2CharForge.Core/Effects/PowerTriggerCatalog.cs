@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Generation;
+using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Effects;
@@ -199,6 +199,10 @@ public static class PowerTriggers
         // 这一类只要 choiceContext + 玩家就能做，自定义状态的触发时机两个都有
         //（没有 choiceContext 的钩子由 EmitChoiceContextBootstrap 造一个），所以状态里也能用。
         "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
+        // V0.2.310（用户构建日志拦下来的那条）：「升级本场战斗中临时增加的牌」——
+        // 这段本体 API 只读战斗历史 + `CardCmd.Upgrade`，一个卡牌上下文都不碰，状态触发器里完全可以做。
+        // 以前只是生成端没给状态链实现（现在复用了卡牌链的 EmitUpgradeGenerated）。
+        "UpgradeGenerated",
         // 升级卡牌（用户报的用例：自定义状态「玩家回合开始时 → 升级手牌里的 1 张」，
         // 参照本体储君的「暴政」TyrannyPower）。本体自己就在状态钩子里选牌：
         //   TyrannyPower.AfterPlayerTurnStart → CardSelectCmd.FromHand(choiceContext, player, prefs, null, this)
