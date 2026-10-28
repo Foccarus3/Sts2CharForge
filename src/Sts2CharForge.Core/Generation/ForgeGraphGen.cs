@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -1513,7 +1513,11 @@ public static class ForgeGraphGen
             sb.AppendLine("        Creature __fgSelf = base.Owner;");
             // 「打谁」的默认档：状态没有「打出时选中的目标」，所以默认取第一个可打的敌人
             //（和「自定义状态」页那条老链同一个口径：EmitFoeBlock 的兜底就是它）。
-            sb.AppendLine("        Creature? __fgTarget = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
+            // V0.2.312（用户报「打帝王蟹，打右钳结果给的左钳」）：「突破格挡时」这个钩子自带
+            // `target`（= 被打穿格挡的那个单位），图上没接【对象】时就该打它，而不是第一个敌人。
+            sb.AppendLine(plan.Timing.Id == "BlockBroken"
+                ? "        Creature? __fgTarget = target;   // 突破格挡的那个单位（钩子参数），不是「第一个敌人」"
+                : "        Creature? __fgTarget = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
         }
         else
         {

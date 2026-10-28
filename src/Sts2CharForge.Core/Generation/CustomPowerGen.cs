@@ -1212,7 +1212,9 @@ public static class CustomPowerGen
                 EmitChoiceContextBootstrap(w, "BlockBroken", items);
                 w.Line("if (target.IsPlayer) return;                                   // 只认敌人的格挡被打穿");
                 w.Line("if (!(breaker == base.Owner || breaker?.PetOwner?.Creature == base.Owner)) return;   // 只认自己或自己的召唤物打的（照抄手钻）");
-                EmitItemsWithAmountGate(w, items, p);
+                // V0.2.312（用户报「打帝王蟹，打右钳结果给的左钳」）：钩子里的 `target` 就是**被打穿格挡的那个单位**，
+                // 「指定敌人」那一档必须用它 —— 以前不传 foeFrom，于是退回「可打的第一个敌人」（正好是左钳）。
+                EmitItemsWithAmountGate(w, items, p, foeFrom: "target");
                 w.Close();
                 break;
 

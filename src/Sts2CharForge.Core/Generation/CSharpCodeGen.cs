@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -4576,6 +4576,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// AllAllies = 同一边的玩家单位（排除自己，可选排除召唤物）；
     /// AllUnits = 场上两边所有存活单位（V0.2.132 新增）。
     /// </summary>
+    /// <summary>
+    /// 「当前正在生成的那个钩子自带的一个敌人」（V0.2.312）。
+    ///
+    /// <para>用户报：「突破格挡时的对象有点问题，打帝王蟹、打右钳结果给的左钳，应该是给予有指向的破盾对象」。
+    /// 本体 <c>AfterBlockBroken(choiceContext, target, breaker)</c> 里的 <c>target</c> 就是**被打穿格挡的那个单位**，
+    /// 本体「手钻」HandDrill 也只对它动手；而遗物 / 药水链的「指定敌人」以前一律退回
+    /// <c>HittableEnemies.FirstOrDefault()</c>（= 列表里第一个敌人才，正好是帝王蟹的左钳）→ 破盾落错人。</para>
+    ///
+    /// <para>做法：生成某条触发时机的效果体之前把它设成那个变量名（目前只有「突破格挡时」= <c>target</c>），
+    /// <see cref="EmitPerCreature"/> 的「指定敌人」就会优先用它；生成完还原（可嵌套）。</para>
+    /// </summary>
+    private static string? _hookFoe;
+
+    /// <summary>在 <paramref name="expr"/> 作为「当前钩子自带的目标」的范围内生成（可嵌套，退出时还原）。</summary>
+    private static void WithHookFoe(string? expr, Action emit)
+    {
+        string? old = _hookFoe;
+        _hookFoe = expr;
+        try { emit(); }
+        finally { _hookFoe = old; }
+    }
+
+    /// <summary>
+    /// 遗物链里「指定敌人」那句 <c>Creature? foe = …</c>（V0.2.312）：钩子自带目标（突破格挡的 <c>target</c>）
+    /// 时优先用它，否则照旧取「可打的第一个敌人」。返回 <paramref name="w"/> 方便接着链式写。
+    /// </summary>
+    private static CodeWriter EmitRelicFoeDecl(CodeWriter w)
+    {
+        w.Line(_hookFoe is null
+            ? "Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();"
+            : $"Creature? foe = {_hookFoe};   // 用这个钩子自带的目标（突破格挡的那个单位），不是「第一个敌人」");
+        return w;
+    }
+
     private static void EmitPerCreature(CodeWriter w, EffectSpec e, bool useX,
         string selfExpr, string? cardTargetExpr, string enemiesExpr, Func<string, string> body)
     {
@@ -4617,6 +4651,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Enemy":
+                // 「当前触发时机自带的一个敌人」优先（V0.2.312）：突破格挡时 = 被打穿格挡的**那个**目标。
+                // 本体「手钻」HandDrill 就是只对 `target` 动手；以前这里一律取「可打的第一个敌人」，
+                // 于是打帝王蟹的右钳、破盾却落在左钳上（用户实测报的）。
+                if (_hookFoe is not null)
+                {
+                    w.Open($"if ({_hookFoe} is not null)")
+                     .Line(body(_hookFoe))
+                     .Close();
+                    break;
+                }
                 // 遗物 / 药水：没有「玩家选的目标」，取可打的第一个敌人
                 w.Open("")
                  .Line($"Creature? foe = {enemiesExpr}.FirstOrDefault();")
@@ -11578,8 +11622,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (r.IsAllTriggers) w.Line(RelicTriggerModeMarker(r));
         int relicEffectIndex = 0;
         // 「生成调试日志」（V0.2.142，默认关）：这一段的效果都属于「这只遗物」
+        // V0.2.312：「突破格挡时」的钩子自带 `target`（被打穿格挡的那个单位）—— 「指定敌人」用它，
+        // 不然打帝王蟹的右钳会落到左钳上（用户实测报的）。
         using (DebugLogGen.Begin(p, "遗物", r.Name, cls, "base.Owner.Creature"))
-            EmitRelicEffectBlock(w, p, r.First, r.Effects.ToList(), hasContext, relicVars, roomVar, ref relicEffectIndex);
+            WithHookFoe(trigger.Id == "BlockBroken" ? "target" : null,
+                () => EmitRelicEffectBlock(w, p, r.First, r.Effects.ToList(), hasContext, relicVars, roomVar, ref relicEffectIndex));
         // 效果级「每场战斗只触发一次」：跑过一次就打标记（整只遗物级的已经在上面打过标记了）
         if (!hasCond || r.Condition.Kind != "OncePerCombat")
             if (relicEffectConds.Any(x => x.Condition.Kind == "OncePerCombat"))
@@ -12356,8 +12403,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         // 效果仍被判成「这个触发时机没有 choiceContext，无法实现」→ **整条效果被静默丢掉**
                         //（只留一行注释）。用户实测报的「遗物触发有点问题」里就叠着这一条：
                         // 用「打出一张牌时」+ 多时机时，施加增益/减益那一半效果一次都不会发生。
-                        EmitRelicEffectBlock(w, p, plan.Trigger, allEffects, plan.HasContext || plan.NeedsCtx,
-                            relicVars, plan.RoomVar, ref relicEffectIndex);
+                        // V0.2.312：同上 —— 「突破格挡时」的「指定敌人」用钩子里的 target
+                        WithHookFoe(plan.Trigger.Kind == "BlockBroken" ? "target" : null,
+                            () => EmitRelicEffectBlock(w, p, plan.Trigger, allEffects, plan.HasContext || plan.NeedsCtx,
+                                relicVars, plan.RoomVar, ref relicEffectIndex));
                 }
                 if (andOn)
                 {
@@ -13304,7 +13353,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 else
                 {
                     // 「指定敌人」：遗物没有「玩家选中的目标」→ 取可打的第一个敌人（和其它效果同一套约定）
-                    w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
+                    EmitRelicFoeDecl(w)
                      .Open("if (foe is not null)")
                      .Line(ApplyPowerInstr(e, useX: false, e.PowerId, "foe", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "foe");
@@ -13349,7 +13398,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 }
                 else
                 {
-                    w.Line("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();")
+                    EmitRelicFoeDecl(w)
                      .Open("if (foe is not null)")
                      .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, null);")
                      .Close();

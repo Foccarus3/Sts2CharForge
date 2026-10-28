@@ -18044,6 +18044,52 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("V0.2.310：勾了「数值 = 本状态的层数」→ 最多升几张按当前层数算",
 							upgSrc2.Contains("if (__upgGen >= (int)base.Amount) break;"), "按层数");
 					}
+					// ===== V0.2.312（用户报「突破格挡时的对象有点问题，打帝王蟹、打右钳结果给的左钳」）=====
+					// 本体 AfterBlockBroken(choiceContext, target, breaker) 的 `target` 就是被打穿格挡的那个单位
+					//（本体「手钻」HandDrill 也只对它动手）。三条链的「指定敌人」以前一律退回
+					// HittableEnemies.FirstOrDefault()（列表第一个敌人才 = 左钳）→ 破盾落错人。
+					{
+						var bbProf = ProfileFactory.Sample();
+						var bbPow = new CustomPowerSpec { Name = "自检破盾", ClassName = "UiCheckBlockBrokenPow", Enabled = true };
+						bbPow.Triggers.Add(new PowerTriggerSpec
+						{
+							Kind = "BlockBroken",
+							Effects = { new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 2m, TargetSide = "Enemy" } },
+						});
+						bbProf.CustomPowers.Add(bbPow);
+						string bbSrc = CustomPowerGen.Source(bbProf, bbPow, bbProf.CustomPowers.Count - 1);
+						Check("V0.2.312：状态「突破格挡时」的「指定敌人」用钩子的 target（不是第一个敌人）",
+							bbSrc.Contains("Creature? other = target;") && !bbSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();"),
+							"用 target 了");
+
+						var bbRelic = new RelicSpec { Name = "自检破盾遗物", ClassName = "UiCheckBlockBrokenRelic" };
+						bbRelic.Triggers.Add(new RelicTriggerSpec { Kind = "BlockBroken" });
+						bbRelic.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 2m, TargetSide = "Enemy" });
+						bbProf.Relics.Add(bbRelic);
+						string bbRelicSrc = CSharpCodeGen.RelicSource(bbProf, bbRelic, bbProf.Relics.Count - 1);
+						Check("V0.2.312：遗物「突破格挡时」的「指定敌人」也用 target",
+							bbRelicSrc.Contains("Creature? foe = target;"), "用 target 了");
+						// 对照：**别的**触发时机一个字都不变（老存档红线）—— 仍是「第一个敌人」
+						bbRelic.Triggers[0].Kind = "PlayerTurnStart";
+						string bbRelicSrc2 = CSharpCodeGen.RelicSource(bbProf, bbRelic, bbProf.Relics.Count - 1);
+						Check("V0.2.312：（对照）不是突破格挡的时机照旧取第一个敌人（老存档生成文本不变）",
+							bbRelicSrc2.Contains("Creature? foe = base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault();"), "没变");
+
+						// 锻造图那一路：图上的默认目标 = __fgTarget，突破格挡时也必须是 target
+						var bbGraphPow = new CustomPowerSpec { Name = "自检破盾图", ClassName = "UiCheckBlockBrokenGraph", Enabled = true };
+						var bbTrig = new ForgeNodeSpec { Kind = "Trigger" };
+						bbTrig.SetField("Timing", ForgeTimings.BlockBroken);
+						var bbEff = new ForgeNodeSpec { Kind = "Effect" };
+						bbEff.SetField("Effect", "ApplyPower");
+						bbEff.SetField("PowerId", "WeakPower");
+						bbEff.SetField("Amount", "2");
+						bbGraphPow.ForgeGraph = new ForgeGraphSpec { Nodes = { bbTrig, bbEff } };
+						bbGraphPow.ForgeGraph.Links.Add(new ForgeLinkSpec { From = bbTrig.Id, To = bbEff.Id, FromPort = 0, ToPort = 0 });
+						bbProf.CustomPowers.Add(bbGraphPow);
+						string bbGraphSrc = CustomPowerGen.Source(bbProf, bbGraphPow, bbProf.CustomPowers.Count - 1);
+						Check("V0.2.312：锻造图上「突破格挡时」的默认目标也换成 target",
+							bbGraphSrc.Contains("Creature? __fgTarget = target;"), "图上也对");
+					}
 
 					// 新一批效果（变化 / 复制 / 预见 / 药水 / 卡牌奖励）"
 					string SrcFor(string fx, params (string K, string V)[] fields)
