@@ -40255,6 +40255,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 		}
 
+		// ===== V0.2.317：药水「指定敌人」在多目标下打错人 + 遗物「获得药水」指向自己做���药水 =====
+		{
+			var potProf = ProfileFactory.Sample();
+			var pot = new PotionSpec { Name = "自检目标药水", ClassName = "UiCheckTargetPotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "AnyEnemy" };
+			pot.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "WeakPower", Amount = 2m, TargetSide = "Enemy" });
+			potProf.Potions.Add(pot);
+			string potSrc = CSharpCodeGen.PotionSource(potProf, pot, potProf.Potions.Count - 1);
+			Check("V0.2.317：药水「指定敌人」用的是 OnUse 的 target（不是「第一个敌人」）",
+				potSrc.Contains("Apply<WeakPower>(choiceContext, target,") && !potSrc.Contains("HittableEnemies.FirstOrDefault()"), "用 target 了");
+			// 节点图那条路：图上没接【对象】时也该打 target
+			var potG = new ForgeGraphSpec();
+			var potT = new ForgeNodeSpec { Kind = "Trigger" };
+			potT.SetField("Timing", "PotionUsed");
+			var potE = new ForgeNodeSpec { Kind = "Effect" };
+			potE.SetField("Effect", "Damage");
+			potE.SetField("Amount", "4");
+			potG.Nodes.AddRange(new[] { potT, potE });
+			potG.Links.Add(new ForgeLinkSpec { From = potT.Id, To = potE.Id, FromPort = 0, ToPort = 0 });
+			pot.ForgeGraph = potG;
+			string potGraphSrc = CSharpCodeGen.PotionSource(potProf, pot, potProf.Potions.Count - 1);
+			Check("V0.2.317：药水的锻造图上「__fgTarget = target」（不是第一个敌人）",
+				potGraphSrc.Contains("Creature? __fgTarget = target"), "图上也对");
+			// 遗物「获得药水（指定一瓶）」指向**自己做的**药水：类名不能带本体命名空间
+			var potRelic = new RelicSpec { Name = "自检药水遗物", ClassName = "UiCheckPotionRelic" };
+			potRelic.Triggers.Add(new RelicTriggerSpec { Kind = "PlayerTurnStart" });
+			potRelic.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionId = "UiCheckTargetPotion" });
+			potProf.Relics.Add(potRelic);
+			string potRelicSrc = CSharpCodeGen.RelicSource(potProf, potRelic, potProf.Relics.Count - 1);
+			Check("V0.2.317：遗物「获得药水」指向自己的药水 → TryToProcure<自己的类>（不再套本体命名空间）",
+				potRelicSrc.Contains("TryToProcure<UiCheckTargetPotion>")
+				&& !potRelicSrc.Contains("Potions.UiCheckTargetPotion"), "类名对了");
+			Check("V0.2.317：指向本体药水时仍然写本体命名空间",
+				CSharpCodeGen.PotionTypeName(potProf, "SwiftPotion") == "MegaCrit.Sts2.Core.Models.Potions.SwiftPotion", "本体照旧");
+		}
+
 		// ===== V0.2.315：插件机制（清单扫描 / 效果种类注册 / 模板生成 / 随 mod 打包）=====
 		{
 			string pluginRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_plugins_" + Guid.NewGuid().ToString("N").Substring(0, 8));

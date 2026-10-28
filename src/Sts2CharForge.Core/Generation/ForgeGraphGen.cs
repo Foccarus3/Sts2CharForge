@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -1529,7 +1529,12 @@ public static class ForgeGraphGen
                 // 用 ?. 取目标（那一档下面会插一句 `CardPlay? cardPlay = null;`），
                 // 不然生成出来是 CS8602（对可能为 null 的引用解引用）。
                 ? (hookHasPlay ? "        Creature? __fgTarget = cardPlay.Target;" : "        Creature? __fgTarget = cardPlay?.Target;")
-                : "        Creature? __fgTarget = null;");
+                // V0.2.317（用户报「药水指向指定敌人，在多目标时只给第一个敌人」）：药水的 OnUse 自带
+                // `Creature? target`（= 玩家用这瓶药水时选中的那个敌人）—— 图上没接【对象】时就该打它，
+                // 而不是退回「可打的第一个敌人」。
+                : string.Equals(ctx.Scope, "Potion", StringComparison.Ordinal)
+                    ? "        Creature? __fgTarget = target;   // 药水使用时选中的那个目标（OnUse 的参数）"
+                    : "        Creature? __fgTarget = null;");
         }
         // 没有 choiceContext 的时机（「获得时」「遗物被点击」以及造不出来的那几条）：效果里不引用那个名字，
         // 需要它的那几种效果会传 null!（本体自己在运行时会拦下并报错，比默默不做事清楚）——

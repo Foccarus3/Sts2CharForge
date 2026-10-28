@@ -6469,8 +6469,33 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <paramref name="playerExpr"/> = 玩家那一侧：卡牌 / 遗物 / 药水三条链是 <c>base.Owner</c>，
     /// 自定义状态触发器里是 <c>base.Owner.Player</c>（那里 base.Owner 是 Creature）。
     /// </summary>
+    /// <summary>
+    /// 「获得药水」里那瓶药的**类型名**（V0.2.317）：
+    /// 本体药水在 <c>MegaCrit.Sts2.Core.Models.Potions.&lt;名字&gt;</c>，而**自己做的药水**在模组自己的命名空间里
+    /// （生成工程里直接写类名就行）。以前一律加本体命名空间 → 「获得药水（指定一瓶）」指向自己做的药水时
+    /// 引用的类不存在（编不过；或者运行到那句直接炸 → 用户看到的「卡死」）。
+    /// </summary>
+    public static string PotionTypeName(CharacterProfile? p, string potionId)
+    {
+        string id = (potionId ?? "").Trim();
+        if (p is not null && id.Length > 0)
+        {
+            var nn = Naming.From(p);
+            for (int i = 0; i < p.Potions.Count; i++)
+            {
+                var s = p.Potions[i];
+                if (s is null) continue;
+                string cls = nn.PotionClassName(s, i);
+                if (string.Equals(cls, id, StringComparison.OrdinalIgnoreCase)
+                    || string.Equals((s.ClassName ?? "").Trim(), id, StringComparison.OrdinalIgnoreCase))
+                    return cls;   // 我们自己的药水：同一个命名空间，直接写类名
+            }
+        }
+        return "MegaCrit.Sts2.Core.Models.Potions." + id;
+    }
+
     internal static void EmitGainPotion(CodeWriter w, EffectSpec e, bool useX = false, string playerExpr = "base.Owner",
-        string? countExpr = null)
+        string? countExpr = null, CharacterProfile? p = null)
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
@@ -6496,7 +6521,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 + "（内部就是 ModelDb.Potion<T>().ToMutable()）。");
             w.Line("// 药水栏满时本体返回 success=false —— 这里什么都不发生（不会丢掉 / 替换你已经有的药水）。");
             if (loop) w.Open($"for (int __potionIdx = 0; __potionIdx < {n}; __potionIdx++)");
-            w.Line($"await PotionCmd.TryToProcure<MegaCrit.Sts2.Core.Models.Potions.{potion}>({playerExpr});");
+            w.Line($"await PotionCmd.TryToProcure<{PotionTypeName(p, potion)}>({playerExpr});");
             if (loop) w.Close();
             return;
         }
@@ -9111,7 +9136,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 获得药水（需求 ⑨）：不需要 choiceContext（本体 PotionCmd.TryToProcure 不收 context）
             case "GainPotion":
-                EmitGainPotion(w, e, useX);
+                EmitGainPotion(w, e, useX, p: p);
                 break;
 
             case "ExhaustCard":
@@ -13095,7 +13120,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 获得药水（需求 ⑨）：本体 TryToProcure 不收 choiceContext，所以没有 choiceContext 的
             // 触发时机（遗物「获得时 / 战斗胜利时」）照样能用 —— 这里**不加** hasContext 的判断。
             case "GainPotion":
-                EmitGainPotion(w, e);
+                EmitGainPotion(w, e, p: p);
+
                 break;
 
             case "ExhaustCard":
@@ -14667,7 +14693,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 获得药水（需求 ⑨）：药水的 base.Owner 就是 Player
             case "GainPotion":
-                EmitGainPotion(w, e);
+                EmitGainPotion(w, e, p: p);
+
                 break;
 
             case "ExhaustCard":

@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -1776,7 +1776,7 @@ public static class CustomPowerGen
             // 状态钩子里 base.Owner 是 **Creature**（不是 Player），所以玩家那一侧要取 base.Owner.Player；
             // 「瓶数 = 本状态的层数」那一档直接传 base.Amount（和别的效果同一套口径）。
             case "GainPotion":
-                CSharpCodeGen.EmitGainPotion(w, e, useX: false, playerExpr: "base.Owner.Player",
+                CSharpCodeGen.EmitGainPotion(w, e, useX: false, playerExpr: "base.Owner.Player", p: p,
                     countExpr: e.AmountIsStack ? "base.Amount" : null);
                 break;
 
