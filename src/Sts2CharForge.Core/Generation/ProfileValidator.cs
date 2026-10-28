@@ -262,7 +262,9 @@ public static class ProfileValidator
             for (int k = 0; k < cp.Triggers.Count; k++)
             {
                 var t = cp.Triggers[k];
-                var opt = PowerTriggers.Find(t.Kind);
+                var opt = PowerTriggers.Find(t.Kind)
+                          // V0.2.316：插件触发时机（别名）= 本体已有钩子 + 额外守卫，按宿主时机校验
+                          ?? (Plugins.PluginRegistry.TriggerOf(t.Kind) is { } plugT ? PowerTriggers.Find(plugT.Hook) : null);
                 if (opt is null)
                 {
                     issues.Add(new("错误", $"{who} 的第 {k + 1} 个触发时机不认识：{t.Kind}。"));
@@ -1156,7 +1158,8 @@ public static class ProfileValidator
                 // 只有一条时机时前缀为空串 → 下面所有消息文本和以前完全一致
                 string tPrefix = multiTrigger ? $"第 {ti + 1} 条时机（{RelicTriggerName(trig.Kind)}）的" : "";
                 string tWhere = multiTrigger ? $"第 {ti + 1} 条时机（{RelicTriggerName(trig.Kind)}）" : "";
-                if (!EffectCatalog.RelicTriggers.Any(t => t.Id == trig.Kind))
+            if (!EffectCatalog.RelicTriggers.Any(t => t.Id == trig.Kind)
+                && !Plugins.PluginRegistry.IsPluginTrigger(trig.Kind))
                     issues.Add(new("错误", $"遗物「{r.Name}」触发时机非法：{trig.Kind}"));
                 if (trig.Kind == "Obtained")
                     issues.Add(new("提示", $"遗物「{r.Name}」的{tPrefix}触发时机是「获得时」：拿到这只遗物的那一刻触发一次"
@@ -4388,7 +4391,7 @@ public static class ProfileValidator
     internal static void ValidateCondition(List<ValidationIssue> issues, string owner, ConditionSpec? cond, string ctx)
     {
         if (cond is null || cond.IsNone) return;
-
+        // V0.2.316：插件条件也算认识（FindCondition 已经会去 AllConditions 里找）
         var opt = EffectCatalog.FindCondition(cond.Kind);
         if (opt is null)
         {

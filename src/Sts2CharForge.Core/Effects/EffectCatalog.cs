@@ -1844,6 +1844,12 @@ public static class EffectCatalog
         Intents.FirstOrDefault(x => string.Equals(x.Id, (id ?? "").Trim(), StringComparison.OrdinalIgnoreCase))?.Display
         ?? ((id ?? "").Trim() is { Length: > 0 } s ? s : "攻击");
 
+    /// <summary>
+    /// 界面上的「条件」全表 = 自带 + 插件贡献的（V0.2.316）。没插件时与 <see cref="Conditions"/> 完全相同。
+    /// </summary>
+    public static IReadOnlyList<ConditionOption> AllConditions =>
+        PluginRegistry.ConditionOptions.Count == 0 ? Conditions : Conditions.Concat(PluginRegistry.ConditionOptions).ToList();
+
     public static IReadOnlyList<ConditionOption> Conditions { get; } = new[]
     {
         new ConditionOption("None", "无条件（默认）", true, true, false, false, "不做任何判断，效果一定生效。", true),
@@ -2164,7 +2170,7 @@ public static class EffectCatalog
 
     public static ConditionOption? FindCondition(string? kind) =>
         string.IsNullOrWhiteSpace(kind) ? null
-        : Conditions.FirstOrDefault(c => string.Equals(c.Id, kind, StringComparison.OrdinalIgnoreCase));
+        : AllConditions.FirstOrDefault(c => string.Equals(c.Id, kind, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// 条件的中文说明（界面列表 / 卡面描述 / 生成代码注释都用这一份，别各写一遍）。
@@ -2517,6 +2523,15 @@ public static class EffectCatalog
         kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "ClearPowerOne" or "ClearPowerDebuffs";
     public static IReadOnlyList<string> PotionUsages { get; } = new[] { "CombatOnly", "AnyTime" };
     public static IReadOnlyList<string> PotionTargets { get; } = new[] { "Self", "AnyEnemy", "AllEnemies" };
+
+    /// <summary>遗物触发时机下拉的全表 = 自带 + 插件贡献的（V0.2.316）。没插件时与 <see cref="RelicTriggers"/> 相同。</summary>
+    public static IReadOnlyList<TriggerOption> AllRelicTriggers =>
+        PluginRegistry.Triggers.Count == 0
+            ? RelicTriggers
+            : RelicTriggers.Concat(PluginRegistry.Triggers.Values
+                .Select(t => new TriggerOption(t.Id.Trim(),
+                    string.IsNullOrWhiteSpace(t.Display) ? t.Id.Trim() : t.Display.Trim(),
+                    "插件时机：挂在本体的「" + t.Hook.Trim() + "」钩子上"))).ToList();
 
     public static IReadOnlyList<TriggerOption> RelicTriggers { get; } = new[]
     {

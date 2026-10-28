@@ -642,7 +642,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public IReadOnlyList<EffectKindOption> PowerKinds =>
 		EffectCatalog.EffectKinds.Where(k => PowerTriggers.Supports(k.Kind)).ToList();
 
-	public IReadOnlyList<TriggerOption> RelicTriggers => EffectCatalog.RelicTriggers;
+	public IReadOnlyList<TriggerOption> RelicTriggers => _relicTriggers ??= EffectCatalog.AllRelicTriggers;
+	private IReadOnlyList<TriggerOption>? _relicTriggers;
 
 	public ObservableCollection<PowerEntry> AllCards { get; } = new ObservableCollection<PowerEntry>();
 
@@ -1142,27 +1143,32 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	public bool AncientCatalogMissing => Ancients.Count == 0;
 
 	/// <summary>卡片「条件选项」里能选的条件（每条效果各自一份）。</summary>
-	public IReadOnlyList<ConditionOption> CardEffectConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForCard).ToList();
+	public IReadOnlyList<ConditionOption> CardEffectConditions => _cardEffectConditions ??= EffectCatalog.AllConditions.Where((ConditionOption c) => c.ForCard).ToList();
+	private IReadOnlyList<ConditionOption>? _cardEffectConditions;
 
 	/// <summary>老存档里的整张牌条件（新界面不再用它，只为兼容老配置）。</summary>
-	public IReadOnlyList<ConditionOption> CardConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForCard).ToList();
+	public IReadOnlyList<ConditionOption> CardConditions => _cardConditions ??= EffectCatalog.AllConditions.Where((ConditionOption c) => c.ForCard).ToList();
+	private IReadOnlyList<ConditionOption>? _cardConditions;
 
 
 	/// <summary>遗物页「整只遗物」的触发条件。</summary>
-	public IReadOnlyList<ConditionOption> RelicConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForRelic).ToList();
+	public IReadOnlyList<ConditionOption> RelicConditions => _relicConditions ??= EffectCatalog.AllConditions.Where((ConditionOption c) => c.ForRelic).ToList();
+	private IReadOnlyList<ConditionOption>? _relicConditions;
 
 	/// <summary>V0.2.288（用户要求「条件增加『指定敌人的意图为（）』」）：意图下拉的选项（本体 IntentType 那 15 个）。</summary>
 	public IReadOnlyList<IntentOption> IntentOptions { get; } = EffectCatalog.Intents;
 
 	/// <summary>遗物 / 自定义状态的「每条效果自己的条件」（不能用「这张牌」类条件）。</summary>
-	public IReadOnlyList<ConditionOption> PlainEffectConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForRelic && c.ForPower).ToList();
+	public IReadOnlyList<ConditionOption> PlainEffectConditions => _plainEffectConditions ??= EffectCatalog.AllConditions.Where((ConditionOption c) => c.ForRelic && c.ForPower).ToList();
+	private IReadOnlyList<ConditionOption>? _plainEffectConditions;
 
 	/// <summary>
 	/// 自定义状态（能力）触发器里能选的条件 = <see cref="ConditionOption.ForPower"/> 的那些。"
 	/// 每 <see cref="PlainEffectConditions"/> 多出「某状态层数刚好达到 N 层」这类**只有状态钩子**才成立的条目
 	/// （它要用 AfterPowerAmountChanged 给的 power / amount），所以状态那边单独一份候选。"
 	/// </summary>
-	public IReadOnlyList<ConditionOption> PowerEffectConditions { get; } = EffectCatalog.Conditions.Where((ConditionOption c) => c.ForPower).ToList();
+	public IReadOnlyList<ConditionOption> PowerEffectConditions => _powerEffectConditions ??= EffectCatalog.AllConditions.Where((ConditionOption c) => c.ForPower).ToList();
+	private IReadOnlyList<ConditionOption>? _powerEffectConditions;
 
 	/// <summary>条件里的「指向对象」：自己 / 任意一个敌人 / 全部敌人。</summary>
 	public IReadOnlyList<ConditionTargetOption> ConditionTargets { get; } = EffectCatalog.ConditionTargets;
@@ -3032,7 +3038,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>（老属性）只要 id 的那份，留着给别的代码用」 /summary>
 	public IReadOnlyList<string> CardFilters => PowerTriggers.CardFilters;
 
-	public IReadOnlyList<PowerTriggerOption> TriggerOptions => PowerTriggers.All;
+	public IReadOnlyList<PowerTriggerOption> TriggerOptions => _triggerOptions ??= PowerTriggers.AllWithPlugins;
+	private IReadOnlyList<PowerTriggerOption>? _triggerOptions;
 	public IReadOnlyList<ConditionTargetOption> WatchTargets => PowerTriggers.WatchTargets;
 
 	public string TriggerHint
@@ -40312,6 +40319,83 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("V0.2.315：插件自带 .cs 会拷进生成工程（cs/Plugins/<id>/，随 mod 一起编译打包）",
 					PluginGen.CopyInto(projRoot) == 1
 					&& File.Exists(Path.Combine(projRoot, "cs", "Plugins", "uicheck", "UiCheckPluginHelper.cs")), "拷进去了");
+				// ===== V0.2.316：触发时机 / 条件 / 锻造模块 接进生成端 =====
+				// 触发时机 = 本体已有钩子的别名 + 一句额外守卫；条件 = 一段布尔表达式；锻造模块 = 一段模板。
+				string good2 = Path.Combine(pluginRoot, "plugins", "uiCheck2");
+				Directory.CreateDirectory(good2);
+				File.WriteAllText(Path.Combine(good2, "plugin.json"), """
+				{
+				  "id": "uicheck2",
+				  "name": "自检插件2",
+				  "apiVersion": "1",
+				  "triggers": [
+				    { "id": "UiCheckPlugTrg", "display": "自检插件时机", "hook": "EnemyDamaged",
+				      "guard": "if (target is null || target.IsPlayer) return;   // 自检守卫" }
+				  ],
+				  "conditions": [
+				    { "id": "UiCheckPlugCond", "display": "自检插件条件", "expr": "{self}.Block > 0" }
+				  ],
+				  "forgeModules": [
+				    { "kind": "UiCheckPlugForge", "display": "自检插件模块", "emit": "await CreatureCmd.Heal({self}, {amount});" }
+				  ]
+				}
+				""", new UTF8Encoding(false));
+				int loaded2 = PluginRegistry.Load(pluginRoot);
+				Check("V0.2.316：插件触发时机 / 条件 / 锻造模块都能登记（两个插件都可用）",
+					loaded2 == 2 && PluginRegistry.IsPluginTrigger("UiCheckPlugTrg")
+					&& PluginRegistry.IsPluginCondition("UiCheckPlugCond")
+					&& EffectCatalog.AllEffectKinds.Any(kk => kk.Kind == "UiCheckPlugForge"), $"loaded={loaded2}");
+				Check("V0.2.316：插件触发时机进了状态 / 遗物的时机下拉",
+					PowerTriggers.AllWithPlugins.Any(pp => pp.Kind == "UiCheckPlugTrg")
+					&& EffectCatalog.AllRelicTriggers.Any(pp => pp.Id == "UiCheckPlugTrg"), "进下拉了");
+				Check("V0.2.316：插件条件进了条件下拉（AllConditions）",
+					EffectCatalog.AllConditions.Any(cc => cc.Id == "UiCheckPlugCond"), "进下拉了");
+
+				var pgProf = ProfileFactory.Sample();
+				var pgPow = new CustomPowerSpec { Name = "自检插件时机状态", ClassName = "UiCheckPlugTrgPow", Enabled = true };
+				pgPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "UiCheckPlugTrg",
+					Effects = { new EffectSpec { Kind = "Block", Amount = 2m, TargetSide = "Self" } },
+				});
+				pgProf.CustomPowers.Add(pgPow);
+				string pgSrc = CustomPowerGen.Source(pgProf, pgPow, pgProf.CustomPowers.Count - 1);
+				Check("V0.2.316：状态用插件时机 → 生成宿主钩子（AfterDamageReceived）+ 插件守卫",
+					pgSrc.Contains("AfterDamageReceived(") && pgSrc.Contains("// 自检守卫"), "生成对了");
+				var pgRelic = new RelicSpec { Name = "自检插件时机遗物", ClassName = "UiCheckPlugTrgRelic" };
+				pgRelic.Triggers.Add(new RelicTriggerSpec { Kind = "UiCheckPlugTrg" });
+				pgRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+				pgProf.Relics.Add(pgRelic);
+				string pgRelicSrc = CSharpCodeGen.RelicSource(pgProf, pgRelic, pgProf.Relics.Count - 1);
+				Check("V0.2.316：遗物用插件时机 → 也是宿主钩子 + 插件守卫",
+					pgRelicSrc.Contains("AfterDamageReceived(") && pgRelicSrc.Contains("// 自检守卫"), "生成对了");
+
+				var pcCard = new CardSpec { Name = "自检插件条件卡", ClassName = "UiCheckPlugCondCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				pcCard.Effects.Add(new EffectSpec
+				{
+					Kind = "Block", Amount = 3m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "UiCheckPlugCond" },
+				});
+				pgProf.Cards.Add(pcCard);
+				string pcSrc = CSharpCodeGen.CardSource(pgProf, pcCard, pgProf.Cards.Count - 1);
+				Check("V0.2.316：卡牌用插件条件 → 守卫里是插件表达式（{self} 换成 base.Owner.Creature）",
+					pcSrc.Contains("(base.Owner.Creature.Block > 0)"), "条件生成对了");
+
+				var pfProf = ProfileFactory.Sample();
+				var pfCard = new CardSpec { Name = "自检插件图卡", ClassName = "UiCheckPlugForgeCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+				var pfG = new ForgeGraphSpec();
+				var pfT = new ForgeNodeSpec { Kind = "Trigger" };
+				pfT.SetField("Timing", ForgeTimings.CardPlayed);
+				var pfE = new ForgeNodeSpec { Kind = "Effect" };
+				pfE.SetField("Effect", "UiCheckPlugForge");
+				pfE.SetField("Amount", "3");
+				pfG.Nodes.AddRange(new[] { pfT, pfE });
+				pfG.Links.Add(new ForgeLinkSpec { From = pfT.Id, To = pfE.Id, FromPort = 0, ToPort = 0 });
+				pfCard.ForgeGraph = pfG;
+				pfProf.Cards.Add(pfCard);
+				string pfSrc = CSharpCodeGen.CardSource(pfProf, pfCard, pfProf.Cards.Count - 1);
+				Check("V0.2.316：锻造图里的插件模块也能生成（图上【效果】节点选它即可）",
+					pfSrc.Contains("CreatureCmd.Heal("), "图上也生成了");
 			}
 			finally
 			{

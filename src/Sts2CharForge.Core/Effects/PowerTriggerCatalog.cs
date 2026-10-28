@@ -1,5 +1,7 @@
-using Sts2CharForge.Core.Generation;
+﻿using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
+
+using Sts2CharForge.Core.Plugins;
 
 namespace Sts2CharForge.Core.Effects;
 
@@ -25,6 +27,19 @@ public static class PowerTriggers
     /// 全部对着本体源码确认过：这些都是 AbstractModel 上的 virtual 钩子，由 Hook.cs 统一派发给
     /// 「ShouldReceiveCombatHooks == true」的模型（PowerModel 就是 true），所以自定义状态能吃它们。
     /// </summary>
+    /// <summary>
+    /// 状态触发器下拉的全表 = 自带 + 插件贡献的（V0.2.316）。没插件时与 <see cref="All"/> 完全相同。
+    /// 插件那几条是「本体已有钩子 + 额外守卫」的别名（生成端在 <c>CustomPowerGen</c> 里换成宿主钩子）。
+    /// </summary>
+    public static IReadOnlyList<PowerTriggerOption> AllWithPlugins =>
+        Plugins.PluginRegistry.Triggers.Count == 0
+            ? All
+            : All.Concat(Plugins.PluginRegistry.Triggers.Values.Select(t => new PowerTriggerOption(
+                t.Id.Trim(),
+                string.IsNullOrWhiteSpace(t.Display) ? t.Id.Trim() : t.Display.Trim(),
+                "插件时机：挂在本体的「" + (Find(t.Hook)?.Display ?? t.Hook) + "」钩子上"
+                + (string.IsNullOrWhiteSpace(t.Guard) ? "" : "（另有额外守卫）")))).ToList();
+
     public static IReadOnlyList<PowerTriggerOption> All { get; } = new[]
     {
         new PowerTriggerOption("PlayerTurnStart", "玩家回合开始时",   "AfterPlayerTurnStart：本体恶魔形态就是挂这个（老存档里的 TurnStart 也认）。钩子跑在**这回合的牌已经抽完**之后"),

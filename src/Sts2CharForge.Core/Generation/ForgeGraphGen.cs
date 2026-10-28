@@ -4797,7 +4797,8 @@ public static class ForgeGraphGen
 
             // ① 这个种类在节点图里**根本没接**（选了等于白选，生成出来只有一行注释）——
             //    这是最难看懂的一类：生成、编译、进游戏全都不报错，就是没反应。
-            if (!SupportedEffectKinds.Contains(kind))
+            // V0.2.316：插件贡献的效果种类（含插件锻造模块）在图上**已经接了**（走 PluginGen 模板）→ 放行
+            if (!SupportedEffectKinds.Contains(kind) && !Plugins.PluginRegistry.IsPluginEffect(kind))
             {
                 list.Add(("错误", $"【效果】选的「{display}」**节点图里还没接上**（选了不会做任何事，只在生成的代码里留一行注释）。"
                     + "请把这一块换成节点图支持的种类，或者把这一项从锻造页移出去（不勾「锻造」之后）"

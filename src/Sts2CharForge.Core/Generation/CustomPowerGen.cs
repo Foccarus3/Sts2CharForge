@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -360,9 +360,18 @@ public static class CustomPowerGen
         return true;
     }
 
+    /// <summary>插件触发时机要落的额外守卫（V0.2.316）：触发时机生成处设，效果体生成处消费一次。</summary>
+    [ThreadStatic] private static string? _pendingPluginGuard;
+
     private static void EmitItemsWithAmountGate(CodeWriter w, IEnumerable<PowerTriggerSpec> items,
         CharacterProfile p, string? foeFrom = null, string? bodyText = null)
     {
+        // 插件触发时机（别名）：先把清单里那句额外守卫落下来（只落一次，落完就清）
+        if (_pendingPluginGuard is { } plugGuard)
+        {
+            w.Line(plugGuard + "   // 插件触发时机的额外守卫");
+            _pendingPluginGuard = null;
+        }
         // 先落到 List：下面要按「这个钩子里合并了几条触发时机」决定要不要给每条包裸块（≥2 条才包）。
         var list = items as List<PowerTriggerSpec> ?? items.ToList();
         bool ownScope = list.Count > 1;
@@ -938,6 +947,15 @@ public static class CustomPowerGen
         //（闸是在 DamageTaken / HpLost 那两个方法里用的，而「要不要开闸」由整只状态决定）。
         bool hpLossGuard = NeedsHpLossGuard(items);
         string when = PowerTriggers.Find(kind)?.Display ?? kind;
+        // V0.2.316：插件贡献的触发时机 = 「本体已有的某个钩子换名字 + 一句额外守卫」的别名。
+        // 这样插件不用改编辑器的钩子生成器（也就不会因编辑器升级失效）；
+        // 守卫由下面第一个效果体（EmitItemsWithAmountGate）落一行。
+        _pendingPluginGuard = null;
+        if (Plugins.PluginRegistry.TriggerOf(kind) is { } plugTr)
+        {
+            kind = plugTr.Hook.Trim();
+            _pendingPluginGuard = string.IsNullOrWhiteSpace(plugTr.Guard) ? null : plugTr.Guard.Trim();
+        }
         w.Line();
         w.Line($"// ===== 触发时机：{when} =====");
 

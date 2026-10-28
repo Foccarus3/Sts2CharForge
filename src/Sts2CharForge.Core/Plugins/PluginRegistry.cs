@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -149,6 +149,11 @@ public static class PluginRegistry
     private static readonly List<PluginSpec> _plugins = new();
     private static readonly List<EffectKindOption> _effectKinds = new();
     private static readonly Dictionary<string, PluginEffectSpec> _effectsById = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>插件贡献的条件（V0.2.316）：id → 规格 + 下拉项。</summary>
+    private static readonly List<ConditionOption> _conditionOptions = new();
+    private static readonly Dictionary<string, PluginConditionSpec> _conditionsById = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>插件贡献的触发时机（V0.2.316）：id → 规格（含「挂哪个本体钩子」+ 额外守卫）。</summary>
+    private static readonly Dictionary<string, PluginTriggerSpec> _triggersById = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>加载到的插件（按目录名排序，结果稳定）。</summary>
     public static IReadOnlyList<PluginSpec> Plugins => _plugins;
@@ -181,6 +186,9 @@ public static class PluginRegistry
         _plugins.Clear();
         _effectKinds.Clear();
         _effectsById.Clear();
+        _conditionOptions.Clear();
+        _conditionsById.Clear();
+        _triggersById.Clear();
         LastScan = DateTime.Now.ToString("HH:mm:ss");
 
         string dir = PluginsDirOf(appDir);
@@ -270,21 +278,65 @@ public static class PluginRegistry
         // 这里只做重名检查，避免插件之间互相踩。
         foreach (var tr in spec.Triggers.Where(x => x is not null))
         {
-            if (string.IsNullOrWhiteSpace(tr.Id)) spec.Problems.Add("有一条触发时机没填 id。");
-            else if (!IsValidKind(tr.Id)) spec.Problems.Add($"触发时机 id「{tr.Id}」不合法。");
-            else if (string.IsNullOrWhiteSpace(tr.Hook)) spec.Problems.Add($"触发时机「{tr.Id}」没填 hook（要挂在本体哪个钩子上）。");
+            if (string.IsNullOrWhiteSpace(tr.Id)) { spec.Problems.Add("有一条触发时机没填 id。"); continue; }
+            if (!IsValidKind(tr.Id)) { spec.Problems.Add($"触发时机 id「{tr.Id}」不合法。"); continue; }
+            string hook = (tr.Hook ?? "").Trim();
+            if (hook.Length == 0) { spec.Problems.Add($"触发时机「{tr.Id}」没填 hook（要挂在本体哪个钩子上）。"); continue; }
+            // V0.2.316：触发时机 = 「给本体已有的某个钩子换个名字 + 加一句额外守卫」——
+            // 这样插件不必改编辑器的钩子生成器，也不需要新的 override 方法（也就不会因编辑器升级失效）。
+            if (EffectCatalog.RelicTriggers.All(x => !string.Equals(x.Id, hook, StringComparison.OrdinalIgnoreCase))
+                && PowerTriggers.All.All(x => !string.Equals(x.Kind, hook, StringComparison.OrdinalIgnoreCase)))
+            {
+                spec.Problems.Add($"触发时机「{tr.Id}」的 hook「{hook}」不是编辑器已知的钩子 —— 跳过这一条。");
+                continue;
+            }
+            if (_triggersById.ContainsKey(tr.Id.Trim()))
+            {
+                spec.Problems.Add($"触发时机 id「{tr.Id}」和别的插件重名 —— 跳过这一条。");
+                continue;
+            }
+            _triggersById[tr.Id.Trim()] = tr;
         }
         foreach (var c in spec.Conditions.Where(x => x is not null))
         {
-            if (string.IsNullOrWhiteSpace(c.Id)) spec.Problems.Add("有一条条件没填 id。");
-            else if (!IsValidKind(c.Id)) spec.Problems.Add($"条件 id「{c.Id}」不合法。");
-            else if (string.IsNullOrWhiteSpace(c.Expr)) spec.Problems.Add($"条件「{c.Id}」没写 expr 表达式。");
+            if (string.IsNullOrWhiteSpace(c.Id)) { spec.Problems.Add("有一条条件没填 id。"); continue; }
+            if (!IsValidKind(c.Id)) { spec.Problems.Add($"条件 id「{c.Id}」不合法。"); continue; }
+            if (string.IsNullOrWhiteSpace(c.Expr)) { spec.Problems.Add($"条件「{c.Id}」没写 expr 表达式。"); continue; }
+            if (EffectCatalog.Conditions.Any(x => string.Equals(x.Id, c.Id, StringComparison.OrdinalIgnoreCase))
+                || _conditionsById.ContainsKey(c.Id))
+            {
+                spec.Problems.Add($"条件 id「{c.Id}」和已有的条件重名 —— 跳过这一条。");
+                continue;
+            }
+            // V0.2.316：条件现在**真的接进生成端了**（四链通用；插件条件对卡牌/遗物/状态都开放）。
+            _conditionsById[c.Id.Trim()] = c;
+            _conditionOptions.Add(new ConditionOption(
+                Id: c.Id.Trim(),
+                Display: string.IsNullOrWhiteSpace(c.Display) ? c.Id.Trim() : c.Display.Trim(),
+                ForCard: true, ForRelic: true, NeedsAmount: false, NeedsPower: false,
+                Hint: string.IsNullOrWhiteSpace(c.Note) ? "插件条件：" + c.Expr.Trim() : c.Note.Trim(),
+                ForPower: true));
         }
         foreach (var m in spec.ForgeModules.Where(x => x is not null))
         {
-            if (string.IsNullOrWhiteSpace(m.Kind)) spec.Problems.Add("有一个锻造模块没填 kind。");
-            else if (!IsValidKind(m.Kind)) spec.Problems.Add($"锻造模块 kind「{m.Kind}」不合法。");
-            else if (string.IsNullOrWhiteSpace(m.Emit)) spec.Problems.Add($"锻造模块「{m.Kind}」没写 emit 模板。");
+            if (string.IsNullOrWhiteSpace(m.Kind)) { spec.Problems.Add("有一个锻造模块没填 kind。"); continue; }
+            if (!IsValidKind(m.Kind)) { spec.Problems.Add($"锻造模块 kind「{m.Kind}」不合法。"); continue; }
+            if (string.IsNullOrWhiteSpace(m.Emit)) { spec.Problems.Add($"锻造模块「{m.Kind}」没写 emit 模板。"); continue; }
+            // V0.2.316：锻造模块 = 「图上的【效果】节点 + 一段模板」，所以直接当效果种类登记 ——
+            // 于是它会出现在卡牌页的效果下拉、也会出现在锻造图【效果】节点的候选里（图上就能用）。
+            if (EffectCatalog.EffectKinds.Any(k => string.Equals(k.Kind, m.Kind, StringComparison.OrdinalIgnoreCase))
+                || _effectsById.ContainsKey(m.Kind))
+            {
+                spec.Problems.Add($"锻造模块 kind「{m.Kind}」和已有的种类重名 —— 跳过这一条。");
+                continue;
+            }
+            var asEffect = new PluginEffectSpec
+            {
+                Kind = m.Kind, Display = string.IsNullOrWhiteSpace(m.Display) ? m.Kind : m.Display,
+                Unit = "点", Min = 0, Max = 99, Emit = m.Emit, Note = m.Note,
+            };
+            _effectsById[m.Kind.Trim()] = asEffect;
+            _effectKinds.Add(new EffectKindOption(asEffect.Kind, asEffect.Display, asEffect.Unit, 0, 99, false));
         }
 
         // 自带文件必须在插件目录里、且真的存在（越界路径直接拒绝，避免手滑删到别处）
@@ -303,6 +355,28 @@ public static class PluginRegistry
         if (kind.Length == 0 || !char.IsLetter(kind[0])) return false;
         return kind.All(c => char.IsLetterOrDigit(c) || c == '_');
     }
+
+    /// <summary>插件贡献的条件（下拉项，合并进 <see cref="EffectCatalog.AllConditions"/>）。</summary>
+    public static IReadOnlyList<ConditionOption> ConditionOptions => _conditionOptions;
+
+    /// <summary>这个条件 id 是不是插件给的。</summary>
+    public static bool IsPluginCondition(string? id) =>
+        id is not null && _conditionsById.ContainsKey(id.Trim());
+
+    /// <summary>插件条件的规格（拿到 expr 模板用）；不是插件条件返回 null。</summary>
+    public static PluginConditionSpec? ConditionOf(string? id) =>
+        id is not null && _conditionsById.TryGetValue(id.Trim(), out var c) ? c : null;
+
+    /// <summary>这个触发时机 id 是不是插件给的。</summary>
+    public static bool IsPluginTrigger(string? id) =>
+        id is not null && _triggersById.ContainsKey(id.Trim());
+
+    /// <summary>插件贡献的触发时机规格；不是插件时机返回 null。</summary>
+    public static PluginTriggerSpec? TriggerOf(string? id) =>
+        id is not null && _triggersById.TryGetValue(id.Trim(), out var t) ? t : null;
+
+    /// <summary>插件时机的清单（下拉合并用）。</summary>
+    public static IReadOnlyDictionary<string, PluginTriggerSpec> Triggers => _triggersById;
 
     /// <summary>插件贡献的额外页（id / 标题 / 正文 + 所属插件名）。</summary>
     public static IEnumerable<(PluginSpec Plugin, PluginPageSpec Page)> AllPages =>

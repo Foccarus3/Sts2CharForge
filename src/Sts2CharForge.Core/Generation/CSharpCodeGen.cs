@@ -1062,6 +1062,23 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         // 「自己」= 哪个生物；战斗状态；玩家（额外资源量在玩家身上）
         string ownerCreature = ctx == CondCtx.Power ? "base.Owner" : "base.Owner.Creature";
+        // V0.2.316：插件贡献的条件 —— 直接渲染清单里的表达式（占位符按当前链换成对应对象）
+        if (Plugins.PluginRegistry.ConditionOf(c.Kind) is { } plugCond)
+        {
+            string plugPlayer = ctx == CondCtx.Power ? "base.Owner.Player" : "base.Owner";
+            string plugFoe = ctx == CondCtx.Card
+                ? "cardPlay.Target"
+                : (ctx == CondCtx.Power
+                    ? "base.Owner.CombatState?.HittableEnemies.FirstOrDefault()"
+                    : "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()");
+            return "(" + (plugCond.Expr ?? "true")
+                .Replace("{self}", ownerCreature, StringComparison.OrdinalIgnoreCase)
+                .Replace("{player}", plugPlayer, StringComparison.OrdinalIgnoreCase)
+                .Replace("{foe}", plugFoe, StringComparison.OrdinalIgnoreCase)
+                .Replace("{amount}", Lit.Dec(c.Amount), StringComparison.OrdinalIgnoreCase)
+                .Replace("{power}", Lit.Identifier(c.PowerId ?? "VulnerablePower", "VulnerablePower"), StringComparison.OrdinalIgnoreCase)
+                + ")";
+        }
         string st = ctx switch
         {
             CondCtx.Card => "base.CombatState",
@@ -11483,6 +11500,27 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static IEnumerable<EffectSpec> RelicEffects(RelicSpec r) =>
         r.Effects is null ? Enumerable.Empty<EffectSpec>() : r.Effects.Where(e => e is not null);
 
+    /// <summary>
+    /// 把「遗物触发时机 id」解析成编辑器自带的 <see cref="TriggerOption"/>（V0.2.316）：
+    /// 插件时机 = 「本体已有钩子 + 额外守卫」的别名 —— 这里换成宿主 id 并把守卫交出去。
+    /// 不是插件时**原样**按老逻辑解析（老存档生成文本逐字不变）。
+    /// </summary>
+    private static TriggerOption ResolveRelicTrigger(string? id, out string? pluginGuard)
+    {
+        pluginGuard = null;
+        if (Plugins.PluginRegistry.TriggerOf(id) is { } plug)
+        {
+            pluginGuard = string.IsNullOrWhiteSpace(plug.Guard) ? null : plug.Guard.Trim();
+            string hook = plug.Hook.Trim();
+            return EffectCatalog.RelicTriggers.FirstOrDefault(t => string.Equals(t.Id, hook, StringComparison.OrdinalIgnoreCase))
+                   ?? EffectCatalog.RelicTriggers[0];
+        }
+        return EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == id) ?? EffectCatalog.RelicTriggers[0];
+    }
+
+    /// <summary>插件触发时机要落的额外守卫（V0.2.316）：遗物链由触发时机解析处设、效果块处消费一次。</summary>
+    [ThreadStatic] private static string? _pendingPluginGuard;
+
     public static string RelicSource(CharacterProfile p, RelicSpec r, int index)
     {
         PercentPowers.Current = p;   // V0.2.289：深层发射器拼「百分比状态」类名用
@@ -11498,7 +11536,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         var n = Naming.From(p);
         string cls = n.RelicClassName(r, index);
-        var trigger = EffectCatalog.RelicTriggers.FirstOrDefault(t => t.Id == r.Trigger) ?? EffectCatalog.RelicTriggers[0];
+        // V0.2.316：插件触发时机 = 本体已有钩子的别名（+ 一句额外守卫）；不是插件时原样返回，逐字不变
+        var trigger = ResolveRelicTrigger(r.Trigger, out string? plugGuard);
+        _pendingPluginGuard = plugGuard;
         // 「获得时」的钩子没有 choiceContext，需要的时候生成端自己造一个（见 CanBootstrapContext）；
         // 「每消耗一个能量 / 每消耗一个额外资源量 / 生成卡牌时」同样没有，但那三条在战斗里 ——
         // 按本体 Hook.cs 的做法造 HookPlayerChoiceContext（见 BootstrapInCombat）。
@@ -12161,7 +12201,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         var n = Naming.From(p);
         string cls = n.RelicClassName(r, index);
-        var triggers = r.Triggers.Where(t => t is not null).ToList();
+        // V0.2.316：插件触发时机（别名）在这里换成宿主钩子的**副本**，额外守卫单独记下来
+        // （不改进档里的原对象 —— 那份 id 是插件的身份，改了就存不回去了）。
+        var plugGuards = new Dictionary<RelicTriggerSpec, string?>();
+        var triggers = new List<RelicTriggerSpec>();
+        foreach (var rawTrig in r.Triggers.Where(t => t is not null))
+        {
+            if (Plugins.PluginRegistry.TriggerOf(rawTrig.Kind) is { } plugTr)
+            {
+                var copy = new RelicTriggerSpec
+                {
+                    Kind = plugTr.Hook.Trim(), PowerId = rawTrig.PowerId, PowerDirection = rawTrig.PowerDirection,
+                    Amount = rawTrig.Amount, Scope = rawTrig.Scope, CardFilter = rawTrig.CardFilter,
+                    RequireAllTriggers = rawTrig.RequireAllTriggers, OwnerRelic = rawTrig.OwnerRelic,
+                };
+                foreach (var fx in rawTrig.Effects) copy.Effects.Add(fx);
+                plugGuards[copy] = string.IsNullOrWhiteSpace(plugTr.Guard) ? null : plugTr.Guard.Trim();
+                triggers.Add(copy);
+            }
+            else triggers.Add(rawTrig);
+        }
         // V0.2.126：效果是**整只遗物唯一那一份**（不再按时机各配一份）
         var allEffects = RelicEffects(r).ToList();
 
@@ -12417,6 +12476,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         //（只留一行注释）。用户实测报的「遗物触发有点问题」里就叠着这一条：
                         // 用「打出一张牌时」+ 多时机时，施加增益/减益那一半效果一次都不会发生。
                         // V0.2.312：同上 —— 「突破格挡时」的「指定敌人」用钩子里的 target
+                        // V0.2.316：挂的是插件触发时机（别名）时，先把额外守卫交出去
+                        _pendingPluginGuard = plugGuards.TryGetValue(plan.Trigger, out string? plugGuardMulti) ? plugGuardMulti : null;
+                        // （上面那句做的事：这条时机要是插件时机，就把它的额外守卫交给效果块去落一行）
                         WithHookFoe(plan.Trigger.Kind == "BlockBroken" ? "target" : null,
                             () => EmitRelicEffectBlock(w, p, plan.Trigger, allEffects, plan.HasContext || plan.NeedsCtx,
                                 relicVars, plan.RoomVar, ref relicEffectIndex));
@@ -12475,6 +12537,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         List<EffectSpec> effects, bool hasContext, Dictionary<EffectSpec, string> relicVars, string? roomVar,
         ref int relicEffectIndex)
     {
+        // V0.2.316：插件触发时机的额外守卫（遗物链）—— 先落一行再跑效果
+        if (_pendingPluginGuard is { } plugGuardLine)
+        {
+            w.Line(plugGuardLine + "   // 插件触发时机的额外守卫");
+            _pendingPluginGuard = null;
+        }
         if (effects.Count > 0) w.Line();
         // 「每消耗一个能量 / 每消耗一个额外资源量」：本体那个 amount 是**这一张牌一共花的**点数，
         // 所以整段效果按点数各跑一次（本体 OrbitPower 也是按点数累加的）。掷骰留在循环外面 ——

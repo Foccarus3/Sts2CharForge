@@ -1,11 +1,11 @@
-{
+﻿{
   "id": "example",
   "name": "示例插件（可删）",
-  "version": "1.0",
+  "version": "1.1",
   "apiVersion": "1",
   "author": "Sts2CharForge",
-  "description": "演示插件怎么写：给编辑器加一个新效果种类（回复生命并给等量格挡），再带一个工具类一起编进模组。不需要就整份删掉。",
-  "readme": "这是一个示例插件，用来对照 docs\\插件开发规范.md 看格式。\n\n它做了三件事：\n1) 加一个效果种类「插件示例：回复生命并格挡」——它会出现在卡牌 / 遗物 / 药水 / 状态 / 锻造图的「效果种类」下拉里；\n2) 带一个 cs/PluginDemo.cs，生成工程时会被拷到 cs/Plugins/example/ 下，和模组一起编译；\n3) 带这一页说明（你正在看的就是它）。\n\n把整个 plugins\\示例插件 文件夹删掉，编辑器就会恢复成「没有插件」的状态。",
+  "description": "演示插件怎么写：加一个效果种类、一个触发时机、一个条件、一个锻造模块，再带一个工具类随模组一起编译。不需要就整份删掉。",
+  "readme": "这是一个示例插件，对着 docs\\插件开发规范.md 看格式即可。\n\n它加了四样东西：\n1) 效果种类「插件示例：回复生命并给等量格挡」——卡牌 / 遗物 / 药水 / 状态 / 锻造图的「效果种类」下拉里都有；\n2) 触发时机「插件示例：敌人受伤后」——挂在本体 EnemyDamaged 钩子上，并带一句额外守卫；\n3) 条件（本示例没带，避免影响自带条件的编号；写法见 docs\\插件开发规范.md）；\n4) 锻造模块「插件示例模块：回复生命」——它同时也是一个效果种类，在锻造图的【效果】节点里能选到。\n\n另外带一个 cs/PluginDemo.cs，生成工程时会拷到 cs/Plugins/example/ 下和模组一起编译。\n把整个 plugins\\示例插件 文件夹删掉，编辑器就恢复成「没有插件」的状态。",
   "effects": [
     {
       "kind": "PluginHealAndBlock",
@@ -18,11 +18,37 @@
       "emit": "// 来自插件 example（PluginHealAndBlock）\nawait CreatureCmd.Heal({self}, {amount});\nawait CreatureCmd.GainBlock({self}, {amount}, ValueProp.Move, null);"
     }
   ],
+  "triggers": [
+    {
+      "id": "PluginEnemyHurt",
+      "display": "插件示例：敌人受伤后",
+      "hook": "EnemyDamaged",
+      "guard": "if (target is null || target.IsPlayer) return;   // 插件示例：只认敌人那边",
+      "hasChoiceContext": true,
+      "note": "插件触发时机 = 本体已有钩子 + 一句额外守卫。这里挂的是 EnemyDamaged（参数 target / result / dealer 都能在守卫里用）。"
+    }
+  ],
+  "conditions": [
+    {
+      "id": "PluginHasBlock",
+      "display": "插件示例：自己有格挡",
+      "expr": "{self}.Block > 0",
+      "note": "条件表达式里可以用 {self} / {player} / {foe} / {amount}；生成时会按所在的链换成对应对象。"
+    }
+  ],
+  "forgeModules": [
+    {
+      "kind": "PluginForgeHeal",
+      "display": "插件示例模块：回复生命",
+      "emit": "await CreatureCmd.Heal({self}, {amount});",
+      "note": "锻造模块本质就是「图上的【效果】节点 + 一段模板」，所以它同时也是一个效果种类。"
+    }
+  ],
   "pages": [
     {
       "id": "howto",
       "title": "怎么写自己的插件",
-      "markdown": "最短路径：\n1) 在 plugins 文件夹里新建一个目录（名字随便）；\n2) 放一个 plugin.json，最少要有 id / name / apiVersion / effects；\n3) 效果的 emit 里写 C# 语句，可用 {amount} {self} {player} {foe} {choice} {cardSelf} {power} {card} 这些占位符；\n4) 回到编辑器「插件」页点「重新加载插件」。\n\n详细规范（含占位符含义、打包规则、版本兼容约定）见程序目录下的 docs\\插件开发规范.md。"
+      "markdown": "最短路径：\n1) 在 plugins 文件夹里新建一个目录（名字随便）；\n2) 放一个 plugin.json，最少要有 id / name / apiVersion / effects；\n3) 效果的 emit 里写 C# 语句，可用 {amount} {self} {player} {foe} {choice} {cardSelf} {power} {card} 这些占位符；\n4) 触发时机 = 本体已有钩子（hook）+ 一句守卫；条件 = 一段布尔表达式；锻造模块 = 一段模板；\n5) 回到编辑器「插件」页点「重新加载插件」。\n\n详细规范（含占位符含义、允许的钩子、打包规则、版本兼容约定）见程序目录下的 docs\\插件开发规范.md。"
     }
   ],
   "csFiles": [
