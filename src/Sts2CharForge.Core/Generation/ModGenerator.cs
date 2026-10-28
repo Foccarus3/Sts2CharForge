@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -670,6 +670,10 @@ public static class ModGenerator
         int pluginFiles = Plugins.PluginGen.CopyInto(root);
         if (pluginFiles > 0)
             Log($"  插件自带文件：{pluginFiles} 个已拷进工程（cs/Plugins/<插件 id>/ 与 plugin_assets/<插件 id>/）");
+        // V0.2.319：插件「自定义页」里填的值按模板渲染成文件写进工程（随 mod 一起编译 / 打包）
+        int pluginPages = Plugins.PluginGen.WritePages(root);
+        if (pluginPages > 0)
+            Log($"  插件自定义页：{pluginPages} 个文件已按页面里填的值生成进工程");
         ProjectFilesGen.WriteText(Path.Combine(root, "README.md"), Readme(profile, n));
 
         Log("生成完成 ✅");

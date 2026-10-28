@@ -79,14 +79,49 @@ public sealed class PluginForgeModuleSpec
     public string Note { get; set; } = "";
 }
 
-/// <summary>额外内容页：插件自带的一页 Markdown（编辑器「插件」页里按插件分栏显示）。</summary>
+/// <summary>插件自定义页上的一个栏位（V0.2.319）。</summary>
+public sealed class PluginFieldSpec
+{
+    public string Key { get; set; } = "";
+    public string Label { get; set; } = "";
+    /// <summary>text / number / bool / pick / multiline</summary>
+    public string Type { get; set; } = "text";
+    public string Default { get; set; } = "";
+    public List<string> Options { get; set; } = new();
+    public string Hint { get; set; } = "";
+}
+
+/// <summary>
+/// 额外内容页（V0.2.315 起：Markdown 说明页；V0.2.319 起：**自定义页框架**）。
+///
+/// <para>带 <see cref="Fields"/> 的页面 = 编辑器渲染成一张表单（栏位由插件声明），
+/// 插件用 <see cref="Emit"/> 描述「把这些值变成什么代码」，编辑器负责：
+/// 保存填的值（<c>plugins\&lt;id&gt;\values.json</c>）、实时预览、生成工程时按
+/// <see cref="Target"/> 写进工程（于是随 mod 一起打包）。页面**内容完全由插件决定**，
+/// 编辑器只提供底盘 —— 这也是「插件不因编辑器升级失效」的同一条思路：只认数据 + 模板。</para>
+/// </summary>
 public sealed class PluginPageSpec
 {
     public string Id { get; set; } = "";
     public string Title { get; set; } = "";
 
-    /// <summary>正文（Markdown 片段；编辑器按纯文本 + 简单缩进显示）。</summary>
+    /// <summary>正文（Markdown 片段；没有 <see cref="Fields"/> 时就是一个纯说明页）。</summary>
     public string Markdown { get; set; } = "";
+
+    /// <summary>这张页面上的栏位（空 = 纯说明页）。</summary>
+    public List<PluginFieldSpec> Fields { get; set; } = new();
+
+    /// <summary>
+    /// 生成出来的文件放在工程里的相对路径（支持 <c>{id}</c> 和 <c>{字段key}</c> 占位符），
+    /// 例如 <c>cs/Plugins/{id}/Events/{EventClass}.cs</c>。留空 = 这个页面不产出文件（只显示）。
+    /// </summary>
+    public string Target { get; set; } = "";
+
+    /// <summary>把栏位值渲染成的文本（C# 等，原样写进 <see cref="Target"/>）。占位符 <c>{字段key}</c>。</summary>
+    public string Emit { get; set; } = "";
+
+    [JsonIgnore] public bool IsForm => Fields.Count > 0 && Fields.Any(f => f is not null && !string.IsNullOrWhiteSpace(f.Key));
+    [JsonIgnore] public bool Produces => IsForm && !string.IsNullOrWhiteSpace(Emit) && !string.IsNullOrWhiteSpace(Target);
 }
 
 /// <summary>一个插件的清单（<c>plugins/&lt;目录&gt;/plugin.json</c>）。</summary>
@@ -354,6 +389,71 @@ public static class PluginRegistry
     {
         if (kind.Length == 0 || !char.IsLetter(kind[0])) return false;
         return kind.All(c => char.IsLetterOrDigit(c) || c == '_');
+    }
+
+    // ==================== 自定义页面的「填的值」（V0.2.319）====================
+
+    /// <summary>每个插件自己那份 <c>values.json</c> 的缓存（key = 插件 id）。</summary>
+    private static readonly Dictionary<string, Dictionary<string, Dictionary<string, string>>> _pageValues =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static string ValuesPathOf(PluginSpec p) => Path.Combine(p.Dir, "values.json");
+
+    /// <summary>读这个插件的页面值（没有就读磁盘上的 values.json；读坏了当空）。</summary>
+    private static Dictionary<string, Dictionary<string, string>> ValuesOf(PluginSpec p)
+    {
+        if (_pageValues.TryGetValue(p.Id, out var cached)) return cached;
+        var map = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string path = ValuesPathOf(p);
+            if (File.Exists(path))
+            {
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllText(path), JsonOpts);
+                if (loaded is not null)
+                    foreach (var kv in loaded)
+                        if (kv.Value is not null) map[kv.Key] = new Dictionary<string, string>(kv.Value, StringComparer.OrdinalIgnoreCase);
+            }
+        }
+        catch { /* 读坏了就用默认值，不挡住编辑器 */ }
+        _pageValues[p.Id] = map;
+        return map;
+    }
+
+    /// <summary>这一页某个栏位当前的值（没填过 = 清单里的默认值）。</summary>
+    public static string PageValueOf(PluginSpec p, PluginPageSpec page, PluginFieldSpec field)
+    {
+        var values = ValuesOf(p);
+        if (values.TryGetValue(page.Id, out var pageMap) && pageMap.TryGetValue(field.Key, out string? v) && v is not null) return v;
+        return field.Default ?? "";
+    }
+
+    /// <summary>改一页某个栏位的值（只改内存；<see cref="SavePageValues"/> 才落盘）。</summary>
+    public static void SetPageValue(PluginSpec p, PluginPageSpec page, PluginFieldSpec field, string? value)
+    {
+        var values = ValuesOf(p);
+        if (!values.TryGetValue(page.Id, out var pageMap))
+        {
+            pageMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            values[page.Id] = pageMap;
+        }
+        pageMap[field.Key] = value ?? "";
+    }
+
+    /// <summary>把填的值写回 <c>plugins\&lt;id&gt;\values.json</c>（失败只记一条，不抛）。</summary>
+    public static string? SavePageValues(PluginSpec p)
+    {
+        try
+        {
+            var values = ValuesOf(p);
+            var plain = values.ToDictionary(kv => kv.Key, kv => kv.Value.ToDictionary(x => x.Key, x => x.Value));
+            File.WriteAllText(ValuesPathOf(p), JsonSerializer.Serialize(plain, new JsonSerializerOptions { WriteIndented = true }), new System.Text.UTF8Encoding(false));
+            return null;
+        }
+        catch (Exception e)
+        {
+            return e.Message;
+        }
     }
 
     /// <summary>插件贡献的条件（下拉项，合并进 <see cref="EffectCatalog.AllConditions"/>）。</summary>

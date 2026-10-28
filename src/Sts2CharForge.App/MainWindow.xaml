@@ -3421,8 +3421,8 @@
                                  BorderThickness="0" Background="Transparent" Foreground="#0A7" Margin="0,6,0,0"/>
                         <ListBox x:Name="PluginList" SelectionChanged="OnPluginSelected"/>
                     </DockPanel>
-                    <TextBox Grid.Column="2" x:Name="PluginDetailBox" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
-                             VerticalScrollBarVisibility="Auto" FontFamily="Consolas" Text="（左边选一个插件看详情）"/>
+                    <!-- V0.2.319：右边是「插件页」的容器 —— 第一页是插件信息，其余是插件自己声明的页（含自定义表单） -->
+                    <TabControl Grid.Column="2" x:Name="PluginPageTabs" BorderThickness="0" Background="Transparent"/>
                 </Grid>
             </TabItem>
 

@@ -6342,8 +6342,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			? $"还没有插件。放插件的位置：{PluginRegistry.PluginsDirOf(AppContext.BaseDirectory)}（扫描于 {PluginRegistry.LastScan}）"
 			: $"共 {PluginRegistry.Plugins.Count} 个插件（{ok} 个可用）；插件贡献了 {PluginRegistry.EffectKinds.Count} 种效果种类。扫描于 {PluginRegistry.LastScan}";
 		if (PluginList.Items.Count > 0) PluginList.SelectedIndex = 0;
-		else PluginDetailBox.Text = "（还没有插件。把插件文件夹放进 "
-			+ PluginRegistry.PluginsDirOf(AppContext.BaseDirectory) + " 后点「重新加载插件」；写法见 docs\\插件开发规范.md）";
+		else
+		{
+			PluginPageTabs.Items.Clear();
+			PluginPageTabs.Items.Add(new TabItem
+			{
+				Header = "信息",
+				Content = new TextBox
+				{
+					IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, BorderThickness = new Thickness(0),
+					Text = "（还没有插件。把插件文件夹放进 " + PluginRegistry.PluginsDirOf(AppContext.BaseDirectory)
+						+ " 后点「重新加载插件」；写法见 docs\\插件开发规范.md）",
+				},
+			});
+		}
 	}
 
 	private sealed class PluginListItem
@@ -6353,10 +6365,199 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		public override string ToString() => (Spec.Problems.Count > 0 ? "⚠ " : "") + Spec.Display;
 	}
 
+	// ==================== 插件「自定义页」（V0.2.319） ====================
+
+	/// <summary>第一页（插件信息）那个只读文本框 —— 由代码建出来（XAML 里右边改成 TabControl 了）。</summary>
+	private TextBox? _pluginDetailBox;
+
+	/// <summary>把某个插件的页铺到右边：第 1 页是插件信息，后面是插件自己声明的页。</summary>
+	private void ShowPluginPages(PluginSpec p)
+	{
+		PluginPageTabs.Items.Clear();
+
+		_pluginDetailBox = new TextBox
+		{
+			IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+			FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+			Text = DescribePlugin(p), BorderThickness = new Thickness(0),
+		};
+		PluginPageTabs.Items.Add(new TabItem { Header = "信息", Content = _pluginDetailBox });
+
+		foreach (var page in p.Pages.Where(x => x is not null))
+		{
+			object content = page.IsForm ? BuildPluginPageForm(p, page) : BuildPluginPageText(page);
+			PluginPageTabs.Items.Add(new TabItem
+			{
+				Header = string.IsNullOrWhiteSpace(page.Title) ? (string.IsNullOrWhiteSpace(page.Id) ? "页" : page.Id) : page.Title,
+				Content = content,
+			});
+		}
+	}
+
+	/// <summary>纯说明页（Markdown 原样显示）。</summary>
+	private static object BuildPluginPageText(PluginPageSpec page)
+	{
+		return new ScrollViewer
+		{
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+			Content = new TextBox
+			{
+				IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap, BorderThickness = new Thickness(0),
+				FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+				Text = (page.Markdown ?? "").Trim(),
+			},
+		};
+	}
+
+	/// <summary>
+	/// 插件声明的「表单页」：栏位由插件决定（text / number / bool / pick / multiline），
+	/// 编辑器只负责画控件、存值、实时预览、以及「生成到工程」—— 内容完全由插件的 emit 模板决定。
+	/// </summary>
+	private object BuildPluginPageForm(PluginSpec p, PluginPageSpec page)
+	{
+		var panel = new StackPanel { Margin = new Thickness(10) };
+		var editors = new Dictionary<string, Func<string>>(StringComparer.OrdinalIgnoreCase);
+
+		if (!string.IsNullOrWhiteSpace(page.Markdown))
+			panel.Children.Add(new TextBlock
+			{
+				Text = page.Markdown.Trim(), TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray,
+				Margin = new Thickness(0, 0, 0, 8),
+			});
+
+		var preview = new TextBox
+		{
+			IsReadOnly = true, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap,
+			VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+			HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+			FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+			Height = 240, Margin = new Thickness(0, 8, 0, 8),
+		};
+		void Refresh()
+		{
+			preview.Text = page.Produces ? PluginGen.RenderPage(p, page)
+				: "（这页没配 target / emit：只保存值，不产出文件）";
+		}
+
+		foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+		{
+			string key = f.Key.Trim();
+			string current = PluginRegistry.PageValueOf(p, page, f);
+			var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+			row.Children.Add(new TextBlock
+			{
+				Text = string.IsNullOrWhiteSpace(f.Label) ? key : f.Label,
+				Width = 170, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+			});
+			string type = (f.Type ?? "text").Trim().ToLowerInvariant();
+			switch (type)
+			{
+				case "bool":
+				{
+					var cb = new CheckBox { IsChecked = current is "1" or "true" or "True" or "是", VerticalAlignment = VerticalAlignment.Center };
+					cb.Checked += (_, _) => { PluginRegistry.SetPageValue(p, page, f, "1"); Refresh(); };
+					cb.Unchecked += (_, _) => { PluginRegistry.SetPageValue(p, page, f, "0"); Refresh(); };
+					row.Children.Add(cb);
+					editors[key] = () => cb.IsChecked == true ? "1" : "0";
+					break;
+				}
+				case "pick":
+				{
+					var combo = new ComboBox { Width = 320, IsEditable = false };
+					foreach (string opt in f.Options) combo.Items.Add(opt);
+					combo.Text = current;
+					if (combo.SelectedIndex < 0 && combo.Items.Count > 0) combo.SelectedItem = combo.Items[0];
+					combo.SelectionChanged += (_, _) => { PluginRegistry.SetPageValue(p, page, f, combo.Text); Refresh(); };
+					row.Children.Add(combo);
+					editors[key] = () => combo.Text;
+					break;
+				}
+				case "multiline":
+				{
+					var tb = new TextBox
+					{
+						Width = 520, Height = 90, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+						VerticalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new System.Windows.Media.FontFamily("Consolas"),
+						Text = current,
+					};
+					tb.TextChanged += (_, _) => { PluginRegistry.SetPageValue(p, page, f, tb.Text); Refresh(); };
+					panel.Children.Add(row);
+					panel.Children.Add(tb);
+					editors[key] = () => tb.Text;
+					continue;
+				}
+				case "number":
+				{
+					var tb = new TextBox { Width = 120, Text = current };
+					tb.TextChanged += (_, _) =>
+					{
+						// 只留数字 / 负号 / 小数点（插件若想要别的类型，可以用 text）
+						string clean = new string(tb.Text.Where(c => char.IsDigit(c) || c == '-' || c == '.').ToArray());
+						PluginRegistry.SetPageValue(p, page, f, clean);
+						Refresh();
+					};
+					row.Children.Add(tb);
+					editors[key] = () => PluginRegistry.PageValueOf(p, page, f);
+					break;
+				}
+				default:
+				{
+					var tb = new TextBox { Width = 420, Text = current };
+					tb.TextChanged += (_, _) => { PluginRegistry.SetPageValue(p, page, f, tb.Text); Refresh(); };
+					row.Children.Add(tb);
+					editors[key] = () => tb.Text;
+					break;
+				}
+			}
+			if (!string.IsNullOrWhiteSpace(f.Hint))
+				row.Children.Add(new TextBlock { Text = f.Hint, Foreground = Brushes.Gray, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+			panel.Children.Add(row);
+		}
+
+		var buttons = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+		var save = new Button { Content = "保存这些值", Padding = new Thickness(10, 4, 10, 4) };
+		save.Click += (_, _) =>
+		{
+			string? err = PluginRegistry.SavePageValues(p);
+			SetStatus(err is null ? $"插件「{p.Name}」的「{page.Title}」已保存（plugins\\{p.Id}\\values.json）" : "保存失败：" + err);
+		};
+		var gen = new Button { Content = "生成到当前工程", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
+		gen.Click += (_, _) =>
+		{
+			if (!page.Produces) { SetStatus("这页没配 target / emit，不产出文件。"); return; }
+			string root = ModGenerator.ProjectRootOf(_profile);
+			if (!Directory.Exists(root)) { SetStatus("还没有生成过工程：请先在「构建 / 日志」页点「生成工程」。" ); return; }
+			string target = PluginGen.TargetOf(p, page);
+			try
+			{
+				string full = Path.GetFullPath(Path.Combine(root, target.Replace('/', Path.DirectorySeparatorChar)));
+				Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+				File.WriteAllText(full, PluginGen.RenderPage(p, page), new System.Text.UTF8Encoding(false));
+				PluginRegistry.SavePageValues(p);
+				SetStatus($"已写入工程：{target}");
+			}
+			catch (Exception ex) { SetStatus("写入失败：" + ex.Message); }
+		};
+		buttons.Children.Add(save);
+		buttons.Children.Add(gen);
+
+		panel.Children.Add(buttons);
+		panel.Children.Add(new TextBlock
+		{
+			Text = page.Produces ? "生成工程时会自动按上面的值写进：" + PluginGen.TargetOf(p, page) : "",
+			Foreground = Brushes.Gray, Margin = new Thickness(0, 6, 0, 0), TextWrapping = TextWrapping.Wrap,
+		});
+		panel.Children.Add(preview);
+		Refresh();
+
+		return new ScrollViewer { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Content = panel };
+	}
+
 	private void OnPluginSelected(object sender, SelectionChangedEventArgs e)
 	{
 		if (PluginList.SelectedItem is not PluginListItem item) return;
-		PluginDetailBox.Text = DescribePlugin(item.Spec);
+		ShowPluginPages(item.Spec);
 	}
 
 	private static string DescribePlugin(PluginSpec p)
@@ -40372,7 +40573,56 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 				// ④ 随 mod 打包：自带 cs 要拷进生成工程
 				string projRoot = Path.Combine(pluginRoot, "proj");
-				Directory.CreateDirectory(projRoot);
+				// ===== V0.2.319：插件「自定义页框架」（表单 + 渲染成文件写进工程）=====
+				{
+					string pageDir = Path.Combine(pluginRoot, "plugins", "uiPage");
+					Directory.CreateDirectory(pageDir);
+					File.WriteAllText(Path.Combine(pageDir, "plugin.json"), """
+					{
+					  "id": "uipage",
+					  "name": "自检页面插件",
+					  "apiVersion": "1",
+					  "pages": [
+					    {
+					      "id": "ev",
+					      "title": "自检事件页",
+					      "fields": [
+					        { "key": "EventClass", "label": "类名", "type": "text", "default": "UiEv" },
+					        { "key": "Weight", "label": "权重", "type": "number", "default": "1" }
+					      ],
+					      "target": "cs/Plugins/{id}/Events/{EventClass}.cs",
+					      "emit": "public static class {EventClass} { public const int Weight = {Weight}; }"
+					    }
+					  ]
+					}
+					""", new UTF8Encoding(false));
+					PluginRegistry.Load(pluginRoot);
+					var pgP = PluginRegistry.Plugins.FirstOrDefault(x => x.Id == "uipage");
+					var pgPage = pgP?.Pages.FirstOrDefault(x => x is not null && x.IsForm);
+					if (pgP is not null && pgPage is not null)
+					{
+						PluginRegistry.SetPageValue(pgP, pgPage, pgPage.Fields[0], "UiCheckEvent");
+						PluginRegistry.SetPageValue(pgP, pgPage, pgPage.Fields[1], "7");
+						Check("V0.2.319：页面目标路径的占位符（{id} / 字段值）都替换掉了",
+							PluginGen.TargetOf(pgP, pgPage) == "cs/Plugins/uipage/Events/UiCheckEvent.cs",
+							PluginGen.TargetOf(pgP, pgPage));
+						Check("V0.2.319：emit 按填的值渲染（字段占位符替换）",
+							PluginGen.RenderPage(pgP, pgPage).Contains("class UiCheckEvent")
+							&& PluginGen.RenderPage(pgP, pgPage).Contains("Weight = 7"),
+							PluginGen.RenderPage(pgP, pgPage).Replace("\n", " "));
+						string pagesRoot = Path.Combine(pluginRoot, "proj2");
+						Directory.CreateDirectory(pagesRoot);
+						Check("V0.2.319：生成工程时会把这页写成文件（随 mod 一起编译打包）",
+							PluginGen.WritePages(pagesRoot) >= 1
+							&& File.Exists(Path.Combine(pagesRoot, "cs", "Plugins", "uipage", "Events", "UiCheckEvent.cs")), "写进去了");
+						string? saveErr = PluginRegistry.SavePageValues(pgP);
+						Check("V0.2.319：填的值能存回 plugins\\<id>\\values.json",
+							saveErr is null && File.Exists(Path.Combine(pgP.Dir, "values.json")), saveErr ?? "存好了");
+					}
+					else Check("V0.2.319：（准备）页面插件装载成功", false, pgP is null ? "插件没加载" : "没有表单页");
+				}
+
+
 				Check("V0.2.315：插件自带 .cs 会拷进生成工程（cs/Plugins/<id>/，随 mod 一起编译打包）",
 					PluginGen.CopyInto(projRoot) == 1
 					&& File.Exists(Path.Combine(projRoot, "cs", "Plugins", "uicheck", "UiCheckPluginHelper.cs")), "拷进去了");
@@ -40399,7 +40649,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				""", new UTF8Encoding(false));
 				int loaded2 = PluginRegistry.Load(pluginRoot);
 				Check("V0.2.316：插件触发时机 / 条件 / 锻造模块都能登记（两个插件都可用）",
-					loaded2 == 2 && PluginRegistry.IsPluginTrigger("UiCheckPlugTrg")
+					loaded2 >= 2 && PluginRegistry.IsPluginTrigger("UiCheckPlugTrg")
 					&& PluginRegistry.IsPluginCondition("UiCheckPlugCond")
 					&& EffectCatalog.AllEffectKinds.Any(kk => kk.Kind == "UiCheckPlugForge"), $"loaded={loaded2}");
 				Check("V0.2.316：插件触发时机进了状态 / 遗物的时机下拉",

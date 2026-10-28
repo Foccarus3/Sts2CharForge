@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -101,6 +101,64 @@ public static class PluginGen
         {
             return 0;   // 拷贝失败也不能挡住生成（插件是附加内容）
         }
+    }
+
+    // ==================== 自定义页面（V0.2.319）====================
+
+    /// <summary>把一页的栏位值渲染成 <see cref="PluginPageSpec.Emit"/> 的文本（占位符 <c>{字段key}</c>）。</summary>
+    public static string RenderPage(PluginSpec p, PluginPageSpec page)
+    {
+        string text = page.Emit ?? "";
+        foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+            text = text.Replace("{" + f.Key.Trim() + "}", PluginRegistry.PageValueOf(p, page, f), StringComparison.OrdinalIgnoreCase);
+        return text.ReplaceLineEndings("\n");
+    }
+
+    /// <summary>这页要写进工程的相对路径（<c>{id}</c> / <c>{字段key}</c> 都会替换）。</summary>
+    public static string TargetOf(PluginSpec p, PluginPageSpec page)
+    {
+        string path = (page.Target ?? "").Replace("{id}", p.Id, StringComparison.OrdinalIgnoreCase);
+        foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+            path = path.Replace("{" + f.Key.Trim() + "}", FileSafe(PluginRegistry.PageValueOf(p, page, f)), StringComparison.OrdinalIgnoreCase);
+        return path.Replace('\\', '/').Trim();
+    }
+
+    /// <summary>路径里用的值：去掉非法字符（用户可能把事件名填成中文 / 带空格）。</summary>
+    private static string FileSafe(string v)
+    {
+        var sb = new StringBuilder();
+        foreach (char c in (v ?? "").Trim())
+            sb.Append(char.IsLetterOrDigit(c) || c == '-' || c == '_' || c == '.' || c > 0x7F ? c : '_');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// 把插件「自定义页」里填的值渲染成文件写进生成工程（只处理 <see cref="PluginPageSpec.Produces"/> 的页）。
+    /// 生成时调一次 —— 于是这些内容随 mod 一起编译 / 打包。返回写进去的文件数。
+    /// </summary>
+    public static int WritePages(string projectRoot)
+    {
+        int n = 0;
+        foreach (var pl in PluginRegistry.Plugins)
+        {
+            if (pl.Problems.Count > 0) continue;
+            foreach (var page in pl.Pages.Where(x => x is not null && x.Produces))
+            {
+                string target = TargetOf(pl, page);
+                if (target.Length == 0) continue;
+                try
+                {
+                    string full = Path.GetFullPath(Path.Combine(projectRoot, target.Replace('/', Path.DirectorySeparatorChar)));
+                    string rootFull = Path.GetFullPath(projectRoot);
+                    if (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase)) continue;   // 越界，跳过
+                    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                    File.WriteAllText(full, RenderPage(pl, page), new System.Text.UTF8Encoding(false));
+                    n++;
+                }
+                catch { /* 插件是附加内容：写失败不能挡住生成 */ }
+            }
+        }
+        return n;
     }
 
     /// <summary>生成时拼给模板用的上下文（每条链自己填）。</summary>
