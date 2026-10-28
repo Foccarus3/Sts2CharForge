@@ -1468,10 +1468,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 }
                 if (selfOk)
                 {
-                    // 数值 0 = 这张牌自己（V0.2.205）：升级牌组里这张牌（同名的副本都算）
+                    // 数值 0 = 这张牌自己（V0.2.205）：升级牌组里这张牌。
+                    // V0.2.314（用户要求「只动一张」）：以前 Where(…Id == this.Id) 后面没有 Take(1)，
+                    // 同名副本会**一起**升级；现在只升一张（想全升：勾「全部」）。
                     w.Line(SelfContainedMarker(e));
-                    w.Line("// 数值 0 = 这张牌自己：升级牌组里这张牌（同名的副本都算）");
-                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsUpgradable && c.Id == {cardSelfExpr}.Id).ToList()) CardCmd.Upgrade(c);");
+                    w.Line("// 数值 0 = 这张牌自己：升级牌组里这张牌的**一张**（同名副本只动一张；要全升请勾「全部」）");
+                    w.Line($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.IsUpgradable && c.Id == {cardSelfExpr}.Id).Take(1).ToList()) CardCmd.Upgrade(c);");
                     break;
                 }
                 if (selfFallback)
@@ -1498,10 +1500,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"var __transformPool = {SpawnPoolExpr(e, p, owner)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
                 if (selfOk)
                 {
-                    // 数值 0 = 这张牌自己（V0.2.205）：把牌组里这张牌变成目标卡 / 随机卡（同名的副本都算）
+                    // 数值 0 = 这张牌自己（V0.2.205）：把牌组里这张牌变成目标卡 / 随机卡。
+                    // V0.2.314（用户要求「只动一张」）：同名副本以前会**一起**变掉，现在只变一张（要全变：勾「全部」）。
                     w.Line(SelfContainedMarker(e));
-                    w.Line("// 数值 0 = 这张牌自己：把牌组里这张牌变掉（同名的副本都算）");
-                    w.Open($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.Id == {cardSelfExpr}.Id).ToList())");
+                    w.Line("// 数值 0 = 这张牌自己：把牌组里这张牌的**一张**变掉（同名副本只动一张；要全变请勾「全部」）");
+                    w.Open($"foreach (CardModel c in PileType.Deck.GetPile({owner}).Cards.Where(c => c.Id == {cardSelfExpr}.Id).Take(1).ToList())");
                     EmitTransformGlobalBody(w, e, owner, rng, "c", target, p);
                     w.Close();
                     break;

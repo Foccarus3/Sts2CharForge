@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -37364,10 +37364,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				upCard.Effects.Add(new EffectSpec { Kind = "UpgradeCardGlobal", Amount = 0m, CardPick = "Chosen" });
 				Check("V0.2.205：卡牌链「升级牌组 = 0」→ 升级牌组里这张牌自己",
 					CSharpCodeGen.CardSource(Profile, upCard, 0).Contains("c.IsUpgradable && c.Id == this.Id"), "升级自己");
+				// V0.2.314（用户要求「只动一张」）：升级 / 变化 的数值 0 也只动一张同名副本
+				Check("V0.2.314：「升级牌组 = 0」只升一张同名副本（Take(1)）",
+					CSharpCodeGen.CardSource(Profile, upCard, 0).Contains(".Where(c => c.IsUpgradable && c.Id == this.Id).Take(1)"), "只升一张");
 				CardSpec tgCard = new CardSpec { Name = "自变化", ClassName = "UiCheckSelfTransform", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 				tgCard.Effects.Add(new EffectSpec { Kind = "TransformCardGlobal", Amount = 0m, CardPick = "Chosen" });
 				Check("V0.2.205：卡牌链「变化牌组 = 0」→ 把牌组里这张牌自己变掉",
 					CSharpCodeGen.CardSource(Profile, tgCard, 0).Contains("Cards.Where(c => c.Id == this.Id)"), "变化自己");
+				Check("V0.2.314：「变化牌组 = 0」只变一张同名副本（Take(1)）",
+					CSharpCodeGen.CardSource(Profile, tgCard, 0).Contains(".Where(c => c.Id == this.Id).Take(1)"), "只变一张");
 				// 锻造图（卡牌）：同样要生成本张牌自己的删除
 				CardSpec fgCard = new CardSpec { Name = "锻造自删", ClassName = "UiCheckForgeSelfRemove", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 				var fgGraph = new ForgeGraphSpec();
