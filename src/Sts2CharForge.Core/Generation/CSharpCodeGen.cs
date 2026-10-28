@@ -7878,6 +7878,47 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string playerExpr = "base.Owner", string creatureExpr = "base.Owner.Creature", string sourceExpr = "this",
         string combatStateExpr = "base.CombatState", string choiceExpr = "choiceContext", string? countInto = null)
     {
+        // V0.2.320（用户报「变化卡牌填 0：不弹界面了，但卡牌本体没有发生变化」）：
+        // 以前数值 0 落在 IsInertZero 里（TransformCard 属于「数值 = 力度」那类）→ **整条效果被丢掉**，
+        // 所以既没有选牌界面、也没有任何变化。现在和「消耗 / 丢弃 / 复制」同一套语义：
+        // **数值 0 = 把这张牌自己变掉**。
+        if (AmountZeroIsSelf(e))
+        {
+            if (string.Equals(sourceExpr, "null", StringComparison.Ordinal))
+            {
+                Warn(w, e, "（数值 0 = 这张牌自己：只有卡牌上有「这张牌」—— 遗物 / 药水 / 状态请改成 ≥ 1 张，或改用「变化牌组（全局）」）");
+                return;
+            }
+            bool selfRandom = e.IsSpawnRandom;
+            string? selfTarget = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
+            if (!selfRandom && selfTarget is null)
+            {
+                w.Line("// ⚠ 「变化卡牌」数值 0 = 把这张牌自己变掉，但既没选「目标卡」也没选「按范围随机」—— 这条不会做任何事");
+                return;
+            }
+            w.Line(SelfContainedMarker(e));
+            w.Line("// 数值 0 = 这张牌自己：把这张牌本身变掉");
+            if (selfRandom)
+            {
+                w.Line($"var __transformPool = {SpawnPoolExpr(e, p, playerExpr)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
+                w.Line($"CardModel? __newSelf = {playerExpr}.RunState.Rng.CombatCardGeneration.NextItem(__transformPool);");
+                w.Open("if (__newSelf is not null)");
+                w.Line($"CardModel __madeSelf = {playerExpr}.RunState.CreateCard(__newSelf, {playerExpr});");
+                if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
+                w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
+                EmitSpawnKeyword(w, e, "__madeSelf", p);
+                w.Close();
+            }
+            else
+            {
+                w.Line($"CardModel __madeSelf = {playerExpr}.RunState.CreateCard(ModelDb.Card<{CardTypeExpr(p, selfTarget!)}>(), {playerExpr});");
+                if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
+                w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
+                EmitSpawnKeyword(w, e, "__madeSelf", p);
+            }
+            if (countInto is not null) w.Line($"{countInto} += 1;");
+            return;
+        }
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
         // 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认 → 表现为卡死。
@@ -8269,6 +8310,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             //「0 = 这张牌自己」。以前它们落在 IsInertZero 里 → 整条效果被丢掉，所以填 0 毫无反应。
             //（只有卡牌 / 卡牌的锻造图真的有「这张牌」；别的布上按 1 张处理，生成时会写注释说清。）
             or "RemoveCardGlobal" or "UpgradeCardGlobal" or "TransformCardGlobal"
+        // V0.2.320（用户报「变化卡牌填 0：不弹界面但卡牌没变化」）：变化卡牌填 0 = 把**这张牌自己**变掉。
+        or "TransformCard"
             // V0.2.226（用户要求「复制效果能够复制自己」）：复制卡牌填 0 = 复制**这张牌自己** N 份。
             or "CopyCard");
 

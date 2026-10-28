@@ -3207,6 +3207,18 @@ public static class ForgeGraphGen
             }
             bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
             // 变量名按模块 Id 取，**每条效果一套** —— 同一条链上有两个同种效果时不会撞名（编译期就报 CS0128）
+            // V0.2.320（用户报「变化卡牌填 0：不弹界面了，但卡牌本体没有发生变化」）：
+            // 卡牌布上「变化卡牌」数值 0 = **把这张牌自己变掉**（和消耗 / 丢弃 / 复制同一套语义）。
+            // 以前这里先命中下面的「取 0 张 → 整段跳过」，于是什么都不发生；现在先走卡牌页那份实现。
+            if (kind == "TransformCard" && ctx.CardSelfExpr is not null
+                && CSharpCodeGen.AmountZeroIsSelf(cvSpec ?? ForgeEffectBridge.Ensure(node)))
+            {
+                ViaCodeWriterAppend(sb, indent, w => CSharpCodeGen.EmitTransformCardPublic(w, cvSpec!, p,
+                    cardSource: ctx.CardSelfExpr!, countExpr: null, playerExpr: "__fgPlayer",
+                    creatureExpr: "__fgSelf", sourceExpr: ctx.CardSelfExpr!, combatStateExpr: combatState,
+                    choiceExpr: ctx.ChoiceVar));
+                return;
+            }
         // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：这条链上的「取几张」是**字面 0** 时，
         // 整个效果模块跳过 —— 本体 CardSelectorPrefs(提示, 0) 的选择界面会一直等一个不可能成立的确认。
         // ⚠ 只对「必须弹选择框」的这几档生效：复制卡牌 / 生成卡牌 的 0 有专门含义（= 这张牌自己），不能跳过。

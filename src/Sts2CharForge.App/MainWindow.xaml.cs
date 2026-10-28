@@ -36560,7 +36560,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("所有效果种类的数值范围都允许 0（用户要求：不能填 0 的也能填 0）",
 				badMin.Count == 0, badMin.Count == 0 ? "全部 ≤ 0" : string.Join("/", badMin.Select((EffectKindOption k) => $"{k.Kind}:{k.Min}")));
 			Check("0 值效果一律「不显示也不执行」（以前不能填 0 的那些也一样；例外的只有「0 = 这张牌自己」那几档）",
-				new[] { "GenerateCard", "TransformCard", "UpgradeCard", "Scry",
+				// V0.2.320：变化卡牌填 0 = 把**这张牌自己**变掉（有含义）→ 从这份「算不生效」的清单里拿掉
+			new[] { "GenerateCard", "UpgradeCard", "Scry",
 						"ReplayCard", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
 						"AddCardGlobal", "CardReward", "ApplyPower", "Draw" }
 					.All(k => CSharpCodeGen.IsInertZero(new EffectSpec { Kind = k, Amount = 0m })), "都算不生效");
@@ -36569,7 +36570,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "GiveKeyword", Amount = 0m })
 				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TurnEndPlay", Amount = 0m })
 				// V0.2.226：复制卡牌填 0 = 复制**这张牌自己**，也有含义（以前这里算「不生效」）
-				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "CopyCard", Amount = 0m }), "有含义");
+				&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "CopyCard", Amount = 0m })
+			// V0.2.320：变化卡牌填 0 = 把**这张牌自己**变掉
+			&& !CSharpCodeGen.IsInertZero(new EffectSpec { Kind = "TransformCard", Amount = 0m }), "有含义");
 			CharacterProfile zeroProbe = ProfileFactory.Sample();
 			CardSpec zeroCard = new CardSpec { Name = "自检零值", ClassName = "UiCheckZero", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 			zeroCard.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 0m, SpawnCardId = "Shiv" });
@@ -40454,6 +40457,39 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 			SelectTabRoot("遗物");
+		}
+
+		// ===== V0.2.320：变化卡牌数值 0 = 把这张牌自己变掉（以前整条被丢掉 → 不弹界面也不变化）=====
+		{
+			var tfProf = ProfileFactory.Sample();
+			var tfAim = new CardSpec { Name = "自检变化目标", ClassName = "UiCheckTf0Aim", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			tfAim.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+			tfProf.Cards.Add(tfAim);
+			var tfCard = new CardSpec { Name = "自检变化零", ClassName = "UiCheckTf0", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			tfCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 0m, CardPick = "Chosen", SpawnCardId = "UiCheckTf0Aim" });
+			tfProf.Cards.Add(tfCard);
+			string tfSrc = CSharpCodeGen.CardSource(tfProf, tfCard, tfProf.Cards.Count - 1);
+			Check("V0.2.320：变化卡牌「数值 0」= 把这张牌自己变掉（生成 CardCmd.Transform(this, …)）",
+				CSharpCodeGen.AmountZeroIsSelf(tfCard.Effects[0])
+				&& tfSrc.Contains("await CardCmd.Transform(this, __madeSelf);")
+				&& !tfSrc.Contains("取 0 张"), "变自己了");
+			// 图链也要
+			var tfGraphCard = new CardSpec { Name = "自检图变化零", ClassName = "UiCheckTf0Graph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+			var tfG = new ForgeGraphSpec();
+			var tfT = new ForgeNodeSpec { Kind = "Trigger" };
+			tfT.SetField("Timing", ForgeTimings.CardPlayed);
+			var tfE = new ForgeNodeSpec { Kind = "Effect" };
+			tfE.SetField("Effect", "TransformCard");
+			tfE.SetField("Amount", "0");
+			tfE.SetField("Pick", "Chosen");
+			tfE.SetField("SpawnCardId", "UiCheckTf0Aim");
+			tfG.Nodes.AddRange(new[] { tfT, tfE });
+			tfG.Links.Add(new ForgeLinkSpec { From = tfT.Id, To = tfE.Id, FromPort = 0, ToPort = 0 });
+			tfGraphCard.ForgeGraph = tfG;
+			tfProf.Cards.Add(tfGraphCard);
+			string tfGSrc = CSharpCodeGen.CardSource(tfProf, tfGraphCard, tfProf.Cards.Count - 1);
+			Check("V0.2.320：图上的「变化卡牌 0」也变成自己（不再被「取 0 张」跳过）",
+				tfGSrc.Contains("await CardCmd.Transform(this, __madeSelf);") && !tfGSrc.Contains("取 0 张"), "图上也变了");
 		}
 
 		// ===== V0.2.318：锻造状态 + 「某个状态层数到达 N 层」——图上的效果体以前被丢掉 =====
