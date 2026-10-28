@@ -32994,6 +32994,75 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("按关键词组随机生成 → 直接列出这一组牌（走 GetDistinctForCombat 抽，不重复）",
 				kwSrc.Contains("var __genPool = new List<CardModel> { ModelDb.Card<UiCheckFateA>(), ModelDb.Card<UiCheckFateB>() };")
 				&& kwSrc.Contains("CardFactory.GetDistinctForCombat(base.Owner, __genPool, 1,"), "显式牌表");
+			// ===== V0.2.308（用户报「使用自定义组进行生成卡牌的选择时，无法正常进行」）=====
+			// 真因：那个组里全是「基础（Basic）」稀有度的令牌牌（利刃 / 长槊 / 篡改），
+			// 而本体 CardFactory.FilterForCombat 会把 Basic / Ancient / Event 全滤掉
+			// → GetDistinctForCombat 返回 0 张 → 生成出来的 `if (__candidates.Count > 0)` 整段跳过：
+			//   牌打出去什么都不发生（选牌界面根本不出现）。
+			{
+				var grpProf = ProfileFactory.Sample();
+				grpProf.CardGroups.Clear();
+				grpProf.CardGroups.Add(new CardGroupSpec { Id = "grpBasicCheck", Name = "令牌组" });
+				var tokA = new CardSpec { Name = "自检令牌甲", ClassName = "UiCheckTokenA", CardType = "Attack", Rarity = "Basic", Cost = 0, InCardPool = false, IsColorless = true };
+				tokA.GroupIds.Add("grpBasicCheck");
+				tokA.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Enemy" });
+				var tokB = new CardSpec { Name = "自检令牌乙", ClassName = "UiCheckTokenB", CardType = "Skill", Rarity = "Basic", Cost = 0, InCardPool = false, IsColorless = true };
+				tokB.GroupIds.Add("grpBasicCheck");
+				grpProf.Cards.Add(tokA);
+				grpProf.Cards.Add(tokB);
+				var gm = new CardSpec { Name = "自检多选一", ClassName = "UiCheckTokenMulti", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				gm.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnPick = "Random", SpawnChoice = 2m, SpawnFilter = "Group:grpBasicCheck", SpawnTo = "Hand" });
+				var gr = new CardSpec { Name = "自检随机令牌", ClassName = "UiCheckTokenRandom", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				gr.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnPick = "Random", SpawnFilter = "Group:grpBasicCheck", SpawnTo = "Hand" });
+				grpProf.Cards.Add(gm);
+				grpProf.Cards.Add(gr);
+				Check("V0.2.308：组里全是「基础」稀有度 → 判定为「要绕开本体卡池过滤」",
+					CSharpCodeGen.ExplicitSpawnPoolBypassesCombatFilter(gm.Effects[0], grpProf)
+					&& CSharpCodeGen.ExplicitSpawnPoolBypassesCombatFilter(gr.Effects[0], grpProf)
+					&& !CSharpCodeGen.ExplicitSpawnPoolBypassesCombatFilter(
+						new EffectSpec { Kind = "GenerateCard", SpawnFilter = "Attack" }, grpProf), "判据对");
+				string gmSrc = CSharpCodeGen.CardSource(grpProf, gm, 0);
+				string grSrc = CSharpCodeGen.CardSource(grpProf, gr, 0);
+				Check("V0.2.308：「多选1」改成直接按组抽候选（不再走会被滤空的 GetDistinctForCombat）",
+					gmSrc.Contains("IEnumerableExtensions.TakeRandom(__genPool.Distinct(), 2,")
+					&& !gmSrc.Contains("GetDistinctForCombat"), "绕开了");
+				Check("V0.2.308：「按范围随机 N 张」也同样绕开（否则整池被滤空 = 打出去什么都不发生）",
+					grSrc.Contains("IEnumerableExtensions.TakeRandom(__genPool.Distinct(), 2,")
+					&& !grSrc.Contains("GetDistinctForCombat"), "绕开了");
+				// 对照：组里都是普通稀有度 → 一个字都不变，照旧走本体那套（老存档红线）
+				tokA.Rarity = "Common";
+				tokB.Rarity = "Common";
+				string gmSrc2 = CSharpCodeGen.CardSource(grpProf, gm, 0);
+				Check("V0.2.308：（对照）组里都是普通稀有度 → 照旧走 GetDistinctForCombat（老存档生成文本不变）",
+					gmSrc2.Contains("CardFactory.GetDistinctForCombat(base.Owner, __genPool, 2,") && !gmSrc2.Contains("TakeRandom"), "没变");
+
+				// 真编译一遍：组 + 基础稀有度令牌 + 多选1 + 随机 N 张
+				string grpRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_grpbasic_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+				try
+				{
+					tokA.Rarity = "Basic";
+					tokB.Rarity = "Basic";
+					grpProf.Paths.OutputDir = grpRoot;
+					grpProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+					grpProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+					grpProf.Paths.DotnetExe = Profile.Paths.DotnetExe;
+					var grpGen = ModGenerator.Generate(grpProf);
+					Check("V0.2.308：（准备）组 + 基础稀有度令牌的存档能生成工程", grpGen.Success,
+						grpGen.Success ? grpGen.ProjectRoot : string.Join(" ｜ ", grpGen.Issues.Where((ValidationIssue x) => x.IsError).Select((ValidationIssue x) => x.Message)));
+					if (grpGen.Success)
+					{
+						var grpBuild = Sts2CharForge.Core.Build.ModBuilder.Build(grpGen.ProjectRoot, Naming.From(grpProf).ModId,
+							null, null, null, grpProf.Paths.DotnetExe);
+						var grpDll = grpBuild.Steps.FirstOrDefault(st => st.Name.Contains("编译 DLL", StringComparison.Ordinal));
+						Check("V0.2.308：它生成出来的工程**真的编译得过**（dotnet build 0 错误）", grpDll is { Success: true },
+							grpDll is null ? "(没找到编译那一步)" : grpDll.Output.Split('\n').LastOrDefault(l => l.Contains("个错误", StringComparison.Ordinal)) ?? grpDll.Name);
+					}
+				}
+				finally
+				{
+					try { Directory.Delete(grpRoot, true); } catch { }
+				}
+			}
 			Check("卡面描述里写的是这一组的名字（「命运」），不是「不限」",
 				LocalizationGen.CardsJson(kwProbe).Contains("「命运」"), "描述对");
 			// 登记表（没有 profile 参数的地方靠它显示中文名）

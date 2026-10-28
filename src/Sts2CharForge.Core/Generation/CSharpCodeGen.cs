@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -6340,7 +6340,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             int m = Math.Max(2, Math.Min(60, (int)e.SpawnChoice));
             w.Line($"// 按范围随机：先从「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」里抽 {m} 张当候选，玩家选 1 张放进{PileZh(pile)}");
             w.Line($"var __genPool = {pool};");
-            w.Line($"List<CardModel> __candidates = MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {m}, {playerExpr}.RunState.Rng.CombatCardGeneration).ToList();");
+            // V0.2.308：范围是**自定义组 / 关键词**、而且里面有「基础 / 先古 / 事件」稀有度的牌时，
+            // 本体 GetDistinctForCombat 会把整池滤空（见 ExplicitSpawnPoolBypassesCombatFilter）——
+            // 改成直接按这个列表抽候选，玩家才真的能看到/选到那些牌。
+            bool directPool = ExplicitSpawnPoolBypassesCombatFilter(e, p);
+            w.Line(directPool
+                ? $"List<CardModel> __candidates = {DirectSpawnCandidatesExpr("__genPool", m.ToString(), playerExpr, creatureExpr)};   // 不过本体卡池过滤（组里的牌可能是「基础」稀有度的令牌）"
+                : $"List<CardModel> __candidates = MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {m}, {playerExpr}.RunState.Rng.CombatCardGeneration).ToList();");
             // 池子比 M 小的时候会少给几张：本体「发现」在这一步是直接 ReportSoftlock 的，
             // 这里改成「有就选、一张都没有就整条跳过」（下面那个 if 就是干这个的），免得把牌卡死。
             w.Open("if (__candidates.Count > 0)");
@@ -6362,7 +6368,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line($"// 按范围随机生成 {nC} 张「{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}」放进{PileZh(pile)}");
         w.Line($"var __genPool = {pool};");
         EmitTempUpgradePowerApply(w, tempUp, tempUpSource, creatureExpr);
-        w.Line($"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {n}, {playerExpr}.RunState.Rng.CombatCardGeneration))");
+        // V0.2.308：同上 —— 自定义组 / 关键词里的「基础 / 先古 / 事件」牌会被本体卡池过滤整池滤空
+        w.Line(ExplicitSpawnPoolBypassesCombatFilter(e, p)
+            ? $"foreach (CardModel __gen in {DirectSpawnCandidatesExpr("__genPool", n, playerExpr, creatureExpr)})   // 不过本体卡池过滤（组里的牌可能是「基础」稀有度的令牌）"
+            : $"foreach (CardModel __gen in MegaCrit.Sts2.Core.Factories.CardFactory.GetDistinctForCombat({playerExpr}, __genPool, {n}, {playerExpr}.RunState.Rng.CombatCardGeneration))");
         w.Open("");
         EmitSpawnModifiers(w, e, "__gen", tempUp, p, playerExpr, creatureExpr);
         EmitCounted(w, $"await CardPileCmd.AddGeneratedCardToCombat(__gen, PileType.{pile}, {playerExpr});", countInto);
@@ -6580,6 +6589,44 @@ public static class ExtraResourceEnergyCounterDiagPatch
         };
         return $"{extra}.Where({filter}).Distinct().ToList()";
     }
+
+    /// <summary>
+    /// 这个「生成卡牌」的候选池要不要**绕开本体的 `CardFactory.FilterForCombat`**（V0.2.308）。
+    ///
+    /// <para>用户报的现象：「使用自定义组进行生成卡牌的选择时，无法正常进行」—— 查下来他那个组里
+    /// （`bzblBlade` 利刃 / `bzblSpear` 长槊 / `bzblChange` 篡改）全是**稀有度 = 基础（Basic）**的令牌牌，
+    /// 而本体 <c>CardFactory.FilterForCombat</c> 的第一句就是
+    /// <c>c.CanBeGeneratedInCombat &amp;&amp; c.Rarity != Basic &amp;&amp; c.Rarity != Ancient &amp;&amp; c.Rarity != Event</c> ——
+    /// 整池被滤空 → 生成出来的 <c>GetDistinctForCombat</c> 返回 0 张 → <c>if (__candidates.Count &gt; 0)</c>
+    /// 整段跳过：牌打出去**什么都没发生**（选牌界面根本不出现）。</para>
+    ///
+    /// <para>判据：范围是**自定义组 / 自定义关键词**（用户明确点名要这几张牌），而且这几张牌里
+    /// 有**任何一张**会被上面那条过滤掉 → 改成「直接按这个列表生成」（不再过卡池过滤）。
+    /// 别的范围（攻击 / 技能 / … / 整个角色卡池）照旧走本体那套（那些牌本来就是从卡池里取的）。</para>
+    /// </summary>
+    public static bool ExplicitSpawnPoolBypassesCombatFilter(EffectSpec e, CharacterProfile? p)
+    {
+        if (p is null) return false;
+        bool isGroup = EffectCatalog.IsCardGroupFilter(e.SpawnFilter);
+        bool isKeyword = EffectCatalog.IsKeywordFilter(e.SpawnFilter);
+        if (!isGroup && !isKeyword) return false;
+        var cards = isGroup
+            ? EffectCatalog.CardGroupCards(p, e.SpawnFilter)
+            : EffectCatalog.KeywordGroupCards(p, e.SpawnFilter);
+        if (cards.Count == 0) return false;
+        // 本体 FilterForCombat 会滤掉的稀有度（见 CardFactory.cs:159）
+        return cards.Any(c => c.Rarity is "Basic" or "Ancient" or "Event");
+    }
+
+    /// <summary>
+    /// 「生成卡牌」的候选池 → 卡牌实例列表（不经本体卡池过滤，V0.2.308；见
+    /// <see cref="ExplicitSpawnPoolBypassesCombatFilter"/>）。
+    /// 随机取 <paramref name="countExpr"/> 张（不重复），再 <c>CombatState.CreateCard</c> 建实例 ——
+    /// 和 <c>CardFactory.GetDistinctForCombat</c> 一样返回**实例**（后面 AddGeneratedCardToCombat 要它）。
+    /// </summary>
+    public static string DirectSpawnCandidatesExpr(string pool, string countExpr, string playerExpr, string creatureExpr) =>
+        $"MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom({pool}.Distinct(), {countExpr}, {playerExpr}.RunState.Rng.CombatCardGeneration)"
+        + $".Select(c => {creatureExpr}.CombatState.CreateCard(c, {playerExpr})).ToList()";
 
     /// <summary>
     /// 放置卡牌（用户要求的新效果）：
