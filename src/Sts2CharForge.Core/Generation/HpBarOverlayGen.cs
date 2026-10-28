@@ -183,6 +183,23 @@ public static class {{ClassName}}
         Log.Warn("[覆盖血条] 没画出来（这条只报一次）：" + why);
     }
 
+    /// <summary>
+    /// 上一次我们自己写进去的 <c>_hpForeground.OffsetRight</c>（我们自己写的那份 + **写之前的本体原值**）。
+    ///
+    /// <para>V0.2.311（用户报「两个状态却有 3 个颜色」）：本体 <c>RefreshValues</c> 内部会先调一次
+    /// <c>RefreshForeground</c>。两个入口都打了补丁时，同一次刷新里我们的 Postfix 会跑**两遍** ——
+    /// 第一遍按「本体原值」把红条缩了 12×N 像素，第二遍又拿**已经缩过**的值当基准再缩一次 →
+    /// 红条右端比覆盖条左端多退了「一整截」，中间空出来的那一段露出的是本体的浅红「掉血预览条」
+    /// （<c>%HpMiddleground</c>），于是 2 条状态看起来像 3 段颜色。</para>
+    ///
+    /// <para>两头都治：① <c>PatchesGen</c> 现在**只打一个**入口（RefreshValues 只在 RefreshForeground
+    /// 找不到时才兜底）；② 这里再记一份「本体原值」，读到的是我们自己写的值就用原值当基准 —— 重复调用幂等。</para>
+    /// </summary>
+    private sealed class OffsetMemo { public float Written; public float Base; }
+
+    private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<
+        MegaCrit.Sts2.Core.Nodes.Combat.NHealthBar, OffsetMemo> Memo = new();
+
     /// <summary>每条状态「第一次真的画上去」记一条（方便一眼看出是没触发还是没画出来）。</summary>
     private static int _drawn;
     private static void NoteDrawn(int index, int amount, float from, float to, float barWidth, float maxHp)
@@ -263,8 +280,14 @@ public static class {{ClassName}}
             Control? doom = __instance.GetNodeOrNull<Control>("%DoomForeground");
             if (doom is not null && doom.Visible) leftEnd = Math.Max(0f, parentWidth + doom.OffsetRight);
 
-            // 右端：本体算好的「当前血量的右端」（中毒在场时它已经往左退过一次）
-            float rightEnd = parentWidth + red.OffsetRight;
+            // 右端：本体算好的「当前血量的右端」（中毒在场时它已经往左退过一次）。
+            // ⚠ 必须用**本体写的**那个值当基准：同一帧里如果我们被叫了两次（两个入口都打上补丁时就是这样），
+            //   第二次读到的 `red.OffsetRight` 是第一次我们自己写进去的（已经缩过），再缩一次就会空出一截 ——
+            //   V0.2.311 用户报的「两个状态却有 3 个颜色」就是这么来的（空的那截露出浅红的掉血预览条）。
+            OffsetMemo memo = Memo.GetValue(__instance, _ => new OffsetMemo());
+            float ownOffset = red.OffsetRight;
+            float baseOffset = Math.Abs(ownOffset - memo.Written) < 0.01f ? memo.Base : ownOffset;
+            float rightEnd = parentWidth + baseOffset;
             bool anyLeft = false;
             bool anyDrawn = false;
 
@@ -274,6 +297,8 @@ public static class {{ClassName}}
             if (anyLeft) red.OffsetLeft = leftEnd;
             else red.OffsetLeft = 0f;
             red.OffsetRight = rightEnd - parentWidth;
+            memo.Base = baseOffset;
+            memo.Written = red.OffsetRight;
 
             // 钩子确实进来了、但身上没有配了覆盖色的状态：记一条（只记一次），
             // 这样「补丁没打上 / 打了没触发 / 触发了但身上没状态 / 真画了」四种情况在日志里分得清。

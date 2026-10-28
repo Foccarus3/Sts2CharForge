@@ -26720,10 +26720,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& hpSrc.Contains("[覆盖血条] 画上了："), "两向日志");
 			Check("覆盖血条：宽度有 12px 下限（跟本体 GetFgWidth 一样，层数少也看得见）",
 				hpSrc.Contains("if (width < 12f) width = 12f;"), "12px 下限");
-			Check("覆盖血条：两个入口都接（RefreshForeground + 它的调用方 RefreshValues，各打各的）",
-				hpSrc.Contains("ValuesTarget")
-				&& hpSrc.Contains("AccessTools.Method(typeof(MegaCrit.Sts2.Core.Nodes.Combat.NHealthBar), \"RefreshValues\")")
-				&& PatchesGen.ModEntrySource(hpProfile).Contains("__hpValues"), "两个入口");
+			// V0.2.311（用户报「两个状态却有 3 个颜色」）：以前两个入口都打补丁
+			//（RefreshForeground + 它的调用方 RefreshValues），而 RefreshValues 内部会先调一次
+			// RefreshForeground ⇒ 同一次刷新我们的 Postfix 跑两遍 → 红条被缩两次、右端空出一截，
+			// 那截露出本体的 %HpMiddleground（#FF7F00 橙色，掉血 / 回血预览条）→ 看着像多了第三种颜色。
+			Check("V0.2.311：覆盖血条只打**一个**入口（RefreshValues 只在找不到 RefreshForeground 时兜底）",
+				PatchesGen.ModEntrySource(hpProfile).Contains("if (__hpOverlay is not null)")
+				&& PatchesGen.ModEntrySource(hpProfile).Contains("var __hpValues")
+				&& PatchesGen.ModEntrySource(hpProfile).Split(new[] { "harmony.Patch(__hpValues" }, StringSplitOptions.None).Length == 2, "一主一兜底");
+			Check("V0.2.311：同一次刷新被叫两次也不会把红条缩两次（按「本体原值」当基准，幂等）",
+				hpSrc.Contains("ConditionalWeakTable<") && hpSrc.Contains("float baseOffset")
+				&& hpSrc.Contains("memo.Base = baseOffset;") && hpSrc.Contains("memo.Written = red.OffsetRight;"), "幂等");
 			Check("补丁里几何：层数当血量、同一边依次往里堆、红条 = 中间剩下那一段",
 				hpSrc.Contains("float width = (float)amount / maxHp * maxFgWidth;")
 				&& hpSrc.Contains("a = Math.Max(rightEnd - width, leftEnd);")

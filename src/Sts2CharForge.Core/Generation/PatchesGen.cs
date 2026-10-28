@@ -170,8 +170,13 @@ public static class PatchesGen
         //
         // ⚠ V0.2.185：用户报「覆盖血条没显示出来」时日志里一个字都没有 —— 因为生成出来的补丁
         //   成功 / 静默失败都不出声，根本分不清「没生成（存档里没填颜色）」「没打上」「打上了没触发」。
-        //   所以这里加载时就把**表里有哪几条**打出来（一眼看出模组里到底有没有这个功能），
-        //   两个入口各打一次（RefreshForeground + 它的调用方 RefreshValues），各自失败各自记警告。
+        //   所以这里加载时就把**表里有哪几条**打出来（一眼看出模组里到底有没有这个功能）。
+        //
+        // ⚠ V0.2.311（用户报「两个状态却有 3 个颜色」）：以前这里**两个入口都打**（RefreshForeground +
+        //   它的调用方 RefreshValues），而 RefreshValues 内部会先调一次 RefreshForeground ⇒ 同一次刷新
+        //   我们的 Postfix 跑两遍：第一遍把红条按覆盖条宽度缩一次，第二遍拿**已经缩过**的值再缩一次，
+        //   红条右端多退了一整截、中间那截露出本体的浅红「掉血预览条」→ 2 条状态看着像 3 段颜色。
+        //   现在**只打 RefreshForeground**；只有在找不到它时才退而求其次接 RefreshValues（各打一次，不并存）。
         if (HpBarOverlayGen.Needs(p))
         {
             w.Line()
@@ -179,23 +184,23 @@ public static class PatchesGen
              .Line($"Log.Info({Lit.Str(HpBarOverlayGen.LoadSummary(p))});")
              .Open("try")
              .Line($"var __hpOverlay = {HpBarOverlayGen.ClassName}.Target;")
-             .Line("if (__hpOverlay is not null)")
+             .Open("if (__hpOverlay is not null)")
              .Line($"    harmony.Patch(__hpOverlay, postfix: new HarmonyLib.HarmonyMethod(typeof({HpBarOverlayGen.ClassName}), nameof({HpBarOverlayGen.ClassName}.Postfix)));")
-             .Line("else")
-             .Line($"    Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：找不到 NHealthBar.RefreshForeground（本体的血条节点可能改过）")});")
+             .Close()
+             .Open("else")
+             // 兜底：只接 RefreshValues 这一个入口（它内部会调 RefreshForeground，所以只跑一遍）
+             .Line($"    Log.Warn({Lit.Str("自定义状态覆盖血条：找不到 NHealthBar.RefreshForeground，改接它的调用方 RefreshValues（本体的血条节点可能改过）")});")
+             .Line($"    var __hpValues = {HpBarOverlayGen.ClassName}.ValuesTarget;")
+             .Open("if (__hpValues is not null)")
+             .Line($"        harmony.Patch(__hpValues, postfix: new HarmonyLib.HarmonyMethod(typeof({HpBarOverlayGen.ClassName}), nameof({HpBarOverlayGen.ClassName}.Postfix)));")
+             .Close()
+             .Open("else")
+             .Line($"        Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：两个入口都找不到（本体的血条类可能改过）")});")
+             .Close()
+             .Close()
              .Close()
              .Open("catch (Exception e)")
              .Line($"Log.Warn({Lit.Str("自定义状态覆盖血条补丁没打上：")} + e.Message);")
-             .Close()
-             .Open("try")
-             .Line($"var __hpValues = {HpBarOverlayGen.ClassName}.ValuesTarget;")
-             .Line("if (__hpValues is not null)")
-             .Line($"    harmony.Patch(__hpValues, postfix: new HarmonyLib.HarmonyMethod(typeof({HpBarOverlayGen.ClassName}), nameof({HpBarOverlayGen.ClassName}.Postfix)));")
-             .Line("else")
-             .Line($"    Log.Warn({Lit.Str("自定义状态覆盖血条：找不到 NHealthBar.RefreshValues（只接了 RefreshForeground 那一个入口）")});")
-             .Close()
-             .Open("catch (Exception e)")
-             .Line($"Log.Warn({Lit.Str("自定义状态覆盖血条：RefreshValues 那个入口没打上：")} + e.Message);")
              .Close();
         }
 
