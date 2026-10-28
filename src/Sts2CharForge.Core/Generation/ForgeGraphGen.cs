@@ -3548,6 +3548,11 @@ public static class ForgeGraphGen
                 : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __clr = __fgFoe.GetPower<{powerId}>(); if (__clr is not null) await PowerCmd.Remove(__clr); }}",
             "ClearPowerDebuffs" => $"foreach (Creature __fgFoe in {foes}) await ForgeFormulaRuntime.ClearDebuffs(__fgFoe);",
             "Stun" => $"foreach (Creature __fgFoe in {foes}) CreatureCmd.Stun(__fgFoe);",
+            // V0.2.309（用户报「卡牌「监视」的即死【节点图】里还没接上」）：即死 = 本体 CreatureCmd.Kill
+            //（和卡牌 / 遗物 / 药水链同一句；那几条链早就支持，只有节点图漏了这一档）。
+            "InstantKill" => FoeLoop(foes,
+                DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
+                "await CreatureCmd.Kill(__fgFoe);", alwaysBraces: false),
             "ForbidBlock" => $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Apply<NoBlockPower>({ctx.ChoiceVar}, __fgFoe, {amount}, __fgSelf, {ctx.CardSelfExpr});",
             // ---------- 对**召唤物**动手 ----------
             // 目标是召唤物，**不能**用 unit.Foes（那默认是「指定敌人」）。哪一只由【对象】模块决定：
@@ -4271,6 +4276,8 @@ public static class ForgeGraphGen
         // ---------- 基础（单体 / 群体都走 foreach 或群体命令）----------
         "Damage", "Block", "Draw", "Energy", "Heal", "HpLoss", "MaxHp", "Gold", "ExtraResource",
         "ApplyPower", "Stun", "DoublePower", "ClearPowerOne", "ClearPowerDebuffs", "ForbidBlock",
+        // V0.2.309：即死（用户报「卡牌「监视」的即死节点图里还没接上」）—— 生成 CreatureCmd.Kill
+        "InstantKill",
         "TempPower", "EndTurn",
         // ---------- 牌堆 / 选牌类 ----------
         "GenerateCard", "GainPotion", "ExhaustCard", "DiscardCard", "TransformCard", "UpgradeCard",

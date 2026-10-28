@@ -18123,6 +18123,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& ForgeGraphGen.SupportedEffectKinds.Contains("ReturnSelfToHand")
 						// V0.2.203：用户截图报的「处决」用的就是这一档，现在卡牌图能生成
 						&& ForgeGraphGen.SupportedEffectKinds.Contains("CheapenSelf")
+						// V0.2.309（用户截图报的「卡牌「监视」的即死」）：即死现在节点图也接了
+						&& ForgeGraphGen.SupportedEffectKinds.Contains("InstantKill")
 						// 反例：仍然没接的（抽到就减费那档要挂卡自己的钩子 + 只有遗物 / 药水能配的那一档）
 						&& !ForgeGraphGen.SupportedEffectKinds.Contains("CheapenSelfOnDraw")
 						&& !ForgeGraphGen.SupportedEffectKinds.Contains("AncientRelicSwap"), "名单在");
@@ -18144,6 +18146,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						string.Join(" ｜ ", badKindIssues.Where((ValidationIssue i) => i.IsError).Select((ValidationIssue i) => i.Message).Take(2)));
 					Check("报错里写清了两条出路（换种类 / 放到卡牌页的效果列表里）",
 						badKindIssues.Any((ValidationIssue i) => i.Message.Contains("节点图现在支持") && i.Message.Contains("效果」列表")), "写清了");
+					// V0.2.309（用户截图报的「卡牌「监视」（升级后：「先见」）第 1 张的「即死」【节点图】里还没接上」）：
+					// 即死以前不在节点图的支持名单里 → 整张卡生成被拦。现在接了 `CreatureCmd.Kill`。
+					{
+						var killProf = ProfileFactory.Sample();   // 用干净存档：Profile 里还留着上面那张「没接上的种类」的卡
+						var killTrig = new ForgeNodeSpec { Kind = "Trigger" };
+						killTrig.SetField("Timing", ForgeTimings.CardPlayed);
+						var killEff = new ForgeNodeSpec { Kind = "Effect" };
+						killEff.SetField("Effect", "InstantKill");
+						var killCard = new CardSpec { Name = "自检监视", ClassName = "UiCheckGraphKill", Cost = 1, CardType = "Skill", IsForged = true };
+						killCard.ForgeGraph = new ForgeGraphSpec { Nodes = { killTrig, killEff } };
+						killCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = killTrig.Id, To = killEff.Id, FromPort = 0, ToPort = 0 });
+						killProf.Cards.Add(killCard);
+						var killIssues = ProfileValidator.Validate(killProf);
+						Check("V0.2.309：图里用「即死」不再报「节点图里还没接上」",
+							!killIssues.Any((ValidationIssue i) => i.IsError && i.Message.Contains("节点图里还没接上")), "不再报了");
+						string killSrc = CSharpCodeGen.CardSource(killProf, killCard, killProf.Cards.Count - 1);
+						Check("V0.2.309：图上「即死」生成的是本体的 CreatureCmd.Kill（对【对象】指定的那个目标）",
+							killSrc.Contains("CreatureCmd.Kill(__fgFoe)") && killSrc.Contains("ForgeFormulaRuntime.TargetOrFirst"),
+							killSrc.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Kill", StringComparison.Ordinal))?.Trim() ?? "(没生成)");
+					}
 					// 【效果】需要状态却没选：说「没选状态」，不能说成「节点图没接上这个种类。"
 					foreach (var n2 in badKindCard.ForgeGraph!.Nodes) if (n2.Kind == "Effect") n2.SetField("Effect", "ApplyPower");
 					var noPowerIssues = ProfileValidator.Validate(Profile);
