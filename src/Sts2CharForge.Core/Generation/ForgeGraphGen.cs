@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -1027,9 +1027,20 @@ public static class ForgeGraphGen
                 PlanIdx: idx);
             EmitHookBody(sb, p, g, plan, ctx, hookHasPlay: false, deferGate: false, hasCardReward: hasReward);
             string body2 = sb.ToString();
-            map[timing.Hook] = map.TryGetValue(timing.Hook, out string? prevBody)
-                ? prevBody + "        // ---- 同一个时刻的第 " + (idx + 1) + " 块 ----\n" + "        {\n" + body2 + "        }\n"
-                : body2;
+            // V0.2.318（用户报「锻造状态某个状态层数到达 N 层触发时机不生效」）：这张表要按
+            // **CustomPowerGen 那边的分组键**（PowerHookOf）也存一份 —— 那边用「钩子分组名」
+            //（PowerReached → PowerChanged）去查，而 timing.Hook 写的是本体方法名
+            //（AfterPowerAmountChanged），只存后者 → 查不到 → 图上正文丢了 → 效果体退回老链发射器
+            //（TransformCard 之类在状态链上不支持 → 只剩一句「用不了」注释 = 不生效）。
+            string groupKey = CustomPowerGen.PowerHookOf(PowerTriggers.Canonical(timing.Id));
+            foreach (string mapKey in new[] { timing.Hook, groupKey }
+                         .Where(k => !string.IsNullOrEmpty(k)).Distinct(StringComparer.Ordinal))
+            {
+                if (string.IsNullOrEmpty(mapKey)) continue;
+                map[mapKey] = map.TryGetValue(mapKey, out string? prevBody)
+                    ? prevBody + "        // ---- 同一个时刻的第 " + (idx + 1) + " 块 ----\n" + "        {\n" + body2 + "        }\n"
+                    : body2;
+            }
             idx++;
         }
         }

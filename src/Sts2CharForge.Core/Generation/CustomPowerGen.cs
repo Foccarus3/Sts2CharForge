@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -380,9 +380,17 @@ public static class CustomPowerGen
         // 触发时机自己的数值闸门（每累计 N 次 / 数值 ≥ N）照旧由这里套上，只把「跑效果」那一步
         // 换成写这段正文（见 <see cref="Source"/> 的 graphBody）。bodyText = null 时逐字走老路。
         string? body = bodyText ?? _graphBody;
+        // V0.2.318：图上的正文在整个钩子方法里**只落一次**（同一个钩子上合并多条触发时机时以前每条都
+        // Raw 一遍 → 效果被执行两遍；EmitEffects 那次兜底也会再写一遍）。
+        bool bodyWritten = false;
         void EmitOne(PowerTriggerSpec t, string? foe, bool scope)
         {
-            if (body is not null) { w.Raw(body); return; }
+            if (body is not null)
+            {
+                if (!bodyWritten) { w.Raw(body); bodyWritten = true; }
+                _graphBody = null;   // 交给这里了，别让 EmitEffects 再兜底写一遍
+                return;
+            }
             if (!TryWrapRequireAll(w, t, () => EmitEffects(w, t, foeFrom: foe, p: p, ownScope: scope)))
                 EmitEffects(w, t, foeFrom: foe, p: p, ownScope: scope);
         }
@@ -1347,6 +1355,17 @@ public static class CustomPowerGen
     private static void EmitEffects(CodeWriter w, PowerTriggerSpec t, string? foeFrom = null, string? roomVar = null,
         CharacterProfile? p = null, bool ownScope = false)
     {
+        // V0.2.318（用户报「锻造状态某个状态层数到达 N 层触发时机不生效」）：**锻造状态**这块布上，
+        // 「跑效果」那一步要用图上渲染好的正文（_graphBody）。以前只有 EmitItemsWithAmountGate 那条路
+        // 会换正文，而「到达 N 层」这些档是直接调 EmitEffects 的 → 图上的效果被丢掉，退回老链发射器，
+        // TransformCard 之类在状态链上不支持 → 只剩一句「用不了」注释 = 完全不生效。
+        if (_graphBody is { } graphBodyNow)
+        {
+            _graphBody = null;   // 每段正文只落一次
+            w.Line();
+            w.Raw(graphBodyNow);
+            return;
+        }
         if (t.Effects.Count == 0)
         {
             w.Line("// （这个触发时机下还没加效果）");

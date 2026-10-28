@@ -40255,6 +40255,28 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 		}
 
+		// ===== V0.2.318：锻造状态 + 「某个状态层数到达 N 层」——图上的效果体以前被丢掉 =====
+		{
+			var gProf = ProfileFactory.Sample();
+			var gPow = new CustomPowerSpec { Name = "自检层数图状态", ClassName = "UiCheckReachGraphPow", Enabled = true };
+			var gTrig = new ForgeNodeSpec { Kind = "Trigger" };
+			gTrig.SetField("Timing", ForgeTimings.PowerReached);
+			gTrig.SetField("PowerId", "UiCheckReachGraphPow");
+			gTrig.SetField("PowerAmount", "2");
+			var gEff = new ForgeNodeSpec { Kind = "Effect" };
+			gEff.SetField("Effect", "Block");
+			gEff.SetField("Amount", "3");
+			var gGraph = new ForgeGraphSpec { Nodes = { gTrig, gEff } };
+			gGraph.Links.Add(new ForgeLinkSpec { From = gTrig.Id, To = gEff.Id, FromPort = 0, ToPort = 0 });
+			gPow.ForgeGraph = gGraph;
+			gProf.CustomPowers.Add(gPow);
+			string gSrc = CustomPowerGen.Source(gProf, gPow, gProf.CustomPowers.Count - 1);
+			Check("V0.2.318：图上的「层数到达 N 层」会用图上的效果体（不再退回老链、不再出现「用不了」）",
+				gSrc.Contains("Amount >=") && gSrc.Contains("fgPlayer = base.Owner.Player") && !gSrc.Contains("用不了"), "图正文在");
+			Check("V0.2.318：图正文只落一次（同一个钩子上不会被执行两遍）",
+				gSrc.Split(new[] { "fgPlayer = base.Owner.Player" }, StringSplitOptions.None).Length == 2, "只一次");
+		}
+
 		// ===== V0.2.317：药水「指定敌人」在多目标下打错人 + 遗物「获得药水」指向自己做���药水 =====
 		{
 			var potProf = ProfileFactory.Sample();
