@@ -2371,6 +2371,38 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static bool NeedsSlowPowerHelper(CharacterProfile p) => SlowPercentEffects(p).Any();
 
     /// <summary>施加完「缓慢」之后，把它的内部数值直接写成 N%（creatureExpr = 目标生物）。</summary>
+    /// <summary>
+    /// V0.2.321（用户报「给自己和敌人各 1 层易伤，一回合结束后对面的没了、自己的还在，连吃两个回合」）：
+    /// 本体 <c>PowerCmd.Apply</c> 里有这么一条规矩 —— **往玩家身上施加减益时**会打一个
+    /// <c>SkipNextDurationTick = true</c>（<c>target.Side == CombatSide.Player &amp;&amp; power.Type == PowerType.Debuff</c>），
+    /// 意思是「玩家身上的减益下一次结算先跳过一轮」。它是为「敌人打你」设计的，
+    /// 但自己给自己上减益时结果就是「自己这边的易伤比敌方多挂一轮」—— 看着像 bug。
+    ///
+    /// <para>所以：**我们主动往自己（玩家侧）身上施加状态**之后，紧跟一句把这个标记清掉，
+    /// 让两边在同一个「敌方回合结束」结算完。只在我们自己发的那句后面清 —— 敌人施加的照旧走本体逻辑。</para>
+    ///
+    /// <para>用裸块包起来：同一个方法里可能有多条这种效果，局部变量名不会撞。</para>
+    /// </summary>
+    internal static void EmitSelfDebuffTickFix(CodeWriter w, string powerTypeExpr, string creatureExpr)
+    {
+        w.Open("");
+        w.Line($"if ({creatureExpr}.GetPower<{powerTypeExpr}>() is {{ Type: PowerType.Debuff }} __selfDebuff) __selfDebuff.SkipNextDurationTick = false;");
+        w.Line("// ↑ 本体给「玩家侧减益」打的「跳过下一次结算」标记：清掉，让自己身上的减益和敌人同一回合结算");
+        w.Close();
+    }
+
+    /// <summary>生成里引用这个状态的类名（和 <see cref="ApplyPowerLine"/> 用的那个一致）。</summary>
+    internal static string PowerTypeExprOf(EffectSpec e)
+    {
+        string? t = e.PowerId;
+        if (PercentPowers.IsPercent(t)) t = PercentPowers.ClassOf(t) ?? t;
+        return Lit.Identifier((t ?? "").Trim(), "PowerModel");
+    }
+
+    /// <summary>这个效果是不是「会把状态施加到自己身上」的那些目标档。</summary>
+    private static bool AppliesToSelfSide(EffectSpec e) =>
+        (e.TargetSide ?? "").Trim() is "Self" or "Player" or "AllUnits" or "AnyPlayer" or "AllAllies" or "Ally";
+
     internal static void EmitSlowPercentFix(CodeWriter w, EffectSpec e, string creatureExpr)
     {
         if (!IsSlowPercentEffect(e)) return;
@@ -9579,6 +9611,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     case "Self":
                         w.Line(ApplyPowerInstr(e, useX, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "base.Owner.Creature");
+                        // V0.2.321：自己身上的减益，清掉本体打的「跳过下一次结算」标记（不然要比敌人多挂一轮）
+                        if (AppliesToSelfSide(e) && e.Amount >= 0m && !IsNegativeAmount(e, false)) EmitSelfDebuffTickFix(w, PowerTypeExprOf(e), "base.Owner.Creature");
                         break;
                     case "AllEnemies":
                         w.Open("foreach (Creature foe in base.CombatState.HittableEnemies)")
@@ -9617,6 +9651,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                         w.Open(AllUnitsForeachLine);
                         w.Line(ApplyPowerInstr(e, useX, e.PowerId, "unit", amt, "base.Owner.Creature"));
                         EmitSlowPercentFix(w, e, "unit");
+                            // V0.2.321：全体单位里也包括自己 → 自己那份减益同样清掉「跳过下一次结算」
+                            if (AppliesToSelfSide(e) && e.Amount >= 0m && !IsNegativeAmount(e, false)) EmitSelfDebuffTickFix(w, PowerTypeExprOf(e), "base.Owner.Creature");
                         w.Close();
                         w.Close();
                         break;
@@ -13477,6 +13513,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     w.Line(ApplyPowerInstr(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
+                        // V0.2.321：自己身上的减益，清掉本体打的「跳过下一次结算」标记（不然要比敌人多挂一轮）
+                        if (AppliesToSelfSide(e) && e.Amount >= 0m && !IsNegativeAmount(e, false)) EmitSelfDebuffTickFix(w, PowerTypeExprOf(e), "base.Owner.Creature");
                 }
                 else if (e.TargetSide == "RandomEnemies")
                 {
@@ -14911,6 +14949,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     w.Line(ApplyPowerInstr(e, useX: false, e.PowerId, "base.Owner.Creature", amt, "base.Owner.Creature", cardSourceExpr: "null"));
                     EmitSlowPercentFix(w, e, "base.Owner.Creature");
+                        // V0.2.321：自己身上的减益，清掉本体打的「跳过下一次结算」标记（不然要比敌人多挂一轮）
+                        if (AppliesToSelfSide(e) && e.Amount >= 0m && !IsNegativeAmount(e, false)) EmitSelfDebuffTickFix(w, PowerTypeExprOf(e), "base.Owner.Creature");
                 }
                 break;
 

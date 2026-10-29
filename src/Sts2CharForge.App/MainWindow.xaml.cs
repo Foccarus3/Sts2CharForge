@@ -40459,6 +40459,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 		}
 
+		// ===== V0.2.321：自己身上的减益要清掉本体打的「跳过下一次结算」标记 =====
+		{
+			var sdProf = ProfileFactory.Sample();
+			var sdCard = new CardSpec { Name = "自检自伤易伤", ClassName = "UiCheckSelfVuln", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			sdCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "VulnerablePower", Amount = 1m, TargetSide = "Enemy" });
+			sdCard.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "VulnerablePower", Amount = 1m, TargetSide = "Self" });
+			sdProf.Cards.Add(sdCard);
+			string sdSrc = CSharpCodeGen.CardSource(sdProf, sdCard, sdProf.Cards.Count - 1);
+			Check("V0.2.321：给自己减益后清掉 SkipNextDurationTick（两边同一回合结算）",
+				sdSrc.Contains("__selfDebuff.SkipNextDurationTick = false;"), "清掉了");
+			Check("V0.2.321：只对「会打到自己身上」的目标档加这一句（打敌人不加）",
+				sdSrc.Split(new[] { "__selfDebuff.SkipNextDurationTick" }, StringSplitOptions.None).Length == 2, "只有一处");
+			var sdAll = new CardSpec { Name = "自检全体易伤", ClassName = "UiCheckAllVuln", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			sdAll.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "VulnerablePower", Amount = 1m, TargetSide = "AllUnits" });
+			sdProf.Cards.Add(sdAll);
+			string sdAllSrc = CSharpCodeGen.CardSource(sdProf, sdAll, sdProf.Cards.Count - 1);
+			Check("V0.2.321：全体单位那条也清（自己也在里头）",
+				sdAllSrc.Contains("__selfDebuff.SkipNextDurationTick = false;"), "全体也清");
+		}
+
 		// ===== V0.2.320：变化卡牌数值 0 = 把这张牌自己变掉（以前整条被丢掉 → 不弹界面也不变化）=====
 		{
 			var tfProf = ProfileFactory.Sample();
