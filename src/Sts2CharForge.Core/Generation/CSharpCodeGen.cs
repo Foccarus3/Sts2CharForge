@@ -2409,8 +2409,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitSelfTransformLines(CodeWriter w, string selfExpr, string madeVar, CharacterProfile? p, EffectSpec e, string choiceExpr)
     {
         w.Line($"if ({selfExpr}.Pile is null || {selfExpr}.Pile.Type != PileType.Discard)");
-        w.Line($"    await CardPileCmd.Add({selfExpr}, PileType.Discard, CardPilePosition.Bottom, null, skipVisuals: true);   // 先落进弃牌堆（本体 Transform 要求旧牌有 pile）");
-        w.Line($"await CardCmd.Transform({selfExpr}, {madeVar});   // 原地变成新牌（同一张牌，不是新增一张）");
+        w.Line($"    await CardPileCmd.Add({selfExpr}, PileType.Discard);   // 先落进弃牌堆（本体 Transform 要求旧牌有 pile；带动画，节点才收走）");
+        w.Line($"await CardCmd.Transform({selfExpr}, {madeVar}, MegaCrit.Sts2.Core.Nodes.CommonUi.CardPreviewStyle.None);   // 原地变成新牌（同一张牌，不是新增一张）");
         EmitSpawnKeyword(w, e, madeVar, p);
     }
 
