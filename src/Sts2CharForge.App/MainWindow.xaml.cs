@@ -40540,10 +40540,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			tfCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 0m, CardPick = "Chosen", SpawnCardId = "UiCheckTf0Aim" });
 			tfProf.Cards.Add(tfCard);
 			string tfSrc = CSharpCodeGen.CardSource(tfProf, tfCard, tfProf.Cards.Count - 1);
-			Check("V0.2.320/325：变化卡牌「数值 0」= 把这张牌自己变掉（新牌进弃牌堆 + 消耗掉自己）",
+			Check("V0.2.320/327：变化卡牌「数值 0」= 原位把这张牌变成新牌（先落弃牌堆，再 Transform）",
 				CSharpCodeGen.AmountZeroIsSelf(tfCard.Effects[0])
-				&& tfSrc.Contains("await CardPileCmd.Add(__madeSelf, PileType.Discard);")
-				&& tfSrc.Contains("if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);")
+				&& tfSrc.Contains("await CardPileCmd.Add(this, PileType.Discard, CardPilePosition.Bottom, null, skipVisuals: true);")
+				&& tfSrc.Contains("await CardCmd.Transform(this, __madeSelf);")
 				&& !tfSrc.Contains("取 0 张"), "变自己了");
 			// 图链也要
 			var tfGraphCard = new CardSpec { Name = "自检图变化零", ClassName = "UiCheckTf0Graph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
@@ -40561,7 +40561,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			tfProf.Cards.Add(tfGraphCard);
 			string tfGSrc = CSharpCodeGen.CardSource(tfProf, tfGraphCard, tfProf.Cards.Count - 1);
 			Check("V0.2.320/325：图上的「变化卡牌 0」也变成自己（不再被「取 0 张」跳过）",
-				tfGSrc.Contains("await CardPileCmd.Add(__madeSelf, PileType.Discard);") && !tfGSrc.Contains("取 0 张"), "图上也变了");
+				tfGSrc.Contains("await CardCmd.Transform(this, __madeSelf);") && !tfGSrc.Contains("取 0 张"), "图上也变了");
 		}
 
 		// ===== V0.2.318：锻造状态 + 「某个状态层数到达 N 层」——图上的效果体以前被丢掉 =====

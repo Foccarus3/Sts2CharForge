@@ -2399,6 +2399,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return Lit.Identifier((t ?? "").Trim(), "PowerModel");
     }
 
+    /// <summary>
+    /// V0.2.327（用户报「变化自己后显示的是消耗自己 / 弃牌堆牌数还是 0」）：**原位变**，不要「消耗 + 新增」。
+    ///
+    /// <para>做法：先确保这张牌落进**弃牌堆**（它此刻还在「打出」那一摞里，本体 Transform 要求旧牌有 pile），
+    /// 再 <c>CardCmd.Transform</c> 原地换成新牌 —— 于是：
+    /// 变的是同一张牌（1 张换 1 张）、弃牌堆数量 +1 正常、动画是「变化」不是「消耗」。</para>
+    /// </summary>
+    private static void EmitSelfTransformLines(CodeWriter w, string selfExpr, string madeVar, CharacterProfile? p, EffectSpec e, string choiceExpr)
+    {
+        w.Line($"if ({selfExpr}.Pile is null || {selfExpr}.Pile.Type != PileType.Discard)");
+        w.Line($"    await CardPileCmd.Add({selfExpr}, PileType.Discard, CardPilePosition.Bottom, null, skipVisuals: true);   // 先落进弃牌堆（本体 Transform 要求旧牌有 pile）");
+        w.Line($"await CardCmd.Transform({selfExpr}, {madeVar});   // 原地变成新牌（同一张牌，不是新增一张）");
+        EmitSpawnKeyword(w, e, madeVar, p);
+    }
+
     /// <summary>这个效果是不是「会把状态施加到自己身上」的那些目标档。</summary>
     private static bool AppliesToSelfSide(EffectSpec e) =>
         (e.TargetSide ?? "").Trim() is "Self" or "Player" or "AllUnits" or "AnyPlayer" or "AllAllies" or "Ally";
@@ -7930,12 +7945,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             }
             w.Line(SelfContainedMarker(e));
             // V0.2.325（用户报「变化卡牌数值为 0 时怎么不是变化自己」）：**不能**对正在被打出的这张牌用
-            // CardCmd.Transform —— 本体 Transform 是把「旧牌从它所在的摞里拿掉、新牌放进同一个摞」，
-            // 而这张牌此刻在「打出」那一摞里（PileType.Play）→ 变出来的新牌被塞回「打出」摞，
-            // 战斗结算完就看不见了（= 看起来根本没变）。
-            // 所以这里按「真的替换掉这张牌」来实现：**新牌直接进弃牌堆**，再把这张牌自己消耗掉
-            //（1 张换 1 张，不会变成 2 张）。想「额外多一张」就改用「生成卡牌」。
-            w.Line("// 数值 0 = 这张牌自己：变出来的新牌进弃牌堆，再把这张牌自己消耗掉（= 替换）");
+            // V0.2.327（用户报「变化自己后显示的是消耗自己 / 弃牌堆牌数还是 0」）：不要再「消耗自己 + 新增一张」，
+            // 而是**原位变**：先确保这张牌落进弃牌堆，再原地 CardCmd.Transform 成新牌（1 张换 1 张）。
+            w.Line("// 数值 0 = 这张牌自己：先落进弃牌堆，再原地变成新牌");
             if (selfRandom)
             {
                 w.Line($"var __transformPool = {SpawnPoolExpr(e, p, playerExpr)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
@@ -7947,20 +7959,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 变动画播完人飘在界面上、被抽到手里还会卡死。
                 w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(__newSelf, {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
-                w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
-                EmitSpawnKeyword(w, e, "__madeSelf", p);
-                // V0.2.326：这张牌可能已经被别的流程挪走了（本体 Transform/Add 都要求有 pile）→ 有 pile 才消耗
-                w.Line($"if ({sourceExpr}.Pile is not null) await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
-                w.Close();
+                EmitSelfTransformLines(w, sourceExpr, "__madeSelf", p, e, choiceExpr);
             }
             else
             {
                 w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(ModelDb.Card<{CardTypeExpr(p, selfTarget!)}>(), {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
-                w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
-                EmitSpawnKeyword(w, e, "__madeSelf", p);
-                // V0.2.326：这张牌可能已经被别的流程挪走了（本体 Transform/Add 都要求有 pile）→ 有 pile 才消耗
-                w.Line($"if ({sourceExpr}.Pile is not null) await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
+                EmitSelfTransformLines(w, sourceExpr, "__madeSelf", p, e, choiceExpr);
             }
             if (countInto is not null) w.Line($"{countInto} += 1;");
             return;
