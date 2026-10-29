@@ -3315,13 +3315,13 @@ public static class ForgeGraphGen
                 else
                 {
                     if (!cvMods)
-                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
+                        sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar}) await CardCmd.Transform({selVar}C, __fgPlayer.Creature.CombatState!.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
                     else
                     {
                         EmitGraphTempUpgradeApply(sb, p, cvSpec, ctx, __ind, cvTempUp);
                         sb.AppendLine(__ind + $"foreach (CardModel {selVar}C in {selVar})");
                         sb.AppendLine(__ind + "{");
-                        sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.Transform({selVar}C, __fgPlayer.RunState.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
+                        sb.AppendLine(__ind + $"    var {selVar}Tr = await CardCmd.Transform({selVar}C, __fgPlayer.Creature.CombatState!.CreateCard(ModelDb.Card<{CSharpCodeGen.CardTypeExpr(p, spawnCardClass)}>(), __fgPlayer));");
                         sb.AppendLine(__ind + $"    CardModel? {selVar}New = {selVar}Tr?.cardAdded;");
                         sb.AppendLine(__ind + $"    if ({selVar}New is not null)");
                         sb.AppendLine(__ind + "    {");

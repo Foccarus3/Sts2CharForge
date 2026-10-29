@@ -40460,6 +40460,36 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 		}
 
+		// ===== V0.2.323：战斗中造牌必须走 CombatState.CreateCard（RunState 造出来的牌会飘 / 卡死）=====
+		{
+			var ccProf = ProfileFactory.Sample();
+			var ccAim = new CardSpec { Name = "自检战斗牌", ClassName = "UiCheckCombatAim", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			ccAim.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+			ccProf.Cards.Add(ccAim);
+			var ccCard = new CardSpec { Name = "自检变化卡", ClassName = "UiCheckCombatTf", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			ccCard.Effects.Add(new EffectSpec { Kind = "TransformCard", Amount = 0m, CardPick = "Chosen", SpawnCardId = "UiCheckCombatAim" });
+			ccProf.Cards.Add(ccCard);
+			string ccSrc = CSharpCodeGen.CardSource(ccProf, ccCard, ccProf.Cards.Count - 1);
+			Check("V0.2.323：变化卡牌造新牌用 CombatState.CreateCard（不再 RunState → 不会飘 / 卡死）",
+				ccSrc.Contains(".CreateCard(ModelDb.Card<UiCheckCombatAim>(),") && !ccSrc.Contains("RunState.CreateCard"), "走战斗范围");
+			// 图链那条也要
+			var ccG = new ForgeGraphSpec();
+			var ccT = new ForgeNodeSpec { Kind = "Trigger" };
+			ccT.SetField("Timing", ForgeTimings.CardPlayed);
+			var ccE = new ForgeNodeSpec { Kind = "Effect" };
+			ccE.SetField("Effect", "TransformCard");
+			ccE.SetField("Amount", "1");
+			ccE.SetField("Pick", "Chosen");
+			ccE.SetField("SpawnCardId", "UiCheckCombatAim");
+			ccG.Nodes.AddRange(new[] { ccT, ccE });
+			ccG.Links.Add(new ForgeLinkSpec { From = ccT.Id, To = ccE.Id, FromPort = 0, ToPort = 0 });
+			var ccGraphCard = new CardSpec { Name = "自检图变化卡", ClassName = "UiCheckCombatTfG", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true, ForgeGraph = ccG };
+			ccProf.Cards.Add(ccGraphCard);
+			string ccGSrc = CSharpCodeGen.CardSource(ccProf, ccGraphCard, ccProf.Cards.Count - 1);
+			Check("V0.2.323：图上的变化卡牌也走 CombatState.CreateCard",
+				ccGSrc.Contains("CombatState!.CreateCard(ModelDb.Card<UiCheckCombatAim>(),") && !ccGSrc.Contains("RunState.CreateCard"), "图上也是");
+		}
+
 		// ===== V0.2.321：自己身上的减益要清掉本体打的「跳过下一次结算」标记 =====
 		{
 			var sdProf = ProfileFactory.Sample();

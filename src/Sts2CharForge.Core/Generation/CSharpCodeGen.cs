@@ -7935,7 +7935,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"var __transformPool = {SpawnPoolExpr(e, p, playerExpr)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
                 w.Line($"CardModel? __newSelf = {playerExpr}.RunState.Rng.CombatCardGeneration.NextItem(__transformPool);");
                 w.Open("if (__newSelf is not null)");
-                w.Line($"CardModel __madeSelf = {playerExpr}.RunState.CreateCard(__newSelf, {playerExpr});");
+                // V0.2.323（用户报「变化的牌直接飘在界面上 / 回抽到手里卡死」）：**战斗中**造牌必须走
+            // CombatState.CreateCard（本体 Begone / Guards 就是这么写的）—— 它同时 AddCard + AfterCreated，
+            // 牌才真的挂在战斗里。以前用 RunState.CreateCard，造出来的是「牌组范围」的牌：
+            // 变动画播完人飘在界面上、被抽到手里还会卡死。
+            w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(__newSelf, {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
                 w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
@@ -7943,7 +7947,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             }
             else
             {
-                w.Line($"CardModel __madeSelf = {playerExpr}.RunState.CreateCard(ModelDb.Card<{CardTypeExpr(p, selfTarget!)}>(), {playerExpr});");
+                w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(ModelDb.Card<{CardTypeExpr(p, selfTarget!)}>(), {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
                 w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
