@@ -1524,7 +1524,7 @@ public static class ForgeGraphGen
             // V0.2.322（用户报「流血怎么不扣血了」）：状态挂在**敌人**身上时 base.Owner.Player 是 null ——
             // 以前这里直接 `base.Owner.Player!`，后面算 X / Y（ForgeFormulaRuntime.Energy(…)）会 NRE，
             // 整个钩子抛异常 → 看起来就是「这个状态什么都不做」。现在退一层：宠物主人 → 战斗里第一个玩家。
-            sb.AppendLine("        Player __fgPlayer = base.Owner.Player ?? base.Owner.PetOwner?.Player ?? base.Owner.CombatState!.Players.First();");
+            sb.AppendLine("        Player __fgPlayer = base.Owner.Player ?? base.Owner.PetOwner ?? base.Owner.CombatState!.Players.First();");
             sb.AppendLine("        Creature __fgSelf = base.Owner;");
             // 「打谁」的默认档：状态没有「打出时选中的目标」，所以默认取第一个可打的敌人
             //（和「自定义状态」页那条老链同一个口径：EmitFoeBlock 的兜底就是它）。

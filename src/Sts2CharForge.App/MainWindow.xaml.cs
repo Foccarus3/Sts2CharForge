@@ -20232,7 +20232,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& genGraphSrc.Contains("public override async Task BeforeCardPlayed(CardPlay cardPlay)"), "两个钩子");
 				Check("状态那块布：序幕按状态取（base.Owner.Player / base.Owner），不写卡牌 / 遗物那套",
 				// V0.2.322：挂在敌人身上时 base.Owner.Player 是 null → 生成时退一层（宠物主人 / 战斗里第一个玩家）
-				genGraphSrc.Contains("Player __fgPlayer = base.Owner.Player ?? ")
+				genGraphSrc.Contains("Player __fgPlayer = base.Owner.Player ?? base.Owner.PetOwner ?? ")
 					&& genGraphSrc.Contains("Creature __fgSelf = base.Owner;")
 					&& !genGraphSrc.Contains("__fgPlayer.Creature"), "状态那一档");
 				Check("状态那块布：图上【效果】真的进了钩子（获得格挡 / 抽牌都写出来了）",
@@ -40458,6 +40458,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 			SelectTabRoot("遗物");
+		}
+
+		// ===== V0.2.324：状态序幕找玩家的链式表达式**不能**对 PetOwner 再取 .Player（PetOwner 本身就是 Player）=====
+		{
+			var plProf = ProfileFactory.Sample();
+			var plPow = new CustomPowerSpec { Name = "自检流血", ClassName = "UiCheckBleed", Type = "Debuff", Enabled = true };
+			var plG = new ForgeGraphSpec();
+			var plT = new ForgeNodeSpec { Kind = "Trigger" };
+			plT.SetField("Timing", "DamageDealt");
+			var plE = new ForgeNodeSpec { Kind = "Effect" };
+			plE.SetField("Effect", "HpLoss");
+			plE.SetField("Amount", "1");
+			plG.Nodes.AddRange(new[] { plT, plE });
+			plG.Links.Add(new ForgeLinkSpec { From = plT.Id, To = plE.Id, FromPort = 0, ToPort = 0 });
+			plPow.ForgeGraph = plG;
+			plProf.CustomPowers.Add(plPow);
+			string plSrc = CustomPowerGen.Source(plProf, plPow, plProf.CustomPowers.Count - 1);
+			Check("V0.2.324：状态序幕找玩家 = Owner.Player ?? PetOwner ?? 战斗里第一个玩家（PetOwner 已是 Player，不能再 .Player）",
+				plSrc.Contains("base.Owner.Player ?? base.Owner.PetOwner ?? base.Owner.CombatState!.Players.First()")
+				&& !plSrc.Contains("PetOwner?.Player"), "写法正确");
 		}
 
 		// ===== V0.2.323：战斗中造牌必须走 CombatState.CreateCard（RunState 造出来的牌会飘 / 卡死）=====
