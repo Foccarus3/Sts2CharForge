@@ -40483,6 +40483,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SelectTabRoot("遗物");
 		}
 
+		// ===== V0.2.331：动画页「缩放 / X 偏移 / Y 偏移」以前根本没进生成代码 =====
+		{
+			var animSpec = new AnimationSpec { Enabled = true, Scale = 2, XOffset = 12, YOffset = -40, SpeedScale = 1.5 };
+			Check("V0.2.331：AnimationSpec 有 X 偏移（0 = 居中）", animSpec.XOffset == 12, "有");
+			// 生成端：注册调用必须带上 scale / xOffset / yOffset / speedScale
+			var plan = new AnimFramesGen.Plan(new List<AnimFramesGen.AnimPlan>(),
+				0, 0, 10, 10, 10, 10, 2, 12, -40, new List<string>(), false);
+			Check("V0.2.331：计划里带着 X 偏移（0 不会被自动值覆盖）", plan.XOffset == 12, $"x={plan.XOffset}");
+			var animProf = ProfileFactory.Sample();
+			animProf.Animation.Enabled = true;
+			animProf.Animation.Scale = 2;
+			animProf.Animation.XOffset = 12;
+			animProf.Animation.YOffset = -40;
+			animProf.Animation.SpeedScale = 1.5;
+			string reg = FrameAnimGen.RuntimeSource(animProf);
+			Check("V0.2.331：运行时里位置 = 静态立绘位置 + (X 偏移, Y 偏移)，缩放 = 静态缩放 × 计划缩放",
+				reg.Contains("def.XOffset * s2d.Scale.X") && reg.Contains("s2d.Scale.X * def.Scale")
+				&& reg.Contains("float xOffset = 0f"), "改到位了");
+		}
+
 		// ===== V0.2.330：参数（最大生命）*0.3 的优先级 —— 以前拼出来是 x?.MaxHp ?? (0*0.3) = 满血值 =====
 		{
 			var fProf = ProfileFactory.Sample();

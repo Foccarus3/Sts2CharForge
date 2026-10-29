@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Generation;
@@ -47,9 +47,10 @@ public static partial class AnimFramesGen
     /// <param name="CropX0">裁剪框（x1 / y1 是开区间）</param>
     /// <param name="Width">裁剪框的宽、<paramref name="Height"/> 裁剪框的高</param>
     /// <param name="Scale">缩放（0 值已被换成自动算出来的值）</param>
+    /// <param name="XOffset">X 偏移（像素，正数往右；0 = 水平居中）</param>
     /// <param name="YOffset">Y 偏移（0 值已被换成自动算出来的值）</param>
     /// <param name="Notes">提示 / 警告 / 错误行（原样显示给用户）</param>
     /// <param name="Ok">能不能用（待机解不开 / 没有待机 → false，这时不要生成任何动画文件）</param>
     public sealed record Plan(List<AnimPlan> Anims, int CropX0, int CropY0, int CropX1, int CropY1,
-        int Width, int Height, double Scale, double YOffset, List<string> Notes, bool Ok);
+        int Width, int Height, double Scale, double XOffset, double YOffset, List<string> Notes, bool Ok);
 }

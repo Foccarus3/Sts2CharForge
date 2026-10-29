@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -54,13 +54,13 @@ public static partial class AnimFramesGen
         // 没启用 / 没素材：返回一份「空计划」，缩放给 1 而不是 0 —— 调用方拿它去算
         // 注册用的 const float 时，0 会让角色缩成一个点。
         if (!a.Enabled || !a.HasAny)
-            return new Plan(anims, 0, 0, 0, 0, 0, 0, 1, 0, notes, false);
+            return new Plan(anims, 0, 0, 0, 0, 0, 0, 1, 0, 0, notes, false);
 
         var idle = GifFrames.Decode(a.Idle);
         if (idle == null)
         {
             notes.Add("[错误] 待机动图解不开：" + a.Idle);
-            return new Plan(anims, 0, 0, 0, 0, 0, 0, 1, 0, notes, false);
+            return new Plan(anims, 0, 0, 0, 0, 0, 0, 1, 0, 0, notes, false);
         }
 
         int idleW = idle.Width, idleH = idle.Height;
@@ -162,7 +162,7 @@ public static partial class AnimFramesGen
         if (!anims.Any(x => x.Anim == "relaxed_loop"))
             notes.Add("[提示] 没商店素材：商店场景退回待机");
 
-        return new Plan(anims, x0, y0, x1, y1, w, h, scale, yOffset, notes, true);
+        return new Plan(anims, x0, y0, x1, y1, w, h, scale, a.XOffset, yOffset, notes, true);
     }
 
     /// <summary>
@@ -615,7 +615,8 @@ public static partial class AnimFramesGen
         sb.AppendLine($"  \"size\": [{plan.Width}, {plan.Height}],");
         sb.AppendLine($"  \"crop\": [{plan.CropX0}, {plan.CropY0}, {plan.CropX1}, {plan.CropY1}],");
         sb.AppendLine($"  \"scale\": {plan.Scale.ToString("0.####", CultureInfo.InvariantCulture)},");
-        sb.AppendLine($"  \"yOffset\": {plan.YOffset.ToString("0.###", CultureInfo.InvariantCulture)},");
+        sb.AppendLine($"  \"xOffset\": {plan.XOffset.ToString("0.###", CultureInfo.InvariantCulture)},");
+    sb.AppendLine($"  \"yOffset\": {plan.YOffset.ToString("0.###", CultureInfo.InvariantCulture)},");
         sb.AppendLine($"  \"trigger\": \"{(TriggerOf.TryGetValue(anim.Anim, out var t) ? t : "Idle")}\"");
         sb.AppendLine("}");
         ProjectFilesGen.WriteText(Path.Combine(dir, slug + "_" + anim.Anim + "_manifest.json"), sb.ToString());

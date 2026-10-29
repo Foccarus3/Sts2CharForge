@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -6572,6 +6572,7 @@ public sealed class AnimationSpec : SpecBase
     private bool _nearestFilter = true;
     private double _speedScale = 1;
     private double _scale;
+    private double _xOffset;
     private double _yOffset;
     private bool _keepRestAndShopAnim;
 
@@ -6631,6 +6632,12 @@ public sealed class AnimationSpec : SpecBase
     /// Y 偏移：0 = 自动（让「帧内内容底边」落在静态立绘底边所在的位置，也就是脚的位置不变）。
     /// 注意 0 也是合法的手动值语义里的「自动」；要微调就填非 0。
     /// </summary>
+    /// <summary>
+    /// X 偏移（像素，正数往右）：0 = 水平居中。用来把动画整体对齐到本体「血条中心」那一列
+    /// （V0.2.331 新增；以前只有 Y 偏移，横向偏了只能靠改素材）。
+    /// </summary>
+    public double XOffset { get => _xOffset; set => Set(ref _xOffset, value); }
+
     public double YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
 
     /// <summary>
