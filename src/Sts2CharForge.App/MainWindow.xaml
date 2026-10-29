@@ -3229,18 +3229,24 @@
                                                 ToolTip="{Binding DataContext.UndoAnimHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
                                     </StackPanel>
                                     <!-- 缩略图只画**第一帧**：WPF 播不了动图，真正逐帧播放的是游戏里。 -->
+                                    <!-- V0.2.332：预览 = 真的循环播放 GIF（WPF 自己解码），并跟着「缩放 / X / Y 偏移」变；
+                                         图下那条虚线与血条占位条就是「血条中心瞄点」（比例从用户实机截图量的：脚底下方 ≈5.4% 内容高）。 -->
                                     <Border Margin="0,12,0,0" BorderBrush="#DDD" BorderThickness="1" Height="260" Background="#FAFAFA">
                                         <Viewbox Stretch="Uniform" Margin="6">
-                                            <Border Background="Black">
-                                                <Image Source="{Binding Preview}" Stretch="Uniform"
-                                                       Width="{Binding PreviewWidth}" Height="{Binding PreviewHeight}"/>
-                                            </Border>
+                                            <Grid x:Name="AnimPreviewHost" Background="Black" ClipToBounds="False">
+                                                <Image x:Name="AnimPreviewImage" Stretch="Uniform" RenderTransformOrigin="0.5,0.5"/>
+                                                <Canvas x:Name="AnimPreviewOverlay" IsHitTestVisible="False"/>
+                                            </Grid>
                                         </Viewbox>
                                     </Border>
+                                    <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                        <Button x:Name="AnimPreviewToggle" Content="暂停预览" Padding="10,3" Click="OnAnimPreviewToggle"
+                                                ToolTip="预览会按「播放速度系数」循环播放；卡顿就点这里停下（只影响预览，不影响生成）。"/>
+                                        <TextBlock x:Name="AnimPreviewHint" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                   FontSize="11" Foreground="#888" Text=""/>
+                                    </StackPanel>
                                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                                Text="{Binding FrameNote}"/>
-                                    <TextBlock Margin="0,2,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#888"
-                                               Text="上面这张只是**第一帧**（WPF 播不了动图）；游戏里按下面设置的速度逐帧播放。"/>
                                 </StackPanel>
                             </Border>
                             <!-- 设置区：没勾总开关时整块不显示（ContentControl 只负责把 DataContext 换成 AnimationSpec，
@@ -3251,33 +3257,7 @@
                                     <StackPanel>
                                         <TextBlock Text="动画设置" FontWeight="Bold" FontSize="14"/>
                                         <TextBlock Margin="0,4,0,6" TextWrapping="Wrap" FontSize="11" Foreground="#666"
-                                                   Text="7 个动作共用同一个裁剪框（默认取所有动作所有帧的并集，这样换动作时角色不会跳位置）；想自己控制就填「手动裁剪框」。抠底 / 剥描边只改像素、不改裁剪框。"/>
-                                        <TextBlock Text="手动裁剪框 x0,y0,x1,y1（留空 = 自动；x1/y1 是开区间）"
-                                                   Style="{StaticResource Label}" TextWrapping="Wrap"/>
-                                        <TextBox Style="{StaticResource Field}" Text="{Binding ManualCrop, UpdateSourceTrigger=PropertyChanged}"/>
-                                        <CheckBox Style="{StaticResource Check}" Content="抠背景（把纯色底变透明）"
-                                                  ToolTip="取头尾两个像素的均值当底色，RGB 每通道差不超过容差的像素 alpha 清 0。只影响写帧，不影响裁剪框。"
-                                                  IsChecked="{Binding KeyBackground}"/>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="容差（抠底的 RGB 距离，默认 12）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding KeyTolerance, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <CheckBox Style="{StaticResource Check}" Content="剥掉浅色描边"
-                                                  ToolTip="把轮廓外最外 1~2 层浅色（每通道都亮过下面那个阈值）的像素剥成透明。**会吃掉不透明像素**；剥掉超过 2.5% 时整块还原保护素材。"
-                                                  IsChecked="{Binding StripOutline}"/>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="亮度阈值（剥描边用的「浅色」标准，默认 170）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding OutlineLuminance, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <CheckBox Style="{StaticResource Check}" Content="最近邻过滤"
-                                                  ToolTip="像素画必须开：帧图在游戏里会被缩放，线性过滤会混出源里没有的颜色、边缘发糊。"
-                                                  IsChecked="{Binding NearestFilter}"/>
+                                                   Text="只保留四项：缩放、X 偏移、Y 偏移、播放速度系数。裁剪框固定自动（所有动作所有帧的并集），纹理固定最近邻。改完看下面的预览（预览会跟着这三个数值变）。"/>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
@@ -3306,16 +3286,6 @@
                                             <TextBlock Grid.Column="0" Text="Y 偏移（0 = 自动：让脚落在静态立绘底边）" Style="{StaticResource Label}"/>
                                             <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffset, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="每帧时长秒（0 = 用动图自己的延时取平均）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding FrameSeconds, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <CheckBox Style="{StaticResource Check}" Content="篝火 / 商店里保持专属动画（不切回待机）"
-                                                  ToolTip="不勾：篝火和商店会先播你传的专属动画，但本体过一会儿会发一次「回待机」，画面就切回待机动画了（本体默认行为）。"
-                                                  IsChecked="{Binding KeepRestAndShopAnim}"/>
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                             <Button Content="预览动画计划" Padding="10,4" FontWeight="Bold" Click="OnAnimPlanPreview"
                                                     ToolTip="真的解一遍动图，把裁剪框 / 帧数 / 每帧时长 / 缩放 / 位置 / 提示行列出来。只算不写文件。"/>

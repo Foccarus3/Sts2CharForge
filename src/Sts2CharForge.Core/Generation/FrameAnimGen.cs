@@ -58,11 +58,11 @@ public static class FrameAnimGen
             $"const float __animXOffset = {Num(plan.XOffset)}f;",
             $"const float __animYOffset = {Num(plan.YOffset)}f;",
             $"const float __animSpeed = {Num(a.SpeedScale)}f;",
-            $"const bool __animKeepRestShop = {(a.KeepRestAndShopAnim ? "true" : "false")};",
+            $"const bool __animKeepRestShop = false;   // V0.2.332：这一项已按用户要求去掉（固定不保持）",
         };
         // 纹理过滤：参考实现这一步**漏了**（那个「最近邻」勾选框其实没生效 —— 实测 .import 和注册调用都没变），
         // 我们补上：像素画要用最近邻，线性过滤会在帧图被缩放时混出源里不存在的颜色、边缘发糊。
-        string filter = a.NearestFilter ? "" : ", filter: Godot.CanvasItem.TextureFilterEnum.Linear";
+            string filter = "";   // V0.2.332：最近邻过滤已按用户要求固定开启（像素画必须）
         foreach (var one in plan.Anims)
         {
             string tres = $"res://images/characters/anim/{n.CharSlug}/{n.CharSlug}_{one.Anim}_frames.tres";

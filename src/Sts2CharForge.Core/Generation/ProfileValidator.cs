@@ -1642,23 +1642,11 @@ public static class ProfileValidator
             issues.Add(new("提示", $"「动画」页里放了 {filled} 个动图，但「启用逐帧动画」没勾：这些素材这次不会生效"
                 + "（生成结果和没放素材一样）。"));
 
-        // 裁剪框格式不对给**警告**不给错误：生成侧会优雅降级（写一条 [警告] 然后改用自动裁剪），
-        // 用户手打错一个字符不该拦住整次生成 —— 两边口径必须一致。
-        if (!string.IsNullOrWhiteSpace(a.ManualCrop) && !IsManualCrop(a.ManualCrop))
-            issues.Add(new("警告", $"逐帧动画：「手动裁剪框」格式不对，要 x0,y0,x1,y1 四个整数（x1/y1 是开区间，"
-                + $"例如 0,0,20,24）：{a.ManualCrop} —— 生成时会忽略它、改用自动裁剪（所有动作所有帧的并集）。"));
-
-        // 下面这几个直接进游戏里的缩放 / 播放速度 / 抠底参数，越界会算出看不见人的精灵或抠出窟窿
+        // V0.2.332：动画设置只剩「缩放 / X、Y 偏移 / 播放速度系数」，裁剪框固定自动、抠底与剥描边不再存在。
         if (a.Scale < 0 || a.Scale > 50)
             issues.Add(new("错误", $"逐帧动画：「缩放」只能是 0（按静态立绘高度自动算）或 0.05 ~ 50 之间的数，现在是 {Num(a.Scale)}。"));
         if (a.SpeedScale <= 0 || a.SpeedScale > 20)
-            issues.Add(new("错误", $"逐帧动画：「播放速度系数」只能是大于 0 的数（1 = 动图原速，2 = 双倍速，上限 20），"
-                + $"现在是 {Num(a.SpeedScale)}。0 不是原速，原速是 1。"));
-        if (a.KeyTolerance < 0 || a.KeyTolerance > 255)
-            issues.Add(new("错误", $"逐帧动画：「抠背景容差」是 RGB 每个通道允许的最大差，只能是 0 ~ 255，现在是 {Num(a.KeyTolerance)}。"));
-        if (a.OutlineLuminance < 0 || a.OutlineLuminance > 255)
-            issues.Add(new("错误", $"逐帧动画：「剥描边的亮度阈值」是 0 ~ 255 的亮度，现在是 {Num(a.OutlineLuminance)}。"));
-
+            issues.Add(new("错误", $"逐帧动画：「播放速度系数」只能是大于 0 的数（1 = 动图原速，2 = 双倍速，上限 20），" + $"现在是 {Num(a.SpeedScale)}。0 不是原速，原速是 1。"));
         static string Num(double v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 

@@ -96,29 +96,8 @@ public static partial class AnimFramesGen
         }
 
         int x0, y0, x1, y1;
-        if (!string.IsNullOrWhiteSpace(a.ManualCrop))
-        {
-            string[] parts = a.ManualCrop.Split(new[] { ',' }, 4, StringSplitOptions.None);
-            if (parts.Length == 4 && parts.All(s => int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out _)))
-            {
-                x0 = int.Parse(parts[0], CultureInfo.InvariantCulture);
-                y0 = int.Parse(parts[1], CultureInfo.InvariantCulture);
-                x1 = int.Parse(parts[2], CultureInfo.InvariantCulture);
-                y1 = int.Parse(parts[3], CultureInfo.InvariantCulture);
-                notes.Add($"裁剪框用界面指定的：{x0},{y0}..{x1},{y1}");
-            }
-            else
-            {
-                // 参考实现在这里对「不是数字」的输入会直接抛 FormatException 把整次生成带崩，
-                // 我们改成「当作格式不对 → 改用自动」：用户手打的框打错了不该让整个工程生成失败。
-                notes.Add("[警告] 手动裁剪框格式不对（要 x0,y0,x1,y1）：" + a.ManualCrop + "，改用自动");
-                (x0, y0, x1, y1) = AutoCrop(idle, idleW, idleH, decoded);
-            }
-        }
-        else
-        {
-            (x0, y0, x1, y1) = AutoCrop(idle, idleW, idleH, decoded);
-        }
+        // V0.2.332（用户要求「动画设置只保留缩放 / X、Y 偏移 / 播放速度系数」）：裁剪框固定走自动（所有动作所有帧的并集）。
+        (x0, y0, x1, y1) = AutoCrop(idle, idleW, idleH, decoded);
 
         x0 = Math.Clamp(x0, 0, idleW - 1);
         y0 = Math.Clamp(y0, 0, idleH - 1);
@@ -263,10 +242,7 @@ public static partial class AnimFramesGen
                 dst[di + 3] = rgba[si + 3];
             }
         }
-
-        if (spec.KeyBackground && spec.KeyTolerance > 0) KeyBackground(dst, spec.KeyTolerance);
-        if (spec.StripOutline) StripOutline(dst, cw, ch, spec.OutlineLuminance);
-        return dst;
+        return dst;   // V0.2.332：抠底 / 剥描边这两项设置已按用户要求去掉 → 固定不做（只裁切）
     }
 
     /// <summary>

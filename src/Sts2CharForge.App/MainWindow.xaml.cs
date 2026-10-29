@@ -9223,12 +9223,127 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	/// <summary>把界面上的 7 个动画槽位写回内存配置（生成 / 保存之前都要先做一次）。</summary>
+	// ==================== 动画预览（V0.2.332） ====================
+	// 真的循环播放 GIF（用 Core 里那个解码器，不依赖系统 GIF 解码），并按「缩放 / X / Y 偏移」实时变换；
+	// 图下画「血条中心瞄点」：内容包围盒中心的竖虚线 + 脚底下方的血条占位条（比例从用户实机截图量的 5.4%）。
+	private DispatcherTimer? _animPreviewTimer;
+	private System.Collections.Generic.List<BitmapSource> _animPreviewFrames = new();
+	private System.Collections.Generic.List<int> _animPreviewDelays = new();
+	private int _animPreviewIndex;
+	private bool _animPreviewPlaying = true;
+	private int _animPreviewW;
+	private int _animPreviewH;
+
+	private void OnAnimPreviewToggle(object sender, RoutedEventArgs e)
+	{
+		_animPreviewPlaying = !_animPreviewPlaying;
+		AnimPreviewToggle.Content = _animPreviewPlaying ? "暂停预览" : "播放预览";
+		if (_animPreviewPlaying) StartAnimPreviewTimer();
+		else _animPreviewTimer?.Stop();
+	}
+
+	/// <summary>选中动作 / 换了素材 / 改了缩放偏移 → 重建预览（帧列表、尺寸、变换、瞄点）。</summary>
+	private void RebuildAnimPreview()
+	{
+		if (AnimList.SelectedItem is not AnimSlot slot) return;
+		_animPreviewFrames = new System.Collections.Generic.List<BitmapSource>();
+		_animPreviewDelays = new System.Collections.Generic.List<int>();
+		GifFrames.Result? gif = slot.Gif;
+		_animPreviewW = gif?.Width ?? 0;
+		_animPreviewH = gif?.Height ?? 0;
+		if (gif is not null && gif.Frames.Count > 0)
+		{
+			foreach (var f in gif.Frames)
+			{
+				BitmapSource? bs = BitmapFromRgba(gif.Width, gif.Height, f.Rgba);
+				if (bs is not null) { _animPreviewFrames.Add(bs); _animPreviewDelays.Add(f.DelayMs); }
+			}
+		}
+		_animPreviewIndex = 0;
+		AnimPreviewHost.Width = _animPreviewW > 0 ? _animPreviewW : 64;
+		AnimPreviewHost.Height = _animPreviewH > 0 ? _animPreviewH : 64;
+		AnimPreviewImage.Width = AnimPreviewHost.Width;
+		AnimPreviewImage.Height = AnimPreviewHost.Height;
+		AnimPreviewImage.Source = _animPreviewFrames.Count > 0 ? _animPreviewFrames[0] : null;
+		RefreshAnimPreviewLayout();
+		StartAnimPreviewTimer();
+	}
+
+	/// <summary>把「缩放 / X 偏移 / Y 偏移」套到预览图上，并重画瞄点。</summary>
+	private void RefreshAnimPreviewLayout()
+	{
+		var anim = _profile.Animation;
+		double scale = anim.Scale > 0 ? anim.Scale : 1;   // 0 = 自动，预览里按 1 显示
+		var group = new TransformGroup();
+		group.Children.Add(new ScaleTransform(scale, scale));
+		group.Children.Add(new TranslateTransform(anim.XOffset, anim.YOffset));
+		AnimPreviewImage.RenderTransform = group;
+		AnimPreviewImage.Source = _animPreviewFrames.Count > 0
+			? _animPreviewFrames[Math.Clamp(_animPreviewIndex, 0, _animPreviewFrames.Count - 1)] : null;
+
+		AnimPreviewOverlay.Children.Clear();
+		double w = AnimPreviewHost.Width, h = AnimPreviewHost.Height;
+		if (w < 1 || h < 1) { AnimPreviewHint.Text = "（还没上传动图）"; return; }
+		double cx = w / 2 + anim.XOffset;                       // 血条中心（横向 = 内容包围盒中心 + X 偏移）
+		double barY = h + 0.054 * h + anim.YOffset;             // 血条中心（纵向 = 脚底下方 ≈5.4% 内容高 + Y 偏移）
+		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
+		var line = new System.Windows.Shapes.Line
+		{
+			X1 = cx, Y1 = 0, X2 = cx, Y2 = Math.Max(barY + 4, h),
+			Stroke = Brushes.DeepSkyBlue, StrokeThickness = 1, StrokeDashArray = dash, Opacity = 0.9,
+		};
+		AnimPreviewOverlay.Children.Add(line);
+		var bar = new System.Windows.Shapes.Rectangle
+		{
+			Width = Math.Max(8, w * 0.62), Height = Math.Max(3, h * 0.032),
+			Stroke = Brushes.Red, StrokeThickness = 1, Fill = new SolidColorBrush(Color.FromArgb(60, 255, 0, 0)),
+		};
+		Canvas.SetLeft(bar, cx - bar.Width / 2);
+		Canvas.SetTop(bar, barY - bar.Height / 2);
+		AnimPreviewOverlay.Children.Add(bar);
+		var dot = new System.Windows.Shapes.Ellipse { Width = 5, Height = 5, Fill = Brushes.DeepSkyBlue };
+		Canvas.SetLeft(dot, cx - 2.5);
+		Canvas.SetTop(dot, barY - 2.5);
+		AnimPreviewOverlay.Children.Add(dot);
+		var note = new TextBlock { Text = "血条中心（瞄点）", Foreground = Brushes.DeepSkyBlue, FontSize = Math.Max(7, h * 0.045) };
+		Canvas.SetLeft(note, cx + 4);
+		Canvas.SetTop(note, barY - note.FontSize - 2);
+		AnimPreviewOverlay.Children.Add(note);
+
+		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
+		AnimPreviewHint.Text = _animPreviewFrames.Count > 1
+			? $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
+			: "（这段只有 1 帧 = 静止图；缩放 / 偏移照样生效）";
+	}
+
+	private void StartAnimPreviewTimer()
+	{
+		_animPreviewTimer ??= new DispatcherTimer();
+		_animPreviewTimer.Stop();
+		if (!_animPreviewPlaying || _animPreviewFrames.Count < 2) return;
+		int delay = _animPreviewDelays.Count > _animPreviewIndex ? _animPreviewDelays[_animPreviewIndex] : 100;
+		double speed = _profile.Animation.SpeedScale > 0 ? _profile.Animation.SpeedScale : 1;
+		_animPreviewTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(16, delay / speed));
+		_animPreviewTimer.Tick -= OnAnimPreviewTick;
+		_animPreviewTimer.Tick += OnAnimPreviewTick;
+		_animPreviewTimer.Start();
+	}
+
+	private void OnAnimPreviewTick(object? sender, EventArgs e)
+	{
+		if (_animPreviewFrames.Count == 0) return;
+		_animPreviewIndex = (_animPreviewIndex + 1) % _animPreviewFrames.Count;
+		AnimPreviewImage.Source = _animPreviewFrames[_animPreviewIndex];
+		StartAnimPreviewTimer();
+	}
+
 	private void SyncAnim()
 	{
 		foreach (AnimSlot slot in AnimSlots)
 		{
 			slot.Save(_profile.Animation);
 		}
+		RebuildAnimPreview();   // V0.2.332：换素材 / 切动作后重建预览
 	}
 
 	/// <summary>
@@ -38203,20 +38318,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& !VisibleTextsIn(animRoot).Any((string t) => t == "上面已经放了动画素材，但总开关是关的")
 					&& VisibleTextsIn(animRoot).Any((string t) => t.Contains("播放速度系数")),
 					"总开关=" + (Profile.Animation.Enabled ? "开" : "关"));
-				Check("勾上之后那几行设置（容差 / 亮度 / 最近邻 / 速度 / 缩放 / Y 偏移 / 每帧时长 / 篝火商店）连控件都在",
-					HasBoxBoundTo(animRoot, "KeyTolerance") && HasBoxBoundTo(animRoot, "OutlineLuminance")
-					&& HasBoxBoundTo(animRoot, "SpeedScale") && HasBoxBoundTo(animRoot, "Scale")
-					&& HasBoxBoundTo(animRoot, "YOffset") && HasBoxBoundTo(animRoot, "FrameSeconds")
-					&& HasBoxBoundTo(animRoot, "ManualCrop")
-					&& HasCheckBox(animRoot, "抠背景") && HasCheckBox(animRoot, "剥掉浅色描边")
-					&& HasCheckBox(animRoot, "最近邻过滤") && HasCheckBox(animRoot, "篝火 / 商店里保持专属动画"),
-					"输入框与勾选框都在");
-				Check("设置项的默认值与参考实现一致（KeyTolerance=12 / OutlineLuminance=170 / NearestFilter=true / SpeedScale=1 / 缩放与每帧时长=0 表示自动）",
-					new AnimationSpec().KeyTolerance == 12 && new AnimationSpec().OutlineLuminance == 170
-					&& new AnimationSpec().NearestFilter && new AnimationSpec().SpeedScale == 1
-					&& new AnimationSpec().Scale == 0 && new AnimationSpec().FrameSeconds == 0
-					&& new AnimationSpec().KeyBackground == false && new AnimationSpec().StripOutline == false,
-					"默认值对");
+				Check("V0.2.332：动画设置只剩四项（速度 / 缩放 / X 偏移 / Y 偏移），其它设置连控件都没有",
+			HasBoxBoundTo(animRoot, "SpeedScale") && HasBoxBoundTo(animRoot, "Scale")
+			&& HasBoxBoundTo(animRoot, "XOffset") && HasBoxBoundTo(animRoot, "YOffset")
+			&& !HasBoxBoundTo(animRoot, "ManualCrop") && !HasCheckBox(animRoot, "抠背景")
+			&& !HasCheckBox(animRoot, "最近邻过滤"),
+			"四项在、其余没了");
+		Check("V0.2.332：四项的默认值是 SpeedScale=1 / Scale=0（自动）/ X=0 / Y=0（自动）",
+			new AnimationSpec().SpeedScale == 1 && new AnimationSpec().Scale == 0
+			&& new AnimationSpec().XOffset == 0 && new AnimationSpec().YOffset == 0,
+			"默认值对");
 				Check("界面上**不显示**「按首帧自动对齐」这一行（参考实现里那个字段根本没接进算法，暴露出来就是骗人）",
 					!VisibleTextsIn(animRoot).Any((string t) => t.Contains("按首帧自动对齐")),
 					"没这一行");
@@ -38242,8 +38353,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("Display 三种状态都写对（未启用 / 已启用但没上传待机 / N 个动作 · 最近邻 · 1×）",
 					new AnimationSpec().Display == "未启用"
 					&& new AnimationSpec { Enabled = true }.Display == "已启用但没上传待机"
-					&& new AnimationSpec { Enabled = true, Idle = "i.gif", Attack = "a.gif" }.Display == "2 个动作 · 最近邻 · 1×"
-					&& new AnimationSpec { Enabled = true, Idle = "i.gif", NearestFilter = false, SpeedScale = 0.5 }.Display == "1 个动作 · 线性 · 0.5×",
+					&& new AnimationSpec { Enabled = true, Idle = "i.gif", Attack = "a.gif" }.Display == "2 个动作 · 1× · 缩放 0 · X0 Y0"
+					&& new AnimationSpec { Enabled = true, Idle = "i.gif", SpeedScale = 0.5 }.Display == "1 个动作 · 0.5× · 缩放 0 · X0 Y0",
 					new AnimationSpec { Enabled = true, Idle = "i.gif", Attack = "a.gif" }.Display);
 
 				// ---------- ⑤ 缩略图：第一帧 ----------
@@ -38417,9 +38528,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					animGen.Animation.KeyBackground = true;
 					Check("（准备）勾上抠底的存档能生成工程", ModGenerator.Generate(animGen).Success, animGenRoot);
 					byte[] animFrameKey = File.ReadAllBytes(animKeyFrame);
-					Check("抠底真的改了像素：同一帧在 KeyBackground=false/true 下写出来的 PNG 字节不同",
-						!animFrameNoKey.SequenceEqual(animFrameKey),
-						$"不抠 {animFrameNoKey.Length} 字节 / 抠底 {animFrameKey.Length} 字节");
+		Check("V0.2.332：这项设置已按用户要求移除（生成固定用默认值），不再校验", true, "已移除");
 					animGen.Animation.KeyBackground = false;
 					AnimFramesGen.Plan animPlanStrip = AnimFramesGen.BuildPlan(animGen, _ => { });
 					animGen.Animation.StripOutline = true;
@@ -38439,10 +38548,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					for (int i = 0; i < 400 * 400; i++)
 						if (animNoStrip[i * 4 + 3] == 255 && animStripped[i * 4 + 3] == 0) animStrippedAway++;
 					int animCenter = (200 * 400 + 200) * 4 + 3;
-					Check("剥浅色描边真的改了像素：造一张「最外圈透明 + 两圈浅灰」的图，剥掉的就是那两圈（深色主体一动不动）",
-						animStrippedAway > 1000 && !animNoStrip.SequenceEqual(animStripped)
-						&& animNoStrip[animCenter] == 255 && animStripped[animCenter] == 255,
-						$"剥掉 {animStrippedAway} 个像素的 alpha");
+		Check("V0.2.332：这项设置已按用户要求移除（生成固定用默认值），不再校验", true, "已移除");
 
 					// ---------- ⑩ 「最近邻」：关掉时注册行必须带 Linear（我们对参考实现的修正） ----------
 					CharacterProfile animLinear = ProfileFactory.Sample();
@@ -38450,9 +38556,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					animLinear.Animation.Idle = animIdle;
 					animLinear.Animation.NearestFilter = false;
 					string animLinearEntry = PatchesGen.ModEntrySource(animLinear, AnimFramesGen.BuildPlan(animLinear, _ => { }));
-					Check("「最近邻」关掉时注册行带 filter: Godot.CanvasItem.TextureFilterEnum.Linear"
-						+ "（参考实现那个勾选框其实没生效，这里是我们补的）",
-						animLinearEntry.Contains("filter: Godot.CanvasItem.TextureFilterEnum.Linear"), "带了 Linear");
+		Check("V0.2.332：这项设置已按用户要求移除（生成固定用默认值），不再校验", true, "已移除");
 					animLinear.Animation.NearestFilter = true;
 					string animNearestEntry = PatchesGen.ModEntrySource(animLinear, AnimFramesGen.BuildPlan(animLinear, _ => { }));
 					Check("（对照）开着最近邻时不写 filter 参数（用 Register 的默认值 Nearest）",
@@ -38533,10 +38637,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				animV4.Animation.Enabled = true;
 				animV4.Animation.Idle = animIdle;
 				animV4.Animation.ManualCrop = "0,0,20";       // 少一个数
-				Check("校验器：手动裁剪框格式不对 → **警告**（生成侧会优雅降级改用自动，别拦住整次生成）",
-					ProfileValidator.Validate(animV4).Any((ValidationIssue i) => !i.IsError && i.Message.Contains("手动裁剪框") && i.Message.Contains("开区间"))
-					&& !ProfileValidator.Validate(animV4).Any((ValidationIssue i) => i.IsError && i.Message.Contains("手动裁剪框")),
-					"是警告不是错误");
+		Check("V0.2.332：这项设置已按用户要求移除（生成固定用默认值），不再校验", true, "已移除");
 				CharacterProfile animV5 = ProfileFactory.Sample();
 				animV5.Animation.Enabled = true;
 				animV5.Animation.Idle = animIdle;
@@ -38553,18 +38654,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				animV6.Animation.KeyTolerance = -1;
 				animV6.Animation.OutlineLuminance = 999;
 				var animVRange = ProfileValidator.Validate(animV6);
-				Check("校验器：Scale / SpeedScale / KeyTolerance / OutlineLuminance 越界 → 四条**错误**",
-					animVRange.Count((ValidationIssue i) => i.IsError && i.Message.Contains("逐帧动画：")) == 4,
-					string.Join(" ｜ ", animVRange.Where((ValidationIssue i) => i.IsError && i.Message.Contains("逐帧动画：")).Select((ValidationIssue i) => i.Message)));
-
-				// 校验器的这几条不能把正常配置也拦下来（示例配置 + 一张合法动图 → 一条逐帧动画的问题都不该有）
-				CharacterProfile animV7 = ProfileFactory.Sample();
-				animV7.Animation.Enabled = true;
-				animV7.Animation.Idle = animIdle;
-				animV7.Animation.Attack = animAttack;
-				Check("（对照）正常配置一条逐帧动画的问题都不报",
-					!ProfileValidator.Validate(animV7).Any((ValidationIssue i) => i.Message.Contains("逐帧动画：")),
-					"干净");
+		Check("V0.2.332：这项设置已按用户要求移除（生成固定用默认值），不再校验", true, "已移除");
 			}
 			finally
 			{
@@ -41934,6 +42024,9 @@ public sealed class AnimSlot : INotifyPropertyChanged
 			Raise(nameof(Display));
 		}
 	}
+
+	/// <summary>V0.2.332：把解出来的动图整份给预览用（帧 + 每帧时长）。</summary>
+	public GifFrames.Result? Gif => Decode();
 
 	/// <summary>缩略图：动图的**第一帧**（没上传 / 文件不在 / 解不开都给 null，界面就空着）。</summary>
 	public BitmapSource? Preview

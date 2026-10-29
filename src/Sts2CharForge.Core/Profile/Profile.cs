@@ -6562,7 +6562,6 @@ public sealed class AnimationSpec : SpecBase
 {
     private bool _enabled;
     private string _idle = "", _attack = "", _cast = "", _hurt = "", _die = "", _restSite = "", _merchant = "";
-    private double _frameSeconds;
     private bool _alignByFirstFrame = true;
     private string _manualCrop = "";
     private bool _keyBackground;
@@ -6595,7 +6594,6 @@ public sealed class AnimationSpec : SpecBase
     public string Merchant { get => _merchant; set => SetPath(ref _merchant, value); }
 
     /// <summary>每帧秒数：0 = 用动图自己的延时（取平均）；填了 = 所有动作都用这个值。</summary>
-    public double FrameSeconds { get => _frameSeconds; set { if (Set(ref _frameSeconds, value)) Raise(nameof(Display)); } }
 
     /// <summary>
     /// 按首帧自动对齐（推荐）：以「待机第 0 帧」为基准推一个裁剪框，7 个动作**共用**它
@@ -6603,24 +6601,18 @@ public sealed class AnimationSpec : SpecBase
     /// </summary>
     public bool AlignByFirstFrame { get => _alignByFirstFrame; set => Set(ref _alignByFirstFrame, value); }
 
-    /// <summary>手动裁剪框 <c>x0,y0,x1,y1</c>（留空 = 自动；x1/y1 是**开区间**）。</summary>
-    public string ManualCrop { get => _manualCrop; set => Set(ref _manualCrop, value ?? ""); }
-
-    /// <summary>抠背景：把纯色底（取边框像素的颜色）变透明。</summary>
-    public bool KeyBackground { get => _keyBackground; set => Set(ref _keyBackground, value); }
-    /// <summary>抠底容差（RGB 距离，默认 12）。</summary>
-    public double KeyTolerance { get => _keyTolerance; set => Set(ref _keyTolerance, value); }
-
-    /// <summary>剥掉最外 1~2 层浅色描边（素材在轮廓外留了一圈不透明的浅色边时用；会吃掉不透明像素）。</summary>
-    public bool StripOutline { get => _stripOutline; set => Set(ref _stripOutline, value); }
-    /// <summary>「浅色」的亮度阈值（默认 170）。</summary>
-    public double OutlineLuminance { get => _outlineLuminance; set => Set(ref _outlineLuminance, value); }
-
-    /// <summary>
-    /// 最近邻过滤（默认开）。素材多是 256 色硬边像素画，而帧图在游戏里会被缩放：
-    /// 线性过滤会混出大量源里不存在的颜色、边缘发糊（参考实现实测 9704 色 vs 256 色）。
-    /// </summary>
-    public bool NearestFilter { get => _nearestFilter; set { if (Set(ref _nearestFilter, value)) Raise(nameof(Display)); } }
+    // ==================== V0.2.332：「动画设置」只保留四项 ====================
+    // 用户要求：动画页只留「缩放 / X 偏移 / Y 偏移 / 播放速度系数」，其它项从界面撤掉、生成固定用默认值。
+    // 下面这几个是**只读占位**：老存档里的值不再被读取（[JsonIgnore]），界面也不再绑定它们；
+    // 保留属性只是为了让「预览 / 诊断 / 校验」那些还在引用它们的代码继续编译（值恒为默认）。
+    [JsonIgnore] public string ManualCrop { get => ""; set { } }
+    [JsonIgnore] public bool KeyBackground { get => false; set { } }
+    [JsonIgnore] public double KeyTolerance { get => 12; set { } }
+    [JsonIgnore] public bool StripOutline { get => false; set { } }
+    [JsonIgnore] public double OutlineLuminance { get => 170; set { } }
+    [JsonIgnore] public bool NearestFilter { get => true; set { } }
+    [JsonIgnore] public double FrameSeconds { get => 0; set { } }
+    [JsonIgnore] public bool KeepRestAndShopAnim { get => false; set { } }
 
     /// <summary>播放速度系数：1 = 动图原速，0.5 = 半速，2 = 双倍速。</summary>
     public double SpeedScale { get => _speedScale; set { if (Set(ref _speedScale, value)) Raise(nameof(Display)); } }
@@ -6629,22 +6621,17 @@ public sealed class AnimationSpec : SpecBase
     public double Scale { get => _scale; set => Set(ref _scale, value); }
 
     /// <summary>
-    /// Y 偏移：0 = 自动（让「帧内内容底边」落在静态立绘底边所在的位置，也就是脚的位置不变）。
-    /// 注意 0 也是合法的手动值语义里的「自动」；要微调就填非 0。
-    /// </summary>
-    /// <summary>
     /// X 偏移（像素，正数往右）：0 = 水平居中。用来把动画整体对齐到本体「血条中心」那一列
     /// （V0.2.331 新增；以前只有 Y 偏移，横向偏了只能靠改素材）。
     /// </summary>
     public double XOffset { get => _xOffset; set => Set(ref _xOffset, value); }
 
+    /// <summary>
+    /// Y 偏移：0 = 自动（让「帧内内容底边」落在静态立绘底边所在的位置，也就是脚的位置不变）。
+    /// 注意 0 也是合法的手动值语义里的「自动」；要微调就填非 0。
+    /// </summary>
     public double YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
 
-    /// <summary>
-    /// 篝火 / 商店里保持专属动画（不切回待机）。默认不勾：篝火和商店会先播你传的专属动画，
-    /// 但本体过一会儿会发一次「回待机」，画面就切回待机动画了（本体默认行为）。
-    /// </summary>
-    public bool KeepRestAndShopAnim { get => _keepRestAndShopAnim; set => Set(ref _keepRestAndShopAnim, value); }
 
     private void SetPath(ref string field, string? value)
     {
@@ -6683,7 +6670,7 @@ public sealed class AnimationSpec : SpecBase
         ? "未启用"
         : !HasAny
             ? "已启用但没上传待机"
-            : $"{Slots.Count()} 个动作 · {(NearestFilter ? "最近邻" : "线性")} · {SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}×";
+            : $"{Slots.Count()} 个动作 · {SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}× · 缩放 {Scale:0.##} · X{XOffset:0.#} Y{YOffset:0.#}";
 }
 
 public sealed class PathsSpec
