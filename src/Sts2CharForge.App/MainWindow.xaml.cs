@@ -1313,8 +1313,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ForgeGraphCatalog.SetCardChoices(_profile.AllCards
 			.Where(c => c is not null && !string.IsNullOrWhiteSpace(c.ClassName))
 			.Select(c => (c.ClassName.Trim(), c.Name, c.IsVanillaCard)));
-		ForgeGraphCatalog.SetPotionChoices(EffectCatalog.Potions
-			.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Id))
+		// V0.2.329：图上【获得药水】的药水候选也要带上自己做的药水
+		ForgeGraphCatalog.SetPotionChoices(EffectCatalog.AllPotionEntries
 			.Select(x => (x.Id, x.Display)));
 	}
 
@@ -4200,11 +4200,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// 为什么不用整体 Reset：SearchComboBox 只在 ItemsSource 换实例时重灌候选，而且整表重置会把
 	/// 用户已选中的药水弹掉（「目标卡」那边踩过同一个坑，见 RefreshCardChoices 的注释）。
 	/// </summary>
+	/// <summary>
+	/// V0.2.329：把当前存档里的**自定义药水**登记到 <see cref="EffectCatalog"/>（「目标药水」下拉要用），
+	/// 然后让下拉重新取一次候选。
+	/// </summary>
+	public void RefreshCustomPotionRegistry()
+	{
+		var list = new List<(string, string)>();
+		var nn = Naming.From(_profile);
+		for (int i = 0; i < _profile.Potions.Count; i++)
+		{
+			var pot = _profile.Potions[i];
+			if (pot is null) continue;
+			string cls = nn.PotionClassName(pot, i);
+			if (string.IsNullOrWhiteSpace(cls)) continue;
+			list.Add((cls, (pot.Name ?? "").Trim()));
+		}
+		EffectCatalog.SetCustomPotions(list);
+		RefreshPotionChoices();
+	}
+
 	public void RefreshPotionChoices()
 	{
 		try
 		{
-			List<PotionEntry> list = EffectCatalog.Potions.ToList();
+			// V0.2.329：本体药水 + **自己做的药水**（以前只有本体 → 「获得指定药水」找不到自制的那瓶）
+			List<PotionEntry> list = EffectCatalog.AllPotionEntries.ToList();
 			for (int i = 0; i < list.Count; i++)
 			{
 				PotionEntry entry = list[i];
@@ -5218,6 +5239,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		EffectCatalog.SetCustomPowers(list);
 		EffectCatalog.SetDisplayProfile(_profile);   // V0.2.247：条件里「范围（组）」的文案要查当前存档的组名
 		RefreshPowerChoices();
+		// V0.2.329：自定义药水也登记一份 → 「获得药水」的「目标药水」下拉里能选到
+		RefreshCustomPotionRegistry();
 	}
 
 	/// <summary>
@@ -25299,9 +25322,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("找到「目标药水」搜索框（和「目标卡」同构的可搜索下拉）", potionBox != null, $"{potionSearchBoxes.Count} 个搜索框");
 		if (potionBox != null)
 		{
-			Check("「目标药水」里灌的就是本体药水目录",
-				potionBox.FilteredCount == EffectCatalog.Potions.Count && EffectCatalog.Potions.Count > 0,
-				$"{potionBox.FilteredCount} / 目录 {EffectCatalog.Potions.Count}");
+		Check("「目标药水」里灌的就是「本体 + 自制」的药水目录",
+			potionBox.FilteredCount == EffectCatalog.AllPotionEntries.Count && EffectCatalog.AllPotionEntries.Count > 0,
+			$"{potionBox.FilteredCount} / 目录 {EffectCatalog.AllPotionEntries.Count}");
 			potionBox.ApplySearch("格挡");
 			Check("在「目标药水」里打「格挡」就能搜到「格挡药水」（按中文名搜）",
 				potionBox.FilteredCount >= 1 && potionBox.SuggestionTexts.Any((string t) => t.Contains("格挡药水")),
@@ -40458,6 +40481,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 			SelectTabRoot("遗物");
+		}
+
+		// ===== V0.2.329：卡牌「获得指定药水」要能选到自己做的药水 =====
+		{
+			EffectCatalog.SetCustomPotions(new[] { ("UiCheckPotion", "自检药水") });
+			Check("V0.2.329：自定义药水进了「目标药水」候选（本体 + 自制）",
+				EffectCatalog.AllPotionEntries.Any((PotionEntry x) => x.Id == "UiCheckPotion" && x.Zh == "自检药水"),
+				$"{EffectCatalog.AllPotionEntries.Count} 项");
+			Check("V0.2.329：校验器认得出自定义药水（不再报「认不出来」）",
+				EffectCatalog.HasPotion("UiCheckPotion") && EffectCatalog.HasPotion("BlockPotion"), "都认得");
+			Check("V0.2.329：描述里显示自定义药水的中文名",
+				EffectCatalog.FindPotionZh("UiCheckPotion") == "自检药水", EffectCatalog.FindPotionZh("UiCheckPotion"));
+			var gpProf = ProfileFactory.Sample();
+			// 存档里真有一瓶类名叫 UiCheckPotion 的药水（生成端按存档里的药水表查类名）
+			gpProf.Potions.Add(new PotionSpec { Name = "自检药水", ClassName = "UiCheckPotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self" });
+			var gpCard = new CardSpec { Name = "自检给药水", ClassName = "UiCheckGainPotion", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+			gpCard.Effects.Add(new EffectSpec { Kind = "GainPotion", Amount = 1m, PotionId = "UiCheckPotion" });
+			gpProf.Cards.Add(gpCard);
+			var gpIssues = ProfileValidator.Validate(gpProf);
+			Check("V0.2.329：「获得药水」指向自制药水时校验通过",
+				!gpIssues.Any((ValidationIssue i2) => i2.IsError && i2.Message.Contains("药水")), "没报错");
+			Check("V0.2.329：生成时用的是自己的药水类（不套本体命名空间）",
+				CSharpCodeGen.PotionTypeName(gpProf, "UiCheckPotion") == "UiCheckPotion", CSharpCodeGen.PotionTypeName(gpProf, "UiCheckPotion"));
 		}
 
 		// ===== V0.2.324：状态序幕找玩家的链式表达式**不能**对 PetOwner 再取 .Player（PetOwner 本身就是 Player）=====

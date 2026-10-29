@@ -648,18 +648,46 @@ public static class EffectCatalog
     /// <summary>本体药水目录（类名 + 中文名）。读不到解包工程时从 sts2.dll 反射。</summary>
     public static IReadOnlyList<PotionEntry> Potions { get; private set; } = Array.Empty<PotionEntry>();
 
+    // ==================== 「自定义药水」登记表（V0.2.329）====================
+    // 用户报「卡牌效果选『获得指定药水』时找不到自制的药水」：以前「目标药水」下拉只有本体药水，
+    // 「获得药水」指向自己做的那瓶时既选不到、校验器还会报「认不出来」。
+    // 这里和「自定义状态」同一套做法：类名 → 显示名，界面刷新 / 生成前登记一次。
+    private static readonly Dictionary<string, string> CustomPotions = new(StringComparer.Ordinal);
+
+    /// <summary>按当前存档里的药水更新登记表。</summary>
+    public static void SetCustomPotions(IEnumerable<(string ClassName, string Display)>? potions)
+    {
+        CustomPotions.Clear();
+        if (potions is null) return;
+        foreach (var (cls, name) in potions)
+        {
+            if (string.IsNullOrWhiteSpace(cls)) continue;
+            string key = cls.Trim();
+            CustomPotions[key] = string.IsNullOrWhiteSpace(name) ? key : name;
+        }
+    }
+
+    /// <summary>自定义药水（界面上和本体药水拼在一起给用户选）。</summary>
+    public static IReadOnlyList<PotionEntry> CustomPotionEntries =>
+        CustomPotions.Select(kv => new PotionEntry(kv.Key, kv.Value)).ToList();
+
+    /// <summary>下拉里能选的全部药水 = 本体 + 自定义。</summary>
+    public static IReadOnlyList<PotionEntry> AllPotionEntries =>
+        Potions.Concat(CustomPotionEntries).ToList();
     /// <summary>药水类名 → 中文名（找不到就原样返回类名），卡面描述里写「获得一瓶格挡药水」用它。</summary>
     public static string FindPotionZh(string? potionId)
     {
         if (string.IsNullOrWhiteSpace(potionId)) return "药水";
-        var hit = Potions.FirstOrDefault(x => string.Equals(x.Id, potionId.Trim(), StringComparison.Ordinal));
+        string id = potionId.Trim();
+        var hit = AllPotionEntries.FirstOrDefault(x => string.Equals(x.Id, id, StringComparison.Ordinal));
         return hit is null || string.IsNullOrWhiteSpace(hit.Zh) ? potionId.Trim() : hit.Zh;
     }
 
     /// <summary>这个药水类名在目录里认不认得出来（认不出来时校验器要报错，不能静默生成不存在的类型）。</summary>
     public static bool HasPotion(string? potionId) =>
         !string.IsNullOrWhiteSpace(potionId)
-        && Potions.Any(x => string.Equals(x.Id, potionId.Trim(), StringComparison.Ordinal));
+        && (Potions.Any(x => string.Equals(x.Id, potionId.Trim(), StringComparison.Ordinal))
+            || CustomPotions.ContainsKey(potionId.Trim()));
 
     public static void InitializePotions(string? vanillaProjectDir, string? gameDataDir = null)
     {
