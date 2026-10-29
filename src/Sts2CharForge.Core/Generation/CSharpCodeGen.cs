@@ -7929,28 +7929,36 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 return;
             }
             w.Line(SelfContainedMarker(e));
-            w.Line("// 数值 0 = 这张牌自己：把这张牌本身变掉");
+            // V0.2.325（用户报「变化卡牌数值为 0 时怎么不是变化自己」）：**不能**对正在被打出的这张牌用
+            // CardCmd.Transform —— 本体 Transform 是把「旧牌从它所在的摞里拿掉、新牌放进同一个摞」，
+            // 而这张牌此刻在「打出」那一摞里（PileType.Play）→ 变出来的新牌被塞回「打出」摞，
+            // 战斗结算完就看不见了（= 看起来根本没变）。
+            // 所以这里按「真的替换掉这张牌」来实现：**新牌直接进弃牌堆**，再把这张牌自己消耗掉
+            //（1 张换 1 张，不会变成 2 张）。想「额外多一张」就改用「生成卡牌」。
+            w.Line("// 数值 0 = 这张牌自己：变出来的新牌进弃牌堆，再把这张牌自己消耗掉（= 替换）");
             if (selfRandom)
             {
                 w.Line($"var __transformPool = {SpawnPoolExpr(e, p, playerExpr)};   // 变化范围：{EffectCatalog.SpawnFilterZh(e.SpawnFilter)}");
                 w.Line($"CardModel? __newSelf = {playerExpr}.RunState.Rng.CombatCardGeneration.NextItem(__transformPool);");
                 w.Open("if (__newSelf is not null)");
                 // V0.2.323（用户报「变化的牌直接飘在界面上 / 回抽到手里卡死」）：**战斗中**造牌必须走
-            // CombatState.CreateCard（本体 Begone / Guards 就是这么写的）—— 它同时 AddCard + AfterCreated，
-            // 牌才真的挂在战斗里。以前用 RunState.CreateCard，造出来的是「牌组范围」的牌：
-            // 变动画播完人飘在界面上、被抽到手里还会卡死。
-            w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(__newSelf, {playerExpr});");
+                // CombatState.CreateCard（本体 Begone / Guards 就是这么写的）—— 它同时 AddCard + AfterCreated，
+                // 牌才真的挂在战斗里。以前用 RunState.CreateCard，造出来的是「牌组范围」的牌：
+                // 变动画播完人飘在界面上、被抽到手里还会卡死。
+                w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(__newSelf, {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
-                w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
+                w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
+                w.Line($"await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
                 w.Close();
             }
             else
             {
                 w.Line($"CardModel __madeSelf = {combatStateExpr}.CreateCard(ModelDb.Card<{CardTypeExpr(p, selfTarget!)}>(), {playerExpr});");
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
-                w.Line($"await CardCmd.Transform({sourceExpr}, __madeSelf);");
+                w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
+                w.Line($"await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
             }
             if (countInto is not null) w.Line($"{countInto} += 1;");
             return;
