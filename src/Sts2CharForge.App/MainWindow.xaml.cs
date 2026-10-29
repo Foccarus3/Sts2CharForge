@@ -9311,22 +9311,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Canvas.SetLeft(AnimPreviewImage, cx + anim.XOffset - artW / 2);
 		Canvas.SetTop(AnimPreviewImage, barY + anim.YOffset - artAnchorY);
 		// 血条宽度 = 角色宽度 + 24px（和本体 NHealthBar：bounds 宽 + 24 一致）→ 缩放一变它跟着变
-		double barW = Math.Min(hostW * 0.96, artW + 24.0);
+		// V0.2.335（用户要求）：去掉血条方块，只留「瞄点」——一条贯穿的竖虚线 + 中心十字 + 蓝点。
 		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
 		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 		{
 			X1 = cx, Y1 = 0, X2 = cx, Y2 = hostH,
 			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.004), StrokeDashArray = dash, Opacity = 0.85,
 		});
-		var bar = new System.Windows.Shapes.Rectangle
+		double tick = Math.Max(6.0, artW * 0.10);              // 瞄点中心那一条横线（血条中心位置）
+		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 		{
-			Width = barW, Height = barH,
-			Stroke = Brushes.Red, StrokeThickness = Math.Max(1, artH * 0.004),
-			Fill = new SolidColorBrush(Color.FromArgb(60, 255, 0, 0)),
-		};
-		Canvas.SetLeft(bar, cx - barW / 2);
-		Canvas.SetTop(bar, barY - barH / 2);
-		AnimPreviewOverlay.Children.Add(bar);
+			X1 = cx - tick / 2, Y1 = barY, X2 = cx + tick / 2, Y2 = barY,
+			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.006), Opacity = 0.95,
+		});
 		double r = Math.Max(2.0, artH * 0.012);
 		var dot = new System.Windows.Shapes.Ellipse { Width = r * 2, Height = r * 2, Fill = Brushes.DeepSkyBlue };
 		Canvas.SetLeft(dot, cx - r);
@@ -9335,7 +9332,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
 		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
-			+ $"（红条 = 血条，宽 {barW:0}px = 角色 {artW:0} + 24；蓝点 = 血条中心）";
+			+ $"（蓝点/十字 = 血条中心；缩放 1 = 原尺寸，0 = 自动）";
 	}
 
 

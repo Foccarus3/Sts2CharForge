@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -385,6 +385,25 @@ public static class ProfileValidator
                     // 作用对象 = 「全体单位」（V0.2.132 第 7 档）：状态链也在生成端实现了
                     //（CustomPowerGen.EmitEffect / EmitDamage），但只对那几个种类 —— 其余一律报错拦住。
                     ValidateAllUnitsTarget(issues, $"{who}「{when}」", j + 1, EffectCatalog.FindKind(e.Kind), e, "Power");
+                    // 「目标卡 / 只对这张卡（指定）」存的都是**卡牌类名**，填了就必须认得出。
+                    // 以前只查了卡牌 / 遗物 / 药水三条链（见 ValidateEffects），**自定义状态这条链漏了** ——
+                    // 于是 `cs\Powers\<角色>Power<xx>.cs` 里会写出
+                    // `ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.FengJian>()`（认不出来就被当成本体卡加前缀）
+                    // → 编译期 CS0234「命名空间 …Models.Cards 中不存在类型或命名空间名」，
+                    // 用户实测报过：`MetalicSwordPowerxunqiu.cs(24,281) CS0234 …"FengJian"`。
+                    // ⚠ 只在这一档**生成端真的会用它**（PowerTriggers.Supports）时查，免得和上面那条「不支持」重复报。
+                    if (PowerTriggers.Supports(e.Kind))
+                    {
+                        string fxWhere = $"{who}「{when}」的第 {j + 1} 条「{EffectCatalog.FindKind(e.Kind).Display}」";
+                        if (!e.IsSpawnRandom && !string.IsNullOrWhiteSpace(e.SpawnCardId)
+                            && e.Kind is "GenerateCard" or "TransformCard" or "TransformCardGlobal" or "AddCardGlobal" or "FillHand")
+                            ValidateCardTargetExists(issues, fxWhere, p, e);
+                        if (e.Kind == "BoostCard")
+                            ValidateBoostCardTarget(issues, fxWhere, p, e);
+                        if (e.HasScopeCardId
+                            && CardTargetProblem(p, fxWhere, e.ScopeCardId, fieldZh: "只对这张卡（指定）") is { } scopedProblem)
+                            issues.Add(new(scopedProblem.Level, scopedProblem.Message));
+                    }
                     // 复制 / 重放 / 回合结束时自动打出，以及「斩杀」条件：都要「打出某张牌」的上下文，
                     // 状态触发器里没有 —— 生成时会留一行「已忽略」，这里也说清楚（不静默丢）。
                     if (e.Kind is "CopyCard" or "ReplayCard" or "TurnEndPlay")
