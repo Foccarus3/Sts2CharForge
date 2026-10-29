@@ -3255,52 +3255,35 @@
                                 <Border BorderBrush="#DDD" BorderThickness="1" Padding="10"
                                         Visibility="{Binding Enabled, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
-                                        <TextBlock Text="动画设置" FontWeight="Bold" FontSize="14"/>
                                         <TextBlock Margin="0,4,0,6" TextWrapping="Wrap" FontSize="11" Foreground="#666"
-                                                   Text="四项都用滑条拖（数值实时显示在右边）；下面的预览会立刻跟着变，蓝虚线 + 红条 = 血条中心。"/>
-                                        <Grid Margin="0,0,0,6">
+                                                   Text="四项直接填数值（改完下面预览立刻跟着变；蓝虚线与红条 = 血条中心，红条宽度跟着缩放变）。"/>
+                                        <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/>
+                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="缩放" Style="{StaticResource Label}" Width="110"/>
-                                            <Slider Grid.Column="1" Minimum="0" Maximum="5" SmallChange="0.05" LargeChange="0.25" TickFrequency="0.25"
-                                                    IsSnapToTickEnabled="False" VerticalAlignment="Center"
-                                                    Value="{Binding Scale, Mode=TwoWay}" ToolTip="0 = 按静态立绘高度自动算"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding Scale, StringFormat={}{0:0.##}}" VerticalAlignment="Center" TextAlignment="Right"
-                                                       FontFamily="Consolas"/>
+                                            <TextBlock Grid.Column="0" Text="缩放（0 = 按静态立绘高度自动算）" Style="{StaticResource Label}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Scale, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
-                                        <Grid Margin="0,0,0,6">
+                                        <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/>
+                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="X 偏移（像素）" Style="{StaticResource Label}" Width="110"/>
-                                            <Slider Grid.Column="1" Minimum="-300" Maximum="300" SmallChange="1" LargeChange="10" TickFrequency="10"
-                                                    VerticalAlignment="Center" Value="{Binding XOffset, Mode=TwoWay}"
-                                                    ToolTip="正数往右；0 = 水平居中"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding XOffset, StringFormat={}{0:0.#}}" VerticalAlignment="Center" TextAlignment="Right"
-                                                       FontFamily="Consolas"/>
+                                            <TextBlock Grid.Column="0" Text="X 偏移（像素，正数往右；相对血条中心）" Style="{StaticResource Label}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding XOffset, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
-                                        <Grid Margin="0,0,0,6">
+                                        <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/>
+                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="Y 偏移（像素）" Style="{StaticResource Label}" Width="110"/>
-                                            <Slider Grid.Column="1" Minimum="-300" Maximum="300" SmallChange="1" LargeChange="10" TickFrequency="10"
-                                                    VerticalAlignment="Center" Value="{Binding YOffset, Mode=TwoWay}"
-                                                    ToolTip="0 = 自动（让脚落在静态立绘底边）；要微调就往负数拖（往上）"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding YOffset, StringFormat={}{0:0.#}}" VerticalAlignment="Center" TextAlignment="Right"
-                                                       FontFamily="Consolas"/>
+                                            <TextBlock Grid.Column="0" Text="Y 偏移（像素；0 = 自动：脚落在静态立绘底边）" Style="{StaticResource Label}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffset, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
-                                        <Grid Margin="0,0,0,6">
+                                        <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/>
+                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="播放速度系数" Style="{StaticResource Label}" Width="110"/>
-                                            <Slider Grid.Column="1" Minimum="0.1" Maximum="4" SmallChange="0.05" LargeChange="0.25" TickFrequency="0.1"
-                                                    VerticalAlignment="Center" Value="{Binding SpeedScale, Mode=TwoWay}"
-                                                    ToolTip="1 = 动图原速，2 = 双倍速"/>
-                                            <TextBlock Grid.Column="2" Text="{Binding SpeedScale, StringFormat={}{0:0.##}}" VerticalAlignment="Center" TextAlignment="Right"
-                                                       FontFamily="Consolas"/>
+                                            <TextBlock Grid.Column="0" Text="播放速度系数（1 = 动图原速，2 = 双倍速）" Style="{StaticResource Label}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding SpeedScale, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                             <Button Content="预览动画计划" Padding="10,4" FontWeight="Bold" Click="OnAnimPlanPreview"

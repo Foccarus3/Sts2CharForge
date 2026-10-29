@@ -9289,34 +9289,35 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			return;
 		}
 
-		// V0.2.333（用户报「缩放和 X/Y 偏移看不出效果」）：以前用 RenderTransform，而外面套着 Viewbox ——
-		// Viewbox 按子元素的**布局尺寸**缩放，RenderTransform 不改布局 → 缩放看不出变化、平移还会被边框裁掉。
-		// 现在直接改布局：画布尺寸 = 帧尺寸 × 缩放（再给血条留一条空间），图按 (X 偏移, Y 偏移) 摆，
-		// 瞄点固定画在画布正中/底部 —— 于是「图相对血条中心怎么偏」一眼就能看出来。
+		// V0.2.334（用户要求）：① X/Y 偏移要能「看出相对血条中心偏了多少」——所以预览画布的尺寸**不随偏移变化**，
+		// 偏移只是在固定画框里挪动图片；② 缩放改了以后，预览底下那条血条的大小也要跟着变（游戏里血条宽度
+		// = 角色宽度 + 固定 24px，所以角色放大血条就变宽）。
 		double artW = _animPreviewW * scale;
 		double artH = _animPreviewH * scale;
-		double pad = Math.Max(10.0, artH * 0.10);            // 血条那一条的高度（含 5.4% 间距）
-		double hostW = artW + Math.Abs(anim.XOffset) * 2 + 4;
-		double hostH = artH + pad + Math.Abs(anim.YOffset) + 4;
+		double gap = Math.Max(10.0, artH * 0.054);            // 脚底到血条中心的距离（实机截图量的 5.4% 内容高）
+		double barH = Math.Max(4.0, artH * 0.026);            // 血条厚度
+		double marginX = Math.Max(60.0, artW * 0.42);         // 固定留白：够把 ±300 像素的偏移显示出来
+		double hostW = artW + marginX * 2;
+		double hostH = artH + gap + barH * 2 + Math.Max(16.0, artH * 0.10);
 		AnimPreviewHost.Width = hostW;
 		AnimPreviewHost.Height = hostH;
 		AnimPreviewImage.Width = artW;
 		AnimPreviewImage.Height = artH;
 		AnimPreviewImage.RenderTransform = null;
-		double cx = hostW / 2;                                // 血条中心（横向）
-		double barY = hostH - pad / 2;                        // 血条中心（纵向）
-		// V0.2.333（用户要求「X/Y 偏移和缩放都相对于血条中心」）：图片自己的锚点 = 水平中心 + 脚底再往下 5.4% 内容高，
-		// 把那个锚点对准血条中心，再加 X/Y 偏移 —— 于是缩放是「以血条中心为原点长大」，平移是「相对血条中心的位移」。
-		double artAnchorY = artH * (1 + 0.054);
+		double cx = hostW / 2;                                // 血条中心（横向）——画框正中，不随偏移动
+		double barY = hostH - barH * 2;                       // 血条中心（纵向）——底部固定
+		// 图片自己的锚点 = 水平中心 + 「脚底再往下 gap」，把它对准 (血条中心 + 偏移)
+		double artAnchorY = artH + gap;
 		Canvas.SetLeft(AnimPreviewImage, cx + anim.XOffset - artW / 2);
 		Canvas.SetTop(AnimPreviewImage, barY + anim.YOffset - artAnchorY);
+		// 血条宽度 = 角色宽度 + 24px（和本体 NHealthBar：bounds 宽 + 24 一致）→ 缩放一变它跟着变
+		double barW = Math.Min(hostW * 0.96, artW + 24.0);
 		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
 		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 		{
 			X1 = cx, Y1 = 0, X2 = cx, Y2 = hostH,
 			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.004), StrokeDashArray = dash, Opacity = 0.85,
 		});
-		double barW = Math.Max(12, artW * 0.62), barH = Math.Max(3, pad * 0.30);
 		var bar = new System.Windows.Shapes.Rectangle
 		{
 			Width = barW, Height = barH,
@@ -9333,9 +9334,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		AnimPreviewOverlay.Children.Add(dot);
 
 		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
-		AnimPreviewHint.Text = _animPreviewFrames.Count > 1
-			? $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}（红线 = 血条中心）"
-			: $"（这段只有 1 帧 = 静止图）缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}（红线 = 血条中心）";
+		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
+			+ $"（红条 = 血条，宽 {barW:0}px = 角色 {artW:0} + 24；蓝点 = 血条中心）";
 	}
 
 
