@@ -7949,7 +7949,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
                 w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
-                w.Line($"await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
+                // V0.2.326：这张牌可能已经被别的流程挪走了（本体 Transform/Add 都要求有 pile）→ 有 pile 才消耗
+                w.Line($"if ({sourceExpr}.Pile is not null) await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
                 w.Close();
             }
             else
@@ -7958,7 +7959,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 if (e.SpawnUpgraded) w.Line("CardCmd.Upgrade(__madeSelf);   // 变出来就是升级过的");
                 w.Line("await CardPileCmd.Add(__madeSelf, PileType.Discard);");
                 EmitSpawnKeyword(w, e, "__madeSelf", p);
-                w.Line($"await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
+                // V0.2.326：这张牌可能已经被别的流程挪走了（本体 Transform/Add 都要求有 pile）→ 有 pile 才消耗
+                w.Line($"if ({sourceExpr}.Pile is not null) await CardCmd.Exhaust({choiceExpr}, {sourceExpr});");
             }
             if (countInto is not null) w.Line($"{countInto} += 1;");
             return;

@@ -40543,7 +40543,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("V0.2.320/325：变化卡牌「数值 0」= 把这张牌自己变掉（新牌进弃牌堆 + 消耗掉自己）",
 				CSharpCodeGen.AmountZeroIsSelf(tfCard.Effects[0])
 				&& tfSrc.Contains("await CardPileCmd.Add(__madeSelf, PileType.Discard);")
-				&& tfSrc.Contains("await CardCmd.Exhaust(choiceContext, this);")
+				&& tfSrc.Contains("if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);")
 				&& !tfSrc.Contains("取 0 张"), "变自己了");
 			// 图链也要
 			var tfGraphCard = new CardSpec { Name = "自检图变化零", ClassName = "UiCheckTf0Graph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
