@@ -701,7 +701,32 @@ public static class ForgeFormula
     /// 那些本来就不会被吞，多套一层还会改掉生成文本（自检里按原文断言的十几条会跟着红）。
     /// </summary>
     private static bool NeedsParens(string rep) =>
-        rep.Contains("??", StringComparison.Ordinal) && !rep.TrimStart().StartsWith("(", StringComparison.Ordinal);
+        rep.Contains("??", StringComparison.Ordinal) && !FullyWrapped(rep);
+
+    /// <summary>
+    /// 这个片段是不是**整体**被一对括号包着（首字符 '('、和它配对的那个 ')' 正好是最后一个字符）。
+    ///
+    /// <para>V0.2.330（用户报「参数 B = 指定敌人最大生命，造成 B*0.3 的伤害，卡面显示的是 B」）：
+    /// 以前只判「首字符是不是 '('」，而「参数 = 最大生命」生成的是 <c>(target)?.MaxHp ?? 0</c> ——
+    /// **首字符是 '(' 但整体没被包**，于是被当成安全，拼进乘法就成了
+    /// <c>(target)?.MaxHp ?? (0 * 0.3m)</c> = 满血值（等于参数本身 = 你看到的「显示 B」）。</para>
+    /// </summary>
+    private static bool FullyWrapped(string rep)
+    {
+        string s = rep.Trim();
+        if (s.Length < 2 || s[0] != '(') return false;
+        int depth = 0;
+        for (int i = 0; i < s.Length; i++)
+        {
+            if (s[i] == '(') depth++;
+            else if (s[i] == ')')
+            {
+                depth--;
+                if (depth == 0) return i == s.Length - 1;   // 配对的那个 ')' 必须是最后一个字符
+            }
+        }
+        return false;
+    }
 
     private static bool EmitNode(Node n, StringBuilder sb, Func<string, string?> resolveVar, ref string error)
     {

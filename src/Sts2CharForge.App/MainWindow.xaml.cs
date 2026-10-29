@@ -12814,7 +12814,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("「生效次数」公式 → 循环上界现算（夹到 0~20，不会让公式算出 999 把一局卡死）",
 				cfSrc.Contains("for (int i = 0; i < (int)System.Math.Clamp((__fgPlayer?.PlayerCombatState?.TurnNumber ?? 0), 0m, 20m); i++)"), "对");
 			Check("「命中次数」公式 → WithHitCount 里现算（夹到 0~20）",
-				cfSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + (decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0)), 0m, 20m))"), "对");
+			cfSrc.Contains(".WithHitCount((int)System.Math.Clamp(((2m) + ((decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0))), 0m, 20m))"), "对");
 			Check("生成时写一行回读标记（CET:CountFormulas=…，键=公式、| 分隔）",
 				cfSrc.Contains("// CET:CountFormulas=Times=Turn|Repeat=2 + HandCount"), "有标记");
 			Check("卡面印的是公式本身（不是那个固定次数）",
@@ -12884,7 +12884,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			cf3.Cards.Add(replayCard);
 			string replaySrc = CSharpCodeGen.CardSource(cf3, replayCard, 0);
 			Check("「重放次数」公式 → BaseReplayCount += 现算（夹到 0~20）",
-				replaySrc.Contains("__replayCard.BaseReplayCount += (int)System.Math.Clamp((decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0), 0m, 20m);"), "对");
+				replaySrc.Contains("__replayCard.BaseReplayCount += (int)System.Math.Clamp(((decimal)(__fgPlayer?.PlayerCombatState?.Hand?.Cards.Count ?? 0)), 0m, 20m);"), "对");
 			// 默认档逐字不变：没写次数公式的卡一个字符都不多
 			CharacterProfile cfPlain = ProfileFactory.Sample();
 			var plainCard = new CardSpec { Name = "普通次数卡", ClassName = "UiCheckCountPlain", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
@@ -40481,6 +40481,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 			}
 			SelectTabRoot("遗物");
+		}
+
+		// ===== V0.2.330：参数（最大生命）*0.3 的优先级 —— 以前拼出来是 x?.MaxHp ?? (0*0.3) = 满血值 =====
+		{
+			var fProf = ProfileFactory.Sample();
+			fProf.CustomParams.Clear();
+			fProf.CustomParams.Add(new ParamSpec { Name = "B", Source = ParamSources.MaxHp, Target = ParamTargets.ChosenEnemy });
+			var fCard = new CardSpec { Name = "自检参数公式", ClassName = "UiCheckFormulaMul", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+			var fEff = new EffectSpec { Kind = "Damage", Amount = 0m, TargetSide = "Enemy" };
+			fEff.ForgeAmountText = "B*0.3";
+			fCard.Effects.Add(fEff);
+			fProf.Cards.Add(fCard);
+			string fSrc = CSharpCodeGen.CardSource(fProf, fCard, fProf.Cards.Count - 1);
+			Check("V0.2.330：参数「最大生命」乘系数会被整体括起来（不然 ?? 吃掉乘号 = 满血值）",
+				fSrc.Contains("(((target)?.MaxHp ?? 0) * (0.3m))")
+				&& !fSrc.Contains("?? 0 * (0.3m)"), "括号对了");
+			Check("V0.2.330：卡面文案用的还是公式原文（B*0.3）",
+				fEff.ForgeAmountTextShown == "B*0.3", fEff.ForgeAmountTextShown);
 		}
 
 		// ===== V0.2.329：卡牌「获得指定药水」要能选到自己做的药水 =====
