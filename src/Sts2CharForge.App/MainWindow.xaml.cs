@@ -20231,7 +20231,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					genGraphSrc.Contains("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)")
 					&& genGraphSrc.Contains("public override async Task BeforeCardPlayed(CardPlay cardPlay)"), "两个钩子");
 				Check("状态那块布：序幕按状态取（base.Owner.Player / base.Owner），不写卡牌 / 遗物那套",
-					genGraphSrc.Contains("Player __fgPlayer = base.Owner.Player!;")
+				// V0.2.322：挂在敌人身上时 base.Owner.Player 是 null → 生成时退一层（宠物主人 / 战斗里第一个玩家）
+				genGraphSrc.Contains("Player __fgPlayer = base.Owner.Player ?? ")
 					&& genGraphSrc.Contains("Creature __fgSelf = base.Owner;")
 					&& !genGraphSrc.Contains("__fgPlayer.Creature"), "状态那一档");
 				Check("状态那块布：图上【效果】真的进了钩子（获得格挡 / 抽牌都写出来了）",
