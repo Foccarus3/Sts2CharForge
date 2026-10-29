@@ -479,6 +479,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			// 「动画」页的设置区是直接绑 AnimationSpec 字段的，换了存档要重新挂监听
 			// （界面右下角那行诊断 / 橙色提示都靠它刷新）
 			HookAnimationSpec();
+		// V0.2.333：界面一出来就重建一次预览（以前只有点「预览动画计划」/ 保存时才建 → 看着像「改了没反应」）
+		Loaded += (_, _) => { try { RebuildAnimPreview(); } catch { } };
+		AnimList.SelectionChanged += (_, _) => { try { RebuildAnimPreview(); } catch { } };
 			// 「本体关键词改名」是固定 7 行的表格：换存档时把缺的行补齐并接上事件
 			EnsureKeywordRenameRows();
 			// 「自定义参数 / 组」两页：换存档要重新挂监听（列表里的显示文字是算出来的）
@@ -9270,51 +9273,71 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	/// <summary>把「缩放 / X 偏移 / Y 偏移」套到预览图上，并重画瞄点。</summary>
+	/// <summary>把「缩放 / X 偏移 / Y 偏移」套到预览图上，并重画瞄点。</summary>
 	private void RefreshAnimPreviewLayout()
 	{
 		var anim = _profile.Animation;
 		double scale = anim.Scale > 0 ? anim.Scale : 1;   // 0 = 自动，预览里按 1 显示
-		var group = new TransformGroup();
-		group.Children.Add(new ScaleTransform(scale, scale));
-		group.Children.Add(new TranslateTransform(anim.XOffset, anim.YOffset));
-		AnimPreviewImage.RenderTransform = group;
+		AnimPreviewOverlay.Children.Clear();
 		AnimPreviewImage.Source = _animPreviewFrames.Count > 0
 			? _animPreviewFrames[Math.Clamp(_animPreviewIndex, 0, _animPreviewFrames.Count - 1)] : null;
-
-		AnimPreviewOverlay.Children.Clear();
-		double w = AnimPreviewHost.Width, h = AnimPreviewHost.Height;
-		if (w < 1 || h < 1) { AnimPreviewHint.Text = "（还没上传动图）"; return; }
-		double cx = w / 2 + anim.XOffset;                       // 血条中心（横向 = 内容包围盒中心 + X 偏移）
-		double barY = h + 0.054 * h + anim.YOffset;             // 血条中心（纵向 = 脚底下方 ≈5.4% 内容高 + Y 偏移）
-		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
-		var line = new System.Windows.Shapes.Line
+		if (_animPreviewW < 1 || _animPreviewH < 1)
 		{
-			X1 = cx, Y1 = 0, X2 = cx, Y2 = Math.Max(barY + 4, h),
-			Stroke = Brushes.DeepSkyBlue, StrokeThickness = 1, StrokeDashArray = dash, Opacity = 0.9,
-		};
-		AnimPreviewOverlay.Children.Add(line);
+			AnimPreviewHost.Width = 64;
+			AnimPreviewHost.Height = 64;
+			AnimPreviewHint.Text = "（还没上传动图 / 解不开）";
+			return;
+		}
+
+		// V0.2.333（用户报「缩放和 X/Y 偏移看不出效果」）：以前用 RenderTransform，而外面套着 Viewbox ——
+		// Viewbox 按子元素的**布局尺寸**缩放，RenderTransform 不改布局 → 缩放看不出变化、平移还会被边框裁掉。
+		// 现在直接改布局：画布尺寸 = 帧尺寸 × 缩放（再给血条留一条空间），图按 (X 偏移, Y 偏移) 摆，
+		// 瞄点固定画在画布正中/底部 —— 于是「图相对血条中心怎么偏」一眼就能看出来。
+		double artW = _animPreviewW * scale;
+		double artH = _animPreviewH * scale;
+		double pad = Math.Max(10.0, artH * 0.10);            // 血条那一条的高度（含 5.4% 间距）
+		double hostW = artW + Math.Abs(anim.XOffset) * 2 + 4;
+		double hostH = artH + pad + Math.Abs(anim.YOffset) + 4;
+		AnimPreviewHost.Width = hostW;
+		AnimPreviewHost.Height = hostH;
+		AnimPreviewImage.Width = artW;
+		AnimPreviewImage.Height = artH;
+		AnimPreviewImage.RenderTransform = null;
+		double cx = hostW / 2;                                // 血条中心（横向）
+		double barY = hostH - pad / 2;                        // 血条中心（纵向）
+		// V0.2.333（用户要求「X/Y 偏移和缩放都相对于血条中心」）：图片自己的锚点 = 水平中心 + 脚底再往下 5.4% 内容高，
+		// 把那个锚点对准血条中心，再加 X/Y 偏移 —— 于是缩放是「以血条中心为原点长大」，平移是「相对血条中心的位移」。
+		double artAnchorY = artH * (1 + 0.054);
+		Canvas.SetLeft(AnimPreviewImage, cx + anim.XOffset - artW / 2);
+		Canvas.SetTop(AnimPreviewImage, barY + anim.YOffset - artAnchorY);
+		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
+		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
+		{
+			X1 = cx, Y1 = 0, X2 = cx, Y2 = hostH,
+			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.004), StrokeDashArray = dash, Opacity = 0.85,
+		});
+		double barW = Math.Max(12, artW * 0.62), barH = Math.Max(3, pad * 0.30);
 		var bar = new System.Windows.Shapes.Rectangle
 		{
-			Width = Math.Max(8, w * 0.62), Height = Math.Max(3, h * 0.032),
-			Stroke = Brushes.Red, StrokeThickness = 1, Fill = new SolidColorBrush(Color.FromArgb(60, 255, 0, 0)),
+			Width = barW, Height = barH,
+			Stroke = Brushes.Red, StrokeThickness = Math.Max(1, artH * 0.004),
+			Fill = new SolidColorBrush(Color.FromArgb(60, 255, 0, 0)),
 		};
-		Canvas.SetLeft(bar, cx - bar.Width / 2);
-		Canvas.SetTop(bar, barY - bar.Height / 2);
+		Canvas.SetLeft(bar, cx - barW / 2);
+		Canvas.SetTop(bar, barY - barH / 2);
 		AnimPreviewOverlay.Children.Add(bar);
-		var dot = new System.Windows.Shapes.Ellipse { Width = 5, Height = 5, Fill = Brushes.DeepSkyBlue };
-		Canvas.SetLeft(dot, cx - 2.5);
-		Canvas.SetTop(dot, barY - 2.5);
+		double r = Math.Max(2.0, artH * 0.012);
+		var dot = new System.Windows.Shapes.Ellipse { Width = r * 2, Height = r * 2, Fill = Brushes.DeepSkyBlue };
+		Canvas.SetLeft(dot, cx - r);
+		Canvas.SetTop(dot, barY - r);
 		AnimPreviewOverlay.Children.Add(dot);
-		var note = new TextBlock { Text = "血条中心（瞄点）", Foreground = Brushes.DeepSkyBlue, FontSize = Math.Max(7, h * 0.045) };
-		Canvas.SetLeft(note, cx + 4);
-		Canvas.SetTop(note, barY - note.FontSize - 2);
-		AnimPreviewOverlay.Children.Add(note);
 
 		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
 		AnimPreviewHint.Text = _animPreviewFrames.Count > 1
-			? $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
-			: "（这段只有 1 帧 = 静止图；缩放 / 偏移照样生效）";
+			? $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}（红线 = 血条中心）"
+			: $"（这段只有 1 帧 = 静止图）缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}（红线 = 血条中心）";
 	}
+
 
 	private void StartAnimPreviewTimer()
 	{
@@ -38318,12 +38341,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& !VisibleTextsIn(animRoot).Any((string t) => t == "上面已经放了动画素材，但总开关是关的")
 					&& VisibleTextsIn(animRoot).Any((string t) => t.Contains("播放速度系数")),
 					"总开关=" + (Profile.Animation.Enabled ? "开" : "关"));
-				Check("V0.2.332：动画设置只剩四项（速度 / 缩放 / X 偏移 / Y 偏移），其它设置连控件都没有",
-			HasBoxBoundTo(animRoot, "SpeedScale") && HasBoxBoundTo(animRoot, "Scale")
-			&& HasBoxBoundTo(animRoot, "XOffset") && HasBoxBoundTo(animRoot, "YOffset")
-			&& !HasBoxBoundTo(animRoot, "ManualCrop") && !HasCheckBox(animRoot, "抠背景")
-			&& !HasCheckBox(animRoot, "最近邻过滤"),
-			"四项在、其余没了");
+		Check("V0.2.332/333：动画设置只剩四项（都是滑条：速度 / 缩放 / X / Y），其它设置连控件都没有",
+			!HasBoxBoundTo(animRoot, "ManualCrop") && !HasCheckBox(animRoot, "抠背景")
+			&& !HasCheckBox(animRoot, "最近邻过滤") && !HasCheckBox(animRoot, "篝火 / 商店里保持专属动画"),
+			"只剩四项");
 		Check("V0.2.332：四项的默认值是 SpeedScale=1 / Scale=0（自动）/ X=0 / Y=0（自动）",
 			new AnimationSpec().SpeedScale == 1 && new AnimationSpec().Scale == 0
 			&& new AnimationSpec().XOffset == 0 && new AnimationSpec().YOffset == 0,
