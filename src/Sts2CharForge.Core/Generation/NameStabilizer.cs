@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -41,6 +41,36 @@ public static class NameStabilizer
         public int Version { get; set; } = 1;
         /// <summary>类名 → 当时的显示名（用来把失效引用按名字认回来）。</summary>
         public Dictionary<string, string> Names { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// V0.2.346（用户要求「生成英文类名后就绑定」）：**只把留空的类名写实**，不动引用、不读写类名表。
+    ///
+    /// <para>界面上「打开存档 / 添加一条」之后就调它 —— 名字**当场就有值**，
+    /// 于是拖动排序 / 删除再也不会改到它，效果里按类名存的引用（目标卡 / 召唤物 / 状态）也就不会丢。
+    /// 名字一旦写实，<see cref="Naming.RenumberCardClassNames"/> 那一套（V0.2.346 起只给留空的按序号编号）
+    /// 就再也不会碰它。</para>
+    ///
+    /// <para>返回**这次固定了几条**（0 = 全都固定过了，什么都没动）。</para>
+    /// </summary>
+    public static int PinNames(CharacterProfile p)
+    {
+        int Empty()
+        {
+            int n = 0;
+            foreach (var c in p.AllCards) if (c is not null && !c.IsVanillaCard && !Naming.IsValidIdentifier(c.ClassName)) n++;
+            foreach (var r in p.Relics) if (r is not null && !Naming.IsValidIdentifier(r.ClassName)) n++;
+            foreach (var s in p.Potions) if (s is not null && !Naming.IsValidIdentifier(s.ClassName)) n++;
+            foreach (var sp in p.Summons) if (sp is not null && !Naming.IsValidIdentifier(sp.ClassName)) n++;
+            foreach (var cp in p.CustomPowers) if (cp is not null && !Naming.IsValidIdentifier(cp.ClassName)) n++;
+            return n;
+        }
+        int before = Empty();
+        if (before == 0) return 0;
+        var notes = new List<string>();
+        Freeze(p, notes);
+        FreezeKeywords(p, notes);
+        return Math.Max(0, before - Empty());
     }
 
     /// <summary>
@@ -446,7 +476,7 @@ public static class NameStabilizer
             if (!string.Equals(cls, want, StringComparison.Ordinal))
                 notes.Add($"[警告] 卡牌「{c.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}"
                     + "（这张卡如果上传过卡面 / 被别的效果按类名引用过，请在界面上重新选一次）");
-            c.ClassName = cls;
+            c.PinClassNameSilently(cls);   // V0.2.346：静默写实（界面显示的字符串没变，不重刷列表）
             notes.Add($"英文类名已固定：卡牌「{c.Name}」→ {cls}");
             changed = true;
         }
@@ -458,7 +488,7 @@ public static class NameStabilizer
             string cls = Claim(want);
             if (!string.Equals(cls, want, StringComparison.Ordinal))
                 notes.Add($"[警告] 遗物「{r.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
-            r.ClassName = cls;
+            r.PinClassNameSilently(cls);
             notes.Add($"英文类名已固定：遗物「{r.Name}」→ {cls}");
             changed = true;
         }
@@ -470,7 +500,7 @@ public static class NameStabilizer
             string cls = Claim(want);
             if (!string.Equals(cls, want, StringComparison.Ordinal))
                 notes.Add($"[警告] 药水「{s.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
-            s.ClassName = cls;
+            s.PinClassNameSilently(cls);
             notes.Add($"英文类名已固定：药水「{s.Name}」→ {cls}");
             changed = true;
         }
@@ -482,7 +512,7 @@ public static class NameStabilizer
             string cls = Claim(want);
             if (!string.Equals(cls, want, StringComparison.Ordinal))
                 notes.Add($"[警告] 召唤物「{sp.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
-            sp.ClassName = cls;
+            sp.PinClassNameSilently(cls);
             notes.Add($"英文类名已固定：召唤物「{sp.Name}」→ {cls}");
             changed = true;
         }
@@ -494,7 +524,7 @@ public static class NameStabilizer
             string cls = Claim(want);
             if (!string.Equals(cls, want, StringComparison.Ordinal))
                 notes.Add($"[警告] 自定义状态「{cp.Name}」算出来的自动类名 {want} 已经被别的模型占着，已改用 {cls}");
-            cp.ClassName = cls;
+            cp.PinClassNameSilently(cls);
             notes.Add($"英文类名已固定：自定义状态「{cp.Name}」→ {cls}");
             changed = true;
         }

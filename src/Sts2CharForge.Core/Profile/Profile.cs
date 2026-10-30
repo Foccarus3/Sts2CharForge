@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -2858,6 +2858,14 @@ public sealed class CardSpec : SpecBase, ISlotRow
     public string Name { get => _name; set => Set(ref _name, value); }
     /// <summary>英文类名，留空自动生成 &lt;角色类名&gt;Card&lt;序号&gt;</summary>
     public string ClassName { get => _className; set => Set(ref _className, value); }
+
+    /// <summary>
+    /// V0.2.346：把自动算出来的类名**静默**写实（不触发 PropertyChanged）。
+    /// 界面上显示的字符串一个字都没变（算出来的名字 == 固定下来的名字），所以不需要重刷列表；
+    /// 需要「静默」是因为 <see cref="Generation.NameStabilizer.PinNames"/> 会在界面刷新途中被调用，
+    /// 走 setter 会重入刷新（自检里表现为容器被重建、拖动测试拿不到行）。
+    /// </summary>
+    internal void PinClassNameSilently(string? cls) => _className = cls ?? "";
     /// <summary>Attack / Skill / Power</summary>
     public string CardType { get => _cardType; set => Set(ref _cardType, value); }
     /// <summary>Basic / Common / Uncommon / Rare</summary>
@@ -4257,6 +4265,11 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
 
     public string Name { get => _name; set => Set(ref _name, value); }
 
+    /// <summary>
+    /// V0.2.346：把自动算出来的类名**静默**写实（不触发 PropertyChanged，见 CardSpec.PinClassNameSilently）。
+    /// </summary>
+    internal void PinClassNameSilently(string? cls) => _className = cls ?? "";
+
     /// <summary>英文类名。留空 = 由工具按位置自动生成（见 Naming.RelicClassName）。</summary>
     public string ClassName
     {
@@ -5021,6 +5034,14 @@ public sealed class CustomPowerSpec : SpecBase
     /// <summary>中文显示名（游戏里状态栏和悬停提示用的名字）</summary>
     public string Name { get => _name; set => Set(ref _name, value); }    /// <summary>英文类名（留空自动生成 &lt;角色类名&gt;Power&lt;序号&gt;）</summary>
     public string ClassName { get => _className; set => Set(ref _className, value); }
+
+    /// <summary>
+    /// V0.2.346：把自动算出来的类名**静默**写实（不触发 PropertyChanged）。
+    /// 界面上显示的字符串一个字都没变（算出来的名字 == 固定下来的名字），所以不需要重刷列表；
+    /// 需要「静默」是因为 <see cref="Generation.NameStabilizer.PinNames"/> 会在界面刷新途中被调用，
+    /// 走 setter 会重入刷新（自检里表现为容器被重建、拖动测试拿不到行）。
+    /// </summary>
+    internal void PinClassNameSilently(string? cls) => _className = cls ?? "";
     /// <summary>描述（留空自动按触发器生成一句话；{Amount} = 层数占位符）</summary>
     public string Description { get => _description; set => Set(ref _description, value); }
     /// <summary>图标（本机图片路径，留空 = 用本体的 missing_power 占位图）</summary>
@@ -5749,6 +5770,11 @@ public sealed class PotionSpec : SpecBase, ISlotRow
     private bool _inPotionPool = true;
 
     public string Name { get => _name; set => Set(ref _name, value); }
+
+    /// <summary>
+    /// V0.2.346：把自动算出来的类名**静默**写实（不触发 PropertyChanged，见 CardSpec.PinClassNameSilently）。
+    /// </summary>
+    internal void PinClassNameSilently(string? cls) => _className = cls ?? "";
 
     /// <summary>英文类名。留空 = 由工具按位置自动生成（见 Naming.PotionClassName）。</summary>
     public string ClassName
@@ -6492,6 +6518,14 @@ public sealed class SummonSpec : SpecBase
     /// <summary>英文类名（<c>MonsterModel</c> 子类的名字）。留空自动用 <c>&lt;角色类名&gt;Pet</c>（多只时按序号）。
     /// 本体的 <c>ModelDb</c> 只按<b>类名</b>算模型 ID（忽略命名空间），所以不能和本体的怪物重名、也不能互相重名。</summary>
     public string ClassName { get => _className; set => Set(ref _className, value); }
+
+    /// <summary>
+    /// V0.2.346：把自动算出来的类名**静默**写实（不触发 PropertyChanged）。
+    /// 界面上显示的字符串一个字都没变（算出来的名字 == 固定下来的名字），所以不需要重刷列表；
+    /// 需要「静默」是因为 <see cref="Generation.NameStabilizer.PinNames"/> 会在界面刷新途中被调用，
+    /// 走 setter 会重入刷新（自检里表现为容器被重建、拖动测试拿不到行）。
+    /// </summary>
+    internal void PinClassNameSilently(string? cls) => _className = cls ?? "";
 
     /// <summary>中文名：显示在宠物名牌上（写进 <c>localization/zhs/monsters.json</c> 的 <c>&lt;ENTRY&gt;.name</c>）。</summary>
     public string Name { get => _name; set => Set(ref _name, value); }

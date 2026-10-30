@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1015,8 +1015,8 @@ public static class ProfileValidator
                 if (!string.Equals(c.ClassName!.Trim(), wantAuto, StringComparison.Ordinal))
                     issues.Add(new("提示", $"卡牌「{c.Name}」的英文类名 {c.ClassName.Trim()} 长得像**工具自动生成的编号**，"
                         + $"但它现在排在{(c.IsCurseCard ? "诅咒卡" : c.IsAncientCard ? "先古卡" : "普通卡")}列表第 "
-                        + $"{Naming.CardRowOf(p, c)} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
-                        + "如果你想让它固定不变，请换一个不像自动编号的名字（例：SevenSlash）。"));
+                        + $"{Naming.CardRowOf(p, c)} 位（按位置算本该叫 {wantAuto}）。"
+                        + "V0.2.346 起名字一旦写实就**固定不变**，不会再自动改名 —— 想换就直接在「英文类名」里改（例：SevenSlash）。"));
             }
             // 多人联机：本体模型 ID 只看**类名**（不含命名空间），而且联机时所有人的模组都得装齐 ——
             // 两个模组里有同名类就会在加载模型库时抛 DuplicateModelException（游戏起不来）。
@@ -1335,7 +1335,7 @@ public static class ProfileValidator
                 && !string.Equals(s.ClassName.Trim(), wantAuto, StringComparison.Ordinal))
                 issues.Add(new("提示", $"药水「{s.Name}」的英文类名 {s.ClassName.Trim()} 长得像**工具自动生成的编号**，"
                     + $"但它现在排第 {i + 1} 位 —— 下次生成 / 构建会按位置改名为 {wantAuto}。"
-                    + "如果你想让它固定不变，请换一个不像自动编号的名字（例：SevenFlask）。"));
+                    + "V0.2.346 起名字一旦写实就固定，不会再自动改；想换名字直接在「英文类名」里改（例：SevenFlask）。"));
             ValidateEffects(issues, $"药水「{s.Name}」", s.Effects, s.TargetType, ctx: "Potion", p: p);
             AddDuplicateVarNotice(issues, $"药水「{s.Name}」", s.Effects);
             ValidateForgeGraph(issues, $"药水「{s.Name}」", s.ForgeGraph, p, "Potion");

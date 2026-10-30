@@ -457,6 +457,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		set
 		{
 			_profile = value;
+			PinAllClassNames();   // V0.2.346：换存档就先把留空的英文类名写实（名字从这一刻起固定）
 			HookProfileColors();
 			// 换存档：遗物列表的「序号 + 空槽行」要改挂到新存档的 Relics 上（旧的那份要摘掉订阅），
 			// 并把镜像集合按新存档重铺一遍 —— 见 HookRelicListOrder / SyncRelicRows
@@ -3885,8 +3886,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		SetStatus(text ?? "就绪。填好配置 → 「① 生成工程」→「② 一键构建 + 安装」。");
 	}
 
+	/// <summary>
+	/// V0.2.346（用户要求「生成英文类名后就绑定」）：把**留空**的英文类名立刻写实。
+	///
+	/// <para>为什么放在 <see cref="SyncDetail"/> 里：那是「换存档 / 增删 / 拖动」之后都会走的那一处，
+	/// 于是名字在**拖动之前**就有值了 —— 而 V0.2.346 起「长得像自动名」也不再被改
+	/// （见 <see cref="Naming.RenumberCardClassNames"/>），所以拖动 / 删除都不会改名字，
+	/// 效果里按类名存的引用（目标卡 / 召唤物 / 状态）不会再丢。</para>
+	///
+	/// <para>⚠ 会重入：写实 <c>ClassName</c> 会触发 PropertyChanged → 界面那边的 OnCardChanged 可能又调
+	/// <see cref="SyncDetail"/>；用一个标记挡住，第二趟直接返回（那时也已经没有留空的了）。</para>
+	/// </summary>
+	private void PinAllClassNames()
+	{
+		if (_pinningClassNames) return;
+		_pinningClassNames = true;
+		try
+		{
+			int pinned = NameStabilizer.PinNames(_profile);
+			// ⚠ 这里**不写日志**：SyncDetail 是在界面刷新途中被调的，往日志框写一行会拽动布局
+			//（自检里表现为卡牌列表容器被重建、序号那一列只画出一两行）。只记在字段里，
+			// 真正需要给用户看的那句话放到「生成 / 保存」的时候再写。
+			if (pinned > 0) _pinnedNameNotes.Add($"英文类名已固定 {pinned} 条（从这一刻起拖动 / 删除都不会再改名）");
+		}
+		catch (Exception ex)
+		{
+			AppendLog("[警告] 固定英文类名失败：" + ex.Message);
+		}
+		finally
+		{
+			_pinningClassNames = false;
+		}
+	}
+
+	/// <summary>防止 <see cref="PinAllClassNames"/> 被 PropertyChanged 重入。</summary>
+	private bool _pinningClassNames;
+
+	/// <summary>这次运行里固定过类名的记录（日志 / 状态栏用）。</summary>
+	private readonly List<string> _pinnedNameNotes = new();
 	private void SyncDetail()
 	{
+		PinAllClassNames();   // V0.2.346：留空的英文类名当场写实（静默，不重刷列表）
 		// 遗物页：先把「序号 / 空槽行」铺一遍（换存档 / 载入后 RelicRows 要跟着新 Profile 走），
 		// 再认一遍「当前界面上选中的是哪只真遗物」（选中项可能已经被删 / 被撤回删除换了对象）
 		RefreshRelicOrdinals();
@@ -7360,7 +7400,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus($"「{dragged.Name}」已经在这个位置了。");
 			return;
 		}
-		SetStatus($"已把卡牌「{dragged.Name}」拖到第 {Profile.Cards.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+		SetStatus($"已把卡牌「{dragged.Name}」拖到第 {Profile.Cards.IndexOf(dragged) + 1} 位（英文类名已经固定，不会跟着序号变）。");
 	}
 
 	/// <summary>
@@ -8513,7 +8553,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus($"「{dragged.Name}」已经在这个位置了。");
 			return;
 		}
-		SetStatus($"已把遗物「{dragged.Name}」拖到第 {Profile.Relics.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+		SetStatus($"已把遗物「{dragged.Name}」拖到第 {Profile.Relics.IndexOf(dragged) + 1} 位（英文类名已经固定，不会跟着序号变）。");
 	}
 
 	/// <summary>
@@ -8526,6 +8566,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// </summary>
 	internal bool MoveRelicTo(RelicSpec dragged, RelicSpec? over, int overRowIndex = -1)
 	{
+		PinAllClassNames();
 		int from = _profile.Relics.IndexOf(dragged);
 		if (from < 0) return false;
 		int to;
@@ -8783,7 +8824,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus($"「{dragged.Name}」已经在这个位置了。");
 			return;
 		}
-		SetStatus($"已把药水「{dragged.Name}」拖到第 {Profile.Potions.IndexOf(dragged) + 1} 位（自动生成的英文类名会在下次重新生成时跟着序号走）。");
+		SetStatus($"已把药水「{dragged.Name}」拖到第 {Profile.Potions.IndexOf(dragged) + 1} 位（英文类名已经固定，不会跟着序号变）。");
 	}
 
 	/// <summary>
@@ -8793,6 +8834,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// </summary>
 	internal bool MovePotionTo(PotionSpec dragged, PotionSpec? over, int overRowIndex = -1)
 	{
+		PinAllClassNames();
 		int from = _profile.Potions.IndexOf(dragged);
 		if (from < 0) return false;
 		int to;
@@ -11119,9 +11161,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			OnCopyCard(this, new RoutedEventArgs());
 			Check("复制卡牌：列表多一张", Profile.Cards.Count == beforeCopy + 1, $"{beforeCopy} → {Profile.Cards.Count}");
 			CardSpec copyDst = Profile.Cards[Profile.Cards.Count - 1];
-			Check("复制卡牌：名字加「·改」、类名清空（留空 = 自动编号，照抄会撞模型 ID）",
-				copyDst.Name == "复制源·改" && copyDst.ClassName.Length == 0,
-				copyDst.Name + " / 类名=" + (copyDst.ClassName.Length == 0 ? "(空)" : copyDst.ClassName));
+			Check("复制卡牌：名字加「·改」，并且拿到一个**和源卡不同**的类名（V0.2.346 起复制后立刻固定，照抄会撞模型 ID）",
+				copyDst.Name == "复制源·改" && copyDst.ClassName.Length > 0
+				&& (copySrc.ClassName.Length == 0 || copyDst.ClassName != copySrc.ClassName),
+				copyDst.Name + " / 类名=" + (copyDst.ClassName.Length == 0 ? "(空)" : copyDst.ClassName) + " / 源=" + (copySrc.ClassName.Length == 0 ? "(空)" : copySrc.ClassName));
 			Check("复制卡牌：勾选的自定义关键词跟着复制（用户报过漏掉这个）",
 				copyDst.CustomKeywordList.Contains("UiCheckCopyKw"),
 				string.Join("·", copyDst.CustomKeywordList));
@@ -14131,14 +14174,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					var n2 = Naming.From(Profile);
 					// ⚠ 期望值按**实际位置**算（baseCount 是这只存档里原有的遗物数，测试遗物接在它们后面）：
 					// 写死「SevenRelic3」只在「列表里没有别的遗物」时才对。
-					string autoA = "SevenRelic" + (c + 1);   // 排序甲被拖到第 c+1 位（旧名字 SevenRelic1 是自动名 → 跟过来）
+					string autoA = "SevenRelic" + (c + 1);   // 按「位置」算出来的名字（V0.2.346 起**不再**写回去）
 					int renum = n2.RenumberRelicClassNames(Profile.Relics);
-					Check($"重新生成时：旧自动类名「SevenRelic1」跟到新位置（第 {c + 1} 位 → {autoA}）",
-						Profile.Relics[c].ClassName == autoA, Profile.Relics[c].ClassName);
-					Check($"重新生成时：没填类名的**类名保持留空**、只记下「这个位置对应第 {b + 1} 号自动名」"
-						+ "（留空才不会把「工具生成的」和「用户手打的」混在一起）",
-						Profile.Relics[b].ClassName == "" && Profile.Relics[b].LastAutoOrdinal == b + 1
-						&& n2.RelicClassName(Profile.Relics[b], b) == "SevenRelic" + (b + 1),
+					// V0.2.346（用户要求「生成英文类名后就绑定」）：已经存下来的类名**一律不再跟着序号变**，
+					// 哪怕它长得像自动名。以前这里会把 SevenRelic1 改成 SevenRelic{c+1} —— 那正是
+					// 「拖动换位置后效果里的目标卡 / 召唤物引用当场断链」的根源。
+					Check($"V0.2.346：已存的类名不再跟着序号走（排到第 {c + 1} 位，「SevenRelic1」一个字都没动）",
+						Profile.Relics[c].ClassName == "SevenRelic1", $"现在={Profile.Relics[c].ClassName}（位置对应的自动名是 {autoA}）");
+					Check("V0.2.346：留空的类名在「拖动 / 打开存档」时就被写实（不再保持留空 —— 这样引用才稳定）",
+						Profile.Relics[b].ClassName != "" && Profile.Relics[b].LastAutoOrdinal == b + 1
+						&& n2.RelicClassName(Profile.Relics[b], b) == Profile.Relics[b].ClassName,
 						$"ClassName='{Profile.Relics[b].ClassName}' 自动名={n2.RelicClassName(Profile.Relics[b], b)}");
 					Check("重新生成时：**手填的**类名一个字都不动（MyCharm / HunterCharm —— 认不出是自动名的都当手填）",
 						Profile.Relics[a].ClassName == "MyCharm" && Profile.Relics[d].ClassName == "HunterCharm",
@@ -14157,15 +14202,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& !n2.IsAutoRelicClassName("") && !n2.IsAutoRelicClassName(null),
 						"判据对（共动了 " + renum + " 只）");
 					// 用户要求原话：「如果没有填写英文类名，自动清除之前自动生成的英文类名，然后按照左侧序列号生成」
-					// —— 这里直接照原话验一遍：把排序丁的类名改成**它自己原来位置的自动名**，
-					// 再把它拖到第 1 位，重新编号后它必须换成正序号那个名字。
-					Profile.Relics[d].ClassName = "SevenRelic" + (d + 1);
+					// ⚠ V0.2.346 用户改口了：「生成英文类名后就绑定」——所以这一条改成验**名字不动**。
+					// —— 把排序丁的类名写成它原来位置的自动名，再拖到第 1 位：名字必须还是原来那个。
+					// —— 用户后来说的原话反过来了（V0.2.346）：「生成英文类名后就绑定」——所以这里验**名字不动**。
+					string pinName = "SevenRelic" + (d + 1);
+					Profile.Relics[d].ClassName = pinName;
 					Profile.Relics.Move(d, 0);
 					RefreshRelicOrdinals();
 					int renum3 = n2.RenumberRelicClassNames(Profile.Relics);
-					Check("照用户原话：没填类名的（旧自动名）拖到第 1 位 → 旧自动名被清掉、按序列号重新生成（SevenRelic1）",
-						Profile.Relics[0].Name == "排序丁" && Profile.Relics[0].ClassName == "SevenRelic1" && renum3 > 0,
-						Profile.Relics[0].Name + " → " + Profile.Relics[0].ClassName);
+					Check("V0.2.346：把「SevenRelic8」拖到第 1 位 → 类名**不变**（不再按新序号改名，引用因此不会丢）",
+						Profile.Relics[0].Name == "排序丁" && Profile.Relics[0].ClassName == pinName && renum3 == 0,
+						Profile.Relics[0].Name + " → " + Profile.Relics[0].ClassName + $"（改了 {renum3} 处）");
 					Check("界面上能看出这只遗物的类名是自动还是手填（ClassNameIsAuto / ClassNameHint）",
 						Profile.Relics[a].ClassNameIsAuto == false && Profile.Relics[a].ClassNameHint.Contains("手填")
 						&& Profile.Relics[c].ClassNameIsAuto && Profile.Relics[c].ClassNameHint.Contains("自动"),
@@ -14381,10 +14428,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					rnProfile.Potions.Add(rnAuto);
 					rnProfile.Potions.Add(rnForeign);
 					int rnMoved = rn.RenumberPotionClassNames(rnProfile.Potions);
-					Check("自动类名跟序号走：手填的一个字不动、留空的保持留空只记序号、工具自动生成的按当前序号重命名",
-						rnHand.ClassName == "MyOwnFlask" && rnHand.LastAutoOrdinal == 0
+					Check("V0.2.346：已存的类名一个都不动（手填 / 长得像自动名 / 别家前缀都算），只有留空的按序号记一下",
+						rnHand.ClassName == "MyOwnFlask" && rnHand.LastAutoOrdinal == 1
 						&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 2
-						&& rnAuto.ClassName == rn.CharClass + "Potion3" && rnAuto.LastAutoOrdinal == 3
+						&& rnAuto.ClassName == rn.CharClass + "Potion9" && rnAuto.LastAutoOrdinal == 3
 						&& rnForeign.ClassName == "SomebodyElsePotion5",
 						$"手填={rnHand.ClassName} / 留空='{rnEmpty.ClassName}':{rnEmpty.LastAutoOrdinal} / 自动={rnAuto.ClassName} / 别家={rnForeign.ClassName}（改了 {rnMoved} 处）");
 					Check("自动类名的编号只认**本角色类名**前缀（别的角色的 PotionN 不会被当成我们的自动名）",
@@ -14403,8 +14450,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// 拖到别的序号之后：自动名跟着换
 					rnProfile.Potions.Move(2, 0);                       // 「自动丙」从第 3 位拖到第 1 位
 					rn.RenumberPotionClassNames(rnProfile.Potions);
-					Check("把自动命名的药水拖到第 1 位后重新生成 → 类名变成 <角色类名>Potion1（用户要的链路）",
-						rnAuto.ClassName == rn.CharClass + "Potion1" && rnHand.ClassName == "MyOwnFlask"
+					Check("V0.2.346：把长得像自动名的药水拖到第 1 位 → 类名**不变**（引用不会因此丢）",
+						rnAuto.ClassName == rn.CharClass + "Potion9" && rnHand.ClassName == "MyOwnFlask"
 						&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 3,
 						$"自动={rnAuto.ClassName} / 手填={rnHand.ClassName} / 留空序号={rnEmpty.LastAutoOrdinal}");
 					// 「删掉英文类名 → 重新生成」：留空的保持留空，但记的序号是当前的
@@ -15686,15 +15733,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				rnProfile.Art.CardPortraits[rn.CharClass + "Card9"] = @"D:\fake\probe_art.png";
 				// 这里走**生成端真正走的那一步**（NameStabilizer.RenumberCardNames：改号 + 把引用 / 卡面一起搬）
 				int rnMoved = NameStabilizer.RenumberCardNames(rnProfile);
-				Check("改号时顺手把「上传的卡面」也搬到新类名上（不然卡面会静悄悄退回占位图）",
-					rnProfile.Art.CardPortraits.TryGetValue(rn.CharClass + "Card3", out string? movedArt)
+				Check("V0.2.346：类名不再改 → 上传的卡面也不用搬家（还挂在原来的 Card9 上，不会退回占位图）",
+					rnProfile.Art.CardPortraits.TryGetValue(rn.CharClass + "Card9", out string? movedArt)
 					&& movedArt == @"D:\fake\probe_art.png"
-					&& !rnProfile.Art.CardPortraits.ContainsKey(rn.CharClass + "Card9"),
+					&& rnProfile.Art.CardPortraits.Count == 1,
 					"CardPortraits = " + string.Join(" / ", rnProfile.Art.CardPortraits.Select(kv => kv.Key + "→" + kv.Value)));
-				Check("卡牌自动类名跟序号走：手填的一个字不动、留空的保持留空只记序号、工具自动生成的按当前序号重命名",
-					rnHand.ClassName == "MyOwnSlash" && rnHand.LastAutoOrdinal == 0
+				Check("V0.2.346：已存的卡牌类名一个都不动（手填 / 长得像自动名 / 别家前缀都算），只有留空的按序号记一下",
+					rnHand.ClassName == "MyOwnSlash" && rnHand.LastAutoOrdinal == 1
 					&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 2
-					&& rnAuto.ClassName == rn.CharClass + "Card3" && rnAuto.LastAutoOrdinal == 3
+					&& rnAuto.ClassName == rn.CharClass + "Card9" && rnAuto.LastAutoOrdinal == 3
 					&& rnForeign.ClassName == "SomebodyElseCard5",
 					$"手填={rnHand.ClassName} / 留空='{rnEmpty.ClassName}':{rnEmpty.LastAutoOrdinal} / 自动={rnAuto.ClassName} / 别家={rnForeign.ClassName}（改了 {rnMoved} 处）");
 				Check("卡牌自动名的编号只认**本角色类名**前缀（别的角色的 CardN 不会被当成我们的自动名）",
@@ -15710,11 +15757,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					rnSig);
 				Check("「拖到第 3 位、类名早就正好是 Card3」也把 LastAutoOrdinal 同步好（界面小字不写上一个序号）",
 					rnAuto.LastAutoOrdinal == 3, rnAuto.LastAutoOrdinal.ToString());
-				// 拖到别的序号之后：自动名跟着换（用户要的链路）
+				// V0.2.346：拖到别的序号之后，名字**不动**（名字一旦生成就绑定）
 				rnProfile.Cards.Move(2, 0);                       // 「自动丙」从第 3 位拖到第 1 位
 				rn.RenumberCardClassNames(rnProfile.AllCards);
-				Check("把自动命名的卡拖到第 1 位后重新生成 → 类名变成 <角色类名>Card1（用户要的链路）",
-					rnAuto.ClassName == rn.CharClass + "Card1" && rnHand.ClassName == "MyOwnSlash"
+				Check("V0.2.346：把长得像自动名的卡拖到第 1 位 → 类名**不变**（Card9 还是 Card9，引用不会丢）",
+					rnAuto.ClassName == rn.CharClass + "Card9" && rnHand.ClassName == "MyOwnSlash"
 					&& rnEmpty.ClassName == "" && rnEmpty.LastAutoOrdinal == 3,
 					$"自动={rnAuto.ClassName} / 手填={rnHand.ClassName} / 留空序号={rnEmpty.LastAutoOrdinal}");
 				// 「删掉英文类名 → 重新生成」：留空的保持留空，但记的序号是当前的
@@ -15742,19 +15789,51 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				var mask2 = new CardSpec { Name = "面具虚影", ClassName = "SparkleCard7", CardType = "Skill", Rarity = "Common", Cost = 1 };
 				sparkle2.Cards.Add(mask2);
 				int sparkleMoved = Naming.From(sparkle2).RenumberCardClassNames(sparkle2.AllCards);
-				Check("老存档里的自动名（SparkleCard7）排到第 3 行 → 自动清掉、按当前序号重拼成 SparkleCard3",
-					mask2.ClassName == "SparkleCard3" && sparkleMoved == 1, $"{mask2.ClassName}（改了 {sparkleMoved} 处）");
+				Check("V0.2.346：老存档里的自动名（SparkleCard7）排到第 3 行 → **保持 SparkleCard7**（不再按位置重拼）",
+					mask2.ClassName == "SparkleCard7" && sparkleMoved == 0, $"{mask2.ClassName}（改了 {sparkleMoved} 处）");
 				Check("（对照）手填的 SparkleDance / SparkleWard 一动不动",
 					sparkle2.Cards[0].ClassName == "SparkleDance" && sparkle2.Cards[1].ClassName == "SparkleWard", "没动");
 			}
-			// ---- 校验器：手打的「像自动编号但序号对不上」要提示（不许静默）----
+			// ---- V0.2.346：用户报的原始症状 —— 拖动排序后按类名存的「目标卡」引用必须还在 ----
+			{
+				var refProf = ProfileFactory.Sample();
+				refProf.Cards.Clear();
+				refProf.Curses.Clear();
+				refProf.AncientCards.Clear();
+				var refGen = new CardSpec
+				{
+					Name = "引用源", ClassName = "UiPinGen", CardType = "Skill", Rarity = "Common", Cost = 1,
+					Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiPinTarget" } },
+				};
+				var refTarget = new CardSpec { Name = "引用目标", ClassName = "UiPinTarget", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				refProf.Cards.Add(refGen);
+				refProf.Cards.Add(refTarget);
+				refProf.Cards.Remove(refTarget);
+				refProf.Cards.Insert(0, refTarget);          // 换顺序：目标卡拖到最前面
+				NameStabilizer.RenumberCardNames(refProf);
+				Check("V0.2.346（用户报的原始症状）：拖动排序后「目标卡」引用仍然指着同一张卡（不再丢）",
+					refGen.Effects[0].SpawnCardId == "UiPinTarget" && refTarget.ClassName == "UiPinTarget",
+					refGen.Effects[0].SpawnCardId ?? "(空)");
+				// 留空的卡：先固定、再拖动 —— 名字和引用都不许变
+				var refAuto = new CardSpec { Name = "留空目标", CardType = "Attack", Rarity = "Common", Cost = 1 };
+				refProf.Cards.Add(refAuto);
+				NameStabilizer.PinNames(refProf);
+				string pinnedName = refAuto.ClassName;
+				refGen.Effects[0].SpawnCardId = pinnedName;
+				refProf.Cards.Remove(refAuto);
+				refProf.Cards.Insert(0, refAuto);            // 再拖一次
+				NameStabilizer.RenumberCardNames(refProf);
+				Check("V0.2.346：留空的卡在固定之后，拖动也不改名字（引用照样在）",
+					pinnedName.Length > 0 && refAuto.ClassName == pinnedName && refGen.Effects[0].SpawnCardId == pinnedName,
+					$"固定后={pinnedName} / 拖动后={refAuto.ClassName} / 引用={refGen.Effects[0].SpawnCardId}");
+			}			// ---- 校验器：手打的「像自动编号但序号对不上」要提示（不许静默）----
 			{
 				var rnWarn = ProfileFactory.Sample();
 				rnWarn.Cards.Clear();
 				rnWarn.Curses.Clear();
 				rnWarn.AncientCards.Clear();
 				rnWarn.Cards.Add(new CardSpec { Name = "像自动名", ClassName = "SevenCard7", CardType = "Attack", Rarity = "Common", Cost = 1 });
-				Check("校验器：手填的卡牌类名长得像自动编号但序号对不上 → 提示「下次生成会改名」（不许静默）",
+				Check("校验器：手填的卡牌类名长得像自动编号但序号对不上 → 提示「名字已固定、不会再自动改名」（不许静默）",
 					ProfileValidator.Validate(rnWarn).Any(i => i.Level == "提示" && i.Message.Contains("自动生成的编号")),
 					ProfileValidator.Validate(rnWarn).FirstOrDefault(i => i.Message.Contains("自动生成的编号"))?.Message ?? "(没报)");
 				rnWarn.Cards[0].ClassName = "SevenSlash";
@@ -16089,10 +16168,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					SyncDetail();
 					UpdateLayout();
 					namingNow.RenumberCardClassNames(Profile.Cards);
-					Check($"（空槽 ⑧）手填的类名一个字不动、工具自动名跟着序号走、留空的保持留空",
+					Check($"（空槽 ⑧）V0.2.346：手填的不动、显式写的不动、留空的已被固定成按位置算的那个名字",
 						Profile.Cards[1].ClassName == handName
-						&& Profile.Cards[0].ClassName == "" && Profile.Cards[0].LastAutoOrdinal == 1
-						&& Profile.Cards[2].ClassName == namingNow.CharClass + "Card3",
+						&& Profile.Cards[0].ClassName == namingNow.CharClass + "Card1" && Profile.Cards[0].LastAutoOrdinal == 1
+						&& Profile.Cards[2].ClassName == autoName,
 						$"手填={Profile.Cards[1].ClassName} / 留空='{Profile.Cards[0].ClassName}':{Profile.Cards[0].LastAutoOrdinal} / 自动={Profile.Cards[2].ClassName}");
 					Check("（空槽 ⑧）顺序号仍然是「位置号」：自动名重编号是幂等的（连跑两遍一个字不变）",
 						string.Join("|", Profile.Cards.Select(c => c.Name + ":" + c.ClassName + ":" + c.LastAutoOrdinal)) is string sig1

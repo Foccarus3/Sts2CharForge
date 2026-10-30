@@ -530,21 +530,14 @@ public sealed record Naming(
             string want = CharClass + CardStemOf(c) + row.ToString();
             if (IsValidIdentifier(c.ClassName))
             {
-                // 有类名：只有「认得出是自动名」的才跟着位置走（手填的原样保留）；
-                // 自动名本来就正好等于当前前缀 + 位置那个名字的，就不用动（幂等：反复生成结果一样）
-                if (IsAutoCardClassName(c.ClassName))
-                {
-                    if (!string.Equals(c.ClassName!.Trim(), want, StringComparison.Ordinal))
-                    {
-                        renamedOut?.TryAdd(c.ClassName!.Trim(), want);
-                        plannedRenames.Add((c, want));
-                        renumbered++;      // 计数口径和以前一样：改名 +1（下面那次 LastAutoOrdinal 不另外计）
-                    }
-                    // 和药水那版一致：界面上「英文类名」下面那行小字读 LastAutoOrdinal，
-                    // 「行号早就等于自动名」的分支也要同步好，否则小字还写着上一个号、界面自相矛盾。
-                    // 这个字段是 [JsonIgnore]，不写存档、不参与生成，改了不影响老存档的生成结果。
-                    if (c.LastAutoOrdinal != row) plannedOrdinals.Add((c, row, false));
-                }
+                // ⚠ V0.2.346（用户要求「生成英文类名后就绑定」，原话：变换顺序后自动生成的英文类名会变、
+                // 导致目标卡丢失）：**已经存下来的类名一律不动**，哪怕它长得像自动名。
+                //
+                // 以前这里「认得出是自动名就跟着行号走」（V0.2.140/153 的行为）：拖动换位置时名字会变，
+                // 而效果里按类名存的引用（`SpawnCardId` 目标卡 / 先古转化清单 / 卡面 key）**只在生成时**才被搬，
+                // 拖动那一刻就断链 —— 用户看到的就是「目标卡丢失」。
+                // 现在只有**留空**的才按行号自动编号；名字一旦写实（添加 / 打开存档时写实）就固定。
+                if (c.LastAutoOrdinal != row) plannedOrdinals.Add((c, row, false));
             }
             else
             {
@@ -643,17 +636,13 @@ public sealed record Naming(
         foreach (var r in relics)
         {
             if (r is null) { index++; continue; }
-            string want = CharClass + "Relic" + (index + 1).ToString();
             if (IsValidIdentifier(r.ClassName))
             {
-                // 有类名：只有「认得出是自动名」的才跟着序号走（手填的原样保留）；
-                // 自动名本来就正好等于当前序号那个名字的，就不用动（幂等：反复生成结果一样）
-                if (IsAutoRelicClassName(r.ClassName) && !string.Equals(r.ClassName!.Trim(), want, StringComparison.Ordinal))
-                {
-                    r.ClassName = want;
-                    r.LastAutoOrdinal = index + 1;
-                    renumbered++;
-                }
+                // ⚠ V0.2.346（用户要求「生成英文类名后就绑定」）：**已经存下来的类名一律不动**，
+                // 哪怕它长得像自动名。以前「认得出是自动名就跟着序号走」→ 拖动换位置时名字会变，
+                // 而效果里按类名存的引用（目标卡 / 召唤物 / 状态）当场对不上（用户报「目标卡丢失」）。
+                // 现在只有**留空**的才按序号自动编号；名字一旦写实（添加 / 打开存档时就会写实）就固定。
+                r.LastAutoOrdinal = index + 1;
             }
             else
             {
@@ -739,26 +728,13 @@ public sealed record Naming(
         foreach (var s in potions)
         {
             if (s is null) { index++; continue; }
-            string want = CharClass + "Potion" + (index + 1).ToString();
             if (IsValidIdentifier(s.ClassName))
             {
-                // 有类名：只有「认得出是自动名」的才跟着序号走（手填的原样保留）；
-                // 自动名本来就正好等于当前序号那个名字的，就不用动（幂等：反复生成结果一样）
-                if (IsAutoPotionClassName(s.ClassName))
-                {
-                    if (!string.Equals(s.ClassName!.Trim(), want, StringComparison.Ordinal))
-                    {
-                        s.ClassName = want;
-                        renumbered++;
-                    }
-                    // ⚠ 这一行和遗物那版**不一样**（遗物那版只在改名成功时才写 LastAutoOrdinal）：
-                    // 药水的 `PotionSpec.AutoClassNameHint`（→ 「英文类名」下面那行小字）会读它，
-                    // 遗物的 `RelicSpec.AutoClassNameHint` 也会读 —— 但遗物页的行为这轮不许动，
-                    // 所以只在这里把「已经是当前序号那个自动名」的分支也同步好：
-                    // 否则「拖到第 3 位、类名早就正好是 Potion3」时小字还写着上一个序号，界面自相矛盾。
-                    // 这个字段是 [JsonIgnore]，不写存档、不参与生成，改了不影响老存档的生成结果。
-                    if (s.LastAutoOrdinal != index + 1) s.LastAutoOrdinal = index + 1;
-                }
+                // ⚠ V0.2.346（和遗物 / 卡牌同一个口径，用户要求「生成英文类名后就绑定」）：
+                // **已经存下来的类名一律不动**，哪怕它长得像自动名 —— 只有留空的才按序号自动编号。
+                // 名字一旦写实（添加 / 打开存档时写实）就固定，拖动换位置不再改它，
+                // 效果里按类名存的引用也就不会丢。
+                if (s.LastAutoOrdinal != index + 1) s.LastAutoOrdinal = index + 1;
             }
             else
             {

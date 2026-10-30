@@ -1,4 +1,4 @@
-<Window x:Class="Sts2CharForge.App.MainWindow"
+﻿<Window x:Class="Sts2CharForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sts2CharForge.App"
@@ -691,7 +691,7 @@
                              （真卡 + 末尾空槽行）；真卡集合 Profile.Cards 仍是唯一事实来源。
                              诅咒卡 / 先古卡那两栏各自同理（CurseRows / AncientRows，前缀 Curse / Ancient）。 -->
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" FontSize="11" Margin="0,0,0,4"
-                                   Text="最左边的数字 = 这张卡**现在排第几位**（1..N，含最上面的本体卡 / 初始打击防御；拖动换位置后跟着重排）。序号每次多留 5 个：不够 5 张时后面几行是**灰色空槽**（拖卡牌过去就放到那个位置）；空槽不能被选中。自动生成的英文类名会跟着这个序号走（&lt;角色类名&gt;Card&lt;序号&gt;），手填的不会被改。诅咒卡 / 先古卡在各自那一页从 1 数，用 Curse / Ancient 前缀。"/>
+                                   Text="最左边的数字 = 这张卡**现在排第几位**（1..N，含最上面的本体卡 / 初始打击防御；拖动换位置后跟着重排）。序号每次多留 5 个：不够 5 张时后面几行是**灰色空槽**（拖卡牌过去就放到那个位置）；空槽不能被选中。英文类名**一旦生成就固定**，拖动 / 删除都不再改名（V0.2.346）。诅咒卡 / 先古卡各自从 1 数，前缀 Curse / Ancient。"/>
                         <TextBlock DockPanel.Dock="Bottom" x:Name="CardDragHint" TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,4,0,0"
                                    Text="拖动提示：按住某一行的文字往下/往上拖，会出现一条蓝线 —— 松手就插到那条线的位置。"/>
                         <ListBox x:Name="CardList" SelectionMode="{Binding MultiSelectCards, Converter={StaticResource MultiSelectMode}}"
