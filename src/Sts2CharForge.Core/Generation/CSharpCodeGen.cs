@@ -3109,13 +3109,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 失去生命 = <c>-delta</c>、格挡 = <c>amount</c>）。</param>
     public static IReadOnlyList<string> TriggerAmountLines(string kind, decimal amount, string scope,
         string creatureExpr, string stateExpr, string playerExpr, string? valueExpr = null,
-        string counterClass = "ForgeCombatCounters", string? cardFilter = null)
+        string counterClass = "ForgeCombatCounters", string? cardFilter = null, string? currentCardExpr = null)
     {
         if (amount <= 0m)
             return Array.Empty<string>();
         if (valueExpr is not null)
             return new[] { $"if ({valueExpr} < {Lit.Dec(amount)}) return;   // 数值 ≥ {amount:0.##} 才触发" };
-        string count = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter);
+        string count = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter, currentCardExpr);
         if (count.Length == 0)
         {
             // 敌人死亡：本体战斗历史里**没有死亡记录**，所以由工具自己记一个计数器（见 CombatCountersSource）——
@@ -3128,7 +3128,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 };
             return Array.Empty<string>();
         }
-        // 本体是**先记账再调钩子**，所以历史里已经包含这一次 → 「累计 % N == 0」就是「每 N 次触发一次」
+        // 计数族：「累计 % N == 0」就是「每 N 次触发一次」。
+        // ⚠ 「打出一张牌时」（CardPlayed）本体是**先调钩子、再记账** —— 那一档的 +1 已经做在
+        // CountExpr 里（V0.2.341）；其余四档（结算完 / 消耗 / 弃掉 / 抽到 / 生成）才是「已经含这一次」。
         return new[] { $"if ({count} % {Lit.Int(amount)} != 0) return;   // 每累计 {amount:0.##} 次触发一次（范围：{(scope == "Combat" ? "本场战斗" : "本回合")}）" };
     }
 
@@ -4082,11 +4084,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     public static string? TriggerAmountCond(string kind, decimal amount, string scope,
         string creatureExpr, string stateExpr, string playerExpr, string? valueExpr = null,
-        string? cardFilter = null)
+        string? cardFilter = null, string? currentCardExpr = null)
     {
         if (amount <= 0m) return null;
         if (valueExpr is not null) return $"{valueExpr} >= {Lit.Dec(amount)}";
-        string count = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter);
+        string count = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter, currentCardExpr);
         return count.Length == 0 ? null : $"{count} % {Lit.Int(amount)} == 0";
     }
 
@@ -4112,15 +4114,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <para>其余四档（消耗 / 弃掉 / 抽到 / 生成）本体都是**先记账再调钩子**，累计数本来就含这一次，保持原样。</para>
     /// </summary>
     public static string CountExpr(string kind, string scope, string creatureExpr, string stateExpr, string playerExpr,
-        string? cardFilter = null)
+        string? cardFilter = null, string? currentCardExpr = null)
     {
         string turn = scope == "Combat" ? "" : $" && e.HappenedThisTurn({stateExpr})";
         const string H = "MegaCrit.Sts2.Core.Combat.History.Entries.";
+        // V0.2.341：`BeforeCardPlayed` 那一刻历史里**还没有**正在打出的这一张 → 要自己补 1。
+        // 有「只对哪类牌生效」时补的条件也要按同一个筛选判（这一张不合格就不补），见 CardFilterExpr。
+        string cardNow = currentCardExpr is null || CardFilterExpr(cardFilter, currentCardExpr) is not { } curCond
+            ? " + 1"
+            : $" + ({curCond} ? 1 : 0)";
         return kind switch
         {
-            // 打出一张牌时 = BeforeCardPlayed：这一张**还没**进 CardPlaysFinished，用 CardPlaysStarted（含这一张）
-            "CardPlayed" => "CombatManager.Instance.History.CardPlaysStarted"
-                + $".Count(e => e.Actor == {creatureExpr}{CardFilterCond(cardFilter, "e.CardPlay.Card")}{turn})",
+            // 打出一张牌时 = BeforeCardPlayed。⚠ 本体顺序是「先调钩子、再记 CardPlayStarted」
+            //（CardModel.Play：`await Hook.BeforeCardPlayed(...)` → `History.CardPlayStarted(...)` → OnPlay），
+            // 所以这一刻历史里**还没有**正在打出的这一张 —— 要 `+ 1` 才是「含这一张」的口径。
+            // V0.2.341 修：以前注释写的是「CardPlaysStarted 含这一张」，实际不含 →
+            // 「每 N 张牌触发一次」整体晚一张（N=2 要打 3 张、N=3 要打 4 张；遗物链没有基准值抵消，肉眼可见）。
+            "CardPlayed" => "(CombatManager.Instance.History.CardPlaysStarted"
+                + $".Count(e => e.Actor == {creatureExpr}{CardFilterCond(cardFilter, "e.CardPlay.Card")}{turn}){cardNow})",
             // 一张牌结算完毕时 = AfterCardPlayedLate：本体先记 CardPlayFinished 再调钩子，这一张已经在里面了。
             // V0.2.173 之前这一档**没有**计数表达式 → 界面能填次数、生成却一个字符都没有（静默失效）。
             "CardResolved" => "CombatManager.Instance.History.CardPlaysFinished"
@@ -4166,10 +4177,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「给予自定义关键词」那份运行时标记的类名（生成的 GivenKeywords.cs 里的静态类）。
     internal const string GivenKeywordsClass = "ForgeGivenKeywords";
 
-    private static string CardFilterCond(string? cardFilter, string cardExpr)
+    private static string CardFilterCond(string? cardFilter, string cardExpr) =>
+        CardFilterExpr(cardFilter, cardExpr) is { } cond ? " && " + cond : "";
+
+    /// <summary>
+    /// 「只对哪类牌生效」的**布尔条件**（不带 <c>&amp;&amp;</c> 前缀；空 = 不筛 / 这种筛选在代码里表达不了）。
+    ///
+    /// <para>V0.2.341：从 <see cref="CardFilterCond"/> 里拆出来 —— 「每 N 张牌触发一次」在
+    /// <c>BeforeCardPlayed</c> 里要把**正在打出的这一张**算进累计数，而这一张到底算不算，
+    /// 得按同一个筛选判（不然「只对技能牌、每 2 张」打两张攻击就会被数成 1 张）。</para>
+    /// </summary>
+    private static string? CardFilterExpr(string? cardFilter, string cardExpr)
     {
         string f = (cardFilter ?? "").Trim();
-        if (f.Length == 0 || string.Equals(f, "Any", StringComparison.Ordinal)) return "";
+        if (f.Length == 0 || string.Equals(f, "Any", StringComparison.Ordinal)) return null;
         string? cond = f switch
         {
             "Attack" => "c.Type == CardType.Attack",
@@ -4181,7 +4202,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             "Quest" => "c.Type == CardType.Quest",
             _ => null,
         };
-        return cond is null ? "" : " && " + cond.Replace("c.", cardExpr + ".");
+        return cond?.Replace("c.", cardExpr + ".");
     }
 
     /// <summary>标记里写的数值（回读用）：0.## + m，和别处的十进制字面量一个写法。</summary>
@@ -11753,7 +11774,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 遗物只有一个触发时机，所以这里直接用「不满足就 return」的写法。
         foreach (string amountLine in TriggerAmountLines(trigger.Id, r.TriggerAmount, r.TriggerScope,
                      "base.Owner.Creature", "base.Owner.Creature.CombatState", "base.Owner", TriggerValueExpr(trigger.Id),
-                     CombatCountersClass(p), r.TriggerCardFilter))
+                     CombatCountersClass(p), r.TriggerCardFilter, currentCardExpr: "cardPlay.Card"))
             w.Line(amountLine);
         // 数值也写一行标记（回读用：守卫那几行的写法以后改了就丢配置）
         // ⚠ V0.2.152：`PowerReached`（到达 N 层）**故意不写这一行** —— 它的 N 由上面那行
@@ -12300,7 +12321,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ⚠ 这里必须传这条时机自己的 Scope（以前写死 "Turn" —— 数值那行注释里的范围会错，回读就认错）
         foreach (string a in TriggerAmountLines(triggerId, amount, scope,
                      "base.Owner.Creature", "base.Owner.Creature.CombatState", "base.Owner", TriggerValueExpr(triggerId),
-                     CombatCountersClass(p), cardFilter))
+                     CombatCountersClass(p), cardFilter, currentCardExpr: "cardPlay.Card"))
             w2.Line(a);
         return w2.ToString().Replace("\r\n", "\n").Split('\n').Where(l => l.Length > 0).ToList();
     }

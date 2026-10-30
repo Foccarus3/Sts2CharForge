@@ -35348,13 +35348,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Effects = { new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" } },
 				};
 				amtProfile.Relics.Add(amtSkill);
-				Check("打出一张牌时：计数用 CardPlaysStarted（含正在打出的这一张，Finished 会永远差一张 → 填 3 一次都不触发）",
+				Check("打出一张牌时：计数用 CardPlaysStarted、并且 +1 补上正在打出的这一张（Finished 会永远差一张 → 填 3 一次都不触发）",
 					CSharpCodeGen.RelicSource(amtProfile, amtPlayed, 0)
-						.Contains("CardPlaysStarted.Count(e => e.Actor == base.Owner.Creature && e.HappenedThisTurn(base.Owner.Creature.CombatState)) % 3 != 0) return;")
+						.Contains("CardPlaysStarted.Count(e => e.Actor == base.Owner.Creature && e.HappenedThisTurn(base.Owner.Creature.CombatState)) + 1) % 3 != 0) return;")
 					&& !CSharpCodeGen.RelicSource(amtProfile, amtPlayed, 0).Contains("CardPlaysFinished.Count"), "对");
-				Check("打出一张牌时：计数也按「只对哪类牌生效」筛（每 3 张技能牌 ≠ 每 3 张牌）",
+				Check("打出一张牌时：计数也按「只对哪类牌生效」筛（每 3 张技能牌 ≠ 每 3 张牌），补的那一张按同一个筛选判",
 					CSharpCodeGen.RelicSource(amtProfile, amtSkill, 1)
-						.Contains("CardPlaysStarted.Count(e => e.Actor == base.Owner.Creature && e.CardPlay.Card.Type == CardType.Skill && e.HappenedThisTurn(base.Owner.Creature.CombatState)) % 3 != 0) return;"), "对");
+						.Contains("CardPlaysStarted.Count(e => e.Actor == base.Owner.Creature && e.CardPlay.Card.Type == CardType.Skill && e.HappenedThisTurn(base.Owner.Creature.CombatState)) + (cardPlay.Card.Type == CardType.Skill ? 1 : 0)) % 3 != 0) return;"), "对");
 				Check("打出一张牌时：没填牌型（Any）时计数里不带类型判据（老行为）",
 					!CSharpCodeGen.RelicSource(amtProfile, amtPlayed, 0).Contains("e.CardPlay.Card.Type"), "不带");
 				Check("阈值类生成「数值 ≥ N 才触发」",
@@ -35373,7 +35373,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				// 用户实测报的：「状态会直接统计整个回合（战斗）的计数，然后哪怕那时候还没上状态，也会计数……
 				// 要打 4 张牌触发，但在上状态之前就打了 3 张，上状态之后只需要打 1 张就行了」。
 				// 真因：本体历史是整个回合 / 整场战斗的累计，老写法直接 `累计 % N == 0` —— 把上状态之前的事也数了。
-				// 修法：每个状态实例一个基准值字段（-1 = 还没记过），只数基准之后的事件。
+				// 修法：每个状态实例一个基准值字段（int.MinValue = 还没记过，V0.2.341 起不是 -1 了），只数基准之后的事件。
 				{
 					var cntProf = ProfileFactory.Sample();
 					var cntPow = new CustomPowerSpec { Name = "自检每累计", ClassName = "UiCheckCountBase" };
@@ -35385,16 +35385,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					cntPow.Triggers.Add(cntPlayed);
 					cntProf.CustomPowers.Add(cntPow);
 					string cntSrc = CustomPowerGen.Source(cntProf, cntPow, cntProf.CustomPowers.Count - 1);
-					Check("V0.2.168：状态侧的「每累计 N 次」有**本实例基准值**字段（-1 = 还没记过；本回合 / 本场战斗各一份）",
-						cntSrc.Contains("private int __cntCardExhaustedCombat = -1", StringComparison.Ordinal)
-						&& cntSrc.Contains(", __cntCardPlayedTurn = -1", StringComparison.Ordinal), "有字段");
+					Check("V0.2.168：状态侧的「每累计 N 次」有**本实例基准值**字段（int.MinValue = 还没记过；本回合 / 本场战斗各一份）",
+						cntSrc.Contains("private int __cntCardExhaustedCombat = int.MinValue", StringComparison.Ordinal)
+						&& cntSrc.Contains(", __cntCardPlayedTurn = int.MinValue", StringComparison.Ordinal), "有字段");
 					Check("V0.2.168：基准值在第一次走到时记成「本次 - 1」（= 从上状态那一刻起，这次算第 1 次）",
-						cntSrc.Contains("if (__cntCardPlayedTurn < 0 || __cnt <= __cntCardPlayedTurn) __cntCardPlayedTurn = __cnt - 1;", StringComparison.Ordinal)
-						&& cntSrc.Contains("if (__cntCardExhaustedCombat < 0 || __cnt <= __cntCardExhaustedCombat) __cntCardExhaustedCombat = __cnt - 1;", StringComparison.Ordinal), "会记基准");
+						cntSrc.Contains("if (__cntCardPlayedTurn == int.MinValue || __cnt <= __cntCardPlayedTurn) __cntCardPlayedTurn = __cnt - 1;", StringComparison.Ordinal)
+						&& cntSrc.Contains("if (__cntCardExhaustedCombat == int.MinValue || __cnt <= __cntCardExhaustedCombat) __cntCardExhaustedCombat = __cnt - 1;", StringComparison.Ordinal), "会记基准");
 					Check("V0.2.168：判断用的是**相对基准**的差值（`(__cnt - 基准) % N == 0`），不是本体历史的总数",
 						cntSrc.Contains("if (__cnt > __cntCardPlayedTurn && (__cnt - __cntCardPlayedTurn) % 4 == 0)", StringComparison.Ordinal)
 						&& cntSrc.Contains("if (__cnt > __cntCardExhaustedCombat && (__cnt - __cntCardExhaustedCombat) % 2 == 0)", StringComparison.Ordinal)
-						&& cntSrc.Contains("int __cnt = CombatManager.Instance.History.CardPlaysStarted.Count(e => e.Actor == base.Owner", StringComparison.Ordinal),
+						&& cntSrc.Contains("int __cnt = (CombatManager.Instance.History.CardPlaysStarted.Count(e => e.Actor == base.Owner", StringComparison.Ordinal),
 						"按差值判");
 					// V0.2.173：`__cnt > 基准` 这一条**必须**有 —— 「打出一张牌时」跑的时候本体还没记这张牌，
 					// 而 CardPlaysStarted 含正在打出的这一张 → 不挡掉「施加这个状态的那一张」的话，
@@ -35410,7 +35410,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					cntDeathProf.CustomPowers.Add(cntDeath);
 					string cntDeathSrc = CustomPowerGen.Source(cntDeathProf, cntDeath, cntDeathProf.CustomPowers.Count - 1);
 					Check("V0.2.168：「每 N 个敌人死亡」同样按基准（上状态之前死的敌人不算）",
-						cntDeathSrc.Contains("private int __cntEnemyDeathCombat = -1", StringComparison.Ordinal)
+						cntDeathSrc.Contains("private int __cntEnemyDeathCombat = int.MinValue", StringComparison.Ordinal)
 						&& cntDeathSrc.Contains("BumpEnemyDeath(base.Owner.CombatState)", StringComparison.Ordinal)
 						&& cntDeathSrc.Contains("if (__cnt > __cntEnemyDeathCombat && (__cnt - __cntEnemyDeathCombat) % 2 == 0)", StringComparison.Ordinal), "按基准");
 				}
@@ -35432,9 +35432,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					cntMultiProf.CustomPowers.Add(cntMultiPow);
 					string cntMultiSrc = CustomPowerGen.Source(cntMultiProf, cntMultiPow, cntMultiProf.CustomPowers.Count - 1);
 					Check("V0.2.211：两条筛选不同的计数时机**各有一个基准值字段**（攻击一份、技能一份，不再共用）",
-						cntMultiSrc.Contains("__cntCardPlayedTurnAttack = -1", StringComparison.Ordinal)
-						&& cntMultiSrc.Contains("__cntCardPlayedTurnSkill = -1", StringComparison.Ordinal)
-						&& !cntMultiSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal),
+						cntMultiSrc.Contains("__cntCardPlayedTurnAttack = int.MinValue", StringComparison.Ordinal)
+						&& cntMultiSrc.Contains("__cntCardPlayedTurnSkill = int.MinValue", StringComparison.Ordinal)
+						&& !cntMultiSrc.Contains("private int __cntCardPlayedTurn = int.MinValue", StringComparison.Ordinal),
 						"各一份");
 					Check("V0.2.211：每条用的都是自己那份（`(累计 - 自己的基准) % 3 == 0`），两条互不覆盖",
 						cntMultiSrc.Contains("e.CardPlay.Card.Type == CardType.Attack", StringComparison.Ordinal)
@@ -35450,8 +35450,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					cntOnePow.Triggers.Add(cntOneTrig);
 					cntOneProf.CustomPowers.Add(cntOnePow);
 					string cntOneSrc = CustomPowerGen.Source(cntOneProf, cntOnePow, cntOneProf.CustomPowers.Count - 1);
-					Check("V0.2.211：（红线）只有一条计数时机时字段名照旧是 `__cntCardPlayedTurn`（老工程生成文本不变）",
-						cntOneSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal)
+					Check("V0.2.211：（红线）只有一条计数时机时字段名照旧是 `__cntCardPlayedTurn`（名字不变，只有哨兵值换成了 int.MinValue）",
+						cntOneSrc.Contains("private int __cntCardPlayedTurn = int.MinValue", StringComparison.Ordinal)
 						&& cntOneSrc.Contains("if (__cnt > __cntCardPlayedTurn && (__cnt - __cntCardPlayedTurn) % 3 == 0)", StringComparison.Ordinal),
 						"没变");
 					// 两条筛选用同一个值（都 Attack）→ 计数表达式相同 → 仍然共用一份（不该凭空多一个字段）
@@ -35466,7 +35466,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					cntSameProf.CustomPowers.Add(cntSamePow);
 					string cntSameSrc = CustomPowerGen.Source(cntSameProf, cntSamePow, cntSameProf.CustomPowers.Count - 1);
 					Check("V0.2.211：两条筛选**相同**时仍共用一份基准值（计数表达式一样，没必要各记一份）",
-						cntSameSrc.Contains("private int __cntCardPlayedTurn = -1", StringComparison.Ordinal)
+						cntSameSrc.Contains("private int __cntCardPlayedTurn = int.MinValue", StringComparison.Ordinal)
 						&& !cntSameSrc.Contains("__cntCardPlayedTurnAttack", StringComparison.Ordinal),
 						"共用");
 					// 「每 N 个敌人死亡」的计数是工具自己 Bump 的：一个钩子上两条时必须只数一次
@@ -41477,6 +41477,62 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			}
 		}
 
+		// ===== V0.2.341：「每 N 张牌触发一次」整体晚一张（用户报：手刃形态「用两张牌」不给、第三张才给）=====
+		// 真因两条（都对着本体源码核过）：
+		// ① CardModel.Play 的顺序是 `Hook.BeforeCardPlayed(...)` → `History.CardPlayStarted(...)` → OnPlay，
+		//    所以「打出一张牌时」这一刻历史里**没有**正在打出的这一张 —— 生成端以前当它「含这一张」。
+		// ② 状态链的基准值哨兵用 -1，而「本回合第 1 张牌」时算出来的基准**正好就是 -1** →
+		//    下一张牌又把它当成「还没记过」再重置一次，本回合第一张被吞掉（于是每回合要第 3 张才响）。
+		{
+			var cntProf = ProfileFactory.Sample();
+			var cntPow = new CustomPowerSpec { Name = "自检每两张牌", ClassName = "UiCheckEveryTwoCards", Enabled = true };
+			cntPow.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "CardPlayed",
+				CardFilter = "Any",
+				TriggerAmount = 2,
+				TriggerScope = "Turn",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" } },
+			});
+			cntProf.CustomPowers.Add(cntPow);
+			string cntSrc = CustomPowerGen.Source(cntProf, cntPow, cntProf.CustomPowers.Count - 1);
+			Check("V0.2.341：状态链「打出一张牌时」的累计数把正在打出的这一张算上（本体是先调钩子、再记 CardPlayStarted）",
+				cntSrc.Contains("CardPlaysStarted") && cntSrc.Contains(")) + 1)"), "计数含这一张");
+			Check("V0.2.341：基准值哨兵改成 int.MinValue（-1 是合法基准：本回合第 1 张牌时历史累计 = 0）",
+				cntSrc.Contains("= int.MinValue;") && cntSrc.Contains("== int.MinValue || __cnt <="), "换回合不再吞掉第一张");
+			// 机械验证：步长从**生成文本**里读，再按生成出来的那三行原样模拟一遍
+			var stepMatch = System.Text.RegularExpressions.Regex.Match(cntSrc, @"\(__cnt - __cntCardPlayedTurn\) % (\d+) == 0");
+			int cntStep = stepMatch.Success ? int.Parse(stepMatch.Groups[1].Value) : 0;
+			List<int> cntFires = SimulateEveryNCards(cntStep, 6, prevTurnBase: 5);   // 上一回合最后一共打了 5 张（换回合要重记基准）
+			Check("V0.2.341：「每 2 张牌」= 本回合第 2、4、6 张触发（修之前是 3、5、7 —— 每回合第一张被吞掉）",
+				cntStep == 2 && cntFires.SequenceEqual(new[] { 2, 4, 6 }), $"步长 {cntStep} → 触发于第 {string.Join("、", cntFires)} 张");
+			// 遗物链没有基准值可以抵消，同一个 +1 也要生效（以前同样晚一张）
+			var cntRelic = new RelicSpec { Name = "自检每两张牌遗物", ClassName = "UiCheckEveryTwoRelic" };
+			cntRelic.Triggers.Add(new RelicTriggerSpec { Kind = "CardPlayed", Amount = 2m, Scope = "Turn" });
+			cntRelic.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+			cntProf.Relics.Add(cntRelic);
+			string cntRelicSrc = CSharpCodeGen.RelicSource(cntProf, cntRelic, cntProf.Relics.Count - 1);
+			Check("V0.2.341：遗物链「每 N 张牌」也把这一张算进去（以前同样晚一张）",
+				cntRelicSrc.Contains("+ 1) % 2 != 0"), "遗物链计数含这一张");
+			Check("V0.2.341：（对照）「一张牌结算完毕时」不 +1 —— 本体是**先记 CardPlayFinished 再调钩子**",
+				CSharpCodeGen.CountExpr("CardResolved", "Turn", "x", "y", "z").Contains("CardPlaysFinished")
+				&& !CSharpCodeGen.CountExpr("CardResolved", "Turn", "x", "y", "z").Contains("+ 1"), "没多算");
+			// 有「只对哪类牌生效」时，补的这一张也要按同一个筛选判（不然打攻击牌也会给技能牌的计数 +1）
+			var cntSkillPow = new CustomPowerSpec { Name = "自检每两张技能", ClassName = "UiCheckEveryTwoSkills", Enabled = true };
+			cntSkillPow.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "CardPlayed",
+				CardFilter = "Skill",
+				TriggerAmount = 2,
+				TriggerScope = "Turn",
+				Effects = { new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" } },
+			});
+			cntProf.CustomPowers.Add(cntSkillPow);
+			string cntSkillSrc = CustomPowerGen.Source(cntProf, cntSkillPow, cntProf.CustomPowers.Count - 1);
+			Check("V0.2.341：「只对技能牌、每 2 张」补的那一张按同一个筛选判（打攻击牌不会给技能计数 +1）",
+				cntSkillSrc.Contains("(cardPlay.Card.Type == CardType.Skill ? 1 : 0)"), "筛选同步");
+		}
+
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。
@@ -41522,6 +41578,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			string path16 = path;
 			return boxes.Any((TextBox t) => BindingOperations.GetBinding(t, TextBox.TextProperty)?.Path?.Path == path16);
+		}
+
+		/// <summary>
+		/// V0.2.341：把「每 N 张牌触发一次」生成出来的那几行**原样模拟一遍**，返回第几张牌触发。
+		///
+		/// <para>生成的形状（CustomPowerGen.EmitItemsWithAmountGate）：
+		/// <c>int __cnt = &lt;历史累计 + 1&gt;;</c> →
+		/// <c>if (基准 == int.MinValue || __cnt &lt;= 基准) 基准 = __cnt - 1;</c> →
+		/// <c>if (__cnt &gt; 基准 &amp;&amp; (__cnt - 基准) % N == 0) { 效果 }</c>。
+		/// 这里只模拟这三行（<paramref name="step"/> 从生成文本里抠出来，不是写死的）。</para>
+		/// </summary>
+		/// <param name="step">每 N 张触发一次（从生成代码里读）。</param>
+		/// <param name="cards">本回合一共打几张牌。</param>
+		/// <param name="prevTurnBase">进入这个回合时基准值还留着上回合的数（模拟「换回合」：累计数变小 → 重记基准）。</param>
+		List<int> SimulateEveryNCards(int step, int cards, int prevTurnBase)
+		{
+			var fires = new List<int>();
+			if (step <= 0) return fires;
+			int baseVal = prevTurnBase;
+			for (int h = 0; h < cards; h++)   // h = 历史里本回合**已经打出**多少张（不含正在打出的这一张）
+			{
+				int cnt = h + 1;              // 生成端 +1 之后的口径：含正在打出的这一张
+				if (baseVal == int.MinValue || cnt <= baseVal) baseVal = cnt - 1;
+				if (cnt > baseVal && (cnt - baseVal) % step == 0) fires.Add(cnt);
+			}
+			return fires;
 		}
 	}
 

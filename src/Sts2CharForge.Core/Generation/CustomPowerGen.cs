@@ -177,15 +177,19 @@ public static class CustomPowerGen
                     .Distinct(StringComparer.Ordinal).ToList();
                 w.Line();
                 w.Line("/// <summary>");
-                w.Line("/// 「每累计 N 次触发一次」的基准值：**刚上这个状态时**本体历史里已经有多少次（-1 = 还没记过）。");
+                w.Line("/// 「每累计 N 次触发一次」的基准值：**刚上这个状态时**本体历史里已经有多少次（int.MinValue = 还没记过）。");
                 w.Line("/// 为什么要有它（V0.2.168 用户实测报的）：本体历史是整个回合 / 整场战斗的累计 ——");
                 w.Line("/// 直接拿「累计 % N」判，会把**上状态之前**发生过的事也数进去（「要打 4 张牌」在上状态前");
                 w.Line("/// 已经打了 3 张时，上状态后只要再打 1 张就触发了）。只数基准之后的事件才对。");
                 w.Line("/// ⚠ V0.2.211：同一个状态上**两条筛选不同**的计数时机（用户报的「打出攻击牌 3 次 + 打出技能牌 3 次」）");
                 w.Line("/// 必须各记一份 —— 共用一份时两条的累计值不同，后跑的那条会用自己的「累计 - 1」把先跑那条冲掉，");
                 w.Line("/// 于是第一次只要 1 张就触发（后续又变回 3 张）。这两条的字段名带筛选（见 CountBaseField）。");
+                w.Line("/// ⚠ V0.2.340：哨兵值从 -1 改成 int.MinValue —— -1 是**合法的基准值**（本回合第 1 张牌时");
+                w.Line("/// 「历史累计」= 0，基准正好记成 -1），用 -1 当「没记过」会让换回合后的**第一张牌**被");
+                w.Line("/// 当成「还没记过」再重置一次（那一刻的 0 被丢掉），于是每回合第一次要打 3 张才触发（用户报的");
+                w.Line("/// 「两张牌就该给，但第三张才给」）。");
                 w.Line("/// </summary>");
-                w.Line("private int " + string.Join(", ", fields.Select(f => f + " = -1")) + ";");
+                w.Line("private int " + string.Join(", ", fields.Select(f => f + " = int.MinValue")) + ";");
             }
             // V0.2.336（用户报「花掉能量后」的计数从战斗开始算）：花能量 / 花额外资源量这两条时机以前
             // 直接用本体历史的总量 → 上状态之前花掉的也算进去。这里同样给每个状态实例记一份基准
@@ -440,16 +444,16 @@ public static class CustomPowerGen
                     // 敌人死亡：本体历史里没有死亡记录 → 由工具自己记一个（见 CombatCountersSource）
                     ? (deathCountOnce ?? $"{CSharpCodeGen.CombatCountersClass(p)}.BumpEnemyDeath(base.Owner.CombatState)")
                     : CSharpCodeGen.CountExpr(kind, t.TriggerScope, "base.Owner", "base.Owner.CombatState", "base.Owner.Player",
-                        t.CardFilter);
+                        t.CardFilter, currentCardExpr: "cardPlay.Card");   // V0.2.341：CardPlayed 要把正在打出的这一张补上
                 string step = CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount).TrimEnd('m');
                 w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}");
                 w.Open("");   // 裸块：__cnt 这个局部变量不和别条时机 / 外层撞名
-                w.Line($"int __cnt = {countExpr};   // 本体历史里到现在为止一共有多少次（含这一次）");
-                w.Line($"if ({field} < 0 || __cnt <= {field}) {field} = __cnt - 1;   // 本状态刚上 / 换了新回合：从现在开始数");
+                w.Line($"int __cnt = {countExpr};   // 本体历史里到现在为止一共有多少次（含正在打出的这一张）");
+                w.Line($"if ({field} == int.MinValue || __cnt <= {field}) {field} = __cnt - 1;   // 本状态刚上 / 换了新回合：从现在开始数");
                 // V0.2.173：外加 `__cnt > {field}` —— **施加这个状态的那一张牌不算**。
-                // 「打出一张牌时」（BeforeCardPlayed）跑的时候本体**还没**记这张牌，而计数用的是
-                // CardPlaysStarted（含正在打出的这一张），所以上状态的那一张已经算进 __cnt 了；
-                // 不挡掉它的话「施加时正好凑够 N 张」就会当场触发一次（上状态前打了 3 张 = 一上就响）。
+                // 本体现在是「先调 BeforeCardPlayed、再记 CardPlayStarted」（见 CardModel.Play），
+                // 所以 CountExpr 里已经 +1 把正在打出的这一张补上了（V0.2.340 修正）；上状态的那一张
+                // 早就在历史里了，于是它落在基准里、不参与计数 —— 不挡掉它的话「施加时正好凑够 N 张」会当场响一次。
                 w.Open($"if (__cnt > {field} && (__cnt - {field}) % {step} == 0)");
                 w.Line($"// 每累计 {t.TriggerAmount:0.##} 次触发一次（范围：{(t.TriggerScope == "Combat" ? "本场战斗" : "本回合")}，"
                      + "**从这个状态被施加那一刻**起数）");
@@ -460,7 +464,7 @@ public static class CustomPowerGen
             }
             string? cond = CSharpCodeGen.TriggerAmountCond(kind, t.TriggerAmount, t.TriggerScope,
                 "base.Owner", "base.Owner.CombatState", "base.Owner.Player", CSharpCodeGen.TriggerValueExpr(kind),
-                t.CardFilter);
+                t.CardFilter, currentCardExpr: "cardPlay.Card");
             if (cond is null)
             {
                 // ⚠ 这一支**不套 if**：多条触发时机合并时，这里就是那个「帮助变量会撞车」的地方 → 必须各自包裸块。
