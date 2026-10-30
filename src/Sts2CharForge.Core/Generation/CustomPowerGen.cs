@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -1638,7 +1638,10 @@ public static class CustomPowerGen
         // （以前只有卡牌 / 遗物 / 药水 / 锻造图四条链 —— 状态链的 switch 白名单会把插件 kind 打回「用不了」）。
         if (Plugins.PluginGen.TryEmit(w, e, new Plugins.PluginGen.PluginCtx(
                 Self: "base.Owner", Player: "base.Owner.Player!", Foe: CSharpCodeGen.FirstEnemyOf("base.Owner.Player"),
-                Choice: "choiceContext", CardSelf: "null", AmountOverride: amt)))
+                Choice: "choiceContext", CardSelf: "null", AmountOverride: amt,
+                // V0.2.339：状态链上 base.Owner **本身就是 Creature**，不能写 base.Owner.Creature.CombatState
+                //（V0.2.338 的默认值就是那个 → 模板里用 {combatState} 会 CS1061）
+                CombatState: "base.Owner.CombatState", CardSelfIsCard: false)))
             return;
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 直接 return（状态根本挂不上）
@@ -1671,7 +1674,9 @@ public static class CustomPowerGen
                 Self: "base.Owner", Player: "base.Owner.Player",
                 Foe: foeFrom ?? "base.Owner.CombatState?.HittableEnemies.FirstOrDefault()",
                 Choice: "choiceContext",
-                AmountOverride: e.AmountIsStack ? "(int)base.Amount" : Lit.Dec(e.Amount))))
+                AmountOverride: e.AmountIsStack ? "(int)base.Amount" : Lit.Dec(e.Amount),
+                // V0.2.339：同上 —— 状态链的战斗状态挂在 base.Owner 自己身上；状态的 this 也不是卡牌
+                CombatState: "base.Owner.CombatState", CardSelfIsCard: false)))
             return;
 
         switch (e.Kind)

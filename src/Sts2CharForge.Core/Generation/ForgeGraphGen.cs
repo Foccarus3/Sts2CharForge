@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -2936,7 +2936,9 @@ public static class ForgeGraphGen
         if (PluginGen.TryEmit(sb, indent, EffectFromNode(node), new PluginGen.PluginCtx(
                 Self: "__fgSelf", Player: "__fgPlayer",
                 Foe: "ForgeFormulaRuntime.TargetOrFirst(__fgTarget, __fgPlayer).FirstOrDefault()",
-                Choice: ctx.ChoiceVar, AmountOverride: amount)))
+                Choice: ctx.ChoiceVar, AmountOverride: amount,
+                // V0.2.339：只有「卡牌」那张布上的 this 才是 CardModel；状态 / 遗物 / 药水的布上不是
+                CardSelfIsCard: string.Equals(ctx.Scope, "Card", StringComparison.Ordinal))))
             return;
 
         // V0.2.194：**状态那一档**支持「= 本状态层数」那几个开关（EffectSpec.AmountIsStack /

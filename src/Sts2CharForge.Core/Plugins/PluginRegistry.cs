@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -109,9 +109,10 @@ public sealed class PluginPageSpec
     public string Markdown { get; set; } = "";
 
     /// <summary>
-    /// 这一页要挂到哪个页面（V0.2.338「扩展生成器页」）：空 = 挂在「插件」页；
+    /// 这一页要挂到哪个页面（V0.2.338 立字段 / V0.2.339 接上界面）：空 = 挂在「插件」页；
     /// 填 <c>card</c> / <c>relic</c> / <c>potion</c> / <c>power</c> / <c>forge</c> / <c>build</c> 之一
-    /// = 作为那个生成器页签里的一个**扩展页**显示（不改生成器本来的页）。
+    /// = 作为那个生成器页签里的一个**扩展页**显示（见 <see cref="PluginRegistry.KnownTabs"/> /
+    /// <see cref="PluginRegistry.ExtensionPagesOf"/>；不改生成器本来的页）。填错的值当没填（留在「插件」页）。
     /// </summary>
     public string Tab { get; set; } = "";
 
@@ -489,4 +490,30 @@ public static class PluginRegistry
     public static IEnumerable<(PluginSpec Plugin, PluginPageSpec Page)> AllPages =>
         _plugins.Where(p => p.Problems.Count == 0)
                 .SelectMany(p => p.Pages.Where(x => x is not null).Select(x => (p, x)));
+
+    // ==================== 扩展页挂到哪个生成器页签（V0.2.339）====================
+
+    /// <summary>
+    /// <c>pages[].tab</c> 认得的取值（V0.2.339）。空 = 挂在「插件」页；
+    /// 这几个值 = 挂到对应的生成器页签当**扩展页**（卡牌 / 遗物 / 药水 / 自定义状态 / 锻造 / 构建·日志）。
+    /// </summary>
+    public static readonly IReadOnlyList<string> KnownTabs = new[] { "card", "relic", "potion", "power", "forge", "build" };
+
+    /// <summary>这个 <c>tab</c> 值认不认识（空串也算认识 = 挂「插件」页；写错的返回 false，界面按「插件」页显示并说明）。</summary>
+    public static bool IsKnownTab(string? tab)
+    {
+        string t = (tab ?? "").Trim();
+        return t.Length == 0 || KnownTabs.Any(k => string.Equals(k, t, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 某个生成器页签上的扩展页：<c>pages[].tab</c> 指向它的那些页（按清单顺序）。
+    /// 挂载点在 <c>MainWindow.RebuildPluginExtensionPages</c>；写错 tab 值的页**不在这里**（它们留在「插件」页）。
+    /// </summary>
+    public static IEnumerable<(PluginSpec Plugin, PluginPageSpec Page)> ExtensionPagesOf(string tab)
+    {
+        string want = (tab ?? "").Trim();
+        if (want.Length == 0) return Array.Empty<(PluginSpec, PluginPageSpec)>();
+        return AllPages.Where(x => string.Equals((x.Page.Tab ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase));
+    }
 }

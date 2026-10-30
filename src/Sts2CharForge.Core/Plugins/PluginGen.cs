@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -74,8 +74,8 @@ public static class PluginGen
             string cls = text.Substring(at + key.Length, close - at - key.Length).Trim();
             string made = $"__plugMade{guard}";
             string store = $"CardModel {made} = {ctx.CombatState}.CreateCard(ModelDb.Card<{cls}>(), {ctx.Player}); await CardPileCmd.Add({made}, PileType.Discard);";
-            string body = string.Equals(ctx.CardSelf, "null", StringComparison.Ordinal)
-                ? store   // 没有「这张牌」的链（状态 / 遗物 / 药水）：只把新牌放进弃牌堆
+            string body = !ctx.CardSelfIsCard
+                ? store   // 没有「这张牌」的链（状态 / 遗物 / 药水 / 非卡牌上的锻造图）：只把新牌放进弃牌堆
                 : store + $" if ({ctx.CardSelf}.Pile is not null) await CardCmd.Exhaust({ctx.Choice}, {ctx.CardSelf});";
             text = text[..at] + body + text[(close + 1)..];
             at = text.IndexOf(key, at + body.Length, StringComparison.OrdinalIgnoreCase);
@@ -213,5 +213,9 @@ public static class PluginGen
         string CombatState = "base.Owner.Creature.CombatState",
         string CardPlay = "cardPlay",
         string State = "this",
-        string? SpawnCardType = null);
+        string? SpawnCardType = null,
+        // V0.2.339：这一条链上「这张牌」到底是不是**真的卡牌**（卡牌链 / 卡牌上的锻造图 = true）。
+        // {transformSelf:…} 宏只在这条为 true 时才「顺手把这张牌消耗掉」——
+        // 遗物 / 药水 / 状态的 this 是遗物 / 药水 / 状态对象，没有 CardModel.Pile，写那句会 CS1061。
+        bool CardSelfIsCard = true);
 }

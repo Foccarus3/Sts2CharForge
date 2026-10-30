@@ -1,4 +1,4 @@
-﻿<Window x:Class="Sts2CharForge.App.MainWindow"
+<Window x:Class="Sts2CharForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sts2CharForge.App"
@@ -622,7 +622,7 @@
             </TabItem>
 
             <!-- ============ 卡牌 ============ -->
-            <TabItem Header="卡牌">
+            <TabItem x:Name="CardTab" Header="卡牌">
                 <Grid Margin="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
@@ -1439,7 +1439,7 @@
             </TabItem>
 
             <!-- ============ 遗物 ============ -->
-            <TabItem Header="遗物">
+            <TabItem x:Name="RelicTab" Header="遗物">
                 <Grid Margin="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>
@@ -1805,7 +1805,7 @@
             </TabItem>
 
             <!-- ============ 药水 ============ -->
-            <TabItem Header="药水">
+            <TabItem x:Name="PotionTab" Header="药水">
                 <Grid Margin="8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="380"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/>

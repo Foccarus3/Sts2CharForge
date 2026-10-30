@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -9183,9 +9183,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ⚠ 延迟状态那条路传进来的 blockAmt 是**已经折好的字面量**（那里没有 base.DynamicVars）。
         string blockAmt = blockAmtOverride ?? BlockValueAccess(varMap, e);
         // V0.2.315：插件贡献的效果种类 —— 模板渲染后直接写进来（不是插件种类时什么都不做）
+        // V0.2.339：{amount} 传**算好的** amt，不再固定 `Lit.Dec(e.Amount)` ——
+        // 卡牌链上「数值 = X」是写在这个框里的（`IsBareX`，见 EffectSpec.AmountIsXEffective），
+        // 以前插件效果拿到的是 0m（数值框里那一格），等于「选了 = X 就不生效」。
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner", Foe: "cardPlay.Target",
-                Choice: "choiceContext", CardSelf: "this", AmountOverride: Lit.Dec(e.Amount))))
+                Choice: "choiceContext", CardSelf: "this", AmountOverride: amt)))
             return;
         switch (e.Kind)
         {
@@ -13195,7 +13198,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: Lit.Dec(e.Amount))))
+                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: Lit.Dec(e.Amount),
+                CardSelfIsCard: false)))   // 遗物的 this 不是卡牌：{transformSelf} 只放新牌、不写 this.Pile
             return;
         switch (e.Kind)
         {
@@ -14765,7 +14769,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: "choiceContext", AmountOverride: Lit.Dec(e.Amount))))
+                Choice: "choiceContext", AmountOverride: Lit.Dec(e.Amount),
+                CardSelfIsCard: false)))   // 药水的 this 不是卡牌：同上
             return;
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";
         // V0.2.132：药水这条链也把新档位写一行回读标记（只在**新档位**出现时才写；

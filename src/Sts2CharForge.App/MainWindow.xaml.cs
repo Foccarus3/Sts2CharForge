@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -6357,6 +6357,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			try { PluginStatusText.Text = "加载插件失败：" + ex.Message; } catch { }
 		}
 		RefreshPluginList();
+		// V0.2.339：插件声明了 pages[].tab 的页要挂到对应生成器页签上（没声明的插件一个像素都不动）
+		RebuildPluginExtensionPages();
 	}
 
 	private void RefreshPluginList()
@@ -6391,6 +6393,151 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		public override string ToString() => (Spec.Problems.Count > 0 ? "⚠ " : "") + Spec.Display;
 	}
 
+	// ==================== 插件扩展页：挂到生成器页签（V0.2.339） ====================
+
+	/// <summary>已经在哪些生成器页签上开过「扩展区」（key = <c>pages[].tab</c> 的值）。开一次就够，重载插件只换里面的页。</summary>
+	private readonly Dictionary<string, PluginExtMount> _pluginExtMounts = new(StringComparer.OrdinalIgnoreCase);
+
+	/// <summary>一个生成器页签上的扩展区（包出来的两行 Grid + 底下那条 Expander + 原来的内容）。</summary>
+	private sealed class PluginExtMount
+	{
+		public required Grid Wrapper { get; init; }
+		public required Expander Host { get; init; }
+		/// <summary>页签原来的内容（换爹之前的那个对象，自检要确认它还在）。</summary>
+		public UIElement? Original { get; init; }
+	}
+
+	/// <summary>tab 值 → 界面上那个页签（认不认识由 <see cref="PluginRegistry.IsKnownTab"/> 判）。</summary>
+	private TabItem? PluginExtTabOf(string key) => key.ToLowerInvariant() switch
+	{
+		"card" => CardTab,
+		"relic" => RelicTab,
+		"potion" => PotionTab,
+		"power" => CustomPowerTab,
+		"forge" => ForgeTab,
+		"build" => BuildTab,
+		_ => null,
+	};
+
+	/// <summary>tab 值对应的中文页签名（界面文案 / 自检详情用）。</summary>
+	private static string PluginExtTabName(string key) => key.ToLowerInvariant() switch
+	{
+		"card" => "卡牌",
+		"relic" => "遗物",
+		"potion" => "药水",
+		"power" => "自定义状态",
+		"forge" => "锻造",
+		"build" => "构建 / 日志",
+		_ => key,
+	};
+
+	/// <summary>
+	/// 按当前插件清单重建所有「扩展页」（插件加载 / 重新加载后调一次）。
+	///
+	/// <para>为什么不逐页改 XAML：生成器那 6 个页签的排版是手写的，往里插控件既容易改坏、也会让
+	/// 「没装插件的人」看到多出来的一条边。这里的做法是 —— **只有真的有扩展页时**才把那个页签原来的内容
+	/// 包进一个两行 Grid（原来的内容占满第一行，扩展区在第二行）；之后重载插件只换扩展区里的页。
+	/// 于是没有扩展页的页签连 DOM 都不动一下（<see cref="PluginExtMount"/> 都不会建）。</para>
+	/// </summary>
+	private void RebuildPluginExtensionPages()
+	{
+		foreach (string key in PluginRegistry.KnownTabs)
+		{
+			TabItem? tab = PluginExtTabOf(key);
+			if (tab is null) continue;
+			var pages = PluginRegistry.ExtensionPagesOf(key).ToList();
+			if (!_pluginExtMounts.TryGetValue(key, out PluginExtMount? mount))
+			{
+				if (pages.Count == 0) continue;   // 这一页没有扩展页：保持原样（连包都不包）
+				mount = AttachPluginExtHost(tab);
+				_pluginExtMounts[key] = mount;
+			}
+			FillPluginExtHost(mount.Host, pages);
+		}
+		// 「插件」页右边那排页签会因为「这几页已经挂去别处」而变短 —— 当前选中的插件要重画一次
+		if (PluginList.SelectedItem is PluginListItem sel) ShowPluginPages(sel.Spec);
+	}
+
+	/// <summary>把页签原来的内容包进两行 Grid，并在第二行留出扩展区。</summary>
+	private static PluginExtMount AttachPluginExtHost(TabItem tab)
+	{
+		var host = new Expander
+		{
+			Margin = new Thickness(6, 2, 6, 6),
+			IsExpanded = false,
+			HorizontalAlignment = HorizontalAlignment.Stretch,
+			ToolTip = "这些页来自插件（plugin.json 里 pages[].tab 指定挂在这一页）",
+		};
+		var wrapper = new Grid();
+		wrapper.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+		wrapper.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+		UIElement? original = tab.Content as UIElement;
+		if (original is not null)
+		{
+			tab.Content = null;            // 先摘下来才换得了爹（WPF 一个元素只能有一个父）
+			Grid.SetRow(original, 0);
+			wrapper.Children.Add(original);
+		}
+		Grid.SetRow(host, 1);
+		wrapper.Children.Add(host);
+		tab.Content = wrapper;
+		return new PluginExtMount { Wrapper = wrapper, Host = host, Original = original };
+	}
+
+	/// <summary>把一组扩展页铺进扩展区（一页一个页签；0 页时整块收起来）。</summary>
+	private void FillPluginExtHost(Expander host, List<(PluginSpec Plugin, PluginPageSpec Page)> pages)
+	{
+		var tabs = new TabControl
+		{
+			BorderThickness = new Thickness(0),
+			Background = Brushes.Transparent,
+			Height = 340,   // 固定高度：展开时不会把生成器本来的排版挤变形
+		};
+		foreach (var (pl, page) in pages)
+		{
+			object content = page.IsForm ? BuildPluginPageForm(pl, page) : BuildPluginPageText(page);
+			tabs.Items.Add(new TabItem
+			{
+				Header = PluginPageTitleOf(page),
+				Content = content,
+				ToolTip = $"插件「{pl.Name}」的页（{page.Id}）",
+			});
+		}
+		host.Content = tabs;
+		host.Header = pages.Count == 0
+			? "插件扩展页"
+			: $"插件扩展页（{pages.Count}）— " + string.Join("、", tabs.Items.OfType<TabItem>().Select(t => t.Header?.ToString() ?? "页"));
+		host.Visibility = pages.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+	}
+
+	/// <summary>一页的页签标题（没填 title 就用 id）。</summary>
+	private static string PluginPageTitleOf(PluginPageSpec page) =>
+		string.IsNullOrWhiteSpace(page.Title) ? (string.IsNullOrWhiteSpace(page.Id) ? "页" : page.Id) : page.Title;
+
+	/// <summary>自检用：这个生成器页签上被包过没有（= 有过扩展页）。</summary>
+	public bool PluginExtMountedForCheck(string tabKey) => _pluginExtMounts.ContainsKey(tabKey);
+
+	/// <summary>自检用：某个生成器页签上挂了几页扩展页（没挂 = 0）。</summary>
+	public int PluginExtPageCountForCheck(string tabKey) =>
+		_pluginExtMounts.TryGetValue(tabKey, out PluginExtMount? m) && m.Host.Content is TabControl tc ? tc.Items.Count : 0;
+
+	/// <summary>自检用：扩展区里那些页的标题（「/」分隔）。</summary>
+	public string PluginExtTitlesForCheck(string tabKey) =>
+		_pluginExtMounts.TryGetValue(tabKey, out PluginExtMount? m) && m.Host.Content is TabControl tc
+			? string.Join("/", tc.Items.OfType<TabItem>().Select(t => t.Header?.ToString() ?? ""))
+			: "";
+
+	/// <summary>自检用：扩展区现在显示着没有（没挂 / 收起来都算没有）。</summary>
+	public bool PluginExtVisibleForCheck(string tabKey) =>
+		_pluginExtMounts.TryGetValue(tabKey, out PluginExtMount? m) && m.Host.Visibility == Visibility.Visible;
+
+	/// <summary>自检用：这个页签被包过之后，原来的内容还老老实实待在第一个位置（没被吃掉 / 没被换掉）。</summary>
+	public bool PluginExtKeepsOriginalForCheck(string tabKey) =>
+		_pluginExtMounts.TryGetValue(tabKey, out PluginExtMount? m)
+		&& m.Wrapper.Children.Count >= 2
+		&& ReferenceEquals(m.Wrapper.Children[0], m.Original)
+		&& ReferenceEquals(m.Wrapper.Children[1], m.Host);
+
 	// ==================== 插件「自定义页」（V0.2.319） ====================
 
 	/// <summary>第一页（插件信息）那个只读文本框 —— 由代码建出来（XAML 里右边改成 TabControl 了）。</summary>
@@ -6412,13 +6559,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		foreach (var page in p.Pages.Where(x => x is not null))
 		{
+			// V0.2.339：声明了 pages[].tab 的页已经挂在对应生成器页签上了（那里才是它该在的地方）。
+			// 这里不再重复画一份表单 —— 两个控件编辑同一份值，预览会各说各话。
+			if (IsMountedPluginPage(p, page)) continue;
 			object content = page.IsForm ? BuildPluginPageForm(p, page) : BuildPluginPageText(page);
 			PluginPageTabs.Items.Add(new TabItem
 			{
-				Header = string.IsNullOrWhiteSpace(page.Title) ? (string.IsNullOrWhiteSpace(page.Id) ? "页" : page.Id) : page.Title,
+				Header = PluginPageTitleOf(page),
 				Content = content,
 			});
 		}
+	}
+
+	/// <summary>这一页是不是已经挂到某个生成器页签上了（挂载成功的前提：插件本身没问题 + tab 值认得）。</summary>
+	private static bool IsMountedPluginPage(PluginSpec p, PluginPageSpec page)
+	{
+		string tab = (page.Tab ?? "").Trim();
+		return p.Problems.Count == 0 && tab.Length > 0 && PluginRegistry.IsKnownTab(tab);
 	}
 
 	/// <summary>纯说明页（Markdown 原样显示）。</summary>
@@ -6630,6 +6787,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			sb.AppendLine();
 			sb.AppendLine("———— 插件自述 ————");
 			sb.AppendLine(p.Readme.Trim());
+		}
+		// V0.2.339：哪些页挂到生成器页签上了（写错 tab 值的在这里说清楚，不然用户只会觉得「这页不见了」）
+		var withTabList = p.Pages.Where(x => x is not null && (x.Tab ?? "").Trim().Length > 0).ToList();
+		if (withTabList.Count > 0)
+		{
+			sb.AppendLine();
+			sb.AppendLine("声明了「挂到生成器页签」的扩展页：");
+			foreach (var page in withTabList)
+			{
+				string tab = (page.Tab ?? "").Trim();
+				if (!PluginRegistry.IsKnownTab(tab))
+					sb.AppendLine($"  · {PluginPageTitleOf(page)} → tab「{tab}」不认识（可用：card / relic / potion / power / forge / build），先按「插件」页显示");
+				else
+					sb.AppendLine($"  · {PluginPageTitleOf(page)} → 已挂到「{PluginExtTabName(tab)}」页签里的「插件扩展页」");
+			}
 		}
 		foreach (var page in p.Pages)
 		{
@@ -15412,10 +15584,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					bool rowHitOk = false;
 					if (rowC is FrameworkElement rowCFe)
 					{
+						// V0.2.339：卡牌页底部可能有「插件扩展页」那条折叠条（列表会短一截），
+						// 先确保这一行真的在视口里再点 —— 不然点到的是列表空白处（点不到任何行）。
+						CardList.ScrollIntoView(CardRows[probeRow]);
+						CardList.UpdateLayout();
+						if (CardList.ItemContainerGenerator.ContainerFromIndex(probeRow) is FrameworkElement reRow) rowCFe = reRow;
 						Point offset = rowCFe.TransformToVisual(CardList).Transform(new Point(0, 0));
 						var at = CardRowAtPoint(new Point(offset.X + rowCFe.ActualWidth * 0.5, offset.Y + rowCFe.ActualHeight * 0.5));
 						rowHitOk = at.Index == probeRow && ReferenceEquals(at.Card, Profile.Cards[probeRow]);
-						rowDetail = $"行{at.Index}/{at.Card?.Name ?? "无卡"}";
+						rowDetail = $"行{at.Index}/{at.Card?.Name ?? "无卡"}"
+							+ $"（列表 {CardList.ActualWidth:F0}×{CardList.ActualHeight:F0}，行 {rowCFe.ActualWidth:F0}×{rowCFe.ActualHeight:F0}，"
+							+ $"点 ({offset.X + rowCFe.ActualWidth * 0.5:F0},{offset.Y + rowCFe.ActualHeight * 0.5:F0})）";
 					}
 					Check("CardRowAtPoint 能按行号认出鼠标下面是哪张卡（拖动起手 / 落点都用它）",
 						rowHitOk, rowDetail);
@@ -40818,6 +40997,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			string pluginRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_plugins_" + Guid.NewGuid().ToString("N").Substring(0, 8));
 			try
 			{
+				// V0.2.339：随包带的示例插件也要能过 —— 它的 pages[].tab=card 那一页必须真挂在「卡牌」页签上
+				// （示例插件允许用户整份删掉，所以「不在就跳过」，不算失败）
+				bool examplePresent = File.Exists(Path.Combine(AppContext.BaseDirectory, "plugins", "示例插件", "plugin.json"));
+				Check("V0.2.339：随包的示例插件（还在的话）加载 0 问题，它的「卡牌页扩展页」真挂在卡牌页签上",
+					!examplePresent
+					|| (PluginRegistry.Plugins.Any(pp => pp.Id == "example" && pp.Problems.Count == 0)
+						&& PluginExtTitlesForCheck("card").Contains("卡牌页扩展页")),
+					examplePresent ? PluginExtTitlesForCheck("card") : "(示例插件已删除，跳过)");
+
 				// ① 写一个能用的插件（新效果种类 + 自带 cs）
 				string good = Path.Combine(pluginRoot, "plugins", "uiCheck");
 				Directory.CreateDirectory(Path.Combine(good, "cs"));
@@ -40829,7 +41017,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				  "apiVersion": "1",
 				  "effects": [
 				    { "kind": "UiCheckPluginFx", "display": "自检插件效果", "unit": "点", "min": 0, "max": 99,
-				      "emit": "await CreatureCmd.Heal({self}, {amount});" }
+				      "emit": "await CreatureCmd.Heal({self}, {amount});" },
+				    { "kind": "UiCheckPluginCtx", "display": "自检插件上下文效果", "unit": "点", "min": 0, "max": 99,
+				      "emit": "if ({combatState} is null) return;\nawait CreatureCmd.Heal({self}, {amount});" },
+				    { "kind": "UiCheckPluginTf", "display": "自检插件变化效果", "unit": "点", "min": 0, "max": 99,
+				      "emit": "{transformSelf:UiCheckTfTarget}" }
 				  ],
 				  "csFiles": [ "cs/UiCheckPluginHelper.cs" ]
 				}
@@ -40847,7 +41039,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& PluginRegistry.Plugins.Any(pp => pp.Id == "uicheckbad" && pp.Problems.Count > 0), $"loaded={loaded}");
 				Check("V0.2.315：插件贡献的效果种类进了「效果种类」下拉（AllEffectKinds）",
 					EffectCatalog.AllEffectKinds.Any(kk => kk.Kind == "UiCheckPluginFx")
-					&& EffectCatalog.AllEffectKinds.Count == EffectCatalog.EffectKinds.Count + 1, "进下拉了");
+					&& EffectCatalog.AllEffectKinds.Count == EffectCatalog.EffectKinds.Count + 3, "进下拉了");
 				Check("V0.2.315：FindKind 认得出插件种类（不是退回「造成伤害」）",
 					EffectCatalog.FindKind("UiCheckPluginFx").Display == "自检插件效果", EffectCatalog.FindKind("UiCheckPluginFx").Kind);
 				Check("V0.2.315：插件效果的字段开关来自清单（needsTarget/needsPower 默认关）",
@@ -40860,7 +41052,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				plugProf.Cards.Add(plugCard);
 				string plugSrc = CSharpCodeGen.CardSource(plugProf, plugCard, plugProf.Cards.Count - 1);
 				Check("V0.2.315：插件效果的模板真的生成了代码（{self} / {amount} 都替换掉了）",
-					plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, 3m);") || plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, 3);"), "卡牌链生成了");
+					plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, base.DynamicVars[\"Value\"].BaseValue);")
+					|| plugSrc.Contains("await CreatureCmd.Heal(base.Owner.Creature, 3m);"), "卡牌链生成了");
+				// V0.2.339：卡牌链上「数值 = X」是写在公式框里的裸 X（AmountIsXEffective）——
+				// 以前插件效果固定拿 Lit.Dec(e.Amount)，等于「选了 = X 就不生效」
+				var plugXCard = new CardSpec { Name = "自检插件X卡", ClassName = "UiCheckPluginXCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				plugXCard.Effects.Add(new EffectSpec { Kind = "UiCheckPluginFx", Amount = 0m, AmountFormula = "X" });
+				plugProf.Cards.Add(plugXCard);
+				string plugXSrc = CSharpCodeGen.CardSource(plugProf, plugXCard, plugProf.Cards.Count - 1);
+				string plugXLine = plugXSrc.Split('\n').FirstOrDefault(line => line.Contains("CreatureCmd.Heal(")) ?? "";
+				Check("V0.2.339：卡牌上「数值 = X」的插件效果拿到的是 X 变量（以前是 0m，等于选了就不生效）",
+					plugXLine.Length > 0 && !plugXLine.Contains(", 0m)") && plugXLine.Contains(", x)"), plugXLine.Trim());
 				var plugPow = new CustomPowerSpec { Name = "自检插件状态", ClassName = "UiCheckPluginPow", Enabled = true };
 				plugPow.Triggers.Add(new PowerTriggerSpec
 				{
@@ -40870,6 +41072,35 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				plugProf.CustomPowers.Add(plugPow);
 				Check("V0.2.315：状态链也认得插件效果（{self} 换成 base.Owner）",
 					CustomPowerGen.Source(plugProf, plugPow, plugProf.CustomPowers.Count - 1).Contains("await CreatureCmd.Heal(base.Owner, 2m);"), "状态链生成了");
+				// V0.2.339：{combatState} 在状态链上必须是 base.Owner.CombatState（状态类的 base.Owner 本身就是 Creature）
+				var plugCtxPow = new CustomPowerSpec { Name = "自检插件上下文状态", ClassName = "UiCheckPluginCtxPow", Enabled = true };
+				plugCtxPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "UiCheckPluginCtx", Amount = 1m } },
+				});
+				plugProf.CustomPowers.Add(plugCtxPow);
+				string plugCtxSrc = CustomPowerGen.Source(plugProf, plugCtxPow, plugProf.CustomPowers.Count - 1);
+				Check("V0.2.339：{combatState} 在状态链上换成 base.Owner.CombatState（V0.2.338 那套默认值 base.Owner.Creature.CombatState 会 CS1061）",
+					plugCtxSrc.Contains("if (base.Owner.CombatState is null) return;")
+					&& !plugCtxSrc.Contains("base.Owner.Creature.CombatState"), "换对了");
+				// V0.2.339：{transformSelf:类名} 宏 —— 卡牌链「新牌进弃牌堆 + 消耗这张牌」；非卡牌链只放新牌
+				var tfCard = new CardSpec { Name = "自检变化卡", ClassName = "UiCheckTfCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				tfCard.Effects.Add(new EffectSpec { Kind = "UiCheckPluginTf", Amount = 0m });
+				plugProf.Cards.Add(tfCard);
+				string tfCardSrc = CSharpCodeGen.CardSource(plugProf, tfCard, plugProf.Cards.Count - 1);
+				Check("V0.2.339：{transformSelf:类名} 在卡牌链展开成「新牌进弃牌堆 + 消耗这张牌」",
+					tfCardSrc.Contains("ModelDb.Card<UiCheckTfTarget>()") && tfCardSrc.Contains("if (this.Pile is not null)"), "展开对了");
+				var tfPow = new CustomPowerSpec { Name = "自检变化状态", ClassName = "UiCheckTfPow", Enabled = true };
+				tfPow.Triggers.Add(new PowerTriggerSpec
+				{
+					Kind = "PlayerTurnStart",
+					Effects = { new EffectSpec { Kind = "UiCheckPluginTf", Amount = 0m } },
+				});
+				plugProf.CustomPowers.Add(tfPow);
+				string tfPowSrc = CustomPowerGen.Source(plugProf, tfPow, plugProf.CustomPowers.Count - 1);
+				Check("V0.2.339：{transformSelf:类名} 在状态 / 遗物 / 药水链只放新牌（不写 this.Pile —— 那些链的 this 不是卡牌，会 CS1061）",
+					tfPowSrc.Contains("PileType.Discard") && !tfPowSrc.Contains(".Pile is not null"), "只放新牌");
 
 				// ④ 随 mod 打包：自带 cs 要拷进生成工程
 				string projRoot = Path.Combine(pluginRoot, "proj");
@@ -41003,6 +41234,88 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string pfSrc = CSharpCodeGen.CardSource(pfProf, pfCard, pfProf.Cards.Count - 1);
 				Check("V0.2.316：锻造图里的插件模块也能生成（图上【效果】节点选它即可）",
 					pfSrc.Contains("CreatureCmd.Heal("), "图上也生成了");
+
+				// ===== V0.2.339：pages[].tab —— 把插件的页挂到对应生成器页签上（卡牌 / 遗物 / 药水 / 状态 / 锻造 / 构建）=====
+				{
+					string tabDir = Path.Combine(pluginRoot, "plugins", "uiTab");
+					Directory.CreateDirectory(tabDir);
+					File.WriteAllText(Path.Combine(tabDir, "plugin.json"), """
+					{
+					  "id": "uitab",
+					  "name": "自检扩展页插件",
+					  "apiVersion": "1",
+					  "pages": [
+					    {
+					      "id": "cardpage", "title": "自检卡牌扩展页", "tab": "card",
+					      "markdown": "挂在卡牌页下面",
+					      "fields": [ { "key": "Note", "label": "备注", "type": "text", "default": "x" } ],
+					      "target": "cs/Plugins/{id}/Note_{Note}.cs",
+					      "emit": "public static class Note_{Note} { }"
+					    },
+					    { "id": "powerpage", "title": "自检状态扩展页", "tab": "power", "markdown": "挂在自定义状态页下面" },
+					    { "id": "badpage", "title": "自检写错页", "tab": "cards", "markdown": "tab 值写错了" }
+					  ]
+					}
+					""", new UTF8Encoding(false));
+					PluginRegistry.Load(pluginRoot);
+					var tabPl = PluginRegistry.Plugins.FirstOrDefault(x => x.Id == "uitab");
+					var tabPages = tabPl?.Pages.Where(x => x is not null).ToList() ?? new List<PluginPageSpec>();
+					Check("V0.2.339：规则表认得 6 个页签值 + 空串（空 = 还挂「插件」页），写错的（cards）不认",
+						PluginRegistry.KnownTabs.Count == 6
+						&& PluginRegistry.IsKnownTab("")
+						&& PluginRegistry.KnownTabs.All(k => PluginRegistry.IsKnownTab(k))
+						&& !PluginRegistry.IsKnownTab("cards"), string.Join("/", PluginRegistry.KnownTabs));
+					Check("V0.2.339：清单里的 pages[].tab 读得出来（card / power / 写错的 cards 各自原样留着）",
+						tabPages.Count == 3
+						&& tabPages.Any(x => x.Id == "cardpage" && x.Tab == "card")
+						&& tabPages.Any(x => x.Id == "powerpage" && x.Tab == "power")
+						&& tabPages.Any(x => x.Id == "badpage" && x.Tab == "cards"), $"{tabPages.Count} 页");
+					Check("V0.2.339：ExtensionPagesOf(\"card\") 只挑 tab=card 那一页（不串页、也不含写错的）",
+						PluginRegistry.ExtensionPagesOf("card").Count() == 1
+						&& PluginRegistry.ExtensionPagesOf("card").All(x => x.Page.Id == "cardpage")
+						&& !PluginRegistry.ExtensionPagesOf("card").Any(x => x.Page.Id == "badpage"), "挑对了");
+
+					RebuildPluginExtensionPages();
+					Check("V0.2.339：卡牌页签上真的挂上了扩展页（1 页，标题用清单里的 title）",
+						PluginExtPageCountForCheck("card") == 1
+						&& PluginExtTitlesForCheck("card").Contains("自检卡牌扩展页"), PluginExtTitlesForCheck("card"));
+					Check("V0.2.339：扩展区是收起来的（展开要去点它，不抢生成器页的地盘）",
+						PluginExtVisibleForCheck("card") && CardTab.Content is Grid gCard
+						&& gCard.Children.OfType<Expander>().All(ex => !ex.IsExpanded), "收着");
+					Check("V0.2.339：tab=power 的页挂到「自定义状态」页签上（不是卡牌页）",
+						PluginExtPageCountForCheck("power") == 1
+						&& PluginExtTitlesForCheck("power").Contains("自检状态扩展页")
+						&& !PluginExtTitlesForCheck("card").Contains("自检状态扩展页"), PluginExtTitlesForCheck("power"));
+					Check("V0.2.339：没声明扩展页的页签一点都不动（遗物 / 药水 / 锻造 / 构建 连包都不包）",
+						!PluginExtMountedForCheck("relic") && !PluginExtMountedForCheck("potion")
+						&& !PluginExtMountedForCheck("forge") && !PluginExtMountedForCheck("build"), "没动");
+					Check("V0.2.339：包过之后原来的内容还老实待在第一位（卡牌页没被吃掉、也没被换掉）",
+						PluginExtKeepsOriginalForCheck("card") && PluginExtKeepsOriginalForCheck("power"), "原样");
+
+					bool cardForm = CardTab.Content is Grid g1 && g1.Children[1] is Expander e1 && e1.Content is TabControl t1
+						&& t1.Items[0] is TabItem ti1 && ti1.Content is System.Windows.Controls.ScrollViewer sv1
+						&& sv1.Content is StackPanel;
+					Check("V0.2.339：挂上去的那页是真的表单（ScrollViewer > StackPanel，栏位由清单声明）", cardForm, cardForm ? "表单" : "形状不对");
+					bool powerText = CustomPowerTab.Content is Grid g2 && g2.Children[1] is Expander e2 && e2.Content is TabControl t2
+						&& t2.Items[0] is TabItem ti2 && ti2.Content is System.Windows.Controls.ScrollViewer sv2
+						&& sv2.Content is TextBox;
+					Check("V0.2.339：没声明 fields 的页按 Markdown 显示（ScrollViewer > TextBox）", powerText, powerText ? "说明页" : "形状不对");
+					Check("V0.2.339：写错 tab 值的页不会消失 —— 它留在「插件」页（显示不认识的提示）",
+						tabPl is not null && !IsMountedPluginPage(tabPl, tabPages.First(x => x.Id == "badpage")), "留在插件页");
+
+					ShowPluginPages(tabPl!);
+					Check("V0.2.339：已经挂去生成器页签的页，不在「插件」页重复画一份（右边只剩「信息」+ 写错那页）",
+						PluginPageTabs.Items.Count == 2, $"{PluginPageTabs.Items.Count} 个页签");
+
+					// 收尾：换回真实插件再重建 —— 扩展区按现在的插件清单重建（示例插件带 card 页时是 1 页），原内容始终还在
+					try { PluginRegistry.Load(AppContext.BaseDirectory); } catch { }
+					RebuildPluginExtensionPages();
+					Check("V0.2.339：换回真实插件后扩展区按当前清单重建（页数 = 现在声明的扩展页数），原内容始终没被吃掉",
+						PluginExtPageCountForCheck("card") == PluginRegistry.ExtensionPagesOf("card").Count()
+						&& PluginExtKeepsOriginalForCheck("card")
+						&& PluginExtVisibleForCheck("card") == PluginRegistry.ExtensionPagesOf("card").Any(),
+						$"{PluginExtPageCountForCheck("card")} 页 / {PluginExtTitlesForCheck("card")}");
+				}
 			}
 			finally
 			{
