@@ -34308,7 +34308,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string spSrc = CSharpCodeGen.RelicSource(spProfile, spRelic, 0);
 				Check("遗物：生成「这一次之前已经花了多少」+「每累计 N 点触发一次」（用本体战斗历史，不需要自己记计数器）",
 					spSrc.Contains("EnergySpentEntry>().Where(e => e.Actor == base.Owner.Creature && e.HappenedThisTurn(base.Owner.Creature.CombatState)).Sum(e => e.Amount) - amount")
-					&& spSrc.Contains("if ((__spentBefore + __EnergySpentIdx + 1) % 3 != 0) continue;"), "对");
+			&& (spSrc.Contains("__spentBaseTurn") || spSrc.Contains("__spentBaseCombat")) && spSrc.Contains("% 3 != 0) continue"), "对");
 				Check("遗物：范围选「本场战斗」时不算 HappenedThisTurn（整场累计）",
 					CSharpCodeGen.SpentSumExpr("StarsSpent", "Combat", "base.Owner.Creature", "base.Owner.Creature.CombatState")
 						.Contains("e.Amount < 0)") && !CSharpCodeGen.SpentSumExpr("StarsSpent", "Combat", "base.Owner.Creature", "base.Owner.Creature.CombatState")
@@ -34325,7 +34325,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				spPowProfile.CustomPowers.Add(spPow);
 				string spPowSrc = CustomPowerGen.Source(spPowProfile, spPow, 0);
 				Check("状态：生成的是「每累计 N 点才跑这条效果」（if ((__spentBefore + idx + 1) % N == 0)）",
-					spPowSrc.Contains("int __spentBefore =") && spPowSrc.Contains("if ((__spentBefore + __energySpentIdx + 1) % 4 == 0)"), "对");
+			spPowSrc.Contains("int __spentBefore =") && (spPowSrc.Contains("__spentBaseTurn") || spPowSrc.Contains("__spentBaseCombat")) && spPowSrc.Contains("+ 1) % 4 == 0)"), "对");
 				Check("校验器：负数 → 报错（不能是负数）",
 					ProfileValidator.Validate(new CharacterProfile { Relics = { new RelicSpec { Name = "费", Trigger = "EnergySpent", TriggerAmount = -2m, Effects = { new EffectSpec { Kind = "Block", Amount = 1m } } } } })
 						.Any((ValidationIssue i) => i.IsError && i.Message.Contains("不能是负数")), "拦住了");
@@ -34375,8 +34375,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string zSrc = CSharpCodeGen.RelicSource(zeroProfile, zeroRelic, 0);
 				Check("遗物：填 0 → 不再按点数循环（0 和 1 一样就是它：0 被当成「每 1 点」）",
 					!zSrc.Contains("for (int __EnergySpentIdx"), "没有点数循环");
-				Check("遗物：填 0 → 判「这一次之前花过没有」，本回合只触发第一次",
-					zSrc.Contains("if (__spentBefore == 0)") && zSrc.Contains("只触发第一次"), "对");
+		Check("遗物：填 0 → 判「这一次之前花过没有」，本回合只触发第一次",
+			zSrc.Contains("__spentBaseTurn") && zSrc.Contains("只触发第一次"), "对");
 				Check("遗物：填 0 也写回读标记（否则从工程恢复会变回默认的 1）",
 					zSrc.Contains("CET:TriggerAmount=0m CET:TriggerScope=Turn"), "写");
 
@@ -34388,7 +34388,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				zeroPowProfile.CustomPowers.Add(zeroPow);
 				string zpSrc = CustomPowerGen.Source(zeroPowProfile, zeroPow, 0);
 				Check("状态：填 0 → 不按点数循环，改成「只要消耗一次」+ 本场战斗只触发第一次",
-					!zpSrc.Contains("for (int __starsSpentIdx") && zpSrc.Contains("if (__spentBefore == 0)"), "对");
+			!zpSrc.Contains("for (int __starsSpentIdx") && (zpSrc.Contains("__spentBaseCombat") || zpSrc.Contains("__spentBaseTurn")) && zpSrc.Contains("&& amount > 0)"), "对");
 				Check("状态：填 0 也写回读标记（TriggerAmount=0 + 范围）",
 					zpSrc.Contains("CET:TriggerAmount=0m CET:TriggerScope=Combat"), "写");
 				Check("说明文字：填 0 说的是「只要消耗就触发一次 + 这个范围只触发第一次」",
@@ -34408,7 +34408,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				var mixProfile = ProfileFactory.Sample();
 				mixProfile.CustomPowers.Add(mixPow);
 				string mixSrc = CustomPowerGen.Source(mixProfile, mixPow, 0);
-				int mixZeroAt = mixSrc.IndexOf("if (__spentBefore == 0)", StringComparison.Ordinal);
+		int mixZeroAt = mixSrc.IndexOf("&& amount > 0)", StringComparison.Ordinal);
 				int mixLoopAt = mixSrc.IndexOf("for (int __energySpentIdx", StringComparison.Ordinal);
 				Check("混搭：0 档在点数循环外面（0 档 = 这个窗口的第一次消耗），N 档继续按点数",
 					mixZeroAt >= 0 && mixLoopAt > mixZeroAt, $"0 档@{mixZeroAt} / 循环@{mixLoopAt}");

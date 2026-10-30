@@ -11688,6 +11688,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line()
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
+        // V0.2.336（用户报「花掉能量后」的计数从战斗开始算）：遗物这条链也记一份基准 ——
+        // 第一次看到消耗时把「已花掉多少」记下来，之后只数基准之后的部分。
+        if (PerPointTrigger(trigger.Id))
+            w.Line("private int __spentBaseTurn = -1;   // 「每累计花掉 N 点」的基准（-1 = 还没记过）")
+             .Line("private int __spentBaseCombat = -1;")
+             .Line();
         // 第 10 批：动态变量要覆盖**所有触发时机**的效果（只看 r.Effects = 第 1 条时机会漏掉后面的）
         var relicAllEffects = RelicEffects(r).ToList();
         var relicVars = VarNamesOf(relicAllEffects);
@@ -12689,7 +12695,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line(SpendBeforeLine(t.Kind, t.Scope, "base.Owner.Creature", "base.Owner.Creature.CombatState"));
                 w.Line($"// 数值填 0（留空）：只要消耗就触发一次（范围：{(t.Scope == "Combat" ? "本场战斗" : "本回合")}"
                      + "，只触发第一次 —— 之后再消耗不重复）");
-                w.Open("if (__spentBefore == 0)");
+                // V0.2.336：基准之后才算这一次（懒记法：第一次看到消耗时记下已花掉多少）
+                w.Line($"int __spentNow{t.Scope} = __spentBefore + amount;");
+                w.Line($"if (__spentBase{t.Scope} < 0 || __spentNow{t.Scope} <= __spentBase{t.Scope}) __spentBase{t.Scope} = __spentBefore;");
+                w.Open($"if (__spentBefore - __spentBase{t.Scope} == 0 && amount > 0)");
                 w.Line($"// 这一次之前{(t.Scope == "Combat" ? "本场战斗" : "本回合")}还没花过 → 这是第一次消耗，触发");
             }
             else
@@ -12697,7 +12706,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"// 这个钩子的 amount 是「这一张牌一共花的」点数 → 下面的效果按点数各触发一次（{t.Display}）");
                 w.Open($"for (int __{t.Kind}Idx = 0; __{t.Kind}Idx < amount; __{t.Kind}Idx++)");
                 if (spendThreshold)
-                    w.Line(SpendTickLine(t.Amount, $"__{t.Kind}Idx", "__spentBefore"));
+                    w.Line($"if ((__spentBefore - __spentBase{t.Scope} + __{t.Kind}Idx + 1) % {Lit.Int(Math.Max(1m, t.Amount))} != 0) continue;   // 从这个遗物生效那一刻起数");
             }
         }
         // 概率生效：这只遗物这一次触发里，所有勾了概率的效果共用一次掷骰

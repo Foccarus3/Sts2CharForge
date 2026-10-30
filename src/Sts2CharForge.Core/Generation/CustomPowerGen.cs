@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -186,6 +186,20 @@ public static class CustomPowerGen
                 w.Line("/// 于是第一次只要 1 张就触发（后续又变回 3 张）。这两条的字段名带筛选（见 CountBaseField）。");
                 w.Line("/// </summary>");
                 w.Line("private int " + string.Join(", ", fields.Select(f => f + " = -1")) + ";");
+            }
+            // V0.2.336（用户报「花掉能量后」的计数从战斗开始算）：花能量 / 花额外资源量这两条时机以前
+            // 直接用本体历史的总量 → 上状态之前花掉的也算进去。这里同样给每个状态实例记一份基准
+            // （按范围各一份：本回合 / 本场战斗；-1 = 还没记过，见 EmitSpendTriggers）。
+            var spendScopes = triggers
+                .Where(t => t is not null && t.TriggerAmount >= 0m
+                    && PowerTriggers.Canonical(t.Kind) is "EnergySpent" or "StarsSpent")
+                .Select(t => (t.TriggerScope == "Combat") ? "Combat" : "Turn")
+                .Distinct(StringComparer.Ordinal).ToList();
+            if (spendScopes.Count > 0)
+            {
+                w.Line();
+                w.Line("/// <summary>「每累计花掉 N 点触发一次」的基准值：这个状态被施加那一刻已经花掉多少（-1 = 还没记过）。</summary>");
+                w.Line("private int " + string.Join(", ", spendScopes.Select(sc => "__spentBase" + sc + " = -1")) + ";");
             }
         }
 
@@ -495,12 +509,16 @@ public static class CustomPowerGen
             ? "__spentBefore"
             : (scope == "Combat" ? "__spentBeforeCombat" : "__spentBeforeTurn");
         var declared = new HashSet<string>(StringComparer.Ordinal);
+        // V0.2.336：把「这个状态被施加那一刻已经花掉多少」定成基准（第一次走到这里时记下），
+        // 之后只数基准之后花掉的部分 —— 于是「每累计 N 点触发一次」不再把上状态之前的花销算进去。
+        string BaseVar(string scope) => "__spentBase" + scope;
         void DeclareBefore(string scope)
         {
             if (!declared.Add(scope)) return;
             w.Line(CSharpCodeGen.SpendBeforeLine(kind, scope, "base.Owner", "base.Owner.CombatState", BeforeVar(scope)));
+            w.Line($"int __spentNow{scope} = {BeforeVar(scope)} + amount;   // 含这一次一共花掉多少");
+            w.Line($"if ({BaseVar(scope)} < 0 || __spentNow{scope} <= {BaseVar(scope)}) {BaseVar(scope)} = {BeforeVar(scope)};   // 施加时的基准（换回合会自己重记）");
         }
-
         // 跑一条时机自己的效果
         void Run(PowerTriggerSpec t) => EmitEffects(w, t, p: p);
 
@@ -514,7 +532,7 @@ public static class CustomPowerGen
                 w.Line($"// 数值填 0（留空）：只要消耗就触发一次（范围：{(scope == "Combat" ? "本场战斗" : "本回合")}"
                      + "，只触发第一次 —— 之后再消耗不重复）");
                 w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}");
-                w.Open($"if ({BeforeVar(scope)} == 0)");
+                w.Open($"if ({BeforeVar(scope)} - {BaseVar(scope)} == 0 && amount > 0)");
                 Run(t);
                 w.Close();
             }
@@ -529,7 +547,8 @@ public static class CustomPowerGen
             w.Open($"for (int {idxVar} = 0; {idxVar} < amount; {idxVar}++)");
             foreach (var t in perPoint)
             {
-                w.Open($"if ({CSharpCodeGen.SpendTickCond(t.TriggerAmount, idxVar, BeforeVar(SpendScopeOf(t)))})");
+                string sc = SpendScopeOf(t);
+                w.Open($"if (({BeforeVar(sc)} - {BaseVar(sc)} + {idxVar} + 1) % {CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount).TrimEnd('m')} == 0)");
                 Run(t);
                 w.Close();
             }
