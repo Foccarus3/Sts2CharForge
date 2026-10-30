@@ -4941,6 +4941,43 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line()
          .Line($"public {cls}() : base({c.Cost}, CardType.Curse, CardRarity.Curse, TargetType.None) {{ }}");
 
+        // ===== V0.2.343：诅咒也能用锻造页那块布（和普通卡同一套图）=====
+        // 用户要求「锻造列表增加先古、诅咒、状态牌的列表」：先古卡 / 状态卡本来就走 CardSource（天然支持），
+        // 只有诅咒是另一条链（CurseSource）—— 这里把图接上。
+        // · 图上除「打出时」以外的时机（被消耗 / 被丢弃 / 被抽到…）由 CardHooks 自己写 override；
+        // · 「打出时」不能自己 override 一个 OnPlay 去干活？—— 诅咒本来**没有** OnPlay（下面那套是
+        //   「在手上回合结束时」），所以这里给它补一个，只有**费用 ≥ 0、能打出去的诅咒**才会跑到。
+        // · 老那套「在手上回合结束时」**照旧生成**（图表达不了那个时机），两套并存、互不冲突
+        //   （钩子名不同：OnTurnEndInHand vs 图自己那几个）。
+        if (ForgeGraphGen.UsesGraph(c))
+        {
+            string curseFields = ForgeGraphGen.TimingFields(p, c);
+            if (curseFields.Length > 0) w.Raw(curseFields);
+            string curseHooks = ForgeGraphGen.CardHooks(p, c, isUpgraded: false);
+            if (curseHooks.Length > 0) w.Raw(curseHooks);
+            if (c.UpgradedForgeGraph is { IsEmpty: false })
+            {
+                string curseFieldsUp = ForgeGraphGen.TimingFields(p, c, upgraded: true);
+                if (curseFieldsUp.Length > 0) w.Raw(curseFieldsUp);
+                string curseHooksUp = ForgeGraphGen.CardHooks(p, c, isUpgraded: true);
+                if (curseHooksUp.Length > 0) w.Raw(curseHooksUp);
+            }
+            bool cursePlay = ForgeGraphGen.HasPlayTimingIn(c.ForgeGraph);
+            bool cursePlayUp = c.UpgradedForgeGraph is { IsEmpty: false } && ForgeGraphGen.HasPlayTimingIn(c.UpgradedForgeGraph);
+            if (cursePlay || cursePlayUp)
+            {
+                w.Line()
+                 .Line("// 锻造页那块布上的【触发时机 = 卡牌被打出时】（诅咒只有费用 ≥ 0、能打出去时才会跑到这里）")
+                 .Open("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
+                if (cursePlay && cursePlayUp)
+                    w.Line($"if (base.IsUpgraded) await {ForgeGraphGen.PlayMethodName(true)}(choiceContext, cardPlay);   // 升级后走「升级后」那张布")
+                     .Line($"else await {ForgeGraphGen.PlayMethodName(false)}(choiceContext, cardPlay);                   // 没升级走「升级前」");
+                else if (cursePlayUp) w.Line($"await {ForgeGraphGen.PlayMethodName(true)}(choiceContext, cardPlay);   // 锻造节点图（升级后）");
+                else w.Line($"await {ForgeGraphGen.PlayMethodName(false)}(choiceContext, cardPlay);   // 锻造节点图：【触发时机】= 卡牌被打出时");
+                w.Close();
+            }
+        }
+
         if (c.Effects.Count > 0)
         {
             w.Line()

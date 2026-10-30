@@ -1317,16 +1317,26 @@
                             <StackPanel>
                                 <RadioButton x:Name="ForgeKindNone" GroupName="ForgeKind" Content="（不选）" Margin="0,3"
                                              IsChecked="True"
-                                             ToolTip="不选任何一类时，右侧是空白的，只提示「请选择卡牌、药水、遗物、状态」"/>
+                                             ToolTip="不选任何一类时，右侧是空白的，只提示「请选择卡牌、先古牌、诅咒牌、状态牌、药水、遗物、状态」"/>
                                 <RadioButton x:Name="ForgeKindCard" GroupName="ForgeKind" Content="卡牌列表" Margin="0,3"/>
+                                <!-- V0.2.343（用户要求「锻造列表增加先古、诅咒、状态牌的列表」）：
+                                     这三档列的是「诅咒 / 先古 / 状态」页那三类**卡**（和「卡牌列表」一样是 CardSpec / 同一块布），
+                                     不是「自定义状态」—— 所以名字都带「牌」字，和下面那个「状态列表」区分开。 -->
+                                <RadioButton x:Name="ForgeKindAncient" GroupName="ForgeKind" Content="先古牌列表" Margin="0,3"
+                                             ToolTip="列「诅咒 / 先古 / 状态」页的**先古卡**（稀有度 = 先古）。选中就能用右边那块布给它编效果（生成时照样是普通卡链）。"/>
+                                <RadioButton x:Name="ForgeKindCurse" GroupName="ForgeKind" Content="诅咒牌列表" Margin="0,3"
+                                             ToolTip="列「诅咒 / 先古 / 状态」页的**诅咒卡**。注意：诅咒的招牌机制是「在你的回合结束时、还在手上就触发」（那一条仍在诅咒页照常生成）；这块布上的【打出时】只有**费用 ≥ 0、能打出去的诅咒**才会触发。"/>
+                                <RadioButton x:Name="ForgeKindStatusCard" GroupName="ForgeKind" Content="状态牌列表" Margin="0,3"
+                                             ToolTip="列「诅咒 / 先古 / 状态」页的**状态卡**（稀有度 = 状态）。和下面那个「状态列表」（自定义状态 / 能力牌用的）不是一个东西。"/>
                                 <RadioButton x:Name="ForgeKindPotion" GroupName="ForgeKind" Content="药水列表" Margin="0,3"/>
                                 <RadioButton x:Name="ForgeKindRelic" GroupName="ForgeKind" Content="遗物列表" Margin="0,3"/>
                                 <!-- V0.2.194（用户原话：「我要的不是模块，是锻造页左边『要锻造哪一类』里多一个『状态列表』，
                                      像卡牌列表 / 药水列表 / 遗物列表那样，用那块布给自定义状态编效果」）：
                                      这一档列的是「自定义状态」页那些状态，所以文案就叫「状态列表」而不是「自定义状态列表」
-                                     —— 后者会和「自定义状态」页那个名字撞车，让人以为是在这儿新建状态。 -->
-                                <RadioButton x:Name="ForgeKindPower" GroupName="ForgeKind" Content="状态列表" Margin="0,3"
-                                             ToolTip="用右边那块布（节点图 / 积木）给**自定义状态**编触发时机和效果。列表里是在「自定义状态」页建好的那些状态。"/>
+                                     —— 后者会和「自定义状态」页那个名字撞车，让人以为是在这儿新建状态。
+                                     V0.2.343：加了三档**卡**之后，这一档补一句「（自定义状态）」，不然和「状态牌列表」分不清。 -->
+                                <RadioButton x:Name="ForgeKindPower" GroupName="ForgeKind" Content="状态列表（自定义状态）" Margin="0,3"
+                                             ToolTip="用右边那块布（节点图 / 积木）给**自定义状态**编触发时机和效果。列表里是在「自定义状态」页建好的那些状态（能力牌用的那种，不是「状态卡」）。"/>
                             </StackPanel>
                         </GroupBox>
 
@@ -1349,7 +1359,7 @@
                     <!-- 一类都没选：整块空白 + 提示 -->
                     <TextBlock x:Name="ForgeEmptyHint" Grid.Column="2" FontSize="18" Foreground="#999"
                                HorizontalAlignment="Center" VerticalAlignment="Center"
-                               Text="请选择卡牌、药水、遗物、状态"
+                               Text="请选择卡牌、先古牌、诅咒牌、状态牌、药水、遗物、状态"
                                Visibility="{Binding ForgeNoKind, Converter={StaticResource BoolToVis}}"/>
 
                     <Grid x:Name="ForgeDetail" Grid.Column="2" Visibility="{Binding ForgeHasKind, Converter={StaticResource BoolToVis}}">

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -2523,6 +2523,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		"Potion" => _profile.Potions.Where(p => p.IsForged).Cast<object>(),
 		"Relic" => _profile.Relics.Where(r => r.IsForged).Cast<object>(),
 		"Power" => _profile.CustomPowers.Where(cp => cp is not null).Cast<object>(),
+		// V0.2.343：先古 / 诅咒 / 状态牌这三档列的是「诅咒 / 先古 / 状态」页那三类**真卡**（不是锻造副本），
+		// 所以**不过滤 IsForged** —— 它们本来就是在那两页建的，这里只是借那块布给它们编效果。
+		"Ancient" => _profile.AncientCards.Where(c => c is not null).Cast<object>(),
+		"Curse" => _profile.Curses.Where(c => c is not null).Cast<object>(),
+		"StatusCard" => _profile.Cards.Where(c => c is not null && c.IsStatusCard).Cast<object>(),
 		_ => Enumerable.Empty<object>(),
 	};
 
@@ -2611,7 +2616,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ForgeCanvas.Owner = _profile;
 		// 「状态列表」这一档传的就是 "Power"（V0.2.194 起 ForgeTimings 有了同一档），
 		// 那张布上【触发时机】的候选按它筛。
-		ForgeCanvas.Scope = _forgeKind.Length > 0 ? _forgeKind : "Card";
+		// V0.2.343：先古 / 诅咒 / 状态牌这三档是**卡**，布上的时机菜单和「卡牌列表」完全一样 → 传 "Card"。
+		ForgeCanvas.Scope = _forgeKind switch
+		{
+			"" => "Card",
+			"Ancient" or "Curse" or "StatusCard" => "Card",
+			var k => k,
+		};
 		ForgeGraphSpec? graph;
 		if (item is CustomPowerSpec cp)
 		{
@@ -2741,12 +2752,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void OnForgeKindChanged(object sender, RoutedEventArgs e)
 	{
-		// "Power" = 左边的「状态列表」（V0.2.194）：列的是 _profile.CustomPowers 那些自定义状态，
+		// "Power" = 左边的「状态列表（自定义状态）」（V0.2.194）：列的是 _profile.CustomPowers 那些自定义状态，
 		// 右边那块布编的是它们的 ForgeGraph。另外三档逐字照旧。
+		// V0.2.343：多了三档**卡**：先古牌 / 诅咒牌 / 状态牌（都是 CardSpec，走同一条卡牌布）。
 		_forgeKind = ForgeKindCard.IsChecked == true ? "Card"
 			: ForgeKindPotion.IsChecked == true ? "Potion"
 			: ForgeKindRelic.IsChecked == true ? "Relic"
 			: ForgeKindPower.IsChecked == true ? "Power"
+			: ForgeKindAncient.IsChecked == true ? "Ancient"
+			: ForgeKindCurse.IsChecked == true ? "Curse"
+			: ForgeKindStatusCard.IsChecked == true ? "StatusCard"
 			: "";
 		// 注意：这个处理器在 XAML 解析阶段就会被调一次（默认选中的「（不选）」那一项），"
 		// 那时候后面那些控件还没造出来 —— 构造函数末尾接好之后再刷新。"
@@ -2802,8 +2817,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			var g = ForgeCanvas?.Graph;
 			// 「状态列表」档没有「升级前 / 升级后」这回事（那一对分页在这一档是收起来的），
 			// 这里点名「状态列表」，不然那句话会写着「升级前」而用户根本看不到分页。
-			string which = _forgeKind == "Power" ? "状态列表" : (ForgeEditingUpgraded ? "升级后" : "升级前");
-			string head = g is null
+			// V0.2.343：先古 / 诅咒 / 状态牌三档是卡，有「升级前 / 升级后」两块布，所以照卡牌那样写「升级前 / 升级后」。
+			string which = _forgeKind == "Power" ? "状态列表" : (ForgeEditingUpgraded ? "升级后" : "升级前");			string head = g is null
 				? $"（{which}：这一件还没有节点图）"
 				: g.IsEmpty
 					? $"（{which}：空白的帧 —— 用上面的「添加」放第一个【触发时机】模块）"
@@ -2881,6 +2896,61 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				SetStatus("已添加一只锻造遗物（名字前面带**）。");
 				break;
 			}
+			// ===== V0.2.343：先古牌 / 诅咒牌 / 状态牌这三档 =====
+			// 这三档列的是「诅咒 / 先古 / 状态」页那三类**真卡**（不是「锻造出来的副本」），
+			// 所以「添加」建的就是那一页同款的新卡（默认值和那边的「添加」一模一样），只是顺手给它一块布。
+			case "Ancient":
+			{
+				var c = new CardSpec
+				{
+					Name = $"先古卡（锻造）{_profile.AncientCards.Count + 1}",
+					CardType = "Attack",
+					Rarity = "Ancient",
+					Cost = 1,
+					IsForged = true,     // 名字前面带 *（和「卡牌列表」那档一致，一眼看出是这一页建的）
+				};
+				_profile.AncientCards.Add(c);
+				ForgeGraphGen.EnsureGraph(c);
+				RefreshForgeList();
+				ForgeItemList!.SelectedItem = c;
+				SetStatus("已添加一张先古卡（名字前面带 *）—— 属性和普通卡一样在「诅咒 / 先古 / 状态」页改，右边那块布编它的效果。");
+				break;
+			}
+			case "Curse":
+			{
+				var c = new CardSpec
+				{
+					Name = $"诅咒（锻造）{_profile.Curses.Count + 1}",
+					CardType = "Curse",
+					Rarity = "Curse",
+					Cost = -1,
+					Unplayable = true,   // 和「诅咒」页的「添加」同款默认值（生成时还会强制加这个关键字）
+					IsForged = true,
+				};
+				_profile.Curses.Add(c);
+				ForgeGraphGen.EnsureGraph(c);
+				RefreshForgeList();
+				ForgeItemList!.SelectedItem = c;
+				SetStatus("已添加一张诅咒（名字前面带 *）。注意：诅咒的「在手上回合结束时」那条链照旧在「诅咒」页配；这块布上的【打出时】只有费用 ≥ 0 的诅咒才会触发。");
+				break;
+			}
+			case "StatusCard":
+			{
+				var c = new CardSpec
+				{
+					Name = $"状态牌（锻造）{_profile.Cards.Count(x => x.IsStatusCard) + 1}",
+					CardType = "Status",
+					Rarity = "Status",
+					Cost = 1,
+					IsForged = true,
+				};
+				_profile.Cards.Add(c);
+				ForgeGraphGen.EnsureGraph(c);
+				RefreshForgeList();
+				ForgeItemList!.SelectedItem = c;
+				SetStatus("已添加一张状态牌（名字前面带 *）—— 类型 / 稀有度都是「状态」，右边那块布编它的效果。");
+				break;
+			}
 			case "Power":
 			{
 				// 「状态列表」这一档建的是**真的自定义状态**（不是「锻造出来的副本」那种）：
@@ -2904,7 +2974,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				break;
 			}
 			default:
-				SetStatus("请先在左上角选「卡牌列表 / 药水列表 / 遗物列表 / 状态列表」，再点「添加」。");
+				SetStatus("请先在左上角选「卡牌列表 / 先古牌列表 / 诅咒牌列表 / 状态牌列表 / 药水列表 / 遗物列表 / 状态列表（自定义状态）」，再点「添加」。");
 				break;
 		}
 		Raise("CardCountText");
@@ -2926,9 +2996,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 所以删完还得把状态注册表重刷一遍 —— 卡牌效果里「施加增益 / 减益」那份候选读的就是它
 		//（和「自定义状态」页那个「删除选中」同一套收尾，见 OnRemoveCustomPower）。
 		bool removedPower = false;
+		bool removedCard = false;
 		foreach (var o in picked)
 		{
-			if (o is CardSpec c && c.IsForged) _profile.Cards.Remove(c);
+			// V0.2.343：先古牌 / 诅咒牌 / 状态牌这三档的条目是**真卡**（分别在 AncientCards / Curses / Cards 里），
+			// 所以按「哪个集合里有它就删哪个」来删 —— 卡牌列表那档删的仍然只是锻造出来的那张。
+			if (o is CardSpec c)
+			{
+				bool gone = _profile.Cards.Remove(c) | _profile.Curses.Remove(c) | _profile.AncientCards.Remove(c);
+				if (gone) removedCard = true;
+			}
 			else if (o is PotionSpec p && p.IsForged) _profile.Potions.Remove(p);
 			else if (o is RelicSpec r && r.IsForged) _profile.Relics.Remove(r);
 			else if (o is CustomPowerSpec cp) { _profile.CustomPowers.Remove(cp); removedPower = true; }
@@ -2942,6 +3019,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// RefreshForgeList 会把左边列表重建一遍：选中项已经不在列表里了 → ListBox 自动清成 null →
 		// SyncForgeDetail → SyncForgeCanvas 把 ForgeCanvas.Graph 指成 null，画布不会继续指着刚删掉的那只。
 		RefreshForgeList();
+		// 三档真卡（先古 / 诅咒 / 状态牌）删完要把那几页的列表镜像重铺一遍，不然「诅咒 / 先古 / 状态」页还显示着它
+		if (removedCard) SyncDetail();
 		Raise("CardCountText");
 		SetStatus($"已删除 {picked.Count} 项。");
 	}
@@ -3796,6 +3875,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ForgeKindPotion.Checked += OnForgeKindChanged;
 		ForgeKindRelic.Checked += OnForgeKindChanged;
 		ForgeKindPower.Checked += OnForgeKindChanged;
+		// V0.2.343：多了三档**卡**（先古 / 诅咒 / 状态牌）—— 挂法一模一样
+		ForgeKindAncient.Checked += OnForgeKindChanged;
+		ForgeKindCurse.Checked += OnForgeKindChanged;
+		ForgeKindStatusCard.Checked += OnForgeKindChanged;
 		// 所有控件都造好了：这一页现在可以安全刷新 
 		_uiReady = true;
 		RefreshForgeList();
@@ -18197,9 +18280,91 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					forgeTexts.Contains("卡牌列表") && forgeTexts.Contains("药水列表") && forgeTexts.Contains("遗物列表"), "三个分类在");
 				Check("锻造页**不再有**「自定义状态列表」那一类（用户要求删掉：自定义状态在「自定义状态」页配，别让人以为在锻造页也能配）",
 					!forgeTexts.Contains("自定义状态列表"), forgeTexts.Contains("自定义状态列表") ? "还在" : "已删掉");
-				Check("一类都没选时右侧提示「请选择卡牌、药水、遗物」",
-					ForgeKindNone.IsChecked == true && ForgeNoKind && forgeTexts.Any(t => t.Contains("请选择卡牌、药水、遗物")),
+				Check("一类都没选时右侧提示「请选择卡牌、先古牌、诅咒牌…」",
+					ForgeKindNone.IsChecked == true && ForgeNoKind && forgeTexts.Any(t => t.Contains("请选择卡牌、先古牌、诅咒牌")),
 					$"ForgeNoKind={ForgeNoKind}");
+
+				// ===== V0.2.343：锻造列表新增「先古牌 / 诅咒牌 / 状态牌」三档（用户要求）=====
+				{
+					Check("锻造页多了三档分类：先古牌列表 / 诅咒牌列表 / 状态牌列表（且「状态列表」改名成「状态列表（自定义状态）」区分开）",
+						forgeTexts.Contains("先古牌列表") && forgeTexts.Contains("诅咒牌列表") && forgeTexts.Contains("状态牌列表")
+						&& forgeTexts.Any(t => t.Contains("状态列表（自定义状态）")),
+						string.Join(" / ", forgeTexts.Where(t => t.Contains("列表"))));
+
+					// 先古牌：列表 = Profile.AncientCards（真卡）；添加 → 多一张 Rarity=Ancient 且自带布
+					ForgeKindAncient.IsChecked = true;
+					int ancBefore = Profile.AncientCards.Count;
+					Check("选「先古牌列表」→ 左边列表就是 Profile.AncientCards（真卡，不过滤 IsForged）",
+						ForgeKind == "Ancient" && ForgeVisible.Count == ancBefore, $"{ForgeVisible.Count} 项 / 存档里有 {ancBefore} 张");
+					OnAddForged(this, new RoutedEventArgs());
+					var ancNew = Profile.AncientCards.LastOrDefault();
+					Check("先古牌列表点「添加」→ 真的多一张先古卡（稀有度 = 先古、列表显示带 *）",
+						Profile.AncientCards.Count == ancBefore + 1 && ancNew is not null && ancNew.IsAncientCard
+						&& ancNew.IsForged && (ancNew.Display ?? "").Contains("*"), ancNew?.Display ?? "(没有)");
+					Check("新加的先古卡自带一块布（添加即 EnsureGraph）", ancNew?.ForgeGraph is not null, "有布");
+					Check("这三档的布用的是**卡牌**那套时机菜单（ForgeCanvas.Scope = Card）",
+						ForgeCanvas.Scope == "Card", ForgeCanvas.Scope);
+					// 删掉刚才那张（别把自检造出来的卡留在存档里）
+					if (ancNew is not null)
+					{
+						ForgeItemList!.SelectedItem = ancNew;
+					OnRemoveForged(this, new RoutedEventArgs());
+						Check("在锻造页删掉先古卡 → 真从那串里删掉（不是只删「锻造副本」）",
+							Profile.AncientCards.Count == ancBefore, $"{Profile.AncientCards.Count} / {ancBefore}");
+					}
+					else Check("先古牌删除（跳过：没加成）", false, "没加成");
+
+					// 诅咒牌：列表 = Profile.Curses；添加 → Rarity=Curse / -1 费 / 不能被打出
+					ForgeKindCurse.IsChecked = true;
+					int curseBefore = Profile.Curses.Count;
+					OnAddForged(this, new RoutedEventArgs());
+					var curseNew = Profile.Curses.LastOrDefault();
+					Check("诅咒牌列表点「添加」→ 多一张诅咒（稀有度 = 诅咒、-1 费、默认不能被打出）",
+						Profile.Curses.Count == curseBefore + 1 && curseNew is not null && curseNew.IsCurseCard
+						&& curseNew.Cost == -1 && curseNew.Unplayable, $"费 {curseNew?.Cost} / 不能打出={curseNew?.Unplayable}");
+					// 生成端：诅咒带图 → CurseSource 也把图接上（V0.2.343 新增），而且老那套「在手上回合结束」还在
+					var curseWithGraph = new CardSpec
+					{
+						Name = "自检诅咒图", ClassName = "UiCheckCurseGraph", CardType = "Curse", Rarity = "Curse", Cost = 0,
+						Effects = { new EffectSpec { Kind = "HpLoss", Amount = 2m, TargetSide = "Self" } },
+					};
+					curseWithGraph.ForgeGraph = new ForgeGraphSpec();
+					var cgT = new ForgeNodeSpec { Kind = "Trigger" };
+					cgT.SetField("Timing", ForgeTimings.CardPlayed);
+					var cgE = new ForgeNodeSpec { Kind = "Effect" };
+					cgE.SetField("Effect", "Block");
+					cgE.SetField("Amount", "4");
+					curseWithGraph.ForgeGraph.Nodes.AddRange(new[] { cgT, cgE });
+					curseWithGraph.ForgeGraph.Links.Add(new ForgeLinkSpec { From = cgT.Id, To = cgE.Id, FromPort = 0, ToPort = 0 });
+					var cgProf2 = ProfileFactory.Sample();
+					cgProf2.Curses.Add(curseWithGraph);
+					string cgSrc = CSharpCodeGen.CurseSource(cgProf2, curseWithGraph, cgProf2.Cards.Count + 1);
+					Check("诅咒带锻造图 → 生成出来的诅咒里有 OnPlay 调图（费用 ≥ 0 才跑得到）",
+						cgSrc.Contains("ForgeGraphOnPlay") && cgSrc.Contains("protected override async Task OnPlay("), "接上了");
+					Check("（红线）诅咒老那套「在手上回合结束时」照旧生成（图表达不了那个时机，不能被顶掉）",
+						cgSrc.Contains("OnTurnEndInHand"), "还在");
+					if (curseNew is not null)
+					{
+						ForgeItemList!.SelectedItem = curseNew;
+					OnRemoveForged(this, new RoutedEventArgs());
+						Check("在锻造页删掉诅咒 → 真从 Profile.Curses 删掉", Profile.Curses.Count == curseBefore, $"{Profile.Curses.Count} / {curseBefore}");
+					}
+
+					// 状态牌：列表 = Cards 里稀有度「状态」的那些
+					ForgeKindStatusCard.IsChecked = true;
+					int stBefore = Profile.Cards.Count(c => c.IsStatusCard);
+					Check("选「状态牌列表」→ 列表里只有稀有度 = 状态的那些卡",
+						ForgeKind == "StatusCard" && ForgeVisible.Count == stBefore && ForgeVisible.OfType<CardSpec>().All(c => c.IsStatusCard),
+						$"{ForgeVisible.Count} 项 / 存档里 {stBefore} 张");
+					OnAddForged(this, new RoutedEventArgs());
+					var stNew = Profile.Cards.LastOrDefault(c => c.IsStatusCard);
+					Check("状态牌列表点「添加」→ 多一张状态牌（类型 / 稀有度都是状态）",
+						Profile.Cards.Count(c => c.IsStatusCard) == stBefore + 1 && stNew is not null
+						&& string.Equals(stNew.CardType, "Status", StringComparison.Ordinal), stNew?.Display ?? "(没有)");
+					if (stNew is not null) { ForgeItemList!.SelectedItem = stNew; OnRemoveForged(this, new RoutedEventArgs()); }
+					ForgeKindNone.IsChecked = true;
+					RaiseForgeChanged();
+				}
 
 				// 选「卡牌列表」→ 添加 → 生成一项前缀带「*」的卡"
 				ForgeKindCard.IsChecked = true;
