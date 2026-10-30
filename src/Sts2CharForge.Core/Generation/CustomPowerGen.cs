@@ -1634,6 +1634,12 @@ public static class CustomPowerGen
             ? "base.Amount"
             : (CSharpCodeGen.InlineAmountFormula(p, e, "base.Owner.Player", "base.Owner",
                    CSharpCodeGen.FirstEnemyOf("base.Owner.Player")) ?? Lit.Dec(e.Amount));
+        // V0.2.337（用户要求「插件别限制太死」）：插件贡献的效果种类在**状态链**上也能落地了
+        // （以前只有卡牌 / 遗物 / 药水 / 锻造图四条链 —— 状态链的 switch 白名单会把插件 kind 打回「用不了」）。
+        if (Plugins.PluginGen.TryEmit(w, e, new Plugins.PluginGen.PluginCtx(
+                Self: "base.Owner", Player: "base.Owner.Player!", Foe: CSharpCodeGen.FirstEnemyOf("base.Owner.Player"),
+                Choice: "choiceContext", CardSelf: "null", AmountOverride: amt)))
+            return;
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 直接 return（状态根本挂不上）
         if (CSharpCodeGen.IsSlowPercentEffect(e)) amt = "1m";

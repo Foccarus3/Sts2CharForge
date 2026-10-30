@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -370,7 +370,8 @@ public static class ProfileValidator
                     if (e.Kind == "CardReward" && t.Kind != "CombatVictory")
                         issues.Add(new("提示", $"{who}「{when}」里放了「获得卡牌奖励」：这个触发时机是在战斗中途，"
                             + "生成时会在那一刻直接弹「N 选一」的选牌界面、选中就进牌组（想要「打赢后奖励界面多一条」就挂「战斗胜利后」）。"));
-                    if (!PowerTriggers.Supports(e.Kind))
+                    // V0.2.337：插件贡献的效果种类放行（状态链已经能渲染它们，见 CustomPowerGen.EmitEffect）
+                    if (!PowerTriggers.Supports(e.Kind) && !Plugins.PluginRegistry.IsPluginEffect(e.Kind))
                     {
                         // ⚠ 文案按**真实原因**分档：以前一律说「需要卡牌上下文（选牌 / 结束回合）」，
                         // 但那个清单里混了两种原因 —— ClearPowerOne / ClearPowerDebuffs / PetSacrifice

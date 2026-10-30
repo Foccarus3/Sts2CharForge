@@ -36,6 +36,9 @@ public static class PluginGen
             .Replace("{self}", ctx.Self, StringComparison.OrdinalIgnoreCase)
             .Replace("{player}", ctx.Player, StringComparison.OrdinalIgnoreCase)
             .Replace("{foe}", ctx.Foe, StringComparison.OrdinalIgnoreCase)
+            // V0.2.337：{target} = 「当前指向对象」（和 {foe} 同一个表达式；状态链上就是触发器的目标 / 兜底第一个敌人）
+            .Replace("{target}", ctx.Foe, StringComparison.OrdinalIgnoreCase)
+            .Replace("{targetorfirst}", ctx.Foe, StringComparison.OrdinalIgnoreCase)
             .Replace("{choice}", ctx.Choice, StringComparison.OrdinalIgnoreCase)
             .Replace("{cardself}", ctx.CardSelf, StringComparison.OrdinalIgnoreCase)
             .Replace("{power}", (e.PowerId ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
