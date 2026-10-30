@@ -6778,6 +6778,176 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	}
 
 	/// <summary>纯说明页（Markdown 原样显示）。</summary>
+	/// <summary>
+	/// V0.2.349（框架）：把 <c>type = "list"</c> 的栏位渲染成**动态行集合** ——
+	/// 每行一组子栏位 + 「↑ / ↓ / 删除」，底下「+ 添加一行」。
+	/// 行数据存在 <c>plugins\&lt;id&gt;\rows.json</c>（见 <see cref="PluginRegistry.PageRowsOf"/>），
+	/// 生成时由 <see cref="PluginGen.RenderPage"/> 的 <c>{key} … {/key}</c> 块逐行展开。
+	///
+	/// <para>这就是「招式列表 / 完整编辑器」那种界面能靠插件做出来的底盘：
+	/// 插件只在 JSON 里声明行里有哪些栏位，不用懂 WPF。</para>
+	/// </summary>
+	private FrameworkElement BuildPluginListEditor(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField, Action onChanged)
+	{
+		var rows = PluginRegistry.PageRowsOf(p, page, listField);
+		string title = string.IsNullOrWhiteSpace(listField.Label) ? listField.Key : listField.Label;
+		string itemLabel = !string.IsNullOrWhiteSpace(listField.ItemLabel) ? listField.ItemLabel
+			: (!string.IsNullOrWhiteSpace(listField.Label) ? listField.Label : "行");
+
+		var box = new StackPanel { Margin = new Thickness(0, 6, 0, 8) };
+		var head = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 4) };
+		head.Children.Add(new TextBlock
+		{
+			Text = title, Width = 170, FontWeight = FontWeights.Bold,
+			VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+		});
+		var add = new Button { Content = "+ 添加一行", Padding = new Thickness(10, 2, 10, 2) };
+		head.Children.Add(add);
+		if (!string.IsNullOrWhiteSpace(listField.Hint))
+			head.Children.Add(new TextBlock
+			{
+				Text = listField.Hint, Foreground = Brushes.Gray, Margin = new Thickness(8, 0, 0, 0),
+				VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+			});
+		box.Children.Add(head);
+		var rowsHost = new StackPanel();
+		box.Children.Add(rowsHost);
+
+		void Commit(string? err)
+		{
+			if (err is not null) SetStatus("行数据保存失败：" + err);
+			Rebuild();
+			onChanged();
+		}
+
+		FrameworkElement SubRow(Dictionary<string, string> row, PluginFieldSpec sub)
+		{
+			string subKey = (sub.Key ?? "").Trim();
+			string current = row.TryGetValue(subKey, out string? v) && v is not null ? v : (sub.Default ?? "");
+			var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+			line.Children.Add(new TextBlock
+			{
+				Text = string.IsNullOrWhiteSpace(sub.Label) ? subKey : sub.Label,
+				Width = 130, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+			});
+			switch ((sub.Type ?? "text").Trim().ToLowerInvariant())
+			{
+				case "bool":
+				{
+					var cb = new CheckBox { IsChecked = current is "1" or "true" or "True" or "是", VerticalAlignment = VerticalAlignment.Center };
+					void Set() { row[subKey] = cb.IsChecked == true ? "1" : "0"; onChanged(); }
+					cb.Checked += (_, _) => Set();
+					cb.Unchecked += (_, _) => Set();
+					line.Children.Add(cb);
+					break;
+				}
+				case "pick":
+				{
+					var combo = new ComboBox { Width = 240, IsEditable = false };
+					foreach (string opt in sub.Options) combo.Items.Add(opt);
+					combo.Text = current;
+					if (combo.SelectedIndex < 0 && combo.Items.Count > 0) combo.SelectedItem = combo.Items[0];
+					combo.SelectionChanged += (_, _) => { row[subKey] = combo.Text ?? ""; onChanged(); };
+					line.Children.Add(combo);
+					break;
+				}
+				case "number":
+				{
+					var tb = new TextBox { Width = 110, Text = current };
+					tb.TextChanged += (_, _) =>
+					{
+						row[subKey] = new string(tb.Text.Where(ch => char.IsDigit(ch) || ch == '-' || ch == '.').ToArray());
+						onChanged();
+					};
+					line.Children.Add(tb);
+					break;
+				}
+				case "multiline":
+				{
+					var tb = new TextBox
+					{
+						Width = 430, Height = 60, AcceptsReturn = true, TextWrapping = TextWrapping.Wrap,
+						VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+						FontFamily = new System.Windows.Media.FontFamily("Consolas"), Text = current,
+					};
+					tb.TextChanged += (_, _) => { row[subKey] = tb.Text; onChanged(); };
+					line.Children.Add(tb);
+					break;
+				}
+				default:
+				{
+					var tb = new TextBox { Width = 300, Text = current };
+					tb.TextChanged += (_, _) => { row[subKey] = tb.Text; onChanged(); };
+					line.Children.Add(tb);
+					break;
+				}
+			}
+			if (!string.IsNullOrWhiteSpace(sub.Hint))
+				line.Children.Add(new TextBlock
+				{
+					Text = sub.Hint, Foreground = Brushes.Gray, Margin = new Thickness(8, 0, 0, 0),
+					VerticalAlignment = VerticalAlignment.Center,
+				});
+			return line;
+		}
+
+		void Rebuild()
+		{
+			rowsHost.Children.Clear();
+			for (int i = 0; i < rows.Count; i++)
+			{
+				int index = i;
+				Dictionary<string, string> row = rows[i];
+				var inner = new StackPanel();
+				var rhead = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 2) };
+				rhead.Children.Add(new TextBlock
+				{
+					Text = $"{itemLabel} {index + 1}", Width = 110, FontWeight = FontWeights.Bold,
+					VerticalAlignment = VerticalAlignment.Center,
+				});
+				var up = new Button { Content = "↑", Padding = new Thickness(6, 0, 6, 0), IsEnabled = index > 0 };
+				up.Click += (_, _) =>
+				{
+					if (index <= 0) return;
+					Dictionary<string, string> moved = rows[index];
+					rows.RemoveAt(index);
+					rows.Insert(index - 1, moved);
+					Commit(PluginRegistry.SaveRows(p));
+				};
+				var down = new Button { Content = "↓", Padding = new Thickness(6, 0, 6, 0), Margin = new Thickness(2, 0, 0, 0), IsEnabled = index < rows.Count - 1 };
+				down.Click += (_, _) =>
+				{
+					if (index >= rows.Count - 1) return;
+					Dictionary<string, string> moved = rows[index];
+					rows.RemoveAt(index);
+					rows.Insert(index + 1, moved);
+					Commit(PluginRegistry.SaveRows(p));
+				};
+				var del = new Button { Content = "删除", Padding = new Thickness(8, 0, 8, 0), Margin = new Thickness(2, 0, 0, 0) };
+				del.Click += (_, _) => { rows.RemoveAt(index); Commit(PluginRegistry.SaveRows(p)); };
+				rhead.Children.Add(up);
+				rhead.Children.Add(down);
+				rhead.Children.Add(del);
+				inner.Children.Add(rhead);
+				foreach (var sub in listField.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+					inner.Children.Add(SubRow(row, sub));
+				rowsHost.Children.Add(new Border
+				{
+					Child = inner, Padding = new Thickness(6), Margin = new Thickness(0, 2, 0, 2),
+					BorderBrush = Brushes.Gainsboro, BorderThickness = new Thickness(1, 0, 0, 1),
+				});
+			}
+			if (rows.Count == 0)
+				rowsHost.Children.Add(new TextBlock
+				{
+					Text = "（还没有行：点上面的「+ 添加一行」）", Foreground = Brushes.Gray, Margin = new Thickness(0, 2, 0, 2),
+				});
+		}
+
+		add.Click += (_, _) => { rows.Add(PluginRegistry.NewRowOf(listField)); Commit(PluginRegistry.SaveRows(p)); };
+		Rebuild();
+		return box;
+	}
 	private static object BuildPluginPageText(PluginPageSpec page)
 	{
 		return new ScrollViewer
@@ -6822,8 +6992,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				: "（这页没配 target / emit：只保存值，不产出文件）";
 		}
 
+		// V0.2.349：这页自己的配置问题（list 栏位没配对 / 嵌套 list 之类）—— 有问题的页不产出文件
+		if (page.Problems.Count > 0)
+			panel.Children.Add(new TextBlock
+			{
+				Text = "这页有配置问题，生成时会跳过：\n· " + string.Join("\n· ", page.Problems),
+				TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Firebrick, Margin = new Thickness(0, 0, 0, 8),
+			});
+
 		foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
 		{
+			// V0.2.349：动态行集合（可增删 / 上下移）—— 「招式列表」这种界面就是靠它做的
+			if (f.IsList)
+			{
+				panel.Children.Add(BuildPluginListEditor(p, page, f, Refresh));
+				continue;
+			}
 			string key = f.Key.Trim();
 			string current = PluginRegistry.PageValueOf(p, page, f);
 			var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
@@ -6917,6 +7101,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Directory.CreateDirectory(Path.GetDirectoryName(full)!);
 				File.WriteAllText(full, PluginGen.RenderPage(p, page), new System.Text.UTF8Encoding(false));
 				PluginRegistry.SavePageValues(p);
+				PluginRegistry.SaveRows(p);
 				SetStatus($"已写入工程：{target}");
 			}
 			catch (Exception ex) { SetStatus("写入失败：" + ex.Message); }
@@ -39210,6 +39395,76 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						AnimPreviewOverlay.Children.OfType<Image>().Count(img => img.Opacity >= 0.99) <= 1,
 						AnimPreviewOverlay.Children.OfType<Image>().Count() + " 张图片，其中不透明的 "
 						+ AnimPreviewOverlay.Children.OfType<Image>().Count(img => img.Opacity >= 0.99) + " 张");
+				}				// ----- V0.2.349：插件框架的 list 字段（动态行）——「招式列表」这类界面靠它就能做 -----
+				{
+					var lp = new PluginSpec { Id = "uicheck-list", Name = "自检列表插件", Dir = Path.Combine(Path.GetTempPath(), "uicheck-list-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(lp.Dir);
+					var lpage = new PluginPageSpec
+					{
+						Id = "p1",
+						Title = "招式列表",
+						Target = "cs/Plugins/{id}/Mobs/{Mob}.cs",
+						Emit = "class {Mob}\n{\n    // 招式（{moves}…{/moves} 会按行展开）\n    {moves}\"夜{index}:{name}/{kind}/{dmg}\",\n    {/moves}}\n",
+						Fields =
+						{
+							new PluginFieldSpec { Key = "Mob", Label = "怪物", Type = "text", Default = "Demo" },
+							new PluginFieldSpec
+							{
+								Key = "moves", Label = "招式", Type = "list", ItemLabel = "招式", DefaultRows = 2,
+								Fields =
+								{
+									new PluginFieldSpec { Key = "name", Label = "名字", Type = "text", Default = "Tackle" },
+									new PluginFieldSpec { Key = "kind", Label = "类型", Type = "pick", Options = { "攻击", "防御" }, Default = "攻击" },
+									new PluginFieldSpec { Key = "dmg", Label = "数值", Type = "number", Default = "6" },
+								},
+							},
+						},
+					};
+					lp.Pages.Add(lpage);
+					PluginRegistry.ValidatePages(lp);
+					Check("V0.2.349（框架）：合法的 list 页不报问题", lpage.Problems.Count == 0, string.Join(" / ", lpage.Problems));
+					var rows = PluginRegistry.PageRowsOf(lp, lpage, lpage.Fields[1]);
+					Check("V0.2.349：list 字段第一次访问按 defaultRows 生成空行（每行子栏位都是默认值）",
+						rows.Count == 2 && rows[0]["name"] == "Tackle" && rows[0]["dmg"] == "6", $"{rows.Count} 行");
+					rows[0]["name"] = "Slash";
+					rows[1]["name"] = "Guard";
+					rows[1]["kind"] = "防御";
+					string rendered = PluginGen.RenderPage(lp, lpage);
+					Check("V0.2.349：emit 里的 {key}…{/key} 块按行展开（行内子栏位 + {index}）",
+						rendered.Contains("\"夜1:Slash/攻击/6\"") && rendered.Contains("\"夜2:Guard/防御/6\"") && rendered.Contains("class Demo"),
+						rendered.Replace("\n", "⏎"));
+					string? rowsErr = PluginRegistry.SaveRows(lp);
+					Check("V0.2.349：行数据写到 plugins\\<id>\\rows.json（和 values.json 分开，老版本读不坏）",
+						rowsErr is null && File.Exists(Path.Combine(lp.Dir, "rows.json"))
+						&& File.ReadAllText(Path.Combine(lp.Dir, "rows.json")).Contains("Slash"), rowsErr ?? "已写");
+					var badPage = new PluginPageSpec
+					{
+						Id = "p2", Title = "坏页", Target = "cs/Plugins/{id}/{moves}.cs",
+						Emit = "{moves}x{/moves}",
+						Fields = { new PluginFieldSpec { Key = "moves", Type = "list", Fields = { new PluginFieldSpec { Key = "a", Type = "list", Fields = { new PluginFieldSpec { Key = "b" } } } } } },
+					};
+					var badSpec = new PluginSpec { Id = "uicheck-list-bad", Name = "自检坏页" };
+					badSpec.Pages.Add(badPage);
+					PluginRegistry.ValidatePages(badSpec);
+					Check("V0.2.349：list 配置不对会被报出来（嵌套 list / target 里用 list）而不是静默失效",
+						badPage.Problems.Any(x => x.Contains("不能再是 list")) && badPage.Problems.Any(x => x.Contains("target")),
+						string.Join(" / ", badPage.Problems));
+					PluginRegistry.ValidatePages(new PluginSpec());
+					object form = BuildPluginPageForm(lp, lpage);
+					var buttons = new List<string>();
+					WalkVisual(form as DependencyObject, null);
+					// 用**逻辑树**走（还没量过的面板没有可视子节点，VisualTreeHelper 会一个都走不到）
+					void WalkVisual(DependencyObject? node, object? _)
+					{
+						if (node is null) return;
+						if (node is Button b && b.Content is string s) buttons.Add(s);
+						foreach (object child in LogicalTreeHelper.GetChildren(node))
+							if (child is DependencyObject dep) WalkVisual(dep, null);
+					}
+					Check("V0.2.349：界面上真的画出了「+ 添加一行」和每行的「↑ / ↓ / 删除」",
+						buttons.Contains("+ 添加一行") && buttons.Contains("↑") && buttons.Contains("↓")
+						&& buttons.Count(x => x == "删除") == 2, string.Join(" / ", buttons));
+					try { Directory.Delete(lp.Dir, recursive: true); } catch { }
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

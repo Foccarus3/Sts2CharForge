@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -79,16 +79,41 @@ public sealed class PluginForgeModuleSpec
     public string Note { get; set; } = "";
 }
 
-/// <summary>插件自定义页上的一个栏位（V0.2.319）。</summary>
+/// <summary>插件自定义页上的一个栏位（V0.2.319；V0.2.349 起支持 <c>list</c> 动态行）。</summary>
 public sealed class PluginFieldSpec
 {
     public string Key { get; set; } = "";
     public string Label { get; set; } = "";
-    /// <summary>text / number / bool / pick / multiline</summary>
+
+    /// <summary>
+    /// <c>text</c> / <c>number</c> / <c>bool</c> / <c>pick</c> / <c>multiline</c> / <c>list</c>。
+    ///
+    /// <para>V0.2.349（「能适配的框架」）：多了 <c>list</c> —— 一个**可增删、可上下移的行集合**，
+    /// 每行的子栏位写在 <see cref="Fields"/> 里。插件用它就能表达「招式列表 / 怪物列表 / 掉落表」
+    /// 这种动态列表（以前只能做静态表单，所以「完整敌人编辑器」那种界面在插件里做不出来）。</para>
+    /// </summary>
     public string Type { get; set; } = "text";
+
     public string Default { get; set; } = "";
     public List<string> Options { get; set; } = new();
     public string Hint { get; set; } = "";
+
+    /// <summary>
+    /// <c>list</c> 字段的**子栏位**（每一行都按这套定义渲染；子栏位自己不能再是 <c>list</c>，
+    /// 嵌套列表 v1 不支持，加载时会报一条问题而不是静默失效）。
+    /// </summary>
+    public List<PluginFieldSpec> Fields { get; set; } = new();
+
+    /// <summary><c>list</c> 字段的行标题口径（例：「招式」→ 每行显示「招式 1」）。空 = 用 <see cref="Label"/>。</summary>
+    public string ItemLabel { get; set; } = "";
+
+    /// <summary>
+    /// <c>list</c> 字段初始给几行（只在还没有存过任何行时生效；0 = 空列表，用户自己点「添加一行」）。
+    /// </summary>
+    public int DefaultRows { get; set; }
+
+    /// <summary>这个栏位是不是动态行集合。</summary>
+    public bool IsList => string.Equals((Type ?? "").Trim(), "list", StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -138,6 +163,9 @@ public sealed class PluginPageSpec
 
     /// <summary>把栏位值渲染成的文本（C# 等，原样写进 <see cref="Target"/>）。占位符 <c>{字段key}</c>。</summary>
     public string Emit { get; set; } = "";
+
+    /// <summary>V0.2.349：这页自己的问题（list 栏位配置不对等）—— 有问题的页会被跳过，不影响同插件的其它页。</summary>
+    [JsonIgnore] public List<string> Problems { get; set; } = new();
 
     [JsonIgnore] public bool IsForm => Fields.Count > 0 && Fields.Any(f => f is not null && !string.IsNullOrWhiteSpace(f.Key));
     [JsonIgnore] public bool Produces => IsForm && !string.IsNullOrWhiteSpace(Emit) && !string.IsNullOrWhiteSpace(Target);
@@ -297,6 +325,57 @@ public static class PluginRegistry
         return _plugins.Count(p => p.Problems.Count == 0);
     }
 
+    /// <summary>
+    /// V0.2.349（框架）：页面里 <c>list</c> 栏位的基本检查。**只检查有 list 栏位的页**，老插件一条都不会动。
+    /// 问题记到 <see cref="PluginPageSpec.Problems"/>：这页会被跳过（不生成半截文件），同插件的其它页照常。
+    /// </summary>
+    public static void ValidatePages(PluginSpec spec)
+    {
+        foreach (PluginPageSpec page in spec.Pages)
+        {
+            if (page is null) continue;
+            string where = "页「" + (string.IsNullOrWhiteSpace(page.Title) ? page.Id : page.Title) + "」";
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (PluginFieldSpec f in page.Fields)
+            {
+                if (f is null || string.IsNullOrWhiteSpace(f.Key)) continue;
+                if (!keys.Add(f.Key.Trim())) page.Problems.Add($"{where}：栏位 key「{f.Key}」重复。");
+            }
+            foreach (PluginFieldSpec f in page.Fields.Where(x => x is not null && x.IsList))
+            {
+                string key = (f.Key ?? "").Trim();
+                int subs = 0;
+                foreach (PluginFieldSpec sub in f.Fields)
+                {
+                    if (sub is null || string.IsNullOrWhiteSpace(sub.Key)) continue;
+                    subs++;
+                    if (sub.IsList) page.Problems.Add($"{where}：list 栏位「{key}」的子栏位「{sub.Key}」不能再是 list（嵌套列表 v1 不支持）。");
+                }
+                if (subs == 0) page.Problems.Add($"{where}：list 栏位「{key}」没写子栏位（fields）。");
+                int open = CountOccurrences(page.Emit, "{" + key + "}");
+                int close = CountOccurrences(page.Emit, "{/" + key + "}");
+                if (open != close)
+                    page.Problems.Add($"{where}：emit 里「{{{key}}}」块没配对（{open} 个 {{{key}}} / {close} 个 {{/{key}}}）。");
+                if (!string.IsNullOrWhiteSpace(page.Target)
+                    && page.Target.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase))
+                    page.Problems.Add($"{where}：target 里不能用 list 栏位「{key}」（文件名没法按行展开）。");
+            }
+        }
+    }
+
+    private static int CountOccurrences(string? text, string what)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(what)) return 0;
+        int n = 0;
+        int at = 0;
+        while (true)
+        {
+            at = text.IndexOf(what, at, StringComparison.OrdinalIgnoreCase);
+            if (at < 0) return n;
+            n++;
+            at += what.Length;
+        }
+    }
     private static readonly JsonSerializerOptions JsonOpts = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -475,6 +554,115 @@ public static class PluginRegistry
         }
     }
 
+    // ==================== 动态列表的行数据（V0.2.349「能适配的框架」）====================
+    //
+    // 为什么要独立文件：列表是**多行多列**，塞不进 values.json 的 `页面id → {栏位: 字符串}` 那层；
+    // 而改 values.json 的格式会让老版本编辑器读到新数据时**整份读坏**（JsonException 一抛就全没了）。
+    // 所以单独存 plugins\<id>\rows.json：
+    //     { 页面id: { 列表字段key: [ { 子key: 值, … }, … ] } }
+    // 老版本编辑器不认识这个文件 = 看不到列表内容，但 values.json 一个字节都不受影响。
+
+    private static readonly Dictionary<string, Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>> _pageRows =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static string RowsPathOf(PluginSpec p) => Path.Combine(p.Dir, "rows.json");
+
+    private static Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>> RowsOf(PluginSpec p)
+    {
+        if (_pageRows.TryGetValue(p.Id, out var cached)) return cached;
+        var map = new Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string path = RowsPathOf(p);
+            if (File.Exists(path))
+            {
+                var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>>(File.ReadAllText(path), JsonOpts);
+                if (loaded is not null)
+                    foreach (var kv in loaded)
+                    {
+                        if (kv.Value is null) continue;
+                        var pageMap = new Dictionary<string, List<Dictionary<string, string>>>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var fv in kv.Value)
+                        {
+                            if (fv.Value is null) continue;
+                            var rows = new List<Dictionary<string, string>>();
+                            foreach (var r in fv.Value)
+                                if (r is not null) rows.Add(new Dictionary<string, string>(r, StringComparer.OrdinalIgnoreCase));
+                            pageMap[fv.Key] = rows;
+                        }
+                        map[kv.Key] = pageMap;
+                    }
+            }
+        }
+        catch { /* 读坏了就当成空表，不挡住编辑器 */ }
+        _pageRows[p.Id] = map;
+        return map;
+    }
+
+    /// <summary>
+    /// 这一页某个 <c>list</c> 栏位当前的行。**返回的是缓存里的可变引用** —— 界面改完调
+    /// <see cref="SaveRows"/> 落盘。第一次访问且没有存过时，按 <see cref="PluginFieldSpec.DefaultRows"/>
+    /// 生成若干「子栏位都是默认值」的空行。
+    /// </summary>
+    public static List<Dictionary<string, string>> PageRowsOf(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField)
+    {
+        var rowsMap = RowsOf(p);
+        if (!rowsMap.TryGetValue(page.Id, out var pageMap))
+        {
+            pageMap = new Dictionary<string, List<Dictionary<string, string>>>(StringComparer.OrdinalIgnoreCase);
+            rowsMap[page.Id] = pageMap;
+        }
+        string key = (listField.Key ?? "").Trim();
+        if (!pageMap.TryGetValue(key, out var rows))
+        {
+            rows = new List<Dictionary<string, string>>();
+            int n = Math.Clamp(listField.DefaultRows, 0, 50);
+            for (int i = 0; i < n; i++) rows.Add(NewRowOf(listField));
+            pageMap[key] = rows;
+        }
+        return rows;
+    }
+
+    /// <summary>新行：每个子栏位都用它自己的默认值。</summary>
+    public static Dictionary<string, string> NewRowOf(PluginFieldSpec listField)
+    {
+        var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sub in listField.Fields)
+        {
+            if (sub is null || string.IsNullOrWhiteSpace(sub.Key)) continue;
+            row[sub.Key.Trim()] = sub.Default ?? "";
+        }
+        return row;
+    }
+
+    /// <summary>这一行某个子栏位的值（没填 = 子栏位默认值）。</summary>
+    public static string RowValueOf(PluginFieldSpec listField, Dictionary<string, string> row, PluginFieldSpec sub)
+    {
+        string key = (sub.Key ?? "").Trim();
+        if (row.TryGetValue(key, out string? v) && v is not null) return v;
+        return sub.Default ?? "";
+    }
+
+    /// <summary>把行数据写回 <c>plugins\&lt;id&gt;\rows.json</c>（失败只记一条，不抛）。</summary>
+    public static string? SaveRows(PluginSpec p)
+    {
+        try
+        {
+            var rowsMap = RowsOf(p);
+            var plain = rowsMap.ToDictionary(
+                kv => kv.Key,
+                kv => kv.Value.ToDictionary(
+                    x => x.Key,
+                    x => x.Value.Select(r => r.ToDictionary(y => y.Key, y => y.Value)).ToList()));
+            File.WriteAllText(RowsPathOf(p), JsonSerializer.Serialize(plain, new JsonSerializerOptions { WriteIndented = true }),
+                new System.Text.UTF8Encoding(false));
+            return null;
+        }
+        catch (Exception e)
+        {
+            return e.Message;
+        }
+    }
     /// <summary>插件贡献的条件（下拉项，合并进 <see cref="EffectCatalog.AllConditions"/>）。</summary>
     public static IReadOnlyList<ConditionOption> ConditionOptions => _conditionOptions;
 

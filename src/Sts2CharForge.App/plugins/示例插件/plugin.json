@@ -76,6 +76,23 @@
       "emit": "// 由插件 example 的「卡牌页扩展页」生成\npublic static class {NoteName}\n{\n    public const string From = \"卡牌页扩展页\";\n}\n"
     },
     {
+      "id": "move-list",
+      "title": "招式列表（list 字段示例）",
+      "tab": "card",
+      "markdown": "演示 V0.2.349 的 **list 字段**（动态行集合）：每行是一招（名字 / 类型 / 数值），可以「+ 添加一行」「↑ ↓」「删除」。\n\nemit 里的 `{moves}` … `{/moves}` 会**按行展开**：块里每行渲染一遍，行内用该行的子栏位，另外还有 `{index}`（从 1 起）/ `{index0}`（从 0 起）。\n\n行数据存在 plugins\\<插件 id>\\rows.json（和 values.json 分开，老版本编辑器读不到列表也不会把值读坏）。有了这个，像「招式列表 / 怪物列表 / 掉落表」这种界面插件也能做了 —— 插件只声明栏位，WPF 由编辑器出。",
+      "fields": [
+        { "key": "MonsterName", "label": "怪物名（英文类名）", "type": "text", "default": "DemoMob" },
+        { "key": "moves", "label": "招式", "type": "list", "itemLabel": "招式", "defaultRows": 2,
+          "hint": "每行一招；块里 {name} / {kind} / {value} / {index}",
+          "fields": [
+            { "key": "name", "label": "招式名", "type": "text", "default": "Tackle" },
+            { "key": "kind", "label": "类型", "type": "pick", "options": ["攻击", "防御", "上状态"], "default": "攻击" },
+            { "key": "value", "label": "数值", "type": "number", "default": "6" }
+          ] }
+      ],
+      "target": "cs/Plugins/{id}/Monsters/{MonsterName}.cs",
+      "emit": "// 由插件 example 的「招式列表（list 字段示例）」生成\n// 这里只是演示 list 字段能产出什么；真要能打的敌人还得接 MonsterModel（见文档）\npublic static class {MonsterName}\n{\n    public static readonly string[] Moves = new string[]\n    {\n    {moves}\n        \"[{index}] {name}（{kind}，{value}）\",\n    {/moves}\n    };\n}\n"
+    },    {
       "id": "feature",
       "title": "示例功能页",
       "newTab": true,

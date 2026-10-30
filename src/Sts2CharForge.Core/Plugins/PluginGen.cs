@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -145,21 +145,68 @@ public static class PluginGen
 
     // ==================== 自定义页面（V0.2.319）====================
 
-    /// <summary>把一页的栏位值渲染成 <see cref="PluginPageSpec.Emit"/> 的文本（占位符 <c>{字段key}</c>）。</summary>
+    /// <summary>
+    /// 把一页的栏位值渲染成 <see cref="PluginPageSpec.Emit"/> 的文本（占位符 <c>{字段key}</c>）。
+    ///
+    /// <para>V0.2.349（框架）：<c>list</c> 栏位用**块**展开 ——</para>
+    /// <code>
+    /// {moves}
+    ///     new Move("{name}", {damage}),
+    /// {/moves}
+    /// </code>
+    /// <para>块里每行渲染一遍，行内可用该行的子栏位，以及 <c>{index}</c>（从 1 起）/ <c>{index0}</c>（从 0 起）。
+    /// 没写块（或没配对）时这个 list 不产出任何文本（配对错误在加载时已经报进 <see cref="PluginPageSpec.Problems"/>）。</para>
+    /// </summary>
     public static string RenderPage(PluginSpec p, PluginPageSpec page)
     {
         string text = page.Emit ?? "";
-        foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+        // 先展开 list 块（块里的子栏位替换只在这一层做，避免和页面级同名字段打架）
+        foreach (var lf in page.Fields.Where(x => x is not null && x.IsList))
+            text = ExpandListBlock(text, p, page, lf);
+        // 再替换页面级普通栏位
+        foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
             text = text.Replace("{" + f.Key.Trim() + "}", PluginRegistry.PageValueOf(p, page, f), StringComparison.OrdinalIgnoreCase);
         return text.ReplaceLineEndings("\n");
     }
 
+    /// <summary>展开一个 list 栏位的块：<c>{key} … {/key}</c>（可能出现多次）。</summary>
+    private static string ExpandListBlock(string text, PluginSpec p, PluginPageSpec page, PluginFieldSpec listField)
+    {
+        string key = (listField.Key ?? "").Trim();
+        if (key.Length == 0 || string.IsNullOrEmpty(text)) return text;
+        string open = "{" + key + "}";
+        string close = "{/" + key + "}";
+        int at = text.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        int guard = 0;
+        while (at >= 0 && guard++ < 200)
+        {
+            int end = text.IndexOf(close, at + open.Length, StringComparison.OrdinalIgnoreCase);
+            if (end < 0) break;      // 没配对：原样留着（加载时已报问题）
+            string inner = text.Substring(at + open.Length, end - at - open.Length);
+            var rows = PluginRegistry.PageRowsOf(p, page, listField);
+            var sb = new StringBuilder();
+            for (int i = 0; i < rows.Count; i++)
+            {
+                string one = inner
+                    .Replace("{index}", (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+                    .Replace("{index0}", i.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+                foreach (var sub in listField.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                    one = one.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(listField, rows[i], sub), StringComparison.OrdinalIgnoreCase);
+                sb.Append(one);
+            }
+            string replaced = sb.ToString();
+            text = text.Substring(0, at) + replaced + text.Substring(end + close.Length);
+            at = text.IndexOf(open, Math.Min(text.Length, at + replaced.Length), StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
+    }
     /// <summary>这页要写进工程的相对路径（<c>{id}</c> / <c>{字段key}</c> 都会替换）。</summary>
     public static string TargetOf(PluginSpec p, PluginPageSpec page)
     {
         string path = (page.Target ?? "").Replace("{id}", p.Id, StringComparison.OrdinalIgnoreCase);
         foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
-            path = path.Replace("{" + f.Key.Trim() + "}", FileSafe(PluginRegistry.PageValueOf(p, page, f)), StringComparison.OrdinalIgnoreCase);
+            path = path.Replace("{" + f.Key.Trim() + "}",
+                f.IsList ? "" : FileSafe(PluginRegistry.PageValueOf(p, page, f)), StringComparison.OrdinalIgnoreCase);
         return path.Replace('\\', '/').Trim();
     }
 
@@ -182,7 +229,7 @@ public static class PluginGen
         foreach (var pl in PluginRegistry.Plugins)
         {
             if (pl.Problems.Count > 0) continue;
-            foreach (var page in pl.Pages.Where(x => x is not null && x.Produces))
+            foreach (var page in pl.Pages.Where(x => x is not null && x.Produces && x.Problems.Count == 0))
             {
                 string target = TargetOf(pl, page);
                 if (target.Length == 0) continue;

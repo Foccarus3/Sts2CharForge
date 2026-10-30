@@ -325,3 +325,27 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 3. 「卡牌」页 → 效果列表 →「效果种类」下拉里选插件效果 → 填数值 →「生成工程」；
 4. 声明了 `pages[].tab` 的页，会出现在对应生成器页签底部的「插件扩展页（N）」折叠条里（点开就是一排页签）；
 5. 生成出来的工程里能搜到模板展开的那几行代码，`cs\Plugins\<插件 id>\` 下有你带的 cs。
+---
+
+## 15. 动态行集合 `type = "list"`（V0.2.349）
+
+要「招式列表 / 掉落表 / 任何多行可增删的界面」就用 `list` 栏位：
+
+```json
+{ "key": "moves", "label": "招式", "type": "list", "itemLabel": "招式", "defaultRows": 1,
+  "fields": [ { "key": "name", "type": "text", "default": "Tackle" }, { "key": "dmg", "type": "number", "default": "6" } ] }
+```
+
+emit 里用块宏逐行展开：
+
+```
+{moves}
+    "{index}: {name} = {dmg}",
+{/moves}
+```
+
+要点：
+* 块必须配对（`{moves}` … `{/moves}`），不配对会报错、整段不展开；
+* 块里可用子栏位 + `{index}`（1 起）/ `{index0}`（0 起）；
+* 子栏位**不能**再是 `list`；`target` 文件名里**不能**用 list 栏位；
+* 行数据在 `plugins\<id>\rows.json`（和 values.json 分开）。
