@@ -31,7 +31,7 @@ public static class PluginGen
         if (string.IsNullOrWhiteSpace(body)) return null;
 
         string amount = ctx.AmountOverride ?? Lit.Dec(e.Amount);
-        return body
+        string text = body
             .Replace("{amount}", amount, StringComparison.OrdinalIgnoreCase)
             .Replace("{self}", ctx.Self, StringComparison.OrdinalIgnoreCase)
             .Replace("{player}", ctx.Player, StringComparison.OrdinalIgnoreCase)
@@ -43,7 +43,44 @@ public static class PluginGen
             .Replace("{cardself}", ctx.CardSelf, StringComparison.OrdinalIgnoreCase)
             .Replace("{power}", (e.PowerId ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
             .Replace("{card}", (e.SpawnCardId ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
+            // ===== V0.2.338：把「上下文 / 对象 / 变化的卡牌」也交给插件 =====
+            .Replace("{combatstate}", ctx.CombatState, StringComparison.OrdinalIgnoreCase)
+            .Replace("{cardplay}", ctx.CardPlay, StringComparison.OrdinalIgnoreCase)
+            .Replace("{state}", ctx.State, StringComparison.OrdinalIgnoreCase)
+            .Replace("{spawncardtype}", ctx.SpawnCardType ?? ("ModelDb.Card<" + CSharpCodeGen.CardTypeExpr(null, (e.SpawnCardId ?? "").Trim()) + ">()"), StringComparison.OrdinalIgnoreCase)
+            .Replace("{amountformula}", ctx.AmountOverride ?? amount, StringComparison.OrdinalIgnoreCase)
             .ReplaceLineEndings("\n");
+        // 「变化这张牌」这种动作是本工具踩过坑的（打出的牌在 Play 摞里 → Transform 会丢牌），
+        // 所以包里给一个**宏**，插件写 {transformSelf:类名} 就展开成验证过的写法（1 张换 1 张）。
+        return TransformSelfMacro(text, ctx);
+    }
+
+    /// <summary>
+    /// 展开 <c>{transformSelf:类名}</c>：把「这张牌变成另一张」做成宏（V0.2.338）。
+    ///
+    /// <para>为什么不直接让插件写 <c>CardCmd.Transform(this, …)</c>：打出的牌此刻躺在「打出」那一摞里，
+    /// 本体 Transform 会把新牌塞回同一摞 → 战斗结束看不见（我们踩过）。这里展开成验证过的写法：
+    /// 新牌进弃牌堆 + 把这张牌消耗掉（1 张换 1 张）。只替换占位符本身，不碰其它文本。</para>
+    /// </summary>
+    private static string TransformSelfMacro(string text, PluginCtx ctx)
+    {
+        const string key = "{transformSelf:";
+        int at = text.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+        int guard = 0;
+        while (at >= 0 && guard++ < 16)
+        {
+            int close = text.IndexOf('}', at);
+            if (close < 0) break;
+            string cls = text.Substring(at + key.Length, close - at - key.Length).Trim();
+            string made = $"__plugMade{guard}";
+            string store = $"CardModel {made} = {ctx.CombatState}.CreateCard(ModelDb.Card<{cls}>(), {ctx.Player}); await CardPileCmd.Add({made}, PileType.Discard);";
+            string body = string.Equals(ctx.CardSelf, "null", StringComparison.Ordinal)
+                ? store   // 没有「这张牌」的链（状态 / 遗物 / 药水）：只把新牌放进弃牌堆
+                : store + $" if ({ctx.CardSelf}.Pile is not null) await CardCmd.Exhaust({ctx.Choice}, {ctx.CardSelf});";
+            text = text[..at] + body + text[(close + 1)..];
+            at = text.IndexOf(key, at + body.Length, StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
     }
 
     /// <summary>把渲染结果写进 <see cref="CodeWriter"/>（多行时每行都写）。返回是否写入了（false = 不是插件种类）。</summary>
@@ -165,7 +202,16 @@ public static class PluginGen
     }
 
     /// <summary>生成时拼给模板用的上下文（每条链自己填）。</summary>
+    /// <summary>
+    /// 模板上下文（V0.2.338 扩充）：每条链填自己那份表达式，插件模板里的占位符就从这里换。
+    /// 新加的几项都有默认值 —— 老调用点不改也能编译，只是那几个占位符在没传的链上等于默认写法。
+    /// </summary>
     public readonly record struct PluginCtx(
         string Self, string Player, string Foe, string Choice,
-        string CardSelf = "this", string? AmountOverride = null);
+        string CardSelf = "this", string? AmountOverride = null,
+        // V0.2.338：把「上下文」也暴露给插件 —— 以前只有 amount / 目标，拿不到战斗状态、本次出牌、状态实例
+        string CombatState = "base.Owner.Creature.CombatState",
+        string CardPlay = "cardPlay",
+        string State = "this",
+        string? SpawnCardType = null);
 }

@@ -108,6 +108,13 @@ public sealed class PluginPageSpec
     /// <summary>正文（Markdown 片段；没有 <see cref="Fields"/> 时就是一个纯说明页）。</summary>
     public string Markdown { get; set; } = "";
 
+    /// <summary>
+    /// 这一页要挂到哪个页面（V0.2.338「扩展生成器页」）：空 = 挂在「插件」页；
+    /// 填 <c>card</c> / <c>relic</c> / <c>potion</c> / <c>power</c> / <c>forge</c> / <c>build</c> 之一
+    /// = 作为那个生成器页签里的一个**扩展页**显示（不改生成器本来的页）。
+    /// </summary>
+    public string Tab { get; set; } = "";
+
     /// <summary>这张页面上的栏位（空 = 纯说明页）。</summary>
     public List<PluginFieldSpec> Fields { get; set; } = new();
 
