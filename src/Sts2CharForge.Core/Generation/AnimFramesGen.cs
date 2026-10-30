@@ -478,6 +478,83 @@ public static partial class AnimFramesGen
         return 195;
     }
 
+    /// <summary>
+    /// 静态立绘的像素尺寸（宽, 高）。读不到就退回 195×195（和 <see cref="StaticArtHeight"/> 的兜底一致）。
+    /// </summary>
+    public static (int W, int H) StaticArtSize(CharacterProfile p)
+    {
+        string? path = p.Art.CharacterStatic;
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+        {
+            var img = PngUtil.Decode(path);
+            if (img.HasValue && img.Value.W > 0 && img.Value.H > 0) return (img.Value.W, img.Value.H);
+        }
+        return (195, 195);
+    }
+
+    /// <summary>
+    /// V0.2.347：动画页预览的几何 —— 和**生成的运行时**同一套式子，不再自己发明参照物。
+    ///
+    /// <para>坐标原点 = 静态立绘那个 <c>Sprite2D</c> 的 <c>Position</c>，也就是**瞄点**；y 向下为正。</para>
+    ///
+    /// <para>依据（都来自生成的代码本身）：</para>
+    /// <list type="bullet">
+    ///   <item>立绘节点：<c>ArtGenerator</c> 写的 <c>position = Vector2(0, -spriteH/2)</c> + Sprite2D 默认
+    ///     <c>Centered=true</c> → 立绘**中心**就在瞄点，立绘底边（地面线）在瞄点下方 <c>SpriteH/2</c>。</item>
+    ///   <item>帧动画节点（<c>FrameAnimGen</c>）：<c>Position = s2d.Position + (XOffset×s2d.Scale, YOffset×s2d.Scale)</c>、
+    ///     <c>Scale = s2d.Scale × plan.Scale</c> → 帧图中心相对瞄点偏移 <c>(XOffset, YOffset) × s2d.Scale</c>；
+    ///     帧图尺寸 = 裁剪框 × plan.Scale × s2d.Scale。</item>
+    ///   <item>缩放 / Y 偏移留空时用的自动值：和 <see cref="BuildPlan"/> 里那两段完全一样
+    ///     （缩放 = 静态立绘高 ÷ 待机内容高；Y = <see cref="AutoYOffset"/>）。</item>
+    /// </list>
+    /// <para>⚠ 以前预览画的是「血条中心」，那是错的：血条由本体按角色视觉场景里的 <c>%Bounds</c> 控件摆
+    /// （<c>NHealthBar.UpdateLayoutForCreatureBounds</c>），垂直位置来自战斗场景布局，**和我们的偏移无关**。 </para>
+    /// </summary>
+    public sealed record PreviewGeometry(
+        int StaticW, int StaticH, double StaticScale, double SpriteW, double SpriteH,
+        int CropX0, int CropY0, int CropX1, int CropY1,
+        double PlanScale, bool ScaleAuto, double XOffset, double YOffset, bool YAuto,
+        double FrameW, double FrameH, double FrameCx, double FrameCy)
+    {
+        /// <summary>立绘底边（地面线）相对瞄点的位置（正 = 在瞄点下方）。</summary>
+        public double GroundY => SpriteH / 2.0;
+        /// <summary>帧动画底边相对瞄点的位置（正 = 在瞄点下方）。</summary>
+        public double FrameBottomY => FrameCy + FrameH / 2.0;
+    }
+
+    /// <summary>算一份预览几何；没配待机素材（解不开）时返回 null。</summary>
+    public static PreviewGeometry? PreviewGeometryOf(CharacterProfile p,
+        IReadOnlyList<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)> slots)
+    {
+        var a = p.Animation;
+        GifFrames.Result? idle = null;
+        foreach (var s in slots) if (s.Anim == "idle_loop") { idle = s.Gif; break; }
+        if (idle is null || idle.Frames.Count == 0) return null;
+
+        (int x0, int y0, int x1, int y1) = AutoCrop(idle, idle.Width, idle.Height, slots.ToList());
+        double planScale = a.Scale;
+        bool scaleAuto = !(planScale > 0);
+        int staticH = StaticArtHeight(p);
+        if (scaleAuto)
+        {
+            int contentH = ContentHeight(idle, 0, x0, y0, x1, y1);
+            planScale = contentH <= 0 || staticH <= 0 ? 1 : (double)staticH / contentH;
+        }
+        double yOffset = a.YOffset;
+        bool yAuto = Math.Abs(yOffset) < 1e-9;
+        if (yAuto) yOffset = AutoYOffset(idle, 0, y0, y1, planScale);
+
+        (int staticW, int staticH2) = StaticArtSize(p);
+        (double staticScale, int spriteH, _) = ArtGenerator.SpriteFit(staticW, staticH2);
+        double spriteW = staticW * staticScale;
+        double frameW = (x1 - x0) * planScale * staticScale;
+        double frameH = (y1 - y0) * planScale * staticScale;
+        return new PreviewGeometry(
+            staticW, staticH2, staticScale, spriteW, spriteH,
+            x0, y0, x1, y1, planScale, scaleAuto,
+            a.XOffset, yOffset, yAuto,
+            frameW, frameH, a.XOffset * staticScale, yOffset * staticScale);
+    }
     /// <summary>一帧的平均显示时长（秒）。没有帧时给 1/30 秒，免得除出 0 让游戏里「每帧 0 秒」空转。</summary>
     public static double AverageSeconds(GifFrames.Result gif)
     {

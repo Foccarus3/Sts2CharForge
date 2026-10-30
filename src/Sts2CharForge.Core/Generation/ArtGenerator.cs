@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Text.Json.Nodes;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -337,7 +337,8 @@ region = Rect2(0, 0, {ow}, {oh})
     /// 立绘摆位：按图片高度缩放（高了缩到 ~340px，和本体角色差不多高），并让 Sprite2D 的底边落在 y = 0。
     /// 返回（缩放比例、缩放后高度、场景里那行 scale）。
     /// </summary>
-    private static (double Scale, int SpriteH, string ScaleLine) SpriteFit(int w, int h)
+    /// <summary>立绘摆位用的缩放（高了缩到 ~340px；V0.2.347 起预览也复用这一条，别各写一份）。</summary>
+    public static (double Scale, int SpriteH, string ScaleLine) SpriteFit(int w, int h)
     {
         double scale = h > 400 ? 340.0 / h : 1.0;
         if (scale < 0.05) scale = 0.05;

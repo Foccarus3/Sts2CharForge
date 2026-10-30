@@ -3240,7 +3240,7 @@
                                     </StackPanel>
                                     <!-- 缩略图只画**第一帧**：WPF 播不了动图，真正逐帧播放的是游戏里。 -->
                                     <!-- V0.2.332：预览 = 真的循环播放 GIF（WPF 自己解码），并跟着「缩放 / X / Y 偏移」变；
-                                         图下那条虚线与血条占位条就是「血条中心瞄点」（比例从用户实机截图量的：脚底下方 ≈5.4% 内容高）。 -->
+                                         V0.2.347（用户指出「血条中心」这个参照不对）：参照物换成**静态立绘** —— 瞄点 = 立绘那个 Sprite2D 的原点（立绘中心），偏移 0 就是与立绘完全重合。 -->
                                     <Border Margin="0,12,0,0" BorderBrush="#DDD" BorderThickness="1" Height="260" Background="#FAFAFA">
                                         <Viewbox Stretch="Uniform" Margin="6">
                                             <Grid x:Name="AnimPreviewHost" Background="Black" ClipToBounds="False">
@@ -3260,7 +3260,7 @@
                                          画布上还会从瞄点拉一条直角虚线到动画的锚点，并在两端标 X / Y。 -->
                                     <TextBlock x:Name="AnimOffsetReadout" Margin="0,4,0,0" TextWrapping="Wrap"
                                                FontSize="12" FontWeight="Bold" Foreground="#0A7" Text=""
-                                               ToolTip="瞄点 = 本体血条中心（蓝点 + 十字）。这一行显示动画内容的锚点相对瞄点偏了多少：X 正数往右、Y 正数往下。"/>
+                                               ToolTip="瞄点 = 静态立绘的 Sprite 原点（立绘中心，蓝点 + 十字）。偏移 0 = 帧动画与立绘完全重合；X 正数往右、Y 正数往下，单位是立绘像素。"/>
                                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                                Text="{Binding FrameNote}"/>
                                 </StackPanel>
@@ -3272,7 +3272,7 @@
                                         Visibility="{Binding Enabled, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
                                         <TextBlock Margin="0,4,0,6" TextWrapping="Wrap" FontSize="11" Foreground="#666"
-                                                   Text="四项直接填数值，小数也行（例：缩放 0.85、X 偏移 -12.5）；改完预览立刻跟着变。蓝点 + 十字 = 本体血条中心的瞄点，下面那行绿字显示「相对瞄点偏了多少」。"/>
+                                                   Text="四项直接填数值，小数也行（例：缩放 0.85、X 偏移 -12.5）；改完预览立刻跟着变。预览里半透明的就是静态立绘，蓝点 = 瞄点（立绘中心的 Sprite 原点），偏移 0 = 帧动画与立绘完全重合。"/>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
@@ -3284,14 +3284,14 @@
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="X 偏移（像素，正数往右；相对血条中心）" Style="{StaticResource Label}"/>
+                                            <TextBlock Grid.Column="0" Text="X 偏移（立绘像素，正数往右；相对瞄点）" Style="{StaticResource Label}"/>
                                             <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding XOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="Y 偏移（像素；0 = 自动：脚落在静态立绘底边）" Style="{StaticResource Label}"/>
+                                            <TextBlock Grid.Column="0" Text="Y 偏移（立绘像素；0 = 自动：让帧内内容底边落在立绘底边上）" Style="{StaticResource Label}"/>
                                             <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <Grid Margin="0,0,0,4">

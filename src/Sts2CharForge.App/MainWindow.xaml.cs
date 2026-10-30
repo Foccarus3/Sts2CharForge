@@ -9647,6 +9647,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		AnimPreviewImage.Width = AnimPreviewHost.Width;
 		AnimPreviewImage.Height = AnimPreviewHost.Height;
 		AnimPreviewImage.Source = _animPreviewFrames.Count > 0 ? _animPreviewFrames[0] : null;
+		LoadAnimPreviewStatic();   // V0.2.347：预览的参照物 = 静态立绘
 		RefreshAnimPreviewLayout();
 		StartAnimPreviewTimer();
 	}
@@ -9656,94 +9657,123 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private void RefreshAnimPreviewLayout()
 	{
 		var anim = _profile.Animation;
-		double scale = anim.Scale > 0 ? anim.Scale : 1;   // 0 = 自动，预览里按 1 显示
 		// V0.2.345：这行读数**不依赖动图**（还没上传素材时也能看到自己填的偏移对不对），所以放在最前面更新。
 		if (AnimOffsetReadout is not null) AnimOffsetReadout.Text = OffsetReadoutText(anim);
 		AnimPreviewOverlay.Children.Clear();
-		AnimPreviewImage.Source = _animPreviewFrames.Count > 0
-			? _animPreviewFrames[Math.Clamp(_animPreviewIndex, 0, _animPreviewFrames.Count - 1)] : null;
-		if (_animPreviewW < 1 || _animPreviewH < 1)
+		AnimPreviewImage.Source = null;      // V0.2.347：立绘 + 帧图都改由 overlay 自己画，这张单图不再用
+		_animPreviewGeo = null;
+
+		// ===== V0.2.347：参照物换成**静态立绘**（用户指出以前画的「血条中心」不对）=====
+		// 几何全部来自生成的运行时（AnimFramesGen.PreviewGeometryOf）：
+		//   瞄点 = 静态立绘那个 Sprite2D 的 Position（Centered=true ⇒ 就是立绘中心）；
+		//   帧动画中心 = 瞄点 + (X 偏移, Y 偏移) × 立绘缩放；帧图尺寸 = 裁剪框 × 自动缩放 × 立绘缩放。
+		// 血条**不再画、也不再当参照**：它由本体按角色视觉场景里的 %Bounds 摆，垂直位置来自战斗场景布局，
+		// 和我们的偏移毫无关系（NHealthBar.UpdateLayoutForCreatureBounds 只改 X / 宽度）。
+		var geo = AnimFramesGen.PreviewGeometryOf(_profile, AnimSlotGifsForPreview());
+		if (geo is null)
 		{
-			AnimPreviewHost.Width = 64;
-			AnimPreviewHost.Height = 64;
-			AnimPreviewHint.Text = "（还没上传动图 / 解不开）";
+			AnimPreviewHost.Width = 220;
+			AnimPreviewHost.Height = 160;
+			AnimPreviewHint.Text = "（还没上传待机动图 / 解不开 → 逐帧动画不参与生成）";
 			return;
 		}
+		_animPreviewGeo = geo;
 
-		// V0.2.334（用户要求）：① X/Y 偏移要能「看出相对血条中心偏了多少」——所以预览画布的尺寸**不随偏移变化**，
-		// 偏移只是在固定画框里挪动图片；② 缩放改了以后，预览底下那条血条的大小也要跟着变（游戏里血条宽度
-		// = 角色宽度 + 固定 24px，所以角色放大血条就变宽）。
-		double artW = _animPreviewW * scale;
-		double artH = _animPreviewH * scale;
-		double gap = Math.Max(10.0, artH * 0.054);            // 脚底到血条中心的距离（实机截图量的 5.4% 内容高）
-		double barH = Math.Max(4.0, artH * 0.026);            // 血条厚度
-		double marginX = Math.Max(60.0, artW * 0.42);         // 固定留白：够把 ±300 像素的偏移显示出来
-		double hostW = artW + marginX * 2;
-		double hostH = artH + gap + barH * 2 + Math.Max(16.0, artH * 0.10);
+		// 画框：把立绘 + 帧图 + 偏移矢量全装进去（偏移再大也不会被裁掉）
+		double halfW = Math.Max(geo.SpriteW / 2.0, Math.Abs(geo.FrameCx) + geo.FrameW / 2.0) + 28;
+		double top = Math.Min(-geo.SpriteH / 2.0, geo.FrameCy - geo.FrameH / 2.0) - 20;
+		double bottom = Math.Max(geo.SpriteH / 2.0, geo.FrameCy + geo.FrameH / 2.0) + 28;
+		double hostW = halfW * 2;
+		double hostH = Math.Max(60, bottom - top);
 		AnimPreviewHost.Width = hostW;
 		AnimPreviewHost.Height = hostH;
-		AnimPreviewImage.Width = artW;
-		AnimPreviewImage.Height = artH;
+		AnimPreviewImage.Width = hostW;
+		AnimPreviewImage.Height = hostH;
 		AnimPreviewImage.RenderTransform = null;
-		double cx = hostW / 2;                                // 血条中心（横向）——画框正中，不随偏移动
-		double barY = hostH - barH * 2;                       // 血条中心（纵向）——底部固定
-		// 图片自己的锚点 = 水平中心 + 「脚底再往下 gap」，把它对准 (血条中心 + 偏移)
-		double artAnchorY = artH + gap;
-		Canvas.SetLeft(AnimPreviewImage, cx + anim.XOffset - artW / 2);
-		Canvas.SetTop(AnimPreviewImage, barY + anim.YOffset - artAnchorY);
-		// 血条宽度 = 角色宽度 + 24px（和本体 NHealthBar：bounds 宽 + 24 一致）→ 缩放一变它跟着变
-		// V0.2.335（用户要求）：去掉血条方块，只留「瞄点」——一条贯穿的竖虚线 + 中心十字 + 蓝点。
-		var dash = new System.Windows.Media.DoubleCollection(new double[] { 3, 3 });
+		double cx = hostW / 2.0;              // 瞄点（X）—— 画框正中
+		double cy = -top;                     // 瞄点（Y）—— 上面按需要留白
+		double SX(double v) => cx + v;
+		double SY(double v) => cy + v;
+
+		// ① 静态立绘（半透明底图）：中心就在瞄点
+		if (_animPreviewStatic is not null)
+		{
+			var portrait = new Image
+			{
+				Source = _animPreviewStatic,
+				Width = geo.SpriteW,
+				Height = geo.SpriteH,
+				Stretch = Stretch.Fill,
+				Opacity = 0.40,
+			};
+			Canvas.SetLeft(portrait, SX(-geo.SpriteW / 2.0));
+			Canvas.SetTop(portrait, SY(-geo.SpriteH / 2.0));
+			AnimPreviewOverlay.Children.Add(portrait);
+		}
+
+		// ② 当前帧（按裁剪框裁好、按自动缩放放大）——位置和生成的代码一致
+		BitmapSource? shown = CurrentAnimPreviewFrame(geo);
+		if (shown is not null)
+		{
+			var frame = new Image { Source = shown, Width = geo.FrameW, Height = geo.FrameH, Stretch = Stretch.Fill };
+			Canvas.SetLeft(frame, SX(geo.FrameCx) - geo.FrameW / 2.0);
+			Canvas.SetTop(frame, SY(geo.FrameCy) - geo.FrameH / 2.0);
+			AnimPreviewOverlay.Children.Add(frame);
+		}
+
+		// ③ 地面线（= 立绘底边，瞄点下方 SpriteH/2）
+		var dash = new System.Windows.Media.DoubleCollection(new double[] { 4, 4 });
+		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
+		{
+			X1 = 0, Y1 = SY(geo.GroundY), X2 = hostW, Y2 = SY(geo.GroundY),
+			Stroke = Brushes.DimGray, StrokeThickness = 1, StrokeDashArray = dash, Opacity = 0.75,
+		});
+		AnimPreviewOverlay.Children.Add(OffsetLabel("地面线（立绘底边）", 2, SY(geo.GroundY) - 14, geo.SpriteH, Brushes.DimGray, above: false));
+
+		// ④ 瞄点：贯穿竖虚线 + 十字 + 蓝点
 		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 		{
 			X1 = cx, Y1 = 0, X2 = cx, Y2 = hostH,
-			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.004), StrokeDashArray = dash, Opacity = 0.85,
+			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, geo.SpriteH * 0.004), StrokeDashArray = dash, Opacity = 0.85,
 		});
-		double tick = Math.Max(6.0, artW * 0.10);              // 瞄点中心那一条横线（血条中心位置）
+		double tick = Math.Max(8.0, geo.SpriteW * 0.12);
 		AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 		{
-			X1 = cx - tick / 2, Y1 = barY, X2 = cx + tick / 2, Y2 = barY,
-			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, artH * 0.006), Opacity = 0.95,
+			X1 = cx - tick / 2, Y1 = cy, X2 = cx + tick / 2, Y2 = cy,
+			Stroke = Brushes.DeepSkyBlue, StrokeThickness = Math.Max(1, geo.SpriteH * 0.006), Opacity = 0.95,
 		});
-		double r = Math.Max(2.0, artH * 0.012);
+		double r = Math.Max(2.5, geo.SpriteH * 0.012);
 		var dot = new System.Windows.Shapes.Ellipse { Width = r * 2, Height = r * 2, Fill = Brushes.DeepSkyBlue };
 		Canvas.SetLeft(dot, cx - r);
-		Canvas.SetTop(dot, barY - r);
+		Canvas.SetTop(dot, cy - r);
 		AnimPreviewOverlay.Children.Add(dot);
 
-		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
-		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
-			+ $"（蓝点/十字 = 血条中心；缩放 1 = 原尺寸，0 = 自动）";
-
-		// ===== V0.2.345（用户要求「偏移应该实时显示相对瞄点的偏移位置」）=====
-		// 瞄点 = 血条中心 (cx, barY)；动画锚点 = 瞄点 + (X 偏移, Y 偏移)。
-		// 这里把「从瞄点走到锚点」画成一条直角虚线 + 两个端点标记 + 两段数字，再把同一组数字写到预览下面那行常驻文字里。
-		double ax = cx + anim.XOffset;          // 动画锚点（X）
-		double ay = barY + anim.YOffset;        // 动画锚点（Y）
+		// ⑤ 偏移矢量：瞄点 → 帧图中心（就是 X / Y 偏移，两段各标一个数字）
+		double ax = SX(geo.FrameCx);
+		double ay = SY(geo.FrameCy);
 		var vecDash = new System.Windows.Media.DoubleCollection(new double[] { 2, 4 });
-		double vecThick = Math.Max(1, artH * 0.005);
-		if (Math.Abs(anim.XOffset) > 0.01)
+		double vecThick = Math.Max(1, geo.SpriteH * 0.005);
+		if (Math.Abs(geo.FrameCx) > 0.01)
 		{
 			AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 			{
 				X1 = cx, Y1 = ay, X2 = ax, Y2 = ay,
 				Stroke = Brushes.OrangeRed, StrokeThickness = vecThick, StrokeDashArray = vecDash, Opacity = 0.9,
 			});
-			AnimPreviewOverlay.Children.Add(OffsetLabel(anim.XOffset >= 0 ? $"+{anim.XOffset:0.##}" : $"{anim.XOffset:0.##}",
-				(cx + ax) / 2, ay, artH, Brushes.OrangeRed, above: true));
+			AnimPreviewOverlay.Children.Add(OffsetLabel(FmtSigned(geo.FrameCx / Math.Max(1e-9, geo.StaticScale)),
+				(cx + ax) / 2, ay, geo.SpriteH, Brushes.OrangeRed, above: true));
 		}
-		if (Math.Abs(anim.YOffset) > 0.01)
+		if (Math.Abs(geo.FrameCy) > 0.01)
 		{
 			AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
 			{
-				X1 = ax, Y1 = barY, X2 = ax, Y2 = ay,
+				X1 = ax, Y1 = cy, X2 = ax, Y2 = ay,
 				Stroke = Brushes.OrangeRed, StrokeThickness = vecThick, StrokeDashArray = vecDash, Opacity = 0.9,
 			});
-			AnimPreviewOverlay.Children.Add(OffsetLabel(anim.YOffset >= 0 ? $"+{anim.YOffset:0.##}" : $"{anim.YOffset:0.##}",
-				ax, (barY + ay) / 2, artH, Brushes.OrangeRed, above: false));
+			AnimPreviewOverlay.Children.Add(OffsetLabel(FmtSigned(geo.FrameCy / Math.Max(1e-9, geo.StaticScale)),
+				ax, (cy + ay) / 2, geo.SpriteH, Brushes.OrangeRed, above: false));
 		}
-		// 锚点本身：灰色空心小圈（瞄点是蓝的，一眼能分开）
-		double ar = Math.Max(2.0, artH * 0.010);
+		double ar = Math.Max(2.5, geo.SpriteH * 0.010);
 		var anchorRing = new System.Windows.Shapes.Ellipse
 		{
 			Width = ar * 2, Height = ar * 2, Stroke = Brushes.OrangeRed, StrokeThickness = Math.Max(1, ar * 0.6), Fill = Brushes.Transparent,
@@ -9752,23 +9782,89 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Canvas.SetTop(anchorRing, ay - ar);
 		AnimPreviewOverlay.Children.Add(anchorRing);
 
-		// 常驻读数（不依赖动图）由方法开头那句统一更新，见 OffsetReadoutText
+		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
+		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {FmtScale(geo)} · "
+			+ $"X {geo.XOffset:0.#} · Y {geo.YOffset:0.#}{(geo.YAuto ? "（自动）" : "")}（立绘像素）";
+	}
+
+	/// <summary>最近一次算出来的预览几何（自检 / 读数用）。</summary>
+	private AnimFramesGen.PreviewGeometry? _animPreviewGeo;
+
+	/// <summary>预览用的静态立绘（半透明底图）。</summary>
+	private BitmapSource? _animPreviewStatic;
+
+	/// <summary>静态立绘缓存是按路径来的：换存档 / 换图要重读。</summary>
+	private string? _animPreviewStaticPath;
+
+	/// <summary>
+	/// V0.2.347：把「美术资源 → 战斗立绘」读成预览用的底图（半透明叠在帧动画下面当参照物）。
+	/// 按路径缓存：同一张图不重复解码（几 MB 的 PNG 每刷一次都解会很卡）。
+	/// </summary>
+	private void LoadAnimPreviewStatic()
+	{
+		string path = _profile.Art.CharacterStatic ?? "";
+		if (string.Equals(path, _animPreviewStaticPath, StringComparison.Ordinal)) return;
+		_animPreviewStaticPath = path;
+		_animPreviewStatic = null;
+		if (path.Length == 0 || !File.Exists(path)) return;
+		try
+		{
+			var img = PngUtil.Decode(path);
+			if (img.HasValue) _animPreviewStatic = BitmapFromRgba(img.Value.W, img.Value.H, img.Value.Rgba);
+		}
+		catch
+		{
+			// 图坏了就当没配：预览只画帧动画，不影响生成
+		}
+	}
+	private static string FmtSigned(double v) =>
+		v.ToString("+0.##;-0.##;0", System.Globalization.CultureInfo.InvariantCulture);
+
+	private static string FmtScale(AnimFramesGen.PreviewGeometry geo) =>
+		geo.ScaleAuto ? "自动" : geo.PlanScale.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+
+	/// <summary>把界面上的槽位（解出来的动图）整理成预览几何要的形状：只留解得开的。</summary>
+	private List<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)> AnimSlotGifsForPreview()
+	{
+		var list = new List<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)>();
+		foreach (AnimSlot slot in AnimSlots)
+		{
+			GifFrames.Result? gif = slot.Gif;
+			if (gif is null) continue;
+			bool loop = slot.AnimName is "idle_loop" or "low_health_loop" or "relaxed_loop" or "overgrowth_loop" or "hive_loop" or "glory_loop";
+			list.Add((slot.AnimName, slot.Path ?? "", gif, loop, slot.AnimName == "die"));
+		}
+		return list;
+	}
+
+	/// <summary>当前要显示的那一帧（按裁剪框裁好）。</summary>
+	private BitmapSource? CurrentAnimPreviewFrame(AnimFramesGen.PreviewGeometry geo)
+	{
+		if (_animPreviewFrames.Count == 0) return null;
+		BitmapSource full = _animPreviewFrames[Math.Clamp(_animPreviewIndex, 0, _animPreviewFrames.Count - 1)];
+		int x = Math.Clamp(geo.CropX0, 0, Math.Max(0, full.PixelWidth - 1));
+		int y = Math.Clamp(geo.CropY0, 0, Math.Max(0, full.PixelHeight - 1));
+		int w = Math.Min(geo.CropX1 - geo.CropX0, full.PixelWidth - x);
+		int h = Math.Min(geo.CropY1 - geo.CropY0, full.PixelHeight - y);
+		if (w <= 0 || h <= 0) return full;
+		try { return new CroppedBitmap(full, new Int32Rect(x, y, w, h)); }
+		catch { return full; }
 	}
 
 	/// <summary>
-	/// 「相对瞄点」的偏移读数（V0.2.345，用户要求「偏移应该实时显示相对瞄点的偏移位置」）。
-	/// 瞄点 = 本体血条中心；这里说的是**动画内容的锚点**相对它偏了多少：X 正数往右、Y 正数往下。
-	/// Y 填 0 是「自动」那一档（脚落在静态立绘底边），所以 0 要单独说明，不能只写 0。
+	/// 「相对瞄点」的偏移读数（V0.2.345 提出、V0.2.347 改口径）。
+	/// 瞄点 = **静态立绘那个 Sprite2D 的 Position（Centered ⇒ 立绘中心）**，不是血条中心；
+	/// 偏移 0 = 帧动画与立绘**完全重合**。X 正数往右、Y 正数往下，单位是立绘像素（写进游戏再乘立绘缩放）。
+	/// Y 填 0 是「自动」那一档（让帧内内容底边落在立绘底边上），所以 0 要单独说明。
 	/// </summary>
 	internal static string OffsetReadoutText(AnimationSpec anim)
 	{
-		string x = Math.Abs(anim.XOffset) < 0.005 ? "0（水平居中）"
-			: $"{anim.XOffset.ToString("+0.##;-0.##;0", System.Globalization.CultureInfo.InvariantCulture)} px（{(anim.XOffset > 0 ? "向右" : "向左")}）";
-		string y = Math.Abs(anim.YOffset) < 0.005 ? "0 = 自动（脚落在静态立绘底边）"
-			: $"{anim.YOffset.ToString("+0.##;-0.##;0", System.Globalization.CultureInfo.InvariantCulture)} px（{(anim.YOffset > 0 ? "向下" : "向上")}）";
-		return $"相对瞄点：X {x} · Y {y}   —— 蓝点 = 瞄点（血条中心），红圈 = 动画锚点";
+		string x = Math.Abs(anim.XOffset) < 0.005 ? "0（水平居中，和立绘对齐）"
+			: $"{FmtSigned(anim.XOffset)}（{(anim.XOffset > 0 ? "向右" : "向左")}）";
+		string y = Math.Abs(anim.YOffset) < 0.005 ? "0 = 自动（让帧内内容底边落在立绘底边上）"
+			: $"{FmtSigned(anim.YOffset)}（{(anim.YOffset > 0 ? "向下" : "向上")}）";
+		return $"相对瞄点：X {x} · Y {y}（立绘像素）   —— 瞄点 = 静态立绘的 Sprite 原点（立绘中心），偏移 0 = 帧动画与立绘完全重合";
 	}
-
 	/// <summary>预览画布上的一个小数字标签（画在画布的 Canvas 上，跟着缩放走）。</summary>
 	private static TextBlock OffsetLabel(string text, double x, double y, double artH, Brush brush, bool above)
 	{
@@ -39030,15 +39126,69 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						$"缩放 {rtBack.Animation.Scale} / X {rtBack.Animation.XOffset}");
 					string readText = OffsetReadoutText(new AnimationSpec { XOffset = 12.5, YOffset = -30 });
 					Check("V0.2.345：预览下面那行显示「相对瞄点」的读数（正负号 + 方向：X 往右 / Y 往上）",
-						readText.Contains("X +12.5 px（向右）") && readText.Contains("Y -30 px（向上）"), readText);
+						readText.Contains("X +12.5（向右）") && readText.Contains("Y -30（向上）"), readText);
 					Check("V0.2.345：Y 填 0 时写清「0 = 自动」（不然用户以为偏 0 像素就是没对齐）",
 						OffsetReadoutText(new AnimationSpec()).Contains("Y 0 = 自动")
-						&& OffsetReadoutText(new AnimationSpec()).Contains("X 0（水平居中）"), OffsetReadoutText(new AnimationSpec()));
+						&& OffsetReadoutText(new AnimationSpec()).Contains("X 0（水平居中"), OffsetReadoutText(new AnimationSpec()));
 					// 「实时」这条要钉住：改一下数值 → 预览那行立刻变（以前 OnAnimSettingChanged 只刷新诊断文字，预览完全不刷新）
 					Profile.Animation.XOffset = 20.5;
 					Check("V0.2.345：改一下 X 偏移 → 预览那行读数**立刻**跟着变（以前预览根本不动）",
-						(AnimOffsetReadout?.Text ?? "").Contains("X +20.5 px（向右）"), AnimOffsetReadout?.Text ?? "(空)");
+						(AnimOffsetReadout?.Text ?? "").Contains("X +20.5（向右）"), AnimOffsetReadout?.Text ?? "(空)");
 					Profile.Animation.XOffset = 0;
+				}				// ----- V0.2.347：预览的参照物换成静态立绘（用户指出「蓝点不是血条中心」）-----
+				{
+					Check("V0.2.347：读数不再提「血条」，改成「瞄点 = 静态立绘的 Sprite 原点 / 偏移 0 = 与立绘完全重合」",
+						!OffsetReadoutText(new AnimationSpec { XOffset = 5, YOffset = -20 }).Contains("血条")
+						&& OffsetReadoutText(new AnimationSpec()).Contains("静态立绘")
+						&& OffsetReadoutText(new AnimationSpec()).Contains("完全重合"),
+						OffsetReadoutText(new AnimationSpec()));
+					Check("V0.2.347：动画页上看不到「血条中心」这个说法了（X / Y 偏移的标签也改成「相对瞄点」）",
+						!VisibleTextsIn(animRoot).Any((string s) => s.Contains("血条中心"))
+						&& VisibleTextsIn(animRoot).Any((string s) => s.Contains("相对瞄点")),
+						string.Join(" / ", VisibleTextsIn(animRoot).Where((string s) => s.Contains("瞄点") || s.Contains("血条"))));
+					// 合成一张 100×200 的「动图」：内容 40×100、左上角 (30,50) → 自动裁剪框应该是 (22,42)-(78,158)
+					byte[] fakeRgba = new byte[100 * 200 * 4];
+					for (int yy = 50; yy < 150; yy++)
+						for (int xx = 30; xx < 70; xx++)
+						{
+							int at = (yy * 100 + xx) * 4;
+							fakeRgba[at] = 200; fakeRgba[at + 1] = 100; fakeRgba[at + 2] = 50; fakeRgba[at + 3] = 255;
+						}
+					var fakeGif = new GifFrames.Result(100, 200, new List<GifFrames.Frame> { new GifFrames.Frame(fakeRgba, 100) });
+					var gSlots = new List<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)>
+						{ ("idle_loop", "fake.gif", fakeGif, true, false) };
+					var gProf = ProfileFactory.Sample();
+					gProf.Animation.Enabled = true;
+					gProf.Animation.Scale = 0;
+					gProf.Animation.XOffset = 0;
+					gProf.Animation.YOffset = 0;
+					var geo = AnimFramesGen.PreviewGeometryOf(gProf, gSlots);
+					Check("V0.2.347：算得出预览几何（没配战斗立绘时按 195×195 的兜底算；195 没超过 400 → 不缩）",
+						geo is not null && geo.StaticW == 195 && geo.StaticH == 195 && Math.Abs(geo.SpriteH - 195) < 0.01,
+						geo is null ? "(null)" : $"{geo.StaticW}×{geo.StaticH} → 场景里高 {geo.SpriteH:0.#}");
+					if (geo is not null)
+					{
+						Check("V0.2.347：地面线 = 立绘底边 = 瞄点下方半个立绘高（立绘 Centered，中心就是瞄点）",
+							Math.Abs(geo.GroundY - geo.SpriteH / 2) < 0.01, $"{geo.GroundY:0.#} / {geo.SpriteH / 2:0.#}");
+						Check("V0.2.347：X 偏移 0 → 帧图中心与瞄点横向重合（这就是「偏移 0 = 与立绘完全重合」）",
+							Math.Abs(geo.FrameCx) < 0.01, geo.FrameCx.ToString("0.##"));
+						Check("V0.2.347：自动缩放 = 立绘高 ÷ 帧内内容高（195 ÷ 100 = 1.95），自动裁剪框 = 内容并集 + 8px 边",
+							geo.ScaleAuto && Math.Abs(geo.PlanScale - 1.95) < 1e-6
+							&& geo.CropX0 == 22 && geo.CropY0 == 42 && geo.CropX1 == 78 && geo.CropY1 == 158,
+							$"缩放 {geo.PlanScale:0.###} / 裁剪 ({geo.CropX0},{geo.CropY0})-({geo.CropX1},{geo.CropY1})");
+						Check("V0.2.347：自动 Y = 生成端那个式子（(裁剪高/2 − 内容底边) × 缩放 = (58 − 108) × 1.95 = −97.5）",
+							geo.YAuto && Math.Abs(geo.YOffset + 97.5) < 0.01, geo.YOffset.ToString("0.##"));
+						gProf.Animation.Scale = 2;
+						gProf.Animation.XOffset = 50;
+						gProf.Animation.YOffset = 100;
+						var geo2 = AnimFramesGen.PreviewGeometryOf(gProf, gSlots);
+						Check("V0.2.347：X / Y / 缩放都填了 → 预览全按填的值算（帧图尺寸 = 裁剪框 × 缩放，偏移直接落位）",
+							geo2 is not null && !geo2.ScaleAuto && !geo2.YAuto
+							&& Math.Abs(geo2.PlanScale - 2) < 1e-9
+							&& Math.Abs(geo2.FrameCx - 50) < 1e-9 && Math.Abs(geo2.FrameCy - 100) < 1e-9
+							&& Math.Abs(geo2.FrameW - 112) < 1e-6 && Math.Abs(geo2.FrameH - 232) < 1e-6,
+							geo2 is null ? "(null)" : $"缩放 {geo2.PlanScale} / 中心 ({geo2.FrameCx:0.#},{geo2.FrameCy:0.#}) / 尺寸 {geo2.FrameW:0.#}×{geo2.FrameH:0.#}");
+					}
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
