@@ -9646,7 +9646,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		AnimPreviewHost.Height = _animPreviewH > 0 ? _animPreviewH : 64;
 		AnimPreviewImage.Width = AnimPreviewHost.Width;
 		AnimPreviewImage.Height = AnimPreviewHost.Height;
-		AnimPreviewImage.Source = _animPreviewFrames.Count > 0 ? _animPreviewFrames[0] : null;
+		AnimPreviewImage.Source = null;   // V0.2.348：旧单图彻底不用（重影的来源），只留 overlay 里那张帧图
+		AnimPreviewImage.Visibility = Visibility.Collapsed;
 		LoadAnimPreviewStatic();   // V0.2.347：预览的参照物 = 静态立绘
 		RefreshAnimPreviewLayout();
 		StartAnimPreviewTimer();
@@ -9716,6 +9717,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (shown is not null)
 		{
 			var frame = new Image { Source = shown, Width = geo.FrameW, Height = geo.FrameH, Stretch = Stretch.Fill };
+			_animPreviewFrameImage = frame;
 			Canvas.SetLeft(frame, SX(geo.FrameCx) - geo.FrameW / 2.0);
 			Canvas.SetTop(frame, SY(geo.FrameCy) - geo.FrameH / 2.0);
 			AnimPreviewOverlay.Children.Add(frame);
@@ -9784,7 +9786,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
 		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {FmtScale(geo)} · "
-			+ $"X {geo.XOffset:0.#} · Y {geo.YOffset:0.#}{(geo.YAuto ? "（自动）" : "")}（立绘像素）";
+			+ $"X {geo.XOffset:0.#} · Y {geo.YOffset:0.#}{(geo.YAuto ? "（自动）" : "")}（立绘像素）· 半透明 = 静态立绘（参照），彩色 = 帧动画（实际位置 / 大小）";
 	}
 
 	/// <summary>最近一次算出来的预览几何（自检 / 读数用）。</summary>
@@ -9792,6 +9794,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	/// <summary>预览用的静态立绘（半透明底图）。</summary>
 	private BitmapSource? _animPreviewStatic;
+
+	/// <summary>overlay 里那张「帧图」元素（V0.2.348：动画 tick 只换它的 Source，别的都不碰）。</summary>
+	private Image? _animPreviewFrameImage;
 
 	/// <summary>静态立绘缓存是按路径来的：换存档 / 换图要重读。</summary>
 	private string? _animPreviewStaticPath;
@@ -9898,7 +9903,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		if (_animPreviewFrames.Count == 0) return;
 		_animPreviewIndex = (_animPreviewIndex + 1) % _animPreviewFrames.Count;
-		AnimPreviewImage.Source = _animPreviewFrames[_animPreviewIndex];
+		// V0.2.348：只换 overlay 里那张**帧图**（V0.2.347 起预览改由 overlay 自己画「立绘 + 帧图」）。
+		// ⚠ 以前这里写的是 `AnimPreviewImage.Source = 下一帧` —— 那张旧单图是**整幅动图**，
+		//   而 overlay 里已经有「半透明静态立绘」和「按裁剪框缩放的帧图」了，于是每播一帧就多冒出一个
+		//   大小不同的重影（用户实测：预览里出现 3 个大小不一的角色）。
+		if (_animPreviewFrameImage is not null && _animPreviewGeo is not null)
+			_animPreviewFrameImage.Source = CurrentAnimPreviewFrame(_animPreviewGeo);
 		StartAnimPreviewTimer();
 	}
 
@@ -39189,6 +39199,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							&& Math.Abs(geo2.FrameW - 112) < 1e-6 && Math.Abs(geo2.FrameH - 232) < 1e-6,
 							geo2 is null ? "(null)" : $"缩放 {geo2.PlanScale} / 中心 ({geo2.FrameCx:0.#},{geo2.FrameCy:0.#}) / 尺寸 {geo2.FrameW:0.#}×{geo2.FrameH:0.#}");
 					}
+				}				// ----- V0.2.348：预览里的「三个重影」修掉（旧单图每播一帧就把整幅动图又画一遍）-----
+				{
+					RefreshAnimPreviewLayout();
+					UpdateLayout();
+					Check("V0.2.348：预览不再用旧的单图（它每播一帧就把**整幅动图**又画一遍 → 用户看到 3 个大小不一的角色）",
+						AnimPreviewImage.Source is null && AnimPreviewImage.Visibility == Visibility.Collapsed,
+						$"Source={(AnimPreviewImage.Source is null ? "null" : "有图")} / Visibility={AnimPreviewImage.Visibility}");
+					Check("V0.2.348：预览画布上最多只有一个「彩色帧图」（其余是半透明立绘 + 辅助线）",
+						AnimPreviewOverlay.Children.OfType<Image>().Count(img => img.Opacity >= 0.99) <= 1,
+						AnimPreviewOverlay.Children.OfType<Image>().Count() + " 张图片，其中不透明的 "
+						+ AnimPreviewOverlay.Children.OfType<Image>().Count(img => img.Opacity >= 0.99) + " 张");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
