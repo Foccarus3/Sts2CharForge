@@ -1977,7 +1977,44 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (all.Any(e => e.Kind == "CardReward"))
             list.Add("MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.Static(MegaCrit.Sts2.Core.HoverTips.StaticHoverTip.CardReward)");
 
+        // ===== V0.2.344（用户要求「卡牌引用」：像悬停「刀刃之舞」旁边出现小刀的卡面那样）=====
+        // 这条效果**提到了哪一张具体的卡**，就把它挂成一个悬停卡面 —— 本体自己就是这么做的
+        // （BladeDance.cs：`ExtraHoverTips => [HoverTipFactory.FromCard<Shiv>()]`，弹出来的是 CardHoverTip = 小卡面）。
+        // 只认「明确的那一张」：留空时只有「生成端本来就写死小刀」的那三档才弹（生成卡牌 / 加进牌组 / 填满手牌），
+        // 「变化」类留空 = 随机卡，不能瞎猜成小刀。数量不设上限（用户明确要求），重复的靠最后那句 Distinct 去重。
+        foreach (var e in all)
+        {
+            string? mentioned = MentionedCardClass(e);
+            if (mentioned is null) continue;
+            string type = CardTypeExpr(owner, mentioned);
+            bool upgradedCard = e.SpawnUpgraded || e.SpawnUpgradedThisTurn;
+            list.Add($"MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromCard<{type}>({(upgradedCard ? "true" : "")})");
+        }
+
         return list.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// V0.2.344：这条效果会不会「明确提到某一张具体卡牌」（给悬停卡面提示用）。
+    /// 返回卡类名（<b>空串 = 生成端默认的小刀 Shiv</b>）；<c>null</c> = 这条效果没有「某一张具体的卡」。
+    ///
+    /// <para>判据跟着**生成端**走，不是跟着界面文案走：</para>
+    /// <list type="bullet">
+    ///   <item>生成卡牌 / 加进牌组 / 填满手牌：留空时生成端写死 <c>Shiv</c>（见 <see cref="EmitFillHand"/> +
+    ///     <see cref="CardTypeExpr"/> 的默认值）→ 空串也算「提到了小刀」；</item>
+    ///   <item>变化 / 全局变化：留空 = <c>TransformToRandom</c>（随机卡）→ 不弹；</item>
+    ///   <item>强化指定卡：必须点名，留空不弹。</item>
+    /// </list>
+    /// </summary>
+    internal static string? MentionedCardClass(EffectSpec e)
+    {
+        string id = (e.SpawnCardId ?? "").Trim();
+        return e.Kind switch
+        {
+            "GenerateCard" or "AddCardGlobal" or "FillHand" => id,        // 空串 = 小刀
+            "TransformCard" or "TransformCardGlobal" or "BoostCard" => id.Length > 0 ? id : null,
+            _ => null,
+        };
     }
 
     /// <summary>生成 ExtraHoverTips 覆写（没用到状态就返回空字符串）。isPublic = 药水（基类是 public）。</summary>

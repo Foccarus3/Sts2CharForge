@@ -26688,6 +26688,63 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Effects = { new EffectSpec { Kind = "CardReward", Amount = 3m, TargetSide = "Self" } },
 			}, 1).Contains("StaticHoverTip.CardReward"), "卡牌奖励提示在");
 
+		// ---- V0.2.344：卡牌引用（用户要求「像悬停刀刃之舞旁边出现小刀的卡面那样」）----
+		{
+			// 「生成卡牌」留空 = 生成端写死的小刀 → 弹小刀卡面（正好等于本体 BladeDance 的那一行）
+			Check("「生成卡牌」留空 → 悬停弹小刀的卡面（FromCard<Shiv>()，和本体刀刃之舞同一写法）",
+				CSharpCodeGen.CardSource(hoverProbe, new CardSpec
+				{
+					Name = "自检引用小刀", ClassName = "UiCheckRefShiv", Rarity = "Common", InCardPool = true,
+					Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 3m, TargetSide = "Self" } },
+				}, 5).Contains("HoverTipFactory.FromCard<MegaCrit.Sts2.Core.Models.Cards.Shiv>()"), "小刀卡面");
+			// 点名自己的卡 → 用短类名
+			var refCard = new CardSpec
+			{
+				Name = "自检引用目标", ClassName = "UiCheckRefTarget", Rarity = "Common", InCardPool = true,
+				Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiCheckRefTarget" } },
+			};
+			hoverProbe.Cards.Add(refCard);   // 先登记进存档，CardTypeExpr 才会用短类名（自己的卡）
+			string refSrc = CSharpCodeGen.CardSource(hoverProbe, refCard, hoverProbe.Cards.Count - 1);
+			Check("点名自己做的卡 → 悬停弹那张卡的卡面（自己的卡写短类名）",
+				refSrc.Contains("HoverTipFactory.FromCard<UiCheckRefTarget>()"), "自己的卡");
+			Check("勾了「生成的是升级过的」→ 卡面也按升级后显示（FromCard<X>(true)）",
+				CSharpCodeGen.CardSource(hoverProbe, new CardSpec
+				{
+					Name = "自检引用升级", ClassName = "UiCheckRefUp", Rarity = "Common", InCardPool = true,
+					Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiCheckRefTarget", SpawnUpgraded = true } },
+				}, 7).Contains("HoverTipFactory.FromCard<UiCheckRefTarget>(true)"), "升级后卡面");
+			Check("点名本体卡 → 用全名（本体那张 Void 会和 System.Void 撞，必须写全名）",
+				CSharpCodeGen.CardSource(hoverProbe, new CardSpec
+				{
+					Name = "自检引用本体卡", ClassName = "UiCheckRefVanilla", Rarity = "Common", InCardPool = true,
+					Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "Shiv" } },
+				}, 8).Contains("HoverTipFactory.FromCard<MegaCrit.Sts2.Core.Models.Cards.Shiv>()"), "全名");
+			// 「变化卡牌」留空 = 随机卡 → 不能瞎猜成小刀
+			Check("（反向）「变化卡牌」留空 = 随机卡 → 不弹任何卡面（不瞎猜）",
+				!CSharpCodeGen.CardSource(hoverProbe, new CardSpec
+				{
+					Name = "自检引用随机变化", ClassName = "UiCheckRefRandom", Rarity = "Common", InCardPool = true,
+					Effects = { new EffectSpec { Kind = "TransformCard", Amount = 1m, TargetSide = "Self" } },
+				}, 9).Contains("FromCard<"), "没瞎猜");
+			Check("同一张卡被两条效果提到只弹一次（去重）",
+				CSharpCodeGen.CardSource(hoverProbe, new CardSpec
+				{
+					Name = "自检引用去重", ClassName = "UiCheckRefDup", Rarity = "Common", InCardPool = true,
+					Effects =
+					{
+						new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiCheckRefTarget" },
+						new EffectSpec { Kind = "FillHand", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiCheckRefTarget" },
+					},
+				}, 10) is var dupSrc && dupSrc.Split("HoverTipFactory.FromCard<UiCheckRefTarget>()").Length - 1 == 1, "只有一条");
+			// 遗物链同样吃这套（遗物「生成卡牌」也要能弹卡面）
+			Check("遗物「生成卡牌」也会弹那张卡的卡面（遗物链走同一个 HoverTipsOf）",
+				CSharpCodeGen.RelicSource(hoverProbe, new RelicSpec
+				{
+					Name = "自检引用遗物", ClassName = "UiCheckRefRelic", Trigger = "CombatStart",
+					Effects = { new EffectSpec { Kind = "GenerateCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiCheckRefTarget" } },
+				}, 2).Contains("HoverTipFactory.FromCard<UiCheckRefTarget>()"), "遗物也弹");
+		}
+
 		// ---- 「获得能量 / 获得金币」填负数 = 扣除（本体的 GainEnergy / GainGold 对非正数直接 return）----
 		{
 			Check("「获得能量 / 获得金币」允许填负数（负数 = 失去 / 扣除）",
