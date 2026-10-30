@@ -41533,6 +41533,71 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				cntSkillSrc.Contains("(cardPlay.Card.Type == CardType.Skill ? 1 : 0)"), "筛选同步");
 		}
 
+		// ===== V0.2.342：状态互相触发成环 → 打出的牌停在出牌位浮空（用户报「破解这张牌在游戏中会浮在空中」）=====
+		// 已核对：牌自己的代码没问题（没有 cardPlay.Target，不是 V0.2.217/243 那个洞）；浮空的机制是
+		// 本体 CardModel.Play「等 OnPlay 返回 → 才把牌放进结果堆」，所以 OnPlay 里那条触发链没跑完（或抛异常）就会悬着。
+		// 破解一次给**所有敌人**上骇入，把每个敌人身上的「给予骇入时」状态各触发一遍，其中还会造成伤害 → 又能给骇入。
+		{
+			// ① 校验器：会**加**层数的环要提示
+			var cycProf = ProfileFactory.Sample();
+			var cycA = new CustomPowerSpec { Name = "自检环A", ClassName = "UiCheckCycleA", Enabled = true };
+			var cycB = new CustomPowerSpec { Name = "自检环B", ClassName = "UiCheckCycleB", Enabled = true };
+			cycA.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "PowerChanged", PowerId = "UiCheckCycleB",
+				Effects = { new EffectSpec { Kind = "ApplyPower", Amount = 1m, PowerId = "UiCheckCycleB", TargetSide = "Self" } },
+			});
+			cycB.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "PowerChanged", PowerId = "UiCheckCycleA",
+				Effects = { new EffectSpec { Kind = "ApplyPower", Amount = 1m, PowerId = "UiCheckCycleA", TargetSide = "Self" } },
+			});
+			cycProf.CustomPowers.Add(cycA);
+			cycProf.CustomPowers.Add(cycB);
+			var cycIssues = ProfileValidator.Validate(cycProf).Where(i => i.Message.Contains("互相触发")).ToList();
+			Check("V0.2.342：校验器能认出「状态互相触发成环」并说清后果（牌停在出牌位浮空 / 回合卡住）",
+				cycIssues.Count > 0 && cycIssues.Any(i => i.Message.Contains("自检环A") && i.Message.Contains("自检环B")),
+				cycIssues.FirstOrDefault()?.Message ?? "(没报)");
+			// ② 只扣层数的（回合结束「层数减半」= 拿 -B/2 给自己叠）不能误报成环
+			var decayProf = ProfileFactory.Sample();
+			var decayPow = new CustomPowerSpec { Name = "自检衰减", ClassName = "UiCheckDecaySelf", Enabled = true };
+			decayPow.Triggers.Add(new PowerTriggerSpec
+			{
+				Kind = "EnemyTurnEnd",
+				Effects = { new EffectSpec { Kind = "ApplyPower", Amount = 0m, AmountFormula = "-B/2", PowerId = "UiCheckDecaySelf", TargetSide = "Self" } },
+			});
+			decayProf.CustomPowers.Add(decayPow);
+			Check("V0.2.342：（反向）「回合结束层数减半」这种给自己叠负数的写法不算环（不误报）",
+				!ProfileValidator.Validate(decayProf).Any(i => i.Message.Contains("互相触发") || i.Message.Contains("又给它自己叠层数")),
+				"没误报");
+			// ③ 生成端：有自定义状态就生成 12 层深度闸门（兜住「伤害 → 给状态 → 又伤害」这类环）
+			string rgSrc = RecursionGuardGen.Source(cycProf);
+			Check("V0.2.342：递归保护源码写对了（HarmonyPatch Hook.AfterPowerAmountChanged + 12 层 + 线程静态深度）",
+				rgSrc.Contains("Hook.AfterPowerAmountChanged") && rgSrc.Contains("Limit = 12")
+				&& rgSrc.Contains("[System.ThreadStatic]") && rgSrc.Contains("return false;") && rgSrc.Contains("__result = AwaitAndRelease(__result);"),
+				$"{rgSrc.Length} 字符");
+			var noPowProf = ProfileFactory.Sample();
+			foreach (var cp in noPowProf.CustomPowers) cp.Enabled = false;
+			Check("V0.2.342：自定义状态全部禁用时不生成递归保护（老工程一个文件都不多）",
+				!RecursionGuardGen.Needed(noPowProf), "不生成");
+			// ④ 真的生成一次工程，确认文件写进去了
+			string rgRoot = Path.Combine(Path.GetTempPath(), "forge_uicheck_recguard_" + Guid.NewGuid().ToString("N").Substring(0, 8));
+			try
+			{
+				cycProf.Paths.OutputDir = rgRoot;
+				cycProf.Paths.VanillaProject = Profile.Paths.VanillaProject;
+				cycProf.Paths.GameDataDir = Profile.Paths.GameDataDir;
+				var rgGen = ModGenerator.Generate(cycProf);
+				string rgFile = Path.Combine(rgGen.ProjectRoot, "cs", RecursionGuardGen.FileName);
+				Check("V0.2.342：生成工程里真的带着 cs/ForgeRecursionGuard.cs",
+					File.Exists(rgFile) && File.ReadAllText(rgFile).Contains("ForgeRecursionGuardPatch"), "写进去了");
+			}
+			finally
+			{
+				try { Directory.Delete(rgRoot, true); } catch { }
+			}
+		}
+
 		Close();
 		// 自检结束：把存档目录还原回真实值（并把临时目录删掉），
 		// 免得自检产生的临时存档留在真实存档目录里、或者后面还有代码用到它。

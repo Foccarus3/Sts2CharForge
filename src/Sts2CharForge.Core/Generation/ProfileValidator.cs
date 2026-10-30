@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -125,6 +125,9 @@ public static class ProfileValidator
         // 自定义状态的**层数不会自动乘到效果上** —— 必须勾「数值 = 本状态的层数」或「生效次数 = 本状态的层数」。
         // 当某处会按 ≥2 层（或升级后变多）给它叠层、而它的效果完全没用层数时，给一条提示说清。
         ValidatePowerLayerUsage(issues, p);
+        // V0.2.342（用户报「破解这张牌在游戏中会浮在空中」）：状态之间**互相触发成环**时，
+        // 打出那张牌的 OnPlay 永远返回不了 → 牌停在出牌位浮空、回合卡住。这里在生成前就提示。
+        ValidateTriggerCycles(issues, p);
 
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
@@ -2389,6 +2392,100 @@ public static class ProfileValidator
     /// 没有触发时机或效果、用的是锻造节点图（图上那份「数值 = 层数」由模块自己管）、
     /// 或者全份配置里只按 1 层（升级也不加层）施加它。</para>
     /// </summary>
+    /// <summary>
+    /// V0.2.342：状态之间**互相触发成环**（A 的触发效果给 B 叠层数、B 的触发效果又给 A）。
+    ///
+    /// <para>为什么必须提示：本体「状态层数变化」是一整条同步 await 链，环会让打出那张牌的
+    /// <c>OnPlay</c> 永远返回不了 —— 而本体 <c>CardModel.Play</c> 是「等 OnPlay 返回才把牌放进结果堆」，
+    /// 所以玩家看到的就是**打出的牌停在出牌位浮空、回合卡住**（用户报「破解这张牌在游戏中会浮在空中」：
+    /// 破解一次给所有敌人上「骇入」，把每个敌人身上那些「给予骇入时」的状态各触发一遍，其中有的会再给骇入）。</para>
+    ///
+    /// <para>V0.2.342 起生成端给 <c>Hook.AfterPowerAmountChanged</c> 加了 12 层深度闸门兜底，
+    /// 但真正该改的是配置：去掉环上的一条边，或者给其中一边加条件。</para>
+    /// </summary>
+    private static void ValidateTriggerCycles(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        var enabled = p.CustomPowers.Where(x => x is not null && x.Enabled && !string.IsNullOrWhiteSpace(x.ClassName)).ToList();
+        if (enabled.Count == 0) return;
+        var byClass = new Dictionary<string, CustomPowerSpec>(StringComparer.Ordinal);
+        foreach (var cp in enabled) byClass[cp.ClassName.Trim()] = cp;
+
+        // 边 A → B：A 的某条触发效果会给 B（自定义状态）叠层数
+        var edges = new Dictionary<string, List<(string To, string When)>>(StringComparer.Ordinal);
+        foreach (var cp in enabled)
+        {
+            string from = cp.ClassName.Trim();
+            foreach (var t in cp.Triggers.Where(x => x is not null))
+                foreach (var e in t.Effects.Where(x => x is not null))
+                {
+                    if (e.Kind is not ("ApplyPower" or "TempPower")) continue;
+                    string to = (e.PowerId ?? "").Trim();
+                    if (to.Length == 0 || !byClass.ContainsKey(to)) continue;
+                    // ⚠ 只算「会**加**层数」的那一边：回合结束「层数减半 / 衰减」是拿负数给自己叠（`-B/2`），
+                    // 那是正常的递减、每一轮都在变小，永远不会成环。以前不判方向，正常配置会被误报成环。
+                    if (!CouldAddLayers(e)) continue;
+                    if (!edges.TryGetValue(from, out var list)) edges[from] = list = new();
+                    string when = PowerTriggers.All.FirstOrDefault(x => string.Equals(x.Kind, t.Kind, StringComparison.Ordinal))?.Display
+                                  ?? t.Kind;
+                    if (!list.Any(x => x.To == to)) list.Add((to, when));
+                }
+        }
+        if (edges.Count == 0) return;
+
+        // 找环：对每条边 A→B 看 B 能不能走回 A（深度上限 = 状态数，绝不无限递归）
+        var reported = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (from, list) in edges)
+        {
+            foreach (var (to, when) in list)
+            {
+                if (!Reaches(edges, to, from, enabled.Count + 1)) continue;
+                string key = string.CompareOrdinal(from, to) <= 0 ? from + "\u001f" + to : to + "\u001f" + from;
+                if (!reported.Add(key)) continue;
+                string fromName = byClass.TryGetValue(from, out var a) ? $"「{a.Name}」" : from;
+                string toName = byClass.TryGetValue(to, out var b) ? $"「{b.Name}」" : to;
+                if (string.Equals(from, to, StringComparison.Ordinal))
+                {
+                    issues.Add(new("警告", $"自定义状态{fromName}的「{when}」里又给它自己叠层数 —— "
+                        + "每次叠层都会再触发一次自己，战斗里会无限连锁：打出那张牌会**停在出牌位浮空、回合卡住**。"
+                        + "V0.2.342 起运行时会在 12 层截断兜底，但建议给这一条加个条件，或者改成别的效果。"));
+                }
+                else
+                {
+                    issues.Add(new("警告", $"自定义状态{fromName}和{toName}会**互相触发**"
+                        + $"（{fromName}的「{when}」给{toName}叠层数，{toName}的触发里又给{fromName}叠层数）—— "
+                        + "战斗里会无限连锁：打出相关的那张牌会**停在出牌位浮空、回合卡住**。"
+                        + "V0.2.342 起运行时会在 12 层截断兜底，但建议去掉环上的一条边，或给其中一边加条件。"));
+                }
+            }
+        }
+    }
+
+    /// <summary>这条「施加状态」效果会不会**加**层数（负数 / 以负号开头的公式 = 扣层数，不算环）。</summary>
+    private static bool CouldAddLayers(EffectSpec e)
+    {
+        string f = ForgeFormula.DisplayText(e.AmountFormula).Trim();
+        if (f.Length > 0) return !f.StartsWith("-", StringComparison.Ordinal);
+        return e.Amount > 0m;
+    }
+
+    /// <summary>图里从 <paramref name="from"/> 出发能不能走到 <paramref name="target"/>（深度上限兜底，绝不无限递归）。</summary>
+    private static bool Reaches(Dictionary<string, List<(string To, string When)>> edges, string from, string target, int maxHops)
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<(string Node, int Hops)>();
+        queue.Enqueue((from, 0));
+        while (queue.Count > 0)
+        {
+            var (node, hops) = queue.Dequeue();
+            if (hops > maxHops) continue;
+            if (string.Equals(node, target, StringComparison.Ordinal)) return true;
+            if (!seen.Add(node)) continue;
+            if (!edges.TryGetValue(node, out var next)) continue;
+            foreach (var (to, _) in next) queue.Enqueue((to, hops + 1));
+        }
+        return false;
+    }
+
     private static void ValidatePowerLayerUsage(List<ValidationIssue> issues, CharacterProfile p)
     {
         // 全份配置里所有「施加状态」的地方（卡牌 / 遗物 / 药水 / 其它状态的效果）

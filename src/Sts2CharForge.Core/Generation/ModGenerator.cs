@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -358,6 +358,14 @@ public static class ModGenerator
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "PowerRemoval.cs"), CSharpCodeGen.PowerRemovalSource(profile));
             Log("  已生成「某个状态被移除时」的通知补丁（本体没有全局的「状态被移除」钩子）");
+        }
+
+        // V0.2.342：状态互相触发成环时，别让打出那张牌的 OnPlay 永远返回（现象 = 牌停在出牌位浮空、回合卡住）。
+        // 只在有启用自定义状态时生成一个 12 层深度闸门，业务代码一个字都不动。
+        if (RecursionGuardGen.Needed(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, RecursionGuardGen.FileName), RecursionGuardGen.Source(profile));
+            Log($"  已生成触发链递归保护：cs/{RecursionGuardGen.FileName}（状态层数变化嵌套超过 {RecursionGuardGen.Limit} 层就跳过这一次）");
         }
 
         // 「数值公式」的卡面现算变量（用户要求：卡面要看到算出来的数字，不是「M/2」这种公式文本）
