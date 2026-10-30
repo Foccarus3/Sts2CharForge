@@ -9615,6 +9615,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		var anim = _profile.Animation;
 		double scale = anim.Scale > 0 ? anim.Scale : 1;   // 0 = 自动，预览里按 1 显示
+		// V0.2.345：这行读数**不依赖动图**（还没上传素材时也能看到自己填的偏移对不对），所以放在最前面更新。
+		if (AnimOffsetReadout is not null) AnimOffsetReadout.Text = OffsetReadoutText(anim);
 		AnimPreviewOverlay.Children.Clear();
 		AnimPreviewImage.Source = _animPreviewFrames.Count > 0
 			? _animPreviewFrames[Math.Clamp(_animPreviewIndex, 0, _animPreviewFrames.Count - 1)] : null;
@@ -9670,6 +9672,74 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		string spd = anim.SpeedScale > 0 ? anim.SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) : "1";
 		AnimPreviewHint.Text = $"{_animPreviewFrames.Count} 帧 · 速度 {spd}× · 缩放 {scale:0.##} · X {anim.XOffset:0.#} · Y {anim.YOffset:0.#}"
 			+ $"（蓝点/十字 = 血条中心；缩放 1 = 原尺寸，0 = 自动）";
+
+		// ===== V0.2.345（用户要求「偏移应该实时显示相对瞄点的偏移位置」）=====
+		// 瞄点 = 血条中心 (cx, barY)；动画锚点 = 瞄点 + (X 偏移, Y 偏移)。
+		// 这里把「从瞄点走到锚点」画成一条直角虚线 + 两个端点标记 + 两段数字，再把同一组数字写到预览下面那行常驻文字里。
+		double ax = cx + anim.XOffset;          // 动画锚点（X）
+		double ay = barY + anim.YOffset;        // 动画锚点（Y）
+		var vecDash = new System.Windows.Media.DoubleCollection(new double[] { 2, 4 });
+		double vecThick = Math.Max(1, artH * 0.005);
+		if (Math.Abs(anim.XOffset) > 0.01)
+		{
+			AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
+			{
+				X1 = cx, Y1 = ay, X2 = ax, Y2 = ay,
+				Stroke = Brushes.OrangeRed, StrokeThickness = vecThick, StrokeDashArray = vecDash, Opacity = 0.9,
+			});
+			AnimPreviewOverlay.Children.Add(OffsetLabel(anim.XOffset >= 0 ? $"+{anim.XOffset:0.##}" : $"{anim.XOffset:0.##}",
+				(cx + ax) / 2, ay, artH, Brushes.OrangeRed, above: true));
+		}
+		if (Math.Abs(anim.YOffset) > 0.01)
+		{
+			AnimPreviewOverlay.Children.Add(new System.Windows.Shapes.Line
+			{
+				X1 = ax, Y1 = barY, X2 = ax, Y2 = ay,
+				Stroke = Brushes.OrangeRed, StrokeThickness = vecThick, StrokeDashArray = vecDash, Opacity = 0.9,
+			});
+			AnimPreviewOverlay.Children.Add(OffsetLabel(anim.YOffset >= 0 ? $"+{anim.YOffset:0.##}" : $"{anim.YOffset:0.##}",
+				ax, (barY + ay) / 2, artH, Brushes.OrangeRed, above: false));
+		}
+		// 锚点本身：灰色空心小圈（瞄点是蓝的，一眼能分开）
+		double ar = Math.Max(2.0, artH * 0.010);
+		var anchorRing = new System.Windows.Shapes.Ellipse
+		{
+			Width = ar * 2, Height = ar * 2, Stroke = Brushes.OrangeRed, StrokeThickness = Math.Max(1, ar * 0.6), Fill = Brushes.Transparent,
+		};
+		Canvas.SetLeft(anchorRing, ax - ar);
+		Canvas.SetTop(anchorRing, ay - ar);
+		AnimPreviewOverlay.Children.Add(anchorRing);
+
+		// 常驻读数（不依赖动图）由方法开头那句统一更新，见 OffsetReadoutText
+	}
+
+	/// <summary>
+	/// 「相对瞄点」的偏移读数（V0.2.345，用户要求「偏移应该实时显示相对瞄点的偏移位置」）。
+	/// 瞄点 = 本体血条中心；这里说的是**动画内容的锚点**相对它偏了多少：X 正数往右、Y 正数往下。
+	/// Y 填 0 是「自动」那一档（脚落在静态立绘底边），所以 0 要单独说明，不能只写 0。
+	/// </summary>
+	internal static string OffsetReadoutText(AnimationSpec anim)
+	{
+		string x = Math.Abs(anim.XOffset) < 0.005 ? "0（水平居中）"
+			: $"{anim.XOffset.ToString("+0.##;-0.##;0", System.Globalization.CultureInfo.InvariantCulture)} px（{(anim.XOffset > 0 ? "向右" : "向左")}）";
+		string y = Math.Abs(anim.YOffset) < 0.005 ? "0 = 自动（脚落在静态立绘底边）"
+			: $"{anim.YOffset.ToString("+0.##;-0.##;0", System.Globalization.CultureInfo.InvariantCulture)} px（{(anim.YOffset > 0 ? "向下" : "向上")}）";
+		return $"相对瞄点：X {x} · Y {y}   —— 蓝点 = 瞄点（血条中心），红圈 = 动画锚点";
+	}
+
+	/// <summary>预览画布上的一个小数字标签（画在画布的 Canvas 上，跟着缩放走）。</summary>
+	private static TextBlock OffsetLabel(string text, double x, double y, double artH, Brush brush, bool above)
+	{
+		var tb = new TextBlock
+		{
+			Text = text,
+			FontSize = Math.Max(9.0, artH * 0.035),
+			FontWeight = FontWeights.Bold,
+			Foreground = brush,
+		};
+		Canvas.SetLeft(tb, x + Math.Max(2.0, artH * 0.01));
+		Canvas.SetTop(tb, y + (above ? -Math.Max(10.0, artH * 0.05) : 0));
+		return tb;
 	}
 
 
@@ -9728,6 +9798,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		// 设置变了，上一份「预览动画计划」就过期了：清掉，别让用户拿着旧数字去调
 		AnimPlanText = "（设置改过了，点「预览动画计划」重新算一遍）";
 		Raise(nameof(AnimPlanText));
+		// V0.2.345（用户要求「偏移应该实时显示相对瞄点的偏移位置」）：改了缩放 / X / Y / 速度 → 预览立刻跟着变。
+		// 以前这里只刷新上面那行诊断文字，**预览一点反应都没有** —— 用户会以为「填了没生效」。
+		try
+		{
+			if (AnimPreviewOverlay is not null)
+			{
+				RefreshAnimPreviewLayout();
+				if (string.Equals(e.PropertyName, nameof(AnimationSpec.SpeedScale), StringComparison.Ordinal))
+					StartAnimPreviewTimer();
+			}
+		}
+		catch
+		{
+			// 预览只是辅助显示，出问题不能把编辑搞崩
+		}
 	}
 
 	/// <summary>磁盘上（当前存档 JSON）到底有没有动画素材。读不到就当没有（这条路只是给提示用的）。</summary>
@@ -38833,7 +38918,49 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					!VisibleTextsIn(animRoot).Any((string t) => t.Contains("按首帧自动对齐")),
 					"没这一行");
 
-				// ---------- ④ AnimationSpec 的派生属性 ----------
+				// ----- V0.2.345：四项能填小数 + 预览下面那行「相对瞄点」的实时读数 -----
+				{
+					var numSpec = new AnimationSpec();
+					numSpec.ScaleText = "0.85";
+					numSpec.XOffsetText = "-12.5";
+					numSpec.YOffsetText = "3.25";
+					numSpec.SpeedScaleText = "1.75";
+					Check("V0.2.345：动画四项能填小数（0.85 / -12.5 / 3.25 / 1.75 都写进去了）",
+						Math.Abs(numSpec.Scale - 0.85) < 1e-9 && Math.Abs(numSpec.XOffset + 12.5) < 1e-9
+						&& Math.Abs(numSpec.YOffset - 3.25) < 1e-9 && Math.Abs(numSpec.SpeedScale - 1.75) < 1e-9,
+						$"缩放 {numSpec.Scale} / X {numSpec.XOffset} / Y {numSpec.YOffset} / 速度 {numSpec.SpeedScale}");
+					var commaSpec = new AnimationSpec();
+					commaSpec.ScaleText = "0,85";   // 系统把小数点设成逗号的人也能填
+					Check("V0.2.345：小数点写成逗号也认（0,85 → 0.85）", Math.Abs(commaSpec.Scale - 0.85) < 1e-9, commaSpec.Scale.ToString());
+					var keepSpec = new AnimationSpec { Scale = 1.5, XOffset = 7 };
+					keepSpec.ScaleText = "abc";     // 乱写：不写回、保持原值
+					keepSpec.XOffsetText = "";      // 清空：同样保持原值
+					Check("V0.2.345：乱写 / 清空不会把数值改坏（保持上一次的合法值）",
+						Math.Abs(keepSpec.Scale - 1.5) < 1e-9 && Math.Abs(keepSpec.XOffset - 7) < 1e-9, $"缩放 {keepSpec.Scale} / X {keepSpec.XOffset}");
+					Check("V0.2.345：四个框绑的是文本属性（ScaleText / XOffsetText / YOffsetText / SpeedScaleText），不是 double 本体",
+						HasBoxBoundTo(animRoot, "ScaleText") && HasBoxBoundTo(animRoot, "XOffsetText")
+						&& HasBoxBoundTo(animRoot, "YOffsetText") && HasBoxBoundTo(animRoot, "SpeedScaleText")
+						&& !HasBoxBoundTo(animRoot, "Scale") && !HasBoxBoundTo(animRoot, "SpeedScale"), "绑对了");
+					var rtProfile = ProfileFactory.Sample();
+					rtProfile.Animation.Scale = 0.85;
+					rtProfile.Animation.XOffset = -12.5;
+					string rtJson = JsonSerializer.Serialize(rtProfile, ProfileFactory.JsonOpts);
+					var rtBack = JsonSerializer.Deserialize<CharacterProfile>(rtJson, ProfileFactory.JsonOpts)!;
+					Check("V0.2.345：小数存进存档、读回来还是小数（0.85 / -12.5）",
+						Math.Abs(rtBack.Animation.Scale - 0.85) < 1e-9 && Math.Abs(rtBack.Animation.XOffset + 12.5) < 1e-9,
+						$"缩放 {rtBack.Animation.Scale} / X {rtBack.Animation.XOffset}");
+					string readText = OffsetReadoutText(new AnimationSpec { XOffset = 12.5, YOffset = -30 });
+					Check("V0.2.345：预览下面那行显示「相对瞄点」的读数（正负号 + 方向：X 往右 / Y 往上）",
+						readText.Contains("X +12.5 px（向右）") && readText.Contains("Y -30 px（向上）"), readText);
+					Check("V0.2.345：Y 填 0 时写清「0 = 自动」（不然用户以为偏 0 像素就是没对齐）",
+						OffsetReadoutText(new AnimationSpec()).Contains("Y 0 = 自动")
+						&& OffsetReadoutText(new AnimationSpec()).Contains("X 0（水平居中）"), OffsetReadoutText(new AnimationSpec()));
+					// 「实时」这条要钉住：改一下数值 → 预览那行立刻变（以前 OnAnimSettingChanged 只刷新诊断文字，预览完全不刷新）
+					Profile.Animation.XOffset = 20.5;
+					Check("V0.2.345：改一下 X 偏移 → 预览那行读数**立刻**跟着变（以前预览根本不动）",
+						(AnimOffsetReadout?.Text ?? "").Contains("X +20.5 px（向右）"), AnimOffsetReadout?.Text ?? "(空)");
+					Profile.Animation.XOffset = 0;
+				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
 					Idle = "i.gif", Attack = "a.gif", Cast = "c.gif", Hurt = "h.gif",

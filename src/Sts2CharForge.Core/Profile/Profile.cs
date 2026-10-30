@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -6631,6 +6631,51 @@ public sealed class AnimationSpec : SpecBase
     /// 注意 0 也是合法的手动值语义里的「自动」；要微调就填非 0。
     /// </summary>
     public double YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
+
+    // ==================== V0.2.345：四个数值框改成「文本 + 解析」（用户报「动画页的缩放等不能填小数」）====================
+    // 为什么不再把 TextBox 直接绑 double：打 "0." 这种中间态会解析失败，WPF 判这次改动无效
+    //（源不更新、部分输入法下光标还会跳回），小数就常常「填不进去」。
+    // 现在照工具里 CardSpec.CostText 的老写法：文本原样收下，**只有解析成功才写回数值**；
+    // 而且 "0.85" 和 "0,85" 都认（系统区域把小数点设成逗号的人也能填）。
+    // null = 还没改动过（界面上显示当前数值）；空串也是合法输入（清空 = 不写回、保持原值）。
+    private string? _scaleText, _xOffsetText, _yOffsetText, _speedScaleText;
+
+    [JsonIgnore] public string ScaleText
+    {
+        get => _scaleText ?? NumText(_scale);
+        set { _scaleText = value; if (TryNum(value, out double v)) Scale = v; }
+    }
+
+    [JsonIgnore] public string XOffsetText
+    {
+        get => _xOffsetText ?? NumText(_xOffset);
+        set { _xOffsetText = value; if (TryNum(value, out double v)) XOffset = v; }
+    }
+
+    [JsonIgnore] public string YOffsetText
+    {
+        get => _yOffsetText ?? NumText(_yOffset);
+        set { _yOffsetText = value; if (TryNum(value, out double v)) YOffset = v; }
+    }
+
+    [JsonIgnore] public string SpeedScaleText
+    {
+        get => _speedScaleText ?? NumText(_speedScale);
+        set { _speedScaleText = value; if (TryNum(value, out double v)) SpeedScale = v; }
+    }
+
+    /// <summary>数值的默认文本（界面初始值用）。4 位小数够用，且不写成一长串。</summary>
+    private static string NumText(double v) => v.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>「0.85」和「0,85」都认；空串 / 乱写 → false（不写回，保持原值）。</summary>
+    private static bool TryNum(string? text, out double value)
+    {
+        value = 0;
+        string s = (text ?? "").Trim().Replace(',', '.');
+        if (s.Length == 0) return false;
+        return double.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out value);
+    }
 
 
     private void SetPath(ref string field, string? value)

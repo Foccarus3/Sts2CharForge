@@ -3255,6 +3255,12 @@
                                         <TextBlock x:Name="AnimPreviewHint" Margin="8,0,0,0" VerticalAlignment="Center"
                                                    FontSize="11" Foreground="#888" Text=""/>
                                     </StackPanel>
+                                    <!-- V0.2.345（用户要求「偏移应该实时显示相对瞄点的偏移位置」）：
+                                         预览下面这一行常驻显示「相对瞄点」的偏移量（改数值立刻变）；
+                                         画布上还会从瞄点拉一条直角虚线到动画的锚点，并在两端标 X / Y。 -->
+                                    <TextBlock x:Name="AnimOffsetReadout" Margin="0,4,0,0" TextWrapping="Wrap"
+                                               FontSize="12" FontWeight="Bold" Foreground="#0A7" Text=""
+                                               ToolTip="瞄点 = 本体血条中心（蓝点 + 十字）。这一行显示动画内容的锚点相对瞄点偏了多少：X 正数往右、Y 正数往下。"/>
                                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                                Text="{Binding FrameNote}"/>
                                 </StackPanel>
@@ -3266,34 +3272,34 @@
                                         Visibility="{Binding Enabled, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
                                         <TextBlock Margin="0,4,0,6" TextWrapping="Wrap" FontSize="11" Foreground="#666"
-                                                   Text="四项直接填数值（改完下面预览立刻跟着变；蓝虚线与红条 = 血条中心，红条宽度跟着缩放变）。"/>
+                                                   Text="四项直接填数值，小数也行（例：缩放 0.85、X 偏移 -12.5）；改完预览立刻跟着变。蓝点 + 十字 = 本体血条中心的瞄点，下面那行绿字显示「相对瞄点偏了多少」。"/>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="缩放（0 = 按静态立绘高度自动算）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding Scale, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding ScaleText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="X 偏移（像素，正数往右；相对血条中心）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding XOffset, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding XOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="Y 偏移（像素；0 = 自动：脚落在静态立绘底边）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffset, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <Grid Margin="0,0,0,4">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Grid.Column="0" Text="播放速度系数（1 = 动图原速，2 = 双倍速）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding SpeedScale, UpdateSourceTrigger=PropertyChanged}"/>
+                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding SpeedScaleText, UpdateSourceTrigger=PropertyChanged}"/>
                                         </Grid>
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                             <Button Content="预览动画计划" Padding="10,4" FontWeight="Bold" Click="OnAnimPlanPreview"
