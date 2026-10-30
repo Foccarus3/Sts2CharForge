@@ -116,6 +116,17 @@ public sealed class PluginPageSpec
     /// </summary>
     public string Tab { get; set; } = "";
 
+    /// <summary>
+    /// 这一页是不是**生成器的新功能页**（V0.2.340）：<c>true</c> = 生成器顶部多一个页签
+    /// （像「角色」「药水」那样的一级页），页签内容就是这一页（表单 / 说明页）。
+    ///
+    /// <para>位置固定在「构建 / 日志」**前面**；和 <see cref="Tab"/> 二选一 ——
+    /// 两个都填时按这个算（「插件」页的详情里会写一行说明）。</para>
+    /// <para>页里的值存哪、按 <see cref="Target"/> / <see cref="Emit"/> 生成文件，和别的页完全一样
+    /// （生成工程时由 <c>PluginGen.WritePages</c> 写进工程，随 mod 编译打包）。</para>
+    /// </summary>
+    public bool NewTab { get; set; }
+
     /// <summary>这张页面上的栏位（空 = 纯说明页）。</summary>
     public List<PluginFieldSpec> Fields { get; set; } = new();
 
@@ -516,4 +527,12 @@ public static class PluginRegistry
         if (want.Length == 0) return Array.Empty<(PluginSpec, PluginPageSpec)>();
         return AllPages.Where(x => string.Equals((x.Page.Tab ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// 声明成「生成器新功能页」的页（V0.2.340，<c>pages[].newTab = true</c>）：每个都会变成 MainTabs 里
+    /// 一个**顶层页签**（挂在「构建 / 日志」前面）。顺序 = 插件加载顺序 + 清单里的页顺序。
+    /// 挂载点在 <c>MainWindow.RebuildPluginTopLevelTabs</c>。
+    /// </summary>
+    public static IEnumerable<(PluginSpec Plugin, PluginPageSpec Page)> NewTabPages =>
+        AllPages.Where(x => x.Page.NewTab);
 }

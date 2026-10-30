@@ -6359,6 +6359,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RefreshPluginList();
 		// V0.2.339：插件声明了 pages[].tab 的页要挂到对应生成器页签上（没声明的插件一个像素都不动）
 		RebuildPluginExtensionPages();
+		// V0.2.340：插件声明了 pages[].newTab 的页 = 生成器顶部多一个功能页
+		RebuildPluginTopLevelTabs();
 	}
 
 	private void RefreshPluginList()
@@ -6538,6 +6540,75 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		&& ReferenceEquals(m.Wrapper.Children[0], m.Original)
 		&& ReferenceEquals(m.Wrapper.Children[1], m.Host);
 
+	// ==================== 插件「新功能页」= 生成器顶层页签（V0.2.340） ====================
+
+	/// <summary>已经在 MainTabs 里加过的插件功能页（重载插件时先整批撤掉再重建）。</summary>
+	private readonly List<TabItem> _pluginTopTabs = new();
+
+	/// <summary>
+	/// 把插件声明的「新功能页」（<c>pages[].newTab = true</c>）铺成生成器的**顶层页签** ——
+	/// 于是「装一个怪物生成器插件，生成器就多一个怪物生成器页」这种扩展在插件里就能做到。
+	///
+	/// <para>位置：固定插在「构建 / 日志」**前面**（用户选的口径 —— 不动现有页的相对顺序，
+	/// 也不会被塞到最末尾让人找不到）。插件重新加载 / 删插件时先整批撤掉再重建；
+	/// 被撤掉的页签如果正好是选中项，就退回第一个页签。</para>
+	///
+	/// <para>页里的内容复用插件「自定义页」那一套（说明页 / 表单页：栏位、预览、保存、生成到当前工程），
+	/// 所以插件不需要、也拿不到编辑器的任何内部数据。</para>
+	/// </summary>
+	private void RebuildPluginTopLevelTabs()
+	{
+		object? selectedBefore = MainTabs.SelectedItem;
+		foreach (TabItem old in _pluginTopTabs) MainTabs.Items.Remove(old);
+		_pluginTopTabs.Clear();
+
+		var pages = PluginRegistry.NewTabPages.ToList();
+		if (pages.Count > 0)
+		{
+			int at = MainTabs.Items.IndexOf(BuildTab);
+			if (at < 0) at = MainTabs.Items.Count;   // 兜底：XAML 里没找到「构建 / 日志」就加在最后
+			var titles = pages.Select(x => PluginPageTitleOf(x.Page)).ToList();
+			foreach (var (pl, page) in pages)
+			{
+				string title = PluginPageTitleOf(page);
+				// 两个插件给了同名页：带上插件名，免得界面上出现两个一模一样的页签
+				if (titles.Count(t => string.Equals(t, title, StringComparison.OrdinalIgnoreCase)) > 1)
+					title += "（" + pl.Name + "）";
+				var tab = new TabItem
+				{
+					Header = title,
+					Content = page.IsForm ? BuildPluginPageForm(pl, page) : BuildPluginPageText(page),
+					ToolTip = $"插件「{pl.Name}」贡献的功能页（{page.Id}）",
+				};
+				MainTabs.Items.Insert(at++, tab);   // 一个个插在「构建 / 日志」前面，顺序 = 清单顺序
+				_pluginTopTabs.Add(tab);
+			}
+		}
+		if (selectedBefore is TabItem sel && MainTabs.Items.Contains(sel)) MainTabs.SelectedItem = sel;
+		else if (MainTabs.SelectedItem is null && MainTabs.Items.Count > 0) MainTabs.SelectedIndex = 0;
+	}
+
+	/// <summary>自检用：现在是哪些插件功能页签（按界面顺序）。</summary>
+	public string PluginTopTabTitlesForCheck => string.Join("/", _pluginTopTabs.Select(t => t.Header?.ToString() ?? ""));
+
+	/// <summary>自检用：插件功能页签的个数。</summary>
+	public int PluginTopTabCountForCheck => _pluginTopTabs.Count;
+
+	/// <summary>自检用：第 i 个插件功能页的内容（没挂就 null —— 用来确认它是表单 / 说明页）。</summary>
+	public object? PluginTopTabContentForCheck(int i) =>
+		i >= 0 && i < _pluginTopTabs.Count ? _pluginTopTabs[i].Content : null;
+
+	/// <summary>自检用：插件功能页签是不是紧贴在「构建 / 日志」前面（位置 + 连续顺序都对）。</summary>
+	public bool PluginTopTabsBeforeBuildForCheck()
+	{
+		if (_pluginTopTabs.Count == 0) return true;
+		int build = MainTabs.Items.IndexOf(BuildTab);
+		if (build < 0) return false;
+		int first = MainTabs.Items.IndexOf(_pluginTopTabs[0]);
+		return first == build - _pluginTopTabs.Count
+			&& _pluginTopTabs.Select((t, i) => MainTabs.Items.IndexOf(t) == first + i).All(ok => ok);
+	}
+
 	// ==================== 插件「自定义页」（V0.2.319） ====================
 
 	/// <summary>第一页（插件信息）那个只读文本框 —— 由代码建出来（XAML 里右边改成 TabControl 了）。</summary>
@@ -6559,9 +6630,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		foreach (var page in p.Pages.Where(x => x is not null))
 		{
-			// V0.2.339：声明了 pages[].tab 的页已经挂在对应生成器页签上了（那里才是它该在的地方）。
-			// 这里不再重复画一份表单 —— 两个控件编辑同一份值，预览会各说各话。
-			if (IsMountedPluginPage(p, page)) continue;
+			// V0.2.339/340：已经挂到生成器页签上、或自己有顶层功能页的页，这里不再重复画一份表单 ——
+			// 两个控件编辑同一份值，预览会各说各话。
+			if (IsShownOutsidePluginPage(p, page)) continue;
 			object content = page.IsForm ? BuildPluginPageForm(p, page) : BuildPluginPageText(page);
 			PluginPageTabs.Items.Add(new TabItem
 			{
@@ -6571,11 +6642,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		}
 	}
 
-	/// <summary>这一页是不是已经挂到某个生成器页签上了（挂载成功的前提：插件本身没问题 + tab 值认得）。</summary>
-	private static bool IsMountedPluginPage(PluginSpec p, PluginPageSpec page)
+	/// <summary>
+	/// 这一页是不是已经在**别处**显示（挂到某个生成器页签 / 自己是顶层功能页），
+	/// 于是「插件」页不用再画一遍。插件本身有问题（⚠）时一律 false —— 那些页得留在「插件」页里能看见。
+	/// </summary>
+	private static bool IsShownOutsidePluginPage(PluginSpec p, PluginPageSpec page)
 	{
+		if (p.Problems.Count > 0) return false;
+		if (page.NewTab) return true;   // V0.2.340：它自己是生成器顶部的一个功能页
 		string tab = (page.Tab ?? "").Trim();
-		return p.Problems.Count == 0 && tab.Length > 0 && PluginRegistry.IsKnownTab(tab);
+		return tab.Length > 0 && PluginRegistry.IsKnownTab(tab);
 	}
 
 	/// <summary>纯说明页（Markdown 原样显示）。</summary>
@@ -6788,15 +6864,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			sb.AppendLine("———— 插件自述 ————");
 			sb.AppendLine(p.Readme.Trim());
 		}
-		// V0.2.339：哪些页挂到生成器页签上了（写错 tab 值的在这里说清楚，不然用户只会觉得「这页不见了」）
-		var withTabList = p.Pages.Where(x => x is not null && (x.Tab ?? "").Trim().Length > 0).ToList();
+		// V0.2.339/340：哪些页挂到生成器页签上 / 自己是生成器功能页（写错 tab 值的在这里说清楚，不然用户只会觉得「这页不见了」）
+		var withTabList = p.Pages.Where(x => x is not null && ((x.Tab ?? "").Trim().Length > 0 || x.NewTab)).ToList();
 		if (withTabList.Count > 0)
 		{
 			sb.AppendLine();
-			sb.AppendLine("声明了「挂到生成器页签」的扩展页：");
+			sb.AppendLine("声明了「挂到生成器页签 / 自己是功能页」的页：");
 			foreach (var page in withTabList)
 			{
 				string tab = (page.Tab ?? "").Trim();
+				if (page.NewTab)
+				{
+					sb.AppendLine($"  · {PluginPageTitleOf(page)} → 生成器顶部多一个「{PluginPageTitleOf(page)}」功能页"
+						+ (tab.Length > 0 ? $"（tab「{tab}」被忽略了：newTab 优先）" : ""));
+					continue;
+				}
 				if (!PluginRegistry.IsKnownTab(tab))
 					sb.AppendLine($"  · {PluginPageTitleOf(page)} → tab「{tab}」不认识（可用：card / relic / potion / power / forge / build），先按「插件」页显示");
 				else
@@ -41301,7 +41383,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& sv2.Content is TextBox;
 					Check("V0.2.339：没声明 fields 的页按 Markdown 显示（ScrollViewer > TextBox）", powerText, powerText ? "说明页" : "形状不对");
 					Check("V0.2.339：写错 tab 值的页不会消失 —— 它留在「插件」页（显示不认识的提示）",
-						tabPl is not null && !IsMountedPluginPage(tabPl, tabPages.First(x => x.Id == "badpage")), "留在插件页");
+						tabPl is not null && !IsShownOutsidePluginPage(tabPl, tabPages.First(x => x.Id == "badpage")), "留在插件页");
 
 					ShowPluginPages(tabPl!);
 					Check("V0.2.339：已经挂去生成器页签的页，不在「插件」页重复画一份（右边只剩「信息」+ 写错那页）",
@@ -41315,6 +41397,76 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& PluginExtKeepsOriginalForCheck("card")
 						&& PluginExtVisibleForCheck("card") == PluginRegistry.ExtensionPagesOf("card").Any(),
 						$"{PluginExtPageCountForCheck("card")} 页 / {PluginExtTitlesForCheck("card")}");
+				}
+
+				// ===== V0.2.340：pages[].newTab —— 插件给生成器加一个**一级功能页**（像「角色」「药水」那样）=====
+				{
+					string featDir = Path.Combine(pluginRoot, "plugins", "uiFeature");
+					string feat2Dir = Path.Combine(pluginRoot, "plugins", "uiFeature2");
+					Directory.CreateDirectory(featDir);
+					Directory.CreateDirectory(feat2Dir);
+					File.WriteAllText(Path.Combine(featDir, "plugin.json"), """
+					{
+					  "id": "uifeature",
+					  "name": "自检功能页插件",
+					  "apiVersion": "1",
+					  "pages": [
+					    {
+					      "id": "monsters", "title": "怪物生成器（自检）", "newTab": true,
+					      "markdown": "插件贡献的一级功能页",
+					      "fields": [ { "key": "MobName", "label": "怪物类名", "type": "text", "default": "MyMob" } ],
+					      "target": "cs/Plugins/{id}/Mobs/{MobName}.cs",
+					      "emit": "public static class {MobName} { }"
+					    },
+					    { "id": "dup", "title": "重名页（自检）", "newTab": true, "markdown": "和另一个插件同名" }
+					  ]
+					}
+					""", new UTF8Encoding(false));
+					File.WriteAllText(Path.Combine(feat2Dir, "plugin.json"), """
+					{
+					  "id": "uifeature2",
+					  "name": "第二个功能页插件",
+					  "apiVersion": "1",
+					  "pages": [ { "id": "dup2", "title": "重名页（自检）", "newTab": true, "markdown": "同名页" } ]
+					}
+					""", new UTF8Encoding(false));
+					PluginRegistry.Load(pluginRoot);
+					RebuildPluginTopLevelTabs();
+					Check("V0.2.340：pages[].newTab 被认成「生成器功能页」（NewTabPages = 2 个插件的 3 页）",
+						PluginRegistry.NewTabPages.Count() == 3, $"{PluginRegistry.NewTabPages.Count()} 页");
+					Check("V0.2.340：功能页真的出现在 MainTabs 里，而且紧贴在「构建 / 日志」**前面**（顺序不乱）",
+						PluginTopTabCountForCheck == 3 && PluginTopTabsBeforeBuildForCheck(), PluginTopTabTitlesForCheck);
+					Check("V0.2.340：带 fields 的功能页是真表单（ScrollViewer > StackPanel，栏位 / 预览 / 两个按钮都在）",
+						PluginTopTabContentForCheck(0) is System.Windows.Controls.ScrollViewer svTop && svTop.Content is StackPanel,
+						PluginTopTabContentForCheck(0)?.GetType().Name ?? "(空)");
+					Check("V0.2.340：两个插件的同名功能页会带插件名区分（不会出现两个一模一样的页签）",
+						PluginTopTabTitlesForCheck.Split('/').Where(t => t.Contains("重名页")).Distinct().Count() == 2, PluginTopTabTitlesForCheck);
+					var newTabSpecs = PluginRegistry.Plugins.Where(pp => pp.Id is "uifeature" or "uifeature2").ToList();
+					Check("V0.2.340：newTab 页不在「插件」页重复画一遍（它们只作为一级页签出现）",
+						newTabSpecs.Count == 2
+						&& newTabSpecs.All(pp => pp.Pages.Where(pg => pg is not null).All(pg => IsShownOutsidePluginPage(pp, pg))),
+						"只看 MainTabs");
+
+					// 功能页里的值照旧按 target / emit 写成文件（随 mod 编译打包）
+					string featRoot = Path.Combine(pluginRoot, "proj3");
+					Directory.CreateDirectory(featRoot);
+					var featPlug = PluginRegistry.Plugins.FirstOrDefault(x => x.Id == "uifeature");
+					var featPage = featPlug?.Pages.FirstOrDefault(x => x is not null && x.NewTab && x.IsForm);
+					if (featPlug is not null && featPage is not null && featPage.Fields.Count > 0)
+					{
+						PluginRegistry.SetPageValue(featPlug, featPage, featPage.Fields[0], "UiCheckMob");
+						PluginGen.WritePages(featRoot);
+						Check("V0.2.340：功能页的产物照旧按 target / emit 写进工程（随 mod 编译 / 打包）",
+							File.Exists(Path.Combine(featRoot, "cs", "Plugins", "uifeature", "Mobs", "UiCheckMob.cs")), "写进去了");
+					}
+					else Check("V0.2.340：（准备）功能页插件装载成功", false, featPlug is null ? "插件没加载" : "没有表单功能页");
+
+					// 撤掉插件 → 功能页签跟着消失
+					try { PluginRegistry.Load(AppContext.BaseDirectory); } catch { }
+					RebuildPluginTopLevelTabs();
+					Check("V0.2.340：插件删掉后功能页签跟着消失，页数回到「当前清单里声明了几个」",
+						PluginTopTabCountForCheck == PluginRegistry.NewTabPages.Count()
+						&& PluginTopTabsBeforeBuildForCheck(), PluginTopTabTitlesForCheck);
 				}
 			}
 			finally

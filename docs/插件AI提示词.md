@@ -205,11 +205,13 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 
 它会同时出现在「效果种类」下拉里（因为本质上就是同一个东西）。
 
-## 9. 页面（`pages[]`）—— 三种形态
+## 9. 页面（`pages[]`）—— 四种形态
 
 1. **说明页**（只有 `markdown`）：在「插件」页里显示一段文字。
 2. **表单页**（`fields` + `target` + `emit`）：编辑器画表单、存值、实时预览，生成工程时按 `target` 写成文件。
 3. **挂到生成器页签**（再加 `tab`）：这一页作为那个生成器页签里的「插件扩展页」出现，用户编辑卡牌时同一屏就能看到。
+4. **加一个生成器一级功能页**（再加 `newTab: true`）：生成器顶部**多一个页签**（像「角色」「药水」那样），
+   页签内容就是这一页 —— 这就是「装个怪物生成器插件，编辑器里就多一个怪物生成器页」。
 
 ```jsonc
 "pages": [
@@ -226,6 +228,16 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
     ],
     "target": "cs/Plugins/{id}/Events/{EventClass}.cs",
     "emit": "public static class {EventClass} { public const int Weight = {Weight}; }"
+  },
+  {
+    "id": "monsters", "title": "怪物生成器", "newTab": true,   // ← 生成器多一个一级页签
+    "markdown": "填好东西点按钮，会生成到工程里。",
+    "fields": [
+      { "key": "MobClass", "label": "怪物类名（英文）", "type": "text",   "default": "MyMob" },
+      { "key": "MobHp",    "label": "血量",            "type": "number", "default": "40" }
+    ],
+    "target": "cs/Plugins/{id}/Mobs/{MobClass}.cs",
+    "emit": "public static class {MobClass} { public const int Hp = {MobHp}; }"
   }
 ]
 ```
@@ -235,7 +247,11 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 * 值存在 `plugins\<插件 id>\values.json`（每页一组），改清单不会丢。
 * `tab` 的取值：`card`（卡牌）/ `relic`（遗物）/ `potion`（药水）/ `power`（自定义状态）/ `forge`（锻造）/ `build`（构建·日志）；
   不填 = 老行为（挂「插件」页）。写别的值不算错，那一页留在「插件」页并显示提示。
-* 挂走的页**不会**在「插件」页重复画一份（那里只留说明和清单）。
+* `newTab: true`：这一页变成生成器的**一级页签**，固定排在「构建 / 日志」**前面**；
+  和 `tab` 二选一（都填时 `newTab` 优先）。两个插件的功能页重名时，页签标题会自动带上插件名。
+* 挂走的页 / 一级功能页**不会**在「插件」页重复画一份（那里只留说明和清单）。
+* **功能页拿不到编辑器数据**：只有自己那份值，读不到当前存档的角色 / 卡牌 / 遗物，也拿不到本体名录 ——
+  能做的就是「填表 → 按模板出文件」；要每只怪物一份数据，就在模板里按行 / 逗号拆，或者开多个页。
 
 ## 10. 打包规则
 
@@ -282,7 +298,8 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 2. 每条效果都有 `emit`；模板里**没有** `using` / `namespace` / `class`。
 3. 占位符和链对得上（第 5 节：状态链别用 `{cardPlay}`；用完 `{power}` / `{card}` 要开 `needsPower` / `needsCard`）。
 4. `triggers[].hook` 是第 8.1 表里的 id；`guard` 只用那个钩子签名里的参数；`hasChoiceContext` 和签名一致。
-5. 页面：`target` 都在 `cs/Plugins/{id}/…` 或 `plugin_assets/{id}/…` 下，没有 `..\`；`tab` 用第 9 节的 6 个值之一。
+5. 页面：`target` 都在 `cs/Plugins/{id}/…` 或 `plugin_assets/{id}/…` 下，没有 `..\`；`tab` 用第 9 节的 6 个值之一；
+   想让编辑器多一个一级功能页就用 `newTab: true`（和 `tab` 别同时填）。
 6. 自带文件真的存在、真的在插件目录里。
 7. 模板末尾的分号 / 括号别丢（它要直接进 C# 方法体）。
 
