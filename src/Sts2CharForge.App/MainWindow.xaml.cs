@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -15734,10 +15734,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			ancGen.Relics.Clear();
 			ancGen.Relics.Add(ancRelic);
 			string ancRelicSrc = CSharpCodeGen.RelicSource(ancGen, ancRelic, 0);
-			Check("生成里按「组」筛牌组（类名白名单，不是随机挑一张）",
-				ancRelicSrc.Contains("\"UiAncStrike\", \"UiAncDefend\"") && ancRelicSrc.Contains(".Contains(c.Id.Entry)"),
-				ancRelicSrc.Contains("UiAncStrike") ? "白名单在" : "没按组筛");
-			Check("生成里带 c.IsRemovable（本体永恒牌不能被变化）", ancRelicSrc.Contains("c.IsRemovable"), "带上了");
+			// ⚠ V0.2.352：这里以前断言的是 `.Contains(c.Id.Entry)` —— 那正是 bug 本身（Id.Entry 是全大写 slug，拿类名比永远不相等）。改成断言 ModelId 比较。
+			Check("生成里按「组」筛牌组（ModelId 白名单，不是随机挑一张、也不是拿类名比 Id.Entry）",
+				ancRelicSrc.Contains("c.Id == ModelDb.Card<UiAncStrike>().Id") && ancRelicSrc.Contains("c.Id == ModelDb.Card<UiAncDefend>().Id")
+				&& !ancRelicSrc.Contains("Id.Entry"),
+				ancRelicSrc.Contains("UiAncStrike") ? "白名单在（ModelId）" : "没按组筛");
 			Check("生成里用**批量** CardCmd.Transform（本体潘多拉的写法），不是一张一张地变",
 				ancRelicSrc.Contains("new List<CardTransformation>()") && ancRelicSrc.Contains("await CardCmd.Transform(__fgAncient0_0_tx"), "批量在");
 			Check("「各不相同」：循环上界是 牌数 与 池子数 的较小值（池子用完就不换，不循环复用）",
@@ -39552,6 +39553,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					okProf.Cards.Add(okB);
 					Check("V0.2.351：只差「什么时候撤」的两条（V0.2.350 已改成不同类名）→ 不再报撞名",
 						!ProfileValidator.Validate(okProf).Any(i => i.Message.Contains("同一个延迟状态类")), "没报");
+				}				// ----- V0.2.352：「转化为先古卡」不生效的真因（组条件拿类名比 Id.Entry，永远不相等）-----
+				{
+					var afProf = ProfileFactory.Sample();
+					afProf.Cards.Clear();
+					afProf.Curses.Clear();
+					afProf.AncientCards.Clear();
+					var afSrc = new CardSpec { Name = "源卡甲", ClassName = "UiAfSourceA", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					var afSrc2 = new CardSpec { Name = "源卡乙", ClassName = "UiAfSourceB", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					var afAnc = new CardSpec { Name = "先古甲", ClassName = "UiAfAncientA", CardType = "Attack", Rarity = "Ancient", Cost = 1 };
+					afProf.Cards.Add(afSrc);
+					afProf.Cards.Add(afSrc2);
+					afProf.AncientCards.Add(afAnc);
+					afSrc.GroupIds.Add("afgroup");   // 组的成员关系存在卡上（CardSpec.GroupIds），组本身只有 Id / 名字
+					string cond = CSharpCodeGen.SpawnPoolCond("Group:afgroup", afProf);
+					Check("V0.2.352：「组」条件必须按 ModelId 比（`c.Id == ModelDb.Card<X>().Id`）—— 以前拿类名比 `c.Id.Entry`，"
+						+ "而 Id.Entry 是全大写的 slug（SESAI），永远不相等 → 「转化为先古卡」静默失效",
+						cond.Contains("c.Id == ModelDb.Card<UiAfSourceA>().Id") && !cond.Contains("Id.Entry"), cond);
+					var afRelic = new RelicSpec { Name = "先古替换自检", ClassName = "UiAfRelic", Rarity = "Ancient", Trigger = "CombatStart" };
+					var afEffect = new EffectSpec { Kind = "AncientTranscend", Amount = 1m, TargetSide = "Self" };
+					afEffect.AncientRows.Add(new AncientTranscendRow { Group = "Group:afgroup", AncientCards = { "UiAfAncientA" } });
+					afRelic.Effects.Add(afEffect);
+					afProf.Relics.Add(afRelic);
+					string afSrcCode = CSharpCodeGen.RelicSource(afProf, afRelic, afProf.Relics.Count - 1);
+					Check("V0.2.352：生成出来的「转化为先古卡」用 `c.Id == ModelDb.Card<…>().Id` 筛牌（不再用 Id.Entry）",
+						afSrcCode.Contains("c.Id == ModelDb.Card<UiAfSourceA>().Id") && !afSrcCode.Contains("Id.Entry"),
+						afSrcCode.Contains("c.Id == ModelDb.Card<UiAfSourceA>().Id") ? "对" : "还是老的 Id.Entry");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

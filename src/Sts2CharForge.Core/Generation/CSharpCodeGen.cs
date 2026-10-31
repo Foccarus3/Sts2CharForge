@@ -1887,7 +1887,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 和 <see cref="SpawnPoolExpr"/> 共用同一份语义：组 / 自定义关键词按类名白名单，
     /// 内置那几条按类型 / 稀有度。
     /// </summary>
-    internal static string SpawnPoolCond(string? filter, CharacterProfile? p)
+    public static string SpawnPoolCond(string? filter, CharacterProfile? p)
     {
         if (EffectCatalog.IsKeywordFilter(filter) || EffectCatalog.IsCardGroupFilter(filter))
         {
@@ -1896,8 +1896,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 : EffectCatalog.KeywordGroupCards(p, filter);
             if (group.Count == 0) return "false";     // 这一组一张牌都没有：谁都不匹配
             var kn = Naming.From(p!);
-            string names = string.Join(", ", group.Select(c => $"\"{kn.CardClassName(p!, c)}\""));
-            return $"new[] {{ {names} }}.Contains(c.Id.Entry)";
+            // ⚠⚠ V0.2.352（用户实测「变化先古牌不生效」的真因）：这里以前写的是
+            //     new[] { "Sesai" }.Contains(c.Id.Entry)
+            // —— 但 `CardModel.Id.Entry` 是 **Slugify(类名)**（`ModelDb.GetEntry` = 驼峰拆开 + 全大写：
+            // `Sesai` → `SESAI`），拿类名去比**永远不相等** ⇒ 这一组一张都匹配不上，
+            // 于是「转化为先古卡」什么都不做（还不报错，静默失效）。
+            // 牌的身份必须用 **ModelId** 比 —— 和本文件里其它「组条件」同一个口径
+            //（`c.Id == ModelDb.Card<X>().Id`；本体按类名算 Id，战斗里的牌是规范模型的克隆，Id 一样）。
+            var idChecks = group.Select(c => $"c.Id == ModelDb.Card<{CardTypeExpr(p, kn.CardClassName(p!, c))}>().Id").ToList();
+            return idChecks.Count == 1 ? idChecks[0] : "(" + string.Join(" || ", idChecks) + ")";
         }
         return filter switch
         {
