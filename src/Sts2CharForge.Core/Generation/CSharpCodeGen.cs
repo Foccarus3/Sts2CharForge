@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -5910,6 +5910,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 case "AfterFlush":
                     w.Line("if (player != base.Owner || base.CombatState is null) return;");
                     w.Line("if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）");
+                    // V0.2.363（用户实测：结束回合卡住不动）：AfterFlush 在**回合结束的丢牌流程**里跑，
+                    // 传进来的 context 是 CombatPlayPhaseOnly 的 HookPlayerChoiceContext —— 在里面发起选牌
+                    // 会排一个「只能在出牌阶段执行」的 action，永远等不到 → 结束回合卡死。
+                    // 换成 BlockingPlayerChoiceContext：选牌照弹、当场等玩家选完（本体在敌人回合也这么用）。
+                    w.Line("choiceContext = new BlockingPlayerChoiceContext();");
                     break;
             }
             // ⚠ 嵌套私有方法**只带一个 choiceContext 参数**（见 ForgeGraphGen.CardNestedMethod 那一套写法 /
@@ -6029,6 +6034,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Open("public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)")
                      .Line("if (player != base.Owner || base.CombatState is null) return;")
                      .Line("if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）")
+                     // V0.2.363（用户实测：结束回合卡住）：这一档在回合结束的丢牌流程里跑，传进来的 context 只能
+                     // 在出牌阶段执行 → 在里面发起选牌会永远等不到。换成 BlockingPlayerChoiceContext（选牌照弹、当场等）。
+                     .Line("choiceContext = new BlockingPlayerChoiceContext();")
                      .Line("// CET:CardTiming=Retained");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
                     EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);

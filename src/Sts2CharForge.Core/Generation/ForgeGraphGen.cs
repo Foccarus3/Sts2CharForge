@@ -1715,6 +1715,12 @@ public static class ForgeGraphGen
             "//（判据 = 本体 CombatManager.FlushPlayerHand 把这张牌归进 retainedCards：有保留关键词 / 这回合被单回合保留 / 整手牌都不丢）",
             "if (player != base.Owner || base.CombatState is null) return;",
             "if (!retainedCards.Contains(this)) return;   // 这张牌这回合没被保留（被丢进弃牌堆了）",
+            // V0.2.363（用户实测：结束回合卡住不动）：AfterFlush 是在**回合结束的丢牌流程**里跑的，
+            // 那时传进来的 context 是 `CombatPlayPhaseOnly` 的 HookPlayerChoiceContext ——
+            // 在里面发起选牌（CardSelectCmd.FromHand）会去排一个「只能在出牌阶段执行」的 action，
+            // 于是它永远等不到执行、结束回合也就永远等不到这一刻结束。
+            // 改成 BlockingPlayerChoiceContext：选牌照弹、当场等玩家选完，不会再排 action（本体在敌人回合也有这句用法）。
+            "choiceContext = new BlockingPlayerChoiceContext();",
         },
         _ => Array.Empty<string>(),
     };

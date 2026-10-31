@@ -40084,6 +40084,53 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					int ctxDecls = System.Text.RegularExpressions.Regex.Matches(chSrc, "PlayerChoiceContext choiceContext").Count;
 					Check("V0.2.362：签名里已有 choiceContext → 不会重复声明（否则 CS0128），效果体直接用那个参数",
 						ctxDecls == 1, $"出现 {ctxDecls} 次");
+				}				// ----- V0.2.363：卡牌时机「被保留」里发起选牌会把回合结束卡死（改用 BlockingPlayerChoiceContext）-----
+				{
+					ForgeGraphSpec makeRetainGraph(string tag, string cardCls)
+					{
+						var g = new ForgeGraphSpec { Note = "自检「被保留」" + tag };
+						var trig = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+						trig.SetField("Timing", "Retained");
+						var sel = new ForgeNodeSpec { Kind = "Effect", X = 320, Y = 20 };
+						sel.SetField("Effect", "TransformCard");
+						sel.SetField("Amount", "1");
+						sel.SetField("Pick", "Chosen");
+						sel.SetField("SpawnCardId", cardCls);
+						g.Nodes.AddRange(new[] { trig, sel });
+						g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = sel.Id, FromPort = 0, ToPort = 0 });
+						return g;
+					}
+					var rp = ProfileFactory.Sample();
+					rp.Cards.Clear();
+					rp.Curses.Clear();
+					rp.AncientCards.Clear();
+					// ① 两块布都设「被保留」→ 走 EmitGraphOnlyHookContainers 那个壳
+					var rCard = new CardSpec { Name = "保留卡", ClassName = "UiRetainBoth", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					rCard.ForgeGraph = makeRetainGraph("base", "UiRetainBoth");
+					rCard.UpgradedForgeGraph = makeRetainGraph("up", "UiRetainBoth");
+					rp.Cards.Add(rCard);
+					// ② 只有一块布 → 图自己直接写 override
+					var rCard1 = new CardSpec { Name = "保留单布", ClassName = "UiRetainOne", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					rCard1.ForgeGraph = makeRetainGraph("only", "UiRetainOne");
+					rp.Cards.Add(rCard1);
+					// ③ 效果列表那条路（条件 = 卡牌时机「被保留」）
+					var rCard2 = new CardSpec { Name = "保留效果列", ClassName = "UiRetainList", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					var rEff = new EffectSpec { Kind = "TransformCard", Amount = 1m, TargetSide = "Self", SpawnCardId = "UiRetainList", CardPick = "Chosen" };
+					rEff.Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Retained" };
+					rCard2.Effects.Add(rEff);
+					rp.Cards.Add(rCard2);
+					string sBoth = CSharpCodeGen.CardSource(rp, rCard, 0);
+					string sOne = CSharpCodeGen.CardSource(rp, rCard1, 1);
+					string sList = CSharpCodeGen.CardSource(rp, rCard2, 2);
+					Check("V0.2.363：两块布都「被保留」→ 壳里改走 BlockingPlayerChoiceContext（否则结束回合永远卡住）",
+						sBoth.Contains("AfterFlush(") && sBoth.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
+						sBoth.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext")) ?? "(没有)");
+					Check("V0.2.363：图只有一块布时（图自己写 override）同样换掉 context",
+						sOne.Contains("AfterFlush(") && sOne.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
+						sOne.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext")) ?? "(没有)");
+					Check("V0.2.363：效果列表那条「卡牌时机 = 被保留」也换掉 context",
+						sList.Contains("AfterFlush(") && sList.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
+						sList.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext")) ?? "(没有)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
