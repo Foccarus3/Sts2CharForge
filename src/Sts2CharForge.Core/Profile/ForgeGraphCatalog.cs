@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Sts2CharForge.Core.Effects;
@@ -471,6 +471,7 @@ public static class ForgeGraphCatalog
     {
         new ForgeFieldOption("Chosen", "自己选（弹选牌界面）"),
         new ForgeFieldOption("Random", "随机（自动挑）"),
+        new ForgeFieldOption("All", "全选（这一摞里符合条件的全部）"),
     };
 
     /// <summary>「生成到」——生成出来的卡放哪一摞。</summary>

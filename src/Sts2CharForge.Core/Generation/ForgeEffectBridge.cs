@@ -180,7 +180,10 @@ public static class ForgeEffectBridge
             DrawnKeyword = (node.Get("DrawnKeyword") ?? "").Trim(),
             DrawnKeywordTemp = node.GetFlag("DrawnKeywordTemp"),
             // ⚠ 老图的「取牌方式」默认是「自己选」；卡牌那栏的默认是 Random，所以必须显式按老默认给
-            CardPick = string.Equals(node.Get("Pick", "").Trim(), "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen",
+            // V0.2.353（用户要求「锻造里面的选牌方式也加上全选」）：All 也照样传过去 ——
+            // 「全选」在生成端和「取几张 = 全部」是同一个语义（EffectSpec.CountIsAll 认这两个入口）。
+            CardPick = string.Equals(node.Get("Pick", "").Trim(), "All", StringComparison.OrdinalIgnoreCase) ? "All"
+                : string.Equals(node.Get("Pick", "").Trim(), "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen",
             // V0.2.212：图上【效果】模块新加的「从哪里选牌 / 放到哪一摞」两栏。
             // 没有这两个键的老图 → 都落回 "Hand"，和 EffectSpec 自己的默认值一模一样（生成文本一个字都不变）。
             SelectPile = Canonical(node.Get("SelectPile"), "Hand", "Hand", "Draw", "Discard", "Exhaust", "Top"),
@@ -257,7 +260,9 @@ public static class ForgeEffectBridge
         node.SetField("Times", CountText(e.TimesFormula, e.Times));
         node.SetField("Hits", CountText(e.RepeatFormula, e.RepeatCount));
         node.SetField("Chance", ChanceTextOf(e));
-        node.SetField("Pick", string.Equals(e.CardPick, "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen");
+        // V0.2.353：All（全选）也要原样写回图上，否则「卡牌页选了全选 → 打开锻造图」会掉回「自己选」。
+        node.SetField("Pick", string.Equals(e.CardPick, "All", StringComparison.OrdinalIgnoreCase) ? "All"
+            : string.Equals(e.CardPick, "Random", StringComparison.OrdinalIgnoreCase) ? "Random" : "Chosen");
         node.SetField("SpawnCardId", (e.SpawnCardId ?? "").Trim());
         node.SetField("SpawnTo", e.SpawnTo);
         // V0.2.181：把「取卡方式 / 多选1 / 范围限定 / 从范围里自己挑 / 附加处理」也回写 ——

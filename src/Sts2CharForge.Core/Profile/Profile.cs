@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -423,8 +423,15 @@ public sealed class EffectSpec : SpecBase
     /// （本体「恶魔之焰」消耗所有手牌那种写法）。卡面写「所有」、不写数字，所以和「任意张」一样
     /// 不声明 Cards 变量、升级增量也没有落点。
     /// </summary>
+    /// <summary>
+    /// V0.2.353（用户要求「选牌方式里加一个 All」）：不挑、不随机，把整摞里符合条件的牌**全部**拿走。
+    /// 和「取几张 = 全部」是同一个语义的两个入口（后者是老入口，保下来不动）。
+    /// </summary>
     [JsonIgnore]
-    public bool CountIsAll => ShowCountModeRow && CountMode == "All";
+    public bool IsPickAll => string.Equals((CardPick ?? "").Trim(), "All", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool CountIsAll => (ShowCountModeRow && CountMode == "All") || IsPickAll;
 
     /// <summary>「任意张 / 全部」都没有一个固定的张数数字（两处共用这一条判据）。</summary>
     [JsonIgnore]
@@ -2607,7 +2614,7 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>选牌方式的中文（列表文字用）。</summary>
     [JsonIgnore]
-    public string CardPickZh => CardPick == "Chosen" ? "自己选" : "随机";
+    public string CardPickZh => CardPick == "Chosen" ? "自己选" : (CardPick == "All" ? "全选" : "随机");
 
     /// <summary>
     /// 遗物 / 药水列表用的显示文本：它们不能升级，所以不显示「（升级 +N）」这种括号

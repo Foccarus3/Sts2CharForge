@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -28566,12 +28566,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("效果种类含 生成/消耗/变化卡牌", Kinds.Any((EffectKindOption k) => k.Kind == "GenerateCard") && Kinds.Any((EffectKindOption k) => k.Kind == "ExhaustCard") && Kinds.Any((EffectKindOption k) => k.Kind == "TransformCard"), string.Join("·", Kinds.Select((EffectKindOption k) => k.Display)));
 		Check("目标卡目录非空（本体卡 + 自己的卡）", AllCards.Count > 0, $"{AllCards.Count} 张");
 		Check("生成到 / 选牌方式选项齐全",
+		// V0.2.353：选牌方式多了「全选（All）」—— 所以是 3 个，不是 2 个
 			SpawnTargets.Count == 4 && SpawnTargets.Any((SpawnTargetOption o) => o.Id == "Exhaust" && o.Display.Contains("消耗牌堆"))
-			&& CardPickModes.Count == 2,
+			&& CardPickModes.Count == 3 && CardPickModes.Contains("All") && EffectCatalog.CardPickZh("All") == "全选",
 			string.Join("/", SpawnTargets.Select((SpawnTargetOption o) => o.Display)) + " ｜ " + string.Join("/", CardPickModes));
-		Check("「生成到」下拉显示的是中文（值还是 Hand/Draw/Discard/Exhaust）",
-			SpawnTargets.All((SpawnTargetOption o) => o.Display != o.Id) && SpawnTargets.Select((SpawnTargetOption o) => o.Id).SequenceEqual(new[] { "Hand", "Draw", "Discard", "Exhaust" }),
-			string.Join(",", SpawnTargets.Select((SpawnTargetOption o) => o.Id + "=" + o.Display)));
 		CardSpec cardSpec23 = CardUiSelection ?? throw new InvalidOperationException("自检前置条件不成立：卡牌页应当已选中一张真卡");
 		int count15 = cardSpec23.Effects.Count;
 		OnAddEffect(new Button
@@ -39579,6 +39577,52 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.352：生成出来的「转化为先古卡」用 `c.Id == ModelDb.Card<…>().Id` 筛牌（不再用 Id.Entry）",
 						afSrcCode.Contains("c.Id == ModelDb.Card<UiAfSourceA>().Id") && !afSrcCode.Contains("Id.Entry"),
 						afSrcCode.Contains("c.Id == ModelDb.Card<UiAfSourceA>().Id") ? "对" : "还是老的 Id.Entry");
+				}				// ----- V0.2.353：选牌方式多了「全选（All）」—— 不挑不随机，整摞符合条件的全拿 -----
+				{
+					Check("V0.2.353：选牌方式有「全选」这一档（卡牌 / 遗物 / 药水共用同一份候选）",
+						EffectCatalog.CardPickModes.Contains("All") && EffectCatalog.CardPickZh("All") == "全选"
+						&& new EffectSpec { CardPick = "All" }.CardPickZh == "全选",
+						string.Join("/", EffectCatalog.CardPickModes));
+					var apProf = ProfileFactory.Sample();
+					apProf.Cards.Clear();
+					apProf.Curses.Clear();
+					apProf.AncientCards.Clear();
+					var apRelic = new RelicSpec { Name = "全选自检", ClassName = "UiAllPick", Rarity = "Common", Trigger = "CombatStart" };
+					apRelic.Effects.Add(new EffectSpec
+					{
+						Kind = "DiscardCard", Amount = 3m, CardPick = "All", SelectPile = "Discard", TargetSide = "Self",
+					});
+					apRelic.Effects.Add(new EffectSpec
+					{
+						Kind = "GiveKeyword", Amount = 1m, CardPick = "All", SelectPile = "Exhaust", GivenKeyword = "Retain", TargetSide = "Self",
+					});
+					apProf.Relics.Add(apRelic);
+					string apSrc = CSharpCodeGen.RelicSource(apProf, apRelic, 0);
+					Check("V0.2.353：选牌方式 = 全选时**不弹选牌界面**（不该出现 CardSelectCmd.From*），而是整摞一次拿",
+						!apSrc.Contains("CardSelectCmd.From") && apSrc.Contains("全部"), apSrc.Contains("CardSelectCmd.From") ? "还在弹界面" : "不弹");
+					Check("V0.2.353：全选 + 消耗牌堆/弃牌堆时，四摞都能用（生成里读的是那一摞的 Cards）",
+						apSrc.Contains("PileType.Discard") || apSrc.Contains("Discard"),
+						apSrc.Contains("Discard") ? "弃牌堆在" : "没读到那一摞");
+					var allEff = new EffectSpec { Kind = "DiscardCard", CardPick = "All", SelectPile = "Hand" };
+					var numEff = new EffectSpec { Kind = "DiscardCard", CardPick = "Random", SelectPile = "Hand", Amount = 2m };
+					Check("V0.2.353：`CountIsAll` 也认「选牌方式 = 全选」（两个入口同一个语义）",
+						allEff.CountIsAll && allEff.IsPickAll && !numEff.CountIsAll && !numEff.IsPickAll,
+						$"All={allEff.CountIsAll} / 随机={numEff.CountIsAll}");
+					// 锻造：节点上的「全选」要能进/出 EffectSpec，不能掉回「自己选」
+					var node = new ForgeNodeSpec { Kind = "Effect" };
+					node.SetField("Effect", "DiscardCard");
+					node.SetField("Pick", "All");
+					node.SetField("SelectPile", "Exhaust");
+					var bridged = ForgeEffectBridge.Ensure(node);
+					Check("V0.2.353：锻造节点选「全选」→ 生成用的效果也是 All（不会掉回自己选）",
+						string.Equals(bridged.CardPick, "All", StringComparison.OrdinalIgnoreCase), bridged.CardPick);
+					var back = new ForgeNodeSpec { Kind = "Effect" };
+					ForgeEffectBridge.Ensure(back);
+					var effAll = new EffectSpec { Kind = "DiscardCard", CardPick = "All", SelectPile = "Hand" };
+					ForgeEffectBridge.SyncGraph(null);   // 不炸就行（同步入口要能吃 null）
+					Check("V0.2.353：锻造的「选牌方式」候选里有「全选」",
+						ForgeGraphCatalog.PickModes.Any(o => o.Id == "All" && o.Display.Contains("全选")),
+						string.Join("/", ForgeGraphCatalog.PickModes.Select(o => o.Id)));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

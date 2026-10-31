@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -1458,8 +1458,8 @@ public static class EffectCatalog
     public static IReadOnlyList<PileChoiceOption> DiscardPiles { get; } = SelectPiles;
 
     /// <summary>「消耗卡牌 / 变化卡牌」的选牌方式。</summary>
-    public static IReadOnlyList<string> CardPickModes { get; } = new[] { "Random", "Chosen" };
-    public static string CardPickZh(string v) => v == "Chosen" ? "自己选" : "随机";
+    public static IReadOnlyList<string> CardPickModes { get; } = new[] { "Random", "Chosen", "All" };
+    public static string CardPickZh(string v) => v == "Chosen" ? "自己选" : (v == "All" ? "全选" : "随机");
 
     /// <summary>
     /// 「生成 / 变化卡牌」的**范围限定**（用户要求：可以决定是攻击、技能还是能力，或者是诅咒和状态）。
