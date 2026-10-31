@@ -490,6 +490,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Raise("Profile");
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
+			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
+			try
+			{
+				if (_uiReady)
+				{
+					RebuildPluginExtensionPages();
+					RebuildPluginTopLevelTabs();
+				}
+			}
+			catch { /* 插件页是附加内容：重建失败不能挡住换存档 */ }
 		}
 	}
 
@@ -1085,6 +1096,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
+			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
+			try
+			{
+				if (_uiReady)
+				{
+					RebuildPluginExtensionPages();
+					RebuildPluginTopLevelTabs();
+				}
+			}
+			catch { /* 插件页是附加内容：重建失败不能挡住换存档 */ }
 		}
 	}
 
@@ -1117,6 +1139,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Profile.Colors.CardFrameColor = "";
 			}
 			Raise("FrameSelection");
+			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
+			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
+			try
+			{
+				if (_uiReady)
+				{
+					RebuildPluginExtensionPages();
+					RebuildPluginTopLevelTabs();
+				}
+			}
+			catch { /* 插件页是附加内容：重建失败不能挡住换存档 */ }
 			Raise("PresetSelection");
 		}
 	}
@@ -4742,6 +4775,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
+			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
+			try
+			{
+				if (_uiReady)
+				{
+					RebuildPluginExtensionPages();
+					RebuildPluginTopLevelTabs();
+				}
+			}
+			catch { /* 插件页是附加内容：重建失败不能挡住换存档 */ }
 		};
 	}
 
@@ -6851,6 +6895,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					line.Children.Add(combo);
 					break;
 				}
+				case "ref":
+				{
+					// V0.2.356：行内也能引用存档里的对象（例：一条招式引用某个状态）
+					var combo = BuildPluginRefCombo(sub, current, v => { row[subKey] = v; onChanged(); });
+					line.Children.Add(combo);
+					break;
+				}
 				case "number":
 				{
 					var tb = new TextBox { Width = 110, Text = current };
@@ -6948,6 +6999,36 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Rebuild();
 		return box;
 	}
+	/// <summary>
+	/// V0.2.356：引用型栏位的下拉（列出**当前存档**里的卡 / 状态 / 遗物 / 药水 / 伙伴 / 组）。
+	/// 存的值是**稳定标识**（类名 / 组 Id）；存档里已经找不到那一项时额外给一行「找不到」并选中 ——
+	/// 静默变成空下拉是最难查的一种「没反应」。
+	/// </summary>
+	private ComboBox BuildPluginRefCombo(PluginFieldSpec field, string current, Action<string> onPicked)
+	{
+		var combo = new ComboBox { Width = 360, IsEditable = false };
+		var options = PluginRegistry.RefOptions(field.RefKind, _profile);
+		string want = (current ?? "").Trim();
+		int hit = -1;
+		foreach (var (id, display) in options)
+		{
+			combo.Items.Add(new ComboBoxItem { Content = display, Tag = id });
+			if (hit < 0 && string.Equals(id, want, StringComparison.Ordinal)) hit = combo.Items.Count - 1;
+		}
+		if (hit < 0)
+		{
+			string text = want.Length == 0 ? "（还没选）" : $"（找不到：{want}）";
+			combo.Items.Insert(0, new ComboBoxItem { Content = text, Tag = want });
+			hit = 0;
+		}
+		combo.SelectedIndex = hit;
+		combo.SelectionChanged += (_, _) =>
+		{
+			if (combo.SelectedItem is ComboBoxItem item && item.Tag is string id) onPicked(id);
+		};
+		return combo;
+	}
+
 	private static object BuildPluginPageText(PluginPageSpec page)
 	{
 		return new ScrollViewer
@@ -7006,6 +7087,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			if (f.IsList)
 			{
 				panel.Children.Add(BuildPluginListEditor(p, page, f, Refresh));
+				continue;
+			}
+			// V0.2.356：引用型栏位（下拉列出**当前存档**里的卡 / 状态 / 遗物 / 药水 / 伙伴 / 组；存稳定标识）
+			if (f.IsRef)
+			{
+				string refCurrent = PluginRegistry.PageValueOf(p, page, f);
+				var refCombo = BuildPluginRefCombo(f, refCurrent, v => { PluginRegistry.SetPageValue(p, page, f, v); Refresh(); });
+				var refRow = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+				refRow.Children.Add(new TextBlock
+				{
+					Text = string.IsNullOrWhiteSpace(f.Label) ? f.Key.Trim() : f.Label,
+					Width = 170, VerticalAlignment = VerticalAlignment.Center, TextWrapping = TextWrapping.Wrap,
+				});
+				refRow.Children.Add(refCombo);
+				if (!string.IsNullOrWhiteSpace(f.Hint))
+					refRow.Children.Add(new TextBlock { Text = f.Hint, Foreground = Brushes.Gray, Margin = new Thickness(8, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center });
+				panel.Children.Add(refRow);
 				continue;
 			}
 			string key = f.Key.Trim();
@@ -39663,6 +39761,66 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.355（A2）：DelayedPowers.cs 里生成了那个插件延迟类（类体 = 插件模板，数值取 base.Amount）",
 						vDelayed.Contains($"class {delayedCls}") && vDelayed.Contains("// CET:DelayedPlugin=") && vDelayed.Contains("CreatureCmd.Heal("),
 						$"类 {delayedCls} 在={vDelayed.Contains($"class {delayedCls}")}");
+				}				// ----- V0.2.356（框架）：引用型栏位 —— 插件页可以从**当前存档**里挑卡 / 状态 / 遗物… -----
+				{
+					var rd = ProfileFactory.Sample();
+					var rOpts = PluginRegistry.RefOptions("card", rd);
+					var rdCard = rd.Cards.FirstOrDefault(c => c is not null && !c.IsVanillaCard);
+					string rdCardCls = rdCard is null ? "" : Naming.From(rd).CardClassName(rd, rdCard);
+					Check("V0.2.356：refKind = card 时列出的是当前存档里的卡，Id 就是生成端用的类名",
+						rOpts.Count > 0 && rdCardCls.Length > 0 && rOpts.Any(o => o.Id == rdCardCls && o.Display.Contains(rdCardCls)),
+						$"{rOpts.Count} 个候选 / 找 {rdCardCls}");
+					// 状态那一档要**按生成端的口径**算类名（留空 = 自动 <角色>PowerN），所以这里现造一只没填类名的
+					var rdPowerProf = ProfileFactory.Sample();
+					rdPowerProf.CustomPowers.Clear();
+					rdPowerProf.CustomPowers.Add(new CustomPowerSpec { Name = "自检状态" });
+					var rdPowerOpts = PluginRegistry.RefOptions("power", rdPowerProf);
+					string rdAutoPowerCls = CustomPowerGen.ClassNameOf(rdPowerProf, rdPowerProf.CustomPowers[0], 0);
+					Check("V0.2.356：状态那一档列的是**生成端同一个口径**的类名（没填类名也挑得到，不会给个空下拉）",
+						rdPowerOpts.Any(o => o.Id == rdAutoPowerCls)
+						&& PluginRegistry.RefOptions("bogus", rd).Count == 0,
+						$"{rdPowerOpts.Count} 个候选 / 自动类名 {rdAutoPowerCls} / 乱写的 kind 返回空");
+					var rPage = new PluginPageSpec
+					{
+						Id = "refpage", Title = "引用页", Target = "cs/Plugins/{id}/R.cs",
+						Emit = "public static class R { public const string Card = \"{Card}\"; }\n",
+						Fields =
+						{
+							new PluginFieldSpec { Key = "Card", Label = "挑一张卡", Type = "ref", RefKind = "card" },
+						},
+					};
+					var rSpec = new PluginSpec { Id = "uicheck-ref", Name = "自检引用页" };
+					rSpec.Pages.Add(rPage);
+					PluginRegistry.ValidatePages(rSpec);
+					Check("V0.2.356：ref 栏位配了合法 refKind → 不报问题", rPage.Problems.Count == 0, string.Join(" / ", rPage.Problems));
+					PluginRegistry.SetPageValue(rSpec, rPage, rPage.Fields[0], "AnyCard");
+					Check("V0.2.356：挑中的类名会原样进 emit（模板里直接用 {Card}）",
+						PluginGen.RenderPage(rSpec, rPage).Contains("Card = \"AnyCard\""), PluginGen.RenderPage(rSpec, rPage).Replace("\n", " "));
+					var rPageBad = new PluginPageSpec
+					{
+						Id = "refbad", Title = "坏引用页", Emit = "x",
+						Fields = { new PluginFieldSpec { Key = "Card", Type = "ref", RefKind = "不存在" } },
+					};
+					var rSpecBad = new PluginSpec { Id = "uicheck-ref-bad", Name = "自检坏引用" };
+					rSpecBad.Pages.Add(rPageBad);
+					PluginRegistry.ValidatePages(rSpecBad);
+					Check("V0.2.356：refKind 写错会被报出来（不会给一个永远空的下拉）",
+						rPageBad.Problems.Any(x => x.Contains("refKind")), string.Join(" / ", rPageBad.Problems));
+					// 界面上真的画出了下拉，且候选里有那张卡的类名
+					object rForm = BuildPluginPageForm(rSpec, rPage);
+					var rCombos = new List<ComboBox>();
+					void WalkCombo(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is ComboBox cb) rCombos.Add(cb);
+						foreach (object child in LogicalTreeHelper.GetChildren(n))
+							if (child is DependencyObject dep) WalkCombo(dep);
+					}
+					WalkCombo(rForm as DependencyObject);
+					Check("V0.2.356：界面上 ref 栏位渲染成下拉，候选里带着存档里那张卡的类名",
+						rCombos.Count == 1 && rCombos[0].Items.OfType<ComboBoxItem>()
+							.Any(it => (it.Content as string ?? "").Contains(rdCardCls)),
+						$"{rCombos.Count} 个下拉 / 第一项 {(rCombos.Count > 0 ? (rCombos[0].Items.OfType<ComboBoxItem>().FirstOrDefault()?.Content as string ?? "") : "")}");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

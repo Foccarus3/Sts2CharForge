@@ -112,6 +112,17 @@ public sealed class PluginFieldSpec
     /// </summary>
     public int DefaultRows { get; set; }
 
+    /// <summary>
+    /// V0.2.356（「能适配的框架」第二部分）：<c>type = "ref"</c> 的**引用类型** —— 下拉里列的是
+    /// **当前存档里真实存在的对象**，选中的值存它的**类名 / 组 Id**（稳定标识，和生成端用的是同一个）。
+    /// 取值：<c>card</c> / <c>power</c> / <c>relic</c> / <c>potion</c> / <c>pet</c> / <c>group</c>。
+    /// 这样插件页就能真引用「存档里的某张卡 / 某个状态」，而不是让用户手抄类名。
+    /// </summary>
+    public string RefKind { get; set; } = "";
+
+    /// <summary>这个栏位是不是引用型（从当前存档里挑对象）。</summary>
+    public bool IsRef => string.Equals((Type ?? "").Trim(), "ref", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>这个栏位是不是动态行集合。</summary>
     public bool IsList => string.Equals((Type ?? "").Trim(), "list", StringComparison.OrdinalIgnoreCase);
 }
@@ -360,7 +371,12 @@ public static class PluginRegistry
                     && page.Target.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase))
                     page.Problems.Add($"{where}：target 里不能用 list 栏位「{key}」（文件名没法按行展开）。");
             }
-        }
+            foreach (PluginFieldSpec f in page.Fields.Where(x => x is not null && x.IsRef))
+            {
+                // V0.2.356：引用型栏位必须写对 refKind，否则下拉永远是空的（那是最难查的一种「没反应」）
+                if (!RefKinds.Contains((f.RefKind ?? "").Trim().ToLowerInvariant()))
+                    page.Problems.Add($"{where}：ref 栏位「{(f.Key ?? "").Trim()}」的 refKind「{f.RefKind}」不合法（只能是 {string.Join(" / ", RefKinds)}）。");
+            }        }
     }
 
     private static int CountOccurrences(string? text, string what)
@@ -662,6 +678,80 @@ public static class PluginRegistry
         {
             return e.Message;
         }
+    }
+    // ==================== 引用型栏位：从**当前存档**里挑对象（V0.2.356）====================
+    //
+    // 为的是「插件页能真引用存档里的东西」：招式表要挑一张已有的卡、掉落表要挑一个状态、
+    // 事件表要挑一只伙伴…… 以前只能让用户手抄类名（抄错就静默生成不出东西）。
+    // 存的是**稳定标识**（类名 / 组 Id），和生成端用的是同一个，不是显示名。
+
+    /// <summary><c>refKind</c> 认得的取值（写错会被报成页面问题，不会静默变成空下拉）。</summary>
+    public static IReadOnlyList<string> RefKinds { get; } = new[] { "card", "power", "relic", "potion", "pet", "group" };
+
+    /// <summary>引用型栏位的候选：<c>(Id, Display)</c>；<paramref name="profile"/> 为 null 时返回空表。</summary>
+    public static List<(string Id, string Display)> RefOptions(string? refKind, Sts2CharForge.Core.Profile.CharacterProfile? profile)
+    {
+        var list = new List<(string, string)>();
+        if (profile is null) return list;
+        var n = Sts2CharForge.Core.Generation.Naming.From(profile);
+        switch ((refKind ?? "").Trim().ToLowerInvariant())
+        {
+            case "card":
+                foreach (var c in profile.AllCards)
+                {
+                    if (c is null) continue;
+                    string cls = n.CardClassName(profile, c);
+                    if (cls.Length == 0) continue;
+                    list.Add((cls, $"{c.Name}（{cls}）"));
+                }
+                break;
+            case "power":
+                for (int i = 0; i < profile.CustomPowers.Count; i++)
+                {
+                    var cp = profile.CustomPowers[i];
+                    if (cp is null) continue;
+                    // 类名留空 = 生成端按序号自动起（<角色>PowerN）—— 下拉里必须**按同一个口径**显示，
+                    // 否则自动命名的状态全都挑不到（那是「下拉是空的」最常见的原因）。
+                    string cls = Sts2CharForge.Core.Generation.CustomPowerGen.ClassNameOf(profile, cp, i);
+                    list.Add((cls, $"{cp.Name}（{cls}）"));
+                }
+                break;
+            case "relic":
+                for (int i = 0; i < profile.Relics.Count; i++)
+                {
+                    var r = profile.Relics[i];
+                    if (r is null) continue;
+                    string cls = n.RelicClassName(r, i);
+                    list.Add((cls, $"{r.Name}（{cls}）"));
+                }
+                break;
+            case "potion":
+                for (int i = 0; i < profile.Potions.Count; i++)
+                {
+                    var x = profile.Potions[i];
+                    if (x is null) continue;
+                    string cls = n.PotionClassName(x, i);
+                    list.Add((cls, $"{x.Name}（{cls}）"));
+                }
+                break;
+            case "pet":
+                for (int i = 0; i < profile.Summons.Count; i++)
+                {
+                    var sp = profile.Summons[i];
+                    if (sp is null) continue;
+                    string cls = string.IsNullOrWhiteSpace(sp.ClassName) ? $"#{i + 1}" : sp.ClassName!.Trim();
+                    list.Add((cls, $"{sp.Name}（{cls}）"));
+                }
+                break;
+            case "group":
+                foreach (var g in profile.CardGroups)
+                {
+                    if (g is null || string.IsNullOrWhiteSpace(g.Id)) continue;
+                    list.Add((g.Id.Trim(), $"{g.Name}（{g.Id.Trim()}）"));
+                }
+                break;
+        }
+        return list;
     }
     /// <summary>插件贡献的条件（下拉项，合并进 <see cref="EffectCatalog.AllConditions"/>）。</summary>
     public static IReadOnlyList<ConditionOption> ConditionOptions => _conditionOptions;

@@ -76,6 +76,18 @@
       "emit": "// 由插件 example 的「卡牌页扩展页」生成\npublic static class {NoteName}\n{\n    public const string From = \"卡牌页扩展页\";\n}\n"
     },
     {
+      "id": "ref-demo",
+      "title": "引用型栏位示例（从存档里挑卡 / 状态）",
+      "tab": "card",
+      "markdown": "演示 V0.2.356 的 **ref 字段**：下拉里列的是**当前存档里真实存在的对象**，存的是它的稳定标识（类名 / 组 Id）。\n\n字段类型写 `\"type\": \"ref\"` 再用 `refKind` 指定挑什么：`card` 卡牌 / `power` 自定义状态 / `relic` 遗物 / `potion` 药水 / `pet` 伙伴 / `group` 组。\n\n换存档时会自动重建这些下拉（在下拉里选的东西会存进 plugins\\<插件 id>\\values.json）。",
+      "fields": [
+        { "key": "Card", "label": "挑一张卡", "type": "ref", "refKind": "card",
+          "hint": "存的是类名（换存档后如果那张卡没了，这里会显示「找不到：…」）" },
+        { "key": "Power", "label": "挑一个自定义状态", "type": "ref", "refKind": "power" }
+      ],
+      "target": "cs/Plugins/{id}/Refs/RefDemo.cs",
+      "emit": "// 由插件 example 的「引用型栏位示例」生成：值来自编辑器里从**当前存档**挑的对象\npublic static class RefDemo\n{\n    public const string CardClass = \"{Card}\";\n    public const string PowerClass = \"{Power}\";\n}\n"
+    },    {
       "id": "move-list",
       "title": "招式列表（list 字段示例）",
       "tab": "card",
