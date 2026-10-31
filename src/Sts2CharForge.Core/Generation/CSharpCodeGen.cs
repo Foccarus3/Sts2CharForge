@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -11603,8 +11603,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line($"namespace {n.Namespace};")
          .Line();
 
+        // V0.2.350：**按类名去重**（兜底）—— 同一个类名写两遍就是 CS0101（类型已存在）+ CS0111（成员已存在），
+        // 整个构建直接失败（用户实测报的就是这个：LunaForgeDelayedTempPowerSowSowPowerSelf）。
+        // 该区分的维度已经在 Naming.DelayedPowerSuffix 里编进名字了；这里再兜一层：
+        // 万一以后又冒出一条「去重键不同但名字相同」的组合，也只会生成**一个类 + 一行注释**，不会炸构建。
+        var emittedDelayedClasses = new HashSet<string>(StringComparer.Ordinal);
         foreach (var e in CollectDelayedEffects(p))
         {
+            if (!emittedDelayedClasses.Add(n.DelayedPowerClass(e)))
+            {
+                w.Line($"// ⚠ 类名「{n.DelayedPowerClass(e)}」已经生成过一次，这条跳过（同类名写两遍 = CS0101 + CS0111）：")
+                 .Line($"//    被跳过：{e.Kind} / 状态 {(string.IsNullOrWhiteSpace(e.PowerId) ? "(无)" : e.PowerId)}"
+                     + $" / 数值 {e.Amount} / 对象 {e.TargetSide} / 下回合撤回 {e.TempPowerReverse}")
+                 .Line();
+                continue;
+            }
             // 「下回合生效」的**通用**延迟状态（V0.2.133）：层数 = 这条效果的数值，
             // 下回合开始时跑**同一套发射器**（EmitDelayedEffectBody），跑完自毁。
             if (IsDelayedEffectKind(e.Kind))

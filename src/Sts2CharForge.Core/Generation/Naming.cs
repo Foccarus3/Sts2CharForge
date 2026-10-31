@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -334,7 +334,14 @@ public sealed record Naming(
             string pet = CSharpCodeGen.NeedsExistingPet(e) && !PetGen.IsAll(e.PetSummon)
                 ? Lit.Identifier(e.PetSummon ?? "", "")
                 : "";
-            return "ForgeDelayed" + e.Kind + Lit.Identifier(tail ?? "", "") + Lit.Identifier(side, "") + pet;
+            // V0.2.350（用户实测 CS0101 + CS0111，类名 LunaForgeDelayedTempPowerSowSowPowerSelf 写了两次）：
+            // 去重键（`CSharpCodeGen.DelayedEffectKey`）里带着「数值正负」和「临时增益什么时候撤」，
+            // 但类名**没带** —— 两条只在这两栏不同的「下回合生效的临时增益」会算出同一个类名，
+            // 于是 `cs\DelayedPowers.cs` 里同一个类写两遍。
+            // 现在把这两栏编进名字；**默认值一个字都不加**（正数 / 不撤）→ 老存档的类名一个字节都不变。
+            string sign = (e.Amount < 0m ? "Abs" : "")
+                + (e.TempPowerReverse == TempPowerReverses.NextTurnStart ? "NextTurn" : "");
+            return "ForgeDelayed" + e.Kind + Lit.Identifier(tail ?? "", "") + Lit.Identifier(side, "") + pet + sign;
         }
         return "ForgeDelayed" + (e.PowerId ?? "Power");
     }

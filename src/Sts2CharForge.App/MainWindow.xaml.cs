@@ -39465,6 +39465,56 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						buttons.Contains("+ 添加一行") && buttons.Contains("↑") && buttons.Contains("↓")
 						&& buttons.Count(x => x == "删除") == 2, string.Join(" / ", buttons));
 					try { Directory.Delete(lp.Dir, recursive: true); } catch { }
+				}				// ----- V0.2.350：延迟状态「同一个类名写两遍」→ CS0101 + CS0111（用户实测构建失败）-----
+				{
+					var dupProf = ProfileFactory.Sample();
+					dupProf.Cards.Clear();
+					dupProf.Curses.Clear();
+					dupProf.AncientCards.Clear();
+					var dupA = new CardSpec { Name = "延迟甲", ClassName = "UiDupDelayed1", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					var dupB = new CardSpec { Name = "延迟乙", ClassName = "UiDupDelayed2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					// 同状态、同对象，只差「什么时候撤」—— 去重键不同，以前的类名却一样
+					dupA.Effects.Add(new EffectSpec
+					{
+						Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self",
+						TempPowerReverse = TempPowerReverses.TurnEnd,
+					});
+					dupB.Effects.Add(new EffectSpec
+					{
+						Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self",
+						TempPowerReverse = TempPowerReverses.NextTurnStart,
+					});
+					dupProf.Cards.Add(dupA);
+					dupProf.Cards.Add(dupB);
+					var dupNaming = Naming.From(dupProf);
+					string dupClsA = dupNaming.DelayedPowerClass(dupA.Effects[0]);
+					string dupClsB = dupNaming.DelayedPowerClass(dupB.Effects[0]);
+					Check("V0.2.350：只差「什么时候撤」的两条下回合效果 → 类名不同（以前算出同一个类名 → 同一个类写两遍）",
+						!string.Equals(dupClsA, dupClsB, StringComparison.Ordinal), dupClsA + " / " + dupClsB);
+					string dupSrc = CSharpCodeGen.DelayedPowersSource(dupProf);
+					int CountAll(string hay, string needle)
+					{
+						int n = 0;
+						for (int at = hay.IndexOf(needle, StringComparison.Ordinal); at >= 0; at = hay.IndexOf(needle, at + needle.Length, StringComparison.Ordinal)) n++;
+						return n;
+					}
+					Check("V0.2.350：DelayedPowers.cs 里这两个类各只出现一次（同名类写两遍 = CS0101 + CS0111）",
+						CountAll(dupSrc, "class " + dupClsA + " :") == 1 && CountAll(dupSrc, "class " + dupClsB + " :") == 1,
+						$"{dupClsA}={CountAll(dupSrc, "class " + dupClsA + " :")} / {dupClsB}={CountAll(dupSrc, "class " + dupClsB + " :")}");
+					// 再构造一对「去重键不同、名字还是相同」的（只差一个名字里没编进类名的栏位）→ 兜底去重必须吃掉它
+					var dupC = new CardSpec { Name = "延迟丙", ClassName = "UiDupDelayed3", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					dupC.Effects.Add(new EffectSpec
+					{
+						Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self",
+						TempPowerReverse = TempPowerReverses.TurnEnd, SelectPile = "Discard",
+					});
+					dupProf.Cards.Add(dupC);
+					string dupSrc2 = CSharpCodeGen.DelayedPowersSource(dupProf);
+					string dupClsC = dupNaming.DelayedPowerClass(dupC.Effects[0]);
+					Check("V0.2.350（兜底）：万一还是撞名，也只生成一个类 + 一行注释（不再炸构建）",
+						string.Equals(dupClsC, dupClsA, StringComparison.Ordinal) && CountAll(dupSrc2, "class " + dupClsC + " :") == 1
+						&& dupSrc2.Contains("已经生成过一次"),
+						$"{dupClsC} 出现 {CountAll(dupSrc2, "class " + dupClsC + " :")} 次");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
