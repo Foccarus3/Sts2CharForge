@@ -38,9 +38,17 @@
       "guard": "if (target is null || target.IsPlayer) return;   // 插件示例：只认敌人那边",
       "hasChoiceContext": true,
       "note": "插件触发时机 = 本体已有钩子 + 一句额外守卫。这里挂的是 EnemyDamaged（参数 target / result / dealer 都能在守卫里用）。"
+    },
+    {
+      "id": "PluginCustomHook",
+      "display": "插件示例：自定义钩子（回合开始最早那一刻）",
+      "hook": "AfterPlayerTurnStartEarly",
+      "signature": "async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)",
+      "guard": "if (player != base.Owner.Player) return;   // 插件示例：只认自己回合",
+      "hasChoiceContext": true,
+      "note": "写了 signature = **自定义触发时机**（V0.2.362）：生成端把这段 override 原样写进状态类，方法名/参数写错会在编译期报错。"
     }
-  ],
-  "conditions": [
+  ],  "conditions": [
     {
       "id": "PluginHasBlock",
       "display": "插件示例：自己有格挡",

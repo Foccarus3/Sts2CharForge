@@ -40061,6 +40061,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.361：重载真实插件后示例插件的效果种类还在（没被临时目录那轮带坏）",
 						PluginRegistry.EffectKinds.Any(k => k.Kind == "PluginHealAndBlock"),
 						string.Join("/", PluginRegistry.EffectKinds.Select(k => k.Kind)));
+				}				// ----- V0.2.362：插件「自定义触发时机」——签名由插件给，生成端原样写 override -----
+				{
+					var chProf = ProfileFactory.Sample();
+					chProf.CustomPowers.Clear();
+					var chPower = new CustomPowerSpec { Name = "自定义钩子自检", ClassName = "UiCustomHook" };
+					// 效果的载体是「触发时机」上的 Effects（不是状态本身）
+					var chTrig = new PowerTriggerSpec { Kind = "PluginCustomHook" };
+					chTrig.Effects.Add(new EffectSpec { Kind = "Heal", Amount = 3m, TargetSide = "Self" });
+					chTrig.OwnerPower = chPower;
+					chPower.Triggers.Add(chTrig);
+					chProf.CustomPowers.Add(chPower);
+					string chSrc = CustomPowerGen.Source(chProf, chPower, 0);
+					Check("V0.2.362：插件自定义触发时机 → 生成的状态类里出现**插件给的那段 override**",
+						chSrc.Contains("public override async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)"),
+						chSrc.Split('\n').FirstOrDefault(l => l.Contains("AfterPlayerTurnStartEarly")) ?? "(没生成)");
+					Check("V0.2.362：自定义钩子的守卫也写进去了（只认自己回合）",
+						chSrc.Contains("if (player != base.Owner.Player) return;"),
+						chSrc.Split('\n').FirstOrDefault(l => l.Contains("base.Owner.Player")) ?? "(没有守卫)");
+					// 签名里已经声明了 choiceContext 这个参数 → 生成端**不能**再声明一次（否则 CS0128 重复定义），
+					// 效果体直接用这个参数即可。核对「整个类里只有参数那一处声明」。
+					int ctxDecls = System.Text.RegularExpressions.Regex.Matches(chSrc, "PlayerChoiceContext choiceContext").Count;
+					Check("V0.2.362：签名里已有 choiceContext → 不会重复声明（否则 CS0128），效果体直接用那个参数",
+						ctxDecls == 1, $"出现 {ctxDecls} 次");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

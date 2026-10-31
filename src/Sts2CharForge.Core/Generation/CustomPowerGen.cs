@@ -970,6 +970,28 @@ public static class CustomPowerGen
         w.Close();
     }
 
+    /// <summary>
+    /// V0.2.362：把插件声明的**自定义钩子**写成状态类里的一个 override。
+    /// 签名由插件给（方法名 + 参数），这里只负责：补 choiceContext（签名里要了才补）、守卫、效果体。
+    /// </summary>
+    private static void EmitCustomHookMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items,
+        CharacterProfile? p, PluginTriggerSpec plug)
+    {
+        string sig = plug.Signature.Trim();
+        string when = PowerTriggers.Find(kind)?.Display ?? kind;
+        w.Line();
+        w.Line($"// ===== 触发时机：{when}（插件自定义钩子 {plug.Hook}）=====");
+        w.Open("public override " + sig);
+        // 签名里声明了 choiceContext 才补它（否则会 CS0103 / 多余的局部变量）
+        if (sig.Contains("PlayerChoiceContext choiceContext", StringComparison.Ordinal))
+            EmitChoiceContextBootstrap(w, kind, items);
+        if (!string.IsNullOrWhiteSpace(plug.Guard))
+        {
+            w.Line(plug.Guard.Trim());
+        }
+        EmitItemsWithAmountGate(w, items, p);
+        w.Close();
+    }
     private static void EmitTriggerMethod(CodeWriter w, string kind, List<PowerTriggerSpec> items,
         CharacterProfile? p = null)
     {
@@ -984,6 +1006,13 @@ public static class CustomPowerGen
         _pendingPluginGuard = null;
         if (Plugins.PluginRegistry.TriggerOf(kind) is { } plugTr)
         {
+            // V0.2.362：插件写了 signature = **自定义触发时机** —— 原样把它的 override 写进来，
+            // 于是「本体有、编辑器没收录」的钩子也能用（写错是编译期报错，不会静默失效）。
+            if (!string.IsNullOrWhiteSpace(plugTr.Signature))
+            {
+                EmitCustomHookMethod(w, kind, items, p, plugTr);
+                return;
+            }
             kind = plugTr.Hook.Trim();
             _pendingPluginGuard = string.IsNullOrWhiteSpace(plugTr.Guard) ? null : plugTr.Guard.Trim();
         }

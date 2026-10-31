@@ -399,3 +399,11 @@ emit 里的 `{amount}` → `base.DynamicVars["Heal"].BaseValue`，text 里的 `{
 
 当前 `apiVersion = "2"`；**最低支持 1**，写 1 或没写都会自动迁移上来（编辑器里看到一条「提示」，不影响使用）；
 写得比 2 新会被拒绝并提示升级编辑器。迁移不改你的 plugin.json。新插件请直接写 `"apiVersion": "2"`。
+---
+
+## 23. 自定义触发时机（V0.2.362）
+
+`triggers[]` 除了 `hook`（编辑器认识的钩子 id）还能写 `signature` = 完整 override 签名，例如
+`"signature": "async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)"`。
+写了它，`hook` 只当方法名（必须出现在签名里），生成端原样写 override + 你的 guard + 效果体；
+签名里若已声明 choiceContext 就不会重复声明。写错是编译期报错。

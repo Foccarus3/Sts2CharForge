@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -78,6 +78,18 @@ public sealed class PluginTriggerSpec
 {
     public string Id { get; set; } = "";
     public string Display { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.362：**自定义触发时机** —— 插件自己写完整的 <c>override</c> 签名（方法名 + 参数），
+    /// 生成端原样写进状态类，于是「本体有、但编辑器没收录」的钩子也能用。
+    ///
+    /// <para>例：<c>async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)</c>。
+    /// 写错（方法名不存在 / 参数对不上）会在**编译期**报错（CS0115 之类），不会静默失效。
+    /// 签名里带 <c>PlayerChoiceContext choiceContext</c> 时，生成端会按需补 <c>choiceContext</c> 的取值。</para>
+    ///
+    /// <para>填了它之后 <see cref="Hook"/> 只当「方法名」用（不用再是编辑器认识的钩子 id）。</para>
+    /// </summary>
+    public string Signature { get; set; } = "";
 
     /// <summary>挂在哪个本体钩子上（必须是编辑器已知的钩子 id，如 <c>DamageDealt</c>）。</summary>
     public string Hook { get; set; } = "";
@@ -674,6 +686,30 @@ public static class PluginRegistry
             string hook = (tr.Hook ?? "").Trim();
             if (hook.Length == 0) { spec.Problems.Add($"触发时机「{tr.Id}」没填 hook（要挂在本体哪个钩子上）。"); continue; }
             // V0.2.316：触发时机 = 「给本体已有的某个钩子换个名字 + 加一句额外守卫」——
+            // V0.2.362：写了 signature = **自定义触发时机**（插件自带完整 override 签名）——
+            // 这时 hook 只当方法名用，不再要求是编辑器认识的钩子 id（否则等于又把插件锁死在编辑器那张表里）。
+            if (!string.IsNullOrWhiteSpace(tr.Signature))
+            {
+                string sig = tr.Signature.Trim();
+                if (!IsValidKind(hook))
+                {
+                    spec.Problems.Add($"触发时机「{tr.Id}」的 hook「{hook}」不合法（自定义触发时机时它只当方法名用，要英文/数字/下划线）。");
+                    continue;
+                }
+                if (!sig.Contains(hook + "(", StringComparison.Ordinal))
+                {
+                    spec.Problems.Add($"触发时机「{tr.Id}」的 signature 里找不到方法名「{hook}(」—— 签名写错的话生成出来会编译不过。");
+                    continue;
+                }
+                if (_triggersById.ContainsKey(tr.Id.Trim()))
+                {
+                    spec.Problems.Add($"触发时机 id「{tr.Id}」和别的插件重名 —— 跳过这一条。");
+                    continue;
+                }
+                tr.Hook = hook;
+                _triggersById[tr.Id.Trim()] = tr;
+                continue;
+            }
             // 这样插件不必改编辑器的钩子生成器，也不需要新的 override 方法（也就不会因编辑器升级失效）。
             if (EffectCatalog.RelicTriggers.All(x => !string.Equals(x.Id, hook, StringComparison.OrdinalIgnoreCase))
                 && PowerTriggers.All.All(x => !string.Equals(x.Kind, hook, StringComparison.OrdinalIgnoreCase)))
