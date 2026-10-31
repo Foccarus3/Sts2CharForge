@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -39972,13 +39972,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					txProf.Cards.Clear();
 					txProf.Curses.Clear();
 					txProf.AncientCards.Clear();
+					// V0.2.360 起示例插件的主效果声明了 var（卡面会写 {Heal:diff()}），所以「字面数字」这条
+					// 用**不声明 var** 的那条示例效果来验（PluginHealNoVar）。
 					var txCard = new CardSpec { Name = "插件文字自检", ClassName = "UiPluginText", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
-					txCard.Effects.Add(new EffectSpec { Kind = "PluginHealAndBlock", Amount = 4m, TargetSide = "Self" });
+					txCard.Effects.Add(new EffectSpec { Kind = "PluginHealNoVar", Amount = 4m, TargetSide = "Self" });
 					txProf.Cards.Add(txCard);
 					string txAuto = LocalizationGen.CardAutoText(txProf, txCard, upgraded: false);
-					Check("V0.2.359：插件效果声明了 text → 卡面自动描述里会出现那句（{amount} 换成具体数值）",
-						txAuto.Contains("回复 4 点生命并获得 4 点格挡"), txAuto.Replace("\n", "⏎"));
-					string txSrc = CSharpCodeGen.CardSource(txProf, txCard, 0);
+					Check("V0.2.359：插件效果声明了 text → 卡面自动描述里会出现那句（没声明 var 时 {amount} 是字面数字）",
+						txAuto.Contains("回复 4 点生命"), txAuto.Replace("\n", "⏎"));
+					// 悬停说明在 PluginHealAndBlock 上声明，单独造一张卡验
+					var txHover = new CardSpec { Name = "插件悬停自检", ClassName = "UiPluginHover", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					txHover.Effects.Add(new EffectSpec { Kind = "PluginHealAndBlock", Amount = 2m, TargetSide = "Self" });
+					txProf.Cards.Add(txHover);
+					string txSrc = CSharpCodeGen.CardSource(txProf, txHover, txProf.Cards.Count - 1);
 					Check("V0.2.359：插件效果声明了 hoverTip → 写进 ExtraHoverTips（悬停能看到说明）",
 						txSrc.Contains("FromPower<MegaCrit.Sts2.Core.Models.Powers.DexterityPower>()"),
 						txSrc.Contains("ExtraHoverTips") ? "ExtraHoverTips 里有" : "没写进去");
@@ -39989,6 +39995,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string txXText = LocalizationGen.CardAutoText(txProf, txX, upgraded: false);
 					Check("V0.2.359：插件效果的「数值 = X」在卡面上写 X（不是那个用不上的 0）",
 						txXText.Contains("回复 X 点生命"), txXText.Replace("\n", "⏎"));
+				}				// ----- V0.2.360：插件效果能声明**动态变量**（卡面 {变量:diff()} 实时算、升级有对比值）-----
+				{
+					var dvProf = ProfileFactory.Sample();
+					dvProf.Cards.Clear();
+					dvProf.Curses.Clear();
+					dvProf.AncientCards.Clear();
+					var dvCard = new CardSpec { Name = "插件变量自检", ClassName = "UiPluginVar", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					dvCard.Effects.Add(new EffectSpec { Kind = "PluginHealAndBlock", Amount = 5m, TargetSide = "Self" });
+					dvProf.Cards.Add(dvCard);
+					string dvSrc = CSharpCodeGen.CardSource(dvProf, dvCard, 0);
+					Check("V0.2.360：插件效果声明了 var → 生成端**真的声明**这个动态变量（CanonicalVars 里有 Heal = 5）",
+						dvSrc.Contains("new DynamicVar(\"Heal\", 5m)") || dvSrc.Contains("new DynamicVar(\"Heal\""),
+						dvSrc.Split('\n').FirstOrDefault(l => l.Contains("\"Heal\"")) ?? "(没声明)");
+					Check("V0.2.360：模板里的 {amount} 变成 base.DynamicVars[\"Heal\"]（跟着实时值走，不是写死 5m）",
+						dvSrc.Contains("base.DynamicVars[\"Heal\"]") && !dvSrc.Contains("Heal(base.Owner.Creature, 5m)"),
+						dvSrc.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Heal")) ?? "(没生成 Heal)");
+					string dvText = LocalizationGen.CardAutoText(dvProf, dvCard, upgraded: false);
+					Check("V0.2.360：卡面写 {Heal:diff()}（升级后能显示对比值），不再是字面数字",
+						dvText.Contains("{Heal:diff()}"), dvText.Replace("\n", "⏎"));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

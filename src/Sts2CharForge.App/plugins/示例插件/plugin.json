@@ -15,9 +15,19 @@
       "max": 99,
       "needsTarget": false,
       "note": "模板里的 {self} 是「自己」、{amount} 是数值框里的数字（填了数值公式时就是算出来的那个值）。",
+      "var": "Heal",
       "text": "回复 {amount} 点生命并获得 {amount} 点格挡。",
       "hoverTip": "MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower<MegaCrit.Sts2.Core.Models.Powers.DexterityPower>()",
       "emit": "// 来自插件 example（PluginHealAndBlock）\nawait CreatureCmd.Heal({self}, {amount});\nawait CreatureCmd.GainBlock({self}, {amount}, ValueProp.Move, null);"
+    },
+    {
+      "kind": "PluginHealNoVar",
+      "display": "插件示例：回复生命（不声明动态变量）",
+      "unit": "点",
+      "min": 0,
+      "max": 99,
+      "text": "回复 {amount} 点生命。（这条没写 var，所以卡面是字面数字）",
+      "emit": "await CreatureCmd.Heal({self}, {amount});"
     }
   ],
   "triggers": [

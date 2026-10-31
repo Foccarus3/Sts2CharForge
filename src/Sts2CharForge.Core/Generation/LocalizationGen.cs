@@ -1494,11 +1494,15 @@ public static class LocalizationGen
         if (Sts2CharForge.Core.Plugins.PluginRegistry.EffectOf(e.Kind) is { } __pluginFx
             && !string.IsNullOrWhiteSpace(__pluginFx.Text))
         {
+            // V0.2.360：插件效果声明了 var → 卡面写 {变量:diff()}（数字会跟着升级 / 力量实时算）；
+            // 没声明 var 才退回字面数字（含「= X」写 X、公式写公式文本）。
             string amountWord = e.AmountIsXEffective && isCard
                 ? "X"
                 : e.UsesAmountFormula
                     ? ForgeFormula.DisplayText(e.AmountFormula)
-                    : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                    : (!string.IsNullOrWhiteSpace(__pluginFx.Var) && Naming.IsValidIdentifier(__pluginFx.Var))
+                        ? "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}"
+                        : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
             return __pluginFx.Text.Replace("{amount}", amountWord, StringComparison.OrdinalIgnoreCase);
         }
         string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;

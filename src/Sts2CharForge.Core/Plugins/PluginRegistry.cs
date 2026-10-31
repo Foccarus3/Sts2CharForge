@@ -40,6 +40,16 @@ public sealed class PluginEffectSpec
     /// </summary>
     public string HoverTip { get; set; } = "";
 
+    /// <summary>
+    /// V0.2.360：这个效果要声明的**动态变量名**（例：<c>Heal</c> / <c>Block</c> / 你自己的名字）。
+    /// 填了之后：卡牌 / 遗物 / 药水会真的声明这个变量，`{amount}` 在**卡面**上变成 <c>{变量:diff()}</c>
+    /// （升级后能显示对比值）、在**生成代码**里变成 <c>base.DynamicVars["变量"]</c> —— 于是数字会跟着
+    /// 力量 / 敏捷 / 升级这些实时算，不再是写死的字面量。
+    ///
+    /// <para>留空 = 老行为（不声明变量、卡面写字面数字）。<c>X</c> / <c>Y</c> 是保留名，不能用。</para>
+    /// </summary>
+    public string Var { get; set; } = "";
+
     /// <summary>数值单位（「点」/「张」/「层」…）。</summary>
     public string Unit { get; set; } = "点";
 
@@ -569,6 +579,13 @@ public static class PluginRegistry
                 continue;
             }
             if (string.IsNullOrWhiteSpace(fx.Emit)) { spec.Problems.Add($"效果「{kind}」没写 emit 模板。"); continue; }
+            // V0.2.360：动态变量名必须是合法标识符，且不能占 X / Y（那两个是本体的「本回合 X / 额外资源量」）
+            if (!string.IsNullOrWhiteSpace(fx.Var))
+            {
+                string vn = fx.Var.Trim();
+                if (!IsValidKind(vn)) spec.Problems.Add($"效果「{kind}」的 var「{vn}」不合法（英文/数字/下划线，且以字母开头）。");
+                else if (vn is "X" or "Y") spec.Problems.Add($"效果「{kind}」的 var 不能用「{vn}」—— 那是本体的保留名。");
+            }
             // V0.2.359：效果的 text 只认 {amount} —— 写了别的占位符会**原样印在卡面上**，必须报出来
             if (!string.IsNullOrWhiteSpace(fx.Text))
             {

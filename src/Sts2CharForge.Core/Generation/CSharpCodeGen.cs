@@ -2747,7 +2747,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     // ==================== 动态变量 ====================
     // 注意：这两个是 public —— 界面的自检（--uicheck）会直接调它们核对变量名（App 看不到 internal）。
-    public static string VarNameOf(EffectSpec e) => e.Kind switch
+    public static string VarNameOf(EffectSpec e) =>
+        // V0.2.360：插件贡献的效果可以**自己声明动态变量名**（卡面 {名字:diff()} 能实时算）
+        PluginRegistry.EffectOf(e.Kind)?.Var is { Length: > 0 } __pv && Naming.IsValidIdentifier(__pv)
+            ? __pv.Trim()
+            : VarNameOfBuiltIn(e);
+
+    private static string VarNameOfBuiltIn(EffectSpec e) => e.Kind switch
     {
         "Damage" => "Damage",
         "Block" => "Block",
@@ -8847,7 +8853,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   · 顺带让 IsInertZero 对「数值 = X」的种类失效（它们本来就不该按「0 = 不生效」处理）。
     /// </summary>
     internal static bool HasNoDynamicVar(EffectSpec e) =>
-        NoDynamicVarKind(e)
+        // V0.2.360：插件效果**没声明 var** 就不声明动态变量（否则会凭空多一个默认名变量）
+        (PluginRegistry.EffectOf(e.Kind) is { } __pf && string.IsNullOrWhiteSpace(__pf.Var))
+        || NoDynamicVarKind(e)
         // 额外资源量：只有「正数获得」才声明变量（花费走 CanonicalStarCost，不占变量）
         || (e.Kind == "ExtraResource" && e.Amount <= 0)
         // 召唤伙伴：数值填 0 = 用「召唤物」页配置的血量（生成时直接读那只的常量，不声明变量）。

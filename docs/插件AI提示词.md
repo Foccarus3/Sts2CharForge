@@ -386,3 +386,10 @@ emit 里用块宏逐行展开：
 `effects[]` 里可以写 `"text": "回复 {amount} 点生命。"`（占位符只认 `{amount}`；「数值 = X」时写 X；
 写了别的 {…} 会报问题）和 `"hoverTip": "<C# 表达式>"`（原样进 ExtraHoverTips）。
 不声明动态变量，所以 text 里是字面数字，不会随力量/敏捷实时变。
+---
+
+## 21. 动态变量 `var`（V0.2.360）
+
+`effects[]` 写 `"var": "Heal"` 之后：生成端声明 `new DynamicVar("Heal", 数值)`，
+emit 里的 `{amount}` → `base.DynamicVars["Heal"].BaseValue`，text 里的 `{amount}` → `{Heal:diff()}`（卡面实时值 + 升级对比）。
+`var` 必须合法标识符且不能用 X / Y；不写 = 老行为（字面数字）。
