@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -242,6 +242,12 @@ public sealed class PluginSpec
     /// <summary>要一起打包的其它资源（相对路径，拷到工程根的 <c>plugin_assets/&lt;插件 id&gt;/</c>）。</summary>
     public List<string> AssetFiles { get; set; } = new();
 
+    /// <summary>
+    /// V0.2.358：这个插件现在是**启用**还是**禁用**（禁用 = 不注册它的效果 / 触发 / 条件 / 页，也不随 mod 打包）。
+    /// 开关存在 <c>plugins/_enabled.json</c>（不写进 plugin.json，改插件目录不会丢）。
+    /// </summary>
+    [JsonIgnore] public bool Enabled { get; set; } = true;
+
     /// <summary>运行时填的：清单文件所在目录（不参与序列化）。</summary>
     [JsonIgnore] public string Dir { get; set; } = "";
 
@@ -298,6 +304,89 @@ public static class PluginRegistry
     public static string PluginsDirOf(string appDir) => Path.Combine(appDir, "plugins");
 
     /// <summary>上一次扫描的时间（界面显示用）。</summary>
+    // ==================== 插件启用/禁用（V0.2.358）====================
+    //
+    // 存在 plugins/_enabled.json：{ "关掉的": ["插件id", …] } —— **只记关掉的**，所以新装的插件默认启用。
+    // 不写进各自的 plugin.json：那份是插件作者的，我们改它会在重新安装 / 升级时被覆盖。
+
+    private static string EnabledPathOf(string appDir) => Path.Combine(PluginsDirOf(appDir), "_enabled.json");
+    private static readonly HashSet<string> _disabledIds = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>这个插件现在是启用的吗。</summary>
+    public static bool IsEnabled(string? pluginId) => pluginId is not null && !_disabledIds.Contains(pluginId.Trim());
+
+    /// <summary>只含**启用**的插件（生成端该用这个，不是 <see cref="Plugins"/>）。</summary>
+    public static IEnumerable<PluginSpec> ActivePlugins => Plugins.Where(p => p.Enabled && p.Problems.Count == 0);
+
+    /// <summary>切换某个插件的启用状态（只改内存；<see cref="SaveEnabled"/> 才落盘）。返回新的状态。</summary>
+    public static bool SetEnabled(string pluginId, bool enabled)
+    {
+        if (string.IsNullOrWhiteSpace(pluginId)) return enabled;
+        if (enabled) _disabledIds.Remove(pluginId.Trim());
+        else _disabledIds.Add(pluginId.Trim());
+        return enabled;
+    }
+
+    /// <summary>把启用表写回 <c>plugins/_enabled.json</c>（失败返回错误文本，不抛）。</summary>
+    public static string? SaveEnabled(string appDir)
+    {
+        try
+        {
+            Directory.CreateDirectory(PluginsDirOf(appDir));
+            var json = JsonSerializer.Serialize(new { disabled = _disabledIds.OrderBy(x => x, StringComparer.OrdinalIgnoreCase).ToList() },
+                new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(EnabledPathOf(appDir), json, new System.Text.UTF8Encoding(false));
+            return null;
+        }
+        catch (Exception e) { return e.Message; }
+    }
+
+    /// <summary>读启用表（读坏了当「全都启用」，不挡住编辑器）。</summary>
+    private static void LoadEnabled(string appDir)
+    {
+        _disabledIds.Clear();
+        try
+        {
+            string path = EnabledPathOf(appDir);
+            if (!File.Exists(path)) return;
+            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            if (doc.RootElement.TryGetProperty("disabled", out JsonElement arr) && arr.ValueKind == JsonValueKind.Array)
+                foreach (JsonElement e in arr.EnumerateArray())
+                    if (e.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(e.GetString()))
+                        _disabledIds.Add(e.GetString()!.Trim());
+        }
+        catch { /* 读坏了 = 全启用 */ }
+    }
+
+    // ==================== 值按「当前存档」隔离（V0.2.358）====================
+    //
+    // 老行为：plugins/<id>/values.json —— 所有存档共用一份，换角色还是同一套值（用户报的痛点）。
+    // 新行为：plugins/<id>/profiles/<存档 key>/values.json；**老文件仍然会读**（第一次读到就当作这个存档的初值，
+    // 不删老文件），所以升级后旧值不会丢。
+
+    /// <summary>当前存档的 key（文件名去扩展名 + 去非法字符；没打开存档时是 "default"）。</summary>
+    public static string CurrentProfileKey { get; private set; } = "default";
+
+    /// <summary>界面载入 / 新建存档时调一次：之后插件页的值就按这个存档分目录存。</summary>
+    public static void SetCurrentProfile(string? profilePath)
+    {
+        string key = "default";
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(profilePath))
+            {
+                string name = Path.GetFileNameWithoutExtension(profilePath.Trim());
+                var sb = new System.Text.StringBuilder();
+                foreach (char c in name) sb.Append(char.IsLetterOrDigit(c) || c == '_' || c == '-' || c > 0x7F ? c : '_');
+                key = sb.Length > 0 ? sb.ToString() : "default";
+            }
+        }
+        catch { key = "default"; }
+        if (string.Equals(key, CurrentProfileKey, StringComparison.OrdinalIgnoreCase)) return;
+        CurrentProfileKey = key;
+        _pageValues.Clear();     // 缓存是按 pluginId 存的 —— 换了存档必须整体清掉，否则读到上一个存档的值
+        _pageRows.Clear();
+    }
     public static string LastScan { get; private set; } = "";
 
     /// <summary>
@@ -316,6 +405,7 @@ public static class PluginRegistry
         _triggersById.Clear();
         LastScan = DateTime.Now.ToString("HH:mm:ss");
 
+        LoadEnabled(appDir);   // V0.2.358：先读启用表（禁用表只记「关掉的」）
         string dir = PluginsDirOf(appDir);
         if (!Directory.Exists(dir)) return 0;
 
@@ -361,8 +451,10 @@ public static class PluginRegistry
             if (!seenIds.Add(spec.Id)) spec.Problems.Add($"插件 id「{spec.Id}」和前面某个插件重复 —— 这个插件不会被加载。");
 
             if (spec.Problems.Count > 0) { _plugins.Add(spec); continue; }
-
-            LoadOne(spec);
+            spec.Enabled = IsEnabled(spec.Id);
+            // V0.2.358：禁用的插件**不注册**效果 / 触发 / 条件（生成端等于没有它），但界面里仍然列出来（可以再打开）
+            if (spec.Enabled) LoadOne(spec);
+            ValidatePages(spec);
             _plugins.Add(spec);
         }
         return _plugins.Count(p => p.Problems.Count == 0);
@@ -555,7 +647,12 @@ public static class PluginRegistry
     private static readonly Dictionary<string, Dictionary<string, Dictionary<string, string>>> _pageValues =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private static string ValuesPathOf(PluginSpec p) => Path.Combine(p.Dir, "values.json");
+    /// <summary>老位置（升级前所有存档共用一份）。只读，用作第一次的初值。</summary>
+    private static string LegacyValuesPathOf(PluginSpec p) => Path.Combine(p.Dir, "values.json");
+
+    /// <summary>V0.2.358：按**当前存档**分目录存（<c>plugins/&lt;id&gt;/profiles/&lt;存档 key&gt;/values.json</c>）。</summary>
+    private static string ValuesPathOf(PluginSpec p) =>
+        Path.Combine(p.Dir, "profiles", CurrentProfileKey, "values.json");
 
     /// <summary>读这个插件的页面值（没有就读磁盘上的 values.json；读坏了当空）。</summary>
     private static Dictionary<string, Dictionary<string, string>> ValuesOf(PluginSpec p)
@@ -565,6 +662,7 @@ public static class PluginRegistry
         try
         {
             string path = ValuesPathOf(p);
+            if (!File.Exists(path)) path = LegacyValuesPathOf(p);   // V0.2.358：老文件当这个存档的初值
             if (File.Exists(path))
             {
                 var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllText(path), JsonOpts);
@@ -605,6 +703,8 @@ public static class PluginRegistry
         {
             var values = ValuesOf(p);
             var plain = values.ToDictionary(kv => kv.Key, kv => kv.Value.ToDictionary(x => x.Key, x => x.Value));
+            // V0.2.358：值现在按存档分目录存（profiles/<存档 key>/），目录可能还不存在 —— 先建
+            Directory.CreateDirectory(Path.GetDirectoryName(ValuesPathOf(p))!);
             File.WriteAllText(ValuesPathOf(p), JsonSerializer.Serialize(plain, new JsonSerializerOptions { WriteIndented = true }), new System.Text.UTF8Encoding(false));
             return null;
         }
@@ -625,7 +725,10 @@ public static class PluginRegistry
     private static readonly Dictionary<string, Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>> _pageRows =
         new(StringComparer.OrdinalIgnoreCase);
 
-    private static string RowsPathOf(PluginSpec p) => Path.Combine(p.Dir, "rows.json");
+    private static string LegacyRowsPathOf(PluginSpec p) => Path.Combine(p.Dir, "rows.json");
+
+    private static string RowsPathOf(PluginSpec p) =>
+        Path.Combine(p.Dir, "profiles", CurrentProfileKey, "rows.json");
 
     private static Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>> RowsOf(PluginSpec p)
     {
@@ -634,6 +737,7 @@ public static class PluginRegistry
         try
         {
             string path = RowsPathOf(p);
+            if (!File.Exists(path)) path = LegacyRowsPathOf(p);   // V0.2.358：同上
             if (File.Exists(path))
             {
                 var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>>(File.ReadAllText(path), JsonOpts);
@@ -714,6 +818,7 @@ public static class PluginRegistry
                 kv => kv.Value.ToDictionary(
                     x => x.Key,
                     x => x.Value.Select(r => r.ToDictionary(y => y.Key, y => y.Value)).ToList()));
+            Directory.CreateDirectory(Path.GetDirectoryName(RowsPathOf(p))!);   // V0.2.358：同上，先建目录
             File.WriteAllText(RowsPathOf(p), JsonSerializer.Serialize(plain, new JsonSerializerOptions { WriteIndented = true }),
                 new System.Text.UTF8Encoding(false));
             return null;

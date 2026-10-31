@@ -116,7 +116,7 @@ public static class PluginGen
         int n = 0;
         foreach (var p in PluginRegistry.Plugins)
         {
-            if (p.Problems.Count > 0) continue;
+            if (p.Problems.Count > 0 || !p.Enabled) continue;   // V0.2.358：禁用的插件不随 mod 打包
             foreach (string rel in p.CsFiles.Where(x => !string.IsNullOrWhiteSpace(x)))
                 n += CopyOne(p, rel, Path.Combine(projectRoot, "cs", "Plugins", Safe(p.Id)));
             foreach (string rel in p.AssetFiles.Where(x => !string.IsNullOrWhiteSpace(x)))
@@ -394,7 +394,7 @@ public static class PluginGen
         int n = 0;
         foreach (var pl in PluginRegistry.Plugins)
         {
-            if (pl.Problems.Count > 0) continue;
+            if (pl.Problems.Count > 0 || !pl.Enabled) continue;   // V0.2.358：禁用的插件不产出
             foreach (var page in pl.Pages.Where(x => x is not null && x.Produces && x.Problems.Count == 0))
             {
                 // V0.2.357：一页可能产出多个文件（outputs[] / 按行）—— 统一走 WritePageTo

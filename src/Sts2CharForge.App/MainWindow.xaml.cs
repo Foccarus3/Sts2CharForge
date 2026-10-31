@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -490,6 +490,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			Raise("Profile");
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.358：插件页的值按**当前存档**隔离存（换存档 = 换一套值）；这里把「当前是哪个存档」告诉注册表。
+			try { Sts2CharForge.Core.Plugins.PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
 			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
 			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
 			try
@@ -1096,6 +1098,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			}
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.358：插件页的值按**当前存档**隔离存（换存档 = 换一套值）；这里把「当前是哪个存档」告诉注册表。
+			try { Sts2CharForge.Core.Plugins.PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
 			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
 			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
 			try
@@ -1139,6 +1143,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 				Profile.Colors.CardFrameColor = "";
 			}
 			Raise("FrameSelection");
+			// V0.2.358：插件页的值按**当前存档**隔离存（换存档 = 换一套值）；这里把「当前是哪个存档」告诉注册表。
+			try { Sts2CharForge.Core.Plugins.PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
 			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
 			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
 			try
@@ -4775,6 +4781,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			Raise("PresetSelection");
 			Raise("FrameSelection");
+			// V0.2.358：插件页的值按**当前存档**隔离存（换存档 = 换一套值）；这里把「当前是哪个存档」告诉注册表。
+			try { Sts2CharForge.Core.Plugins.PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
 			// V0.2.356：插件页里的「引用型栏位」列的是**当前存档**里的对象 → 换存档要把这些页重建一遍，
 			// 否则下拉里还是上一个存档的卡名（选了也生成不出来）。
 			try
@@ -6530,6 +6538,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		RebuildPluginTopLevelTabs();
 	}
 
+	/// <summary>
+	/// V0.2.358：切换某个插件的启用状态 → 存盘 → **重新加载**（禁用后它的效果就不再出现在下拉里）→ 重建页签。
+	/// </summary>
+	private void OnTogglePluginEnabled(PluginSpec p, bool enabled)
+	{
+		try
+		{
+			PluginRegistry.SetEnabled(p.Id, enabled);
+			string? err = PluginRegistry.SaveEnabled(AppContext.BaseDirectory);
+			if (err is not null) { SetStatus("启用表写入失败：" + err); return; }
+			LoadPlugins();     // 会重新读启用表 + 重建扩展页 / 顶层页
+			SetStatus($"插件「{p.Name}」已{(enabled ? "启用" : "禁用")}（plugins\\_enabled.json）");
+		}
+		catch (Exception ex) { SetStatus("切换插件启用状态失败：" + ex.Message); }
+	}
 	private void RefreshPluginList()
 	{
 		PluginList.Items.Clear();
@@ -6793,7 +6816,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			FontFamily = new System.Windows.Media.FontFamily("Consolas"),
 			Text = DescribePlugin(p), BorderThickness = new Thickness(0),
 		};
-		PluginPageTabs.Items.Add(new TabItem { Header = "信息", Content = _pluginDetailBox });
+		// V0.2.358：启用 / 禁用开关（禁用 = 效果 / 触发 / 条件 / 页面都不生效，也不随 mod 打包；
+		// 存在 plugins\_enabled.json，不动插件自己的 plugin.json）
+		var enabledBox = new CheckBox
+		{
+			Content = $"启用这个插件（{p.Id}）—— 关掉之后它的效果种类 / 触发 / 条件 / 页面全部不生效",
+			IsChecked = p.Enabled,
+			Margin = new Thickness(8, 8, 8, 8),
+			ToolTip = "关掉只是不让它参与生成；插件文件一个都不动。开关存在 plugins\\_enabled.json。",
+		};
+		enabledBox.Click += (_, _) => OnTogglePluginEnabled(p, enabledBox.IsChecked == true);
+		var infoHost = new DockPanel();
+		DockPanel.SetDock(enabledBox, Dock.Top);
+		infoHost.Children.Add(enabledBox);
+		infoHost.Children.Add(_pluginDetailBox);
+		PluginPageTabs.Items.Add(new TabItem { Header = "信息", Content = infoHost });
 
 		foreach (var page in p.Pages.Where(x => x is not null))
 		{
@@ -39529,9 +39566,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						rendered.Contains("\"夜1:Slash/攻击/6\"") && rendered.Contains("\"夜2:Guard/防御/6\"") && rendered.Contains("class Demo"),
 						rendered.Replace("\n", "⏎"));
 					string? rowsErr = PluginRegistry.SaveRows(lp);
-					Check("V0.2.349：行数据写到 plugins\\<id>\\rows.json（和 values.json 分开，老版本读不坏）",
-						rowsErr is null && File.Exists(Path.Combine(lp.Dir, "rows.json"))
-						&& File.ReadAllText(Path.Combine(lp.Dir, "rows.json")).Contains("Slash"), rowsErr ?? "已写");
+					Check("V0.2.349/358：行数据写到 plugins\\<id>\\profiles\\<存档>\\rows.json（和 values.json 分开，老版本读不坏）",
+						rowsErr is null && File.Exists(Path.Combine(lp.Dir, "profiles", PluginRegistry.CurrentProfileKey, "rows.json"))
+						&& File.ReadAllText(Path.Combine(lp.Dir, "profiles", PluginRegistry.CurrentProfileKey, "rows.json")).Contains("Slash"), rowsErr ?? "已写");
 					var badPage = new PluginPageSpec
 					{
 						Id = "p2", Title = "坏页", Target = "cs/Plugins/{id}/{moves}.cs",
@@ -39892,6 +39929,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.357：预览里按文件分段（每段一行「// ---- 文件：… ----」），一眼能看出每个文件",
 						mprev.Split('\n').Count(l => l.StartsWith("// ---- 文件")) == 2, mprev.Split('\n').FirstOrDefault(l => l.StartsWith("// ---- 文件")) ?? "(没有)");
 					try { Directory.Delete(mf.Dir, recursive: true); } catch { }
+				}				// ----- V0.2.358：插件启用开关 + 值按存档隔离 -----
+				{
+					string appDirForPlugins = AppContext.BaseDirectory;
+					string? enErr = PluginRegistry.SaveEnabled(appDirForPlugins);
+					var enabledFile = Path.Combine(PluginRegistry.PluginsDirOf(appDirForPlugins), "_enabled.json");
+					PluginRegistry.SetEnabled("uicheck-disabled", false);
+					enErr ??= PluginRegistry.SaveEnabled(appDirForPlugins);
+					Check("V0.2.358：启用表写进 plugins\\_enabled.json（只记「关掉的」，新装插件默认启用）",
+						enErr is null && File.Exists(enabledFile) && File.ReadAllText(enabledFile).Contains("uicheck-disabled")
+						&& !PluginRegistry.IsEnabled("uicheck-disabled"),
+						enErr ?? "已写");
+					PluginRegistry.SetEnabled("uicheck-disabled", true);
+					PluginRegistry.SaveEnabled(appDirForPlugins);
+					Check("V0.2.358：重新启用会把它从启用表里删掉（不是再记一条 true）",
+						PluginRegistry.IsEnabled("uicheck-disabled") && !File.ReadAllText(enabledFile).Contains("uicheck-disabled"), "对");
+					// 按存档隔离：同一个插件页在两个存档里各存一份值
+					string pvA = Path.Combine(Path.GetTempPath(), "uicheck-prof-a.json");
+					string pvB = Path.Combine(Path.GetTempPath(), "uicheck-prof-b.json");
+					var pv = new PluginSpec { Id = "uicheck-scope", Name = "自检存档隔离", Dir = Path.Combine(Path.GetTempPath(), "uicheck-scope-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(pv.Dir);
+					var pvPage = new PluginPageSpec { Id = "p1", Title = "页", Fields = { new PluginFieldSpec { Key = "V", Label = "值", Type = "text" } } };
+					pv.Pages.Add(pvPage);
+					PluginRegistry.SetCurrentProfile(pvA);
+					PluginRegistry.SetPageValue(pv, pvPage, pvPage.Fields[0], "存档A的值");
+					string? pvErr = PluginRegistry.SavePageValues(pv);
+					PluginRegistry.SetCurrentProfile(pvB);
+					string inB = PluginRegistry.PageValueOf(pv, pvPage, pvPage.Fields[0]);
+					PluginRegistry.SetPageValue(pv, pvPage, pvPage.Fields[0], "存档B的值");
+					PluginRegistry.SavePageValues(pv);
+					PluginRegistry.SetCurrentProfile(pvA);
+					string backA = PluginRegistry.PageValueOf(pv, pvPage, pvPage.Fields[0]);
+					Check("V0.2.358：插件页的值按**存档**隔离（A 存档填的值不会出现在 B 存档里，切回来还在）",
+						pvErr is null && inB.Length == 0 && backA == "存档A的值",
+						$"B 里读到「{inB}」/ 切回 A 读到「{backA}」");
+					PluginRegistry.SetCurrentProfile(null);
+					try { Directory.Delete(pv.Dir, recursive: true); } catch { }
+					try { File.Delete(pvA); File.Delete(pvB); } catch { }
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
@@ -42510,8 +42584,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							PluginGen.WritePages(pagesRoot) >= 1
 							&& File.Exists(Path.Combine(pagesRoot, "cs", "Plugins", "uipage", "Events", "UiCheckEvent.cs")), "写进去了");
 						string? saveErr = PluginRegistry.SavePageValues(pgP);
-						Check("V0.2.319：填的值能存回 plugins\\<id>\\values.json",
-							saveErr is null && File.Exists(Path.Combine(pgP.Dir, "values.json")), saveErr ?? "存好了");
+						Check("V0.2.319/358：填的值能存回 plugins\\<id>\\profiles\\<存档>\\values.json（V0.2.358 起按存档隔离）",
+							saveErr is null && File.Exists(Path.Combine(pgP.Dir, "profiles", PluginRegistry.CurrentProfileKey, "values.json")), saveErr ?? "存好了");
 					}
 					else Check("V0.2.319：（准备）页面插件装载成功", false, pgP is null ? "插件没加载" : "没有表单页");
 				}
