@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using Sts2CharForge.Core.Effects;
@@ -72,7 +72,12 @@ public static class ForgeTimings
     /// <summary>一条时机选项。Scope = Card / Potion / Relic / Power（决定它出现在哪一类物品的布上）。</summary>
     public sealed record TimingOption(string Id, string Display, string Scope, string Hook, string Hint, bool NeedCount = false, bool NeedHp = false,
         // 「盯哪个状态 / 到达 N 层」这两栏要不要显示（Power 档由 PowerTriggers 的 NeedPower 决定）
-        bool NeedPower = false)
+        bool NeedPower = false,
+        // V0.2.367：**插件贡献的触发时机**（清单里写了 signature 的那种）—— 生成端原样写这段 override。
+        // 没写 signature 的插件时机这里留空，走下面那份内置签名表（写错就是编译期报错，不会静默）。
+        string Signature = "",
+        // 插件时机自带的进门守卫（C# 片段，可空）。
+        string PluginGuard = "")
     {
         public override string ToString() => Display;
     }
@@ -193,7 +198,61 @@ public static class ForgeTimings
     /// ⚠⚠ 这个字段必须**声明在 CoreTimings 之后**：静态字段初始化按**文本顺序**跑，
     /// 放在前面时 CoreTimings 还是 null（实测：老存档一生成就 TypeInitializationException）。
     /// </summary>
-    public static IReadOnlyList<TimingOption> All { get; } = BuildAll();
+    private static IReadOnlyList<TimingOption> AllCore { get; } = BuildAll();
+
+    /// <summary>
+    /// 全部时机 = 内置那张表 + **插件贡献的触发时机**（V0.2.367）。
+    ///
+    /// <para>为什么插件那份要每次现算：插件是启动时扫描加载的，而这张表是静态字段 ——
+    /// 把插件那条并进静态表，就会在「插件还没加载」时算一次然后永远少那几条（用户报的正是这个：
+    /// 锻造图的【触发时机】下拉里从来没有插件那几条）。现算的开销可以忽略（一百多条 + 插件几条）。</para>
+    /// </summary>
+    public static IReadOnlyList<TimingOption> All
+    {
+        get
+        {
+            var extra = PluginTimings();
+            if (extra.Count == 0) return AllCore;
+            var list = new List<TimingOption>(AllCore.Count + extra.Count);
+            list.AddRange(AllCore);
+            list.AddRange(extra);
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// 插件贡献的触发时机 → 锻造图可用的时机（四类布都能选）。
+    ///
+    /// <para>插件写了 <c>signature</c> 的：原样把那段 override 写进生成物（<see cref="TimingOption.Signature"/>）；
+    /// 只写了 <c>hook</c> 的（别名式）：照内置那张签名表走，认不出来就是编译期报错（不静默）。
+    /// 守卫用插件自己那句 <c>guard</c>，嵌进外层钩子时不会写（<c>ctx.NoHookParams</c>）。</para>
+    /// </summary>
+    /// <summary>V0.2.367：这条时机是不是插件贡献的（自检 / 界面用它把「内置那几条」和插件那几条分开）。</summary>
+    public static bool IsPluginTiming(string? id) =>
+        !string.IsNullOrWhiteSpace(id)
+        && Plugins.PluginRegistry.Plugins.Any(p => p.Enabled && p.Problems.Count == 0
+            && p.Triggers.Any(t => t is not null && string.Equals((t.Id ?? "").Trim(), id.Trim(), StringComparison.Ordinal)));
+    private static List<TimingOption> PluginTimings()
+    {
+        var list = new List<TimingOption>();
+        foreach (var tr in Plugins.PluginRegistry.Plugins.Where(p => p.Enabled && p.Problems.Count == 0))
+        {
+            foreach (var t in tr.Triggers.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Id)))
+            {
+                string id = t.Id.Trim();
+                if (AllCore.Any(x => string.Equals(x.Id, id, StringComparison.Ordinal))) continue;   // 和内置重名：内置优先
+                string display = string.IsNullOrWhiteSpace(t.Display) ? id : t.Display.Trim();
+                string hint = string.IsNullOrWhiteSpace(t.Note)
+                    ? $"插件「{tr.Name}」贡献的触发时机（钩子 {t.Hook}）。"
+                    : t.Note.Trim();
+                foreach (string scope in new[] { "Card", "Relic", "Power", "Potion" })
+                    list.Add(new TimingOption(id, "插件：" + display, scope, t.Hook.Trim(),
+                        hint, NeedCount: false, NeedHp: false, NeedPower: false,
+                        Signature: (t.Signature ?? "").Trim(), PluginGuard: (t.Guard ?? "").Trim()));
+            }
+        }
+        return list;
+    }
 
     private static IReadOnlyList<TimingOption> BuildAll()
     {

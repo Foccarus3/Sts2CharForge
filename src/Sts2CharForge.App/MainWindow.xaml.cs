@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -19799,7 +19799,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// 锻造页专属的两条（「当遗物被点击时」「血量低于 N」）**不在**遗物页那份里 ——
 					// 比集合时先把它们去掉，剩下的必须和遗物页**双向相等**（一条不多一条不少）。
 					var forgeSharedIds = forgeRelicIds
-						.Where(id => id != ForgeTimings.RelicClicked && id != ForgeTimings.HpBelow).ToList();
+						.Where(id => id != ForgeTimings.RelicClicked && id != ForgeTimings.HpBelow && !ForgeTimings.IsPluginTiming(id)).ToList();
 					var missing = pageRelicIds.Except(forgeSharedIds).ToList();
 					var extra = forgeSharedIds.Except(pageRelicIds).ToList();
 					Check("锻造页遗物档的触发时机（去掉锻造页专属那两条）= 遗物页那份（双向相等：一条不多一条不少）",
@@ -19809,7 +19809,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						+ "多=" + (extra.Count == 0 ? "（无）" : string.Join("/", extra))
 						+ " 少=" + (missing.Count == 0 ? "（无）" : string.Join("/", missing)));
 					Check("锻造页专属的两条（当遗物被点击时 / 血量低于 N）是**唯一**的额外项（第 9 批 ④ 前半段那两条不动）",
-						forgeRelicIds.Except(pageRelicIds).OrderBy(x => x, StringComparer.Ordinal)
+						forgeRelicIds.Where(id => !ForgeTimings.IsPluginTiming(id)).Except(pageRelicIds).OrderBy(x => x, StringComparer.Ordinal)
 							.SequenceEqual(new[] { ForgeTimings.HpBelow, ForgeTimings.RelicClicked })
 						&& !pageRelicIds.Except(forgeRelicIds).Any(),
 						"额外项=" + string.Join("/", forgeRelicIds.Except(pageRelicIds)) + "（正好这两条）");
@@ -19906,13 +19906,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						.Concat(noGuardIds.Select(id => (id, ""))).ToList();
 					// 兜底：清单和目录**必须一一对应**（漏一条就少测一条时机；多一条就是清单里写了个不存在的 id）
 					var rowIds = rows.Select(x => x.Item1).ToList();
-					Check("自检清单和 ForgeTimings.For(\"Relic\") 一一对应（一条不多一条不少，且没有重复 id）",
-						rowIds.ToHashSet(StringComparer.Ordinal).SetEquals(forgeRelicIds)
-						&& rowIds.Count == forgeRelicIds.Count
+					var forgeRelicBuiltIn = forgeRelicIds.Where(id => !ForgeTimings.IsPluginTiming(id)).ToList();
+					Check("自检清单和 ForgeTimings.For(\"Relic\") 的内置部分一一对应（一条不多一条不少，且没有重复 id；插件那几条不算）",
+						rowIds.ToHashSet(StringComparer.Ordinal).SetEquals(forgeRelicBuiltIn)
+						&& rowIds.Count == forgeRelicBuiltIn.Count
 						&& rowIds.Distinct(StringComparer.Ordinal).Count() == rowIds.Count,
-						$"清单 {rowIds.Count} 条 / 目录 {forgeRelicIds.Count} 条；"
-						+ "多=" + (rowIds.Except(forgeRelicIds).Any() ? string.Join("/", rowIds.Except(forgeRelicIds)) : "（无）")
-						+ " 少=" + (forgeRelicIds.Except(rowIds).Any() ? string.Join("/", forgeRelicIds.Except(rowIds)) : "（无）"));
+						$"清单 {rowIds.Count} 条 / 内置 {forgeRelicBuiltIn.Count} 条（另含插件 {forgeRelicIds.Count - forgeRelicBuiltIn.Count} 条）；"
+						+ "多=" + (rowIds.Except(forgeRelicBuiltIn).Any() ? string.Join("/", rowIds.Except(forgeRelicBuiltIn)) : "（无）")
+						+ " 少=" + (forgeRelicBuiltIn.Except(rowIds).Any() ? string.Join("/", forgeRelicBuiltIn.Except(rowIds)) : "（无）"));
 					int guardPass = 0, noGuardPass = 0, sigPass = 0, ctxPass = 0, sharedCount = 0;
 					var guardBad = new List<string>();
 					var noGuardBad = new List<string>();
@@ -21353,17 +21354,18 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				// ① 时机菜单：Power 档 = 「自定义状态」页那一整套（id / 显示名逐条对齐，一个不漏）
 				var forgePowerTimings = ForgeTimings.For(ForgeTimings.PowerScope);
 				Check("状态那一档的触发时机 = 「自定义状态」页那份（逐条对齐，一个不漏）",
-					forgePowerTimings.Count == PowerTriggers.All.Count
+					forgePowerTimings.Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == PowerTriggers.All.Count
 					&& PowerTriggers.All.All(t => forgePowerTimings.Any(x => x.Id == t.Kind && x.Display == t.Display)),
 					$"Power {forgePowerTimings.Count} 条 / PowerTriggers {PowerTriggers.All.Count} 条");
 				Check("状态那一档的钩子分组 = 「自定义状态」页那份（同一个本体钩子只生成一个 override）",
-					forgePowerTimings.All(x => CustomPowerGen.PowerHookOf(x.Id) == x.Hook)
+					forgePowerTimings.Where(x => !ForgeTimings.IsPluginTiming(x.Id)).All(x => CustomPowerGen.PowerHookOf(x.Id) == x.Hook)
 					&& CustomPowerGen.PowerHookOf("PlayerTurnEnd") == "TurnEnd"
 					&& CustomPowerGen.PowerHookOf("EnemyTurnEnd") == "TurnEnd"
 					&& CustomPowerGen.PowerHookOf("CombatEnd") == "CombatVictory", "同一份");
 				Check("状态那一档的时机没有混进卡牌 / 药水 / 遗物那三档（默认档输出不变的前提）",
-					ForgeTimings.For("Card").All(x => x.Scope == "Card") && ForgeTimings.For("Card").Count == 6
-					&& ForgeTimings.For("Potion").Count == 1
+					ForgeTimings.For("Card").All(x => x.Scope == "Card")
+					&& ForgeTimings.For("Card").Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == 6
+					&& ForgeTimings.For("Potion").Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == 1
 					&& ForgeTimings.For("Relic").All(x => x.Scope == "Relic"), "各归各档");
 
 				// ② 老路：图空 → 「自定义状态」页那套照旧（没有图的序幕，也没有图标记）
@@ -40221,6 +40223,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						sNoVar.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Heal"))?.Trim() ?? "(没生成)");
 					Check("V0.2.366：写了 var 的插件效果照旧用 base.DynamicVars[\"Heal\"]（V0.2.360 的行为没被破坏）",
 						sVar.Contains("DynamicVars[\"Heal\"]"), sVar.Split('\n').FirstOrDefault(l => l.Contains("DynamicVars["))?.Trim() ?? "(没有)");
+				}				// ----- V0.2.367：插件触发时机现在能进锻造图的【触发时机】下拉 -----
+				{
+					bool hasPluginInCardScope = ForgeTimings.For("Card").Any(o => o.Id == "PluginCustomHook");
+					Check("V0.2.367：插件贡献的触发时机出现在锻造图「卡牌」那类布的时机下拉里",
+						hasPluginInCardScope, string.Join("/", ForgeTimings.For("Card").Select(o => o.Id)));
+					var fpProf = ProfileFactory.Sample();
+					fpProf.Cards.Clear(); fpProf.Curses.Clear(); fpProf.AncientCards.Clear();
+					var fCard = new CardSpec { Name = "插件时机锻造卡", ClassName = "UiForgePluginTiming", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					var g = new ForgeGraphSpec();
+					var trig = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+					trig.SetField("Timing", "PluginCustomHook");
+					var heal = new ForgeNodeSpec { Kind = "Effect", X = 320, Y = 20 };
+					heal.SetField("Effect", "Heal");
+					heal.SetField("Amount", "3");
+					g.Nodes.AddRange(new[] { trig, heal });
+					g.Links.Add(new ForgeLinkSpec { From = trig.Id, To = heal.Id, FromPort = 0, ToPort = 0 });
+					fCard.ForgeGraph = g;
+					fpProf.Cards.Add(fCard);
+					string fSrc = CSharpCodeGen.CardSource(fpProf, fCard, 0);
+					Check("V0.2.367：锻造图用插件时机 → 生成里出现插件给的那段 override（方法名 + 参数原样）",
+						fSrc.Contains("public override async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)"),
+						fSrc.Split('\n').FirstOrDefault(l => l.Contains("AfterPlayerTurnStartEarly"))?.Trim() ?? "(没生成)");
+					Check("V0.2.367：插件时机自带的守卫也写进去了（只认自己回合）",
+						fSrc.Contains("if (player != base.Owner.Player) return;"),
+						fSrc.Split('\n').FirstOrDefault(l => l.Contains("base.Owner.Player"))?.Trim() ?? "(没有守卫)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

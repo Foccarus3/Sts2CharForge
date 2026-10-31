@@ -1328,6 +1328,10 @@ public static class ForgeGraphGen
                 : HasRoomHook(ctx) ? $"public async Task {methodName}(CombatRoom room)"
                 : $"public async Task {methodName}()";
         }
+        // V0.2.367：插件贡献的触发时机自带签名 → 原样写（方法名 / 参数由插件作者负责，
+        // 写错是编译期报错 CS0115 之类，不会静默失效）。
+        if (!string.IsNullOrWhiteSpace(t.Signature))
+            return "public override " + t.Signature.Trim();
         if (string.Equals(ctx.Scope, "Relic", StringComparison.Ordinal)
             && !string.Equals(t.Id, ForgeTimings.RelicClicked, StringComparison.Ordinal)
             && !string.Equals(t.Id, ForgeTimings.HpBelow, StringComparison.Ordinal))
@@ -1697,7 +1701,14 @@ public static class ForgeGraphGen
     /// 会在**任何**一张牌被消耗时触发（用户配了「被消耗时抽 1 张」就会变成每消耗一张牌都抽）。
     /// 判据和卡牌页「卡牌时机」那一份（<c>CSharpCodeGen.EmitCardTimingHooks</c>）**逐字相同**。
     /// </summary>
-    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t, string scope) => t.Hook switch
+    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t, string scope) =>
+        // V0.2.367：插件时机自带的守卫优先（那段代码本来就是在它的钩子参数上写的，
+        // 和内置那张「按钩子名猜守卫」的表对不上 —— 用插件自己那句最稳）。
+        !string.IsNullOrWhiteSpace(t.PluginGuard)
+            ? new[] { t.PluginGuard.Trim() }
+            : BuiltInGuardLines(t, scope);
+
+    private static IReadOnlyList<string> BuiltInGuardLines(ForgeTimings.TimingOption t, string scope) => t.Hook switch
     {
         "AfterCardExhausted" or "AfterCardDiscarded" when string.Equals(scope, "Card", StringComparison.Ordinal) => new[]
         {
