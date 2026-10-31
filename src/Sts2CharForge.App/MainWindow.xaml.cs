@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -7264,7 +7264,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		var sb = new StringBuilder();
 		sb.AppendLine($"【{p.Display}】  插件 id：{p.Id}");
-		sb.AppendLine($"清单版本 apiVersion：{p.ApiVersion}    作者：{(string.IsNullOrWhiteSpace(p.Author) ? "(没填)" : p.Author)}");
+		sb.AppendLine($"清单版本 apiVersion：{(string.IsNullOrWhiteSpace(p.ApiVersion) ? "(没写，按 1 处理)" : p.ApiVersion)}    作者：{(string.IsNullOrWhiteSpace(p.Author) ? "(没填)" : p.Author)}");
 		sb.AppendLine($"目录：{p.Dir}");
 		if (!string.IsNullOrWhiteSpace(p.Description)) { sb.AppendLine(); sb.AppendLine(p.Description); }
 		if (p.Problems.Count > 0)
@@ -7272,6 +7272,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			sb.AppendLine();
 			sb.AppendLine("⚠ 这个插件有问题（它贡献的内容不会被使用）：");
 			foreach (string prob in p.Problems) sb.AppendLine("  · " + prob);
+		}
+		// V0.2.361：加载时的非致命提示（例：没写 apiVersion、已按 v1 兼容加载）—— 插件照常可用
+		if (p.Notes.Count > 0)
+		{
+			sb.AppendLine();
+			sb.AppendLine("提示（不影响使用）：");
+			foreach (string note in p.Notes) sb.AppendLine("  · " + note);
 		}
 		sb.AppendLine();
 		sb.AppendLine($"效果种类 {p.Effects.Count} 个" + (p.Effects.Count == 0 ? "" : "："));
@@ -40014,6 +40021,46 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string dvText = LocalizationGen.CardAutoText(dvProf, dvCard, upgraded: false);
 					Check("V0.2.360：卡面写 {Heal:diff()}（升级后能显示对比值），不再是字面数字",
 						dvText.Contains("{Heal:diff()}"), dvText.Replace("\n", "⏎"));
+				}				// ----- V0.2.361：清单版本 apiVersion 的**迁移**（不再「不等于当前就拒绝」）-----
+				{
+					string migRoot = Path.Combine(Path.GetTempPath(), "uicheck-mig-" + Guid.NewGuid().ToString("N"));
+					string mkPlugin(string id, string? apiVersion, string kind)
+					{
+						string dir = Path.Combine(migRoot, "plugins", id);
+						Directory.CreateDirectory(dir);
+						string av = apiVersion is null ? "" : $"\"apiVersion\": \"{apiVersion}\",";
+						File.WriteAllText(Path.Combine(dir, "plugin.json"),
+							"{ \"id\": \"" + id + "\", \"name\": \"" + id + "\", " + av
+							+ " \"effects\": [ { \"kind\": \"" + kind + "\", \"display\": \"" + kind + "\", \"emit\": \"await Task.CompletedTask;\" } ] }",
+							new System.Text.UTF8Encoding(false));
+						return dir;
+					}
+					mkPlugin("mig-none", null, "MigNoVersion");
+					mkPlugin("mig-v1", "1", "MigV1");
+					mkPlugin("mig-v2", "2", "MigV2");
+					mkPlugin("mig-future", "9", "MigFuture");
+					int migLoaded = PluginRegistry.Load(migRoot);
+					var byId = PluginRegistry.Plugins.ToDictionary(x => x.Id, x => x, StringComparer.OrdinalIgnoreCase);
+					Check("V0.2.361：**没写 apiVersion** 的老插件也能加载（按 v1 兼容），并给一条提示",
+						byId.TryGetValue("mig-none", out var noneSpec) && noneSpec.Problems.Count == 0
+						&& noneSpec.Notes.Any(n => n.Contains("没写 apiVersion")),
+						noneSpec is null ? "(没加载)" : string.Join(" / ", noneSpec.Notes));
+					Check("V0.2.361：写 apiVersion = 1 的插件自动迁移到 2（记一条迁移提示，插件照常可用）",
+						byId.TryGetValue("mig-v1", out var v1Spec) && v1Spec.Problems.Count == 0
+						&& v1Spec.Notes.Any(n => n.Contains("迁移到 2")),
+						v1Spec is null ? "(没加载)" : string.Join(" / ", v1Spec.Notes));
+					Check("V0.2.361：写 apiVersion = 2 的插件不报任何提示（当前版本）",
+						byId.TryGetValue("mig-v2", out var v2Spec) && v2Spec.Problems.Count == 0 && v2Spec.Notes.Count == 0,
+						v2Spec is null ? "(没加载)" : string.Join(" / ", v2Spec.Problems.Concat(v2Spec.Notes)));
+					Check("V0.2.361：比当前还新的版本（9）被拒绝并说明「请升级编辑器」",
+						byId.TryGetValue("mig-future", out var futSpec) && futSpec.Problems.Any(x => x.Contains("请升级编辑器")),
+						futSpec is null ? "(没加载)" : string.Join(" / ", futSpec.Problems));
+					// 恢复真实插件（这个检查会整体重载注册表）
+					PluginRegistry.Load(AppContext.BaseDirectory);
+					try { Directory.Delete(migRoot, recursive: true); } catch { }
+					Check("V0.2.361：重载真实插件后示例插件的效果种类还在（没被临时目录那轮带坏）",
+						PluginRegistry.EffectKinds.Any(k => k.Kind == "PluginHealAndBlock"),
+						string.Join("/", PluginRegistry.EffectKinds.Select(k => k.Kind)));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

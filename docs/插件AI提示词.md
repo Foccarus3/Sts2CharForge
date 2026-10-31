@@ -393,3 +393,9 @@ emit 里用块宏逐行展开：
 `effects[]` 写 `"var": "Heal"` 之后：生成端声明 `new DynamicVar("Heal", 数值)`，
 emit 里的 `{amount}` → `base.DynamicVars["Heal"].BaseValue`，text 里的 `{amount}` → `{Heal:diff()}`（卡面实时值 + 升级对比）。
 `var` 必须合法标识符且不能用 X / Y；不写 = 老行为（字面数字）。
+---
+
+## 22. 清单版本（V0.2.361）
+
+当前 `apiVersion = "2"`；**最低支持 1**，写 1 或没写都会自动迁移上来（编辑器里看到一条「提示」，不影响使用）；
+写得比 2 新会被拒绝并提示升级编辑器。迁移不改你的 plugin.json。新插件请直接写 `"apiVersion": "2"`。

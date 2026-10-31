@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -248,7 +248,11 @@ public sealed class PluginSpec
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Version { get; set; } = "1.0";
-    public string ApiVersion { get; set; } = "1";
+    /// <summary>
+    /// 清单版本。**默认空**（= 插件的 plugin.json 里没写这一项）—— 空会被当成 v1 兼容加载，
+    /// 这样「老插件没写版本」和「写了 1」在迁移里都走同一条路，但提示能分清（V0.2.361）。
+    /// </summary>
+    public string ApiVersion { get; set; } = "";
     public string Author { get; set; } = "";
     public string Description { get; set; } = "";
 
@@ -276,6 +280,12 @@ public sealed class PluginSpec
     /// </summary>
     [JsonIgnore] public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// V0.2.361：加载时的**非致命提示**（例：这个插件没写 apiVersion、已按 v1 兼容加载）。
+    /// 和 <see cref="Problems"/> 的区别：Problems 会让插件**不生效**，Notes 只是告诉你发生了迁移，插件照常可用。
+    /// </summary>
+    [JsonIgnore] public List<string> Notes { get; } = new();
+
     /// <summary>运行时填的：清单文件所在目录（不参与序列化）。</summary>
     [JsonIgnore] public string Dir { get; set; } = "";
 
@@ -302,8 +312,14 @@ public sealed class PluginSpec
 /// </summary>
 public static class PluginRegistry
 {
-    /// <summary>当前支持的清单版本（插件写 <c>apiVersion</c>；看不懂的一律拒绝并说明）。</summary>
-    public const string ApiVersion = "1";
+    /// <summary>
+    /// 当前的清单版本。插件写 <c>apiVersion</c>；**旧版本会自动迁移**（见 <see cref="Migrate"/>），
+    /// 比它还新的版本会被拒绝并说明（那种插件的字段我们看不懂，硬加载只会静默出错）。
+    /// </summary>
+    public const string ApiVersion = "2";
+
+    /// <summary>还能自动迁移上来的最低版本（比它更老 = 拒绝，字段差太多）。</summary>
+    public const string MinApiVersion = "1";
 
     private static readonly List<PluginSpec> _plugins = new();
     private static readonly List<EffectKindOption> _effectKinds = new();
@@ -474,8 +490,11 @@ public static class PluginRegistry
             if (string.IsNullOrWhiteSpace(spec.Id)) spec.Id = Path.GetFileNameWithoutExtension(path);
             if (string.IsNullOrWhiteSpace(spec.Name)) spec.Name = spec.Id;
 
-            if (!string.Equals((spec.ApiVersion ?? "").Trim(), ApiVersion, StringComparison.OrdinalIgnoreCase))
-                spec.Problems.Add($"清单版本 apiVersion = 「{spec.ApiVersion}」不受支持（本编辑器支持 {ApiVersion}）—— 这个插件不会被加载。");
+            // V0.2.361：版本不再「不等于当前就拒绝」——
+            //   · 没写 / 写旧版本（>= MinApiVersion）→ **自动迁移**并记一条 notes（插件照常可用）；
+            //   · 写得比当前还新 → 拒绝并说明（那些新字段我们看不懂，硬加载只会静默出错）。
+            if (!TryMigrateApiVersion(spec))
+                spec.Problems.Add($"清单版本 apiVersion = 「{spec.ApiVersion}」比本编辑器支持的「{ApiVersion}」还新 —— 这个插件不会被加载（请升级编辑器）。");
             if (!seenIds.Add(spec.Id)) spec.Problems.Add($"插件 id「{spec.Id}」和前面某个插件重复 —— 这个插件不会被加载。");
 
             if (spec.Problems.Count > 0) { _plugins.Add(spec); continue; }
@@ -564,6 +583,51 @@ public static class PluginRegistry
     };
 
     /// <summary>把一个（已通过校验的）插件的内容登记进注册表。</summary>
+    /// <summary>
+    /// V0.2.361：把插件的 <c>apiVersion</c> 迁移到当前版本。返回 false = 版本比当前**还新**，不能加载。
+    ///
+    /// <para>规则：**没写 = 当 1**（老插件）；<c>MinApiVersion..ApiVersion</c> 之间逐级往上迁；比当前新的拒绝。
+    /// 迁移动作记进 <see cref="PluginSpec.Notes"/>，**不改用户磁盘上的 plugin.json**（作者那句版本号保持原样）。</para>
+    ///
+    /// <para>以后加新版本：把 <see cref="ApiVersion"/> 加一，在这里加一段 <c>case</c> 做字段改名 / 补默认值，
+    /// 老插件就永远不用作者手动改。</para>
+    /// </summary>
+    private static bool TryMigrateApiVersion(PluginSpec spec)
+    {
+        string raw = (spec.ApiVersion ?? "").Trim();
+        if (raw.Length == 0)
+        {
+            spec.Notes.Add($"没写 apiVersion —— 按 v{MinApiVersion} 兼容加载（建议补上 apiVersion: \"{ApiVersion}\"）。");
+            raw = MinApiVersion;
+        }
+        if (!int.TryParse(raw, out int ver) || ver < 1)
+        {
+            spec.Notes.Add($"apiVersion「{raw}」看不懂 —— 按 v{MinApiVersion} 兼容加载。");
+            ver = int.Parse(MinApiVersion);
+        }
+        int current = int.Parse(ApiVersion);
+        if (ver > current) return false;       // 比我们还新：拒绝
+        if (ver < int.Parse(MinApiVersion))
+        {
+            spec.Notes.Add($"apiVersion = {ver} 太老（最低支持 {MinApiVersion}）—— 已按 v{MinApiVersion} 加载，个别字段可能不生效。");
+            ver = int.Parse(MinApiVersion);
+        }
+        while (ver < current)
+        {
+            switch (ver)
+            {
+                case 1:
+                    // v1 → v2：**这一档没有结构变化**（v2 只多了可选字段：effects[].var / text / hoverTip、
+                    // pages[].outputs、fields[].type = ref / list）。旧插件不写这些字段时行为与 v1 完全一致。
+                    // 留这个 case 是给下一档做样板：字段改名 / 补默认值都写在这里。
+                    spec.Notes.Add("已从 apiVersion 1 迁移到 2（v2 只多了可选字段，老写法行为不变）。");
+                    break;
+            }
+            ver++;
+        }
+        return true;
+    }
+
     private static void LoadOne(PluginSpec spec)
     {
         foreach (var fx in spec.Effects)
