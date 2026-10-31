@@ -128,6 +128,7 @@ public static class ProfileValidator
         // V0.2.342（用户报「破解这张牌在游戏中会浮在空中」）：状态之间**互相触发成环**时，
         // 打出那张牌的 OnPlay 永远返回不了 → 牌停在出牌位浮空、回合卡住。这里在生成前就提示。
         ValidateTriggerCycles(issues, p);
+        ValidateDelayedClassCollisions(issues, p);   // V0.2.351：两条「下回合生效」算出同一个类名（会 CS0101 + CS0111）
 
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
@@ -2403,6 +2404,33 @@ public static class ProfileValidator
     /// <para>V0.2.342 起生成端给 <c>Hook.AfterPowerAmountChanged</c> 加了 12 层深度闸门兜底，
     /// 但真正该改的是配置：去掉环上的一条边，或者给其中一边加条件。</para>
     /// </summary>
+    /// <summary>
+    /// V0.2.351：**两条「下回合生效」效果算出同一个延迟类名**。
+    ///
+    /// <para>为什么要报：`cs\DelayedPowers.cs` 里同一个类写两遍就是 CS0101 + CS0111，构建直接失败
+    ///（用户实测报过 `LunaForgeDelayedTempPowerSoarPowerSelf` 写了两次）。V0.2.350 起生成端已经：
+    /// ① 把「数值正负 / 临时增益什么时候撤」编进类名；② 万一还是撞名就**只生成一个类 + 一行注释**，
+    /// 构建不会再炸。但「第二条被跳过」代表**行为不是用户想要的那一条**，所以这里提前报出来，
+    /// 让他能在界面上直接改，不用等构建。</para>
+    /// </summary>
+    private static void ValidateDelayedClassCollisions(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var seen = new Dictionary<string, EffectSpec>(StringComparer.Ordinal);
+        foreach (var e in CSharpCodeGen.CollectDelayedEffects(p))
+        {
+            if (e is null) continue;
+            string cls = n.DelayedPowerClass(e);
+            if (seen.TryAdd(cls, e)) continue;
+            issues.Add(new("提示",
+                $"有两条「下回合生效」的效果会算出**同一个延迟状态类**「{cls}」：一条是"
+                + $"「{EffectCatalog.FindKind(e.Kind)?.Display ?? e.Kind}」（状态 "
+                + $"{(string.IsNullOrWhiteSpace(e.PowerId) ? "无" : e.PowerId)}、数值 {e.Amount}、对象 {e.TargetSide}、"
+                + $"下回合才撤 {(string.IsNullOrWhiteSpace(e.TempPowerReverse) ? "否" : "是")}）。"
+                + "生成时**只会保留一条**（另一条被跳过）——想让两条都生效，就改成不同的「数值正负 / 什么时候撤 / 作用对象」，"
+                + "或者把其中一条的「下回合生效」关掉。"));
+        }
+    }
     private static void ValidateTriggerCycles(List<ValidationIssue> issues, CharacterProfile p)
     {
         var enabled = p.CustomPowers.Where(x => x is not null && x.Enabled && !string.IsNullOrWhiteSpace(x.ClassName)).ToList();

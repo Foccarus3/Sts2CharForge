@@ -39515,6 +39515,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						string.Equals(dupClsC, dupClsA, StringComparison.Ordinal) && CountAll(dupSrc2, "class " + dupClsC + " :") == 1
 						&& dupSrc2.Contains("已经生成过一次"),
 						$"{dupClsC} 出现 {CountAll(dupSrc2, "class " + dupClsC + " :")} 次");
+				}				// ----- V0.2.351：撞名在「构建之前」就报出来（不用等 dotnet build 炸）-----
+				{
+					var colProf = ProfileFactory.Sample();
+					colProf.Cards.Clear();
+					colProf.Curses.Clear();
+					colProf.AncientCards.Clear();
+					var colA = new CardSpec { Name = "撞名甲", ClassName = "UiColDelay1", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					var colB = new CardSpec { Name = "撞名乙", ClassName = "UiColDelay2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					colA.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self" });
+					// 只差「选牌堆」——去重键不同、类名里没有这一栏 → 仍然会撞名
+					colB.Effects.Add(new EffectSpec
+					{
+						Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self",
+						SelectPile = "Discard",
+					});
+					colProf.Cards.Add(colA);
+					colProf.Cards.Add(colB);
+					var colIssues = ProfileValidator.Validate(colProf);
+					Check("V0.2.351：两条「下回合生效」会算出同一个延迟类名时，**构建之前**就报提示（不再等 dotnet build 炸）",
+						colIssues.Any(i => i.Message.Contains("同一个延迟状态类")), string.Join(" / ", colIssues.Select(i => i.Message).Take(3)));
+					// 而 V0.2.350 修过的那种（只差「什么时候撤」）不该再报
+					var okProf = ProfileFactory.Sample();
+					okProf.Cards.Clear();
+					okProf.Curses.Clear();
+					okProf.AncientCards.Clear();
+					var okA = new CardSpec { Name = "不撞甲", ClassName = "UiColOk1", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					var okB = new CardSpec { Name = "不撞乙", ClassName = "UiColOk2", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					okA.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self" });
+					okB.Effects.Add(new EffectSpec
+					{
+						Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, NextTurn = true, TargetSide = "Self",
+						TempPowerReverse = TempPowerReverses.NextTurnStart,
+					});
+					okProf.Cards.Add(okA);
+					okProf.Cards.Add(okB);
+					Check("V0.2.351：只差「什么时候撤」的两条（V0.2.350 已改成不同类名）→ 不再报撞名",
+						!ProfileValidator.Validate(okProf).Any(i => i.Message.Contains("同一个延迟状态类")), "没报");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
