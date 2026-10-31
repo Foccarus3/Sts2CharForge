@@ -60,9 +60,17 @@
     {
       "kind": "PluginForgeHeal",
       "display": "插件示例模块：回复生命",
-      "emit": "await CreatureCmd.Heal({self}, {amount});",
-      "note": "锻造模块本质就是「图上的【效果】节点 + 一段模板」，所以它同时也是一个效果种类。"
+      "emit": "for (int __pluginI = 0; __pluginI < {HealTimes}; __pluginI++) await CreatureCmd.Heal({self}, {amount});",
+      "note": "锻造模块本质就是「图上的【效果】节点 + 一段模板」，所以它同时也是一个效果种类。fields 里声明的栏位会出现在图上（emit 里写 {字段key}）。",
+      "fields": [
+        { "key": "HealTimes", "label": "重复几次", "type": "number", "default": "1",
+          "hint": "V0.2.368 示例：插件模块自己的栏位。emit 里写 {HealTimes} 会换成这里填的数（不填用 default）。" }
+      ]
     }
+  ],
+  "formulaVariables": [
+    { "id": "PluginDiscardAttackCount", "display": "插件示例：弃牌堆里的攻击牌数",
+      "csharp": "(decimal)({p}?.PlayerCombatState?.DiscardPile?.Cards.Count(c => c.Type == CardType.Attack) ?? 0)" }
   ],
   "pages": [
     {

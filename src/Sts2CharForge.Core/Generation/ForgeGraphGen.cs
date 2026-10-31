@@ -2985,12 +2985,12 @@ public static class ForgeGraphGen
         else amount = "(" + Lit((double)amountN.Value) + "m)";
 
         // V0.2.315：插件贡献的效果种类 —— 模板渲染后整段写进来（不是插件种类时什么都不做）
-        if (PluginGen.TryEmit(sb, indent, EffectFromNode(node), new PluginGen.PluginCtx(
+        if (PluginGen.TryEmitNode(sb, indent, EffectFromNode(node), new PluginGen.PluginCtx(
                 Self: "__fgSelf", Player: "__fgPlayer",
                 Foe: "ForgeFormulaRuntime.TargetOrFirst(__fgTarget, __fgPlayer).FirstOrDefault()",
                 Choice: ctx.ChoiceVar, AmountOverride: amount,
                 // V0.2.339：只有「卡牌」那张布上的 this 才是 CardModel；状态 / 遗物 / 药水的布上不是
-                CardSelfIsCard: string.Equals(ctx.Scope, "Card", StringComparison.Ordinal))))
+                CardSelfIsCard: string.Equals(ctx.Scope, "Card", StringComparison.Ordinal)), node.Fields))
             return;
 
         // V0.2.194：**状态那一档**支持「= 本状态层数」那几个开关（EffectSpec.AmountIsStack /

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -40248,6 +40248,42 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.367：插件时机自带的守卫也写进去了（只认自己回合）",
 						fSrc.Contains("if (player != base.Owner.Player) return;"),
 						fSrc.Split('\n').FirstOrDefault(l => l.Contains("base.Owner.Player"))?.Trim() ?? "(没有守卫)");
+				}				// ----- V0.2.368：插件锻造模块的额外栏位 + 插件公式变量 -----
+				{
+					var nf = PluginRegistry.NodeFieldsOf("PluginForgeHeal");
+					Check("V0.2.368：插件锻造模块声明的 fields 能被查到（图上要按它出栏位）",
+						nf.Any(x => string.Equals(x.Key, "HealTimes", StringComparison.OrdinalIgnoreCase)),
+						string.Join("/", nf.Select(x => x.Key)));
+					var effKind = ForgeGraphCatalog.Find("Effect");
+					Check("V0.2.368：【效果】模块的栏位里出现了插件那几个（标签带「插件：」前缀）",
+						effKind is not null && effKind.Fields.Any(x => string.Equals(x.Key, "HealTimes", StringComparison.OrdinalIgnoreCase)
+							&& x.Label.Contains("插件：")),
+						effKind is null ? "(没找到 Effect 模块)" : string.Join("/", effKind.Fields.Select(x => x.Key).Take(20)));
+					// 生成：节点上填 Times=3 → emit 里的 {Times} 换成 3
+					var fpp = ProfileFactory.Sample();
+					fpp.Cards.Clear(); fpp.Curses.Clear(); fpp.AncientCards.Clear();
+					var fpc = new CardSpec { Name = "插件模块栏位", ClassName = "UiPluginNodeField", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					var fg = new ForgeGraphSpec();
+					var ftrig = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+					ftrig.SetField("Timing", "CardPlayed");
+					var feff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+					feff.SetField("Effect", "PluginForgeHeal");
+					feff.SetField("Amount", "2");
+					feff.SetField("HealTimes", "3");
+					fg.Nodes.AddRange(new[] { ftrig, feff });
+					fg.Links.Add(new ForgeLinkSpec { From = ftrig.Id, To = feff.Id, FromPort = 0, ToPort = 0 });
+					fpc.ForgeGraph = fg;
+					fpp.Cards.Add(fpc);
+					string fsrc = CSharpCodeGen.CardSource(fpp, fpc, 0);
+					Check("V0.2.368：生成时 emit 里的 {Times} 换成节点上填的 3（不填用 default）",
+						fsrc.Contains("__pluginI < 3"), fsrc.Split('\n').FirstOrDefault(l => l.Contains("__pluginI"))?.Trim() ?? "(没生成)");
+					// 插件公式变量
+					Check("V0.2.368：插件贡献的公式变量进了变量表",
+						FormulaBuiltins.All.Any(c => c.Id == "PluginDiscardAttackCount"),
+						string.Join("/", FormulaBuiltins.All.Where(c => c.Id.StartsWith("Plugin")).Select(c => c.Id)));
+					Check("V0.2.368：内置变量补了「三摞 × 五种牌型」（弃牌堆攻击牌数等）",
+						new[] { "DrawAttackCount", "DiscardAttackCount", "ExhaustCurseCount" }.All(id => FormulaBuiltins.All.Any(c => c.Id == id)),
+						string.Join("/", FormulaBuiltins.All.Where(c => c.Id.Contains("Discard")).Select(c => c.Id).Take(8)));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

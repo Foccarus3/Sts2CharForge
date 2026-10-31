@@ -72,7 +72,12 @@ public static class FormulaBuiltins
     /// <summary>历史记录里那些条目的完整类型名（生成的工程没有 using 那个命名空间，所以写全名）。</summary>
     private const string Hist = "MegaCrit.Sts2.Core.Combat.History.Entries.";
 
-    public static IReadOnlyList<FormulaBuiltin> All { get; } = new[]
+    /// <summary>
+    /// 内置变量表（**不含**插件加的那些）。名字叫 Core 是因为 <see cref="All"/> 现在是「内置 + 插件」的现算结果：
+    /// 插件是启动时扫描的，把插件那条并进静态字段就会在「插件还没加载」时算一次然后永远少那几条
+    /// （V0.2.367 的 ForgeTimings 踩过同一个坑）。
+    /// </summary>
+    private static IReadOnlyList<FormulaBuiltin> Core { get; } = new[]
     {
         // ===== ① 回合 / 轮 =====
         new FormulaBuiltin("Turn",  "自己这一侧的第几回合", "({p}?.PlayerCombatState?.TurnNumber ?? 0)"),
@@ -101,6 +106,23 @@ public static class FormulaBuiltins
         new FormulaBuiltin("DeckStatusCount", "牌组里的状态牌数", Deck("Status")),
         new FormulaBuiltin("DeckCurseCount",  "牌组里的诅咒牌数", Deck("Curse")),
         new FormulaBuiltin("DeckUpgradableCount", "牌组里还能升级的牌数", "(decimal)(PileType.Deck.GetPile({p}).UpgradableCardCount)"),
+        // V0.2.368（用户要求「抽/弃/耗三摞没有按牌型」）：补上三摞 × 五种牌型。
+        // 这样「按弃牌堆里的攻击牌数造成伤害」这类不用自己写 C#，插件也能通过 formulaVariables 再加。
+        new FormulaBuiltin("DrawAttackCount",    "抽牌堆里的攻击牌数", Pile("DrawPile", "Attack")),
+        new FormulaBuiltin("DrawSkillCount",     "抽牌堆里的技能牌数", Pile("DrawPile", "Skill")),
+        new FormulaBuiltin("DrawPowerCount",     "抽牌堆里的能力牌数", Pile("DrawPile", "Power")),
+        new FormulaBuiltin("DrawStatusCount",    "抽牌堆里的状态牌数", Pile("DrawPile", "Status")),
+        new FormulaBuiltin("DrawCurseCount",     "抽牌堆里的诅咒牌数", Pile("DrawPile", "Curse")),
+        new FormulaBuiltin("DiscardAttackCount", "弃牌堆里的攻击牌数", Pile("DiscardPile", "Attack")),
+        new FormulaBuiltin("DiscardSkillCount",  "弃牌堆里的技能牌数", Pile("DiscardPile", "Skill")),
+        new FormulaBuiltin("DiscardPowerCount",  "弃牌堆里的能力牌数", Pile("DiscardPile", "Power")),
+        new FormulaBuiltin("DiscardStatusCount", "弃牌堆里的状态牌数", Pile("DiscardPile", "Status")),
+        new FormulaBuiltin("DiscardCurseCount",  "弃牌堆里的诅咒牌数", Pile("DiscardPile", "Curse")),
+        new FormulaBuiltin("ExhaustAttackCount", "消耗牌堆里的攻击牌数", Pile("ExhaustPile", "Attack")),
+        new FormulaBuiltin("ExhaustSkillCount",  "消耗牌堆里的技能牌数", Pile("ExhaustPile", "Skill")),
+        new FormulaBuiltin("ExhaustPowerCount",  "消耗牌堆里的能力牌数", Pile("ExhaustPile", "Power")),
+        new FormulaBuiltin("ExhaustStatusCount", "消耗牌堆里的状态牌数", Pile("ExhaustPile", "Status")),
+        new FormulaBuiltin("ExhaustCurseCount",  "消耗牌堆里的诅咒牌数", Pile("ExhaustPile", "Curse")),
         // ===== ④ 自己的生命 / 格挡 / 资源 / 身上东西 =====
         // ⚠ 这一组带 `My` 前缀：参数页「取值来源」里已经有 `CurrentHp` / `MaxHp` / `Gold` / `Energy` /
         //   `MaxEnergy`（那几个**可以指定从谁身上取**，例如「指定敌人的最大生命」），名字撞了的话
@@ -319,6 +341,17 @@ public static class FormulaBuiltins
         ? "(decimal)({p}?.PlayerCombatState?.Hand?.Cards.Count ?? 0)"
         : "(decimal)({p}?.PlayerCombatState?.Hand?.Cards.Where(__fgC => __fgC.Type == CardType." + cardType + ").Count() ?? 0)";
 
+    /// <summary>
+    /// V0.2.368（用户要求）：战斗里**抽牌堆 / 弃牌堆 / 消耗牌堆**的张数，也能按牌型过滤。
+    /// 以前这三摞只有总张数（DrawCount / DiscardCount / ExhaustCount），
+    /// 「按弃牌堆里的攻击牌数造成伤害」这种就得自己写整段 C#。
+    /// <paramref name="pileProp"/> = PlayerCombatState 上的属性名（DrawPile / DiscardPile / ExhaustPile）。
+    /// 战斗外读成 0（和 Hand 同一个口径，不抛异常）。
+    /// </summary>
+    private static string Pile(string pileProp, string? cardType) => cardType is null
+        ? "(decimal)({p}?.PlayerCombatState?." + pileProp + "?.Cards.Count ?? 0)"
+        : "(decimal)({p}?.PlayerCombatState?." + pileProp + "?.Cards.Where(__fgC => __fgC.Type == CardType." + cardType + ").Count() ?? 0)";
+
     // ===== 战斗历史 =====
 
     /// <summary>「本回合」那半句判据（本体口径就是 CombatHistoryEntry.HappenedThisTurn）。</summary>
@@ -394,5 +427,45 @@ public static class FormulaBuiltins
              + ".OfType<" + Hist + "StarsModifiedEntry>()"
              + ".Where(__fgE => __fgE.Actor == {c} && __fgE.Amount > 0" + turn + ")"
              + ".Sum(__fgE => __fgE.Amount))";
+    }
+    /// <summary>
+    /// 全部变量 = **内置** + **插件贡献的**（V0.2.368：插件清单里的 <c>formulaVariables[]</c>）。
+    ///
+    /// <para>为什么现算：插件是启动时扫描加载的，静态字段会在「插件还没加载」时算一次然后永远少那几条
+    /// （V0.2.367 的 ForgeTimings 踩过同一个坑）。插件变量的 <c>{p}</c> / <c>{c}</c> 和内置同一套占位符，
+    /// 生成端在 <see cref="AllExprs(string,string)"/> 里替换。</para>
+    /// </summary>
+    public static IReadOnlyList<FormulaBuiltin> All
+    {
+        get
+        {
+            var extra = PluginVariables();
+            if (extra.Count == 0) return Core;
+            var list = new List<FormulaBuiltin>(Core.Count + extra.Count);
+            list.AddRange(Core);
+            list.AddRange(extra);
+            return list;
+        }
+    }
+
+    /// <summary>插件贡献的变量（清单里 <c>formulaVariables</c> 那几条；重名的跳过，内置优先）。</summary>
+    private static List<FormulaBuiltin> PluginVariables()
+    {
+        var list = new List<FormulaBuiltin>();
+        foreach (var pl in Plugins.PluginRegistry.Plugins.Where(x => x.Enabled && x.Problems.Count == 0))
+        {
+            foreach (var v in pl.FormulaVariables.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Id)))
+            {
+                string id = v.Id.Trim();
+                if (Core.Any(c => string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase))) continue;
+                if (list.Any(c => string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase))) continue;
+                list.Add(new FormulaBuiltin(id,
+                    string.IsNullOrWhiteSpace(v.Display) ? "插件变量：" + id : v.Display.Trim(),
+                    (v.CSharp ?? "").Trim(),
+                    // 旧写法也认这一条：从工程反推存档时同一条表达式要能认回来
+                    new[] { (v.CSharp ?? "").Trim() }));
+            }
+        }
+        return list;
     }
 }

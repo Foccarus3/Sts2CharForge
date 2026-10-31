@@ -104,6 +104,42 @@ public static class PluginGen
     }
 
     /// <summary>
+    /// V0.2.368：锻造图【效果】节点那条链专用 —— 和 <see cref="TryEmit(StringBuilder,string,EffectSpec,PluginCtx)"/> 一样，
+    /// 但**多一步节点字段替换**：插件在 <c>forgeModules[].fields[]</c> 里声明的那些栏位，
+    /// emit 里写 <c>{字段key}</c> 就会被换成节点上填的值（没填用声明里的默认值）。
+    ///
+    /// <para>为什么单独开一个方法而不是改老的：老调用点（卡牌 / 遗物 / 药水 / 状态四条链）一个字符都不用动，
+    /// 也就不可能因为这次改动改变它们的生成文本（红线）。</para>
+    /// </summary>
+    public static bool TryEmitNode(StringBuilder sb, string indent, EffectSpec e, PluginCtx ctx,
+        IReadOnlyDictionary<string, string>? nodeFields)
+    {
+        string? text = Render(e, ctx);
+        if (text is null) return false;
+        text = SubstituteNodeFields(text, e, nodeFields);
+        foreach (string line in text.Split('\n'))
+            sb.AppendLine(indent + line);
+        return true;
+    }
+
+    /// <summary>把 <c>{字段key}</c> 换成节点上填的值（空 = 用声明里的默认值）。</summary>
+    public static string SubstituteNodeFields(string text, EffectSpec e, IReadOnlyDictionary<string, string>? nodeFields)
+    {
+        var fields = PluginRegistry.NodeFieldsOf(e.Kind);
+        if (fields.Count == 0 || string.IsNullOrEmpty(text)) return text;
+        foreach (var f in fields)
+        {
+            string key = (f.Key ?? "").Trim();
+            if (key.Length == 0) continue;
+            string value = "";
+            if (nodeFields is not null && nodeFields.TryGetValue(key, out string? v) && !string.IsNullOrWhiteSpace(v)) value = v.Trim();
+            else value = (f.Default ?? "").Trim();
+            text = text.Replace("{" + key + "}", value, StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
+    }
+
+    /// <summary>
     /// 把插件的自带文件拷进生成工程（需求③「插件内容可以正常与 mod 一同打包」）：
     /// <list type="bullet">
     ///   <item><c>CsFiles</c> → <c>cs/Plugins/&lt;插件 id&gt;/…</c>（会被一起编译进 mod 的 dll）</item>

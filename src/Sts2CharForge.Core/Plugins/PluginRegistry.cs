@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -117,8 +117,53 @@ public sealed class PluginForgeModuleSpec
     public string Display { get; set; } = "";
     public string Emit { get; set; } = "";
     public string Note { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.368（用户要求）：这个锻造模块在**图上**要显示的额外栏位。
+    ///
+    /// <para>以前插件锻造模块在图上只有一个【数值】栏 —— 做不出「变化卡牌」那种带参数（目标卡 / 取牌方式 / 范围…）的节点。
+    /// 现在按这里声明，每个栏位都会出现在【效果】模块上，emit 里写 <c>{字段key}</c> 就会被换成节点上填的值
+    /// （没填用 <see cref="PluginNodeFieldSpec.Default"/>）。不声明 = 老行为，一个像素都不变。</para>
+    /// </summary>
+    public List<PluginNodeFieldSpec> Fields { get; set; } = new();
 }
 
+/// <summary>插件锻造模块上的一个栏位（V0.2.368）。</summary>
+public sealed class PluginNodeFieldSpec
+{
+    /// <summary>字段名（英文/数字/下划线；emit 里写 <c>{Key}</c>）。</summary>
+    public string Key { get; set; } = "";
+
+    /// <summary>界面上显示的中文标签。</summary>
+    public string Label { get; set; } = "";
+
+    /// <summary><c>text</c> / <c>number</c> / <c>formula</c> / <c>pick</c> / <c>check</c>（默认 text）。</summary>
+    public string Type { get; set; } = "text";
+
+    /// <summary>默认值（节点上没填时用它；<c>check</c> 用 <c>1</c> / <c>0</c>）。</summary>
+    public string Default { get; set; } = "";
+
+    /// <summary><c>pick</c> 的候选（<c>"值|显示"</c> 或只写值）。</summary>
+    public List<string> Options { get; set; } = new();
+
+    /// <summary>鼠标悬停的说明。</summary>
+    public string Hint { get; set; } = "";
+}
+
+/// <summary>
+/// 插件贡献的一条**公式变量**（V0.2.368）：在「数值公式」里当变量名用。
+/// </summary>
+public sealed class PluginFormulaVarSpec
+{
+    /// <summary>变量名（英文/数字/下划线，字母开头；不能和内置的重名）。</summary>
+    public string Id { get; set; } = "";
+
+    /// <summary>下拉里显示的中文说明。</summary>
+    public string Display { get; set; } = "";
+
+    /// <summary>C# 表达式（decimal），可用 <c>{p}</c>（玩家）和 <c>{c}</c>（自己这个 Creature）。</summary>
+    public string CSharp { get; set; } = "";
+}
 /// <summary>插件自定义页上的一个栏位（V0.2.319；V0.2.349 起支持 <c>list</c> 动态行）。</summary>
 public sealed class PluginFieldSpec
 {
@@ -276,6 +321,17 @@ public sealed class PluginSpec
     public List<PluginConditionSpec> Conditions { get; set; } = new();
     public List<PluginForgeModuleSpec> ForgeModules { get; set; } = new();
     public List<PluginPageSpec> Pages { get; set; } = new();
+
+    /// <summary>
+    /// V0.2.368：插件贡献的**公式变量**（「数值公式」里能用的名字）。
+    ///
+    /// <para>条目 = <c>{ "id": "DiscardAttackCount", "display": "弃牌堆里的攻击牌数",
+    /// "csharp": "(decimal)({p}?.PlayerCombatState?.DiscardPile?.Cards.Count(c => c.Type == CardType.Attack) ?? 0)" }</c>。
+    /// <c>{p}</c> = 玩家、<c>{c}</c> = 「自己」那个 Creature（和内置变量同一套占位符）。</para>
+    ///
+    /// <para>加载时会和内置的 86 条（V0.2.368 起另外多了三摞×五种牌型）合在一起，重名的跳过（内置优先）。</para>
+    /// </summary>
+    public List<PluginFormulaVarSpec> FormulaVariables { get; set; } = new();
 
     /// <summary>
     /// 要一起打包的 C# 文件（相对插件目录的路径，如 <c>cs/MyHelper.cs</c>）。
@@ -749,6 +805,16 @@ public static class PluginRegistry
             if (string.IsNullOrWhiteSpace(m.Kind)) { spec.Problems.Add("有一个锻造模块没填 kind。"); continue; }
             if (!IsValidKind(m.Kind)) { spec.Problems.Add($"锻造模块 kind「{m.Kind}」不合法。"); continue; }
             if (string.IsNullOrWhiteSpace(m.Emit)) { spec.Problems.Add($"锻造模块「{m.Kind}」没写 emit 模板。"); continue; }
+            // V0.2.368：图上额外栏位（key 必须合法且不能和【效果】内置那几栏重名，type 只能是那五种）
+            foreach (var nf in m.Fields.Where(x => x is not null))
+            {
+                string key = (nf.Key ?? "").Trim();
+                if (!IsValidKind(key)) { spec.Problems.Add($"锻造模块「{m.Kind}」的字段「{key}」不合法（英文/数字/下划线，字母开头）。"); continue; }
+                if (Profile.ForgeGraphCatalog.EffectFieldKeys.Any(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase))) { spec.Problems.Add($"锻造模块「{m.Kind}」的字段「{key}」和【效果】模块内置的栏位重名 —— 换一个名字。"); continue; }
+                string ty = (nf.Type ?? "text").Trim().ToLowerInvariant();
+                if (ty is not ("text" or "number" or "formula" or "pick" or "check"))
+                    spec.Problems.Add($"锻造模块「{m.Kind}」的字段「{key}」类型「{nf.Type}」不认识（只能是 text / number / formula / pick / check）。");
+            }
             // V0.2.316：锻造模块 = 「图上的【效果】节点 + 一段模板」，所以直接当效果种类登记 ——
             // 于是它会出现在卡牌页的效果下拉、也会出现在锻造图【效果】节点的候选里（图上就能用）。
             if (EffectCatalog.EffectKinds.Any(k => string.Equals(k.Kind, m.Kind, StringComparison.OrdinalIgnoreCase))
@@ -764,6 +830,30 @@ public static class PluginRegistry
             };
             _effectsById[m.Kind.Trim()] = asEffect;
             _effectKinds.Add(new EffectKindOption(asEffect.Kind, asEffect.Display, asEffect.Unit, 0, 99, false));
+        }
+
+        // V0.2.368：插件贡献的公式变量（id 必须合法、不能和内置重名；只认 {p} / {c} 两个占位符）
+        foreach (var v in spec.FormulaVariables.Where(x => x is not null))
+        {
+            string vid = (v.Id ?? "").Trim();
+            if (!IsValidKind(vid)) { spec.Problems.Add($"公式变量「{vid}」不合法（英文/数字/下划线，字母开头）。"); continue; }
+            if (Generation.FormulaBuiltins.All.Any(c => string.Equals(c.Id, vid, StringComparison.OrdinalIgnoreCase)))
+            {
+                spec.Problems.Add($"公式变量「{vid}」和已有的变量重名 —— 跳过这一条。");
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(v.CSharp))
+            {
+                spec.Problems.Add($"公式变量「{vid}」没写 csharp 表达式。");
+                continue;
+            }
+            foreach (System.Text.RegularExpressions.Match mm in System.Text.RegularExpressions.Regex.Matches(v.CSharp, @"\{[A-Za-z][A-Za-z0-9_]*\}"))
+            {
+                string ph = mm.Value;
+                if (!string.Equals(ph, "{p}", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(ph, "{c}", StringComparison.OrdinalIgnoreCase))
+                    spec.Problems.Add($"公式变量「{vid}」里有个不认识的占位符「{ph}」—— 只认 {{p}}（玩家）和 {{c}}（自己这个 Creature）。");
+            }
         }
 
         // 自带文件必须在插件目录里、且真的存在（越界路径直接拒绝，避免手滑删到别处）
@@ -1044,6 +1134,26 @@ public static class PluginRegistry
         }
         return list;
     }
+
+    /// <summary>V0.2.368：某个插件锻造模块声明的图栏位（不是插件模块 / 没声明 = 空表）。</summary>
+    public static IReadOnlyList<PluginNodeFieldSpec> NodeFieldsOf(string? kind)
+    {
+        string k = (kind ?? "").Trim();
+        if (k.Length == 0) return Array.Empty<PluginNodeFieldSpec>();
+        foreach (var pl in Plugins)
+            foreach (var m in pl.ForgeModules)
+                if (m is not null && string.Equals((m.Kind ?? "").Trim(), k, StringComparison.OrdinalIgnoreCase))
+                    return m.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+        return Array.Empty<PluginNodeFieldSpec>();
+    }
+    /// <summary>【效果】模块**内置**那几个栏位的键（插件自造栏位不能和它们重名）。</summary>
+    private static readonly HashSet<string> BuiltInEffectFieldKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Effect", "PowerId", "Amount", "SpawnCardId", "SpawnTo", "PotionPick", "PotionId", "Pick",
+        "SpawnFilter", "CostDownThisTurn", "SelectPile", "PlaceTo", "PlaceAt", "GivenKeyword", "TempKeyword",
+        "BoostStat", "Sfx", "Note",
+    };
+
     /// <summary>插件贡献的条件（下拉项，合并进 <see cref="EffectCatalog.AllConditions"/>）。</summary>
     public static IReadOnlyList<ConditionOption> ConditionOptions => _conditionOptions;
 

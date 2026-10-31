@@ -973,10 +973,81 @@ public static class ForgeGraphCatalog
             }),
     };
 
-    public static IReadOnlyList<ForgeNodeKind> All { get; } = AllKinds;
+    /// <summary>
+    /// 全部模块种类。V0.2.368：**每次现算**给【效果】模块补上「插件锻造模块声明的额外栏位」
+    /// （<c>forgeModules[].fields[]</c>）—— 插件是启动时扫描的，静态字段会漏掉它们。
+    /// 没有插件栏位时返回的还是原来那份表（引用都不变）。
+    /// </summary>
+    public static IReadOnlyList<ForgeNodeKind> All
+    {
+        get
+        {
+            var extra = PluginEffectFields();
+            if (extra.Count == 0) return AllKinds;
+            var list = new List<ForgeNodeKind>(AllKinds.Count);
+            foreach (var k in AllKinds)
+                list.Add(string.Equals(k.Id, "Effect", StringComparison.Ordinal)
+                    ? k with { Fields = k.Fields.Concat(extra).ToList() }
+                    : k);
+            return list;
+        }
+    }
+
+    /// <summary>
+    /// 【效果】模块**内置**那几栏的键（V0.2.368：插件自造栏位不能和它们重名 —— 重名会让一个节点上
+    /// 出现两行绑同一个键的输入框）。从静态表现推，不另抄一份（抄一份就会漂）。
+    /// </summary>
+    public static IReadOnlyList<string> EffectFieldKeys =>
+        AllKinds.FirstOrDefault(k => string.Equals(k.Id, "Effect", StringComparison.Ordinal))?.Fields.Select(f => f.Key).ToList()
+        ?? (IReadOnlyList<string>)Array.Empty<string>();
 
     public static ForgeNodeKind? Find(string? id) =>
-        AllKinds.FirstOrDefault(k => string.Equals(k.Id, id ?? "", StringComparison.Ordinal));
+        All.FirstOrDefault(k => string.Equals(k.Id, id ?? "", StringComparison.Ordinal));
+
+    /// <summary>插件锻造模块声明的栏位 → 【效果】模块上的 ForgeNodeField（没有插件就空表）。</summary>
+    private static List<ForgeNodeField> PluginEffectFields()
+    {
+        var list = new List<ForgeNodeField>();
+        foreach (var pl in Plugins.PluginRegistry.Plugins.Where(x => x.Enabled && x.Problems.Count == 0))
+        {
+            foreach (var m in pl.ForgeModules.Where(x => x is not null))
+            {
+                foreach (var f in m.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                {
+                    string key = f.Key.Trim();
+                    bool dup = false;
+                    foreach (var e in list) if (string.Equals(e.Key, key, StringComparison.OrdinalIgnoreCase)) dup = true;
+                    if (dup) continue;
+                    if (EffectFieldKeys.Any(x => string.Equals(x, key, StringComparison.OrdinalIgnoreCase))) continue;   // 和内置栏位重名：内置优先
+                    var opts = new List<ForgeFieldOption>();
+                    foreach (string o in f.Options.Where(o => !string.IsNullOrWhiteSpace(o)))
+                    {
+                        string[] parts = o.Split('|', 2);
+                        opts.Add(parts.Length > 1 ? new ForgeFieldOption(parts[0], parts[1]) : new ForgeFieldOption(o, o));
+                    }
+                    string hint = string.IsNullOrWhiteSpace(f.Hint)
+                        ? "插件锻造模块「" + (m.Kind ?? "").Trim() + "」的栏位（emit 里写 {" + key + "}）"
+                        : f.Hint.Trim();
+                    list.Add(new ForgeNodeField(key,
+                        string.IsNullOrWhiteSpace(f.Label) ? "插件：" + key : "插件：" + f.Label.Trim(),
+                        ParseFieldType(f.Type), hint,
+                        opts.Count > 0 ? opts : null,
+                        (f.Default ?? "").Trim()));
+                }
+            }
+        }
+        return list;
+    }
+
+    private static ForgeFieldType ParseFieldType(string? type)
+    {
+        string t2 = (type ?? "").Trim().ToLowerInvariant();
+        if (t2 == "number") return ForgeFieldType.Number;
+        if (t2 == "formula") return ForgeFieldType.Formula;
+        if (t2 == "pick") return ForgeFieldType.Pick;
+        if (t2 == "check") return ForgeFieldType.Check;
+        return ForgeFieldType.Text;
+    }
 
     /// <summary>新建模块时的默认位置（按种类错开一点，别叠在一起）。</summary>
     public static (double X, double Y) DefaultPosition(string kind, int existingCount)
