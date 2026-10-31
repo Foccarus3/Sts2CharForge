@@ -124,7 +124,7 @@ public static class ForgeGraphGen
         /// 所以：缓存命中时还要看「声明处是不是当前作用域的祖先」；不是就在这一段里**重新声明一次**
         /// （同名落在兄弟分支 / 外层是合法 C#：兄弟块互不可见，外层那个也已经出作用域了）。
         /// </summary>
-        public readonly Dictionary<string, string> ValueScope = new(StringComparer.Ordinal);
+        public readonly Dictionary<string, (string Scope, string Name)> ValueScope = new(StringComparer.Ordinal);
         public readonly HashSet<string> NumEmitted = new(StringComparer.Ordinal);     // 已经声明过的「数字栏公式」局部变量
         public readonly HashSet<string> Busy = new(StringComparer.Ordinal);           // 正在算的（防环）
         public readonly HashSet<string> Chained = new(StringComparer.Ordinal);        // 已经作为执行链走过的模块
@@ -133,6 +133,37 @@ public static class ForgeGraphGen
         /// <summary>当前嵌套的大括号块（每进一层 <c>{ }</c> 压一个 Id，出块时弹掉）。</summary>
         public readonly List<string> ScopeStack = new();
 
+        /// <summary>每个已声明过的局部变量名 → 声明时所在的作用域列表（判 CS0136 用）。</summary>
+        public readonly Dictionary<string, List<string>> DeclaredScopes = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// 现在要在当前作用域里声明 <paramref name="baseName"/>：如果这个名字**已经在当前作用域的里面**
+        /// 声明过（CS0136：外层块里不能再出现同名局部变量，哪怕先内后外），就改用 <c>_2 / _3 …</c>。
+        /// 兄弟分支之间同名是合法的（出块就不可见），所以那种情况**保持原名**、生成文本一个字都不变。
+        /// </summary>
+        public string UniqueDeclName(string baseName)
+        {
+            if (!DeclaredScopes.TryGetValue(baseName, out var where))
+            {
+                DeclaredScopes[baseName] = new List<string> { ScopeKey };
+                return baseName;
+            }
+            bool nestedConflict = false;
+            foreach (string s in where)
+                if (ScopeCovers(ScopeKey, s)) { nestedConflict = true; break; }
+            if (!nestedConflict)
+            {
+                where.Add(ScopeKey);
+                return baseName;
+            }
+            for (int i = 2; ; i++)
+            {
+                string cand = baseName + "_" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                if (DeclaredScopes.ContainsKey(cand)) continue;
+                DeclaredScopes[cand] = new List<string> { ScopeKey };
+                return cand;
+            }
+        }
         /// <summary>当前作用域（空串 = 方法体顶层）。</summary>
         public string ScopeKey => ScopeStack.Count == 0 ? "" : string.Join("\u001f", ScopeStack);
 
@@ -2653,12 +2684,16 @@ public static class ForgeGraphGen
         // 已经算过、而且声明处**罩得住**当前作用域 → 直接引用（这条路上生成文本一个字符都不变）。
         // 罩不住（声明落在另一个平级分支里）→ 不能引用，下面在**这一段**里重新声明一次，
         // 否则就是 CS0103「当前上下文中不存在名称 __fgXXXXXX」（用户实测报的 MimikyuCard52）。
-        if (st.ValueScope.TryGetValue(key, out string? declaredIn) && GenState.ScopeCovers(declaredIn, st.ScopeKey))
-            return varName;
+        if (st.ValueScope.TryGetValue(key, out var cached) && GenState.ScopeCovers(cached.Scope, st.ScopeKey))
+            return cached.Name;
         // ⚠ 以前这里返回 node.VarName：缓存键带了口序号，回收时却没带 →
         // 出口 1 复用时拿到的名字少了 pN 后缀（CS0103），现在统一按上面的 varName 返回。
-        st.ValueScope[key] = st.ScopeKey;
-
+        // ⚠⚠ V0.2.354（别人实测报的 CS0136：同一个 __fgXXXXXX 在一段里声明了两次）：
+        //   这一支是「缓存里那次声明**罩不住**当前作用域」。分两种：兄弟分支（真 / 假支）同名重新声明是**合法**的，
+        //   老文本不能变；但如果缓存那次落在**更深**的块里、现在回到外层，C# 的 CS0136 不允许外层再出现同名局部变量
+        //   （哪怕先内后外）→ 必须换名（_2 / _3 …）。两种都在 UniqueDeclName 里判。
+        varName = st.UniqueDeclName(varName);
+        st.ValueScope[key] = (st.ScopeKey, varName);
         switch (node.Kind)
         {
             case "Value":
