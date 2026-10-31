@@ -284,6 +284,33 @@ internal static class DebugLogGen
     /// 「执行后」那一行。返回**追加在原来那条语句后面**的片段（原来那条语句一个字符都不改）。
     /// 和「执行前」一样自成一个代码块 + 单独一行 <c>// CET:DebugLog</c>（回读按行跳过，见 <see cref="PowerBefore"/>）。
     /// </summary>
+    /// <summary>
+    /// V0.2.364：「清除状态」这类效果**执行前**那一行 —— 要回答的是「找的那个类在目标身上到底有没有」，
+    /// 所以除了层数，还把目标**身上现有的全部状态**（类名 + 层数）打出来：一眼能看是不是类名没对上
+    ///（例：你要清的是「百分比易伤」，而身上挂的其实是另一个类）。
+    /// 返回空串 = 开关关着（生成文本与没这个开关时逐字节一致）。
+    /// </summary>
+    internal static string ClearBeforeOne(EffectSpec e, string targetExpr, string powerType)
+    {
+        if (!On) return "";
+        int id = NextSeq();
+        string p = "(" + targetExpr + ")";
+        string text = TextOf(e, "", targetExpr, inLoop: true, beforeLine: "");
+        return
+            $"{{ PowerModel? __dbgClr{id} = {p}.GetPower<{powerType}>(); " +
+            $"Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；要清的类={Lit.Str(powerType)}；找到=\" + (__dbgClr{id} is null ? \"没有\" : \"有，层数=\" + __dbgClr{id}.Amount.ToString()) + \"；目标身上现有状态=[\" + string.Join(\"，\", {p}.Powers.Select(x => x.GetType().Name + \"=\" + x.Amount.ToString())) + \"]\"); }}   // {Marker}\n";
+    }
+
+    /// <summary>「清除状态」执行后那一行（列出目标清除后还剩哪些状态）。开关关着返回空串。</summary>
+    internal static string ClearAfterOne(EffectSpec e, string targetExpr, string powerType)
+    {
+        if (!On) return "";
+        int id = NextSeq();
+        string p = "(" + targetExpr + ")";
+        string text = TextOf(e, "", targetExpr, inLoop: true, beforeLine: "");
+        return
+            $"{{ Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；清完之后=[\" + string.Join(\"，\", {p}.Powers.Select(x => x.GetType().Name + \"=\" + x.Amount.ToString())) + \"]\"); }}   // {Marker}\n";
+    }
     internal static string PowerAfter(EffectSpec e, string targetExpr, string powerType)
     {
         if (!On) return "";

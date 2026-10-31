@@ -4790,8 +4790,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             case "Enemy" when cardTargetExpr is not null:
-                // 卡牌：用玩家选中的那个目标；没选（不该发生）就什么都不做
-                w.Open($"if ({cardTargetExpr} is not null)")
+                // 卡牌：用玩家选中的那个目标；没选（不该发生）就什么都不做。
+                // V0.2.364：卡牌时机那几种钩子里 cardPlay 只是个 `CardPlay? cardPlay = null;` 占位 ——
+                // 直接写 cardPlay.Target 会 **NullReferenceException**（效果整条消失、日志里查不到原因），
+                // 所以目标表达式来自 cardPlay 时先判 cardPlay 本身。
+                w.Open(cardTargetExpr.StartsWith("cardPlay.", StringComparison.Ordinal)
+                        ? $"if (cardPlay is not null && {cardTargetExpr} is not null)"
+                        : $"if ({cardTargetExpr} is not null)")
                  .Line(body(cardTargetExpr))
                  .Close();
                 break;
@@ -7024,12 +7029,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static string ClearPowerOneBody(CharacterProfile? p, EffectSpec e, string c)
     {
+        // V0.2.364：单条 / 组里每一条共用这一句。调试日志开着时会在前后各插一行，打「要清的类是哪个 /
+        // 找到没有 / 目标身上现有的全部状态」（见 DebugLogGen.ClearBeforeOne）—— 类名对不上那种问题一眼可见。
+        string Cls(string raw) => PercentPowers.IsPercent(raw) ? (PercentPowers.ClassOf(raw, p) ?? raw) : raw;
+        string One(string cls) =>
+            DebugLogGen.ClearBeforeOne(e, c, cls)
+            + $"{{ PowerModel? __clrPower = {c}.GetPower<{cls}>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower); }}   // 清除指定状态" + "\n"
+            + DebugLogGen.ClearAfterOne(e, c, cls);
+
         var grp = ResolvePowerGroup(p, e.PowerGroup);
         if (grp.Count == 0)
-            return $"{{ PowerModel? __clrPower = {c}.GetPower<{e.PowerId}>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower); }}   // 清除指定状态";
+            return One(Cls(e.PowerId ?? "")).TrimEnd('\n');
+        // V0.2.364：组里存的可能是**百分比状态的别名**（PercentVuln…）—— 直接当类型名写进 GetPower<>
+        // 就是 CS0246；这里和别的发射点一样先归一成类名。
         var parts = new List<string>();
-        foreach (string cls in grp)
-            parts.Add($"PowerModel? __clr_{cls} = {c}.GetPower<{cls}>(); if (__clr_{cls} is not null) await PowerCmd.Remove(__clr_{cls});");
+        foreach (string raw in grp)
+            parts.Add(One(Cls(raw)));
         return "{ " + string.Join(" ", parts) + " }   // 清除组里的所有状态";
     }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -25827,7 +25827,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pgProf.Cards.Add(pgCard);
 					string pgSrc = CSharpCodeGen.CardSource(pgProf, pgCard, 0);
 					Check("V0.2.255：「清除指定状态」选组 → 把组里每个状态各展开一句清除（本体状态 + 自己的状态都在）",
-						pgSrc.Contains("__clr_WeakPower") && pgSrc.Contains("__clr_UiCheckPgPower")
+						pgSrc.Contains("GetPower<WeakPower>()") && pgSrc.Contains("GetPower<UiCheckPgPower>()")
 						&& pgSrc.Contains("清除组里的所有状态"), "组展开了");
 					Check("V0.2.255：校验器提示「用的是组「减益组」→ 会把这 2 个状态全部清掉」",
 						ProfileValidator.Validate(pgProf).Any((ValidationIssue i) => i.Message.Contains("减益组") && i.Message.Contains("全部")),
@@ -40131,6 +40131,48 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.363：效果列表那条「卡牌时机 = 被保留」也换掉 context",
 						sList.Contains("AfterFlush(") && sList.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
 						sList.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext")) ?? "(没有)");
+				}				// ----- V0.2.364：清除状态的三件事（调试日志 / 组里百分比别名 / 钩子里 cardPlay 判空）-----
+				{
+					CharacterProfile mkClearProf(bool debug, string powerId, string? group, out CardSpec outCard, out EffectSpec outEff)
+					{
+						var cp = ProfileFactory.Sample();
+						cp.Cards.Clear();
+						cp.Curses.Clear();
+						cp.AncientCards.Clear();
+						var card = new CardSpec { Name = "清除自检", ClassName = "UiClearCheck", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						var eff = new EffectSpec { Kind = "ClearPowerOne", TargetSide = "Enemy", PowerId = powerId, PowerGroup = group ?? "" };
+						card.Effects.Add(eff);
+						cp.Cards.Add(card);
+						cp.DebugLog = debug;
+						outCard = card; outEff = eff;
+						return cp;
+					}
+					// ① 调试日志：开 → 有 CET:DebugLog 且打印「目标身上现有状态」；关 → 一个字都不多
+					var pDbg = mkClearProf(true, "PercentVuln", null, out var cDbg, out _);
+					string sDbg = CSharpCodeGen.CardSource(pDbg, cDbg, 0);
+					var pOff = mkClearProf(false, "PercentVuln", null, out var cOff, out _);
+					string sOff = CSharpCodeGen.CardSource(pOff, cOff, 0);
+					Check("V0.2.364：开着调试日志时「清除指定状态」会打印目标身上的现有状态（找出类名对不上的情况）",
+						sDbg.Contains("CET:DebugLog") && sDbg.Contains("目标身上现有状态"), 
+						sDbg.Split('\n').FirstOrDefault(l => l.Contains("目标身上现有状态"))?.Trim() is { } l1 ? l1.Substring(0, Math.Min(120, l1.Length)) : "(没有)");
+					Check("V0.2.364：关着调试日志时清除状态的生成文本里没有任何调试行（红线不变）",
+						!sOff.Contains("CET:DebugLog"), sOff.Contains("DebugLog") ? "有残留" : "干净");
+					// ② 组里存的是百分比别名 → 也必须归一成类名（否则 CS0246）
+					var pGrp = mkClearProf(false, "PercentVuln", "ui-pct-group", out var cGrp, out _);
+					var g = new CardGroupSpec { Id = "ui-pct-group", Name = "百分比组" };
+					g.PowerIdList.Add("PercentVuln");
+					pGrp.CardGroups.Add(g);
+					string sGrp = CSharpCodeGen.CardSource(pGrp, cGrp, 0);
+					Check("V0.2.364：组里填的是百分比**别名**时，生成的是类名（GetPower<…PercentVulnPower>，不会 CS0246）",
+						sGrp.Contains("GetPower<") && sGrp.Contains("PercentVulnPower>()") && !sGrp.Contains("GetPower<PercentVuln>()"),
+						sGrp.Split('\n').FirstOrDefault(l => l.Contains("GetPower<"))?.Trim() ?? "(没有)");
+					// ③ 卡牌时机钩子里 cardPlay 是个 null 占位 → 目标那句必须先判 cardPlay
+					var pHook = mkClearProf(false, "PercentVuln", null, out var cHook, out var eHook);
+					eHook.Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Exhausted" };
+					string sHook = CSharpCodeGen.CardSource(pHook, cHook, 0);
+					Check("V0.2.364：卡牌时机钩子里「清除指定敌人状态」先判 cardPlay 不为 null（否则 NRE、效果整条消失）",
+						sHook.Contains("if (cardPlay is not null && cardPlay.Target is not null)"),
+						sHook.Split('\n').FirstOrDefault(l => l.Contains("cardPlay is not null"))?.Trim() ?? "(没有)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
