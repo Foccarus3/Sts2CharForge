@@ -1416,6 +1416,10 @@ public static class EffectCatalog
         // 不问玩家也不随机（取 N 张就从上往下依次拿）。本体抽牌堆的 Cards 是「顶在前」，
         // 和「预见 Scry」看的「抽牌堆顶」是同一个口径。
         new PileChoiceOption("Top", "牌顶（抽牌堆最上面那张，不用挑、也不随机）"),
+        // V0.2.365（用户要求）：「从哪里选牌」再加一档「全部牌堆」= 抽牌堆 + 弃牌堆 + 手牌 + 消耗堆，
+        // 类似本体「散射炮」那种一次扫四摞的写法。**要和「选牌方式 = 全部」配合用**
+        //（选牌方式 = 自己选 时本体没有跨摞的选牌界面，校验器会拦住）。
+        new PileChoiceOption("All", "全部牌堆（抽牌堆 + 弃牌堆 + 手牌 + 消耗堆，类似「散射炮」）"),
     };
 
     public static string SelectPileZh(string? v) => v switch
@@ -1424,6 +1428,7 @@ public static class EffectCatalog
         "Discard" => "弃牌堆",
         "Exhaust" => "消耗牌堆",
         "Top" => "牌顶",
+        "All" => "全部牌堆",
         _ => "手牌",
     };
 

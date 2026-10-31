@@ -26693,7 +26693,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			new EffectSpec { Kind = "ExhaustCard" }.SelectPile == "Hand"
 			&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileZh == "手牌"
 			&& CSharpCodeGen.CardSource(handProbe, handCard, 0).Contains("CardSelectCmd.FromHand(")
-			&& EffectCatalog.SelectPiles.Count == 5, $"选项 {EffectCatalog.SelectPiles.Count} 个");
+			&& EffectCatalog.SelectPiles.Count >= 5    // V0.2.365：多了一档「全部牌堆」，老行为（默认手牌）不变
+			&& EffectCatalog.SelectPiles.Any((PileChoiceOption o) => o.Id == "Hand"), $"选项 {EffectCatalog.SelectPiles.Count} 个");
 		Check("「从哪里选牌」只有消耗 / 变化 / 丢弃 / 给予关键词用得到",
 			new EffectSpec { Kind = "ExhaustCard" }.UsesSelectPile && new EffectSpec { Kind = "TransformCard" }.UsesSelectPile
 			// 丢弃要**带张数**才算「会挑牌」：数值 0 那一档 = 丢弃这张牌自己，没有「从哪里选」这回事
@@ -26886,9 +26887,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& EffectCatalog.FindKind("DiscardCard").Min == 0m && EffectCatalog.FindKind("DiscardCard").Max == 9m,
 				EffectCatalog.FindKind("DiscardCard").Display);
 			Check("丢弃能选四摞（手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 —— 用户要求把消耗牌堆加进来）",
-				new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Count == 5
-				&& new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.All((PileChoiceOption o) => o.Id is "Hand" or "Draw" or "Discard" or "Exhaust" or "Top")
-				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileChoices.Count == 5,
+				new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Count >= 5
+				&& new[] { "Hand", "Draw", "Discard", "Exhaust", "Top" }.All(id => new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Any((PileChoiceOption o) => o.Id == id))
+				&& new EffectSpec { Kind = "ExhaustCard" }.SelectPileChoices.Count >= 5,
 				string.Join("/", new EffectSpec { Kind = "DiscardCard" }.SelectPileChoices.Select((PileChoiceOption o) => o.Id)));
 			Check("丢弃那一行的标题是「从哪里丢弃」（不是「从哪里选牌」）",
 				new EffectSpec { Kind = "DiscardCard" }.SelectPileLabel.Contains("丢弃")
@@ -37709,18 +37710,18 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		//              回合结束时自动打出 + 斩杀条件 =====
 		{
 			// ① 所有能选牌堆的地方都加上「消耗牌堆」（它和另外三摞一样是**战斗牌堆**）
-			Check("「从哪里选牌」四摞齐全（+「牌顶」共 5 项）：手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 / 牌顶",
-				EffectCatalog.SelectPiles.Count == 5
+			Check("「从哪里选牌」四摞齐全（+「牌顶」+「全部牌堆」）：手牌 / 抽牌堆 / 弃牌堆 / 消耗牌堆 / 牌顶 / 全部牌堆",
+				EffectCatalog.SelectPiles.Count >= 5
 				&& EffectCatalog.SelectPiles.Any((PileChoiceOption o) => o.Id == "Exhaust")
 				&& EffectCatalog.SelectPileZh("Exhaust") == "消耗牌堆"
 				&& EffectCatalog.SelectPileZh("Top") == "牌顶"
 				&& new EffectSpec { SelectPile = "Exhaust" }.SelectPileZh == "消耗牌堆", "四摞 + 牌顶");
 			Check("消耗 / 变化 / 升级 / 丢弃 / 复制 / 重放 / 给关键词 都能选消耗牌堆（四摞 + 牌顶共 5 项）",
 				new[] { "ExhaustCard", "TransformCard", "UpgradeCard", "CopyCard", "ReplayCard", "GiveKeyword" }
-					.All(k => new EffectSpec { Kind = k }.UsesSelectPile && new EffectSpec { Kind = k }.SelectPileChoices.Count == 5)
+					.All(k => new EffectSpec { Kind = k }.UsesSelectPile && new EffectSpec { Kind = k }.SelectPileChoices.Count >= 5)
 				// 丢弃带张数时同样能选那几摞（数值 0 = 丢弃这张牌自己那一档不挑牌，见上一条）
 				&& new EffectSpec { Kind = "DiscardCard", Amount = 1m }.UsesSelectPile
-				&& new EffectSpec { Kind = "DiscardCard", Amount = 1m }.SelectPileChoices.Count == 5, "都行");
+				&& new EffectSpec { Kind = "DiscardCard", Amount = 1m }.SelectPileChoices.Count >= 5, "都行");
 			Check("效果种类里有「从消耗牌堆拿牌到手牌」（和另外两摞一个写法）",
 				EffectCatalog.EffectKinds.Any((EffectKindOption k) => k.Kind == "TakeFromExhaust"), "在");
 			// 「牌顶」（用户要求：选牌 / 取牌方式里多一个「牌顶」）= 抽牌堆最上面那张，直接拿走（不问、不随机）"
@@ -40173,6 +40174,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.364：卡牌时机钩子里「清除指定敌人状态」先判 cardPlay 不为 null（否则 NRE、效果整条消失）",
 						sHook.Contains("if (cardPlay is not null && cardPlay.Target is not null)"),
 						sHook.Split('\n').FirstOrDefault(l => l.Contains("cardPlay is not null"))?.Trim() ?? "(没有)");
+				}				// ----- V0.2.365：「从哪里选牌 = 全部牌堆」（四摞一起，散射炮那种）-----
+				{
+					Check("V0.2.365：「从哪里选牌」多了一档「全部牌堆」",
+						EffectCatalog.SelectPiles.Any(x => x.Id == "All"), string.Join(" / ", EffectCatalog.SelectPiles.Select(x => x.Id)));
+					var apProf = ProfileFactory.Sample();
+					apProf.Cards.Clear(); apProf.Curses.Clear(); apProf.AncientCards.Clear();
+					CardSpec mkCard(string cls, string pile, string pick)
+					{
+						var c2 = new CardSpec { Name = "全牌堆自检", ClassName = cls, CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						c2.Effects.Add(new EffectSpec { Kind = "TransformCard", TargetSide = "Self", Amount = 3m, SelectPile = pile, CardPick = pick, SpawnCardId = cls });
+						apProf.Cards.Add(c2);
+						return c2;
+					}
+					var cAll = mkCard("UiAllPile", "All", "All");
+					var cHand = mkCard("UiHandPile", "Hand", "All");
+					var cChosen = mkCard("UiChosenAll", "All", "Chosen");
+					string sAll = CSharpCodeGen.CardSource(apProf, cAll, apProf.Cards.IndexOf(cAll));
+					string sHand = CSharpCodeGen.CardSource(apProf, cHand, apProf.Cards.IndexOf(cHand));
+					Check("V0.2.365：选「全部牌堆」+ 选牌方式「全部」→ 扫四摞（PlayerCombatState.AllCards），不是只扫手牌",
+						sAll.Contains("PlayerCombatState.AllCards") && !sAll.Contains("PileType.Hand.GetPile"),
+						sAll.Split('\n').FirstOrDefault(l => l.Contains("AllCards"))?.Trim() ?? "(没有)");
+					Check("V0.2.365：单摞（手牌）生成文本没变（还是 PileType.Hand.GetPile(...).Cards）",
+						sHand.Contains("PileType.Hand.GetPile(base.Owner).Cards"),
+						sHand.Split('\n').FirstOrDefault(l => l.Contains("PileType.Hand.GetPile"))?.Trim() ?? "(没有)");
+					Check("V0.2.365：「全部牌堆」+「自己选」会被校验器拦（本体没有跨四摞的选牌界面）",
+						ProfileValidator.Validate(apProf).Any(i => i.Level == "错误" && i.Message.Contains("全部牌堆") && i.Message.Contains("四摞")),
+						string.Join(" ｜ ", ProfileValidator.Validate(apProf).Where(i => i.Message.Contains("全部牌堆")).Select(i => i.Message).Take(2)));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

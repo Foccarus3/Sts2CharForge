@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -6988,6 +6988,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
         };
 
     /// <summary>
+    /// V0.2.365：「从哪里选牌」的**牌集合**表达式 —— 选「全部牌堆」时取本体的
+    /// <c>player.PlayerCombatState.AllCards</c>（抽牌堆 + 弃牌堆 + 手牌 + 消耗堆，类似本体「散射炮」扫四摞），
+    /// 否则就是那一摞的 <c>.Cards</c>。单摞那几种生成的文本逐字不变。
+    /// </summary>
+    private static string PileCardsExpr(EffectSpec e, string player = "base.Owner") =>
+        string.Equals(e.SelectPile, "All", StringComparison.Ordinal)
+            ? $"{player}.PlayerCombatState.AllCards"
+            : $"{PileExpr(e, player)}.Cards";
+
+    /// <summary>
     /// 「牌顶」（用户要求：选牌 / 取牌方式里多一个「牌顶」）：抽牌堆**最上面那张** —— 直接拿走，
     /// **不问玩家、也不随机**（要 N 张就从上往下依次拿）。
     /// 本体抽牌堆的 <c>Cards</c> 是「顶在前」（本体的「预见 Scry」取的就是前 N 个），所以
@@ -7197,9 +7207,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line(SelfContainedMarker(e));
             w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**消耗{ScopeZhSuffix(e)}（不弹选牌界面，本体「恶魔之焰」那种）");
             if (countInto is null)
-                w.Line($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList()) await CardCmd.Exhaust(choiceContext, c);");
+                w.Line($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileCardsExpr(e)}")}.ToList()) await CardCmd.Exhaust(choiceContext, c);");
             else
-                w.Open($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList())")
+                w.Open($"foreach (CardModel c in {CardScopeFiltered(e, p, $"{PileCardsExpr(e)}")}.ToList())")
                  .Line("await CardCmd.Exhaust(choiceContext, c);")
                  .Line($"{countInto} += 1m;")
                  .Close();
@@ -7227,7 +7237,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string scopeExpr = CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards");
+            string scopeExpr = CardScopeFiltered(e, p, $"{PileCardsExpr(e)}");
             w.Line(IsPileTop(e)
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张消耗{ScopeZhSuffix(e)}（不用挑）"
                 : $"// 随机从{pileZh}消耗 {nC} 张{ScopeZhSuffix(e)}");
@@ -7282,7 +7292,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**丢弃{ScopeZhSuffix(e)}（不弹选牌界面）");
             // ⚠ 变量名和「自己选」那支**故意不一样**（__fgAllDiscard 而不是 toDiscard）：
             //   回读是按 `var toDiscard` 这行认「丢弃卡牌」的，同名会让「全部」档多回读一条。
-            w.Line($"var __fgAllDiscard = {CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards")}.ToList();");
+            w.Line($"var __fgAllDiscard = {CardScopeFiltered(e, p, $"{PileCardsExpr(e)}")}.ToList();");
             CountMany(w, "await CardCmd.Discard(choiceContext, __fgAllDiscard);", "__fgAllDiscard", countInto);
         }
         else if (e.CardPick == "Chosen" && !IsPileTop(e))
@@ -7302,7 +7312,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string scopeExpr = CardScopeFiltered(e, p, $"{PileExpr(e)}.Cards");
+            string scopeExpr = CardScopeFiltered(e, p, $"{PileCardsExpr(e)}");
             w.Line(IsPileTop(e)
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张丢弃{ScopeZhSuffix(e)}（不用挑）"
                 : $"// 随机从{pileZh}丢弃 {nC} 张{ScopeZhSuffix(e)}");
@@ -7357,7 +7367,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? scopeCond = CardScopeCond(e, p);
         string replayCond = CombineCond("!c.Keywords.Contains(CardKeyword.Unplayable) && c.GetEnchantedReplayCount() < 1", scopeCond);
         w.Line($"// 候选：{pileZh}里还能重放的牌（打不出去的、已经有重放的都排除）{ScopeZhSuffix(e)}");
-        w.Line($"List<CardModel> {pool} = {PileExpr(e, playerExpr)}.Cards"
+        w.Line($"List<CardModel> {pool} = {PileCardsExpr(e, playerExpr)}"
             + $".Where(c => {replayCond})"
             + ".ToList();");
         w.Open($"if ({pool}.Count > 0)");
@@ -7445,7 +7455,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 「全部」：那一摞里符合条件的牌**全部**在回合结束时自动打出（不弹选牌界面）。
             w.Line($"// 全部：{pileZh}里符合条件的牌**全部**在回合结束时自动打出{ScopeZhSuffix(e)}（现在不弹选牌界面）");
-            w.Line($"var __tePicks = {CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards")}.ToList();");
+            w.Line($"var __tePicks = {CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}")}.ToList();");
             w.Line($"if (__tePicks.Count > 0) await PowerCmd.Apply({choiceExpr}, {cls}.Create(__tePicks), {creatureExpr}, 1m, {creatureExpr}, {cardSource});");
             return;
         }
@@ -7459,7 +7469,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string tePool = CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards");
+            string tePool = CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}");
             w.Line(IsPileTop(e)
                 ? $"var __tePicks = {tePool}.Take({n}).ToList();   // 牌顶：抽牌堆最上面那 {n} 张（不用挑）"
                 : $"var __tePicks = MegaCrit.Sts2.Core.Extensions.IEnumerableExtensions.TakeRandom({tePool}, {n}, {playerExpr}.RunState.Rng.CombatCardSelection).ToList();");
@@ -7637,7 +7647,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 「全部」：那一摞里符合条件的牌**每一张**都复制「复制的份数」份（不弹选牌界面）。
             w.Line($"// 全部：把{pileZh}里符合条件的牌**每一张**都复制 {copiesExpr} 份，复制出来的放进{destZh}{ScopeZhSuffix(e)}（不弹选牌界面）");
-            w.Open($"foreach (CardModel __src in {CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards")}.ToList())");
+            w.Open($"foreach (CardModel __src in {CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}")}.ToList())");
             w.Open($"for (int __copyIdx = 0; __copyIdx < {copiesExpr}; __copyIdx++)");
             w.Line("CardModel __clone = __src.CreateClone();");
             EmitSpawnModifiers(w, e, "__clone", tempUp, p, playerExpr, creatureExpr);
@@ -7663,7 +7673,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string copyScope = CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards");
+            string copyScope = CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}");
             w.Line(IsPileTop(e)
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张复制，每张 {copiesExpr} 份，复制出来的放进{destZh}（不用挑）{ScopeZhSuffix(e)}"
                 : $"// 随机从{pileZh}拿 {nC} 张复制，每张 {copiesExpr} 份，复制出来的放进{destZh}{ScopeZhSuffix(e)}");
@@ -7737,7 +7747,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 「全部」：那一摞里**所有能升级的**牌一次全升级（不弹选牌界面）。
             w.Line($"// 全部：把{pileZh}里所有还能升级的牌**全部**升级{ScopeZhSuffix(e)}（不弹选牌界面）");
-            w.Line($"foreach (CardModel c in {PileExpr(e)}.Cards.Where(c => {upgradableCond}).ToList()) CardCmd.Upgrade(c);");
+            w.Line($"foreach (CardModel c in {PileCardsExpr(e)}.Where(c => {upgradableCond}).ToList()) CardCmd.Upgrade(c);");
         }
         else if (e.CardPick == "Chosen" && !IsPileTop(e))
         {
@@ -7760,7 +7770,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张升级（只挑能升级的、不用自己选）{ScopeZhSuffix(e)}"
                 : $"// 随机升级{pileZh}里的 {nC} 张（只挑能升级的）{ScopeZhSuffix(e)}");
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-            w.Line($"CardModel? pick = {PickOne(e, $"base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileExpr(e)}.Cards.Where(c => {upgradableCond}))", $"{PileExpr(e)}.Cards.Where(c => {upgradableCond}).FirstOrDefault()")};");
+            w.Line($"CardModel? pick = {PickOne(e, $"base.Owner.RunState.Rng.CombatCardSelection.NextItem({PileCardsExpr(e)}.Where(c => {upgradableCond}))", $"{PileCardsExpr(e)}.Where(c => {upgradableCond}).FirstOrDefault()")};");
             w.Line("if (pick is null) break;");
             w.Line("CardCmd.Upgrade(pick);");
             w.Close();
@@ -8146,7 +8156,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (e.CountIsAll)
             {
                 w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**变成挑中的那一张");
-                w.Open($"foreach (CardModel c in {SrcPile(CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards"))}.ToList())");
+                w.Open($"foreach (CardModel c in {SrcPile(CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}"))}.ToList())");
                 EmitTransformBody(w, e, "c", null, false, tempUp, p, playerExpr, creatureExpr, combatStateExpr, "__trPick", countInto);
                 w.Close();
             }
@@ -8167,7 +8177,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     ? $"// 从牌顶（抽牌堆最上面那张）拿（最多 {nC} 张）变成挑中的那一张（不用挑）"
                     : $"// 随机从{pileZh}拿（最多 {nC} 张）变成挑中的那一张");
                 w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-                w.Line($"CardModel? pick = {PickOne(e, $"{playerExpr}.RunState.Rng.CombatCardSelection.NextItem({SrcPile($"{PileExpr(e, playerExpr)}.Cards")})", $"{SrcPile($"{PileExpr(e, playerExpr)}.Cards")}.FirstOrDefault()")};");
+                w.Line($"CardModel? pick = {PickOne(e, $"{playerExpr}.RunState.Rng.CombatCardSelection.NextItem({SrcPile($"{PileCardsExpr(e, playerExpr)}")})", $"{SrcPile($"{PileCardsExpr(e, playerExpr)}")}.FirstOrDefault()")};");
                 w.Line("if (pick is null) break;");
                 EmitTransformBody(w, e, "pick", null, false, tempUp, p, playerExpr, creatureExpr, combatStateExpr, "__trPick", countInto);
                 w.Close();
@@ -8181,7 +8191,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 「全部」：那一摞里符合条件的牌**每一张**都变化（不弹选牌界面）。
             w.Line(SelfContainedMarker(e));   // 这一档没有选牌语句可认，回读靠它
             w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**变化（不弹选牌界面）");
-            w.Open($"foreach (CardModel c in {SrcPile(CardScopeFiltered(e, p, $"{PileExpr(e, playerExpr)}.Cards"))}.ToList())");
+            w.Open($"foreach (CardModel c in {SrcPile(CardScopeFiltered(e, p, $"{PileCardsExpr(e, playerExpr)}"))}.ToList())");
             EmitTransformBody(w, e, "c", target, randomSpawn, tempUp, p, playerExpr, creatureExpr, combatStateExpr, countInto: countInto);
             w.Close();
         }
@@ -8203,7 +8213,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张变化（不用挑）"
                 : $"// 随机从{pileZh}变化 {nC} 张");
             w.Open($"for (int __pickIdx = 0; __pickIdx < {n}; __pickIdx++)");
-            w.Line($"CardModel? pick = {PickOne(e, $"{playerExpr}.RunState.Rng.CombatCardSelection.NextItem({SrcPile($"{PileExpr(e, playerExpr)}.Cards")})", $"{SrcPile($"{PileExpr(e, playerExpr)}.Cards")}.FirstOrDefault()")};");
+            w.Line($"CardModel? pick = {PickOne(e, $"{playerExpr}.RunState.Rng.CombatCardSelection.NextItem({SrcPile($"{PileCardsExpr(e, playerExpr)}")})", $"{SrcPile($"{PileCardsExpr(e, playerExpr)}")}.FirstOrDefault()")};");
             w.Line("if (pick is null) break;");
             EmitTransformBody(w, e, "pick", target, randomSpawn, tempUp, p, playerExpr, creatureExpr, combatStateExpr, countInto: countInto);
             w.Close();

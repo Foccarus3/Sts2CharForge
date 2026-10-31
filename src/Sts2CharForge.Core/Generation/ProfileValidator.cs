@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -3342,6 +3342,12 @@ public static class ProfileValidator
             //   · 只有选牌类效果用得到 —— 别的效果上填了会被忽略；
             //   · 「随机」那条路**没有选牌界面**，「任意张」无从谈起 → 提示会被当成「恰好 N 张」；
             //   · 「任意张」时没有数字可显示，升级增量也没有落点 → 提示。
+            // V0.2.365（用户澄清）：「从哪里选牌 = 全部牌堆」+「选牌方式 = 自己选」→ 本体没有跨四摞的选牌界面
+            //（选牌界面是按摞的），生成端只能退回手牌 —— 那是静默错，必须拦。
+            if (string.Equals(e.SelectPile, "All", StringComparison.Ordinal) && e.CardPick == "Chosen")
+                issues.Add(new("错误", $"{owner} 的「{kind.Display}」选了「从哪里选牌 = 全部牌堆」，但「选牌方式」是「自己选」——"
+                    + "本体没有「四摞一起挑」的选牌界面（选牌界面是按摞的），这条生成出来只会从手牌挑。"
+                    + "想要散射炮那种「四摞里全拿」请把「选牌方式」改成「全部」；只想挑某一摞就把「从哪里选牌」改成那一摞。"));
             if (!string.IsNullOrWhiteSpace(e.CountMode) && !e.UsesCountMode)
                 issues.Add(new("提示", $"{owner} 的「{kind.Display}」填了「取几张 = {CountModes.Zh(e.CountMode)}」，"
                     + "但这个选项只有「消耗 / 丢弃 / 升级卡牌」和「从抽牌堆 / 弃牌堆 / 消耗牌堆拿牌」用得到 —— 这条会被忽略。"));
