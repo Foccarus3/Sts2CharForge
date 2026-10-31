@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -1489,6 +1489,18 @@ public static class LocalizationGen
         //（见 CSharpCodeGen.FormulaVarsSource），所以这里照旧用 {…:diff()} 占位符 ——
         // 游戏在卡面上会填上「按当前属性算出来」的数字（力量 / 敏捷那些加成也照常叠）。
         // 以前的写法是直接印公式本身（「造成 M/2 点伤害」），玩家看不懂，用户报过。
+        // V0.2.359：插件贡献的效果 —— 声明了 Text 就把它写进卡面 / 遗物 / 药水描述的那一句（{amount} = 这条效果的数值）。
+        // 留空 = 和以前一样不产生文字（用户自己写「自定义描述」）。
+        if (Sts2CharForge.Core.Plugins.PluginRegistry.EffectOf(e.Kind) is { } __pluginFx
+            && !string.IsNullOrWhiteSpace(__pluginFx.Text))
+        {
+            string amountWord = e.AmountIsXEffective && isCard
+                ? "X"
+                : e.UsesAmountFormula
+                    ? ForgeFormula.DisplayText(e.AmountFormula)
+                    : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            return __pluginFx.Text.Replace("{amount}", amountWord, StringComparison.OrdinalIgnoreCase);
+        }
         string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;
         string var = varOverride
             ?? (e.AmountIsXEffective && isCard ? "X"

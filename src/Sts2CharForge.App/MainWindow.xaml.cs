@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -39966,6 +39966,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					PluginRegistry.SetCurrentProfile(null);
 					try { Directory.Delete(pv.Dir, recursive: true); } catch { }
 					try { File.Delete(pvA); File.Delete(pvB); } catch { }
+				}				// ----- V0.2.359：插件效果现在能出现在**卡面文字**和**悬停说明**里 -----
+				{
+					var txProf = ProfileFactory.Sample();
+					txProf.Cards.Clear();
+					txProf.Curses.Clear();
+					txProf.AncientCards.Clear();
+					var txCard = new CardSpec { Name = "插件文字自检", ClassName = "UiPluginText", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					txCard.Effects.Add(new EffectSpec { Kind = "PluginHealAndBlock", Amount = 4m, TargetSide = "Self" });
+					txProf.Cards.Add(txCard);
+					string txAuto = LocalizationGen.CardAutoText(txProf, txCard, upgraded: false);
+					Check("V0.2.359：插件效果声明了 text → 卡面自动描述里会出现那句（{amount} 换成具体数值）",
+						txAuto.Contains("回复 4 点生命并获得 4 点格挡"), txAuto.Replace("\n", "⏎"));
+					string txSrc = CSharpCodeGen.CardSource(txProf, txCard, 0);
+					Check("V0.2.359：插件效果声明了 hoverTip → 写进 ExtraHoverTips（悬停能看到说明）",
+						txSrc.Contains("FromPower<MegaCrit.Sts2.Core.Models.Powers.DexterityPower>()"),
+						txSrc.Contains("ExtraHoverTips") ? "ExtraHoverTips 里有" : "没写进去");
+					// 数值 = X 时卡面写 X（插件效果没有动态变量，写死数字会骗人）
+					var txX = new CardSpec { Name = "插件文字X", ClassName = "UiPluginTextX", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					var txEff = new EffectSpec { Kind = "PluginHealAndBlock", Amount = 0m, TargetSide = "Self", AmountIsX = true };
+					txX.Effects.Add(txEff);
+					string txXText = LocalizationGen.CardAutoText(txProf, txX, upgraded: false);
+					Check("V0.2.359：插件效果的「数值 = X」在卡面上写 X（不是那个用不上的 0）",
+						txXText.Contains("回复 X 点生命"), txXText.Replace("\n", "⏎"));
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

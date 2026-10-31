@@ -379,3 +379,10 @@ emit 里用块宏逐行展开：
   开关存在 `plugins\_enabled.json`（只记关掉的，默认启用）。写插件时**不要假设自己一定被加载**。
 * 页面值按**存档**隔离：`plugins/<id>/profiles/<存档 key>/{values,rows}.json`；
   老位置（插件目录下的 values.json / rows.json）仍会被读一次当初值。插件侧不用关心路径。
+---
+
+## 20. 卡面文字与悬停说明（V0.2.359）
+
+`effects[]` 里可以写 `"text": "回复 {amount} 点生命。"`（占位符只认 `{amount}`；「数值 = X」时写 X；
+写了别的 {…} 会报问题）和 `"hoverTip": "<C# 表达式>"`（原样进 ExtraHoverTips）。
+不声明动态变量，所以 text 里是字面数字，不会随力量/敏捷实时变。

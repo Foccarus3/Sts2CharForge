@@ -1961,6 +1961,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (e.Condition is not null && !e.Condition.IsNone
                 && e.Condition.Kind == "HasPowerAtLeast" && !string.IsNullOrWhiteSpace(e.Condition.PowerId))
                 list.Add($"MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower<{e.Condition.PowerId!.Trim()}>()");
+            // V0.2.359：插件效果自己声明的悬停说明（原样写进 ExtraHoverTips，写错是编译期报错）
+            if (PluginRegistry.EffectOf(e.Kind) is { HoverTip: { Length: > 0 } __ht })
+                list.Add(__ht.Trim());
             // 击晕：本体里它是怪物意图（不是状态），本体卡「口哨」用的就是这条静态提示
             if (e.Kind == "Stun")
                 list.Add("MegaCrit.Sts2.Core.MonsterMoves.Intents.StunIntent.GetStaticHoverTip()");

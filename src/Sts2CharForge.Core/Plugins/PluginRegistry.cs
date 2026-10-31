@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -21,6 +21,24 @@ public sealed class PluginEffectSpec
 
     /// <summary>界面上的中文名。</summary>
     public string Display { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.359：这个效果在**卡面 / 遗物 / 药水描述**里写的那句话（中文）。
+    /// 留空 = 和以前一样：插件效果不产生任何卡面文字（只能靠「自定义描述」手写）。
+    ///
+    /// <para>可用占位符 <c>{amount}</c>（会替换成这条效果的数值；「数值 = X」时写 <c>X</c>、
+    /// 填了「数值公式」时写公式文本）。<b>注意</b>：插件效果不声明动态变量，所以这里写的是**字面数字**，
+    /// 不会跟着力量 / 敏捷实时变 —— 要实时变只能等以后支持「动态变量」那一档。</para>
+    /// </summary>
+    public string Text { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.359：这个效果要挂的**悬停说明**（C# 表达式，原样写进 <c>ExtraHoverTips</c> 的列表里）。
+    /// 例：<c>MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower&lt;VulnerablePower&gt;()</c>
+    /// 或 <c>new MegaCrit.Sts2.Core.HoverTips.HoverTip(new LocString("static_hover_tips", "MY_KEY.title"), …)</c>。
+    /// 留空 = 不挂。写错了会在编译期报错（不是静默失效）。
+    /// </summary>
+    public string HoverTip { get; set; } = "";
 
     /// <summary>数值单位（「点」/「张」/「层」…）。</summary>
     public string Unit { get; set; } = "点";
@@ -494,7 +512,7 @@ public static class PluginRegistry
                 if (!string.IsNullOrWhiteSpace(page.Target)
                     && page.Target.Contains("{" + key + "}", StringComparison.OrdinalIgnoreCase))
                     page.Problems.Add($"{where}：target 里不能用 list 栏位「{key}」（文件名没法按行展开）。");
-            }
+                }
             foreach (PluginFieldSpec f in page.Fields.Where(x => x is not null && x.IsRef))
             {
                 // V0.2.356：引用型栏位必须写对 refKind，否则下拉永远是空的（那是最难查的一种「没反应」）
@@ -551,6 +569,13 @@ public static class PluginRegistry
                 continue;
             }
             if (string.IsNullOrWhiteSpace(fx.Emit)) { spec.Problems.Add($"效果「{kind}」没写 emit 模板。"); continue; }
+            // V0.2.359：效果的 text 只认 {amount} —— 写了别的占位符会**原样印在卡面上**，必须报出来
+            if (!string.IsNullOrWhiteSpace(fx.Text))
+            {
+                foreach (System.Text.RegularExpressions.Match mm in System.Text.RegularExpressions.Regex.Matches(fx.Text, @"\{[A-Za-z][A-Za-z0-9_]*(:[^}]*)?\}"))
+                    if (!string.Equals(mm.Value, "{amount}", StringComparison.OrdinalIgnoreCase))
+                        spec.Problems.Add($"效果「{kind}」的 text 里有个不认识的占位符「{mm.Value}」—— 卡面上只有 {{amount}} 会被替换，其它会原样印出来。");
+            }
             _effectsById[kind] = fx;
             _effectKinds.Add(new EffectKindOption(
                 Kind: kind,
