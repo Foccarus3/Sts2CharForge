@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -274,6 +274,10 @@ public sealed record Naming(
     {
         // 「下回合生成 / 变化（全局）/ 全局加牌」这几种**没有 PowerId**：按「种类 + 那张卡」各自起名，
         // 否则它们会全叫 ForgeDelayedPower —— 同一个类名生成两次（CS0102 / 后写覆盖前写）。
+        // V0.2.355：**插件贡献的效果种类**也有「下回合生效」了 —— 它们的类名按「插件 + 种类」起，
+        // 否则所有插件种类都会落到最后那一行 `ForgeDelayed + PowerId（空）` = 全叫 ForgeDelayedPower（CS0101）。
+        if (Sts2CharForge.Core.Plugins.PluginRegistry.EffectOf(e.Kind) is not null)
+            return "ForgeDelayedPlugin" + Lit.Identifier(e.Kind, "");
         if (CSharpCodeGen.IsDelayedSpawnKind(e.Kind))
         {
             string stem = e.Kind switch

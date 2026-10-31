@@ -39623,6 +39623,46 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.353：锻造的「选牌方式」候选里有「全选」",
 						ForgeGraphCatalog.PickModes.Any(o => o.Id == "All" && o.Display.Contains("全选")),
 						string.Join("/", ForgeGraphCatalog.PickModes.Select(o => o.Id)));
+				}				// ----- V0.2.355：插件效果的两个真 bug（{amount} 不认公式 / 下回合生效被静默忽略）-----
+				{
+					bool hasSamplePluginKind = PluginRegistry.EffectKinds.Any(k => k.Kind == "PluginHealAndBlock");
+					Check("V0.2.355：示例插件的效果种类已注册（下面两条要靠它验）", hasSamplePluginKind,
+						string.Join("/", PluginRegistry.EffectKinds.Select(k => k.Kind)));
+					var vProf = ProfileFactory.Sample();
+					vProf.Relics.Clear();
+					var vRelic = new RelicSpec { Name = "插件数值自检", ClassName = "UiPluginAmt", Rarity = "Common", Trigger = "CombatStart" };
+					vRelic.Effects.Add(new EffectSpec
+					{
+						Kind = "PluginHealAndBlock", Amount = 7m, AmountFormula = "2+2", TargetSide = "Self",
+					});
+					vProf.Relics.Add(vRelic);
+					string vRelicSrc = CSharpCodeGen.RelicSource(vProf, vRelic, 0);
+					// 模板是 `CreatureCmd.Heal({self}, {amount})`：新行为下 {amount} 应是**公式内联**后的表达式（不再是字面 7m）
+					var healLine = vRelicSrc.Split('\n').FirstOrDefault(x => x.Contains("CreatureCmd.Heal(")) ?? "(没生成 Heal)";
+					Check("V0.2.355（A1）：遗物链上插件模板的 {amount} 跟着那条链算出来的表达式走（不再是生成时写死的 Amount 字面量）",
+						healLine.Contains("CreatureCmd.Heal(") && !healLine.Contains(", 7m)")
+						&& (healLine.Contains("DynamicVars[") || healLine.Contains("__X") || healLine.Contains("PowerAmount(")),
+						healLine.Trim());
+					// A2：插件效果勾「下回合生效」→ 生成延迟状态类，本回合只挂状态
+					var vCard = new CardSpec { Name = "插件延迟自检", ClassName = "UiPluginDelayed", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					vCard.Effects.Add(new EffectSpec
+					{
+						Kind = "PluginHealAndBlock", Amount = 3m, TargetSide = "Self", NextTurn = true,
+					});
+					var vp2 = ProfileFactory.Sample();
+					vp2.Cards.Clear();
+					vp2.Curses.Clear();
+					vp2.AncientCards.Clear();
+					vp2.Cards.Add(vCard);
+					string vCardSrc = CSharpCodeGen.CardSource(vp2, vCard, 0);
+					string vDelayed = CSharpCodeGen.DelayedPowersSource(vp2);
+					string delayedCls = Naming.From(vp2).DelayedPowerClass(vCard.Effects[0]);
+					Check("V0.2.355（A2）：插件效果勾「下回合生效」→ 真的走延迟状态类（卡这边只 Apply 那个类，不当回合执行模板）",
+						vCardSrc.Contains($"PowerCmd.Apply<{delayedCls}>(") && !vCardSrc.Contains("CreatureCmd.Heal("),
+						$"类名 {delayedCls} / 卡面里" + (vCardSrc.Contains("CreatureCmd.Heal(") ? "**仍然**当回合执行" : "只挂延迟状态"));
+					Check("V0.2.355（A2）：DelayedPowers.cs 里生成了那个插件延迟类（类体 = 插件模板，数值取 base.Amount）",
+						vDelayed.Contains($"class {delayedCls}") && vDelayed.Contains("// CET:DelayedPlugin=") && vDelayed.Contains("CreatureCmd.Heal("),
+						$"类 {delayedCls} 在={vDelayed.Contains($"class {delayedCls}")}");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

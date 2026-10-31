@@ -10860,7 +10860,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         && kind is not ("Block" or "Draw" or "Energy" or "ExtraResource" or "ApplyPower");
 
     /// <summary>这条效果「下回合生效」时走不走新加的通用延迟分支。</summary>
-    internal static bool UsesDelayedEffectBranch(EffectSpec e) => e.NextTurn && IsDelayedEffectKind(e.Kind);
+    /// <summary>
+    /// 这条效果勾了「下回合生效」时走不走**延迟状态类**那条路。
+    /// V0.2.355（用户报「插件效果勾了下回合生效却被当回合执行」）：**插件贡献的种类也算** ——
+    /// 以前判据只认本体那 65 种（`IsDelayedEffectKind`），插件 kind 不在表里，于是勾了「下回合生效」
+    /// 会被**静默忽略**、当回合立刻生效（界面还勾着，最坑的那种错）。现在插件种类也进延迟分支，
+    /// 类体就是插件自己的模板（见 DelayedPowersSource）。
+    /// </summary>
+    internal static bool UsesDelayedEffectBranch(EffectSpec e) =>
+        e.NextTurn && (IsDelayedEffectKind(e.Kind) || PluginRegistry.EffectOf(e.Kind) is not null);
 
     /// <summary>通用延迟状态的去重键（同一条效果在同一个存档里只生成一个类）。</summary>
     internal static string DelayedEffectKey(EffectSpec e) =>
@@ -10893,6 +10901,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             else if (IsDelayedEffectKind(e.Kind))
             {
                 if (seen.Add(DelayedEffectKey(e))) yield return e;
+            }
+            else if (PluginRegistry.EffectOf(e.Kind) is not null)
+            {
+                // V0.2.355：插件种类也生成一个延迟状态类。**按种类去重**就够 ——
+                // 插件模板拿到的数值是运行时的 `base.Amount`（不是生成时定死的字面量），
+                // 所以同一种插件的多条效果共用一个类是正确行为。
+                if (seen.Add("PL:" + e.Kind.Trim().ToLowerInvariant())) yield return e;
             }
         }
     }
@@ -11649,6 +11664,32 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 continue;
             }
 
+            // V0.2.355（用户报「插件效果勾了下回合生效却被当回合执行」）：**插件贡献的种类**也生成延迟类，
+            // 类体就是插件自己的模板 —— {amount} 传 `(int)base.Amount`（层数 = 施放时的数值），
+            // 其余占位符按「状态链」那套给（没有「这张牌」，所以 {cardSelf} 是 null、{transformSelf} 不写 this.Pile）。
+            if (PluginRegistry.EffectOf(e.Kind) is not null)
+            {
+                string clsPlugin = n.DelayedPowerClass(e);
+                w.Line($"/// <summary>下回合开始时执行插件效果「{PluginRegistry.EffectOf(e.Kind)!.Display}」（层数 = 数值）。</summary>")
+                 .Line($"// CET:DelayedPlugin={e.Kind}")
+                 .Open($"public sealed class {clsPlugin} : PowerModel")
+                 .Line("public override PowerType Type => PowerType.Buff;")
+                 .Line()
+                 .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+                 .Line()
+                 .Open("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)")
+                 .Line("if (player != base.Owner.Player || base.Amount <= 0) return;");
+                PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
+                    Self: "base.Owner.Creature", Player: "base.Owner.Player!",
+                    Foe: FirstEnemyOf("base.Owner.Player"), Choice: "choiceContext",
+                    CardSelf: "null", AmountOverride: "((int)base.Amount)", CardSelfIsCard: false));
+                w.Line()
+                 .Line("await PowerCmd.Remove(this);")
+                 .Close()
+                 .Close()
+                 .Line();
+                continue;
+            }
             // 生成类（用户要求：生成卡牌之类也能下回合生效）：层数 = 张数，下回合开始时调用同一套发射器。
             if (IsDelayedSpawnKind(e.Kind))
             {
@@ -13313,7 +13354,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: Lit.Dec(e.Amount),
+                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: amt,
                 CardSelfIsCard: false)))   // 遗物的 this 不是卡牌：{transformSelf} 只放新牌、不写 this.Pile
             return;
         switch (e.Kind)
@@ -14884,7 +14925,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: "choiceContext", AmountOverride: Lit.Dec(e.Amount),
+                Choice: "choiceContext", AmountOverride: amt,
                 CardSelfIsCard: false)))   // 药水的 this 不是卡牌：同上
             return;
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";
