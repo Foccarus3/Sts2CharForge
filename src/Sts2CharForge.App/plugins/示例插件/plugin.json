@@ -76,6 +76,24 @@
       "emit": "// 由插件 example 的「卡牌页扩展页」生成\npublic static class {NoteName}\n{\n    public const string From = \"卡牌页扩展页\";\n}\n"
     },
     {
+      "id": "per-row-files",
+      "title": "每行一个文件（outputs + forEach + 条件宏）",
+      "tab": "card",
+      "markdown": "演示 V0.2.357 两件事：\n\n1) **一页多文件**：`outputs[]` 里每条写一个文件；其中 `forEach` 指向某个 `list` 字段 = **按行各生成一个文件**（下面这条就是「每招一个类」）。\n2) **条件宏**：`{#字段}…{/字段}` 该字段有值才渲染，`{^字段}…{/^字段}` 为空才渲染。",
+      "fields": [
+        { "key": "Prefix", "label": "类名前缀", "type": "text", "default": "Demo" },
+        { "key": "Note", "label": "头部注释（留空就不写那一行）", "type": "text" },
+        { "key": "moves", "label": "招式", "type": "list", "itemLabel": "招式", "defaultRows": 2,
+          "fields": [
+            { "key": "name", "label": "名字", "type": "text", "default": "Tackle" },
+            { "key": "dmg", "label": "伤害", "type": "number", "default": "6" }
+          ] }
+      ],
+      "outputs": [
+        { "target": "cs/Plugins/{id}/Moves/{Prefix}{name}.cs", "forEach": "moves",
+          "emit": "{#Note}// {Note}\n{/Note}{^Note}// （没填 Note 时的兜底注释）\n{/^Note}public static class {Prefix}{name}\n{\n    public const int Damage = {dmg};\n}\n" }
+      ]
+    },    {
       "id": "ref-demo",
       "title": "引用型栏位示例（从存档里挑卡 / 状态）",
       "tab": "card",

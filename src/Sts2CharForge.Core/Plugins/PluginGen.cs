@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -159,14 +159,122 @@ public static class PluginGen
     /// </summary>
     public static string RenderPage(PluginSpec p, PluginPageSpec page)
     {
-        string text = page.Emit ?? "";
-        // 先展开 list 块（块里的子栏位替换只在这一层做，避免和页面级同名字段打架）
+        // V0.2.357：一页可以产出**多个文件**（outputs[]）；没写 outputs 就是老的「一个 target + 一段 emit」。
+        // 预览里按文件分段显示（每段前一行「// ---- 文件：… ----」），一眼看出每个文件长什么样。
+        if (page.Outputs.Count > 0)
+        {
+            var sb = new StringBuilder();
+            foreach (var o in page.Outputs)
+            {
+                if (o is null || !o.Ok) continue;
+                if (o.IsRowOutput)
+                {
+                    var lf = page.Fields.FirstOrDefault(x => x is not null && x.IsList
+                        && string.Equals((x.Key ?? "").Trim(), (o.ForEach ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+                    if (lf is null) continue;
+                    var rows = PluginRegistry.PageRowsOf(p, page, lf);
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        sb.AppendLine($"// ---- 文件（按「{lf.Key}」第 {i + 1} 行）：{RenderTarget(o.Target, p, page, lf, rows[i], i)} ----");
+                        sb.AppendLine(RenderOne(o.Emit, p, page, lf, rows[i], i));
+                    }
+                    continue;
+                }
+                sb.AppendLine($"// ---- 文件：{RenderTarget(o.Target, p, page, null, null, 0)} ----");
+                sb.AppendLine(RenderOne(o.Emit, p, page, null, null, 0));
+            }
+            return sb.ToString().ReplaceLineEndings("\n");
+        }
+        return RenderOne(page.Emit ?? "", p, page, null, null, 0).ReplaceLineEndings("\n");
+    }
+
+    /// <summary>渲染一段模板：行内子栏位（按行产出时）→ list 块 → 页面级标量 → 条件宏。</summary>
+    private static string RenderOne(string text, PluginSpec p, PluginPageSpec page,
+        PluginFieldSpec? rowList, Dictionary<string, string>? row, int rowIndex)
+    {
+        text ??= "";
+        if (rowList is not null && row is not null)
+        {
+            text = text
+                .Replace("{index0}", rowIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+                .Replace("{index}", (rowIndex + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+            foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                text = text.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(rowList, row, sub), StringComparison.OrdinalIgnoreCase);
+        }
         foreach (var lf in page.Fields.Where(x => x is not null && x.IsList))
             text = ExpandListBlock(text, p, page, lf);
-        // 再替换页面级普通栏位
         foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
             text = text.Replace("{" + f.Key.Trim() + "}", PluginRegistry.PageValueOf(p, page, f), StringComparison.OrdinalIgnoreCase);
-        return text.ReplaceLineEndings("\n");
+        return ExpandConditions(text, p, page, rowList, row);
+    }
+
+    /// <summary>把 target 模板渲染成实际路径（行内子栏位 + 页面级标量；值做文件名安全处理）。</summary>
+    private static string RenderTarget(string target, PluginSpec p, PluginPageSpec page,
+        PluginFieldSpec? rowList, Dictionary<string, string>? row, int rowIndex)
+    {
+        string path = (target ?? "").Replace("{id}", p.Id, StringComparison.OrdinalIgnoreCase);
+        if (rowList is not null && row is not null)
+        {
+            path = path
+                .Replace("{index0}", rowIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+                .Replace("{index}", (rowIndex + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+            foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                path = path.Replace("{" + sub.Key.Trim() + "}", FileSafe(PluginRegistry.RowValueOf(rowList, row, sub)), StringComparison.OrdinalIgnoreCase);
+        }
+        foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
+            path = path.Replace("{" + f.Key.Trim() + "}",
+                f.IsRef ? PluginRegistry.PageValueOf(p, page, f) : FileSafe(PluginRegistry.PageValueOf(p, page, f)),
+                StringComparison.OrdinalIgnoreCase);
+        return path.Replace('\\', '/').Trim();
+    }
+
+    /// <summary>
+    /// 条件宏（V0.2.357）：<c>{#key}…{/key}</c> = 该字段**有值**才渲染；<c>{^key}…{/^key}</c> = 为空才渲染。
+    /// 「有值」= 非空、且不是 0 / false / 否。按行产出时行内子栏位也能当条件。
+    /// </summary>
+    private static string ExpandConditions(string text, PluginSpec p, PluginPageSpec page,
+        PluginFieldSpec? rowList, Dictionary<string, string>? row)
+    {
+        if (string.IsNullOrEmpty(text)) return text;
+        for (int guard = 0; guard < 200; guard++)
+        {
+            bool did = false;
+            var keys = new List<(string Key, string Value)>();
+            foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
+                keys.Add((f.Key.Trim(), PluginRegistry.PageValueOf(p, page, f)));
+            if (rowList is not null && row is not null)
+                foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                    keys.Add((sub.Key.Trim(), PluginRegistry.RowValueOf(rowList, row, sub)));
+            foreach (var (ck, cv) in keys)
+            {
+                foreach (bool wantTruthy in new[] { true, false })
+                {
+                    string open = wantTruthy ? "{#" + ck + "}" : "{^" + ck + "}";
+                    string close = wantTruthy ? "{/" + ck + "}" : "{/^" + ck + "}";
+                    int at = text.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+                    if (at < 0) continue;
+                    int end = text.IndexOf(close, at + open.Length, StringComparison.OrdinalIgnoreCase);
+                    if (end < 0) continue;      // 没配对：原样留着（加载时已报问题）
+                    string inner = text.Substring(at + open.Length, end - at - open.Length);
+                    bool keep = IsTruthy(cv) == wantTruthy;
+                    text = text.Substring(0, at) + (keep ? inner : "") + text.Substring(end + close.Length);
+                    did = true;
+                    break;
+                }
+                if (did) break;
+            }
+            if (!did) break;
+        }
+        return text;
+    }
+
+    /// <summary>条件宏里的「有值」判据（空 / 0 / false / 否 都算没有）。</summary>
+    private static bool IsTruthy(string? v)
+    {
+        string s = (v ?? "").Trim();
+        if (s.Length == 0) return false;
+        if (s is "0" || s == "否") return false;
+        return !string.Equals(s, "false", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>展开一个 list 栏位的块：<c>{key} … {/key}</c>（可能出现多次）。</summary>
@@ -210,6 +318,64 @@ public static class PluginGen
         return path.Replace('\\', '/').Trim();
     }
 
+    /// <summary>
+    /// V0.2.357：一页要写的全部文件（<c>(相对路径, 内容)</c>）。没有 <see cref="PluginPageSpec.Outputs"/> 就是
+    /// 老的一个文件；写了 outputs 就有多个 —— 其中 <c>forEach</c> 那条会按 list 的每一行各出一个文件。
+    /// 生成端（<see cref="WritePages"/>）和界面的「生成到当前工程」都走这一份，避免两边口径不一致。
+    /// </summary>
+    public static List<(string Target, string Content)> Renders(PluginSpec p, PluginPageSpec page)
+    {
+        var list = new List<(string, string)>();
+        if (page.Outputs.Count > 0)
+        {
+            foreach (var o in page.Outputs)
+            {
+                if (o is null || !o.Ok) continue;
+                if (o.IsRowOutput)
+                {
+                    var lf = page.Fields.FirstOrDefault(x => x is not null && x.IsList
+                        && string.Equals((x.Key ?? "").Trim(), (o.ForEach ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+                    if (lf is null) continue;
+                    var rows = PluginRegistry.PageRowsOf(p, page, lf);
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        string target = RenderTarget(o.Target, p, page, lf, rows[i], i);
+                        if (target.Length == 0) continue;
+                        list.Add((target, RenderOne(o.Emit, p, page, lf, rows[i], i).ReplaceLineEndings("\n")));
+                    }
+                    continue;
+                }
+                string one = RenderTarget(o.Target, p, page, null, null, 0);
+                if (one.Length == 0) continue;
+                list.Add((one, RenderOne(o.Emit, p, page, null, null, 0).ReplaceLineEndings("\n")));
+            }
+            return list;
+        }
+        string legacy = TargetOf(p, page);
+        if (legacy.Length == 0) return list;
+        list.Add((legacy, RenderPage(p, page)));
+        return list;
+    }
+
+    /// <summary>把一页的全部文件写进工程目录；返回写成功的文件数（失败的单个文件跳过，不影响别的）。</summary>
+    public static int WritePageTo(string projectRoot, PluginSpec p, PluginPageSpec page)
+    {
+        int n = 0;
+        foreach (var (target, content) in Renders(p, page))
+        {
+            try
+            {
+                string full = Path.GetFullPath(Path.Combine(projectRoot, target.Replace('/', Path.DirectorySeparatorChar)));
+                string rootFull = Path.GetFullPath(projectRoot);
+                if (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase)) continue;   // 越界，跳过
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                File.WriteAllText(full, content, new System.Text.UTF8Encoding(false));
+                n++;
+            }
+            catch { /* 插件是附加内容：写失败不能挡住生成 */ }
+        }
+        return n;
+    }
     /// <summary>路径里用的值：去掉非法字符（用户可能把事件名填成中文 / 带空格）。</summary>
     private static string FileSafe(string v)
     {
@@ -231,18 +397,8 @@ public static class PluginGen
             if (pl.Problems.Count > 0) continue;
             foreach (var page in pl.Pages.Where(x => x is not null && x.Produces && x.Problems.Count == 0))
             {
-                string target = TargetOf(pl, page);
-                if (target.Length == 0) continue;
-                try
-                {
-                    string full = Path.GetFullPath(Path.Combine(projectRoot, target.Replace('/', Path.DirectorySeparatorChar)));
-                    string rootFull = Path.GetFullPath(projectRoot);
-                    if (!full.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase)) continue;   // 越界，跳过
-                    Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-                    File.WriteAllText(full, RenderPage(pl, page), new System.Text.UTF8Encoding(false));
-                    n++;
-                }
-                catch { /* 插件是附加内容：写失败不能挡住生成 */ }
+                // V0.2.357：一页可能产出多个文件（outputs[] / 按行）—— 统一走 WritePageTo
+                n += WritePageTo(projectRoot, pl, page);
             }
         }
         return n;

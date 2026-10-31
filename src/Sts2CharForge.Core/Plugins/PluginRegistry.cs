@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -136,6 +136,26 @@ public sealed class PluginFieldSpec
 /// <see cref="Target"/> 写进工程（于是随 mod 一起打包）。页面**内容完全由插件决定**，
 /// 编辑器只提供底盘 —— 这也是「插件不因编辑器升级失效」的同一条思路：只认数据 + 模板。</para>
 /// </summary>
+/// <summary>
+/// 一个「产出」：写哪个文件（<see cref="Target"/>）+ 文件内容模板（<see cref="Emit"/>）。
+///
+/// <para>V0.2.357：<see cref="ForEach"/> 填了 list 字段的 key = **按行生成多个文件**，
+/// 每个文件里都能用该行的子栏位（以及 {index} / {index0}）。不填 = 一个文件。</para>
+/// </summary>
+public sealed class PluginPageOutput
+{
+    /// <summary>要写的文件（相对工程根；可用 {id} / 页面标量字段 / 行内子栏位）。</summary>
+    public string Target { get; set; } = "";
+
+    /// <summary>文件内容模板（同老 <c>page.emit</c> 的写法：{字段}、{list}…{/list}、{#字段}…{/字段}）。</summary>
+    public string Emit { get; set; } = "";
+
+    /// <summary>非空 = 按这个 list 字段**逐行**生成一个文件（行内子栏位在这个 target / emit 里可用）。</summary>
+    public string ForEach { get; set; } = "";
+
+    [JsonIgnore] public bool IsRowOutput => !string.IsNullOrWhiteSpace(ForEach);
+    [JsonIgnore] public bool Ok => !string.IsNullOrWhiteSpace(Target) && !string.IsNullOrWhiteSpace(Emit);
+}
 public sealed class PluginPageSpec
 {
     public string Id { get; set; } = "";
@@ -172,6 +192,16 @@ public sealed class PluginPageSpec
     /// </summary>
     public string Target { get; set; } = "";
 
+    /// <summary>
+    /// V0.2.357（用户要求「一页多文件」）：一页可以产出**多个文件**。
+    /// 空 = 走老的单个 <see cref="Target"/> + <see cref="Emit"/>（老插件一个字都不用改）；
+    /// 非空 = 按这里的每一条各写一个文件（老的那两个字段就被忽略）。
+    ///
+    /// <para>其中 <see cref="PluginPageOutput.ForEach"/> 非空 = **按那个 list 字段逐行生成一个文件**
+    /// （target / emit 里可以用该行的子栏位和 {index} / {index0}）—— 「招式表里每行一个类」就是它。</para>
+    /// </summary>
+    public List<PluginPageOutput> Outputs { get; set; } = new();
+
     /// <summary>把栏位值渲染成的文本（C# 等，原样写进 <see cref="Target"/>）。占位符 <c>{字段key}</c>。</summary>
     public string Emit { get; set; } = "";
 
@@ -179,7 +209,9 @@ public sealed class PluginPageSpec
     [JsonIgnore] public List<string> Problems { get; set; } = new();
 
     [JsonIgnore] public bool IsForm => Fields.Count > 0 && Fields.Any(f => f is not null && !string.IsNullOrWhiteSpace(f.Key));
-    [JsonIgnore] public bool Produces => IsForm && !string.IsNullOrWhiteSpace(Emit) && !string.IsNullOrWhiteSpace(Target);
+    // V0.2.357：有 outputs[] 的页也算「产出」（一页多文件 / 按行产出）
+    [JsonIgnore] public bool Produces => IsForm && (Outputs.Any(o => o is not null && o.Ok)
+        || (!string.IsNullOrWhiteSpace(Emit) && !string.IsNullOrWhiteSpace(Target)));
 }
 
 /// <summary>一个插件的清单（<c>plugins/&lt;目录&gt;/plugin.json</c>）。</summary>
@@ -376,7 +408,19 @@ public static class PluginRegistry
                 // V0.2.356：引用型栏位必须写对 refKind，否则下拉永远是空的（那是最难查的一种「没反应」）
                 if (!RefKinds.Contains((f.RefKind ?? "").Trim().ToLowerInvariant()))
                     page.Problems.Add($"{where}：ref 栏位「{(f.Key ?? "").Trim()}」的 refKind「{f.RefKind}」不合法（只能是 {string.Join(" / ", RefKinds)}）。");
-            }        }
+            }
+            // V0.2.357：一页多文件（outputs[]）的检查 —— 每条都要有 target + emit；forEach 必须是存在的 list 字段
+            foreach (PluginPageOutput o in page.Outputs)
+            {
+                if (o is null) continue;
+                if (!o.Ok) page.Problems.Add($"{where}：outputs 里有一条没写 target 或 emit（会被跳过）。");
+                if (!o.IsRowOutput) continue;
+                string want = (o.ForEach ?? "").Trim();
+                bool found = page.Fields.Any(x => x is not null && x.IsList
+                    && string.Equals((x.Key ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase));
+                if (!found) page.Problems.Add($"{where}：outputs 里 forEach = 「{want}」不是这一页的 list 字段。");
+            }
+        }
     }
 
     private static int CountOccurrences(string? text, string what)

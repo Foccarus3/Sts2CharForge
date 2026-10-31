@@ -7192,15 +7192,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			if (!page.Produces) { SetStatus("这页没配 target / emit，不产出文件。"); return; }
 			string root = ModGenerator.ProjectRootOf(_profile);
 			if (!Directory.Exists(root)) { SetStatus("还没有生成过工程：请先在「构建 / 日志」页点「生成工程」。" ); return; }
-			string target = PluginGen.TargetOf(p, page);
+			// V0.2.357：一页可能产出多个文件（outputs[] / 按行产出一个文件）—— 统一交给 WritePageTo
 			try
 			{
-				string full = Path.GetFullPath(Path.Combine(root, target.Replace('/', Path.DirectorySeparatorChar)));
-				Directory.CreateDirectory(Path.GetDirectoryName(full)!);
-				File.WriteAllText(full, PluginGen.RenderPage(p, page), new System.Text.UTF8Encoding(false));
+				int written = PluginGen.WritePageTo(root, p, page);
 				PluginRegistry.SavePageValues(p);
 				PluginRegistry.SaveRows(p);
-				SetStatus($"已写入工程：{target}");
+				SetStatus(written > 0 ? $"已写入工程：{written} 个文件" : "这页没有可写的内容（target / emit 或 outputs 没配全）");
 			}
 			catch (Exception ex) { SetStatus("写入失败：" + ex.Message); }
 		};
@@ -39821,6 +39819,79 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						rCombos.Count == 1 && rCombos[0].Items.OfType<ComboBoxItem>()
 							.Any(it => (it.Content as string ?? "").Contains(rdCardCls)),
 						$"{rCombos.Count} 个下拉 / 第一项 {(rCombos.Count > 0 ? (rCombos[0].Items.OfType<ComboBoxItem>().FirstOrDefault()?.Content as string ?? "") : "")}");
+				}				// ----- V0.2.357（框架）：一页多文件 / 按行产出 / 条件宏 -----
+				{
+					var mf = new PluginSpec { Id = "uicheck-multi", Name = "自检多文件", Dir = Path.Combine(Path.GetTempPath(), "uicheck-multi-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(mf.Dir);
+					var mpage = new PluginPageSpec
+					{
+						Id = "p1", Title = "每行一个文件",
+						Fields =
+						{
+							new PluginFieldSpec { Key = "Prefix", Label = "前缀", Type = "text", Default = "Demo" },
+							new PluginFieldSpec { Key = "Note", Label = "备注", Type = "text" },
+							new PluginFieldSpec
+							{
+								Key = "moves", Label = "招式", Type = "list", ItemLabel = "招式", DefaultRows = 2,
+								Fields =
+								{
+									new PluginFieldSpec { Key = "name", Label = "名字", Type = "text", Default = "Tackle" },
+									new PluginFieldSpec { Key = "dmg", Label = "伤害", Type = "number", Default = "6" },
+								},
+							},
+						},
+						Outputs =
+						{
+							new PluginPageOutput
+							{
+								Target = "cs/Plugins/{id}/Moves/{Prefix}{name}.cs", ForEach = "moves",
+								Emit = "{#Note}// {Note}\n{/Note}{^Note}// 兜底\n{/^Note}public static class {Prefix}{name} { public const int Damage = {dmg}; }\n",
+							},
+						},
+					};
+					mf.Pages.Add(mpage);
+					PluginRegistry.ValidatePages(mf);
+					Check("V0.2.357：合法的 outputs 页不报问题（有 outputs 也算「产出」）",
+						mpage.Problems.Count == 0 && mpage.Produces, string.Join(" / ", mpage.Problems));
+					var mrows = PluginRegistry.PageRowsOf(mf, mpage, mpage.Fields[2]);
+					mrows[0]["name"] = "Slash";
+					mrows[1]["name"] = "Guard";
+					var files = PluginGen.Renders(mf, mpage);
+					Check("V0.2.357：一页多文件 —— forEach 按 list 每行各出一个文件（文件名用行内子栏位）",
+						files.Count == 2
+						&& files[0].Target.EndsWith("Moves/DemoSlash.cs", StringComparison.OrdinalIgnoreCase)
+						&& files[1].Target.EndsWith("Moves/DemoGuard.cs", StringComparison.OrdinalIgnoreCase),
+						string.Join(" / ", files.Select(f => f.Target)));
+					Check("V0.2.357：条件宏 {#Note} 没填时整段不渲染、{^Note} 兜底段出现",
+						files[0].Content.Contains("// 兜底") && !files[0].Content.Contains("// {Note}")
+						&& files[0].Content.Contains("Damage = 6"),
+						files[0].Content.Replace("\n", "⏎"));
+					PluginRegistry.SetPageValue(mf, mpage, mpage.Fields[1], "手写注释");
+					var files2 = PluginGen.Renders(mf, mpage);
+					Check("V0.2.357：条件宏 {#Note} 有值时渲染、{^Note} 兜底段消失（同一份模板两种结果）",
+						files2[0].Content.Contains("// 手写注释") && !files2[0].Content.Contains("// 兜底"),
+						files2[0].Content.Replace("\n", "⏎"));
+					string mroot = Path.Combine(mf.Dir, "proj");
+					Directory.CreateDirectory(mroot);
+					int mwritten = PluginGen.WritePageTo(mroot, mf, mpage);
+					Check("V0.2.357：WritePageTo 真的把那些文件写进工程（生成端和界面按钮走同一份）",
+						mwritten == 2 && File.Exists(Path.Combine(mroot, "cs", "Plugins", "uicheck-multi", "Moves", "DemoSlash.cs")),
+						$"写了 {mwritten} 个");
+					var mbad = new PluginPageSpec
+					{
+						Id = "p2", Title = "坏 outputs",
+						Fields = { new PluginFieldSpec { Key = "x", Type = "text" } },
+						Outputs = { new PluginPageOutput { Target = "a.cs", Emit = "x", ForEach = "moves" } },
+					};
+					var mbadSpec = new PluginSpec { Id = "uicheck-multi-bad", Name = "自检坏" };
+					mbadSpec.Pages.Add(mbad);
+					PluginRegistry.ValidatePages(mbadSpec);
+					Check("V0.2.357：forEach 指向不存在的 list 字段会被报出来（不会静默生成 0 个文件）",
+						mbad.Problems.Any(x => x.Contains("forEach")), string.Join(" / ", mbad.Problems));
+					var mprev = PluginGen.RenderPage(mf, mpage);
+					Check("V0.2.357：预览里按文件分段（每段一行「// ---- 文件：… ----」），一眼能看出每个文件",
+						mprev.Split('\n').Count(l => l.StartsWith("// ---- 文件")) == 2, mprev.Split('\n').FirstOrDefault(l => l.StartsWith("// ---- 文件")) ?? "(没有)");
+					try { Directory.Delete(mf.Dir, recursive: true); } catch { }
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
