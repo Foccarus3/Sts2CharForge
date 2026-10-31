@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -40201,6 +40201,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.365：「全部牌堆」+「自己选」会被校验器拦（本体没有跨四摞的选牌界面）",
 						ProfileValidator.Validate(apProf).Any(i => i.Level == "错误" && i.Message.Contains("全部牌堆") && i.Message.Contains("四摞")),
 						string.Join(" ｜ ", ProfileValidator.Validate(apProf).Where(i => i.Message.Contains("全部牌堆")).Select(i => i.Message).Take(2)));
+				}				// ----- V0.2.366：插件效果没写 var 时不能引用没声明的 DynamicVars["Value"] -----
+				{
+					var pv = ProfileFactory.Sample();
+					pv.Cards.Clear(); pv.Curses.Clear(); pv.AncientCards.Clear();
+					var cNoVar = new CardSpec { Name = "插件无变量", ClassName = "UiPluginNoVar", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					cNoVar.Effects.Add(new EffectSpec { Kind = "PluginHealNoVar", Amount = 6m, TargetSide = "Self" });
+					var cVar = new CardSpec { Name = "插件有变量", ClassName = "UiPluginWithVar", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					cVar.Effects.Add(new EffectSpec { Kind = "PluginHealAndBlock", Amount = 4m, TargetSide = "Self" });
+					pv.Cards.Add(cNoVar);
+					pv.Cards.Add(cVar);
+					string sNoVar = CSharpCodeGen.CardSource(pv, cNoVar, 0);
+					string sVar = CSharpCodeGen.CardSource(pv, cVar, 1);
+					Check("V0.2.366：插件效果**没写 var** → 生成里不引用 DynamicVars[\"Value\"]（那会造成 KeyNotFoundException）",
+						!sNoVar.Contains("DynamicVars[\"Value\"]") && sNoVar.Contains("CreatureCmd.Heal("),
+						sNoVar.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Heal"))?.Trim() ?? "(没生成)");
+					Check("V0.2.366：数值退成字面量（没写 var 时模板里拿到的是 6m）",
+						sNoVar.Contains("CreatureCmd.Heal(base.Owner.Creature, 6m)"),
+						sNoVar.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Heal"))?.Trim() ?? "(没生成)");
+					Check("V0.2.366：写了 var 的插件效果照旧用 base.DynamicVars[\"Heal\"]（V0.2.360 的行为没被破坏）",
+						sVar.Contains("DynamicVars[\"Heal\"]"), sVar.Split('\n').FirstOrDefault(l => l.Contains("DynamicVars["))?.Trim() ?? "(没有)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

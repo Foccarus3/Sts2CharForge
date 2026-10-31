@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -2303,6 +2303,20 @@ public static class ExtraResourceEnergyCounterDiagPatch
             + DebugLogGen.PowerAfter(e, targetExpr, type ?? "PowerModel");
     }
 
+    /// <summary>
+    /// V0.2.366（用户实测 KeyNotFoundException：<c>ChixiaoTianwei → Value</c>）：
+    /// **插件贡献的效果、又没在 plugin.json 里写 `var`** 时，生成端**不声明**动态变量
+    ///（<see cref="HasNoDynamicVar"/> 那条规则是对的），但数值表达式以前还是走 <c>VarAccess</c>，
+    /// 于是卡面 / 卡牌类里出现了 <c>base.DynamicVars["Value"]</c> —— 这个键根本没声明，
+    /// 游戏里一取就抛 KeyNotFoundException（校验器那条「引用了没有声明的动态变量」拦的就是它）。
+    ///
+    /// <para>所以：没声明 var 的插件效果，数值一律退成**字面数值**（填了公式 / 用了 X 的照旧走表达式）。</para>
+    /// </summary>
+    internal static string PluginAmountExpr(EffectSpec e, string amt) =>
+        PluginRegistry.EffectOf(e.Kind) is { } __pf && string.IsNullOrWhiteSpace(__pf.Var)
+            && !e.UsesAmountFormula && !e.AmountIsXEffective
+                ? Lit.Dec(e.Amount)
+                : amt;
     /// <summary>同上（cardSourceExpr / ctxVar 用默认值那一档）。</summary>
     internal static string ApplyPowerInstr(EffectSpec e, bool useX, string? type, string targetExpr, string amt, string applierExpr, string cardSourceExpr)
         => ApplyPowerInstr(e, useX, type, targetExpr, amt, applierExpr, cardSourceExpr, "choiceContext");
@@ -9334,7 +9348,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 以前插件效果拿到的是 0m（数值框里那一格），等于「选了 = X 就不生效」。
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner", Foe: "cardPlay.Target",
-                Choice: "choiceContext", CardSelf: "this", AmountOverride: amt)))
+                Choice: "choiceContext", CardSelf: "this", AmountOverride: PluginAmountExpr(e, amt))))
             return;
         switch (e.Kind)
         {
@@ -13398,7 +13412,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: amt,
+                Choice: hasContext ? "choiceContext" : "null!", AmountOverride: PluginAmountExpr(e, amt),
                 CardSelfIsCard: false)))   // 遗物的 this 不是卡牌：{transformSelf} 只放新牌、不写 this.Pile
             return;
         switch (e.Kind)
@@ -14969,7 +14983,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (PluginGen.TryEmit(w, e, new PluginGen.PluginCtx(
                 Self: "base.Owner.Creature", Player: "base.Owner",
                 Foe: "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()",
-                Choice: "choiceContext", AmountOverride: amt,
+                Choice: "choiceContext", AmountOverride: PluginAmountExpr(e, amt),
                 CardSelfIsCard: false)))   // 药水的 this 不是卡牌：同上
             return;
         string allEnemies = "base.Owner.Creature.CombatState.HittableEnemies";

@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -1671,7 +1671,7 @@ public static class CustomPowerGen
         // （以前只有卡牌 / 遗物 / 药水 / 锻造图四条链 —— 状态链的 switch 白名单会把插件 kind 打回「用不了」）。
         if (Plugins.PluginGen.TryEmit(w, e, new Plugins.PluginGen.PluginCtx(
                 Self: "base.Owner", Player: "base.Owner.Player!", Foe: CSharpCodeGen.FirstEnemyOf("base.Owner.Player"),
-                Choice: "choiceContext", CardSelf: "null", AmountOverride: amt,
+                Choice: "choiceContext", CardSelf: "null", AmountOverride: CSharpCodeGen.PluginAmountExpr(e, amt),
                 // V0.2.339：状态链上 base.Owner **本身就是 Creature**，不能写 base.Owner.Creature.CombatState
                 //（V0.2.338 的默认值就是那个 → 模板里用 {combatState} 会 CS1061）
                 CombatState: "base.Owner.CombatState", CardSelfIsCard: false)))
