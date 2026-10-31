@@ -1,4 +1,4 @@
-# V0.2.354 — 修 CS0136：锻造图生成的 `__fgXXXXXX` 局部变量在同一段里声明两次
+﻿# V0.2.354 — 修 CS0136：锻造图生成的 `__fgXXXXXX` 局部变量在同一段里声明两次
 
 你贴的（别人的工程 `Lihuazou`）：
 
@@ -28,11 +28,29 @@ Powers\ZouPower16.cs(31,21): error CS0136: … '__fg8970c3' …
 
 所以这个改动**不可能改变任何原本能编译的工程的生成文本**：换名只在「原本会 CS0136」的场合发生。
 
-## 说清楚一点
+## **已用真实存档验证**（同一份 `Lihuazou (3).json`）
 
-这是别人的工程，我这边没有那份 `Lihuazou.json`，**没法用他的真实图复现**；但报错的两个变量名正好对应
-`ValueVar` 那条重新声明路径，而且 C# 的 CS0136 规则和这里的判断完全对得上。所以先按这条修。
-如果他那份更新后**还**报同样的错，请把那份存档（或那块锻造图的 JSON）发我，我按真实图定位。
+改前（旧逻辑跑同一份存档）生成的 `Powers/ZouPower16.cs` 里：
+
+```csharp
+if (base.Owner.GetPowerAmount<ZouPowerju>() >= 1) {
+    decimal __fg5ed68d = …   // fg:…【状态】
+    decimal __fg8970c3 = …   // fg:…【状态】
+    if (…) { decimal __fg5ed68d = …;  decimal __fg8970c3 = …;   // ← CS0136 ×2（正是他报的那两个名字）
+```
+
+改后：两个变量提到外层块声明、内层直接复用 ——
+
+```csharp
+if (base.Owner.GetPowerAmount<ZouPowerju>() >= 1) {
+    decimal __fg5ed68d = …;   // 只声明一次
+    decimal __fg8970c3 = …;
+    if (…) { if (…) { … } }   // 内层只引用
+```
+
+用这份存档跑 `sacprobe powersrc`：**16 个自定义状态全部生成完毕，`decimal __fg…` 一个重复都没有**。
+（`gen` 全量生成在他那份存档上会因为「图标文件在 `C:\Users\z3659\…`、解包工程在 `E:\game\sts2\1`」这些
+**本机路径不存在**而提前停下 —— 那是环境问题，不是代码问题；`Powers` 那部分已经单独验证过了。）
 
 ## 自检
 
