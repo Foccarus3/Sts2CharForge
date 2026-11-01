@@ -1,4 +1,4 @@
-using System.Text.RegularExpressions;
+﻿using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -2015,13 +2015,31 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   <item>变化 / 全局变化：留空 = <c>TransformToRandom</c>（随机卡）→ 不弹；</item>
     ///   <item>强化指定卡：必须点名，留空不弹。</item>
     /// </list>
+    /// <summary>
+    /// V0.2.373：「这张牌全部会提到卡的效果」= 效果列表 + 两块锻造图布。
+    /// 悬停卡面提示以前只看 <c>c.Effects</c> —— **锻造图上的效果一条都不看**，
+    /// 于是「图上生成某张卡」的牌悬停什么都不弹（用户实测：「改造现实」悬停没有利刃卡面）。
+    /// </summary>
+    internal static IEnumerable<EffectSpec> CardHoverEffects(CardSpec c) =>
+        c.Effects
+            .Concat(LocalizationGen.GraphEffects(c.ForgeGraph))
+            .Concat(LocalizationGen.GraphEffects(c.UpgradedForgeGraph))
+            .Where(x => x is not null);
+
     /// </summary>
     internal static string? MentionedCardClass(EffectSpec e)
     {
         string id = (e.SpawnCardId ?? "").Trim();
+        // V0.2.373（用户实测：用「组」生成卡牌时悬停弹的是**小刀**）：
+        // 只有「明确点名一张卡」或「什么都没填（生成端兜底就是小刀）」才弹小刀卡面；
+        // 选了组 / 随机范围（SpawnFilter 非空 或 取牌方式=随机）时出来的**不是小刀** → 不弹那张卡面。
+        // ⚠ 「范围 / 取牌方式」这两栏只有生成卡牌 / 加进牌组才在界面上显示（FillHand 不显示）——
+        // 所以只对那两种判，避免"界面藏着但生成端在读"（V0.2.150 那组逐条对拍会红）。
+        bool __fromPool = e.Kind is "GenerateCard" or "AddCardGlobal"
+            && (!string.IsNullOrWhiteSpace(e.SpawnFilter) || e.IsSpawnRandom);
         return e.Kind switch
         {
-            "GenerateCard" or "AddCardGlobal" or "FillHand" => id,        // 空串 = 小刀
+            "GenerateCard" or "AddCardGlobal" or "FillHand" => (id.Length > 0 || !__fromPool) ? id : null,
             "TransformCard" or "TransformCardGlobal" or "BoostCard" => id.Length > 0 ? id : null,
             _ => null,
         };
@@ -5006,7 +5024,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line("];");
 
         // 悬停说明（描述里提到的状态 / 自定义关键词）
-        w.Raw(HoverTipsOverride(c.Effects, isPublic: false, isCard: true,
+        w.Raw(HoverTipsOverride(CardHoverEffects(c), isPublic: false, isCard: true,
             extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList), owner: p,
             upgradedKeywordTips: UpgradeKeywordTips(p, c)));
 
@@ -5481,7 +5499,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 鼠标悬停卡面描述里的状态 → 弹出本体 powers 表里那条说明（本体状态改写后就是新的名字 + 新的描述）
         // 自定义关键词 + 内置的「临时保留 / 临时奇巧」也走这一段（文本来自我们写进本体 card_keywords 表的键）
         // V0.2.136：「升级后获得 / 失去的自定义关键词」也走这一段（按 base.IsUpgraded 条件加/不加）
-        w.Raw(HoverTipsOverride(c.Effects, isPublic: false, isCard: true,
+        w.Raw(HoverTipsOverride(CardHoverEffects(c), isPublic: false, isCard: true,
             extraTips: KeywordGen.TipsFor(p, c.CustomKeywordList), owner: p,
             upgradedKeywordTips: UpgradeKeywordTips(p, c)));
 

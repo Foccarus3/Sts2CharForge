@@ -40380,6 +40380,44 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string hs2 = CSharpCodeGen.CardSource(hp2, hc2, 0);
 					Check("V0.2.372：普通牌生成文本不变（没有 __fatalWill 那一套）",
 						!hs2.Contains("__fatalWill"), hs2.Contains("__fatalWill") ? "多了" : "干净");
+				}				// ----- V0.2.373：悬停卡面三件事（组生成不再弹小刀 / 图上的效果也算 / 状态也弹） -----
+				{
+					var hv = ProfileFactory.Sample();
+					hv.Cards.Clear(); hv.Curses.Clear(); hv.AncientCards.Clear();
+					// ① 从「组 / 随机范围」生成 → 不许再弹小刀
+					var hc1 = new CardSpec { Name = "组生成", ClassName = "UiHoverGroupGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					hc1.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnFilter = "Attack", TargetSide = "Self" });
+					hv.Cards.Add(hc1);
+					string hs1 = CSharpCodeGen.CardSource(hv, hc1, 0);
+					Check("V0.2.373：用「组 / 范围」生成卡牌时，悬停不再弹默认的小刀卡面",
+						!hs1.Contains("FromCard<Shiv>"), hs1.Split('\n').FirstOrDefault(l => l.Contains("FromCard<"))?.Trim() ?? "(没有 FromCard)");
+					// ② 锻造图上的「生成某张卡」也要弹卡面
+					var hc2 = new CardSpec { Name = "图上生成", ClassName = "UiHoverGraphGen", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					var hg = new ForgeGraphSpec();
+					var ht = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+					ht.SetField("Timing", "CardPlayed");
+					var he = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+					he.SetField("Effect", "GenerateCard");
+					he.SetField("Amount", "1");
+					he.SetField("SpawnCardId", "UiHoverGraphGen");
+					hg.Nodes.AddRange(new[] { ht, he });
+					hg.Links.Add(new ForgeLinkSpec { From = ht.Id, To = he.Id, FromPort = 0, ToPort = 0 });
+					hc2.ForgeGraph = hg;
+					hv.Cards.Add(hc2);
+					string hs2 = CSharpCodeGen.CardSource(hv, hc2, 1);
+					Check("V0.2.373：锻造图上的「生成某张卡」也会弹那张卡面（以前只看效果列表）",
+						hs2.Contains("FromCard<") && hs2.Contains("UiHoverGraphGen"),
+						hs2.Split('\n').FirstOrDefault(l => l.Contains("FromCard<"))?.Trim() ?? "(没有)");
+					// ③ 自定义状态也要弹它要加的卡面
+					var pw = new CustomPowerSpec { Name = "状态弹卡", ClassName = "UiHoverPower" };
+					var tr = new PowerTriggerSpec { Kind = "PlayerTurnStart" };
+					tr.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 1m, SpawnCardId = "UiHoverGraphGen", TargetSide = "Self" });
+					tr.OwnerPower = pw;
+					pw.Triggers.Add(tr);
+					hv.CustomPowers.Add(pw);
+					string ps = CustomPowerGen.Source(hv, pw, 0);
+					Check("V0.2.373：自定义状态也会弹它触发效果里提到的卡面（以前状态完全没有 ExtraHoverTips）",
+						ps.Contains("ExtraHoverTips") && ps.Contains("FromCard<"), ps.Split('\n').FirstOrDefault(l => l.Contains("FromCard<"))?.Trim() ?? "(没有)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

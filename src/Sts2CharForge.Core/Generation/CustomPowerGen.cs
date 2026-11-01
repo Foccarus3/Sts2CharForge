@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -127,6 +127,16 @@ public static class CustomPowerGen
         w.Line($"public override PowerType Type => PowerType.{(debuff ? "Debuff" : "Buff")};");
         w.Line();
         w.Line($"public override PowerStackType StackType => PowerStackType.{(power.Single ? "Single" : "Counter")};");
+        // V0.2.373（用户实测：「改造现实」悬停不弹它要加的利刃卡面）：状态以前**完全没有** ExtraHoverTips ——
+        // 只有卡 / 遗物 / 药水会弹。这里按「这条状态的触发效果 + 锻造图上的效果」生成同一套卡面提示，
+        // 于是状态描述里提到的卡（生成 / 加进牌组 / 填满手牌那几种）鼠标移上去也能看到。
+        {
+            var hoverEffects = new List<EffectSpec>();
+            foreach (var tr in power.Triggers)
+                if (tr?.Effects is not null) hoverEffects.AddRange(tr.Effects.Where(x => x is not null));
+            hoverEffects.AddRange(LocalizationGen.GraphEffects(power.ForgeGraph).Where(x => x is not null));
+            w.Raw(CSharpCodeGen.HoverTipsOverride(hoverEffects, isPublic: false, owner: profile));
+        }
 
         // V0.2.239（用户问「在自定义状态增加状态层数能否到负值」）：勾了「允许负层数」就照本体
         // 力量 / 敏捷 / 专注 那套覆写 AllowNegative —— 这样 `PowerModel.SetAmount` 不会把层数夹在 0 以上、
