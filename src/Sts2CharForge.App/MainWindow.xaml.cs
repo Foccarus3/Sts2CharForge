@@ -40723,6 +40723,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv)
 				{
 					Check("V0.2.379：visibleWhen 界面隐藏", false, "异常：" + exv.Message);
+				}				// ----- V0.2.380：页面间共享数据（{页面id:栏位key}） -----
+				try
+				{
+					var sp2 = new PluginSpec { Id = "uicheck-share", Name = "共享", Dir = Path.Combine(Path.GetTempPath(), "uicheck-share-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(sp2.Dir);
+					var pEnemy = new PluginPageSpec { Id = "enemy", Title = "敌人", Target = "enemy.txt", Emit = "class {name} {{}}", Fields = { new PluginFieldSpec { Key = "name", Label = "名字", Type = "text" } } };
+					var pEnc = new PluginPageSpec { Id = "encounter", Title = "遭遇", Target = "enc.txt", Emit = "spawn {enemy:name} x{count}", Fields = { new PluginFieldSpec { Key = "count", Label = "数量", Type = "number" } } };
+					sp2.Pages.Add(pEnemy);
+					sp2.Pages.Add(pEnc);
+					PluginRegistry.SetPageValue(sp2, pEnemy, pEnemy.Fields[0], "GoblinKing");
+					PluginRegistry.SetPageValue(sp2, pEnc, pEnc.Fields[0], "3");
+					string encOut = PluginGen.RenderPage(sp2, pEnc);
+					Check("V0.2.380：页面间共享数据 —— 遭遇页里 {enemy:name} 取到敌人页填的 GoblinKing",
+						encOut.Contains("GoblinKing") && encOut.Contains("x3"), encOut.Replace("\n", "⏎"));
+					string enemyOut = PluginGen.RenderPage(sp2, pEnemy);
+					Check("V0.2.380：本页模板里正常的 {name} 不受影响",
+						enemyOut.Contains("class GoblinKing"), enemyOut.Replace("\n", "⏎"));
+					var pBad = new PluginPageSpec { Id = "bad", Title = "坏引用", Target = "b.txt", Emit = "x {nope:name}", Fields = { new PluginFieldSpec { Key = "k", Type = "text" } } };
+					sp2.Pages.Add(pBad);
+					Check("V0.2.380：取不到的页面引用原样保留（不会被静默清空）",
+						PluginGen.RenderPage(sp2, pBad).Contains("{nope:name}"), PluginGen.RenderPage(sp2, pBad));
+					try { Directory.Delete(sp2.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exs)
+				{
+					Check("V0.2.380：页面间共享数据", false, "异常：" + exs.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

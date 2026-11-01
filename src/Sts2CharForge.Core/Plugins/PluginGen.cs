@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -242,6 +242,9 @@ public static class PluginGen
             foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
                 text = text.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(rowList, row, sub), StringComparison.OrdinalIgnoreCase);
         }
+        // V0.2.380（缺口文档第 12 节「页面间共享数据」）：跨页取值 {页面id:栏位key}
+        // 例：「遭遇页」里写 {enemy:name} 就能取到「敌人页」的 name —— 不必把同一个 ID 在两个页面各填一遍。
+        text = ExpandPageRefs(p, text);
         foreach (var lf in page.Fields.Where(x => x is not null && x.IsList))
             text = ExpandListBlock(text, p, page, lf);
         foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
@@ -329,6 +332,24 @@ public static class PluginGen
     /// 数据来源 = 父行那一格里存的多行文本：一行一条，子栏位按声明顺序用 <c>|</c> 分隔。
     /// 块里可用子栏位 + <c>{index}</c>（从 1 起）/ <c>{index0}</c>（从 0 起）。
     /// </summary>
+    /// <summary>
+    /// V0.2.380：把 <c>{页面id:栏位key}</c> 换成**那一页**里那个栏位的值（页面间共享数据）。
+    /// 找不到页面 / 栏位时**原样留着**（校验器会报，不会静默变成空）。
+    /// </summary>
+    private static string ExpandPageRefs(PluginSpec p, string text)
+    {
+        if (string.IsNullOrEmpty(text) || p?.Pages is null) return text;
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\{([A-Za-z0-9_\-]+):([A-Za-z0-9_\-]+)\}", m =>
+        {
+            string pid = m.Groups[1].Value, fkey = m.Groups[2].Value;
+            var target = p.Pages.FirstOrDefault(x => x is not null && string.Equals((x.Id ?? "").Trim(), pid, StringComparison.OrdinalIgnoreCase));
+            if (target is null) return m.Value;
+            var f = target.Fields.FirstOrDefault(x => x is not null && string.Equals((x.Key ?? "").Trim(), fkey, StringComparison.OrdinalIgnoreCase));
+            if (f is null || f.IsList) return m.Value;
+            return PluginRegistry.PageValueOf(p, target, f);
+        });
+    }
+
     private static string ExpandRowListBlock(string text, PluginFieldSpec listField, string raw)
     {
         string key = (listField.Key ?? "").Trim();
