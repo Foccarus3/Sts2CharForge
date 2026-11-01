@@ -40790,6 +40790,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exck)
 				{
 					Check("V0.2.381：插件自定义校验器", false, "异常：" + exck.Message);
+				}				// ----- V0.2.382：行内子栏位校验（checks 带 list） -----
+				try
+				{
+					var rc = new PluginSpec { Id = "uicheck-rowcheck", Name = "行校验", Dir = Path.Combine(Path.GetTempPath(), "uicheck-rowcheck-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(rc.Dir);
+					var rowList = new PluginFieldSpec
+					{
+						Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+						Fields = { new PluginFieldSpec { Key = "kind", Type = "pick", Options = { "attack", "block" } }, new PluginFieldSpec { Key = "dmg", Type = "number" } },
+					};
+					var rcPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "行校验页", Target = "x.txt", Emit = "{moves}{dmg}{/moves}",
+						Fields = { rowList },
+						Checks =
+						{
+							new Sts2CharForge.Core.Plugins.PluginPageSpec.PluginCheckSpec { List = "moves", When = "kind=attack", Field = "dmg", Rule = "int", Min = "1", Message = "攻击招式必须填伤害" },
+						},
+					};
+					rc.Pages.Add(rcPage);
+					var rcRows = PluginRegistry.PageRowsOf(rc, rcPage, rowList);
+					rcRows.Clear();
+					rcRows.Add(new Dictionary<string, string> { ["kind"] = "attack", ["dmg"] = "0" });
+					rcRows.Add(new Dictionary<string, string> { ["kind"] = "block", ["dmg"] = "" });
+					PluginRegistry.ValidatePages(rc);
+					Check("V0.2.382：行内校验 —— kind=attack 且 dmg=0 的那一行被报出来（第 1 行）",
+						rcPage.Problems.Any(x => x.Contains("第 1 行") && x.Contains("攻击招式必须填伤害")),
+						string.Join(" / ", rcPage.Problems));
+					Check("V0.2.382：行内校验 —— kind=block 的那一行不报",
+						!rcPage.Problems.Any(x => x.Contains("第 2 行")), string.Join(" / ", rcPage.Problems));
+					try { Directory.Delete(rc.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exr)
+				{
+					Check("V0.2.382：行内子栏位校验", false, "异常：" + exr.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

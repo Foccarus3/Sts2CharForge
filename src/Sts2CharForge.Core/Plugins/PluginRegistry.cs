@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -319,6 +319,8 @@ public sealed class PluginPageSpec
     {
         public string When { get; set; } = "";
         public string Field { get; set; } = "";
+        /// <summary>V0.2.382：非空 = 检查**这个 list 栏位的每一行**（行内子栏位校验）；空 = 检查页面级标量栏位。</summary>
+        public string List { get; set; } = "";
         public string Rule { get; set; } = "required";
         public string Min { get; set; } = "";
         public string Max { get; set; } = "";
@@ -617,18 +619,82 @@ public static class PluginRegistry
     {
         foreach (var f in page.Fields)
         {
-            if (f is null || string.IsNullOrWhiteSpace(f.Key) || f.IsList) continue;
+            if (f is null || string.IsNullOrWhiteSpace(f.Key)) continue;
+            // V0.2.382：list 栏位也算（行内校验的页面可能**只有**一个 list）—— 只要有任何一行填了值就算
+            if (f.IsList)
+            {
+                foreach (var row in PageRowsOf(spec, page, f))
+                    foreach (var v in row.Values)
+                        if (!string.IsNullOrWhiteSpace(v)) return true;
+                continue;
+            }
             if (!string.IsNullOrWhiteSpace(PageValueOf(spec, page, f))) return true;
         }
         return false;
     }
 
     /// <summary>V0.2.381：跑这页的插件自定义校验规则，命中就写进 <see cref="PluginPageSpec.Problems"/>。</summary>
+    /// <summary>V0.2.381/382：把一条规则套到某个值上（页面级与行内共用）。</summary>
+    private static void ApplyOneCheck(PluginPageSpec.PluginCheckSpec c, string val, string label,
+        string where, List<string> problems)
+    {
+        string rule = (c.Rule ?? "").Trim().ToLowerInvariant();
+        string custom = string.IsNullOrWhiteSpace(c.Message) ? "" : c.Message.Trim();
+        if (rule is "" or "required")
+        {
+            if (val.Length == 0)
+                problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须有值"));
+            return;
+        }
+        if (rule is "number" or "int")
+        {
+            bool isInt = rule == "int";
+            bool parsed = decimal.TryParse(val, out decimal num);
+            if (isInt && parsed && num != Math.Truncate(num)) parsed = false;
+            if (val.Length > 0 && !parsed)
+            {
+                problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须是" + (isInt ? "整数" : "数字")));
+                return;
+            }
+            if (!parsed) return;
+            if (decimal.TryParse((c.Min ?? "").Trim(), out decimal mn) && num < mn)
+                problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能小于 " + mn));
+            if (decimal.TryParse((c.Max ?? "").Trim(), out decimal mx) && num > mx)
+                problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能大于 " + mx));
+        }
+    }
+
     private static void ValidateCustomChecks(PluginSpec spec, PluginPageSpec page, string where)
     {
         foreach (var c in page.Checks)
         {
             if (c is null || string.IsNullOrWhiteSpace(c.Field)) continue;
+            // V0.2.382：带 list 的规则 = 检查那一摞的**每一行**（行内子栏位校验）
+            if (!string.IsNullOrWhiteSpace(c.List))
+            {
+                var listField = page.Fields.FirstOrDefault(x => x is not null
+                    && string.Equals((x.Key ?? "").Trim(), c.List.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (listField is null || !listField.IsList)
+                {
+                    page.Problems.Add(where + "：checks 里引用了不存在的 list 栏位「" + c.List + "」。");
+                    continue;
+                }
+                var rows = PageRowsOf(spec, page, listField);   // list 的行存在 rows.json 里，不在 page values 里
+                string listLabel = string.IsNullOrWhiteSpace(listField.Label) ? (listField.Key ?? "").Trim() : listField.Label.Trim();
+                for (int ri = 0; ri < rows.Count; ri++)
+                {
+                    var row = rows[ri];
+                    if (!string.IsNullOrWhiteSpace(c.When))
+                    {
+                        var probe = new PluginFieldSpec { VisibleWhen = c.When };
+                        if (!FieldVisible(probe, k => row.TryGetValue(k, out string? rv) ? rv : null)) continue;
+                    }
+                    string rowVal = (row.TryGetValue(c.Field.Trim(), out string? fv) ? (fv ?? "") : "").Trim();
+                    string rowWhere = where + "：" + listLabel + " 第 " + (ri + 1) + " 行";
+                    ApplyOneCheck(c, rowVal, c.Field.Trim(), rowWhere, page.Problems);
+                }
+                continue;
+            }
             var field = page.Fields.FirstOrDefault(x => x is not null
                 && string.Equals((x.Key ?? "").Trim(), c.Field.Trim(), StringComparison.OrdinalIgnoreCase));
             if (field is null || field.IsList)
