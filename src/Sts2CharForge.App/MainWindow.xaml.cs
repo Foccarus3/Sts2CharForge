@@ -6985,6 +6985,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							line2.Children.Add(new TextBlock { Text = (at + 1) + ".", Width = 26, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.Gray });
 							foreach (var s2 in (sub.Fields ?? new List<PluginFieldSpec>()).Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
 							{
+								// V0.2.379：行内 visibleWhen（条件看同一行的其它子栏位）
+								if (!PluginRegistry.FieldVisible(s2, k => subRows[at].TryGetValue(k, out string? cv) ? cv : null)) continue;
 								string k2 = s2.Key!.Trim();
 								var tb2 = new TextBox { Width = 120, Text = subRows[at].TryGetValue(k2, out string? vv) ? (vv ?? "") : "" };
 								tb2.ToolTip = string.IsNullOrWhiteSpace(s2.Label) ? k2 : s2.Label;
@@ -7167,6 +7169,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		return keys.Count == 0 ? "（先声明 fields）" : string.Join(" | ", keys.Select(k => k + "值"));
 	}
 
+	/// <summary>
+	/// V0.2.379（缺口文档第 8 节）：这个栏位现在该不该画。
+	/// <paramref name="row"/> = null 表示页面级（条件看同页标量）；非 null 表示 list 行内（看同一行）。
+	/// </summary>
+	private static bool ShouldShowField(PluginSpec p, PluginPageSpec page, PluginFieldSpec f, Dictionary<string, string>? row)
+	{
+		if (f is null || string.IsNullOrWhiteSpace(f.VisibleWhen)) return true;
+		if (row is not null)
+			return PluginRegistry.FieldVisible(f, k => row.TryGetValue(k, out string? v) ? v : null);
+		return PluginRegistry.FieldVisible(f, k =>
+		{
+			var ctl = page.Fields.FirstOrDefault(x => x is not null
+				&& string.Equals((x.Key ?? "").Trim(), k, StringComparison.OrdinalIgnoreCase));
+			return ctl is null ? null : PluginRegistry.PageValueOf(p, page, ctl);
+		});
+	}
+
 	private ComboBox BuildPluginRefCombo(PluginFieldSpec field, string current, Action<string> onPicked)
 	{
 		var combo = new ComboBox { Width = 360, IsEditable = false };
@@ -7246,6 +7265,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
 		{
+			// V0.2.379：visibleWhen 不成立的栏位不画（改完控制栏位后由 Refresh 重建这页）
+			if (!ShouldShowField(p, page, f, null)) continue;
 			// V0.2.349：动态行集合（可增删 / 上下移）—— 「招式列表」这种界面就是靠它做的
 			if (f.IsList)
 			{
@@ -40667,6 +40688,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception ex3)
 				{
 					Check("V0.2.377：三层嵌套（生成 + 界面递归）", false, "异常：" + ex3.Message);
+				}				// ----- V0.2.379：插件栏位 visibleWhen 在界面上真的隐藏 -----
+				try
+				{
+					var vw = new PluginSpec { Id = "uicheck-visible", Name = "联动", Dir = Path.Combine(Path.GetTempPath(), "uicheck-visible-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(vw.Dir);
+					var kindField = new PluginFieldSpec { Key = "kind", Label = "类型", Type = "pick", Options = { "attack", "block" } };
+					var dmgField = new PluginFieldSpec { Key = "dmg", Label = "伤害", Type = "number", VisibleWhen = "kind=attack" };
+					var vwPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "联动", Target = "x.txt", Emit = "{kind}/{dmg}",
+						Fields = { kindField, dmgField },
+					};
+					vw.Pages.Add(vwPage);
+					PluginRegistry.SetPageValue(vw, vwPage, kindField, "attack");
+					object f1 = BuildPluginPageForm(vw, vwPage);
+					PluginRegistry.SetPageValue(vw, vwPage, kindField, "block");
+					object f2 = BuildPluginPageForm(vw, vwPage);
+					int CountLabels(DependencyObject? n, string want)
+					{
+						if (n is null) return 0;
+						int c = (n is TextBlock tb && (tb.Text ?? "").Contains(want)) ? 1 : 0;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) c += CountLabels(d, want);
+						return c;
+					}
+					Check("V0.2.379：visibleWhen —— 类型=attack 时画「伤害」栏，类型=block 时不画",
+						CountLabels(f1 as DependencyObject, "伤害") >= 1 && CountLabels(f2 as DependencyObject, "伤害") == 0,
+						$"attack={CountLabels(f1 as DependencyObject, "伤害")} block={CountLabels(f2 as DependencyObject, "伤害")}");
+					Check("V0.2.379：生成端也按空值处理（kind=block 时 {dmg} 生成出来是空）",
+						PluginGen.RenderPage(vw, vwPage).Contains("block/") && !PluginGen.RenderPage(vw, vwPage).Contains("block/0"),
+						PluginGen.RenderPage(vw, vwPage).Replace("\n", "⏎"));
+					try { Directory.Delete(vw.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exv)
+				{
+					Check("V0.2.379：visibleWhen 界面隐藏", false, "异常：" + exv.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
