@@ -40284,6 +40284,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.368：内置变量补了「三摞 × 五种牌型」（弃牌堆攻击牌数等）",
 						new[] { "DrawAttackCount", "DiscardAttackCount", "ExhaustCurseCount" }.All(id => FormulaBuiltins.All.Any(c => c.Id == id)),
 						string.Join("/", FormulaBuiltins.All.Where(c => c.Id.Contains("Discard")).Select(c => c.Id).Take(8)));
+				}				// ----- V0.2.369：图上「击晕」补 await（以前把 Task 丢了） -----
+				{
+					var stProf = ProfileFactory.Sample();
+					stProf.Cards.Clear(); stProf.Curses.Clear(); stProf.AncientCards.Clear();
+					var stCard = new CardSpec { Name = "图上击晕", ClassName = "UiForgeStunAwait", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					var stG = new ForgeGraphSpec();
+					var stTrig = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+					stTrig.SetField("Timing", "CardPlayed");
+					var stEff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+					stEff.SetField("Effect", "Stun");
+					stEff.SetField("Amount", "1");
+					stEff.SetField("Pick", "AllEnemies");
+					stG.Nodes.AddRange(new[] { stTrig, stEff });
+					stG.Links.Add(new ForgeLinkSpec { From = stTrig.Id, To = stEff.Id, FromPort = 0, ToPort = 0 });
+					stCard.ForgeGraph = stG;
+					stProf.Cards.Add(stCard);
+					string stSrc = CSharpCodeGen.CardSource(stProf, stCard, 0);
+					Check("V0.2.369：图上「击晕」生成的是 await CreatureCmd.Stun(…)（以前漏了 await）",
+						stSrc.Contains("await CreatureCmd.Stun(") && !stSrc.Contains(") CreatureCmd.Stun("),
+						stSrc.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Stun"))?.Trim() ?? "(没生成)");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

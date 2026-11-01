@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -3644,7 +3644,10 @@ public static class ForgeGraphGen
                 ? null
                 : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __clr = __fgFoe.GetPower<{powerId}>(); if (__clr is not null) await PowerCmd.Remove(__clr); }}",
             "ClearPowerDebuffs" => $"foreach (Creature __fgFoe in {foes}) await ForgeFormulaRuntime.ClearDebuffs(__fgFoe);",
-            "Stun" => $"foreach (Creature __fgFoe in {foes}) CreatureCmd.Stun(__fgFoe);",
+            // V0.2.369：以前这里**没有 await**（`CreatureCmd.Stun(...)` 返回 Task，被直接丢掉）——
+            // 单体击晕的「真正生效」部分目前是同步的，所以看起来还能用，但它是个随时会咬人的坑
+            // （改成本体那种「晕眩过场 + 回调」时，不 await 就会在效果还没跑完就继续往下走）。
+            "Stun" => $"foreach (Creature __fgFoe in {foes}) await CreatureCmd.Stun(__fgFoe);",
             // V0.2.309（用户报「卡牌「监视」的即死【节点图】里还没接上」）：即死 = 本体 CreatureCmd.Kill
             //（和卡牌 / 遗物 / 药水链同一句；那几条链早就支持，只有节点图漏了这一档）。
             "InstantKill" => FoeLoop(foes,
