@@ -336,30 +336,36 @@ public static class PluginGen
             int end = text.IndexOf(close, at + open.Length, StringComparison.OrdinalIgnoreCase);
             if (end < 0) break;
             string inner = text.Substring(at + open.Length, end - at - open.Length);
-            var subs = (listField.Fields ?? new List<PluginFieldSpec>())
-                .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
-            var sb = new StringBuilder();
-            // V0.2.375：界面现在存 JSON（也兼容老的「一行一条、| 分隔」），解析交给 PluginRegistry
             var subRows = PluginRegistry.ParseSubRows(listField, raw);
-            int idx = 0;
-            foreach (var subRow in subRows)
-            {
-                string one = inner
-                    .Replace("{index0}", idx.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
-                    .Replace("{index}", (idx + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
-                foreach (var s2 in subs)
-                {
-                    string key2 = s2.Key!.Trim();
-                    string val = subRow.TryGetValue(key2, out string? v2) ? (v2 ?? "") : "";
-                    one = one.Replace("{" + key2 + "}", val, StringComparison.OrdinalIgnoreCase);
-                }
-                sb.AppendLine(one);
-                idx++;
-            }
+            var sb = new StringBuilder();
+            for (int idx = 0; idx < subRows.Count; idx++)
+                sb.AppendLine(RenderSubRow(inner, listField, subRows[idx], idx));
             text = text.Substring(0, at) + sb.ToString() + text.Substring(end + close.Length);
             at = text.IndexOf(open, StringComparison.OrdinalIgnoreCase);
         }
         return text;
+    }
+
+    /// <summary>
+    /// V0.2.376：渲染**一行**（支持任意层嵌套）：先展开这一行里的深层 list 块，再替换标量与 {index}。
+    /// </summary>
+    private static string RenderSubRow(string inner, PluginFieldSpec listField,
+        Dictionary<string, string> row, int idx)
+    {
+        string one = inner;
+        var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+            .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+        foreach (var deep in subs.Where(x => x.IsList))
+            one = ExpandRowListBlock(one, deep, row.TryGetValue(deep.Key!.Trim(), out string? rv) ? (rv ?? "") : "");
+        one = one
+            .Replace("{index0}", idx.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+            .Replace("{index}", (idx + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+        foreach (var s2 in subs.Where(x => !x.IsList))
+        {
+            string k2 = s2.Key!.Trim();
+            one = one.Replace("{" + k2 + "}", row.TryGetValue(k2, out string? v2) ? (v2 ?? "") : "", StringComparison.OrdinalIgnoreCase);
+        }
+        return one;
     }
     /// <summary>展开一个 list 栏位的块：<c>{key} … {/key}</c>（可能出现多次）。</summary>
     private static string ExpandListBlock(string text, PluginSpec p, PluginPageSpec page, PluginFieldSpec listField)

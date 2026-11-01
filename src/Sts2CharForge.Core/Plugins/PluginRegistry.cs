@@ -602,10 +602,10 @@ public static class PluginRegistry
                     // V0.2.374（用户反馈「不能用嵌套 list 复刻老界面」）：现在支持**一层**嵌套 —— 子列表自己必须声明字段，且不能再套 list。
                     if (sub.IsList)
                     {
+                        // V0.2.376（缺口文档第 18.1 节）：**任意层嵌套**都允许了（敌人 → 阶段 → 招式 → 动作）。
+                        // 但仍要求每一层都声明 fields（不然那一层没有东西可编辑）。
                         if (!(sub.Fields ?? new List<PluginFieldSpec>()).Any(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
                             page.Problems.Add($"{where}：嵌套 list 栏位「{sub.Key}」没写子栏位（fields）。");
-                        else if (sub.Fields.Any(x => x is not null && x.IsList))
-                            page.Problems.Add($"{where}：嵌套 list 栏位「{sub.Key}」里不能再套 list（只支持一层嵌套）。");
                     }
                 }
                 if (subs == 0) page.Problems.Add($"{where}：list 栏位「{key}」没写子栏位（fields）。");
