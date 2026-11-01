@@ -234,7 +234,12 @@ public static class PluginGen
             text = text
                 .Replace("{index0}", rowIndex.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
                 .Replace("{index}", (rowIndex + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
-            foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+            // V0.2.374（用户反馈「不能用嵌套 list 复刻老界面」）：**一层嵌套列表**先展开。
+            // 父行里那一格存的是多行文本（一行一条，子栏位按声明顺序用 | 分隔），
+            // 这里按 {子列表key} … {/子列表key} 展开，块里可用子栏位 + {index} / {index0}。
+            foreach (var sub in rowList.Fields.Where(x => x is not null && x.IsList && !string.IsNullOrWhiteSpace(x.Key)))
+                text = ExpandRowListBlock(text, sub, PluginRegistry.RowValueOf(rowList, row, sub));
+            foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
                 text = text.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(rowList, row, sub), StringComparison.OrdinalIgnoreCase);
         }
         foreach (var lf in page.Fields.Where(x => x is not null && x.IsList))
@@ -313,6 +318,49 @@ public static class PluginGen
         return !string.Equals(s, "false", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// V0.2.374：展开**嵌套**列表块（父行里的 <c>{子列表key} … {/子列表key}</c>）。
+    /// 数据来源 = 父行那一格里存的多行文本：一行一条，子栏位按声明顺序用 <c>|</c> 分隔。
+    /// 块里可用子栏位 + <c>{index}</c>（从 1 起）/ <c>{index0}</c>（从 0 起）。
+    /// </summary>
+    private static string ExpandRowListBlock(string text, PluginFieldSpec listField, string raw)
+    {
+        string key = (listField.Key ?? "").Trim();
+        if (key.Length == 0 || string.IsNullOrEmpty(text)) return text;
+        string open = "{" + key + "}";
+        string close = "{/" + key + "}";
+        int at = text.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        int guard = 0;
+        while (at >= 0 && guard++ < 200)
+        {
+            int end = text.IndexOf(close, at + open.Length, StringComparison.OrdinalIgnoreCase);
+            if (end < 0) break;
+            string inner = text.Substring(at + open.Length, end - at - open.Length);
+            var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+                .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+            var sb = new StringBuilder();
+            var lines = (raw ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            int idx = 0;
+            foreach (string line in lines)
+            {
+                if (line.Trim().Length == 0) continue;
+                string[] parts = line.Split('|');
+                string one = inner
+                    .Replace("{index0}", idx.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
+                    .Replace("{index}", (idx + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
+                for (int i = 0; i < subs.Count; i++)
+                {
+                    string val = i < parts.Length ? parts[i].Trim() : "";
+                    one = one.Replace("{" + subs[i].Key!.Trim() + "}", val, StringComparison.OrdinalIgnoreCase);
+                }
+                sb.AppendLine(one);
+                idx++;
+            }
+            text = text.Substring(0, at) + sb.ToString() + text.Substring(end + close.Length);
+            at = text.IndexOf(open, StringComparison.OrdinalIgnoreCase);
+        }
+        return text;
+    }
     /// <summary>展开一个 list 栏位的块：<c>{key} … {/key}</c>（可能出现多次）。</summary>
     private static string ExpandListBlock(string text, PluginSpec p, PluginPageSpec page, PluginFieldSpec listField)
     {
@@ -334,7 +382,10 @@ public static class PluginGen
                 string one = inner
                     .Replace("{index}", (i + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
                     .Replace("{index0}", i.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
-                foreach (var sub in listField.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                // V0.2.374：父行里的**嵌套 list** 也在这里展开（父行那一格存的是多行文本）
+                foreach (var sub in listField.Fields.Where(x => x is not null && x.IsList && !string.IsNullOrWhiteSpace(x.Key)))
+                    one = ExpandRowListBlock(one, sub, PluginRegistry.RowValueOf(listField, rows[i], sub));
+                foreach (var sub in listField.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
                     one = one.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(listField, rows[i], sub), StringComparison.OrdinalIgnoreCase);
                 sb.Append(one);
             }

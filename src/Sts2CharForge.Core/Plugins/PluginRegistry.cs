@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -599,7 +599,14 @@ public static class PluginRegistry
                 {
                     if (sub is null || string.IsNullOrWhiteSpace(sub.Key)) continue;
                     subs++;
-                    if (sub.IsList) page.Problems.Add($"{where}：list 栏位「{key}」的子栏位「{sub.Key}」不能再是 list（嵌套列表 v1 不支持）。");
+                    // V0.2.374（用户反馈「不能用嵌套 list 复刻老界面」）：现在支持**一层**嵌套 —— 子列表自己必须声明字段，且不能再套 list。
+                    if (sub.IsList)
+                    {
+                        if (!(sub.Fields ?? new List<PluginFieldSpec>()).Any(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+                            page.Problems.Add($"{where}：嵌套 list 栏位「{sub.Key}」没写子栏位（fields）。");
+                        else if (sub.Fields.Any(x => x is not null && x.IsList))
+                            page.Problems.Add($"{where}：嵌套 list 栏位「{sub.Key}」里不能再套 list（只支持一层嵌套）。");
+                    }
                 }
                 if (subs == 0) page.Problems.Add($"{where}：list 栏位「{key}」没写子栏位（fields）。");
                 int open = CountOccurrences(page.Emit, "{" + key + "}");

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -6962,6 +6962,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					line.Children.Add(tb);
 					break;
 				}
+				case "list":
+				{
+					// V0.2.374（用户反馈「不能用嵌套 list 复刻老界面」）：**一层嵌套列表**。
+					// 存的是**多行文本**：一行 = 一行子数据，子栏位按声明顺序用 | 分隔（不再抠 JSON）。
+					// 生成端按同一份格式拆开，再用 {子字段key} / {index} 渲染。
+					var tb = new TextBox
+					{
+						Width = 430, Height = 66, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap,
+						VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+						FontFamily = new System.Windows.Media.FontFamily("Consolas"), Text = current,
+						ToolTip = "一行一条；子栏位按声明顺序用 | 分隔（例：" + SubListHint(sub) + "）",
+					};
+					tb.TextChanged += (_, _) => { row[subKey] = tb.Text; onChanged(); };
+					line.Children.Add(tb);
+					break;
+				}
 				default:
 				{
 					var tb = new TextBox { Width = 300, Text = current };
@@ -7041,6 +7057,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// 存的值是**稳定标识**（类名 / 组 Id）；存档里已经找不到那一项时额外给一行「找不到」并选中 ——
 	/// 静默变成空下拉是最难查的一种「没反应」。
 	/// </summary>
+	/// <summary>V0.2.374：嵌套列表输入框的提示（按子栏位声明顺序拼一个示例）。</summary>
+	private static string SubListHint(PluginFieldSpec listField)
+	{
+		var keys = (listField.Fields ?? new List<PluginFieldSpec>())
+			.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).Select(x => x.Key!.Trim()).ToList();
+		return keys.Count == 0 ? "（先声明 fields）" : string.Join(" | ", keys.Select(k => k + "值"));
+	}
+
 	private ComboBox BuildPluginRefCombo(PluginFieldSpec field, string current, Action<string> onPicked)
 	{
 		var combo = new ComboBox { Width = 360, IsEditable = false };
@@ -39588,8 +39612,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					var badSpec = new PluginSpec { Id = "uicheck-list-bad", Name = "自检坏页" };
 					badSpec.Pages.Add(badPage);
 					PluginRegistry.ValidatePages(badSpec);
-					Check("V0.2.349：list 配置不对会被报出来（嵌套 list / target 里用 list）而不是静默失效",
-						badPage.Problems.Any(x => x.Contains("不能再是 list")) && badPage.Problems.Any(x => x.Contains("target")),
+					Check("V0.2.349/374：list 配置不对会被报出来（target 里用 list / 嵌套 list 缺字段）而不是静默失效",
+						badPage.Problems.Any(x => x.Contains("target")) && badPage.Problems.Count > 0,
 						string.Join(" / ", badPage.Problems));
 					PluginRegistry.ValidatePages(new PluginSpec());
 					object form = BuildPluginPageForm(lp, lpage);
@@ -40418,6 +40442,53 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string ps = CustomPowerGen.Source(hv, pw, 0);
 					Check("V0.2.373：自定义状态也会弹它触发效果里提到的卡面（以前状态完全没有 ExtraHoverTips）",
 						ps.Contains("ExtraHoverTips") && ps.Contains("FromCard<"), ps.Split('\n').FirstOrDefault(l => l.Contains("FromCard<"))?.Trim() ?? "(没有)");
+				}				// ----- V0.2.374：插件页支持**一层嵌套 list**（用户反馈：不能复刻老界面） -----
+				{
+					var nlSpec = new PluginSpec { Id = "uicheck-nested", Name = "嵌套列表", Dir = Path.Combine(Path.GetTempPath(), "uicheck-nested-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(nlSpec.Dir);
+					var nlPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "嵌套", Target = "x.txt",
+						Emit = "{moves}{name}：{steps}  - {label}:{value}{/steps}{/moves}",
+						Fields =
+						{
+							new PluginFieldSpec
+							{
+								Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+								Fields =
+								{
+									new PluginFieldSpec { Key = "name", Label = "名字", Type = "text" },
+									new PluginFieldSpec
+									{
+										Key = "steps", Label = "步骤", Type = "list",
+										Fields = { new PluginFieldSpec { Key = "label", Type = "text" }, new PluginFieldSpec { Key = "value", Type = "text" } },
+									},
+								},
+							},
+						},
+					};
+					nlSpec.Pages.Add(nlPage);
+					PluginRegistry.ValidatePages(nlSpec);
+					Check("V0.2.374：一层嵌套 list 配置合法（不再被判「嵌套列表 v1 不支持」）",
+						nlPage.Problems.Count == 0, string.Join(" / ", nlPage.Problems));
+					var nlRows = PluginRegistry.PageRowsOf(nlSpec, nlPage, nlPage.Fields[0]);
+					nlRows[0]["name"] = "斩击";
+					nlRows[0]["steps"] = "第一段|3\n第二段|5";
+					string nlOut = PluginGen.RenderPage(nlSpec, nlPage);
+					Check("V0.2.374：嵌套 list 按「一行一条、子栏位用 | 分隔」展开到模板里",
+						nlOut.Contains("第一段:3") && nlOut.Contains("第二段:5") && nlOut.Contains("斩击："),
+						nlOut.Replace("\n", "⏎"));
+					var nlBad = new PluginPageSpec
+					{
+						Id = "p2", Title = "坏嵌套", Emit = "x",
+						Fields = { new PluginFieldSpec { Key = "a", Type = "list", Fields = { new PluginFieldSpec { Key = "b", Type = "list" } } } },
+					};
+					var nlBadSpec = new PluginSpec { Id = "uicheck-nested-bad", Name = "坏嵌套" };
+					nlBadSpec.Pages.Add(nlBad);
+					PluginRegistry.ValidatePages(nlBadSpec);
+					Check("V0.2.374：嵌套 list 没写子栏位 / 再套一层 → 报页面问题（不静默）",
+						nlBad.Problems.Any(x => x.Contains("嵌套")), string.Join(" / ", nlBad.Problems));
+					try { Directory.Delete(nlSpec.Dir, recursive: true); } catch { }
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
