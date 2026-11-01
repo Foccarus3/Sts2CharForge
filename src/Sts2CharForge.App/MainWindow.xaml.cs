@@ -40354,6 +40354,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					int orderAt = pickLine.IndexOf(".OrderBy(", StringComparison.Ordinal);
 					Check("V0.2.371：图上「随机取 N 张」先按范围过滤、再随机取（以前是先取后过滤 → 「消耗 1 张状态」总是取不到）",
 						whereAt >= 0 && orderAt > whereAt, pickLine.Trim());
+				}				// ----- V0.2.372：斩杀 + 需要选牌 → 挪到伤害之前（用 Hook.ModifyDamage 预判） -----
+				{
+					var hp = ProfileFactory.Sample();
+					hp.Cards.Clear(); hp.Curses.Clear(); hp.AncientCards.Clear();
+					var hc = new CardSpec { Name = "斩杀变化", ClassName = "UiFatalHoist", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					hc.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+					var hfx = new EffectSpec { Kind = "TransformCardGlobal", Amount = 1m, CardPick = "Chosen", TargetSide = "Self" };
+					hfx.Condition = new ConditionSpec { Kind = "Fatal" };
+					hc.Effects.Add(hfx);
+					hp.Cards.Add(hc);
+					string hs = CSharpCodeGen.CardSource(hp, hc, 0);
+					int willAt = hs.IndexOf("__fatalWill = __fatalDmg", StringComparison.Ordinal);
+					int dmgAt = hs.IndexOf("DamageCmd.Attack(", StringComparison.Ordinal);
+					int pickAt = hs.IndexOf("FromDeckGeneric(", StringComparison.Ordinal);
+					Check("V0.2.372：斩杀 + 需要选牌 → 先预判 __fatalWill、再把选牌效果放在造成伤害**之前**",
+						willAt > 0 && dmgAt > 0 && pickAt > 0 && pickAt < dmgAt && willAt < dmgAt,
+						$"预判={willAt} 选牌={pickAt} 伤害={dmgAt}");
+					// 没有这种组合的牌不许平白多这几行
+					var hp2 = ProfileFactory.Sample();
+					hp2.Cards.Clear(); hp2.Curses.Clear(); hp2.AncientCards.Clear();
+					var hc2 = new CardSpec { Name = "普通攻击", ClassName = "UiPlainAttack", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					hc2.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+					hp2.Cards.Add(hc2);
+					string hs2 = CSharpCodeGen.CardSource(hp2, hc2, 0);
+					Check("V0.2.372：普通牌生成文本不变（没有 __fatalWill 那一套）",
+						!hs2.Contains("__fatalWill"), hs2.Contains("__fatalWill") ? "多了" : "干净");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

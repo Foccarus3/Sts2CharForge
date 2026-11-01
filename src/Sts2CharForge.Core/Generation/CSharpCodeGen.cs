@@ -5643,8 +5643,30 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「这是第几次打出」（V0.2.236）：投斧 / 回声形态 / 重放 改的是 playCount，本体按它循环调 OnPlay。
         // 用户报「投斧对某张牌不生效」时，这行日志是唯一能分辨「多打的那次没跑」还是「跑了但看不出来」的证据。
         DebugLogGen.PlayCount(w);
-        foreach (var e in onPlayEffects)
+        // V0.2.372（用户实测：「斩杀时变化卡牌（全局）」击杀后选牌被奖励流程吃掉、直接不生效）：
+        // 「斩杀」判的是**这一击有没有打死**（__lastAttack 的结果），所以那条效果只能排在造成伤害之后；
+        // 而那一击要是把最后一只怪打死，战斗就进入结束流程、选牌界面会被顶掉 → 选牌拿到空 → 什么都不做。
+        //
+        // 办法：把「斩杀 + 需要选牌」的效果**挪到造成伤害之前**执行，条件换成**预判** __fatalWill
+        //（用本体的 Hook.ModifyDamage 算出这一击的真实伤害，和目标的当前生命比大小）。
+        // 只有真的存在这种组合时才动；其它牌一个字符都不变。
+        var onPlayList = onPlayEffects as IList<EffectSpec> ?? onPlayEffects.ToList();
+        int fatalDmgIdx = -1;
+        var fatalHoisted = new List<EffectSpec>();
+        for (int i = 0; i < onPlayList.Count; i++)
+            if (onPlayList[i] is { Kind: "Damage" } && fatalDmgIdx < 0) fatalDmgIdx = i;
+        if (fatalDmgIdx >= 0)
+            for (int i = fatalDmgIdx + 1; i < onPlayList.Count; i++)
+                if (onPlayList[i] is EffectSpec __fx && __fx.Condition is { Kind: "Fatal" } && NeedsCardSelectionUi(__fx)) fatalHoisted.Add(__fx);
+        if (fatalHoisted.Count == 0) fatalDmgIdx = -1;
+
+        for (int ei = 0; ei < onPlayList.Count; ei++)
         {
+            var e = onPlayList[ei];
+            if (fatalDmgIdx >= 0 && ei == fatalDmgIdx)
+                EmitFatalHoist(w, p, onPlayList[fatalDmgIdx], fatalHoisted, cardVars, usesX);
+            if (fatalHoisted.Contains(e)) continue;   // 已经挪到伤害之前跑过了
+
             // 条件里也能写「数值公式」（用户要求⑦）：求值同样要 __fgPlayer / __fgSelf ——
             // 所以这里先告诉 ConditionExpr「现在生成的是这张卡」（和次数公式共用那个生成期变量）。
             CharacterProfile? prevCondOwner = _formulaOwner;
@@ -9253,6 +9275,39 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (petLookup is null) return null;
         string? cls = (petDef ?? PetGen.Resolve(p, e.PetSummon))?.ClassName;
         return cls is not null && petLookup.TryGetValue(cls, out string? v) ? v : null;
+    }
+
+    /// <summary>V0.2.372：「这条效果会不会弹选牌界面」（自己选 + 属于选牌族）。</summary>
+    private static bool NeedsCardSelectionUi(EffectSpec e)
+        => e is not null && string.Equals(e.CardPick, "Chosen", StringComparison.Ordinal)
+           && (Effects.EffectFieldPolicy.UsesCardPick(e.Kind)
+               || e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust");
+
+    /// <summary>
+    /// V0.2.372：把「斩杀 + 需要选牌」的效果**挪到造成伤害之前**执行。
+    ///
+    /// <para>为什么：斩杀判的是「这一击有没有打死」（结果要等伤害结算完才有），那条效果只能排在伤害之后；
+    /// 但那一击若结束战斗，本体的选牌界面会被战斗结束 / 奖励流程顶掉 → 选牌返回空 → 效果静默不生效
+    ///（用户实测：「斩杀时变化卡牌（全局）」）。</para>
+    ///
+    /// <para>这里先用本体的 <c>Hook.ModifyDamage</c>（和卡面预览同一套修正）算出**这一击的真实伤害**，
+    /// 与目标当前生命比大小得到 <c>__fatalWill</c>，再把那几条效果包在 <c>if (__fatalWill)</c> 里提前跑。</para>
+    /// </summary>
+    private static void EmitFatalHoist(CodeWriter w, CharacterProfile p, EffectSpec dmg,
+        List<EffectSpec> hoisted, Dictionary<EffectSpec, string>? cardVars, bool useX)
+    {
+        w.Line("// V0.2.372 斩杀预判：先算这一击的真实伤害（含力量 / 易伤等修正），好让「斩杀时选牌」在战斗还活着的时候执行");
+        w.Line("bool __fatalWill = false;");
+        w.Open("if (cardPlay is not null && cardPlay.Target is not null && !cardPlay.Target.IsDead)");
+        w.Line($"decimal __fatalDmg = MegaCrit.Sts2.Core.Hooks.Hook.ModifyDamage(base.Owner.RunState, base.CombatState, cardPlay.Target, base.Owner.Creature, {VarAccess(dmg, cardVars)}, ValueProp.Move, this, cardPlay, MegaCrit.Sts2.Core.Hooks.ModifyDamageHookType.All, CardPreviewMode.None, out _);");
+        w.Line("__fatalWill = __fatalDmg >= (decimal)cardPlay.Target.CurrentHp;");
+        w.Close();
+        foreach (var fx in hoisted)
+        {
+            w.Open("if (__fatalWill)");
+            EmitCardEffect(w, p, fx, useX, cardVars, null, petDef: null, effectComment: null, petLookup: null, captureFatal: false, capture: CardReadings.None);
+            w.Close();
+        }
     }
 
     private static void EmitCardEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, bool useX = false,
