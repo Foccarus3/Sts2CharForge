@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
@@ -245,7 +245,13 @@ public static class PluginGen
         foreach (var lf in page.Fields.Where(x => x is not null && x.IsList))
             text = ExpandListBlock(text, p, page, lf);
         foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
-            text = text.Replace("{" + f.Key.Trim() + "}", PluginRegistry.PageValueOf(p, page, f), StringComparison.OrdinalIgnoreCase);
+        {
+            // V0.2.378：visibleWhen 不成立的栏位按**空值**参与模板（不残留旧值）
+            bool vis = PluginRegistry.FieldVisible(f, k =>
+                page.Fields.FirstOrDefault(x => x is not null && string.Equals((x.Key ?? "").Trim(), k, StringComparison.OrdinalIgnoreCase)) is { } ctl
+                    ? PluginRegistry.PageValueOf(p, page, ctl) : null);
+            text = text.Replace("{" + f.Key.Trim() + "}", vis ? PluginRegistry.PageValueOf(p, page, f) : "", StringComparison.OrdinalIgnoreCase);
+        }
         return ExpandConditions(text, p, page, rowList, row);
     }
 
@@ -363,7 +369,9 @@ public static class PluginGen
         foreach (var s2 in subs.Where(x => !x.IsList))
         {
             string k2 = s2.Key!.Trim();
-            one = one.Replace("{" + k2 + "}", row.TryGetValue(k2, out string? v2) ? (v2 ?? "") : "", StringComparison.OrdinalIgnoreCase);
+            // V0.2.378：行内也可以 visibleWhen（条件看同一行的其它子栏位）
+            bool vis = PluginRegistry.FieldVisible(s2, k => row.TryGetValue(k, out string? cv) ? cv : null);
+            one = one.Replace("{" + k2 + "}", vis && row.TryGetValue(k2, out string? v2) ? (v2 ?? "") : "", StringComparison.OrdinalIgnoreCase);
         }
         return one;
     }

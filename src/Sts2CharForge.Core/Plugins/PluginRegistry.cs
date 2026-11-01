@@ -1,4 +1,4 @@
-using System.Text.Json;
+﻿using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -204,6 +204,16 @@ public sealed class PluginFieldSpec
     /// 这样插件页就能真引用「存档里的某张卡 / 某个状态」，而不是让用户手抄类名。
     /// </summary>
     public string RefKind { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.378（缺口文档第 8 节「字段联动 / 条件显示」）：**可见条件**。
+    ///
+    /// <para>写法：<c>key</c>（有值/非 0/false 才显示）、<c>key=值</c>、<c>key!=值</c>。
+    /// 页面级栏位里 key 指同页其它标量栏位；list 行里的子栏位指**同一行**的其它子栏位。</para>
+    ///
+    /// <para>隐藏的栏位在生成时按**空值**参与模板（不会残留上一次的值）。</para>
+    /// </summary>
+    public string VisibleWhen { get; set; } = "";
 
     /// <summary>这个栏位是不是引用型（从当前存档里挑对象）。</summary>
     public bool IsRef => string.Equals((Type ?? "").Trim(), "ref", StringComparison.OrdinalIgnoreCase);
@@ -1050,6 +1060,29 @@ public static class PluginRegistry
         return rows;
     }
 
+    /// <summary>
+    /// V0.2.378：这个栏位现在**该不该显示**（空条件 = 一直显示）。
+    /// <paramref name="get"/> = 「取另一个栏位的值」的回调（页面级取同页标量；行内取同一行的子栏位）。
+    /// </summary>
+    public static bool FieldVisible(PluginFieldSpec f, Func<string, string?> get)
+    {
+        string cond = (f.VisibleWhen ?? "").Trim();
+        if (cond.Length == 0) return true;
+        int ne = cond.IndexOf("!=", StringComparison.Ordinal);
+        int eq = ne >= 0 ? -1 : cond.IndexOf('=', StringComparison.Ordinal);
+        if (ne >= 0)
+        {
+            string key = cond[..ne].Trim(), want = cond[(ne + 2)..].Trim();
+            return !string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
+        }
+        if (eq >= 0)
+        {
+            string key = cond[..eq].Trim(), want = cond[(eq + 1)..].Trim();
+            return string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
+        }
+        string v = (get(cond) ?? "").Trim();
+        return v.Length > 0 && v != "0" && !string.Equals(v, "false", StringComparison.OrdinalIgnoreCase) && v != "否";
+    }
     /// <summary>V0.2.375：行集合 → 嵌套列表那一格的文本（JSON 数组，界面保存用）。</summary>
     public static string SerializeSubRows(PluginFieldSpec listField, List<Dictionary<string, string>> rows)
     {
