@@ -339,19 +339,19 @@ public static class PluginGen
             var subs = (listField.Fields ?? new List<PluginFieldSpec>())
                 .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
             var sb = new StringBuilder();
-            var lines = (raw ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+            // V0.2.375：界面现在存 JSON（也兼容老的「一行一条、| 分隔」），解析交给 PluginRegistry
+            var subRows = PluginRegistry.ParseSubRows(listField, raw);
             int idx = 0;
-            foreach (string line in lines)
+            foreach (var subRow in subRows)
             {
-                if (line.Trim().Length == 0) continue;
-                string[] parts = line.Split('|');
                 string one = inner
                     .Replace("{index0}", idx.ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase)
                     .Replace("{index}", (idx + 1).ToString(System.Globalization.CultureInfo.InvariantCulture), StringComparison.OrdinalIgnoreCase);
-                for (int i = 0; i < subs.Count; i++)
+                foreach (var s2 in subs)
                 {
-                    string val = i < parts.Length ? parts[i].Trim() : "";
-                    one = one.Replace("{" + subs[i].Key!.Trim() + "}", val, StringComparison.OrdinalIgnoreCase);
+                    string key2 = s2.Key!.Trim();
+                    string val = subRow.TryGetValue(key2, out string? v2) ? (v2 ?? "") : "";
+                    one = one.Replace("{" + key2 + "}", val, StringComparison.OrdinalIgnoreCase);
                 }
                 sb.AppendLine(one);
                 idx++;

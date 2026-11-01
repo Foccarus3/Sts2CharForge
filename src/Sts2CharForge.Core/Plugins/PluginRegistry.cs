@@ -1007,6 +1007,64 @@ public static class PluginRegistry
     /// <see cref="SaveRows"/> 落盘。第一次访问且没有存过时，按 <see cref="PluginFieldSpec.DefaultRows"/>
     /// 生成若干「子栏位都是默认值」的空行。
     /// </summary>
+    /// <summary>
+    /// V0.2.375：嵌套列表那一格的文本 → 行集合。两种写法都认：
+    /// ① **JSON 数组**（界面上现在存这个）：<c>[{"label":"a","value":"1"}, …]</c>；
+    /// ② 老写法**文本行**（V0.2.374）：一行一条、子栏位按声明顺序用 <c>|</c> 分隔。
+    /// 解析失败 = 当老写法处理（不会丢数据、也不会抛）。
+    /// </summary>
+    public static List<Dictionary<string, string>> ParseSubRows(PluginFieldSpec listField, string? raw)
+    {
+        var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+            .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+        var rows = new List<Dictionary<string, string>>();
+        string text = (raw ?? "").Trim();
+        if (text.Length == 0) return rows;
+        if (text.StartsWith("[", StringComparison.Ordinal))
+        {
+            try
+            {
+                var list = JsonSerializer.Deserialize<List<Dictionary<string, string>>>(text);
+                if (list is not null)
+                {
+                    foreach (var it in list)
+                    {
+                        var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var kv in it) row[kv.Key] = kv.Value ?? "";
+                        rows.Add(row);
+                    }
+                    return rows;
+                }
+            }
+            catch { /* 坏 JSON：落到下面的文本行写法 */ }
+        }
+        foreach (string line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        {
+            if (line.Trim().Length == 0) continue;
+            string[] parts = line.Split('|');
+            var row = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < subs.Count; i++)
+                row[subs[i].Key!.Trim()] = i < parts.Length ? parts[i].Trim() : "";
+            rows.Add(row);
+        }
+        return rows;
+    }
+
+    /// <summary>V0.2.375：行集合 → 嵌套列表那一格的文本（JSON 数组，界面保存用）。</summary>
+    public static string SerializeSubRows(PluginFieldSpec listField, List<Dictionary<string, string>> rows)
+    {
+        var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+            .Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).Select(x => x.Key!.Trim()).ToList();
+        var plain = new List<Dictionary<string, string>>();
+        foreach (var r in rows)
+        {
+            var one = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (string k in subs) one[k] = r.TryGetValue(k, out string? v) ? (v ?? "") : "";
+            plain.Add(one);
+        }
+        return JsonSerializer.Serialize(plain);
+    }
+
     public static List<Dictionary<string, string>> PageRowsOf(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField)
     {
         var rowsMap = RowsOf(p);

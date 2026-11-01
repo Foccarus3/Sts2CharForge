@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -6964,18 +6964,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 				case "list":
 				{
-					// V0.2.374（用户反馈「不能用嵌套 list 复刻老界面」）：**一层嵌套列表**。
-					// 存的是**多行文本**：一行 = 一行子数据，子栏位按声明顺序用 | 分隔（不再抠 JSON）。
-					// 生成端按同一份格式拆开，再用 {子字段key} / {index} 渲染。
-					var tb = new TextBox
+					// V0.2.375：嵌套列表 = **可视化子表格**（每行一组子输入框 + 添加 / 删除 / ↑↓）。
+					// 存储仍是这一格的文本（JSON 数组；老数据「一行一条 | 分隔」也能读）。
+					var host = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 2, 0, 2) };
+					var subRows = PluginRegistry.ParseSubRows(sub, current);
+					void Save() { row[subKey] = PluginRegistry.SerializeSubRows(sub, subRows); onChanged(); }
+					void Rebuild()
 					{
-						Width = 430, Height = 66, AcceptsReturn = true, TextWrapping = TextWrapping.NoWrap,
-						VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-						FontFamily = new System.Windows.Media.FontFamily("Consolas"), Text = current,
-						ToolTip = "一行一条；子栏位按声明顺序用 | 分隔（例：" + SubListHint(sub) + "）",
-					};
-					tb.TextChanged += (_, _) => { row[subKey] = tb.Text; onChanged(); };
-					line.Children.Add(tb);
+						host.Children.Clear();
+						for (int si = 0; si < subRows.Count; si++)
+						{
+							int at = si;
+							var line2 = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+							line2.Children.Add(new TextBlock { Text = (at + 1) + ".", Width = 26, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.Gray });
+							foreach (var s2 in (sub.Fields ?? new List<PluginFieldSpec>()).Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+							{
+								string k2 = s2.Key!.Trim();
+								var tb2 = new TextBox { Width = 120, Text = subRows[at].TryGetValue(k2, out string? vv) ? (vv ?? "") : "" };
+								tb2.ToolTip = string.IsNullOrWhiteSpace(s2.Label) ? k2 : s2.Label;
+								tb2.TextChanged += (_, _) => { subRows[at][k2] = tb2.Text; Save(); };
+								line2.Children.Add(tb2);
+								line2.Children.Add(new TextBlock { Text = " ", Width = 4 });
+							}
+							var up = new Button { Content = "↑", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+							up.Click += (_, _) => { if (at > 0) { var t2 = subRows[at - 1]; subRows[at - 1] = subRows[at]; subRows[at] = t2; Save(); Rebuild(); } };
+							var dn = new Button { Content = "↓", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+							dn.Click += (_, _) => { if (at < subRows.Count - 1) { var t2 = subRows[at + 1]; subRows[at + 1] = subRows[at]; subRows[at] = t2; Save(); Rebuild(); } };
+							var rm = new Button { Content = "✕", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+							rm.Click += (_, _) => { subRows.RemoveAt(at); Save(); Rebuild(); };
+							line2.Children.Add(up); line2.Children.Add(dn); line2.Children.Add(rm);
+							host.Children.Add(line2);
+						}
+						var add = new Button { Content = "+ 添加一行", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(26, 2, 0, 0) };
+						add.Click += (_, _) =>
+						{
+							var fresh = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+							foreach (var s2 in (sub.Fields ?? new List<PluginFieldSpec>()).Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
+								fresh[s2.Key!.Trim()] = "";
+							subRows.Add(fresh);
+							Save(); Rebuild();
+						};
+						host.Children.Add(add);
+					}
+					Rebuild();
+					line.Children.Add(host);
 					break;
 				}
 				default:
@@ -40473,9 +40505,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						nlPage.Problems.Count == 0, string.Join(" / ", nlPage.Problems));
 					var nlRows = PluginRegistry.PageRowsOf(nlSpec, nlPage, nlPage.Fields[0]);
 					nlRows[0]["name"] = "斩击";
-					nlRows[0]["steps"] = "第一段|3\n第二段|5";
+					nlRows[0]["steps"] = "[{\"label\":\"第一段\",\"value\":\"3\"},{\"label\":\"第二段\",\"value\":\"5\"}]";
 					string nlOut = PluginGen.RenderPage(nlSpec, nlPage);
-					Check("V0.2.374：嵌套 list 按「一行一条、子栏位用 | 分隔」展开到模板里",
+					Check("V0.2.374/375：嵌套 list（JSON 行）展开到模板里",
 						nlOut.Contains("第一段:3") && nlOut.Contains("第二段:5") && nlOut.Contains("斩击："),
 						nlOut.Replace("\n", "⏎"));
 					var nlBad = new PluginPageSpec
@@ -40489,6 +40521,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.374：嵌套 list 没写子栏位 / 再套一层 → 报页面问题（不静默）",
 						nlBad.Problems.Any(x => x.Contains("嵌套")), string.Join(" / ", nlBad.Problems));
 					try { Directory.Delete(nlSpec.Dir, recursive: true); } catch { }
+				}				// ----- V0.2.375：嵌套列表 = 可视化子表格（存储 JSON，兼容老的 | 文本） -----
+				{
+					var nv = new PluginSpec { Id = "uicheck-subgrid", Name = "子表格", Dir = Path.Combine(Path.GetTempPath(), "uicheck-subgrid-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(nv.Dir);
+					var subList = new PluginFieldSpec
+					{
+						Key = "steps", Label = "步骤", Type = "list",
+						Fields = { new PluginFieldSpec { Key = "label", Type = "text" }, new PluginFieldSpec { Key = "value", Type = "text" } },
+					};
+					var nvPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "子表格", Target = "x.txt",
+						Emit = "{moves}{name}：{steps}  - {label}:{value}{/steps}{/moves}",
+						Fields =
+						{
+							new PluginFieldSpec
+							{
+								Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+								Fields = { new PluginFieldSpec { Key = "name", Type = "text" }, subList },
+							},
+						},
+					};
+					nv.Pages.Add(nvPage);
+					var nvRows = PluginRegistry.PageRowsOf(nv, nvPage, nvPage.Fields[0]);
+					nvRows[0]["name"] = "横扫";
+					nvRows[0]["steps"] = "甲:1|乙:2";
+					string legacy = PluginGen.RenderPage(nv, nvPage);
+					Check("V0.2.375：老写法（一行一条、| 分隔）仍然能读",
+						legacy.Contains("甲:1") && legacy.Contains("乙:2"), legacy.Replace("\n", "⏎"));
+					object nvForm = BuildPluginPageForm(nv, nvPage);
+					var nvButtons = new List<string>();
+					void WalkB(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is Button b && b.Content is string s) nvButtons.Add(s);
+						foreach (object c2 in LogicalTreeHelper.GetChildren(n)) if (c2 is DependencyObject d2) WalkB(d2);
+					}
+					WalkB(nvForm as DependencyObject);
+					Check("V0.2.375：嵌套列表在界面上是**可视化子表格**（有「添加一行」/↑/↓/✕，不是一段文本）",
+						nvButtons.Contains("+ 添加一行") && nvButtons.Contains("✕"), string.Join("/", nvButtons.Distinct()));
+					try { Directory.Delete(nv.Dir, recursive: true); } catch { }
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
