@@ -6964,6 +6964,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 				case "list":
 				{
+					// V0.2.377：子栏位里还有 list → 交给**递归**的子表格构建器（任意层）
+					if ((sub.Fields ?? new List<PluginFieldSpec>()).Any(x => x is not null && x.IsList))
+					{
+						line.Children.Add(BuildSubListEditor(sub, current, v => { row[subKey] = v; onChanged(); }));
+						break;
+					}
 					// V0.2.375：嵌套列表 = **可视化子表格**（每行一组子输入框 + 添加 / 删除 / ↑↓）。
 					// 存储仍是这一格的文本（JSON 数组；老数据「一行一条 | 分隔」也能读）。
 					var host = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 2, 0, 2) };
@@ -7090,6 +7096,70 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// 静默变成空下拉是最难查的一种「没反应」。
 	/// </summary>
 	/// <summary>V0.2.374：嵌套列表输入框的提示（按子栏位声明顺序拼一个示例）。</summary>
+	/// <summary>
+	/// V0.2.377：子列表编辑器（**递归**，任意层）：每行一组子输入框 + ↑ / ↓ / ✕，底部「+ 添加一行」。
+	/// 子栏位本身还是 list 时递归画更深的子表格；每一层都存各自的 JSON 文本。
+	/// </summary>
+	private StackPanel BuildSubListEditor(PluginFieldSpec listField, string current, Action<string> onSave)
+	{
+		var host = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 2, 0, 2) };
+		var rows = PluginRegistry.ParseSubRows(listField, current);
+		var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+			.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+		void Save() => onSave(PluginRegistry.SerializeSubRows(listField, rows));
+		void Rebuild()
+		{
+			host.Children.Clear();
+			for (int si = 0; si < rows.Count; si++)
+			{
+				int at = si;
+				var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+				line.Children.Add(new TextBlock { Text = (at + 1) + ".", Width = 26, VerticalAlignment = VerticalAlignment.Top, Foreground = Brushes.Gray });
+				var cells = new StackPanel { Orientation = Orientation.Vertical };
+				foreach (var s2 in subs)
+				{
+					string k2 = s2.Key!.Trim();
+					string cur2 = rows[at].TryGetValue(k2, out string? vv) ? (vv ?? "") : "";
+					string label = string.IsNullOrWhiteSpace(s2.Label) ? k2 : s2.Label;
+					if (s2.IsList)
+					{
+						cells.Children.Add(new TextBlock { Text = label + "：", Foreground = Brushes.Gray });
+						var deep = BuildSubListEditor(s2, cur2, v => { rows[at][k2] = v; Save(); });
+						deep.Margin = new Thickness(8, 0, 0, 2);
+						cells.Children.Add(deep);
+						continue;
+					}
+					var cell = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+					cell.Children.Add(new TextBlock { Text = label + "：", VerticalAlignment = VerticalAlignment.Center });
+					var tb2 = new TextBox { Width = 140, Text = cur2 };
+					tb2.TextChanged += (_, _) => { rows[at][k2] = tb2.Text; Save(); };
+					cell.Children.Add(tb2);
+					cells.Children.Add(cell);
+				}
+				line.Children.Add(cells);
+				var up = new Button { Content = "↑", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+				up.Click += (_, _) => { if (at > 0) { var t2 = rows[at - 1]; rows[at - 1] = rows[at]; rows[at] = t2; Save(); Rebuild(); } };
+				var dn = new Button { Content = "↓", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+				dn.Click += (_, _) => { if (at < rows.Count - 1) { var t2 = rows[at + 1]; rows[at + 1] = rows[at]; rows[at] = t2; Save(); Rebuild(); } };
+				var rm = new Button { Content = "✕", Width = 26, Margin = new Thickness(2, 0, 0, 0) };
+				rm.Click += (_, _) => { rows.RemoveAt(at); Save(); Rebuild(); };
+				line.Children.Add(up); line.Children.Add(dn); line.Children.Add(rm);
+				host.Children.Add(line);
+			}
+			var add = new Button { Content = "+ 添加一行", HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(26, 2, 0, 0) };
+			add.Click += (_, _) =>
+			{
+				var fresh = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+				foreach (var s2 in subs) fresh[s2.Key!.Trim()] = "";
+				rows.Add(fresh);
+				Save(); Rebuild();
+			};
+			host.Children.Add(add);
+		}
+		Rebuild();
+		return host;
+	}
+
 	private static string SubListHint(PluginFieldSpec listField)
 	{
 		var keys = (listField.Fields ?? new List<PluginFieldSpec>())
@@ -40562,6 +40632,41 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.375：嵌套列表在界面上是**可视化子表格**（有「添加一行」/↑/↓/✕，不是一段文本）",
 						nvButtons.Contains("+ 添加一行") && nvButtons.Contains("✕"), string.Join("/", nvButtons.Distinct()));
 					try { Directory.Delete(nv.Dir, recursive: true); } catch { }
+				}				// ----- V0.2.377：嵌套 list 在界面上也能递归（任意层） -----
+				try
+				{
+					var d3 = new PluginSpec { Id = "uicheck-deep2", Name = "三层", Dir = Path.Combine(Path.GetTempPath(), "uicheck-deep2-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(d3.Dir);
+					var stepField = new PluginFieldSpec { Key = "steps", Type = "list", Fields = { new PluginFieldSpec { Key = "text", Type = "text" } } };
+					var moveField = new PluginFieldSpec { Key = "moves", Type = "list", Fields = { new PluginFieldSpec { Key = "mname", Type = "text" }, stepField } };
+					var phaseField = new PluginFieldSpec { Key = "phases", Type = "list", DefaultRows = 1, Fields = { new PluginFieldSpec { Key = "pname", Type = "text" }, moveField } };
+					var d3Page = new PluginPageSpec
+					{
+						Id = "p1", Title = "三层", Target = "x.txt",
+						Emit = "{phases}{pname}{moves}{mname}{steps}{text}{/steps}{/moves}{/phases}",
+						Fields = { phaseField },
+					};
+					d3.Pages.Add(d3Page);
+					PluginRegistry.ValidatePages(d3);
+					Check("V0.2.377：三层嵌套 list 配置合法", d3Page.Problems.Count == 0, string.Join(" / ", d3Page.Problems));
+					// 生成端递归：直接喂三层 JSON
+					// 界面递归：表单里应该出现**两层**「+ 添加一行」（外层 + 内层）
+					object d3Form = BuildPluginPageForm(d3, d3Page);
+					int addBtns = 0;
+					void WalkAdd(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is Button b && (b.Content as string) == "+ 添加一行") addBtns++;
+						foreach (object c2 in LogicalTreeHelper.GetChildren(n)) if (c2 is DependencyObject dd) WalkAdd(dd);
+					}
+					WalkAdd(d3Form as DependencyObject);
+					Check("V0.2.377：界面上嵌套子表格是递归画的（三层结构里至少出现 2 个「+ 添加一行」）",
+						addBtns >= 2, "按钮数=" + addBtns);
+					try { Directory.Delete(d3.Dir, recursive: true); } catch { }
+				}
+				catch (Exception ex3)
+				{
+					Check("V0.2.377：三层嵌套（生成 + 界面递归）", false, "异常：" + ex3.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
