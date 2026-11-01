@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -297,9 +297,33 @@ public sealed class PluginPageSpec
     /// </summary>
     public List<PluginPageOutput> Outputs { get; set; } = new();
 
+    /// <summary>V0.2.381：插件自己声明的校验规则（见 <see cref="PluginCheckSpec"/>）。</summary>
+    public List<PluginCheckSpec> Checks { get; set; } = new();
+
     /// <summary>把栏位值渲染成的文本（C# 等，原样写进 <see cref="Target"/>）。占位符 <c>{字段key}</c>。</summary>
     public string Emit { get; set; } = "";
 
+    /// <summary>
+    /// V0.2.381（缺口文档第 9 节「插件自定义校验器」）：插件自己声明的一条校验规则。
+    ///
+    /// <para>语义（不引入脚本表达式，保持「规则表」形态）：</para>
+    /// <list type="bullet">
+    ///   <item><see cref="When"/> 空 = 总是检查；否则同 visibleWhen 的写法（页面级标量比较），成立才检查；</item>
+    ///   <item><see cref="Field"/> = 要检查的栏位 key（**页面级标量栏位**）；</item>
+    ///   <item><see cref="Rule"/> = <c>required</c>（默认）/ <c>number</c> / <c>int</c>；</item>
+    ///   <item><see cref="Min"/> / <see cref="Max"/> 非空时对数值再判上下限；</item>
+    ///   <item><see cref="Message"/> 空 = 用默认措辞。</item>
+    /// </list>
+    /// </summary>
+    public sealed class PluginCheckSpec
+    {
+        public string When { get; set; } = "";
+        public string Field { get; set; } = "";
+        public string Rule { get; set; } = "required";
+        public string Min { get; set; } = "";
+        public string Max { get; set; } = "";
+        public string Message { get; set; } = "";
+    }
     /// <summary>V0.2.349：这页自己的问题（list 栏位配置不对等）—— 有问题的页会被跳过，不影响同插件的其它页。</summary>
     [JsonIgnore] public List<string> Problems { get; set; } = new();
 
@@ -588,13 +612,82 @@ public static class PluginRegistry
     /// <summary>
     /// V0.2.349（框架）：页面里 <c>list</c> 栏位的基本检查。**只检查有 list 栏位的页**，老插件一条都不会动。
     /// 问题记到 <see cref="PluginPageSpec.Problems"/>：这页会被跳过（不生成半截文件），同插件的其它页照常。
-    /// </summary>
+    /// <summary>这页有没有存过任何值（决定 required 类校验要不要报）。</summary>
+    private static bool HasAnyPageValue(PluginSpec spec, PluginPageSpec page)
+    {
+        foreach (var f in page.Fields)
+        {
+            if (f is null || string.IsNullOrWhiteSpace(f.Key) || f.IsList) continue;
+            if (!string.IsNullOrWhiteSpace(PageValueOf(spec, page, f))) return true;
+        }
+        return false;
+    }
+
+    /// <summary>V0.2.381：跑这页的插件自定义校验规则，命中就写进 <see cref="PluginPageSpec.Problems"/>。</summary>
+    private static void ValidateCustomChecks(PluginSpec spec, PluginPageSpec page, string where)
+    {
+        foreach (var c in page.Checks)
+        {
+            if (c is null || string.IsNullOrWhiteSpace(c.Field)) continue;
+            var field = page.Fields.FirstOrDefault(x => x is not null
+                && string.Equals((x.Key ?? "").Trim(), c.Field.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (field is null || field.IsList)
+            {
+                page.Problems.Add(where + "：checks 里引用了不存在的页面级栏位「" + c.Field + "」。");
+                continue;
+            }
+            string label = string.IsNullOrWhiteSpace(field.Label) ? (field.Key ?? "").Trim() : field.Label.Trim();
+            if (!string.IsNullOrWhiteSpace(c.When))
+            {
+                var probe = new PluginFieldSpec { VisibleWhen = c.When };
+                bool ok = FieldVisible(probe, k =>
+                {
+                    var ctl = page.Fields.FirstOrDefault(x => x is not null
+                        && string.Equals((x.Key ?? "").Trim(), k, StringComparison.OrdinalIgnoreCase));
+                    return ctl is null ? null : PageValueOf(spec, page, ctl);
+                });
+                if (!ok) continue;
+            }
+            string val = PageValueOf(spec, page, field).Trim();
+            string rule = (c.Rule ?? "").Trim().ToLowerInvariant();
+            string custom = string.IsNullOrWhiteSpace(c.Message) ? "" : c.Message.Trim();
+            if (rule is "" or "required")
+            {
+                if (val.Length == 0)
+                    page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须有值"));
+                continue;
+            }
+            if (rule is "number" or "int")
+            {
+                bool isInt = rule == "int";
+                bool parsed = decimal.TryParse(val, out decimal num);
+                if (isInt && parsed && num != Math.Truncate(num)) parsed = false;
+                if (val.Length > 0 && !parsed)
+                {
+                    page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须是" + (isInt ? "整数" : "数字")));
+                    continue;
+                }
+                if (parsed)
+                {
+                    if (decimal.TryParse((c.Min ?? "").Trim(), out decimal mn) && num < mn)
+                        page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能小于 " + mn));
+                    if (decimal.TryParse((c.Max ?? "").Trim(), out decimal mx) && num > mx)
+                        page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能大于 " + mx));
+                }
+            }
+        }
+    }
+
     public static void ValidatePages(PluginSpec spec)
     {
         foreach (PluginPageSpec page in spec.Pages)
         {
             if (page is null) continue;
             string where = "页「" + (string.IsNullOrWhiteSpace(page.Title) ? page.Id : page.Title) + "」";
+            // V0.2.381：插件自己声明的校验规则（页面级标量栏位）。
+            // ⚠ 只在「这页已经有存过的值」时才报 required —— 否则刚建的空页会一进来就一片红。
+            if (page.Checks is { Count: > 0 } && HasAnyPageValue(spec, page))
+                ValidateCustomChecks(spec, page, where);
             var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (PluginFieldSpec f in page.Fields)
             {

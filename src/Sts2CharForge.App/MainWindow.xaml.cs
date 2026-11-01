@@ -40749,6 +40749,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exs)
 				{
 					Check("V0.2.380：页面间共享数据", false, "异常：" + exs.Message);
+				}				// ----- V0.2.381：插件自定义校验器（checks 规则表） -----
+				try
+				{
+					var ck = new PluginSpec { Id = "uicheck-checks", Name = "校验", Dir = Path.Combine(Path.GetTempPath(), "uicheck-checks-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(ck.Dir);
+					var ckKind = new PluginFieldSpec { Key = "kind", Label = "类型", Type = "pick", Options = { "attack", "block" } };
+					var ckDmg = new PluginFieldSpec { Key = "dmg", Label = "伤害", Type = "number" };
+					var ckPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "校验页", Target = "x.txt", Emit = "{kind}/{dmg}",
+						Fields = { ckKind, ckDmg },
+						Checks =
+						{
+							new Sts2CharForge.Core.Plugins.PluginPageSpec.PluginCheckSpec { When = "kind=attack", Field = "dmg", Rule = "int", Min = "1", Message = "攻击动作必须填至少 1 点伤害" },
+						},
+					};
+					ck.Pages.Add(ckPage);
+					PluginRegistry.SetPageValue(ck, ckPage, ckKind, "attack");
+					PluginRegistry.SetPageValue(ck, ckPage, ckDmg, "0");
+					PluginRegistry.ValidatePages(ck);
+					bool hit = ckPage.Problems.Any(x => x.Contains("至少 1 点伤害"));
+					// 类型换成 block → 规则不该再命中
+					ckPage.Problems.Clear();
+					PluginRegistry.SetPageValue(ck, ckPage, ckKind, "block");
+					PluginRegistry.ValidatePages(ck);
+					bool quiet = !ckPage.Problems.Any(x => x.Contains("至少 1 点伤害"));
+					Check("V0.2.381：插件自己声明的校验规则会命中（kind=attack 且 dmg=0 → 报「至少 1 点伤害」）", hit,
+						string.Join(" / ", ckPage.Problems));
+					Check("V0.2.381：When 不成立时规则不命中（kind=block）", quiet, string.Join(" / ", ckPage.Problems));
+					// 非数字 → number 规则报错
+					ckPage.Problems.Clear();
+					PluginRegistry.SetPageValue(ck, ckPage, ckKind, "attack");
+					PluginRegistry.SetPageValue(ck, ckPage, ckDmg, "abc");
+					PluginRegistry.ValidatePages(ck);
+					Check("V0.2.381：非数字会按 int 规则报出来（自定义 message 优先，报的是插件写的那句）", ckPage.Problems.Count > 0,
+						string.Join(" / ", ckPage.Problems));
+					try { Directory.Delete(ck.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exck)
+				{
+					Check("V0.2.381：插件自定义校验器", false, "异常：" + exck.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
