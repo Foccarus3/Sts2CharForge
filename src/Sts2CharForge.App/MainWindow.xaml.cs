@@ -7193,6 +7193,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		var host = new StackPanel { Orientation = Orientation.Horizontal };
 		var leftPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 10, 0) };
 		var list = new ListBox { Width = 200, Height = 300 };
+		// V0.2.385：搜索框 + 显示项→真实行号 的映射
+		var filterBox = new TextBox { Width = 200, Margin = new Thickness(0, 0, 0, 4), ToolTip = "搜索（按行标签过滤，只影响显示）" };
+		var idxMap = new List<int>();
 		var right = new StackPanel { Orientation = Orientation.Vertical, MinWidth = 360 };
 		int sel = 0;
 		string LabelOf(Dictionary<string, string> row, int idx)
@@ -7243,13 +7246,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		void Reload(int newSel)
 		{
 			sel = newSel;
+			// V0.2.385：左侧搜索框只影响**显示**（idxMap 记着显示项对应的真实行号）
+			string q = (filterBox.Text ?? "").Trim();
 			list.Items.Clear();
-			for (int i = 0; i < rows.Count; i++) list.Items.Add(LabelOf(rows[i], i));
-			if (rows.Count > 0) list.SelectedIndex = Math.Clamp(sel, 0, rows.Count - 1);
-			sel = list.SelectedIndex;
+			idxMap.Clear();
+			for (int i = 0; i < rows.Count; i++)
+			{
+				string label = LabelOf(rows[i], i);
+				if (q.Length > 0 && !label.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+				idxMap.Add(i);
+				list.Items.Add(label);
+			}
+			if (idxMap.Count > 0)
+			{
+				int at = idxMap.IndexOf(Math.Clamp(sel, 0, Math.Max(0, rows.Count - 1)));
+				list.SelectedIndex = at >= 0 ? at : 0;
+				sel = idxMap[list.SelectedIndex];
+			}
 			BuildRight();
 		}
-		list.SelectionChanged += (_, _) => { if (list.SelectedIndex >= 0) { sel = list.SelectedIndex; BuildRight(); } };
+		list.SelectionChanged += (_, _) => { if (list.SelectedIndex >= 0 && list.SelectedIndex < idxMap.Count) { sel = idxMap[list.SelectedIndex]; BuildRight(); } };
 		var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
 		var add = new Button { Content = "+ 添加一行" };
 		add.Click += (_, _) => { var r = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); foreach (var s2 in subs) r[s2.Key!.Trim()] = ""; rows.Add(r); Save(); Reload(rows.Count - 1); };
@@ -7260,6 +7276,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		var dn = new Button { Content = "↓", Margin = new Thickness(4, 0, 0, 0) };
 		dn.Click += (_, _) => { if (sel >= 0 && sel < rows.Count - 1) { var t2 = rows[sel + 1]; rows[sel + 1] = rows[sel]; rows[sel] = t2; Save(); Reload(sel + 1); } };
 		bar.Children.Add(add); bar.Children.Add(del); bar.Children.Add(up); bar.Children.Add(dn);
+		filterBox.TextChanged += (_, _) => Reload(sel);
+		leftPanel.Children.Add(filterBox);
+		// V0.2.385：复制选中这一行
+		var dup = new Button { Content = "⧉ 复制", Margin = new Thickness(4, 0, 0, 0) };
+		dup.Click += (_, _) =>
+		{
+			if (sel < 0 || sel >= rows.Count) return;
+			var copy = new Dictionary<string, string>(rows[sel], StringComparer.OrdinalIgnoreCase);
+			rows.Insert(sel + 1, copy);
+			Save();
+			Reload(sel + 1);
+		};
+		bar.Children.Add(dup);
 		leftPanel.Children.Add(list);
 		leftPanel.Children.Add(bar);
 		host.Children.Add(leftPanel);
@@ -41018,6 +41047,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exmd)
 				{
 					Check("V0.2.384：master-detail 布局", false, "异常：" + exmd.Message);
+				}				// ----- V0.2.385：主从布局的搜索框 / 复制一行 -----
+				try
+				{
+					var m2 = new PluginSpec { Id = "uicheck-md2", Name = "主从2", Dir = Path.Combine(Path.GetTempPath(), "uicheck-md2-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(m2.Dir);
+					var m2List = new PluginFieldSpec
+					{
+						Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+						Fields = { new PluginFieldSpec { Key = "name", Label = "名字", Type = "text" } },
+					};
+					var m2Page = new PluginPageSpec { Id = "p1", Title = "主从2", Target = "x.txt", Emit = "{moves}{name}{/moves}", Layout = "master-detail", Fields = { m2List } };
+					m2.Pages.Add(m2Page);
+					var m2Rows = PluginRegistry.PageRowsOf(m2, m2Page, m2List);
+					m2Rows.Clear();
+					m2Rows.Add(new Dictionary<string, string> { ["name"] = "横扫" });
+					m2Rows.Add(new Dictionary<string, string> { ["name"] = "重击" });
+					m2Rows.Add(new Dictionary<string, string> { ["name"] = "格挡" });
+					object m2Form = BuildPluginPageForm(m2, m2Page);
+					var buttons = new List<string>();
+					ListBox? lb = null;
+					DependencyObject? searchBox = null;
+					void WalkM2(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is Button b && b.Content is string bs) buttons.Add(bs);
+						if (n is ListBox l2 && lb is null) lb = l2;
+						if (n is TextBox tb && (tb.ToolTip as string ?? "").StartsWith("搜索")) searchBox = tb;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject dd) WalkM2(dd);
+					}
+					WalkM2(m2Form as DependencyObject);
+					Check("V0.2.385：主从布局有搜索框和「复制」按钮",
+						searchBox is not null && buttons.Contains("⧉ 复制"), string.Join("/", buttons));
+					// 搜索结果过滤：输入「格挡」后列表只剩 1 项
+					if (searchBox is TextBox ftb && lb is not null)
+					{
+						ftb.Text = "格挡";
+						Check("V0.2.385：搜索框按行标签过滤（输入「格挡」只剩 1 行）", lb.Items.Count == 1,
+							"剩余=" + lb.Items.Count);
+					}
+					try { Directory.Delete(m2.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exm2)
+				{
+					Check("V0.2.385：主从布局搜索/复制", false, "异常：" + exm2.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
