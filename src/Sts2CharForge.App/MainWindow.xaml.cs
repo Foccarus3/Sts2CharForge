@@ -40304,6 +40304,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.369：图上「击晕」生成的是 await CreatureCmd.Stun(…)（以前漏了 await）",
 						stSrc.Contains("await CreatureCmd.Stun(") && !stSrc.Contains(") CreatureCmd.Stun("),
 						stSrc.Split('\n').FirstOrDefault(l => l.Contains("CreatureCmd.Stun"))?.Trim() ?? "(没生成)");
+				}				// ----- V0.2.370：状态钩子里选牌 → 改 BlockingPlayerChoiceContext（否则打出的牌卡在屏幕中央） -----
+				{
+					var bp = ProfileFactory.Sample();
+					bp.CustomPowers.Clear();
+					CustomPowerSpec mkPow(string cls, bool withPick)
+					{
+						var pw = new CustomPowerSpec { Name = "选牌自检" + cls, ClassName = cls };
+						var tr = new PowerTriggerSpec { Kind = "DamageReceived" };
+						tr.Effects.Add(new EffectSpec
+						{
+							Kind = "TakeFromDiscard", Amount = 1m, CardPick = withPick ? "Chosen" : "Random", SelectPile = "Hand",
+						});
+						tr.OwnerPower = pw;
+						pw.Triggers.Add(tr);
+						bp.CustomPowers.Add(pw);
+						return pw;
+					}
+					var pwPick = mkPow("UiHookPick", true);
+					var pwRand = mkPow("UiHookRandom", false);
+					string sPick = CustomPowerGen.Source(bp, pwPick, bp.CustomPowers.IndexOf(pwPick));
+					string sRand = CustomPowerGen.Source(bp, pwRand, bp.CustomPowers.IndexOf(pwRand));
+					Check("V0.2.370：状态钩子里有「自己选牌」时，生成的是 BlockingPlayerChoiceContext（不再让正在结算的牌卡住）",
+						sPick.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
+						sPick.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext"))?.Trim() ?? "(没有)");
+					Check("V0.2.370：没有选牌的钩子生成文本不变（不会平白多一行）",
+						!sRand.Contains("BlockingPlayerChoiceContext"),
+						sRand.Contains("Blocking") ? "多了" : "干净");
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

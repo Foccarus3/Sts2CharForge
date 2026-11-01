@@ -381,9 +381,37 @@ public static class CustomPowerGen
     /// <summary>插件触发时机要落的额外守卫（V0.2.316）：触发时机生成处设，效果体生成处消费一次。</summary>
     [ThreadStatic] private static string? _pendingPluginGuard;
 
+    /// <summary>
+    /// V0.2.370：这条触发时机里有没有「会弹选牌界面」的效果（自己选 / 从某摞挑牌 / 升级某个牌…）。
+    /// 判据用现成的 <see cref="EffectFieldPolicy.UsesCardPick"/> + 「从三摞拿牌」那一族
+    /// （它们的选牌界面由 <c>CardPick == "Chosen"</c> 决定，但不在 UsesCardPick 名单里）。
+    /// </summary>
+    private static bool OpensCardSelection(IReadOnlyList<PowerTriggerSpec> items)
+    {
+        foreach (var t in items)
+        {
+            if (t?.Effects is null) continue;
+            foreach (var e in t.Effects)
+            {
+                if (e is null || !string.Equals(e.CardPick, "Chosen", StringComparison.Ordinal)) continue;
+                if (EffectFieldPolicy.UsesCardPick(e.Kind)) return true;
+                if (e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust") return true;
+            }
+        }
+        return false;
+    }
     private static void EmitItemsWithAmountGate(CodeWriter w, IEnumerable<PowerTriggerSpec> items,
         CharacterProfile p, string? foeFrom = null, string? bodyText = null)
     {
+        // V0.2.370（用户实测：扣血时从弃牌堆拿牌 → **打出的那张卡卡死在画面中央**）：
+        // 状态钩子里发起「选牌」时用的是钩子给的 HookPlayerChoiceContext —— 它会把**正在结算的那张牌**
+        // 的动作暂停、再排队等一个 hook action，那张牌的结算永远等不到恢复，于是卡在画面中央。
+        // 改成 BlockingPlayerChoiceContext（本体在敌人回合也这么处理）：选牌照弹、当场等玩家选完，不再排 action。
+        // 只有「这条触发时机里真的有选牌」时才写这一句 —— 其它钩子的生成文本一个字都不变。
+        var __gateItems = items as IReadOnlyList<PowerTriggerSpec> ?? items.ToList();
+        if (OpensCardSelection(__gateItems))
+            w.Line("choiceContext = new BlockingPlayerChoiceContext();   // 钩子里选牌：别让正在结算的牌卡住");
+
         // 插件触发时机（别名）：先把清单里那句额外守卫落下来（只落一次，落完就清）
         if (_pendingPluginGuard is { } plugGuard)
         {
