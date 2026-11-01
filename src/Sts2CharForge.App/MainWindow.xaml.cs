@@ -7173,6 +7173,101 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// V0.2.379（缺口文档第 8 节）：这个栏位现在该不该画。
 	/// <paramref name="row"/> = null 表示页面级（条件看同页标量）；非 null 表示 list 行内（看同一行）。
 	/// </summary>
+	/// <summary>
+	/// V0.2.384：master-detail 布局。左侧 = 该 list 的行列表（可增删 / 上下移）；右侧 = 选中那一行的子栏位。
+	/// 数据仍是 <see cref="PluginRegistry.PageRowsOf"/> 返回的活列表，改完调 <c>SaveRows</c> 落盘。
+	/// </summary>
+	/// <summary>V0.2.384：表单树里含某段文字的 TextBlock 数（自检用）。</summary>
+	private static int CountTextWith(DependencyObject? n, string want)
+	{
+		if (n is null) return 0;
+		int c = (n is TextBlock tb && (tb.Text ?? "").Contains(want)) ? 1 : 0;
+		foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) c += CountTextWith(d, want);
+		return c;
+	}
+	private UIElement BuildMasterDetail(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField, Action onChanged)
+	{
+		var rows = PluginRegistry.PageRowsOf(p, page, listField);
+		var subs = (listField.Fields ?? new List<PluginFieldSpec>())
+			.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
+		var host = new StackPanel { Orientation = Orientation.Horizontal };
+		var leftPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 10, 0) };
+		var list = new ListBox { Width = 200, Height = 300 };
+		var right = new StackPanel { Orientation = Orientation.Vertical, MinWidth = 360 };
+		int sel = 0;
+		string LabelOf(Dictionary<string, string> row, int idx)
+		{
+			foreach (var s2 in subs.Where(x => !x.IsList))
+			{
+				string k2 = s2.Key!.Trim();
+				if (row.TryGetValue(k2, out string? vv) && !string.IsNullOrWhiteSpace(vv))
+					return (idx + 1) + ". " + vv;
+			}
+			return (idx + 1) + ". （空）";
+		}
+		void Save()
+		{
+			PluginRegistry.SaveRows(p);
+			onChanged();
+		}
+		void BuildRight()
+		{
+			right.Children.Clear();
+			if (rows.Count == 0 || sel < 0 || sel >= rows.Count)
+			{
+				right.Children.Add(new TextBlock { Text = "（左边还没有行，点「+ 添加一行」）", Foreground = Brushes.Gray });
+				return;
+			}
+			var row = rows[sel];
+			foreach (var s2 in subs)
+			{
+				string k2 = s2.Key!.Trim();
+				string label = string.IsNullOrWhiteSpace(s2.Label) ? k2 : s2.Label;
+				if (!PluginRegistry.FieldVisible(s2, k => row.TryGetValue(k, out string? cv) ? cv : null)) continue;
+				var cell = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 2, 0, 2) };
+				cell.Children.Add(new TextBlock { Text = label });
+				if (s2.IsList)
+				{
+					string curJson = row.TryGetValue(k2, out string? jv) ? (jv ?? "") : "";
+					cell.Children.Add(BuildSubListEditor(s2, curJson, v => { row[k2] = v; Save(); }));
+				}
+				else
+				{
+					var tb = new TextBox { Text = row.TryGetValue(k2, out string? tv) ? (tv ?? "") : "", Width = 320 };
+					tb.TextChanged += (_, _) => { row[k2] = tb.Text; Save(); };
+					cell.Children.Add(tb);
+				}
+				right.Children.Add(cell);
+			}
+		}
+		void Reload(int newSel)
+		{
+			sel = newSel;
+			list.Items.Clear();
+			for (int i = 0; i < rows.Count; i++) list.Items.Add(LabelOf(rows[i], i));
+			if (rows.Count > 0) list.SelectedIndex = Math.Clamp(sel, 0, rows.Count - 1);
+			sel = list.SelectedIndex;
+			BuildRight();
+		}
+		list.SelectionChanged += (_, _) => { if (list.SelectedIndex >= 0) { sel = list.SelectedIndex; BuildRight(); } };
+		var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 4, 0, 0) };
+		var add = new Button { Content = "+ 添加一行" };
+		add.Click += (_, _) => { var r = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); foreach (var s2 in subs) r[s2.Key!.Trim()] = ""; rows.Add(r); Save(); Reload(rows.Count - 1); };
+		var del = new Button { Content = "✕ 删除", Margin = new Thickness(4, 0, 0, 0) };
+		del.Click += (_, _) => { if (sel >= 0 && sel < rows.Count) { rows.RemoveAt(sel); Save(); Reload(Math.Max(0, sel - 1)); } };
+		var up = new Button { Content = "↑", Margin = new Thickness(4, 0, 0, 0) };
+		up.Click += (_, _) => { if (sel > 0) { var t2 = rows[sel - 1]; rows[sel - 1] = rows[sel]; rows[sel] = t2; Save(); Reload(sel - 1); } };
+		var dn = new Button { Content = "↓", Margin = new Thickness(4, 0, 0, 0) };
+		dn.Click += (_, _) => { if (sel >= 0 && sel < rows.Count - 1) { var t2 = rows[sel + 1]; rows[sel + 1] = rows[sel]; rows[sel] = t2; Save(); Reload(sel + 1); } };
+		bar.Children.Add(add); bar.Children.Add(del); bar.Children.Add(up); bar.Children.Add(dn);
+		leftPanel.Children.Add(list);
+		leftPanel.Children.Add(bar);
+		host.Children.Add(leftPanel);
+		host.Children.Add(right);
+		Reload(0);
+		return host;
+	}
+
 	private static bool ShouldShowField(PluginSpec p, PluginPageSpec page, PluginFieldSpec f, Dictionary<string, string>? row)
 	{
 		if (f is null || string.IsNullOrWhiteSpace(f.VisibleWhen)) return true;
@@ -7265,6 +7360,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 		foreach (var f in page.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)))
 		{
+			// V0.2.384（缺口文档第 5 节）：master-detail 布局 —— 左侧行列表 + 右侧选中行详情
+			if (string.Equals((page.Layout ?? "").Trim(), "master-detail", StringComparison.OrdinalIgnoreCase))
+			{
+				var mdList = page.Fields.FirstOrDefault(x => x is not null && x.IsList
+					&& (string.IsNullOrWhiteSpace(page.MasterList) || string.Equals((x.Key ?? "").Trim(), page.MasterList.Trim(), StringComparison.OrdinalIgnoreCase)));
+				if (mdList is not null)
+				{
+					panel.Children.Add(BuildMasterDetail(p, page, mdList, Refresh));
+					return panel;
+				}
+			}
 			// V0.2.379：visibleWhen 不成立的栏位不画（改完控制栏位后由 Refresh 重建这页）
 			if (!ShouldShowField(p, page, f, null)) continue;
 			// V0.2.349：动态行集合（可增删 / 上下移）—— 「招式列表」这种界面就是靠它做的
@@ -40871,6 +40977,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exc)
 				{
 					Check("V0.2.383：条件组合", false, "异常：" + exc.Message);
+				}				// ----- V0.2.384：master-detail 布局 -----
+				try
+				{
+					var md = new PluginSpec { Id = "uicheck-md", Name = "主从", Dir = Path.Combine(Path.GetTempPath(), "uicheck-md-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(md.Dir);
+					var mdList = new PluginFieldSpec
+					{
+						Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+						Fields = { new PluginFieldSpec { Key = "name", Label = "名字", Type = "text" }, new PluginFieldSpec { Key = "dmg", Label = "伤害", Type = "number" } },
+					};
+					var mdPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "主从", Target = "x.txt", Emit = "{moves}{name}/{dmg}{/moves}",
+						Layout = "master-detail", Fields = { mdList },
+					};
+					md.Pages.Add(mdPage);
+					var mdRows = PluginRegistry.PageRowsOf(md, mdPage, mdList);
+					mdRows.Clear();
+					mdRows.Add(new Dictionary<string, string> { ["name"] = "横扫", ["dmg"] = "8" });
+					mdRows.Add(new Dictionary<string, string> { ["name"] = "重击", ["dmg"] = "12" });
+					object mdForm = BuildPluginPageForm(md, mdPage);
+					int listBoxes = 0;
+					var itemTexts = new List<string>();
+					void WalkMd(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is ListBox lb) { listBoxes++; foreach (var it in lb.Items) itemTexts.Add(it?.ToString() ?? ""); }
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) WalkMd(d);
+					}
+					WalkMd(mdForm as DependencyObject);
+					Check("V0.2.384：master-detail 布局 —— 左边是行列表（ListBox）且列出两行",
+						listBoxes >= 1 && itemTexts.Count >= 2 && itemTexts[0].Contains("横扫"),
+						$"ListBox={listBoxes} 行={string.Join("|", itemTexts)}");
+					Check("V0.2.384：master-detail 布局 —— 右边显示选中行的字段（默认第 1 行）",
+						mdForm is DependencyObject mdD && CountTextWith(mdD, "名字") >= 1,
+						"有「名字」标签=" + (mdForm is DependencyObject d2 ? CountTextWith(d2, "名字") : -1));
+					try { Directory.Delete(md.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exmd)
+				{
+					Check("V0.2.384：master-detail 布局", false, "异常：" + exmd.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

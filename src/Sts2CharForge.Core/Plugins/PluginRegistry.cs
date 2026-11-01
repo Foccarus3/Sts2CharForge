@@ -267,6 +267,12 @@ public sealed class PluginPageSpec
     /// </summary>
     public string Tab { get; set; } = "";
 
+    /// <summary>V0.2.384（缺口文档第 5 节）：页面布局。<c>"master-detail"</c> = 左侧行列表 + 右侧选中行详情；空 = 老的表单布局。</summary>
+    public string Layout { get; set; } = "";
+
+    /// <summary>V0.2.384：master-detail 布局左侧用哪个 list 栏位（空 = 取这页第一个 list 栏位）。</summary>
+    public string MasterList { get; set; } = "";
+
     /// <summary>
     /// 这一页是不是**生成器的新功能页**（V0.2.340）：<c>true</c> = 生成器顶部多一个页签
     /// （像「角色」「药水」那样的一级页），页签内容就是这一页（表单 / 说明页）。
