@@ -40825,6 +40825,52 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exr)
 				{
 					Check("V0.2.382：行内子栏位校验", false, "异常：" + exr.Message);
+				}				// ----- V0.2.383：条件组合 && || ! -----
+				try
+				{
+					var cv2 = new Dictionary<string, string> { ["kind"] = "attack", ["dmg"] = "0", ["flag"] = "yes" };
+					Func<string, string?> g = k => cv2.TryGetValue(k, out string? v) ? v : null;
+					bool a1 = PluginRegistry.EvalCondition("kind=attack && dmg=0", g);
+					bool a2 = PluginRegistry.EvalCondition("kind=block || dmg=0", g);
+					bool a3 = PluginRegistry.EvalCondition("kind=attack && dmg!=0", g);
+					bool a4 = PluginRegistry.EvalCondition("!kind=block", g);
+					bool a5 = PluginRegistry.EvalCondition("flag", g);
+					Check("V0.2.383：条件组合 —— &&（都成立）/ ||（任一成立）/ != / ! / 真值判断都对",
+						a1 && a2 && !a3 && a4 && a5, $"a1={a1} a2={a2} a3={a3} a4={a4} a5={a5}");
+					// visibleWhen 走同一套：组合条件能隐藏栏位
+					var vpage = new PluginPageSpec
+					{
+						Id = "p1", Title = "组合", Target = "x.txt", Emit = "x",
+						Fields =
+						{
+							new PluginFieldSpec { Key = "kind", Type = "pick", Options = { "attack", "block" } },
+							new PluginFieldSpec { Key = "dmg", Type = "number" },
+							new PluginFieldSpec { Key = "note", Label = "附注", Type = "text", VisibleWhen = "kind=attack && dmg=0" },
+						},
+					};
+					var vspec = new PluginSpec { Id = "uicheck-combo", Name = "组合", Dir = Path.Combine(Path.GetTempPath(), "uicheck-combo-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(vspec.Dir);
+					vspec.Pages.Add(vpage);
+					PluginRegistry.SetPageValue(vspec, vpage, vpage.Fields[0], "attack");
+					PluginRegistry.SetPageValue(vspec, vpage, vpage.Fields[1], "0");
+					object cf1 = BuildPluginPageForm(vspec, vpage);
+					PluginRegistry.SetPageValue(vspec, vpage, vpage.Fields[1], "5");
+					object cf2 = BuildPluginPageForm(vspec, vpage);
+					int CountT(DependencyObject? n, string want)
+					{
+						if (n is null) return 0;
+						int c = (n is TextBlock tb && (tb.Text ?? "").Contains(want)) ? 1 : 0;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) c += CountT(d, want);
+						return c;
+					}
+					Check("V0.2.383：visibleWhen 用组合条件（attack 且 dmg=0 才显示「附注」）",
+						CountT(cf1 as DependencyObject, "附注") >= 1 && CountT(cf2 as DependencyObject, "附注") == 0,
+						$"dmg0={CountT(cf1 as DependencyObject, "附注")} dmg5={CountT(cf2 as DependencyObject, "附注")}");
+					try { Directory.Delete(vspec.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exc)
+				{
+					Check("V0.2.383：条件组合", false, "异常：" + exc.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

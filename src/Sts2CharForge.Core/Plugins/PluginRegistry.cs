@@ -1,4 +1,4 @@
-﻿using System.Text.Json;
+using System.Text.Json;
 using System.Text.Json.Serialization;
 using Sts2CharForge.Core.Effects;
 
@@ -1224,23 +1224,62 @@ public static class PluginRegistry
     /// <paramref name="get"/> = 「取另一个栏位的值」的回调（页面级取同页标量；行内取同一行的子栏位）。
     /// </summary>
     public static bool FieldVisible(PluginFieldSpec f, Func<string, string?> get)
+        => EvalCondition(f.VisibleWhen, get);
+
+    /// <summary>
+    /// V0.2.383（缺口文档第 8/9 节）：条件表达式 —— 支持 <c>&amp;&amp;</c>（与）、<c>||</c>（或）、<c>!</c>（非），
+    /// 以及原子 <c>key</c> / <c>key=值</c> / <c>key!=值</c>。
+    ///
+    /// <para>优先级：<c>||</c> 最低、<c>&amp;&amp;</c> 次之、<c>!</c> 最高（和 C# 一致）；只做一层括号没必要，
+    /// 真需要括号时用「多个 checks 规则」表达更清楚。</para>
+    /// </summary>
+    public static bool EvalCondition(string? cond, Func<string, string?> get)
     {
-        string cond = (f.VisibleWhen ?? "").Trim();
-        if (cond.Length == 0) return true;
-        int ne = cond.IndexOf("!=", StringComparison.Ordinal);
-        int eq = ne >= 0 ? -1 : cond.IndexOf('=', StringComparison.Ordinal);
+        string c = (cond ?? "").Trim();
+        if (c.Length == 0) return true;
+        foreach (string orPart in c.Split("||"))
+        {
+            string p2 = orPart.Trim();
+            if (p2.Length == 0) continue;
+            bool all = true;
+            foreach (string andPart in p2.Split("&&"))
+            {
+                if (!EvalAtom(andPart.Trim(), get)) { all = false; break; }
+            }
+            if (all) return true;
+        }
+        return false;
+    }
+
+    /// <summary>条件表达式里的一个原子（含 <c>!</c> 取反）。</summary>
+    private static bool EvalAtom(string atom, Func<string, string?> get)
+    {
+        if (atom.Length == 0) return true;
+        bool negate = false;
+        while (atom.StartsWith("!", StringComparison.Ordinal) && !atom.StartsWith("!=", StringComparison.Ordinal))
+        {
+            negate = !negate;
+            atom = atom[1..].Trim();
+        }
+        int ne = atom.IndexOf("!=", StringComparison.Ordinal);
+        int eq = ne >= 0 ? -1 : atom.IndexOf('=');
+        bool ok;
         if (ne >= 0)
         {
-            string key = cond[..ne].Trim(), want = cond[(ne + 2)..].Trim();
-            return !string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
+            string key = atom[..ne].Trim(), want = atom[(ne + 2)..].Trim();
+            ok = !string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
         }
-        if (eq >= 0)
+        else if (eq >= 0)
         {
-            string key = cond[..eq].Trim(), want = cond[(eq + 1)..].Trim();
-            return string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
+            string key = atom[..eq].Trim(), want = atom[(eq + 1)..].Trim();
+            ok = string.Equals((get(key) ?? "").Trim(), want, StringComparison.OrdinalIgnoreCase);
         }
-        string v = (get(cond) ?? "").Trim();
-        return v.Length > 0 && v != "0" && !string.Equals(v, "false", StringComparison.OrdinalIgnoreCase) && v != "否";
+        else
+        {
+            string v = (get(atom.Trim()) ?? "").Trim();
+            ok = v.Length > 0 && v != "0" && !string.Equals(v, "false", StringComparison.OrdinalIgnoreCase) && v != "否";
+        }
+        return negate ? !ok : ok;
     }
     /// <summary>V0.2.375：行集合 → 嵌套列表那一格的文本（JSON 数组，界面保存用）。</summary>
     public static string SerializeSubRows(PluginFieldSpec listField, List<Dictionary<string, string>> rows)
