@@ -40331,6 +40331,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.370：没有选牌的钩子生成文本不变（不会平白多一行）",
 						!sRand.Contains("BlockingPlayerChoiceContext"),
 						sRand.Contains("Blocking") ? "多了" : "干净");
+				}				// ----- V0.2.371：图上「随机取 N 张」必须先按范围过滤再取（否则「消耗 1 张状态」永远取不到） -----
+				{
+					var rp2 = ProfileFactory.Sample();
+					rp2.Cards.Clear(); rp2.Curses.Clear(); rp2.AncientCards.Clear();
+					var rc = new CardSpec { Name = "随机取状态", ClassName = "UiRandomStatusPick", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					var rg = new ForgeGraphSpec();
+					var rt = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+					rt.SetField("Timing", "CardPlayed");
+					var re = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+					re.SetField("Effect", "ExhaustCard");
+					re.SetField("Amount", "1");
+					re.SetField("Pick", "Random");
+					re.SetField("SpawnFilter", "Status");
+					rg.Nodes.AddRange(new[] { rt, re });
+					rg.Links.Add(new ForgeLinkSpec { From = rt.Id, To = re.Id, FromPort = 0, ToPort = 0 });
+					rc.ForgeGraph = rg;
+					rp2.Cards.Add(rc);
+					string rs = CSharpCodeGen.CardSource(rp2, rc, 0);
+					string pickLine = rs.Split('\n').FirstOrDefault(l => l.Contains("OrderBy(_ =>")) ?? "";
+					int whereAt = pickLine.IndexOf(".Where(", StringComparison.Ordinal);
+					int orderAt = pickLine.IndexOf(".OrderBy(", StringComparison.Ordinal);
+					Check("V0.2.371：图上「随机取 N 张」先按范围过滤、再随机取（以前是先取后过滤 → 「消耗 1 张状态」总是取不到）",
+						whereAt >= 0 && orderAt > whereAt, pickLine.Trim());
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

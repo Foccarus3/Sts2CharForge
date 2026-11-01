@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -3324,7 +3324,7 @@ public static class ForgeGraphGen
                         ? $"var {selVar} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: {cvPrefs}, filter: {cvPred ?? "null"}, source: {ctx.CardSelfExpr})).ToList();"
                         : $"var {selVar} = (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {GraphPileExpr(cvSpec)}, __fgPlayer, {cvPrefs}{GraphFilterArg(cvPred)})).ToList();"));
                 else
-                    sb.AppendLine(__ind + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(cvSpec, CSharpCodeGen.RangeN(cvE, $"(int)({amount})"))}{GraphWhere(cvPred)});");
+                    sb.AppendLine(__ind + $"var {selVar} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(cvSpec, CSharpCodeGen.RangeN(cvE, $"(int)({amount})"), cvPred)});");
                 if (kind == "CopyCard")
                 {
                     // V0.2.167：勾了「复制的份数」（> 1）/ 附加处理 / 加关键词时，要拿得到复制出来的那张实例
@@ -4320,7 +4320,7 @@ public static class ForgeGraphGen
                 ? $"var {var} = (await CardSelectCmd.FromHand(context: {ctx.ChoiceVar}, player: __fgPlayer, prefs: {prefs}, filter: {pred ?? "null"}, source: {ctx.CardSelfExpr})).ToList();"
                 : $"var {var} = (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {GraphPileExpr(spec)}, __fgPlayer, {prefs}{GraphFilterArg(pred)})).ToList();"));
         else
-            sb.AppendLine(indent + $"var {var} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(spec, CSharpCodeGen.RangeN(e, $"(int)({amount})"))}{GraphWhere(pred)});");
+            sb.AppendLine(indent + $"var {var} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(spec, CSharpCodeGen.RangeN(e, $"(int)({amount})"), pred)});");
         sb.AppendLine(indent + $"foreach (CardModel __fgCard in {var}) {act}");
     }
 
@@ -4350,12 +4350,16 @@ public static class ForgeGraphGen
     /// 「从某一摞随机拿 N 张」的表达式（节点图用）。
     /// 手牌 → 老写法（<c>CardPile.GetCards(...Hand)</c> + 战斗随机 + Take）；别的三摞同理只是换那一摞；
     /// 「牌顶」→ 不随机、直接拿最上面那张（本体抽牌堆顶在前）。
-    /// </summary>
-    private static string GraphRandomPickExpr(EffectSpec? s, string amount)
+    private static string GraphRandomPickExpr(EffectSpec? s, string amount, string? pred = null)
     {
+        // V0.2.371（用户实测：图上「消耗 1 张状态」不生效、「消耗全部」正常）：
+        // 以前谓词是拼在 **Take(N) 之后** 的 —— 先从整摞随机取 1 张，再按类型过滤，
+        // 取到的那张不是状态牌 → 结果空 → 什么都不消耗（N 大时才"看起来能用"）。
+        // 现在先过滤再取，语义 = 「在符合条件的牌里随机挑 N 张」。
+        string where = pred is null ? "" : $".Where({pred})";
         if (s is not null && string.Equals(s.SelectPile, "Top", StringComparison.OrdinalIgnoreCase))
-            return $"{GraphPileExpr(s)}.Cards.Take((int)({amount})).ToList()";
-        return $"CardPile.GetCards(__fgPlayer, {GraphPileTypeExpr(s)})"
+            return $"{GraphPileExpr(s)}.Cards{where}.Take((int)({amount})).ToList()";
+        return $"CardPile.GetCards(__fgPlayer, {GraphPileTypeExpr(s)}){where}"
              + $".OrderBy(_ => __fgPlayer.RunState.Rng.CombatCardSelection.NextInt(int.MaxValue)).Take((int)({amount})).ToList()";
     }
 
