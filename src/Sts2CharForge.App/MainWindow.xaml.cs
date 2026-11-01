@@ -7188,6 +7188,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private UIElement BuildMasterDetail(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField, Action onChanged)
 	{
 		var rows = PluginRegistry.PageRowsOf(p, page, listField);
+		// V0.2.386：先跑一次校验，界面据此给「有问题的行」打 ⚠（Problems / ProblemRows / ProblemFields 都是活集合）
+		page.Problems.Clear(); page.ProblemRows.Clear(); page.ProblemFields.Clear();
+		PluginRegistry.ValidatePages(p);
 		var subs = (listField.Fields ?? new List<PluginFieldSpec>())
 			.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key)).ToList();
 		var host = new StackPanel { Orientation = Orientation.Horizontal };
@@ -7200,13 +7203,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		int sel = 0;
 		string LabelOf(Dictionary<string, string> row, int idx)
 		{
+			string rowKey = (listField.Key ?? "").Trim() + "#" + idx;
+			string mark = page.ProblemRows.Contains(rowKey) ? "⚠ " : "";
 			foreach (var s2 in subs.Where(x => !x.IsList))
 			{
 				string k2 = s2.Key!.Trim();
 				if (row.TryGetValue(k2, out string? vv) && !string.IsNullOrWhiteSpace(vv))
-					return (idx + 1) + ". " + vv;
+					return mark + (idx + 1) + ". " + vv;
 			}
-			return (idx + 1) + ". （空）";
+			return mark + (idx + 1) + ". （空）";
 		}
 		void Save()
 		{
@@ -41091,6 +41096,45 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exm2)
 				{
 					Check("V0.2.385：主从布局搜索/复制", false, "异常：" + exm2.Message);
+				}				// ----- V0.2.386：校验命中的行在列表里打 ⚠ -----
+				try
+				{
+					var mv = new PluginSpec { Id = "uicheck-mdwarn", Name = "主从警告", Dir = Path.Combine(Path.GetTempPath(), "uicheck-mdwarn-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(mv.Dir);
+					var mvList = new PluginFieldSpec
+					{
+						Key = "moves", Label = "招式", Type = "list", DefaultRows = 1,
+						Fields = { new PluginFieldSpec { Key = "kind", Type = "pick", Options = { "attack", "block" } }, new PluginFieldSpec { Key = "dmg", Label = "伤害", Type = "number" } },
+					};
+					var mvPage = new PluginPageSpec
+					{
+						Id = "p1", Title = "主从警告", Target = "x.txt", Emit = "{moves}{dmg}{/moves}", Layout = "master-detail",
+						Fields = { mvList },
+						Checks = { new Sts2CharForge.Core.Plugins.PluginPageSpec.PluginCheckSpec { List = "moves", When = "kind=attack", Field = "dmg", Rule = "int", Min = "1", Message = "攻击招式必须填伤害" } },
+					};
+					mv.Pages.Add(mvPage);
+					var mvRows = PluginRegistry.PageRowsOf(mv, mvPage, mvList);
+					mvRows.Clear();
+					mvRows.Add(new Dictionary<string, string> { ["kind"] = "attack", ["dmg"] = "0" });
+					mvRows.Add(new Dictionary<string, string> { ["kind"] = "block", ["dmg"] = "" });
+					object mvForm = BuildPluginPageForm(mv, mvPage);
+					ListBox? mvLb = null;
+					void WalkMv(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is ListBox l3 && mvLb is null) mvLb = l3;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject dd) WalkMv(dd);
+					}
+					WalkMv(mvForm as DependencyObject);
+					string item0 = mvLb is not null && mvLb.Items.Count > 0 ? (mvLb.Items[0]?.ToString() ?? "") : "";
+					string item1 = mvLb is not null && mvLb.Items.Count > 1 ? (mvLb.Items[1]?.ToString() ?? "") : "";
+					Check("V0.2.386：校验命中的那一行在列表里带 ⚠，没命中的不带",
+						item0.StartsWith("⚠") && !item1.StartsWith("⚠"), $"第1行=「{item0}」 第2行=「{item1}」");
+					try { Directory.Delete(mv.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exmv)
+				{
+					Check("V0.2.386：校验命中的行打 ⚠", false, "异常：" + exmv.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

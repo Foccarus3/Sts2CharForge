@@ -306,6 +306,12 @@ public sealed class PluginPageSpec
     /// <summary>V0.2.381：插件自己声明的校验规则（见 <see cref="PluginCheckSpec"/>）。</summary>
     public List<PluginCheckSpec> Checks { get; set; } = new();
 
+    /// <summary>V0.2.386：校验命中的**行**（`list栏位key#行下标`），界面用它给行列表打 ⚠（不写进 json）。</summary>
+    [JsonIgnore] public HashSet<string> ProblemRows { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>V0.2.386：校验命中的**页面级栏位 key**，界面用它给这几栏标红。</summary>
+    [JsonIgnore] public HashSet<string> ProblemFields { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>把栏位值渲染成的文本（C# 等，原样写进 <see cref="Target"/>）。占位符 <c>{字段key}</c>。</summary>
     public string Emit { get; set; } = "";
 
@@ -697,7 +703,9 @@ public static class PluginRegistry
                     }
                     string rowVal = (row.TryGetValue(c.Field.Trim(), out string? fv) ? (fv ?? "") : "").Trim();
                     string rowWhere = where + "：" + listLabel + " 第 " + (ri + 1) + " 行";
+                    int rowBefore = page.Problems.Count;
                     ApplyOneCheck(c, rowVal, c.Field.Trim(), rowWhere, page.Problems);
+                    if (page.Problems.Count > rowBefore) page.ProblemRows.Add((listField.Key ?? "").Trim() + "#" + ri);
                 }
                 continue;
             }
@@ -721,32 +729,11 @@ public static class PluginRegistry
                 if (!ok) continue;
             }
             string val = PageValueOf(spec, page, field).Trim();
-            string rule = (c.Rule ?? "").Trim().ToLowerInvariant();
-            string custom = string.IsNullOrWhiteSpace(c.Message) ? "" : c.Message.Trim();
-            if (rule is "" or "required")
-            {
-                if (val.Length == 0)
-                    page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须有值"));
-                continue;
-            }
-            if (rule is "number" or "int")
-            {
-                bool isInt = rule == "int";
-                bool parsed = decimal.TryParse(val, out decimal num);
-                if (isInt && parsed && num != Math.Truncate(num)) parsed = false;
-                if (val.Length > 0 && !parsed)
-                {
-                    page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」必须是" + (isInt ? "整数" : "数字")));
-                    continue;
-                }
-                if (parsed)
-                {
-                    if (decimal.TryParse((c.Min ?? "").Trim(), out decimal mn) && num < mn)
-                        page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能小于 " + mn));
-                    if (decimal.TryParse((c.Max ?? "").Trim(), out decimal mx) && num > mx)
-                        page.Problems.Add(where + "：" + (custom.Length > 0 ? custom : "栏位「" + label + "」不能大于 " + mx));
-                }
-            }
+            // V0.2.386：页面级和行内现在共用同一份规则实现（以前这里是内联的旧代码）；
+            // 命中的栏位记进 ProblemFields，界面据此把那几栏标红。
+            int before = page.Problems.Count;
+            ApplyOneCheck(c, val, label, where, page.Problems);
+            if (page.Problems.Count > before) page.ProblemFields.Add((field.Key ?? "").Trim());
         }
     }
 
