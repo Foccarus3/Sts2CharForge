@@ -41421,6 +41421,38 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exg)
 				{
 					Check("V0.2.392：多文件生成", false, "异常：" + exg.Message);
+				}				// ----- V0.2.393：生成确认窗接到主界面（Install 时注入 ConfirmGenerate） -----
+				try
+				{
+					PluginExtensionPages.Install();
+					Check("V0.2.393：Install 之后生成确认回调已注入（插件调 Generate 会先弹文件清单）",
+						Sts2CharForge.Core.Plugins.EditorExtensionRegistry.ConfirmGenerate is not null, "已注入");
+					// 模拟用户点「写入」/「取消」：确认窗在自检里不真弹，用 AutoConfirmForTests 走同一条回调链
+					EditorExtensionRegistry.Reset();
+					var outDir2 = Path.Combine(Path.GetTempPath(), "uicheck-genui-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(outDir2);
+					var xp2 = new PluginSpec { Id = "uicheck-genui", Name = "生成窗", Dir = Path.Combine(Path.GetTempPath(), "uicheck-genuip-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xp2.Dir);
+					xp2.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xp2, xp2.Dir, outDir2);
+					var h2 = UicheckStoreHost.LastHost;
+					var files2 = new[] { new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "X.cs", Content = "class X {}" } };
+					PluginExtensionPages.AutoConfirmForTests = false;
+					var r1 = h2!.Generate(files2);
+					bool existedAfterCancel = File.Exists(Path.Combine(outDir2, "X.cs"));   // 取消后立刻看（别等 r2 写完再看）
+					PluginExtensionPages.AutoConfirmForTests = true;
+					var r2 = h2.Generate(files2);
+					PluginExtensionPages.AutoConfirmForTests = null;
+					Check("V0.2.393：确认窗的「取消」不写盘、「写入」才写（走真实回调链）",
+						!r1.Confirmed && !existedAfterCancel
+						&& r2.Confirmed && File.Exists(Path.Combine(outDir2, "X.cs")),
+						$"取消={r1.Confirmed} 写入={r2.Confirmed} 写出={string.Join("|", r2.Written)} 期望目录={outDir2} 文件在={File.Exists(Path.Combine(outDir2, "X.cs"))}");
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(outDir2, recursive: true); Directory.Delete(xp2.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exg2)
+				{
+					Check("V0.2.393：生成确认窗", false, "异常：" + exg2.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

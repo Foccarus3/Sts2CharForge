@@ -15,8 +15,73 @@ namespace Sts2CharForge.App;
 /// </summary>
 public static class PluginExtensionPages
 {
-    /// <summary>装上面板工厂（主程序启动时调一次）。</summary>
-    public static void Install() => EditorExtensionRegistry.PanelFactory = id => new EditorPanelAdapter(id);
+    /// <summary>
+    /// V0.2.393：自检 / 自动化用的确认开关（null = 真的弹窗让用户点）。
+    /// </summary>
+    public static bool? AutoConfirmForTests;
+
+    /// <summary>装上面板工厂 + 生成确认回调（主程序启动时调一次）。</summary>
+    public static void Install()
+    {
+        EditorExtensionRegistry.PanelFactory = id => new EditorPanelAdapter(id);
+        EditorExtensionRegistry.ConfirmGenerate = (id, plan) => ShowGenerateConfirm(id, plan);
+    }
+
+    /// <summary>
+    /// V0.2.393（需求书 6.4）：生成前的**文件清单确认窗**。用户点「写入」才返回 true；
+    /// 取消 / 关窗 / 出错一律 false（一个文件都不写）。
+    /// </summary>
+    public static bool ShowGenerateConfirm(string pluginId, EditorGeneratePlan plan)
+    {
+        if (AutoConfirmForTests is bool forced) return forced;
+        if (plan is null || !plan.Ok) return false;
+        try
+        {
+            var win = new Window
+            {
+                Title = "确认生成 —— " + pluginId,
+                Width = 720,
+                Height = 460,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = Application.Current?.MainWindow,
+            };
+            var root = new DockPanel { Margin = new Thickness(10) };
+
+            var header = new TextBlock
+            {
+                Text = "将写出 " + plan.Files.Count + " 个文件到：\n" + plan.OutputDir,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            DockPanel.SetDock(header, Dock.Top);
+            root.Children.Add(header);
+
+            var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+            bool ok = false;
+            var yes = new Button { Content = "写入", MinWidth = 90, Margin = new Thickness(0, 0, 8, 0) };
+            yes.Click += (_, _) => { ok = true; win.Close(); };
+            var no = new Button { Content = "取消", MinWidth = 90 };
+            no.Click += (_, _) => win.Close();
+            buttons.Children.Add(yes);
+            buttons.Children.Add(no);
+            DockPanel.SetDock(buttons, Dock.Bottom);
+            root.Children.Add(buttons);
+
+            var list = new ListBox { FontFamily = new System.Windows.Media.FontFamily("Consolas") };
+            foreach (var f in plan.Files)
+                list.Items.Add(f.Path + "    （" + (f.Content ?? "").Length + " 字符）");
+            root.Children.Add(new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+
+            win.Content = root;
+            win.ShowDialog();
+            return ok;
+        }
+        catch
+        {
+            // 弹窗都失败：绝不写盘（安全默认）
+            return false;
+        }
+    }
 
     /// <summary>
     /// 渲染某个插件的扩展页面。返回 null = 这个插件没有加载成功的扩展（调用方不必显示这一块）。
