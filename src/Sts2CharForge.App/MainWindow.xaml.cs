@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -41816,6 +41816,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exdemo)
 				{
 					Check("V0.2.401：示例编辑器扩展", false, "异常：" + exdemo.Message);
+				}				// ----- V0.2.403：百分比易伤（生成出来的百分比状态）要能被「清除所有减益」清掉 -----
+				try
+				{
+					var pp = ProfileFactory.Sample();
+					string rt = ForgeGraphGen.RuntimeSource(pp);
+					string vulnCls = Sts2CharForge.Core.Generation.PercentPowers.ClassOf(Sts2CharForge.Core.Generation.PercentPowers.Vuln, pp) ?? "";
+					string takeCls = Sts2CharForge.Core.Generation.PercentPowers.ClassOf(Sts2CharForge.Core.Generation.PercentPowers.TakenReduce, pp) ?? "";
+					Check("V0.2.403：「清除所有减益」的清单里包含本角色生成的百分比易伤 / 百分比减伤类名",
+						vulnCls.Length > 0 && rt.Contains("\"" + vulnCls + "\"") && rt.Contains("\"" + takeCls + "\""),
+						$"Vuln={vulnCls} TakenReduce={takeCls}");
+				}
+				catch (Exception exp2)
+				{
+					Check("V0.2.403：清除所有减益清单", false, "异常：" + exp2.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
