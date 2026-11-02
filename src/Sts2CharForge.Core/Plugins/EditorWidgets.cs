@@ -43,6 +43,12 @@ public interface IEditorPanel
     /// <summary>V0.2.395：加一个**图片预览**（给插件显示选中的 PNG）。</summary>
     IEditorImagePreview AddImagePreview(string label, int height = 160);
 
+    /// <summary>V0.2.396（需求书 4.9）：加一个**音频预览**（音效 / BGM 试听，播放/停止）。</summary>
+    IEditorAudioPreview AddAudioPreview(string label);
+
+    /// <summary>V0.2.396：加一个**逐帧动画预览**（给一个装着 PNG 序列的文件夹，能逐帧翻）。</summary>
+    IEditorFramePreview AddFramePreview(string label, int height = 160);
+
     /// <summary>清空本面板里所有控件。</summary>
     void Clear();
 }
@@ -79,6 +85,27 @@ public interface IEditorCombo
     void SetOptions(IReadOnlyList<string> options);
 }
 
+/// <summary>V0.2.396：音频预览（设置路径即可；坏路径只显示提示，不抛异常）。</summary>
+public interface IEditorAudioPreview
+{
+    string Path { get; set; }
+}
+
+/// <summary>
+/// V0.2.396：逐帧动画预览。给一个**文件夹**（里面按文件名排好的 PNG 序列），
+/// 插件可以设当前帧；界面提供「◀ / ▶」翻帧。
+/// </summary>
+public interface IEditorFramePreview
+{
+    /// <summary>帧所在文件夹（绝对路径；空 = 没设）。</summary>
+    string Folder { get; set; }
+
+    /// <summary>这个文件夹里被当成帧的图片数（只读，方便插件校验「至少要 1 帧」）。</summary>
+    int FrameCount { get; }
+
+    /// <summary>当前显示第几帧（0 起）。</summary>
+    int FrameIndex { get; set; }
+}
 /// <summary>V0.2.395（需求书 4.9）：文件选择栏 —— 插件只能拿到**用户选的路径**，不能自己乱翻文件系统。</summary>
 public interface IEditorFilePicker
 {

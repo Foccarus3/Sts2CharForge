@@ -153,6 +153,46 @@ public sealed class EditorPanelAdapter : IEditorPanel
         return new ImagePreviewAdapter(img, hint);
     }
 
+    /// <summary>V0.2.396：音频预览 —— 播放 / 停止（MediaPlayer 出错只提示，不抛）。</summary>
+    public IEditorAudioPreview AddAudioPreview(string label)
+    {
+        var row = Row(label);
+        var info = new TextBlock { Text = "（没有音频）", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Width = 260 };
+        var play = new Button { Content = "▶ 播放", MinWidth = 72 };
+        var stop = new Button { Content = "■ 停止", MinWidth = 72, Margin = new Thickness(6, 0, 0, 0) };
+        row.Children.Add(info);
+        row.Children.Add(play);
+        row.Children.Add(stop);
+        _root.Children.Add(row);
+        var adapter = new AudioPreviewAdapter(info);
+        play.Click += (_, _) => Guard(() => adapter.Play());
+        stop.Click += (_, _) => Guard(() => adapter.Stop());
+        return adapter;
+    }
+
+    /// <summary>V0.2.396：逐帧动画预览 —— 一个文件夹里的图片序列，可翻帧。</summary>
+    public IEditorFramePreview AddFramePreview(string label, int height = 160)
+    {
+        if (!string.IsNullOrEmpty(label))
+            _root.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 4, 0, 2) });
+        var img = new Image { Height = height, HorizontalAlignment = HorizontalAlignment.Left };
+        var info = new TextBlock { Text = "（没有帧）", Foreground = Brushes.Gray, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(6, 0, 0, 0) };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(img);
+        row.Children.Add(info);
+        var bar = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 2, 0, 2) };
+        var adapter = new FramePreviewAdapter(img, info);
+        var prevBtn = new Button { Content = "◀ 上一帧", MinWidth = 82 };
+        var nextBtn = new Button { Content = "下一帧 ▶", MinWidth = 82, Margin = new Thickness(6, 0, 0, 0) };
+        prevBtn.Click += (_, _) => Guard(() => adapter.Step(-1));
+        nextBtn.Click += (_, _) => Guard(() => adapter.Step(1));
+        bar.Children.Add(prevBtn);
+        bar.Children.Add(nextBtn);
+        _root.Children.Add(row);
+        _root.Children.Add(bar);
+        return adapter;
+    }
+
     public IEditorPanel AddPanel(string? title = null)
     {
         if (!string.IsNullOrEmpty(title))
@@ -335,6 +375,111 @@ public sealed class EditorPanelAdapter : IEditorPanel
     }
 
     /// <summary>V0.2.395：图片预览的适配器（坏路径只显示提示，不抛）。</summary>
+    /// <summary>V0.2.396：音频预览适配器（MediaPlayer；播不了只提示）。</summary>
+    private sealed class AudioPreviewAdapter : IEditorAudioPreview
+    {
+        private readonly TextBlock _info;
+        private System.Windows.Media.MediaPlayer? _player;
+        private string _path = "";
+        public AudioPreviewAdapter(TextBlock info) => _info = info;
+        public string Path
+        {
+            get => _path;
+            set
+            {
+                _path = value ?? "";
+                _info.Text = _path.Length == 0
+                    ? "（没有音频）"
+                    : (System.IO.File.Exists(_path) ? System.IO.Path.GetFileName(_path) : "（文件不存在：" + System.IO.Path.GetFileName(_path) + "）");
+            }
+        }
+        public void Play()
+        {
+            if (_path.Length == 0 || !System.IO.File.Exists(_path)) { _info.Text = "（没有可播放的音频）"; return; }
+            try
+            {
+                _player ??= new System.Windows.Media.MediaPlayer();
+                _player.Open(new Uri(_path, UriKind.Absolute));
+                _player.Play();
+                _info.Text = "播放中：" + System.IO.Path.GetFileName(_path);
+            }
+            catch (Exception ex)
+            {
+                _info.Text = "（播不了：" + ex.Message + "）";
+            }
+        }
+        public void Stop()
+        {
+            try { _player?.Stop(); _info.Text = System.IO.Path.GetFileName(_path); } catch { }
+        }
+    }
+
+    /// <summary>V0.2.396：逐帧动画预览适配器（文件夹里的图片序列，按文件名排序）。</summary>
+    private sealed class FramePreviewAdapter : IEditorFramePreview
+    {
+        private static readonly string[] Exts = { ".png", ".jpg", ".jpeg", ".bmp", ".gif" };
+        private readonly Image _img;
+        private readonly TextBlock _info;
+        private readonly List<string> _frames = new();
+        private int _idx;
+        public FramePreviewAdapter(Image img, TextBlock info) { _img = img; _info = info; }
+
+        public string Folder
+        {
+            get => _folder;
+            set
+            {
+                _folder = value ?? "";
+                _frames.Clear();
+                _idx = 0;
+                try
+                {
+                    if (_folder.Length > 0 && System.IO.Directory.Exists(_folder))
+                    {
+                        foreach (string f in System.IO.Directory.GetFiles(_folder))
+                            if (Exts.Contains(System.IO.Path.GetExtension(f).ToLowerInvariant())) _frames.Add(f);
+                        _frames.Sort(StringComparer.OrdinalIgnoreCase);
+                    }
+                }
+                catch { }
+                Show();
+            }
+        }
+        private string _folder = "";
+
+        public int FrameCount { get { _ = 0; return _frames.Count; } }
+
+        public int FrameIndex { get => _idx; set { _idx = Math.Clamp(value, 0, Math.Max(0, _frames.Count - 1)); Show(); } }
+
+        public void Step(int delta) => FrameIndex = _idx + delta;
+
+        private void Show()
+        {
+            if (_frames.Count == 0)
+            {
+                _img.Source = null;
+                _info.Text = _folder.Length == 0 ? "（没有帧）" : "（这个文件夹里没有图片）";
+                return;
+            }
+            try
+            {
+                var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                bmp.BeginInit();
+                bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                bmp.UriSource = new Uri(_frames[_idx], UriKind.Absolute);
+                bmp.EndInit();
+                bmp.Freeze();
+                _img.Source = bmp;
+                _info.Text = (_idx + 1) + " / " + _frames.Count + "：" + System.IO.Path.GetFileName(_frames[_idx]);
+            }
+            catch
+            {
+                _img.Source = null;
+                _info.Text = "（这一帧读不出来）";
+            }
+        }
+    }
+
     private sealed class ImagePreviewAdapter : IEditorImagePreview
     {
         private readonly Image _img;

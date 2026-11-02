@@ -41532,6 +41532,39 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exr2)
 				{
 					Check("V0.2.395：资源能力", false, "异常：" + exr2.Message);
+				}				// ----- V0.2.396：音频预览 + 逐帧动画预览 -----
+				try
+				{
+					var api2 = new EditorPanelAdapter("uicheck-av");
+					var au = api2.AddAudioPreview("音效");
+					au.Path = @"C:\temp\hit.wav";
+					Check("V0.2.396：音频预览能记住路径", au.Path.EndsWith("hit.wav"), au.Path);
+					au.Path = Path.Combine(Path.GetTempPath(), "没有这个-" + Guid.NewGuid().ToString("N") + ".wav");
+					Check("V0.2.396：坏音频路径不抛（只显示提示）", true, au.Path);
+					// 造 3 张 PNG 当一个动画序列
+					string dir = Path.Combine(Path.GetTempPath(), "uicheck-seq-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(dir);
+					for (int fi = 1; fi <= 3; fi++)
+					{
+						var enc2 = new System.Windows.Media.Imaging.PngBitmapEncoder();
+						var wb2 = new System.Windows.Media.Imaging.WriteableBitmap(2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null);
+						enc2.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(wb2));
+						using var f2 = File.Create(Path.Combine(dir, "frame" + fi + ".png"));
+						enc2.Save(f2);
+					}
+					var seq = api2.AddFramePreview("动画");
+					seq.Folder = dir;
+					Check("V0.2.396：逐帧预览能数出文件夹里的 3 帧", seq.FrameCount == 3, "帧数=" + seq.FrameCount);
+					seq.FrameIndex = 2;
+					seq.FrameIndex = 99;
+					Check("V0.2.396：帧号会被夹在合法范围（越界不抛）", seq.FrameIndex == 2, "当前帧=" + seq.FrameIndex);
+					seq.Folder = Path.Combine(Path.GetTempPath(), "没有这个目录-" + Guid.NewGuid().ToString("N"));
+					Check("V0.2.396：坏帧目录不抛、帧数=0", seq.FrameCount == 0, "帧数=" + seq.FrameCount);
+					try { Directory.Delete(dir, recursive: true); } catch { }
+				}
+				catch (Exception exav)
+				{
+					Check("V0.2.396：音频/逐帧预览", false, "异常：" + exav.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
