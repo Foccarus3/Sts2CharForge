@@ -31,6 +31,12 @@ public interface IEditorPanel
     /// <summary>加一个可嵌套的子面板（用于分组 / 左右两栏）。</summary>
     IEditorPanel AddPanel(string? title = null);
 
+    /// <summary>
+    /// V0.2.390（需求书 4.3 节）：受控**列表** —— 带选中项、增删改排、选中变化事件。
+    /// 「敌人列表 + 右侧详情」这种界面就是它 + <see cref="IEditorPanel"/> 拼出来的。
+    /// </summary>
+    IEditorList<T> AddList<T>(string label, IReadOnlyList<T> items, Func<T, string> labelOf, Func<T, T>? cloner = null) where T : class;
+
     /// <summary>清空本面板里所有控件。</summary>
     void Clear();
 }
@@ -67,6 +73,28 @@ public interface IEditorCombo
     void SetOptions(IReadOnlyList<string> options);
 }
 
+/// <summary>V0.2.390：受控列表（需求书 4.3）。选中项 / 增删改排 / 选中变化事件都在这里。</summary>
+public interface IEditorList<T> where T : class
+{
+    IReadOnlyList<T> Items { get; }
+
+    /// <summary>当前选中项（设 null = 取消选中）。</summary>
+    T? Selected { get; set; }
+
+    /// <summary>选中项变了（刷列表导致的重建不会误触发）。</summary>
+    event Action<T?>? SelectionChanged;
+
+    void Add(T item);
+    void Remove(T item);
+    void MoveUp(T item);
+    void MoveDown(T item);
+
+    /// <summary>复制一项（用创建列表时给的 cloner；没给就用浅拷贝）。</summary>
+    void Clone(T item);
+
+    /// <summary>数据外部变了之后重画列表（选中项尽量保持）。</summary>
+    void Refresh();
+}
 /// <summary>按钮（插件在这里挂点击回调）。</summary>
 public interface IEditorButton
 {

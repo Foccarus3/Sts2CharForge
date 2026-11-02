@@ -60,3 +60,9 @@ public sealed class UicheckBadPage : Sts2CharForge.Core.Plugins.IEditorPage
 	public object Build() => throw new InvalidOperationException("页面炸了");
 	public void Dispose() { }
 }
+/// <summary>V0.2.390 自检用：列表里的一项。</summary>
+public sealed class UicheckMove
+{
+	public string Name { get; set; } = "";
+	public override string ToString() => Name;
+}

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -41308,6 +41308,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exu)
 				{
 					Check("V0.2.389：编辑器扩展主界面入口", false, "异常：" + exu.Message);
+				}				// ----- V0.2.390：IEditorList<T>（选中项 / 增删改排 / 复制 / 选中事件） -----
+				try
+				{
+					var lp = new EditorPanelAdapter("uicheck-list");
+					var items = new List<UicheckMove> { new UicheckMove { Name = "横扫" }, new UicheckMove { Name = "重击" } };
+					var lst = lp.AddList("招式", items, m => m.Name, m => new UicheckMove { Name = m.Name });
+					string? lastSel = null;
+					lst.SelectionChanged += m => { lastSel = m?.Name; };
+					lst.Refresh();
+					Check("V0.2.390：受控列表能列出条目并默认选中第一项",
+						lst.Items.Count == 2 && lst.Selected?.Name == "横扫", $"条目={lst.Items.Count} 选中={lst.Selected?.Name}");
+					lst.Selected = lst.Items[1];
+					Check("V0.2.390：改选中项会触发 SelectionChanged（插件能拿到选中对象）",
+						lastSel == "重击", "lastSel=" + lastSel);
+					lst.Add(new UicheckMove { Name = "格挡" });
+					lst.MoveUp(lst.Items[2]);
+					Check("V0.2.390：Add / MoveUp 生效（顺序变成 横扫/格挡/重击）",
+						lst.Items.Count == 3 && lst.Items[1].Name == "格挡", string.Join("/", lst.Items.Select(x => x.Name)));
+					lst.Clone(lst.Items[1]);
+					Check("V0.2.390：Clone 复制一份插在后面（用插件给的 cloner）",
+						lst.Items.Count == 4 && lst.Items[2].Name == "格挡", string.Join("/", lst.Items.Select(x => x.Name)));
+					lst.Remove(lst.Items[2]);
+					Check("V0.2.390：Remove 删得掉", lst.Items.Count == 3, string.Join("/", lst.Items.Select(x => x.Name)));
+				}
+				catch (Exception exl)
+				{
+					Check("V0.2.390：IEditorList<T>", false, "异常：" + exl.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

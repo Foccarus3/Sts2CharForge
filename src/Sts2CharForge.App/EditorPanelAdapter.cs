@@ -102,6 +102,21 @@ public sealed class EditorPanelAdapter : IEditorPanel
         return new ButtonAdapter(btn);
     }
 
+    /// <summary>V0.2.390：受控列表 —— ListBox + 增删/上下移/复制按钮，选中变化会通知插件。</summary>
+    public IEditorList<T> AddList<T>(string label, IReadOnlyList<T> items, Func<T, string> labelOf, Func<T, T>? cloner = null) where T : class
+    {
+        if (!string.IsNullOrEmpty(label))
+            _root.Children.Add(new TextBlock { Text = label, FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 2) });
+        var host = new StackPanel { Orientation = Orientation.Horizontal };
+        var listBox = new ListBox { Width = 220, Height = 200 };
+        var side = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(6, 0, 0, 0) };
+        host.Children.Add(listBox);
+        host.Children.Add(side);
+        _root.Children.Add(host);
+        var adapter = new ListAdapter<T>(listBox, side, items ?? Array.Empty<T>(), labelOf ?? (x => x?.ToString() ?? ""), cloner, Guard);
+        return adapter;
+    }
+
     public IEditorPanel AddPanel(string? title = null)
     {
         if (!string.IsNullOrEmpty(title))
@@ -137,6 +152,141 @@ public sealed class EditorPanelAdapter : IEditorPanel
                     "插件扩展出错", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch { /* 连弹窗都失败就算了，绝不能把异常抛回主程序 */ }
+        }
+    }
+
+    /// <summary>V0.2.390：受控列表的实现（ListBox + 侧边按钮）。插件只看到 IEditorList&lt;T&gt;。</summary>
+    private sealed class ListAdapter<T> : IEditorList<T> where T : class
+    {
+        private readonly ListBox _box;
+        private readonly Func<T, string> _label;
+        private readonly Func<T, T>? _cloner;
+        private readonly Action<Action> _guard;
+        private readonly List<T> _items;
+        private bool _silent;
+
+        public ListAdapter(ListBox box, StackPanel side, IReadOnlyList<T> items, Func<T, string> label,
+            Func<T, T>? cloner, Action<Action> guard)
+        {
+            _box = box; _label = label; _cloner = cloner; _guard = guard;
+            _items = new List<T>(items);
+            _box.SelectionChanged += (_, _) =>
+            {
+                if (_silent) return;
+                // 插件的事件回调同样要隔离（抛异常不能影响主程序）
+                _guard(() => SelectionChanged?.Invoke(Selected));
+            };
+
+            void Btn(string text, Action act, bool up = false)
+            {
+                var b = new Button { Content = text, MinWidth = 76, Margin = new Thickness(0, 0, 0, 3) };
+                b.Click += (_, _) => _guard(act);
+                side.Children.Add(b);
+            }
+            Btn("+ 添加", () => { var it = _cloner is not null ? _cloner(CreateBlank()) : CreateBlank(); if (it is not null) Add(it); });
+            Btn("✕ 删除", () => { if (Selected is T s) Remove(s); });
+            Btn("↑ 上移", () => { if (Selected is T s) MoveUp(s); });
+            Btn("↓ 下移", () => { if (Selected is T s) MoveDown(s); });
+            Btn("⧉ 复制", () => { if (Selected is T s) Clone(s); });
+            Refresh();
+        }
+
+        /// <summary>给「+ 添加」用：优先无参构造，没有就克隆一个占位（插件通常会给 cloner）。</summary>
+        private static T CreateBlank()
+        {
+            try { return (T)Activator.CreateInstance(typeof(T), nonPublic: true)!; }
+            catch { return null!; }
+        }
+
+        public IReadOnlyList<T> Items => _items;
+
+        public T? Selected
+        {
+            get => _box.SelectedItem is T t ? t : null;
+            set
+            {
+                _silent = true;
+                try { _box.SelectedItem = value; } finally { _silent = false; }
+                // V0.2.390：代码里改选中项也算「选中变化」（插件常常是代码里 select，不是用户点的）
+                _guard(() => SelectionChanged?.Invoke(Selected));
+            }
+        }
+
+        public event Action<T?>? SelectionChanged;
+
+        private void Sync(T? keep = null)
+        {
+            object? sel = keep ?? _box.SelectedItem;
+            _silent = true;
+            try
+            {
+                _box.Items.Clear();
+                foreach (T it in _items) _box.Items.Add(it);
+                if (sel is T s2 && _items.Contains(s2)) _box.SelectedItem = s2;
+            }
+            finally { _silent = false; }
+        }
+
+        public void Add(T item)
+        {
+            if (item is null) return;
+            _items.Add(item);
+            Sync(item);
+            _guard(() => SelectionChanged?.Invoke(Selected));
+        }
+
+        public void Remove(T item)
+        {
+            if (item is null || !_items.Remove(item)) return;
+            Sync(_items.Count > 0 ? _items[Math.Min(_items.Count - 1, 0)] : null);
+            _guard(() => SelectionChanged?.Invoke(Selected));
+        }
+
+        public void MoveUp(T item)
+        {
+            int at = item is null ? -1 : _items.IndexOf(item);
+            if (at <= 0) return;
+            (_items[at - 1], _items[at]) = (_items[at], _items[at - 1]);
+            Sync(item);
+        }
+
+        public void MoveDown(T item)
+        {
+            int at = item is null ? -1 : _items.IndexOf(item);
+            if (at < 0 || at >= _items.Count - 1) return;
+            (_items[at + 1], _items[at]) = (_items[at], _items[at + 1]);
+            Sync(item);
+        }
+
+        public void Clone(T item)
+        {
+            if (item is null) return;
+            T copy;
+            if (_cloner is not null) copy = _cloner(item);
+            else
+            {
+                // 没给 cloner：浅拷贝（MemberwiseClone），够用且不会失败
+                var m = typeof(object).GetMethod("MemberwiseClone", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                copy = (T)m!.Invoke(item, null)!;
+            }
+            int at = _items.IndexOf(item);
+            _items.Insert(at + 1, copy);
+            Sync(copy);
+            _guard(() => SelectionChanged?.Invoke(Selected));
+        }
+
+        public void Refresh()
+        {
+            _silent = true;
+            try
+            {
+                T? keep = Selected;
+                _box.Items.Clear();
+                foreach (T it in _items) _box.Items.Add(it);
+                if (keep is not null && _items.Contains(keep)) _box.SelectedItem = keep;
+                else if (_items.Count > 0) _box.SelectedIndex = 0;
+            }
+            finally { _silent = false; }
         }
     }
 
