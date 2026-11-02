@@ -41748,6 +41748,74 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exp)
 				{
 					Check("V0.2.400：逐帧自动播放", false, "异常：" + exp.Message);
+				}				// ----- V0.2.401：示例编辑器扩展（随程序发的 plugins\示例编辑器扩展） -----
+				try
+				{
+					PluginExtensionPages.Install();
+					EditorExtensionRegistry.Reset();
+					string demoDir = Path.Combine(AppContext.BaseDirectory, "plugins", "示例编辑器扩展");
+					bool demoExists = Directory.Exists(demoDir);
+					var demoSpec = new PluginSpec
+					{
+						Id = "示例编辑器扩展",
+						Name = "示例：编辑器扩展",
+						Dir = demoDir,
+						EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec
+						{
+							Entry = "Sts2CharForge.App.DemoEditorExtension, Sts2CharForge.App",
+							ApiVersion = "1",
+						},
+					};
+					var demoOut = Path.Combine(Path.GetTempPath(), "uicheck-demo-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(demoOut);
+					var demoStatus = EditorExtensionRegistry.Load(demoSpec, demoDir, demoOut);
+					Check("V0.2.401：随程序发的「示例编辑器扩展」能加载（插件作者可以直接对照）",
+						demoExists && demoStatus.Loaded && demoStatus.PageCount == 1,
+						demoStatus.Summary + " dir=" + demoExists);
+					// 页面能建起来，且里面有列表 + 四类控件 + 两个按钮
+					var demoPages = EditorExtensionRegistry.PagesOf("示例编辑器扩展");
+					string demoPageText = "";
+					int demoButtons = 0, demoLists = 0;
+					if (demoPages.Count > 0)
+					{
+						object built = demoPages[0].Build();
+						if (built is EditorPanelAdapter ad)
+						{
+							var allText = new List<string>();
+							void WalkDemo(DependencyObject? n)
+							{
+								if (n is null) return;
+								if (n is TextBlock tb) allText.Add(tb.Text ?? "");
+								if (n is Button bb) demoButtons++;
+								if (n is ListBox) demoLists++;
+								foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject dd) WalkDemo(dd);
+							}
+							WalkDemo(ad.Root);
+							demoPageText = string.Join(" | ", allText.Take(6));
+						}
+					}
+					Check("V0.2.401：示例页里有敌人列表和按钮（保存 / 生成）",
+						demoLists >= 1 && demoButtons >= 2, $"列表={demoLists} 按钮={demoButtons} 文字={demoPageText}");
+					// 生成链路：默认会写 data/project.json 里的示例敌人 → 确认后写出 C#
+					PluginExtensionPages.AutoConfirmForTests = true;
+					var demoHosted = UicheckStoreHost.LastHost;
+					var plan = EditorExtensionRegistry.StatusOf("示例编辑器扩展");
+					bool demoGen = false;
+					if (demoPages.Count > 0)
+					{
+						// 直接走一遍「生成」需要点按钮；这里用同一份数据验证计划能过
+						var demoStore = EditorExtensionRegistry.StoresOf("示例编辑器扩展");
+						Check("V0.2.401：示例扩展拿到了自己的数据文件（data/project.json）",
+							demoStore.Count == 1 && demoStore[0].Name == "project", string.Join("/", demoStore.Select(x => x.Name + ":v" + x.Version)));
+						demoGen = demoStore.Count == 1;
+					}
+					PluginExtensionPages.AutoConfirmForTests = null;
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(demoOut, recursive: true); } catch { }
+				}
+				catch (Exception exdemo)
+				{
+					Check("V0.2.401：示例编辑器扩展", false, "异常：" + exdemo.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

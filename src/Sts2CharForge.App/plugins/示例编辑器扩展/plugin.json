@@ -1,0 +1,11 @@
+{
+  "id": "示例编辑器扩展",
+  "name": "示例：编辑器扩展（敌人列表 + 招式 + 生成）",
+  "version": "1.0",
+  "notes": "演示 editorExtension：左侧敌人列表 + 右侧详情 + 保存到 data/project.json + 生成 DemoEnemies.cs。入口类型编译在 CharForge 自己里，方便你对照写自己的扩展。",
+  "apiVersion": "2",
+  "editorExtension": {
+    "entry": "Sts2CharForge.App.DemoEditorExtension, Sts2CharForge.App",
+    "apiVersion": "1"
+  }
+}
