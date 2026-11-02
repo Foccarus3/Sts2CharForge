@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -6526,6 +6526,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		try
 		{
 			PluginRegistry.Load(AppContext.BaseDirectory);
+		// V0.2.389（需求书 6.1）：扫描完插件后，把声明了 editorExtension 的扩展也加载进来（老插件不进入这条路径）
+		PluginExtensionPages.Install();
+		EditorExtensionRegistry.Reset();
+		foreach (PluginSpec pl in PluginRegistry.Plugins)
+		{
+			try { EditorExtensionRegistry.Load(pl, pl.Dir, Path.Combine(AppContext.BaseDirectory, "生成")); }
+			catch { /* 扩展加载失败绝不影响普通插件功能 */ }
+		}
 		}
 		catch (Exception ex)
 		{
@@ -6831,6 +6839,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		infoHost.Children.Add(enabledBox);
 		infoHost.Children.Add(_pluginDetailBox);
 		PluginPageTabs.Items.Add(new TabItem { Header = "信息", Content = infoHost });
+		// V0.2.389（需求书 4.2 / 6.4）：插件详情里加一个「编辑器扩展」页签 —— 插件自己造的界面在这里显示。
+		// 没有声明扩展 / 没加载成功时，这页显示的是审核信息（入口 / API 版本 / 状态 / 最近异常）。
+		{
+			var st = EditorExtensionRegistry.StatusOf(p.Id);
+			var extPanel = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(8) };
+			extPanel.Children.Add(new TextBlock
+			{
+				Text = st is null ? "（没有编辑器扩展信息）" : (st.Declared ? "扩展入口：" + st.Entry + "（API " + st.ApiVersion + "）" : "这个插件没有声明编辑器扩展（纯声明式插件）"),
+				TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 4),
+			});
+			if (st is not null && st.Declared)
+			{
+				extPanel.Children.Add(new TextBlock { Text = "加载状态：" + st.Summary, TextWrapping = TextWrapping.Wrap });
+				if (!string.IsNullOrWhiteSpace(st.LastLog))
+					extPanel.Children.Add(new TextBlock { Text = "最近日志：" + st.LastLog, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray });
+				var btns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
+				var reload = new Button { Content = "重新加载扩展", MinWidth = 110 };
+				reload.Click += (_, _) =>
+				{
+					EditorExtensionRegistry.Load(p, p.Dir, Path.Combine(AppContext.BaseDirectory, "生成"));
+					ShowPluginPages(p);
+				};
+				var dis = new Button { Content = "禁用编辑器扩展", MinWidth = 120, Margin = new Thickness(6, 0, 0, 0) };
+				dis.Click += (_, _) =>
+				{
+					EditorExtensionRegistry.SetDisabled(p.Id, true);
+					EditorExtensionRegistry.Load(p, p.Dir, Path.Combine(AppContext.BaseDirectory, "生成"));
+					ShowPluginPages(p);
+				};
+				btns.Children.Add(reload);
+				btns.Children.Add(dis);
+				extPanel.Children.Add(btns);
+			}
+			if (PluginExtensionPages.BuildSection(p, p.Dir, Path.Combine(AppContext.BaseDirectory, "生成")) is UIElement sec)
+				extPanel.Children.Add(new ScrollViewer { Content = sec, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Height = 420 });
+			PluginPageTabs.Items.Add(new TabItem { Header = "编辑器扩展", Content = new ScrollViewer { Content = extPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
+		}
 
 		foreach (var page in p.Pages.Where(x => x is not null))
 		{
@@ -41233,6 +41278,36 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exw)
 				{
 					Check("V0.2.388：受控控件与页面渲染", false, "异常：" + exw.Message);
+				}				// ----- V0.2.389：插件详情里出现「编辑器扩展」页签（主界面入口） -----
+				try
+				{
+					PluginExtensionPages.Install();
+					EditorExtensionRegistry.Reset();
+					var xu = new PluginSpec { Id = "uicheck-entry", Name = "入口自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-entry-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xu.Dir);
+					xu.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					var stu = EditorExtensionRegistry.Load(xu, xu.Dir, xu.Dir);
+					ShowPluginPages(xu);
+					var headers = PluginPageTabs.Items.OfType<TabItem>().Select(t2 => t2.Header as string ?? "").ToList();
+					Check("V0.2.389：插件详情里能点开「编辑器扩展」页签（扩展页面有入口了）",
+						stu.Loaded && headers.Contains("编辑器扩展"), string.Join(" / ", headers));
+					// 页签内容里真的挂了插件造的控件（说明那一下是按同一条渲染路径来的）
+					var extTab = PluginPageTabs.Items.OfType<TabItem>().FirstOrDefault(t2 => (t2.Header as string) == "编辑器扩展");
+					int textsInTab = 0;
+					void WalkE(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is TextBlock tb && (tb.Text ?? "").Contains("这是插件造的页面")) textsInTab++;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) WalkE(d);
+					}
+					WalkE(extTab?.Content as DependencyObject);
+					Check("V0.2.389：那个页签里真的有插件造的界面（不是空壳）", textsInTab >= 1, "命中文本块=" + textsInTab);
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xu.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exu)
+				{
+					Check("V0.2.389：编辑器扩展主界面入口", false, "异常：" + exu.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
@@ -44008,9 +44083,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						tabPl is not null && !IsShownOutsidePluginPage(tabPl, tabPages.First(x => x.Id == "badpage")), "留在插件页");
 
 					ShowPluginPages(tabPl!);
-					Check("V0.2.339：已经挂去生成器页签的页，不在「插件」页重复画一份（右边只剩「信息」+ 写错那页）",
-						PluginPageTabs.Items.Count == 2, $"{PluginPageTabs.Items.Count} 个页签");
-
+					// V0.2.389：多了一个「编辑器扩展」页签（插件详情固定有），所以是 3 个
+					Check("V0.2.339/389：已经挂去生成器页签的页，不在「插件」页重复画一份（「信息」+ 写错那页 + 「编辑器扩展」= 3）",
+						PluginPageTabs.Items.Count == 3, $"{PluginPageTabs.Items.Count} 个页签");
 					// 收尾：换回真实插件再重建 —— 扩展区按现在的插件清单重建（示例插件带 card 页时是 1 页），原内容始终还在
 					try { PluginRegistry.Load(AppContext.BaseDirectory); } catch { }
 					RebuildPluginExtensionPages();
