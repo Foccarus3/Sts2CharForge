@@ -117,6 +117,42 @@ public sealed class EditorPanelAdapter : IEditorPanel
         return adapter;
     }
 
+    /// <summary>V0.2.395：文件选择栏（文本框 + 「浏览…」）。插件只拿到用户选的路径。</summary>
+    public IEditorFilePicker AddFilePicker(string label, string filter, string value, Action<string>? onChange = null)
+    {
+        var row = Row(label);
+        var box = new TextBox { Width = 320, Text = value ?? "" };
+        if (onChange is not null) box.TextChanged += (_, _) => Guard(() => onChange(box.Text));
+        var browse = new Button { Content = "浏览…", MinWidth = 72, Margin = new Thickness(6, 0, 0, 0) };
+        browse.Click += (_, _) => Guard(() =>
+        {
+            var dlg = new Microsoft.Win32.OpenFileDialog { Filter = string.IsNullOrWhiteSpace(filter) ? "所有文件|*.*" : filter };
+            if (dlg.ShowDialog() == true)
+            {
+                box.Text = dlg.FileName;
+                if (onChange is not null) onChange(dlg.FileName);
+            }
+        });
+        row.Children.Add(box);
+        row.Children.Add(browse);
+        _root.Children.Add(row);
+        return new FilePickerAdapter(box);
+    }
+
+    /// <summary>V0.2.395：图片预览（选中的 PNG 直接显示）。</summary>
+    public IEditorImagePreview AddImagePreview(string label, int height = 160)
+    {
+        if (!string.IsNullOrEmpty(label))
+            _root.Children.Add(new TextBlock { Text = label, Margin = new Thickness(0, 4, 0, 2) });
+        var img = new Image { Height = height, HorizontalAlignment = HorizontalAlignment.Left };
+        var hint = new TextBlock { Text = "（没有图片）", Foreground = Brushes.Gray, Margin = new Thickness(4, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        row.Children.Add(img);
+        row.Children.Add(hint);
+        _root.Children.Add(row);
+        return new ImagePreviewAdapter(img, hint);
+    }
+
     public IEditorPanel AddPanel(string? title = null)
     {
         if (!string.IsNullOrEmpty(title))
@@ -287,6 +323,53 @@ public sealed class EditorPanelAdapter : IEditorPanel
                 else if (_items.Count > 0) _box.SelectedIndex = 0;
             }
             finally { _silent = false; }
+        }
+    }
+
+    /// <summary>V0.2.395：文件选择栏的适配器。</summary>
+    private sealed class FilePickerAdapter : IEditorFilePicker
+    {
+        private readonly TextBox _tb;
+        public FilePickerAdapter(TextBox tb) => _tb = tb;
+        public string Value { get => _tb.Text ?? ""; set => _tb.Text = value ?? ""; }
+    }
+
+    /// <summary>V0.2.395：图片预览的适配器（坏路径只显示提示，不抛）。</summary>
+    private sealed class ImagePreviewAdapter : IEditorImagePreview
+    {
+        private readonly Image _img;
+        private readonly TextBlock _hint;
+        private string _path = "";
+        public ImagePreviewAdapter(Image img, TextBlock hint) { _img = img; _hint = hint; }
+        public string Path
+        {
+            get => _path;
+            set
+            {
+                _path = value ?? "";
+                try
+                {
+                    if (_path.Length == 0 || !System.IO.File.Exists(_path))
+                    {
+                        _img.Source = null;
+                        _hint.Text = _path.Length == 0 ? "（没有图片）" : "（文件不存在：" + System.IO.Path.GetFileName(_path) + "）";
+                        return;
+                    }
+                    var bmp = new System.Windows.Media.Imaging.BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad;
+                    bmp.UriSource = new Uri(_path, UriKind.Absolute);
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    _img.Source = bmp;
+                    _hint.Text = System.IO.Path.GetFileName(_path);
+                }
+                catch
+                {
+                    _img.Source = null;
+                    _hint.Text = "（读不出这张图）";
+                }
+            }
         }
     }
 

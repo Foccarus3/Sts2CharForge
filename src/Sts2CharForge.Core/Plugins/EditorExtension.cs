@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Plugins;
@@ -52,6 +52,12 @@ public interface IEditorHost
     /// V0.2.392（需求书 6.4）：**先出计划**（不写盘）—— 界面把文件清单摆给用户看。
     /// 路径一律按 <see cref="OutputDir"/> 相对解析，越界会被记进 Problems。
     /// </summary>
+    /// <summary>
+    /// V0.2.395（需求书 4.9）：把用户选的资源**复制进插件自己的 assets/**，返回相对路径（生成时可直接引用）。
+    /// 目标名带 .. / 路径分隔符 / 非法字符 → 返回空串（拒绝）。
+    /// </summary>
+    string ImportAsset(string sourcePath, string fileName);
+
     EditorGeneratePlan PlanGenerate(IReadOnlyList<EditorOutputFile> files);
 
     /// <summary>

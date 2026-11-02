@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Plugins;
@@ -37,6 +37,12 @@ public interface IEditorPanel
     /// </summary>
     IEditorList<T> AddList<T>(string label, IReadOnlyList<T> items, Func<T, string> labelOf, Func<T, T>? cloner = null) where T : class;
 
+    /// <summary>V0.2.395（需求书 4.9 / 第二期）：加一个**文件选择**栏（选图 / 选音效 / 选任意文件）。</summary>
+    IEditorFilePicker AddFilePicker(string label, string filter, string value, Action<string>? onChange = null);
+
+    /// <summary>V0.2.395：加一个**图片预览**（给插件显示选中的 PNG）。</summary>
+    IEditorImagePreview AddImagePreview(string label, int height = 160);
+
     /// <summary>清空本面板里所有控件。</summary>
     void Clear();
 }
@@ -73,6 +79,18 @@ public interface IEditorCombo
     void SetOptions(IReadOnlyList<string> options);
 }
 
+/// <summary>V0.2.395（需求书 4.9）：文件选择栏 —— 插件只能拿到**用户选的路径**，不能自己乱翻文件系统。</summary>
+public interface IEditorFilePicker
+{
+    /// <summary>当前选中的文件（绝对路径；空 = 没选）。</summary>
+    string Value { get; set; }
+}
+
+/// <summary>V0.2.395：图片预览（SetPath 传绝对路径；文件不存在 / 不是图片时显示提示，不抛异常）。</summary>
+public interface IEditorImagePreview
+{
+    string Path { get; set; }
+}
 /// <summary>V0.2.390：受控列表（需求书 4.3）。选中项 / 增删改排 / 选中变化事件都在这里。</summary>
 public interface IEditorList<T> where T : class
 {

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -314,6 +314,31 @@ public static class EditorExtensionRegistry
             }
             EditorExtensionRegistry.RecordGenerate(PluginId, result.Summary);
             return result;
+        }
+
+        /// <summary>V0.2.395：把资源复制进插件自己的 assets/；名字非法 / 源不存在 → 返回空串。</summary>
+        public string ImportAsset(string sourcePath, string fileName)
+        {
+            try
+            {
+                string src = (sourcePath ?? "").Trim();
+                string name = (fileName ?? "").Trim();
+                if (src.Length == 0 || name.Length == 0) return "";
+                if (!File.Exists(src)) return "";
+                if (PluginDir.Length == 0) return "";
+                foreach (char bad in Path.GetInvalidFileNameChars()) if (name.Contains(bad)) return "";
+                if (name.Contains("..", StringComparison.Ordinal) || name.Contains('/' ) || name.Contains('\\')) return "";
+                string dir = Path.Combine(PluginDir, "assets");
+                Directory.CreateDirectory(dir);
+                string dest = Path.Combine(dir, name);
+                File.Copy(src, dest, overwrite: true);
+                return "assets/" + name;
+            }
+            catch (Exception ex)
+            {
+                EditorExtensionRegistry.RecordError(PluginId, "导入资源失败：" + ex.Message);
+                return "";
+            }
         }
 
         public void Log(string message)

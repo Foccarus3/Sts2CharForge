@@ -41495,6 +41495,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exa)
 				{
 					Check("V0.2.394：审核信息", false, "异常：" + exa.Message);
+				}				// ----- V0.2.395：资源能力（文件选择 / 图片预览 / 复制进插件目录） -----
+				try
+				{
+					var rp = new EditorPanelAdapter("uicheck-res");
+					var picker = rp.AddFilePicker("图片", "图片|*.png;*.jpg", "", v => { });
+					picker.Value = @"C:\temp\x.png";
+					Check("V0.2.395：文件选择栏能保存/读回用户选的路径", picker.Value.EndsWith("x.png"), picker.Value);
+					// 真造一张 PNG 验预览
+					string png = Path.Combine(Path.GetTempPath(), "uicheck-prev-" + Guid.NewGuid().ToString("N") + ".png");
+					var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+					var wb = new System.Windows.Media.Imaging.WriteableBitmap(2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null);
+					enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(wb));
+					using (var fs = File.Create(png)) enc.Save(fs);
+					var prev = rp.AddImagePreview("预览");
+					prev.Path = png;
+					Check("V0.2.395：图片预览能加载真实 PNG（坏路径只显示提示、不抛）",
+						prev.Path == png, prev.Path);
+					prev.Path = Path.Combine(Path.GetTempPath(), "不存在-" + Guid.NewGuid().ToString("N") + ".png");
+					Check("V0.2.395：坏图片路径不抛异常（安全）", true, prev.Path);
+					// 资源复制进插件目录
+					EditorExtensionRegistry.Reset();
+					var xr = new PluginSpec { Id = "uicheck-res", Name = "资源自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-res-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xr.Dir);
+					xr.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xr, xr.Dir, xr.Dir);
+					var hr = UicheckStoreHost.LastHost!;
+					string rel = hr.ImportAsset(png, "hero.png");
+					Check("V0.2.395：ImportAsset 把资源复制进插件的 assets/ 并返回相对路径",
+						rel == "assets/hero.png" && File.Exists(Path.Combine(xr.Dir, "assets", "hero.png")), rel);
+					Check("V0.2.395：ImportAsset 拒绝非法目标名（../ 和路径分隔符）",
+						hr.ImportAsset(png, "../escape.png") == "" && hr.ImportAsset(png, "a/b.png") == "", "已拒绝");
+					EditorExtensionRegistry.Reset();
+					try { File.Delete(png); Directory.Delete(xr.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exr2)
+				{
+					Check("V0.2.395：资源能力", false, "异常：" + exr2.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
