@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Plugins;
@@ -95,9 +95,26 @@ public sealed class EditorExtensionStatus
     public bool Declared { get; set; }
     public bool Loaded { get; set; }
     public bool Disabled { get; set; }
-    public string Error { get; set; } = "";
+    private string _error = "";
+
+    /// <summary>加载错误（非空 = 这个扩展没起来）。**设它就等于记了一条「最近一次异常」**。</summary>
+    public string Error
+    {
+        get => _error;
+        set
+        {
+            _error = value ?? "";
+            if (_error.Length > 0) LastError = _error;
+        }
+    }
     public int PageCount { get; set; }
     public string LastLog { get; set; } = "";
+
+    /// <summary>V0.2.394：最近一次异常（加载 / 建页面 / 回调 / 生成）—— 审核页要显示。</summary>
+    public string LastError { get; set; } = "";
+
+    /// <summary>V0.2.394：最近一次生成输出摘要（写了几个文件 / 哪个目录）—— 审核页要显示。</summary>
+    public string LastGenerate { get; set; } = "";
 
     public string Summary => !Declared
         ? "无编辑器扩展（声明式插件）"

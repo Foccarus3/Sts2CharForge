@@ -6852,6 +6852,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			if (st is not null && st.Declared)
 			{
 				extPanel.Children.Add(new TextBlock { Text = "加载状态：" + st.Summary, TextWrapping = TextWrapping.Wrap });
+				// V0.2.394（需求书 6.4）：审核页显示「最近一次异常 / 最近一次生成输出」
+				extPanel.Children.Add(new TextBlock
+				{
+					Text = "最近一次异常：" + (string.IsNullOrWhiteSpace(st.LastError) ? "（无）" : st.LastError),
+					TextWrapping = TextWrapping.Wrap,
+					Foreground = string.IsNullOrWhiteSpace(st.LastError) ? Brushes.Gray : Brushes.Firebrick,
+					Margin = new Thickness(0, 4, 0, 0),
+				});
+				extPanel.Children.Add(new TextBlock
+				{
+					Text = "最近一次生成输出：" + (string.IsNullOrWhiteSpace(st.LastGenerate) ? "（无）" : st.LastGenerate),
+					TextWrapping = TextWrapping.Wrap,
+					Foreground = Brushes.Gray,
+				});
 				if (!string.IsNullOrWhiteSpace(st.LastLog))
 					extPanel.Children.Add(new TextBlock { Text = "最近日志：" + st.LastLog, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray });
 				var btns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
@@ -41453,6 +41467,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exg2)
 				{
 					Check("V0.2.393：生成确认窗", false, "异常：" + exg2.Message);
+				}				// ----- V0.2.394：审核信息里的「最近异常 / 最近生成输出」 -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xa = new PluginSpec { Id = "uicheck-audit", Name = "审核自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-audit-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xa.Dir);
+					// ① 加载失败 → LastError 自动写上
+					xa.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "No.Such.Type, NoSuchAsm", ApiVersion = "1" };
+					var stA = EditorExtensionRegistry.Load(xa, xa.Dir, xa.Dir);
+					Check("V0.2.394：加载失败会同时记进「最近一次异常」（审核页能看到）",
+						!stA.Loaded && !string.IsNullOrWhiteSpace(stA.LastError), stA.LastError);
+					// ② 生成成功 → LastGenerate 有摘要；失败也记异常
+					var outD = Path.Combine(Path.GetTempPath(), "uicheck-audit-out-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(outD);
+					xa.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xa, xa.Dir, outD);
+					PluginExtensionPages.AutoConfirmForTests = true;
+					var gres = UicheckStoreHost.LastHost!.Generate(new[] { new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "Y.cs", Content = "class Y {}" } });
+					var stB = EditorExtensionRegistry.StatusOf("uicheck-audit");
+					Check("V0.2.394：生成之后「最近一次生成输出」有摘要（写了几个文件）",
+						gres.Confirmed && (stB?.LastGenerate ?? "").Contains("已写出"), stB?.LastGenerate ?? "(空)");
+					PluginExtensionPages.AutoConfirmForTests = null;
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(outD, recursive: true); Directory.Delete(xa.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exa)
+				{
+					Check("V0.2.394：审核信息", false, "异常：" + exa.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

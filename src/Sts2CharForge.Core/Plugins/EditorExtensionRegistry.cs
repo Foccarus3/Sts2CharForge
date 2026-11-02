@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -46,6 +46,18 @@ public static class EditorExtensionRegistry
 
     public static EditorExtensionStatus? StatusOf(string pluginId)
         => _byPlugin.TryGetValue(pluginId ?? "", out var e) ? e.Status : null;
+
+    /// <summary>V0.2.394：记一条异常到那条扩展的状态里（审核页显示「最近一次异常」）。</summary>
+    public static void RecordError(string pluginId, string message)
+    {
+        if (_byPlugin.TryGetValue(pluginId ?? "", out var e)) e.Status.LastError = message ?? "";
+    }
+
+    /// <summary>V0.2.394：记一次生成输出摘要（审核页显示「最近一次生成输出」）。</summary>
+    public static void RecordGenerate(string pluginId, string summary)
+    {
+        if (_byPlugin.TryGetValue(pluginId ?? "", out var e)) e.Status.LastGenerate = summary ?? "";
+    }
 
     /// <summary>这个插件已经建好的页面（没加载成功 = 空）。</summary>
     public static IReadOnlyList<IEditorPage> PagesOf(string pluginId)
@@ -297,8 +309,10 @@ public static class EditorExtensionRegistry
             catch (Exception ex)
             {
                 result.Problems.Add("写文件失败：" + ex.Message);
+                EditorExtensionRegistry.RecordError(PluginId, "写文件失败：" + ex.Message);
                 foreach (var pair in staged) { try { if (File.Exists(pair.tmp)) File.Delete(pair.tmp); } catch { } }
             }
+            EditorExtensionRegistry.RecordGenerate(PluginId, result.Summary);
             return result;
         }
 
