@@ -10,8 +10,16 @@ public sealed class EditorOutputFile
     /// <summary>相对输出目录的路径（可以带子目录）。</summary>
     public string Path { get; set; } = "";
 
-    /// <summary>文件内容（UTF-8 写出）。</summary>
+    /// <summary>文件内容（UTF-8 写出）。<see cref="AssetPath"/> 非空时忽略它。</summary>
     public string Content { get; set; } = "";
+
+    /// <summary>
+    /// V0.2.397（第二期收尾）：要**复制**的资源（相对插件目录，例如 <c>assets/hero.png</c>）。
+    /// 非空 = 这次输出的是二进制资源，内容从插件目录原样拷过去。
+    /// </summary>
+    public string AssetPath { get; set; } = "";
+
+    public bool IsAsset => !string.IsNullOrWhiteSpace(AssetPath);
 }
 
 /// <summary>V0.2.392：生成**计划**（还没写盘）—— 界面拿它给用户看文件清单。</summary>

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Controls;
@@ -69,7 +69,7 @@ public static class PluginExtensionPages
 
             var list = new ListBox { FontFamily = new System.Windows.Media.FontFamily("Consolas") };
             foreach (var f in plan.Files)
-                list.Items.Add(f.Path + "    （" + (f.Content ?? "").Length + " 字符）");
+                list.Items.Add((f.IsAsset ? "【资源】" : "") + f.Path + "    （" + (f.IsAsset ? "从插件目录复制" : (f.Content ?? "").Length + " 字符") + "）");
             root.Children.Add(new ScrollViewer { Content = list, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
 
             win.Content = root;

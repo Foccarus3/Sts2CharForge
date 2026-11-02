@@ -41565,6 +41565,54 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exav)
 				{
 					Check("V0.2.396：音频/逐帧预览", false, "异常：" + exav.Message);
+				}				// ----- V0.2.397：资源随生成输出（AssetPath） -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xo = new PluginSpec { Id = "uicheck-asset", Name = "资源输出", Dir = Path.Combine(Path.GetTempPath(), "uicheck-assetp-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xo.Dir);
+					var outO = Path.Combine(Path.GetTempPath(), "uicheck-asseto-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(outO);
+					xo.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xo, xo.Dir, outO);
+					var ho = UicheckStoreHost.LastHost!;
+					// 先导一张图进插件 assets/
+					string srcPng = Path.Combine(Path.GetTempPath(), "uicheck-a-" + Guid.NewGuid().ToString("N") + ".png");
+					var enc3 = new System.Windows.Media.Imaging.PngBitmapEncoder();
+					var wb3 = new System.Windows.Media.Imaging.WriteableBitmap(2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null);
+					enc3.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(wb3));
+					using (var f3 = File.Create(srcPng)) enc3.Save(f3);
+					string relA = ho.ImportAsset(srcPng, "hero.png");
+					// 计划里带资源 → 校验通过
+					var planA = ho.PlanGenerate(new[]
+					{
+						new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "image/hero.png", AssetPath = relA },
+						new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "Hero.cs", Content = "class Hero {}" },
+					});
+					Check("V0.2.397：生成计划能接受「资源 + 代码」混排（2 个文件、0 问题）",
+						planA.Ok && planA.Files.Count == 2, planA.Summary);
+					// 不存在的资源 → 计划不通过
+					var planB = ho.PlanGenerate(new[] { new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "x/y.png", AssetPath = "assets/没有这个.png" } });
+					Check("V0.2.397：引用了不存在的资源时计划不通过（不会写半截）",
+						!planB.Ok && planB.Problems.Any(p => p.Contains("资源不存在")), planB.Summary);
+					// 真写：资源要被原样复制过去
+					PluginExtensionPages.AutoConfirmForTests = true;
+					var doneO = ho.Generate(new[]
+					{
+						new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "image/hero.png", AssetPath = relA },
+						new Sts2CharForge.Core.Plugins.EditorOutputFile { Path = "Hero.cs", Content = "class Hero {}" },
+					});
+					PluginExtensionPages.AutoConfirmForTests = null;
+					Check("V0.2.397：确认后资源被原样复制进输出目录（image/hero.png 与源文件同大小）",
+						doneO.Confirmed && File.Exists(Path.Combine(outO, "image", "hero.png"))
+						&& new FileInfo(Path.Combine(outO, "image", "hero.png")).Length == new FileInfo(Path.Combine(xo.Dir, "assets", "hero.png")).Length,
+						doneO.Summary);
+					EditorExtensionRegistry.Reset();
+					try { File.Delete(srcPng); Directory.Delete(outO, recursive: true); Directory.Delete(xo.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exo)
+				{
+					Check("V0.2.397：资源随生成输出", false, "异常：" + exo.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

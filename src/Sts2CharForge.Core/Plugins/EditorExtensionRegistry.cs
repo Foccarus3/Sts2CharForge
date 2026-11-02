@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -259,6 +259,18 @@ public static class EditorExtensionRegistry
                     plan.Problems.Add("路径越界，已拒绝：" + f.Path);
                     continue;
                 }
+                if (f.IsAsset)
+                {
+                    string src = Path.GetFullPath(Path.Combine(PluginDir, f.AssetPath));
+                    string root2 = Path.GetFullPath(PluginDir);
+                    if (!src.StartsWith(root2, StringComparison.OrdinalIgnoreCase) || !File.Exists(src))
+                    {
+                        plan.Problems.Add("资源不存在或越界：" + f.AssetPath);
+                        continue;
+                    }
+                    plan.Files.Add(new EditorOutputFile { Path = rel, AssetPath = f.AssetPath });
+                    continue;
+                }
                 plan.Files.Add(new EditorOutputFile { Path = rel, Content = f.Content ?? "" });
             }
             if (plan.Files.Count == 0 && plan.Problems.Count == 0) plan.Problems.Add("没有任何文件要生成");
@@ -296,7 +308,20 @@ public static class EditorExtensionRegistry
                     string? dir = Path.GetDirectoryName(full);
                     if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
                     string tmp = full + ".tmp";
-                    File.WriteAllText(tmp, f.Content, new System.Text.UTF8Encoding(false));
+                    if (f.IsAsset)
+                    {
+                        string srcFile = Path.GetFullPath(Path.Combine(PluginDir, f.AssetPath));
+                        if (!File.Exists(srcFile))
+                        {
+                            result.Problems.Add("资源不存在，已跳过：" + f.AssetPath);
+                            continue;
+                        }
+                        File.Copy(srcFile, tmp, overwrite: true);
+                    }
+                    else
+                    {
+                        File.WriteAllText(tmp, f.Content, new System.Text.UTF8Encoding(false));
+                    }
                     staged.Add((tmp, full));
                 }
                 foreach (var pair in staged)
