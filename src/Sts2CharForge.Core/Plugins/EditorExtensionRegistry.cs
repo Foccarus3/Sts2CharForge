@@ -27,6 +27,7 @@ public static class EditorExtensionRegistry
     {
         public EditorExtensionStatus Status = new();
         public ICharForgeEditorExtension? Ext;
+        public Host? Host;
         public List<IEditorPage> Pages = new();
         public AssemblyLoadContext? Alc;
     }
@@ -54,6 +55,57 @@ public static class EditorExtensionRegistry
     }
 
     /// <summary>V0.2.394：记一次生成输出摘要（审核页显示「最近一次生成输出」）。</summary>
+    /// <summary>V0.2.399：这个插件目前有哪些存储（名字 / 版本 / 有没有落盘）—— 插件详情用。</summary>
+    public static IReadOnlyList<(string Name, int Version, bool Exists)> StoresOf(string pluginId)
+    {
+        var list = new List<(string, int, bool)>();
+        foreach (var e in _byPlugin.Values)
+        {
+            if (!string.Equals(e.Status.PluginId, pluginId ?? "", StringComparison.OrdinalIgnoreCase)) continue;
+            if (e.Host is null) continue;
+            foreach (var kv in e.Host.Stores)
+            {
+                try
+                {
+                    var t = kv.Value.GetType();
+                    int ver = (int)(t.GetProperty("SchemaVersion")?.GetValue(kv.Value) ?? 0);
+                    bool exists = (bool)(t.GetProperty("Exists")?.GetValue(kv.Value) ?? false);
+                    list.Add((kv.Key, ver, exists));
+                }
+                catch { }
+            }
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// V0.2.399：对某个存储做一次「重新读盘 + 迁移 + 写回」。
+    /// 返回 (旧版本, 新版本, 错误)；插件没注册迁移钩子时新版本 == 旧版本（不会假装迁过）。
+    /// </summary>
+    public static (int Old, int New, string Error) MigrateStore(string pluginId, string name)
+    {
+        foreach (var e in _byPlugin.Values)
+        {
+            if (!string.Equals(e.Status.PluginId, pluginId ?? "", StringComparison.OrdinalIgnoreCase)) continue;
+            if (e.Host is null || !e.Host.Stores.TryGetValue((name ?? "").Trim(), out object? store) || store is null)
+                return (0, 0, "找不到这个存储");
+            try
+            {
+                var t = store.GetType();
+                int before = (int)(t.GetProperty("SchemaVersion")?.GetValue(store) ?? 0);
+                t.GetMethod("Reload")?.Invoke(store, null);
+                int after = (int)(t.GetProperty("SchemaVersion")?.GetValue(store) ?? 0);
+                t.GetMethod("Save")?.Invoke(store, null);
+                return (before, after, "");
+            }
+            catch (Exception ex)
+            {
+                return (0, 0, ex.InnerException?.Message ?? ex.Message);
+            }
+        }
+        return (0, 0, "这个插件没有加载成功的扩展");
+    }
+
     public static void RecordGenerate(string pluginId, string summary)
     {
         if (_byPlugin.TryGetValue(pluginId ?? "", out var e)) e.Status.LastGenerate = summary ?? "";
@@ -183,6 +235,7 @@ public static class EditorExtensionRegistry
             }
             entry.Ext = ext;
             var host = new Host(id, pluginDir ?? "", outputDir ?? "");
+            entry.Host = host;
             var pages = ext.CreatePages(host) ?? Array.Empty<IEditorPage>();
             entry.Pages = pages.Where(p => p is not null).ToList();
             status.PageCount = entry.Pages.Count;
@@ -239,7 +292,9 @@ public static class EditorExtensionRegistry
             foreach (char bad in Path.GetInvalidFileNameChars()) if (safe.Contains(bad)) return null;
             if (safe.Contains("..", StringComparison.Ordinal)) return null;
             if (PluginDir.Length == 0) return null;
-            return new FilePluginStore<T>(Path.Combine(PluginDir, "data", safe + ".json"));
+            var store = new FilePluginStore<T>(Path.Combine(PluginDir, "data", safe + ".json"));
+            Stores[safe] = store;
+            return store;
         }
 
         /// <summary>V0.2.392：先出计划（不写盘）。路径越界 / 空文件名会记进 Problems。</summary>
@@ -367,6 +422,9 @@ public static class EditorExtensionRegistry
         }
 
         private readonly Dictionary<string, Dictionary<string, string>> _refs = new(StringComparer.OrdinalIgnoreCase);
+        /// <summary>V0.2.399：发出的存储（名字 → store 实例），插件详情据此显示版本并提供「迁移」。</summary>
+        internal readonly Dictionary<string, object> Stores = new(StringComparer.OrdinalIgnoreCase);
+
 
         /// <summary>V0.2.398：登记可引用对象（kind → id → 显示名）。</summary>
         public void RegisterRefs(string kind, IReadOnlyList<EditorRefItem> items)

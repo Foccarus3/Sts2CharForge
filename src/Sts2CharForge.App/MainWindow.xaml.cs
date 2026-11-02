@@ -6879,6 +6879,35 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					TextWrapping = TextWrapping.Wrap,
 					Foreground = Brushes.Gray,
 				});
+				// V0.2.399：插件自有数据的存储版本 + 「迁移」按钮（检测到旧版本就提示）
+				var storeInfos = EditorExtensionRegistry.StoresOf(p.Id);
+				if (storeInfos.Count > 0)
+				{
+					extPanel.Children.Add(new TextBlock { Text = "插件数据文件：", FontWeight = FontWeights.SemiBold, Margin = new Thickness(0, 6, 0, 2) });
+					foreach (var info in storeInfos)
+					{
+						var line = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 1, 0, 1) };
+						line.Children.Add(new TextBlock
+						{
+							Text = info.Name + ".json    schemaVersion " + info.Version + (info.Exists ? "" : "（还没落盘）"),
+							Width = 320,
+							Foreground = info.Version > 1 ? Brushes.DarkOrange : Brushes.Gray,
+							VerticalAlignment = VerticalAlignment.Center,
+						});
+						var mig = new Button { Content = "迁移 / 重新读取", MinWidth = 120 };
+						string storeName = info.Name;
+						mig.Click += (_, _) =>
+						{
+							var r = EditorExtensionRegistry.MigrateStore(p.Id, storeName);
+							MessageBox.Show(
+								r.Error.Length > 0 ? "迁移失败：" + r.Error : $"迁移完成：schemaVersion {r.Old} → {r.New}",
+								"插件数据迁移", MessageBoxButton.OK, MessageBoxImage.Information);
+							ShowPluginPages(p);
+						};
+						line.Children.Add(mig);
+						extPanel.Children.Add(line);
+					}
+				}
 				if (!string.IsNullOrWhiteSpace(st.LastLog))
 					extPanel.Children.Add(new TextBlock { Text = "最近日志：" + st.LastLog, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray });
 				var btns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
@@ -41657,6 +41686,40 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exr3)
 				{
 					Check("V0.2.398：跨对象引用", false, "异常：" + exr3.Message);
+				}				// ----- V0.2.399：存储版本可见 + 一键迁移 -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xm = new PluginSpec { Id = "uicheck-mig", Name = "迁移自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-mig-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xm.Dir);
+					xm.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xm, xm.Dir, xm.Dir);
+					var hm = UicheckStoreHost.LastHost!;
+					var sm = hm.GetStore<UicheckProject>("project")!;
+					sm.Value = new UicheckProject { Name = "旧结构", Count = 1 };
+					sm.SchemaVersion = 1;
+					sm.Save();
+					var infos1 = EditorExtensionRegistry.StoresOf("uicheck-mig");
+					Check("V0.2.399：插件详情能看到自己的数据文件与 schemaVersion",
+						infos1.Count == 1 && infos1[0].Name == "project" && infos1[0].Version == 1 && infos1[0].Exists,
+						string.Join("/", infos1.Select(x => $"{x.Name}:v{x.Version}")));
+					// 迁移：把 store 升到 v2 并注册钩子，再「迁移 / 重新读取」
+					sm.SchemaVersion = 2;
+					((Sts2CharForge.Core.Plugins.FilePluginStore<UicheckProject>)sm).CurrentSchemaHint = 2;
+					sm.SetMigration((v, raw) => new UicheckProject { Name = "迁移后", Count = v });
+					var migRes = EditorExtensionRegistry.MigrateStore("uicheck-mig", "project");
+					Check("V0.2.399：一键迁移会把旧版本读成新结构并写回（不覆盖成空）",
+						migRes.Error == "" && File.ReadAllText(Path.Combine(xm.Dir, "data", "project.json")).Contains("schemaVersion"),
+						$"old={migRes.Old} new={migRes.New} err={migRes.Error}");
+					var infos2 = EditorExtensionRegistry.StoresOf("uicheck-mig");
+					Check("V0.2.399：迁移之后列表里的版本号跟着变",
+						infos2.Count == 1 && infos2[0].Version == 2, string.Join("/", infos2.Select(x => $"{x.Name}:v{x.Version}")));
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xm.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exm3)
+				{
+					Check("V0.2.399：存储迁移", false, "异常：" + exm3.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
