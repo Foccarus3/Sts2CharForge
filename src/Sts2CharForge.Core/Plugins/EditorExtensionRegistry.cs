@@ -37,6 +37,9 @@ public static class EditorExtensionRegistry
     /// <summary>V0.2.388：面板工厂（由界面层注入；Core 不引用 WPF）。返回 null = 当前没有界面环境。</summary>
     public static Func<string, IEditorPanel?>? PanelFactory;
 
+    /// <summary>V0.2.392：生成前的确认回调（界面层注入：显示文件清单，用户点「确定」返回 true）。null = 没有界面环境，不写盘。</summary>
+    public static Func<string, EditorGeneratePlan, bool>? ConfirmGenerate;
+
     /// <summary>所有已知插件的扩展状态（没声明扩展的也在里面，Summary 会写「无编辑器扩展」）。</summary>
     public static IReadOnlyList<EditorExtensionStatus> All()
         => _byPlugin.Values.Select(v => v.Status).OrderBy(s => s.PluginId, StringComparer.OrdinalIgnoreCase).ToList();
@@ -225,6 +228,78 @@ public static class EditorExtensionRegistry
             if (safe.Contains("..", StringComparison.Ordinal)) return null;
             if (PluginDir.Length == 0) return null;
             return new FilePluginStore<T>(Path.Combine(PluginDir, "data", safe + ".json"));
+        }
+
+        /// <summary>V0.2.392：先出计划（不写盘）。路径越界 / 空文件名会记进 Problems。</summary>
+        public EditorGeneratePlan PlanGenerate(IReadOnlyList<EditorOutputFile> files)
+        {
+            var plan = new EditorGeneratePlan { PluginId = PluginId, OutputDir = OutputDir };
+            foreach (var f in files ?? Array.Empty<EditorOutputFile>())
+            {
+                if (f is null || string.IsNullOrWhiteSpace(f.Path))
+                {
+                    plan.Problems.Add("有一个文件没写路径");
+                    continue;
+                }
+                string rel = f.Path.Trim().Replace('\\', '/');
+                if (rel.Contains("..", StringComparison.Ordinal) || Path.IsPathRooted(rel) || rel.Contains(":" , StringComparison.Ordinal))
+                {
+                    plan.Problems.Add("路径越界，已拒绝：" + f.Path);
+                    continue;
+                }
+                plan.Files.Add(new EditorOutputFile { Path = rel, Content = f.Content ?? "" });
+            }
+            if (plan.Files.Count == 0 && plan.Problems.Count == 0) plan.Problems.Add("没有任何文件要生成");
+            return plan;
+        }
+
+        /// <summary>V0.2.392：确认后写盘；先写 .tmp 再逐个替换，避免留下半成品。</summary>
+        public EditorGenerateResult Generate(IReadOnlyList<EditorOutputFile> files)
+        {
+            var plan = PlanGenerate(files);
+            var result = new EditorGenerateResult { Problems = new List<string>(plan.Problems) };
+            if (!plan.Ok) return result;
+            if (EditorExtensionRegistry.ConfirmGenerate is null)
+            {
+                result.Problems.Add("当前没有界面环境可以确认生成（已取消）");
+                return result;
+            }
+            bool ok = false;
+            try { ok = EditorExtensionRegistry.ConfirmGenerate(PluginId, plan); }
+            catch (Exception ex) { result.Problems.Add("确认生成时出错：" + ex.Message); return result; }
+            if (!ok) return result;
+            result.Confirmed = true;
+            var staged = new List<(string tmp, string final)>();
+            try
+            {
+                foreach (var f in plan.Files)
+                {
+                    string full = Path.GetFullPath(Path.Combine(OutputDir, f.Path));
+                    string root = Path.GetFullPath(OutputDir);
+                    if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                    {
+                        result.Problems.Add("路径越界，已跳过：" + f.Path);
+                        continue;
+                    }
+                    string? dir = Path.GetDirectoryName(full);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    string tmp = full + ".tmp";
+                    File.WriteAllText(tmp, f.Content, new System.Text.UTF8Encoding(false));
+                    staged.Add((tmp, full));
+                }
+                foreach (var pair in staged)
+                {
+                    if (File.Exists(pair.final)) File.Delete(pair.final);
+                    File.Move(pair.tmp, pair.final);
+                    result.Written.Add(pair.final);
+                }
+            }
+            catch (Exception ex)
+            {
+                result.Problems.Add("写文件失败：" + ex.Message);
+                foreach (var pair in staged) { try { if (File.Exists(pair.tmp)) File.Delete(pair.tmp); } catch { } }
+            }
+            return result;
         }
 
         public void Log(string message)

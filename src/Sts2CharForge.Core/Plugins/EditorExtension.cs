@@ -47,6 +47,18 @@ public interface IEditorHost
     /// <paramref name="name"/> 只能是文件名（不能带路径分隔符 / ..）。
     /// </summary>
     IPluginStore<T>? GetStore<T>(string name) where T : class, new();
+
+    /// <summary>
+    /// V0.2.392（需求书 6.4）：**先出计划**（不写盘）—— 界面把文件清单摆给用户看。
+    /// 路径一律按 <see cref="OutputDir"/> 相对解析，越界会被记进 Problems。
+    /// </summary>
+    EditorGeneratePlan PlanGenerate(IReadOnlyList<EditorOutputFile> files);
+
+    /// <summary>
+    /// V0.2.392：确认后写盘。没有界面环境 / 用户取消 → 一个文件都不写（<see cref="EditorGenerateResult.Confirmed"/> = false）。
+    /// 写一半失败时**不会留下半截文件**：先全部写进临时文件，最后逐个替换。
+    /// </summary>
+    EditorGenerateResult Generate(IReadOnlyList<EditorOutputFile> files);
 }
 
 /// <summary>V0.2.387：一个自定义页面。界面由插件通过 <see cref="Build"/> 里的受控控件 API 组装。</summary>

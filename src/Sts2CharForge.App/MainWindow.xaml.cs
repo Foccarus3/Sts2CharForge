@@ -41378,6 +41378,49 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exs2)
 				{
 					Check("V0.2.391：IPluginStore<T>", false, "异常：" + exs2.Message);
+				}				// ----- V0.2.392：多文件生成（计划 → 确认 → 写入） -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var outDir = Path.Combine(Path.GetTempPath(), "uicheck-gen-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(outDir);
+					var xg = new PluginSpec { Id = "uicheck-gen", Name = "生成自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-genp-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xg.Dir);
+					xg.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xg, xg.Dir, outDir);
+					var host = UicheckStoreHost.LastHost;
+					// ① 计划：越界路径被拒
+					var badPlan = host!.PlanGenerate(new[] { new EditorOutputFile { Path = "../escape.cs", Content = "x" } });
+					Check("V0.2.392：生成计划会拒绝越界路径（../escape.cs）",
+						!badPlan.Ok && badPlan.Problems.Any(p => p.Contains("越界")), badPlan.Summary);
+					// ② 没有确认回调 → 一个文件都不写
+					EditorExtensionRegistry.ConfirmGenerate = null;
+					var noConfirm = host.Generate(new[] { new EditorOutputFile { Path = "A.cs", Content = "class A {}" } });
+					Check("V0.2.392：没有界面环境（无确认回调）时一个文件都不写",
+						!noConfirm.Confirmed && !File.Exists(Path.Combine(outDir, "A.cs")), noConfirm.Summary);
+					// ③ 用户取消 → 不写
+					EditorExtensionRegistry.ConfirmGenerate = (id, plan) => false;
+					var cancelled = host.Generate(new[] { new EditorOutputFile { Path = "A.cs", Content = "class A {}" } });
+					Check("V0.2.392：用户点「取消」时不写盘", !cancelled.Confirmed && !File.Exists(Path.Combine(outDir, "A.cs")), cancelled.Summary);
+					// ④ 确认 → 按计划写（含子目录）
+					EditorExtensionRegistry.ConfirmGenerate = (id, plan) => plan.Files.Count == 2;
+					var done = host.Generate(new[]
+					{
+						new EditorOutputFile { Path = "A.cs", Content = "class A {}" },
+						new EditorOutputFile { Path = "sub/B.cs", Content = "class B {}" },
+					});
+					Check("V0.2.392：确认后按清单写出（含子目录），内容正确",
+						done.Confirmed && done.Written.Count == 2
+						&& File.ReadAllText(Path.Combine(outDir, "A.cs")).Contains("class A")
+						&& File.ReadAllText(Path.Combine(outDir, "sub", "B.cs")).Contains("class B"),
+						done.Summary);
+					EditorExtensionRegistry.ConfirmGenerate = null;
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(outDir, recursive: true); Directory.Delete(xg.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exg)
+				{
+					Check("V0.2.392：多文件生成", false, "异常：" + exg.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

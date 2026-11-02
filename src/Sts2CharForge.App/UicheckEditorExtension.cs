@@ -78,10 +78,12 @@ public sealed class UicheckProject
 public static class UicheckStoreHost
 {
 	public static Sts2CharForge.Core.Plugins.IPluginStore<UicheckProject>? LastStore;
+	public static Sts2CharForge.Core.Plugins.IEditorHost? LastHost;
 	public static bool SawUnsafeStore;
 
 	public static void Probe(Sts2CharForge.Core.Plugins.IEditorHost host)
 	{
+		LastHost = host;
 		LastStore = host.GetStore<UicheckProject>("project");
 		SawUnsafeStore = host.GetStore<UicheckProject>("../escape") is not null
 			|| host.GetStore<UicheckProject>("a/b") is not null;
