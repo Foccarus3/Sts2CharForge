@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -25350,8 +25350,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				ctxProf.CustomPowers.Add(ctxPower);
 				string ctxSrc = CustomPowerGen.Source(ctxProf, ctxPower, 0);
 				Check($"V0.2.167③：{kind} 在「敌人回合开始时」会自己造 choiceContext（以前 CS0103）",
-					!ctxSrc.Contains("choiceContext") || ctxSrc.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext("),
-					ctxSrc.Contains("var choiceContext =") ? "造了" : "★没造★");
+					!ctxSrc.Contains("choiceContext") || ctxSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer."),
+					ctxSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.") ? "造了" : "★没造★");
 			}
 
 			// ④ 「目标卡」类名不存在要报出来（以前拖到编译期 CS0246）
@@ -27127,7 +27127,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				upSrc2.Contains("Rng.CombatCardSelection.NextItem(PileType.Discard.GetPile(base.Owner.Player).Cards.Where(c => c.IsUpgradable))"),
 				"随机那行");
 			Check("「敌人回合开始时（钩子不给 choiceContext）」里的升级会自己造一个 choiceContext（否则 CS0103）",
-				upSrc2.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this"),
+				upSrc2.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this"),
 				upSrc2.Contains("HookPlayerChoiceContext(this") ? "造了" : "没选");
 			// 消耗 / 丢弃（用户要求：把状态里「仍然不支持」的这两条也做掉）"
 			Check("状态触发器里**现在支持**「消耗卡牌 / 丢弃卡牌」（本体 TyrannyPower / ToolsOfTheTradePower 就是状态里选牌）",
@@ -34607,7 +34607,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& !cpSrc.Contains("public override async Task AfterCardPlayed(PlayerChoiceContext choiceContext, CardPlay cardPlay)"),
 					cpSrc.Split('\n').FirstOrDefault((string l) => l.Contains("BeforeCardPlayed", StringComparison.Ordinal))?.Trim() ?? "(没生成)");
 				Check("V0.2.157：BeforeCardPlayed 没有 choiceContext → 生成端自己造一个（不然效果里引用不到 choiceContext）",
-					cpSrc.Contains("HookPlayerChoiceContext"), "造了");
+					cpSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer."), "造了");
 				Check("V0.2.157：「一张牌结算完毕时」生成的是 AfterCardPlayedLate（旧版「打出一张牌后」的档位没丢）",
 					cpSrc.Contains("public override async Task AfterCardPlayedLate(PlayerChoiceContext choiceContext, CardPlay cardPlay)"),
 					"生成了");
@@ -37121,7 +37121,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				obSrc.Contains("public override async Task AfterObtained()")
 				&& obSrc.Contains("public override bool HasUponPickupEffect => true;"), "对");
 			Check("需要选牌上下文的效果（抽牌 / 卡牌奖励）→ 生成端自己造一个阻塞式 choiceContext",
-				obSrc.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext();")
+				obSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext();")
 				&& obSrc.Contains("CardPileCmd.Draw(choiceContext,") && obSrc.Contains("CardSelectCmd.FromChooseACardScreen(choiceContext,"), "造了");
 			Check("不需要上下文的效果不会多造一个用不上的变量（免得编译告警）",
 				!obSimpleSrc.Contains("BlockingPlayerChoiceContext") && obSimpleSrc.Contains("PlayerCmd.GainGold"), "不会");
@@ -37769,7 +37769,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& hpLostSrc.Contains("if (creature != base.Owner) return;")
 				&& hpLostSrc.Contains("if (delta >= 0m) return;"), "对");
 			Check("这个钩子本体不给 choiceContext：效果要用它时按本体做法自己造一个（不然造成伤害会 CS0103）",
-				hpLostDmgSrc.Contains("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
+				hpLostDmgSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
 				&& hpLostDmgSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();"), "造了");
 			Check("校验器把「失去生命时」和「受到伤害后」的差别写清楚（前者是后者的超集）",
 				ProfileValidator.Validate(hpLostProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("生命值真的少了")), "写了");
@@ -40716,11 +40716,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.370：状态钩子里有「自己选牌」时，生成的是 BlockingPlayerChoiceContext（不再让正在结算的牌卡住）",
 						sPick.Contains("choiceContext = new BlockingPlayerChoiceContext();"),
 						sPick.Split('\n').FirstOrDefault(l => l.Contains("BlockingPlayerChoiceContext"))?.Trim() ?? "(没有)");
-					Check("V0.2.370：没有选牌的钩子生成文本不变（不会平白多一行）",
-						!sRand.Contains("BlockingPlayerChoiceContext"),
-						sRand.Contains("Blocking") ? "多了" : "干净");
-				}				// ----- V0.2.371：图上「随机取 N 张」必须先按范围过滤再取（否则「消耗 1 张状态」永远取不到） -----
-				{
+					// V0.2.402：**从三摞拿牌**不管取牌方式都会弹选牌界面（CardSelectCmd.FromCombatPile），
+					// 所以「随机」那档同样要 Blocking —— 旧断言（要求它不出现）已经不符合事实，改成正面断言。
+					Check("V0.2.370/402：从牌堆拿牌（含「随机」）也算有选牌 → 同样生成 BlockingPlayerChoiceContext",
+						sRand.Contains("BlockingPlayerChoiceContext"),
+						sRand.Split((char)10).FirstOrDefault(l => l.Contains("PlayerChoiceContext"))?.Trim() ?? "(没生成)");
 					var rp2 = ProfileFactory.Sample();
 					rp2.Cards.Clear(); rp2.Curses.Clear(); rp2.AncientCards.Clear();
 					var rc = new CardSpec { Name = "随机取状态", ClassName = "UiRandomStatusPick", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };

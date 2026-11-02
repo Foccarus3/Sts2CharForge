@@ -3242,7 +3242,9 @@ public static class ForgeGraphGen
             string tfPrefs = CSharpCodeGen.SelectPrefsExpr(tfE, "base.SelectionScreenPrompt", $"(int)({amount})");
             EmitRepeatLoop(sb, indent, timesExpr, __ind =>
             {
-                sb.AppendLine(__ind + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, {tfPrefs}{GraphFilterArg(tfPred)})).ToList())");
+            // V0.2.402：选牌张数按「这一摞里实际可选的数量」夹取 —— 否则「要求选 10 张、可选的只有 1 张」会永远确认不了（界面卡死）
+            string tfPrefsClamped = $"new CardSelectorPrefs({(tfE.CountMode == CountModes.Exact ? "CardSelectorPrefs.ExactSelectionPrompt" : "CardSelectorPrefs.UpToSelectionPrompt")}, 0, (int)Math.Min((decimal)({CSharpCodeGen.RangeN(tfE, $"(int)({amount})")}), (decimal)(CardPile.GetCards(__fgPlayer, {pile}){GraphWhere(tfPred)}.Count)))";
+                sb.AppendLine(__ind + $"foreach (CardModel __fgTake in (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {pile}.GetPile(__fgPlayer), __fgPlayer, {tfPrefsClamped}{GraphFilterArg(tfPred)})).ToList())");
                 sb.AppendLine(__ind + "    await CardPileCmd.Add(__fgTake, PileType.Hand);");
             });
             return;

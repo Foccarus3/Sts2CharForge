@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -403,9 +403,11 @@ public static class CustomPowerGen
             if (t?.Effects is null) continue;
             foreach (var e in t.Effects)
             {
-                if (e is null || !string.Equals(e.CardPick, "Chosen", StringComparison.Ordinal)) continue;
-                if (EffectFieldPolicy.UsesCardPick(e.Kind)) return true;
+                if (e is null) continue;
+                // V0.2.402：**从三摞拿牌**不管取牌方式如何，生成端都会弹选牌界面（CardSelectCmd.FromCombatPile）。
                 if (e.Kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust") return true;
+                if (!string.Equals(e.CardPick, "Chosen", StringComparison.Ordinal)) continue;
+                if (EffectFieldPolicy.UsesCardPick(e.Kind)) return true;
             }
         }
         return false;
@@ -1568,14 +1570,31 @@ public static class CustomPowerGen
     private static void EmitChoiceContextBootstrap(CodeWriter w, string kind, IEnumerable<PowerTriggerSpec> items, bool roomInScope = false)
     {
         if (TriggerHasChoiceContext(kind)) return;
-        if (!items.Any(t => t.Effects.Any(x => NeedsChoiceContext(x) && !(roomInScope && x.Kind == "CardReward")))) return;
-        EmitChoiceContextBootstrapRaw(w);
+        bool graphPicks = _graphBody is not null && _graphBody.Contains("CardSelectCmd", StringComparison.Ordinal);
+        // 只对**图纸正文**这条换 Blocking：其它钩子的文本保持原样（老断言 / 回读都靠它）
+        if (!graphPicks
+            && !items.Any(t => t.Effects.Any(x => NeedsChoiceContext(x) && !(roomInScope && x.Kind == "CardReward"))))
+            return;
+        // ⚠ 必须和下面 EmitItemsWithAmountGate 里那句 `choiceContext = new Blocking...` 判据一致：
+        // 否则先 `var ...Hook...` 再赋 Blocking 会 CS0029（探针真编译抓到的）。
+        bool itemsPick = OpensCardSelection(items as IReadOnlyList<PowerTriggerSpec> ?? items.ToList());
+        EmitChoiceContextBootstrapRaw(w, blocking: graphPicks || itemsPick);
     }
 
     /// <summary>无条件造一个 choiceContext（调用方自己判断要不要）。衰减那一段（见 <see cref="EmitDecay"/>）也用它。</summary>
-    private static void EmitChoiceContextBootstrapRaw(CodeWriter w)
+    /// <param name="blocking">
+    /// V0.2.402：这条钩子**会弹选牌**时传 true —— 用 <c>BlockingPlayerChoiceContext</c>。
+    /// 用 Hook 版本时，选牌会把**正在结算的那张牌**暂停、再排队等一个 hook action，那张牌永远等不到恢复
+    /// （用户实测：状态「扣血时从弃牌堆把指定卡拿回手牌」→ 打出的扣血卡卡死在画面中央）。
+    /// </param>
+    private static void EmitChoiceContextBootstrapRaw(CodeWriter w, bool blocking = false)
     {
         w.Line("// 这个钩子本体没给 choiceContext：按本体的做法自己造一个（不然造成伤害 / 施加状态 / 抽牌用不了）");
+        if (blocking)
+        {
+            w.Line("MegaCrit.Sts2.Core.GameActions.Multiplayer.PlayerChoiceContext choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.BlockingPlayerChoiceContext();");
+            return;
+        }
         w.Line("ulong __netId = MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL;");
         w.Line("var choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
     }
@@ -2123,7 +2142,7 @@ public static class CustomPowerGen
                 string? takePred = CSharpCodeGen.CardScopePredicate(e, p);
                 w.Line($"// 从{EffectCatalog.SelectPileZh(e.SelectPile == "Hand" ? "Discard" : e.SelectPile)}拿 {(e.AmountIsStack ? "本状态层数" : Lit.Int(e.Amount))} 张到手牌"
                     + (takePred is null ? "" : "（只列符合范围界定的牌）"));
-                w.Line($"var __fgTake = (await CardSelectCmd.FromCombatPile(choiceContext, {pile}.GetPile(base.Owner.Player), base.Owner.Player, new CardSelectorPrefs({prompt}, (int)({amt})){(takePred is null ? "" : ", " + takePred)})).ToList();");
+                w.Line($"var __fgTake = (await CardSelectCmd.FromCombatPile(choiceContext, {pile}.GetPile(base.Owner.Player), base.Owner.Player, new CardSelectorPrefs({prompt}, (int)Math.Min((decimal)({amt}), (decimal)({CSharpCodeGen.CardScopeFiltered(e, p, $"{pile}.GetPile(base.Owner.Player).Cards")}.Count))){(takePred is null ? "" : ", " + takePred)})).ToList();");
                 w.Open("foreach (CardModel __fgTook in __fgTake)");
                 w.Line("await CardPileCmd.Add(__fgTook, PileType.Hand);");
                 w.Close();
