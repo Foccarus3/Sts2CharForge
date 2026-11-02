@@ -145,3 +145,11 @@ public sealed class FilePluginStore<T> : IPluginStore<T> where T : class, new()
         catch { /* 写盘失败不能把主程序带崩；审核页会显示最近错误（后续接） */ }
     }
 }
+
+/// <summary>V0.2.398（需求书 4.6）：一个可被引用的对象（id + 显示名）。</summary>
+public sealed class EditorRefItem
+{
+    public string Id { get; set; } = "";
+    public string Label { get; set; } = "";
+}
+

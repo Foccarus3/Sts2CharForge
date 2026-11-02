@@ -6866,6 +6866,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					TextWrapping = TextWrapping.Wrap,
 					Foreground = Brushes.Gray,
 				});
+				// V0.2.398：插件登记的引用对象数 + 自报的校验问题数
+				extPanel.Children.Add(new TextBlock
+				{
+					Text = "可引用对象：" + st.RefCount + " 个；插件自报校验问题：" + st.ProblemCount + " 条",
+					TextWrapping = TextWrapping.Wrap,
+					Foreground = st.ProblemCount > 0 ? Brushes.DarkOrange : Brushes.Gray,
+				});
+				extPanel.Children.Add(new TextBlock
+				{
+					Text = "",
+					TextWrapping = TextWrapping.Wrap,
+					Foreground = Brushes.Gray,
+				});
 				if (!string.IsNullOrWhiteSpace(st.LastLog))
 					extPanel.Children.Add(new TextBlock { Text = "最近日志：" + st.LastLog, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.Gray });
 				var btns = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 6, 0, 6) };
@@ -41613,6 +41626,37 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exo)
 				{
 					Check("V0.2.397：资源随生成输出", false, "异常：" + exo.Message);
+				}				// ----- V0.2.398：跨对象引用（登记 → 解析 → 校验） -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xr3 = new PluginSpec { Id = "uicheck-refs", Name = "引用自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-refs-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xr3.Dir);
+					xr3.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xr3, xr3.Dir, xr3.Dir);
+					var hr3 = UicheckStoreHost.LastHost!;
+					hr3.RegisterRefs("power", new[]
+					{
+						new Sts2CharForge.Core.Plugins.EditorRefItem { Id = "weak", Label = "虚弱" },
+						new Sts2CharForge.Core.Plugins.EditorRefItem { Id = "vuln", Label = "易伤" },
+					});
+					bool okWeak = hr3.TryResolveRef("power", "weak", out string lw);
+					bool okMiss = hr3.TryResolveRef("power", "nope", out string lm);
+					Check("V0.2.398：登记过的引用能查到（weak → 虚弱），没登记的查不到",
+						okWeak && lw == "虚弱" && !okMiss && lm == "", $"weak={lw} 缺失={(okMiss ? "有" : "无")}");
+					hr3.ReportProblem("动作 2 引用了不存在的状态 nope");
+					var stR = EditorExtensionRegistry.StatusOf("uicheck-refs");
+					Check("V0.2.398：插件自报的校验问题会进审核信息（最近异常 + 问题数）",
+						stR is not null && stR.ProblemCount == 1 && (stR.LastError ?? "").Contains("nope"),
+						$"问题数={stR?.ProblemCount} LastError={stR?.LastError}");
+					Check("V0.2.398：审核页能显示登记了多少个可引用对象",
+						stR is not null && stR.RefCount == 2, "RefCount=" + stR?.RefCount);
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xr3.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exr3)
+				{
+					Check("V0.2.398：跨对象引用", false, "异常：" + exr3.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

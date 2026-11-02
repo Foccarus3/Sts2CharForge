@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Plugins;
@@ -57,6 +57,18 @@ public interface IEditorHost
     /// 目标名带 .. / 路径分隔符 / 非法字符 → 返回空串（拒绝）。
     /// </summary>
     string ImportAsset(string sourcePath, string fileName);
+
+    /// <summary>
+    /// V0.2.398（需求书 4.6 / 第三期）：登记插件自己的**引用对象**（状态 / 卡牌 / 召唤物 …），
+    /// 之后别的页或用 <see cref="TryResolveRef"/> 校验「引用的东西还在不在」。
+    /// </summary>
+    void RegisterRefs(string kind, IReadOnlyList<EditorRefItem> items);
+
+    /// <summary>V0.2.398：按 kind + id 查引用；查不到返回 false（插件据此报「引用断了」）。</summary>
+    bool TryResolveRef(string kind, string id, out string label);
+
+    /// <summary>V0.2.398：插件自己发现的校验问题（会出现在插件详情的审核信息里，用户能看见）。</summary>
+    void ReportProblem(string message);
 
     EditorGeneratePlan PlanGenerate(IReadOnlyList<EditorOutputFile> files);
 
@@ -121,6 +133,12 @@ public sealed class EditorExtensionStatus
 
     /// <summary>V0.2.394：最近一次生成输出摘要（写了几个文件 / 哪个目录）—— 审核页要显示。</summary>
     public string LastGenerate { get; set; } = "";
+
+    /// <summary>V0.2.398：插件登记的可引用对象总数（审核页显示）。</summary>
+    public int RefCount { get; set; }
+
+    /// <summary>V0.2.398：插件自报的校验问题数。</summary>
+    public int ProblemCount { get; set; }
 
     public string Summary => !Declared
         ? "无编辑器扩展（声明式插件）"

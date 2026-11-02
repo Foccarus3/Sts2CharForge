@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -363,6 +363,46 @@ public static class EditorExtensionRegistry
             {
                 EditorExtensionRegistry.RecordError(PluginId, "导入资源失败：" + ex.Message);
                 return "";
+            }
+        }
+
+        private readonly Dictionary<string, Dictionary<string, string>> _refs = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>V0.2.398：登记可引用对象（kind → id → 显示名）。</summary>
+        public void RegisterRefs(string kind, IReadOnlyList<EditorRefItem> items)
+        {
+            string k = (kind ?? "").Trim();
+            if (k.Length == 0) return;
+            if (!_refs.TryGetValue(k, out var map)) { map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); _refs[k] = map; }
+            foreach (var it in items ?? Array.Empty<EditorRefItem>())
+            {
+                if (it is null || string.IsNullOrWhiteSpace(it.Id)) continue;
+                map[it.Id.Trim()] = string.IsNullOrWhiteSpace(it.Label) ? it.Id.Trim() : it.Label.Trim();
+            }
+            if (_byPlugin.TryGetValue(PluginId, out var e)) e.Status.RefCount = _refs.Values.Sum(m => m.Count);
+        }
+
+        /// <summary>V0.2.398：查引用。</summary>
+        public bool TryResolveRef(string kind, string id, out string label)
+        {
+            label = "";
+            string k = (kind ?? "").Trim(), key = (id ?? "").Trim();
+            if (k.Length == 0 || key.Length == 0) return false;
+            if (!_refs.TryGetValue(k, out var map)) return false;
+            if (!map.TryGetValue(key, out string? v)) return false;
+            label = v ?? "";
+            return true;
+        }
+
+        /// <summary>V0.2.398：插件自己发现的问题（写进审核信息，用户看得见）。</summary>
+        public void ReportProblem(string message)
+        {
+            if (_byPlugin.TryGetValue(PluginId, out var e))
+            {
+                string m = (message ?? "").Trim();
+                if (m.Length == 0) return;
+                e.Status.LastError = m;
+                e.Status.ProblemCount++;
             }
         }
 
