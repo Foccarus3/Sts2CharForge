@@ -41,6 +41,12 @@ public interface IEditorHost
 
     /// <summary>V0.2.388：造一个受控面板（插件页面里的界面都从它开始加控件）。没有界面环境时返回 null。</summary>
     IEditorPanel? CreatePanel();
+
+    /// <summary>
+    /// V0.2.391（需求书 4.4 节）：拿一个**插件自己的**数据存储（固定落在 <c>&lt;插件目录&gt;/data/&lt;名字&gt;.json</c>）。
+    /// <paramref name="name"/> 只能是文件名（不能带路径分隔符 / ..）。
+    /// </summary>
+    IPluginStore<T>? GetStore<T>(string name) where T : class, new();
 }
 
 /// <summary>V0.2.387：一个自定义页面。界面由插件通过 <see cref="Build"/> 里的受控控件 API 组装。</summary>

@@ -41335,6 +41335,49 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exl)
 				{
 					Check("V0.2.390：IEditorList<T>", false, "异常：" + exl.Message);
+				}				// ----- V0.2.391：IPluginStore<T>（插件自有对象模型落盘 / 版本迁移） -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xs = new PluginSpec { Id = "uicheck-store", Name = "存储自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-store-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xs.Dir);
+					xs.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xs, xs.Dir, xs.Dir);
+					var pages = EditorExtensionRegistry.PagesOf("uicheck-store");
+					var store = UicheckStoreHost.LastStore;
+					Check("V0.2.391：插件通过 IEditorHost.GetStore<T> 拿到自己的存储，路径锁在插件目录的 data/ 下",
+						store is not null && store.FilePath.Replace('\\', '/').Contains("/data/"), store?.FilePath ?? "(null)");
+					store!.Value = new UicheckProject { Name = "哥布林", Count = 3 };
+					store.Save();
+					var reloaded = new Sts2CharForge.Core.Plugins.FilePluginStore<UicheckProject>(store.FilePath);
+					reloaded.Reload();
+					Check("V0.2.391：保存后重新读盘能拿回同样的数据（带 schemaVersion 信封）",
+						reloaded.Value.Name == "哥布林" && reloaded.Value.Count == 3 && File.ReadAllText(store.FilePath).Contains("schemaVersion"),
+						"Name=" + reloaded.Value.Name + " Count=" + reloaded.Value.Count);
+					// 迁移：旧版本文件 → 插件注册的迁移钩子把它补成新结构
+					File.WriteAllText(store.FilePath, "{ \"schemaVersion\": 1, \"data\": { \"Name\": \"老数据非空\" } }");
+					var mig = new Sts2CharForge.Core.Plugins.FilePluginStore<UicheckProject>(store.FilePath) { SchemaVersion = 2, CurrentSchemaHint = 2 };
+					mig.SetMigration((v, raw) => new UicheckProject { Name = "迁移过", Count = v });
+					mig.Reload();
+					Check("V0.2.391：读到旧 schemaVersion 时会调迁移钩子（不静默丢数据）",
+						mig.Value.Name == "迁移过" && mig.Value.Count == 1, "Name=" + mig.Value.Name + " Count=" + mig.Value.Count);
+					// 坏文件不崩、不覆盖
+					File.WriteAllText(store.FilePath, "{ 这不是 json");
+					var broken = new Sts2CharForge.Core.Plugins.FilePluginStore<UicheckProject>(store.FilePath);
+					broken.Reload();
+					Check("V0.2.391：文件坏掉时给空对象、不抛异常、也不覆盖原文件",
+						broken.Value is not null && File.ReadAllText(store.FilePath).Contains("这不是 json"),
+						"内容仍在=" + File.ReadAllText(store.FilePath).Length + " 字符");
+					// 路径穿越被挡
+					var hostBad = EditorExtensionRegistry.StatusOf("uicheck-store");
+					Check("V0.2.391：GetStore 拒绝带 .. 或非法字符的名字（出不了插件目录）",
+						!UicheckStoreHost.SawUnsafeStore, "见 UicheckStoreHost");
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xs.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exs2)
+				{
+					Check("V0.2.391：IPluginStore<T>", false, "异常：" + exs2.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

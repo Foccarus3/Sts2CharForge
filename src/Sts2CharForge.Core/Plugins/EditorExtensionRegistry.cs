@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -215,6 +215,17 @@ public static class EditorExtensionRegistry
         public string PluginDir { get; }
         public string OutputDir { get; }
         public IEditorPanel? CreatePanel() => PanelFactory?.Invoke(PluginId);
+
+        /// <summary>V0.2.391：插件自有数据存储 —— 路径锁死在插件目录下的 data/ 里，出不去。</summary>
+        public IPluginStore<T>? GetStore<T>(string name) where T : class, new()
+        {
+            string safe = (name ?? "").Trim();
+            if (safe.Length == 0) return null;
+            foreach (char bad in Path.GetInvalidFileNameChars()) if (safe.Contains(bad)) return null;
+            if (safe.Contains("..", StringComparison.Ordinal)) return null;
+            if (PluginDir.Length == 0) return null;
+            return new FilePluginStore<T>(Path.Combine(PluginDir, "data", safe + ".json"));
+        }
 
         public void Log(string message)
         {

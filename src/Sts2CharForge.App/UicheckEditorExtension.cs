@@ -11,6 +11,7 @@ public sealed class UicheckEditorExtension : Sts2CharForge.Core.Plugins.ICharFor
 	public IReadOnlyList<Sts2CharForge.Core.Plugins.IEditorPage> CreatePages(Sts2CharForge.Core.Plugins.IEditorHost host)
 	{
 		host?.Log("uicheck: 建页面");
+		if (host is not null) UicheckStoreHost.Probe(host);
 		return new List<Sts2CharForge.Core.Plugins.IEditorPage> { new UicheckPage("p1", "页一"), new UicheckPage("p2", "页二") };
 	}
 }
@@ -65,4 +66,24 @@ public sealed class UicheckMove
 {
 	public string Name { get; set; } = "";
 	public override string ToString() => Name;
+}
+/// <summary>V0.2.391 自检用：插件自己的对象模型。</summary>
+public sealed class UicheckProject
+{
+	public string Name { get; set; } = "";
+	public int Count { get; set; }
+}
+
+/// <summary>V0.2.391 自检用：记录插件拿到过的存储（并验证危险名字被拒）。</summary>
+public static class UicheckStoreHost
+{
+	public static Sts2CharForge.Core.Plugins.IPluginStore<UicheckProject>? LastStore;
+	public static bool SawUnsafeStore;
+
+	public static void Probe(Sts2CharForge.Core.Plugins.IEditorHost host)
+	{
+		LastStore = host.GetStore<UicheckProject>("project");
+		SawUnsafeStore = host.GetStore<UicheckProject>("../escape") is not null
+			|| host.GetStore<UicheckProject>("a/b") is not null;
+	}
 }
