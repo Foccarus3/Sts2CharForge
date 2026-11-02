@@ -105,6 +105,18 @@ public interface IEditorFramePreview
 
     /// <summary>当前显示第几帧（0 起）。</summary>
     int FrameIndex { get; set; }
+
+    /// <summary>V0.2.400：自动播放的帧率（1–60，越界自动夹）。</summary>
+    double Fps { get; set; }
+
+    /// <summary>V0.2.400：正在自动播放吗。</summary>
+    bool IsPlaying { get; }
+
+    /// <summary>V0.2.400：开始按 <see cref="Fps"/> 自动轮播（到最后一帧回到第一帧）。</summary>
+    void Play();
+
+    /// <summary>V0.2.400：停止自动播放（停在哪一帧就留在哪一帧）。</summary>
+    void Stop();
 }
 /// <summary>V0.2.395（需求书 4.9）：文件选择栏 —— 插件只能拿到**用户选的路径**，不能自己乱翻文件系统。</summary>
 public interface IEditorFilePicker

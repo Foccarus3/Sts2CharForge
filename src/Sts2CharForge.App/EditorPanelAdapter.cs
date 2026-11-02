@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Windows;
@@ -452,6 +452,42 @@ public sealed class EditorPanelAdapter : IEditorPanel
         public int FrameIndex { get => _idx; set { _idx = Math.Clamp(value, 0, Math.Max(0, _frames.Count - 1)); Show(); } }
 
         public void Step(int delta) => FrameIndex = _idx + delta;
+
+        // V0.2.400：按 FPS 自动轮播（DispatcherTimer；关掉页面时 Stop 由调用方负责，计时器只持有弱引用语义的自身）
+        private System.Windows.Threading.DispatcherTimer? _timer;
+        private double _fps = 8;
+        public bool IsPlaying => _timer?.IsEnabled == true;
+
+        public double Fps
+        {
+            get => _fps;
+            set
+            {
+                _fps = Math.Clamp(value <= 0 ? 8 : value, 1, 60);
+                if (_timer is not null) _timer.Interval = TimeSpan.FromMilliseconds(1000.0 / _fps);
+            }
+        }
+
+        public void Play()
+        {
+            if (_frames.Count <= 1) return;
+            _timer ??= new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1000.0 / _fps) };
+            _timer.Tick -= OnTick;
+            _timer.Tick += OnTick;
+            _timer.Start();
+        }
+
+        public void Stop()
+        {
+            try { _timer?.Stop(); } catch { }
+        }
+
+        private void OnTick(object? sender, EventArgs e)
+        {
+            if (_frames.Count == 0) return;
+            _idx = (_idx + 1) % _frames.Count;
+            Show();
+        }
 
         private void Show()
         {

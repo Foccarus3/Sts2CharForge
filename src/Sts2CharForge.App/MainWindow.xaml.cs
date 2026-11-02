@@ -41720,6 +41720,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exm3)
 				{
 					Check("V0.2.399：存储迁移", false, "异常：" + exm3.Message);
+				}				// ----- V0.2.400：逐帧自动播放（FPS） -----
+				try
+				{
+					var apPanel = new EditorPanelAdapter("uicheck-play");
+					string dir2 = Path.Combine(Path.GetTempPath(), "uicheck-play-" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(dir2);
+					for (int fi = 1; fi <= 3; fi++)
+					{
+						var enc4 = new System.Windows.Media.Imaging.PngBitmapEncoder();
+						var wb4 = new System.Windows.Media.Imaging.WriteableBitmap(2, 2, 96, 96, System.Windows.Media.PixelFormats.Bgra32, null);
+						enc4.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(wb4));
+						using var f4 = File.Create(Path.Combine(dir2, "f" + fi + ".png"));
+						enc4.Save(f4);
+					}
+					var fp = apPanel.AddFramePreview("播放");
+					fp.Folder = dir2;
+					fp.Fps = 200;   // 会被夹到 60
+					Check("V0.2.400：FPS 会被夹在 1–60", Math.Abs(fp.Fps - 60) < 0.001, "Fps=" + fp.Fps);
+					Check("V0.2.400：一开始不是播放状态", !fp.IsPlaying, "IsPlaying=" + fp.IsPlaying);
+					fp.Play();
+					Check("V0.2.400：Play 之后进入播放状态", fp.IsPlaying, "IsPlaying=" + fp.IsPlaying);
+					fp.Stop();
+					Check("V0.2.400：Stop 之后停止播放", !fp.IsPlaying, "IsPlaying=" + fp.IsPlaying);
+					try { Directory.Delete(dir2, recursive: true); } catch { }
+				}
+				catch (Exception exp)
+				{
+					Check("V0.2.400：逐帧自动播放", false, "异常：" + exp.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
