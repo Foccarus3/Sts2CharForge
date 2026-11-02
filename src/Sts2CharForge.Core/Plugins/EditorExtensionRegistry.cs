@@ -34,6 +34,9 @@ public static class EditorExtensionRegistry
     private static readonly Dictionary<string, Entry> _byPlugin = new(StringComparer.OrdinalIgnoreCase);
     private static readonly HashSet<string> _disabled = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>V0.2.388：面板工厂（由界面层注入；Core 不引用 WPF）。返回 null = 当前没有界面环境。</summary>
+    public static Func<string, IEditorPanel?>? PanelFactory;
+
     /// <summary>所有已知插件的扩展状态（没声明扩展的也在里面，Summary 会写「无编辑器扩展」）。</summary>
     public static IReadOnlyList<EditorExtensionStatus> All()
         => _byPlugin.Values.Select(v => v.Status).OrderBy(s => s.PluginId, StringComparer.OrdinalIgnoreCase).ToList();
@@ -211,6 +214,8 @@ public static class EditorExtensionRegistry
         public string PluginId { get; }
         public string PluginDir { get; }
         public string OutputDir { get; }
+        public IEditorPanel? CreatePanel() => PanelFactory?.Invoke(PluginId);
+
         public void Log(string message)
         {
             if (_byPlugin.TryGetValue(PluginId, out var e)) e.Status.LastLog = message ?? "";

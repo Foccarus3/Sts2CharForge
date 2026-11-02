@@ -41179,6 +41179,60 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exx)
 				{
 					Check("V0.2.387：编辑器扩展加载", false, "异常：" + exx.Message);
+				}				// ----- V0.2.388：受控控件 + 把插件页面渲染成 WPF -----
+				try
+				{
+					PluginExtensionPages.Install();
+					EditorExtensionRegistry.Reset();
+					var xw = new PluginSpec { Id = "uicheck-extpages", Name = "扩展页面", Dir = Path.Combine(Path.GetTempPath(), "uicheck-extpages-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xw.Dir);
+					xw.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					var stw = EditorExtensionRegistry.Load(xw, xw.Dir, xw.Dir);
+					object sec = PluginExtensionPages.BuildSection(xw, xw.Dir, xw.Dir) ?? new StackPanel();
+					var texts = new List<string>();
+					var btns = new List<Button>();
+					TabControl? tabs = null;
+					void WalkX(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is TextBlock tb) texts.Add(tb.Text ?? "");
+						if (n is Button b) btns.Add(b);
+						if (n is TabControl tc) tabs = tc;
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) WalkX(d);
+					}
+					WalkX(sec as DependencyObject);
+					Check("V0.2.388：插件页面被渲染成真实界面（两个 Tab + 受控控件：文字/输入框/按钮/数字/勾选/下拉/子面板）",
+						stw.Loaded && tabs is not null && tabs.Items.Count == 2
+						&& texts.Any(t => t.Contains("这是插件造的页面")) && texts.Any(t => t.Contains("子面板"))
+						&& btns.Any(b => (b.Content as string) == "点我"),
+						$"Tab={tabs?.Items.Count} 文字={texts.Count} 按钮={btns.Count}");
+					// 点按钮 → 插件回调跑起来（并改了自己那张输入框）
+					var clickBtn = btns.FirstOrDefault(b => (b.Content as string) == "点我");
+					clickBtn?.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+					Check("V0.2.388：按钮点击回调能跑（受控事件）", texts.Count > 0 && clickBtn is not null,
+						"点击后文本块=" + texts.Count);
+					// 页面 Build() 抛异常 → 只显示一条错误，不崩
+					var xbad = new PluginSpec { Id = "uicheck-extbad", Name = "坏页面", Dir = Path.Combine(Path.GetTempPath(), "uicheck-extbad-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xbad.Dir);
+					xbad.EditorExtension = new Sts2CharForge.Core.Plugins.EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckBadPageExtension, Sts2CharForge.App", ApiVersion = "1" };
+					EditorExtensionRegistry.Load(xbad, xbad.Dir, xbad.Dir);
+					object badSec = PluginExtensionPages.BuildSection(xbad, xbad.Dir, xbad.Dir) ?? new StackPanel();
+					var badTexts = new List<string>();
+					void WalkBad(DependencyObject? n)
+					{
+						if (n is null) return;
+						if (n is TextBlock tb) badTexts.Add(tb.Text ?? "");
+						foreach (object ch in LogicalTreeHelper.GetChildren(n)) if (ch is DependencyObject d) WalkBad(d);
+					}
+					WalkBad(badSec as DependencyObject);
+					Check("V0.2.388：插件页面 Build() 抛异常被隔离（显示错误，主程序不崩）",
+						badTexts.Any(t => t.Contains("页面创建失败（已隔离）")), string.Join(" | ", badTexts.Take(3)));
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xw.Dir, recursive: true); Directory.Delete(xbad.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exw)
+				{
+					Check("V0.2.388：受控控件与页面渲染", false, "异常：" + exw.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

@@ -38,6 +38,9 @@ public interface IEditorHost
 
     /// <summary>写一行日志到插件详情页（便于审核与排查）。</summary>
     void Log(string message);
+
+    /// <summary>V0.2.388：造一个受控面板（插件页面里的界面都从它开始加控件）。没有界面环境时返回 null。</summary>
+    IEditorPanel? CreatePanel();
 }
 
 /// <summary>V0.2.387：一个自定义页面。界面由插件通过 <see cref="Build"/> 里的受控控件 API 组装。</summary>
