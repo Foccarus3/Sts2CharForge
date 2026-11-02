@@ -303,7 +303,6 @@ public sealed class PluginPageSpec
     /// </summary>
     public List<PluginPageOutput> Outputs { get; set; } = new();
 
-    /// <summary>V0.2.381：插件自己声明的校验规则（见 <see cref="PluginCheckSpec"/>）。</summary>
     public List<PluginCheckSpec> Checks { get; set; } = new();
 
     /// <summary>V0.2.386：校验命中的**行**（`list栏位key#行下标`），界面用它给行列表打 ⚠（不写进 json）。</summary>
@@ -350,6 +349,11 @@ public sealed class PluginPageSpec
 /// <summary>一个插件的清单（<c>plugins/&lt;目录&gt;/plugin.json</c>）。</summary>
 public sealed class PluginSpec
 {
+    /// <summary>
+    /// V0.2.387（需求书第 4.1 节）：**编辑器扩展**声明。没有这一段 = 老插件行为（完全不变）；
+    /// 只有显式声明了、且入口类型真的实现了 ICharForgeEditorExtension 的插件才会被加载代码。
+    /// </summary>
+    public EditorExtensionSpec? EditorExtension { get; set; }
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public string Version { get; set; } = "1.0";

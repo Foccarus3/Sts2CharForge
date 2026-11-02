@@ -41135,6 +41135,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exmv)
 				{
 					Check("V0.2.386：校验命中的行打 ⚠", false, "异常：" + exmv.Message);
+				}				// ----- V0.2.387：编辑器扩展（受控加载：只认显式声明 + 入口类型 + API 版本 + 异常隔离） -----
+				try
+				{
+					EditorExtensionRegistry.Reset();
+					var xe = new PluginSpec { Id = "uicheck-ext", Name = "扩展自检", Dir = Path.Combine(Path.GetTempPath(), "uicheck-ext-" + Guid.NewGuid().ToString("N")) };
+					Directory.CreateDirectory(xe.Dir);
+					// ① 没声明 → 不加载，且明确写「无编辑器扩展」
+					var st0 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：没声明 editorExtension 的插件不会被加载（老插件行为不变）",
+						!st0.Declared && !st0.Loaded && st0.Summary.Contains("无编辑器扩展"), st0.Summary);
+					// ② API 版本不兼容 → 拒绝并给出明确提示
+					xe.EditorExtension = new EditorExtensionSpec { Entry = "X.Y, Z", ApiVersion = "99" };
+					var st1 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：扩展 API 版本不兼容时拒绝加载并提示版本号",
+						!st1.Loaded && st1.Error.Contains("99"), st1.Error);
+					// ③ 找不到程序集 / 入口类型 → 隔离成状态，不抛
+					xe.EditorExtension = new EditorExtensionSpec { Entry = "No.Such.Type, NoSuchAsm", ApiVersion = "1" };
+					var st2 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：找不到程序集时如实报错（不崩、不静默）", !st2.Loaded && st2.Error.Contains("找不到"), st2.Error);
+					// ④ 入口类型没实现接口 → 拒绝
+					xe.EditorExtension = new EditorExtensionSpec { Entry = "System.String, System.Private.CoreLib", ApiVersion = "1" };
+					var st3 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：入口类型没实现 ICharForgeEditorExtension 时拒绝加载",
+						!st3.Loaded && st3.Error.Contains("没有实现"), st3.Error);
+					// ⑤ 真扩展：建页面 + 禁用 + 异常隔离
+					xe.EditorExtension = new EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckEditorExtension, Sts2CharForge.App", ApiVersion = "1" };
+					var st4 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：实现了接口的扩展能加载并报出页面数",
+						st4.Loaded && st4.PageCount == 2, st4.Summary + " / " + st4.Error);
+					EditorExtensionRegistry.SetDisabled("uicheck-ext", true);
+					var st5 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：禁用扩展后不再加载（可以随时禁用，其它功能照常）",
+						!st5.Loaded && st5.Disabled, st5.Summary);
+					EditorExtensionRegistry.SetDisabled("uicheck-ext", false);
+					xe.EditorExtension = new EditorExtensionSpec { Entry = "Sts2CharForge.App.UicheckThrowingExtension, Sts2CharForge.App", ApiVersion = "1" };
+					var st6 = EditorExtensionRegistry.Load(xe, xe.Dir, xe.Dir);
+					Check("V0.2.387：插件初始化抛异常时被隔离（主程序不崩，状态里记错误）",
+						!st6.Loaded && st6.Error.Contains("扩展初始化失败"), st6.Error);
+					EditorExtensionRegistry.Reset();
+					try { Directory.Delete(xe.Dir, recursive: true); } catch { }
+				}
+				catch (Exception exx)
+				{
+					Check("V0.2.387：编辑器扩展加载", false, "异常：" + exx.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
