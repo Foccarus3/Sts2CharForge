@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
@@ -298,7 +298,7 @@ internal static class DebugLogGen
         string text = TextOf(e, "", targetExpr, inLoop: true, beforeLine: "");
         return
             $"{{ PowerModel? __dbgClr{id} = {p}.GetPower<{powerType}>(); " +
-            $"Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；要清的类={Lit.Str(powerType)}；找到=\" + (__dbgClr{id} is null ? \"没有\" : \"有，层数=\" + __dbgClr{id}.Amount.ToString()) + \"；目标身上现有状态=[\" + string.Join(\"，\", {p}.Powers.Select(x => x.GetType().Name + \"=\" + x.Amount.ToString())) + \"]\"); }}   // {Marker}\n";
+            $"Godot.GD.Print({Lit.Str(text)} + {TargetCode(targetExpr, _current?.SelfExpr ?? "")} + \"；要清的类={powerType}；找到=\" + (__dbgClr{id} is null ? \"没有\" : \"有，层数=\" + __dbgClr{id}.Amount.ToString()) + \"；目标身上现有状态=[\" + string.Join(\"，\", {p}.Powers.Select(x => x.GetType().Name + \"=\" + x.Amount.ToString())) + \"]\"); }}   // {Marker}\n";
     }
 
     /// <summary>「清除状态」执行后那一行（列出目标清除后还剩哪些状态）。开关关着返回空串。</summary>

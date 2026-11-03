@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -41891,6 +41891,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception ext3)
 				{
 					Check("V0.3.1：触发次数公式", false, "异常：" + ext3.Message);
+				}				// ----- V0.3.3：清除指定状态的调试日志不能把类名多括一对引号（生成出来会 CS1003） -----
+				try
+				{
+					var dlP = ProfileFactory.Sample();
+					dlP.Cards.Clear(); dlP.Curses.Clear(); dlP.AncientCards.Clear();
+					dlP.DebugLog = true;
+					var dlC = new CardSpec { Name = "清状态调试", ClassName = "DbgClearCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					dlC.Effects.Add(new EffectSpec { Kind = "ClearPowerOne", Amount = 1m, PowerId = "PercentVuln", TargetSide = "Enemy" });
+					dlP.Cards.Add(dlC);
+					string dlSrc = CSharpCodeGen.CardSource(dlP, dlC, 0);
+					string dlLine = dlSrc.Split((char)10).FirstOrDefault(l => l.Contains("要清的类=")) ?? "";
+					Check("V0.3.3：清除指定状态的调试日志里，类名是**字符串的一部分**（不会多出一对引号把 C# 打断）",
+						dlLine.Length > 0 && !dlLine.Contains("\"；要清的类=\"") && dlLine.Contains("要清的类="),
+						dlLine.Trim().Length > 150 ? dlLine.Trim().Substring(0, 150) : dlLine.Trim());
+				}
+				catch (Exception exdl)
+				{
+					Check("V0.3.3：清除指定状态的调试日志", false, "异常：" + exdl.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
