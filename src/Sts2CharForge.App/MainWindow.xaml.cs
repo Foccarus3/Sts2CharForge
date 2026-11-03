@@ -41909,6 +41909,28 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exdl)
 				{
 					Check("V0.3.3：清除指定状态的调试日志", false, "异常：" + exdl.Message);
+				}				// ----- V0.3.4：斩杀 + 动牌组/牌堆的效果也要提前到伤害之前（否则打死最后一只怪就来不及了） -----
+				try
+				{
+					var fh = ProfileFactory.Sample();
+					fh.Cards.Clear(); fh.Curses.Clear(); fh.AncientCards.Clear();
+					var fhCard = new CardSpec { Name = "斩杀升级", ClassName = "FatalUpgradeCard", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					fhCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+					var fhUp = new EffectSpec { Kind = "UpgradeCardGlobal", Amount = 1m, SpawnCardId = "StrikeVanilla", TargetSide = "Self" };
+					fhUp.Condition = new ConditionSpec { Kind = "Fatal" };
+					fhCard.Effects.Add(fhUp);
+					fh.Cards.Add(fhCard);
+					string fhSrc = CSharpCodeGen.CardSource(fh, fhCard, 0);
+					int fhWill = fhSrc.IndexOf("__fatalWill = __fatalDmg", StringComparison.Ordinal);
+					int fhUpAt = fhSrc.IndexOf("CardCmd.Upgrade", StringComparison.Ordinal);
+					int fhDmg = fhSrc.IndexOf("DamageCmd.Attack(", StringComparison.Ordinal);
+					Check("V0.3.4：斩杀 +「升级卡牌（全局）」会先预判、并把升级放在**造成伤害之前**（打死最后一只怪也生效）",
+						fhWill > 0 && fhDmg > 0 && fhUpAt > 0 && fhUpAt < fhDmg,
+						$"预判={fhWill} 升级={fhUpAt} 伤害={fhDmg}");
+				}
+				catch (Exception exfh)
+				{
+					Check("V0.3.4：斩杀 + 动牌组的效果提前", false, "异常：" + exfh.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

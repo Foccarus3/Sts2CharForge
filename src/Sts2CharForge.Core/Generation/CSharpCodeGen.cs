@@ -1,4 +1,4 @@
-﻿using System.Text.RegularExpressions;
+using System.Text.RegularExpressions;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -5697,7 +5697,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (onPlayList[i] is { Kind: "Damage" } && fatalDmgIdx < 0) fatalDmgIdx = i;
         if (fatalDmgIdx >= 0)
             for (int i = fatalDmgIdx + 1; i < onPlayList.Count; i++)
-                if (onPlayList[i] is EffectSpec __fx && __fx.Condition is { Kind: "Fatal" } && NeedsCardSelectionUi(__fx)) fatalHoisted.Add(__fx);
+                if (onPlayList[i] is EffectSpec __fx && __fx.Condition is { Kind: "Fatal" } && FatalHoistable(__fx)) fatalHoisted.Add(__fx);
         if (fatalHoisted.Count == 0) fatalDmgIdx = -1;
 
         for (int ei = 0; ei < onPlayList.Count; ei++)
@@ -9318,6 +9318,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>V0.2.372：「这条效果会不会弹选牌界面」（自己选 + 属于选牌族）。</summary>
+    /// <summary>
+    /// V0.3.4（用户实测：「斩杀时升级卡牌（全局）」在**场上只剩一只怪**时不生效）：
+    /// 斩杀判的是「这一击有没有打死」，所以这些效果只能排在伤害之后；而打死最后一只怪时战斗立刻结束，
+    /// 牌组 / 牌堆类操作就再也没机会跑（或者被战斗结束流程吃掉）。
+    ///
+    /// <para>所以除了「需要选牌」的那几种，**动牌组 / 动牌堆 / 给奖励**的也一起提前到伤害之前
+    ///（用同一段 <c>__fatalWill</c> 预判顶着）。纯粹的「造成伤害 / 上状态」不在名单里 —— 那类提前跑没有意义，
+    /// 还会改变「先打完再上状态」的语义。</para>
+    /// </summary>
+    private static bool FatalHoistable(EffectSpec e)
+    {
+        if (NeedsCardSelectionUi(e)) return true;
+        return e.Kind is "UpgradeCardGlobal" or "TransformCardGlobal" or "RemoveCardGlobal" or "AddCardGlobal"
+            or "GenerateCard" or "CardReward" or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust";
+    }
+
     private static bool NeedsCardSelectionUi(EffectSpec e)
         => e is not null && string.Equals(e.CardPick, "Chosen", StringComparison.Ordinal)
            && (Effects.EffectFieldPolicy.UsesCardPick(e.Kind)
