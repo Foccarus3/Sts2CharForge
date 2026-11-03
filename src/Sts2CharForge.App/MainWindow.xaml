@@ -838,6 +838,11 @@
                                       Style="{StaticResource Check}" IsChecked="{Binding IsColorless}"
                                       ToolTip="无色卡不属于你角色的卡池，而是登记进本体的「无色卡池」（调用 ModHelper.AddModelToPool）。所以：① 它不会出现在你角色的战斗奖励 / 商店里；② 卡框和能量图标用本体的无色那套；③ 它不帮「奖励里至少 3 张」那条规矩（校验器会提示）。稀有度请用 Common / Uncommon / Rare。"/>
                             <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}" IsChecked="{Binding InCardPool}"/>
+                            <!-- V0.3.8：多人卡（只会在多人游戏里出现）—— 放在「加入卡池」下面（这才是「卡牌」页那份模板） -->
+                            <CheckBox Style="{StaticResource Check}" Content="多人卡（只会在多人游戏中出现）"
+                                      IsEnabled="{Binding ValueEditable}"
+                                      IsChecked="{Binding MultiplayerOnly, Mode=TwoWay}"
+                                      ToolTip="勾上：这张牌只会出现在**多人**这一局的卡池 / 奖励 / 商店里（本体 CardMultiplayerConstraint.MultiplayerOnly）。&#10;单人局里它不会出现；已经拿到的牌照旧能用。"/>
                             <CheckBox Content="可被无限升级（每次升级数值再涨一次）" Style="{StaticResource Check}" IsEnabled="{Binding ValueEditable}"
                                       IsChecked="{Binding InfinitelyUpgradable}"
                                       ToolTip="本体默认每张牌只能升级一次（MaxUpgradeLevel => 1）。勾上以后生成 MaxUpgradeLevel => int.MaxValue：可以反复升级，每升一级 OnUpgrade() 就再跑一遍，升级增量会累加；卡面标题显示成「名字+N」。" />
