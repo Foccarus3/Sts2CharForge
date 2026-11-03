@@ -4357,6 +4357,9 @@ public static class ProjectRecovery
                 string? scopeV = Match(body, @"CET:TriggerAmount=[\d.]+m CET:TriggerScope=(\w+)");
                 if (scopeV is not null) trigger.TriggerScope = scopeV;
             }
+                // V0.3.2：**触发次数/阈值公式**（自定义参数、X/Y、算术）——生成端写在同一行后面
+                string? trigFormula = Match(body, @"CET:TriggerAmountFormula=(\S+)");
+                if (trigFormula is not null) trigger.TriggerFormula = CSharpCodeGen.UnescapeMarker(trigFormula);
             // 「花掉 N 点」的数值（用户要求）：生成端在那一段前面写了
             // 「// 数值：每累计花掉 N 点触发一次（范围：本回合 / 本场战斗）」——按它还原
             if (Match(text, @"数值：每累计花掉 ([\d.]+) 点触发一次（范围：(本回合|本场战斗)）") is { } spendN

@@ -1,4 +1,4 @@
-using Sts2CharForge.Core.Effects;
+﻿using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -186,8 +186,19 @@ public static class ProfileValidator
             if (cp.RemoveAtTurnEnd && cp.DecayPerTurn > 0)
                 issues.Add(new("警告", $"{who} 同时勾了「回合结束移除」和「每回合衰减」，衰减不会生效（直接移除）。"));
             if (cp.Triggers.Count == 0)
+            if (cp.Triggers.Count == 0)
                 issues.Add(new("警告", $"{who} 没配任何触发时机：这个状态挂上去也不会做事。"));
-
+            // V0.3.2（用户问「自定义参数能不能用在触发次数上」）：触发了却算不出来 = 静默退回常数，
+            // 所以公式解析失败要**报错拦住**（不然用户以为「填了没生效」）。
+            foreach (var tz in cp.Triggers.Where(x => x is not null))
+            {
+                if (!tz.UsesTriggerFormula) continue;
+                // 判据用**真的求值一次**：TryParse 对「N+1」这种未知标识符也会成功，但 Emit 会返回 null
+                if (CSharpCodeGen.TriggerAmountFormulaExpr(p, tz, "base.Owner.Player", "base.Owner") is null)
+                    issues.Add(new("错误", $"{who} 的触发时机「{(string.IsNullOrWhiteSpace(tz.Display) ? tz.Kind : tz.Display)}」的公式解析不了："
+                        + $"「{tz.TriggerFormula}」。可写算术（2+1）、X / Y、以及你在「自定义参数 / 公式变量」里**声明过的参数名**；"
+                        + "裸写的 M / N 不自动等于你的参数。"));
+            }
             // V0.2.248（用户要求「减少指定卡牌类别的费用（类似腐化，刺破帷幕这些）」）：
             // 费用修正那一栏的几个「配了也不生效」的情况
             string costScope = (cp.CostReduceScope ?? "").Trim();

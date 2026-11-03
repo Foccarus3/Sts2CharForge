@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -41867,6 +41867,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					tfProf.CustomPowers.Add(pwT);
 					string sT = CustomPowerGen.Source(tfProf, pwT, 2);
 					// 诊断：属性本身 / 公式求值辅助 是否真的生效（定位是 setter 还是生成端没读到）
+					// V0.3.2：解析不了的公式要在校验里报错（不再静默退回常数）
+					var badProf = ProfileFactory.Sample();
+					badProf.CustomPowers.Clear();
+					var badPow = new CustomPowerSpec { Name = "坏公式", ClassName = "TrigBad" };
+					var badTr = new PowerTriggerSpec { Kind = "CardPlayed", TriggerFormula = "N+1" };
+					badTr.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+					badTr.OwnerPower = badPow;
+					badPow.Triggers.Add(badTr);
+					badProf.CustomPowers.Add(badPow);
+					var badIssues = ProfileValidator.Validate(badProf);
+					Check("V0.3.2：触发次数公式解析不了时，校验里会报错（不再静默退回常数）",
+						badIssues.Any(x => x.Message.Contains("公式解析不了")),
+						string.Join(" / ", badIssues.Where(x => x.Message.Contains("公式")).Take(2)));
 					Check("V0.3.1-diag：TriggerFormula 能存进对象、公式能求值",
 						trT.UsesTriggerFormula && trT.TriggerFormula == "4"
 						&& Sts2CharForge.Core.Generation.CSharpCodeGen.TriggerAmountFormulaExpr(tfProf, trT, "base.Owner.Player", "base.Owner") is string fe && fe.Length > 0,
