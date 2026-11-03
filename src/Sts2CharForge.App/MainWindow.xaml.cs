@@ -41931,6 +41931,53 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exfh)
 				{
 					Check("V0.3.4：斩杀 + 动牌组的效果提前", false, "异常：" + exfh.Message);
+				}				// ----- V0.3.5：两张布都用同一个**插件**触发时机 → 不能再静默生成孤儿方法 -----
+				try
+				{
+					// ① 把一个插件时机塞进 ForgeTimings（模拟「插件带 signature」）→ 壳里应出现 override 与 HasTurnEndInHandEffect
+					var ovSrc = CSharpCodeGen.CardSource(ProfileFactory.Sample(), new CardSpec { Name = "空", ClassName = "OvEmpty", CardType = "Skill", Rarity = "Common", Cost = 1 }, 0);
+					// 用随程序发的示例插件里那个「带 signature 的插件触发时机」做真实验证
+					var plugOpt = ForgeTimings.All.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t.Signature)
+						&& string.Equals(t.Scope, "Card", StringComparison.Ordinal));
+					if (plugOpt is not null)
+					{
+						var ovP = ProfileFactory.Sample();
+						ovP.Cards.Clear(); ovP.Curses.Clear(); ovP.AncientCards.Clear();
+						var both = new CardSpec { Name = "两布插件时机", ClassName = "OvPluginTiming", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						ForgeGraphSpec mkOvGraph()
+						{
+							var g = new ForgeGraphSpec();
+							var trg = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+							trg.SetField("Timing", plugOpt.Id);
+							var eff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+							eff.SetField("Effect", "GainBlock");
+							eff.SetField("Amount", "3");
+							g.Nodes.AddRange(new[] { trg, eff });
+							g.Links.Add(new ForgeLinkSpec { From = trg.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+							return g;
+						}
+						both.ForgeGraph = mkOvGraph();
+						both.UpgradedForgeGraph = mkOvGraph();
+						ovP.Cards.Add(both);
+						string ovText = CSharpCodeGen.CardSource(ovP, both, 0);
+						string sigTail = plugOpt.Signature.Trim();
+						int shCount = ovText.Split((char)10).Count(l => l.Contains("public override " + sigTail));
+						Check("V0.3.5：两张布都用**插件触发时机**时，生成端补一个分派 override（不再只有两个孤儿方法）",
+							shCount == 1 && ovText.Contains("if (base.IsUpgraded)"),
+							$"override 数量={shCount} 签名={sigTail}");
+					}
+					// ② 校验器：没有签名、也不在内置 5 个里的重叠钩子必须报「错误」
+					var ovCard = new CardSpec { Name = "两张布", ClassName = "OvTwoCanvas", CardType = "Skill", Rarity = "Common", Cost = 1 };
+					var ovProf = ProfileFactory.Sample();
+					ovProf.Cards.Clear(); ovProf.Curses.Clear(); ovProf.AncientCards.Clear();
+					ovProf.Cards.Add(ovCard);
+					var ovIssues = ProfileValidator.Validate(ovProf);
+					Check("V0.3.5：普通卡（没有插件时机）不会被这条新检查误报",
+						!ovIssues.Any(x => x.Message.Contains("没人调用")), "无误报");
+				}
+				catch (Exception exov)
+				{
+					Check("V0.3.5：两布重叠钩子", false, "异常：" + exov.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

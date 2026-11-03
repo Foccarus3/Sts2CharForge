@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
@@ -1141,6 +1141,21 @@ public static class ProfileValidator
             //（ForgeGraphGen.Problems 是死代码，没人调）—— 最要命的是「【效果】选了节点图没接上的种类」：
             // 生成、编译、进游戏全都不报错，就是没反应（别人实测报的「给召唤物 buff 不生效」就是这个）。
             ValidateForgeGraph(issues, $"卡牌「{c.Name}」（升级前）", c.ForgeGraph, p, "Card", CSharpCodeGen.TargetTypeOf(c));
+            // V0.3.5（缺陷报告：两张布都用同一个插件触发时机 → 生成两个没人调用的私有方法、静默失效）：
+            // 分派壳只认「内置 5 个钩子」和「插件自带 signature」两种。剩下的组合现在会在生成时被跳过，
+            // 那就必须在这里**报错**，不能让用户看到「生成成功、编译成功、游戏里没反应」。
+            foreach (string ovHook in ForgeGraphGen.CardGraphOverlapHooks(c))
+            {
+                bool builtin = ovHook is "AfterCardExhausted" or "AfterCardDiscarded" or "AfterCardDrawn"
+                    or "AfterCardPlayed" or "AfterFlush";
+                bool pluginSig = ForgeTimings.All.Any(t => !string.IsNullOrWhiteSpace(t.Signature)
+                    && string.Equals(t.Hook, ovHook, StringComparison.Ordinal));
+                if (!builtin && !pluginSig)
+                    issues.Add(new("错误", $"卡牌「{c.Name}」的两张布（升级前 / 升级后）都用了同一个触发时机「{ForgeGraphGen.HookZh(ovHook)}」，"
+                        + "而这个时机既不是内置的那 5 个卡牌钩子、插件也没给它写 `signature` —— 生成端无法为它写分派用的 override，"
+                        + "两张布会变成**没人调用**的私有方法（编译能过、游戏里永不触发）。"
+                        + "解决办法：只在其中一张布用它，或让插件给这个触发时机补一个 `signature`。"));
+            }
             ValidateForgeGraph(issues, $"卡牌「{c.Name}」（升级后）", c.UpgradedForgeGraph, p, "Card", CSharpCodeGen.TargetTypeOf(c));
             AddDuplicateVarNotice(issues, $"卡牌「{c.Name}」", c.Effects);
             // 老存档的「整张牌一个条件」也校验一下（打开后会自动搬到第一条效果上）

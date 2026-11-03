@@ -5968,7 +5968,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 "AfterFlush" => "public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)",
                 _ => null,
             };
+            // V0.3.5（缺陷报告：插件触发时机在两张布上会生成孤儿方法）：
+            // 内置那 5 条之外，**插件触发时机自带 signature** 的也能当壳 —— 用它自己的签名。
+            // 以前这里直接 continue，于是两张布都选插件时机时只会留下两个没人调用的私有方法，静默失效。
+            string? plugGuard = null;
+            if (sig is null)
+            {
+                var plugOpt = Sts2CharForge.Core.Profile.ForgeTimings.All.FirstOrDefault(t =>
+                    !string.IsNullOrWhiteSpace(t.Signature)
+                    && string.Equals(t.Hook, hook, StringComparison.Ordinal));
+                if (plugOpt is not null)
+                {
+                    sig = "public override " + plugOpt.Signature.Trim();
+                    plugGuard = string.IsNullOrWhiteSpace(plugOpt.PluginGuard) ? null : plugOpt.PluginGuard.Trim();
+                }
+            }
             if (sig is null) continue;   // 认不出来的钩子不硬写（宁可少一个壳，也不生成编译不过的东西）
+            // V0.3.5：OnTurnEndInHand 这类钩子本体还会看一个布尔属性 —— 必须**在同一层**声明一次
+            //（放进方法体里是语法错误；两份布各写一次是重复成员）。
+            if (string.Equals(hook, "OnTurnEndInHand", StringComparison.Ordinal))
+                w.Line("public override bool HasTurnEndInHandEffect => true;");
             w.Line()
              .Line($"// 两块布（升级前 / 升级后）都用了「{ForgeGraphGen.HookZh(hook)}」这个时刻：")
              .Line("// 它们各自只能变成私有方法，override 只留这一个 —— 按有没有升级二选一（两个都调 = 两套效果各跑一遍）。")
@@ -5996,6 +6015,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // 会排一个「只能在出牌阶段执行」的 action，永远等不到 → 结束回合卡死。
                     // 换成 BlockingPlayerChoiceContext：选牌照弹、当场等玩家选完（本体在敌人回合也这么用）。
                     w.Line("choiceContext = new BlockingPlayerChoiceContext();");
+                    break;
+                default:
+                    // V0.3.5：插件触发时机自带 `guard` 就照它写（没有就只判「还在战斗里」）；
+                    // 另外 OnTurnEndInHand 必须同时打开 HasTurnEndInHandEffect，否则本体根本不会调它。
+                    w.Line("if (base.CombatState is null) return;");
+                    if (!string.IsNullOrWhiteSpace(plugGuard)) w.Line(plugGuard!);
+                    if (string.Equals(hook, "OnTurnEndInHand", StringComparison.Ordinal))
+                        w.Line("public override bool HasTurnEndInHandEffect => true;");
                     break;
             }
             // ⚠ 嵌套私有方法**只带一个 choiceContext 参数**（见 ForgeGraphGen.CardNestedMethod 那一套写法 /
