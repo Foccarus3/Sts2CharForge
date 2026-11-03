@@ -1,4 +1,4 @@
-﻿<Window x:Class="Sts2CharForge.App.MainWindow"
+<Window x:Class="Sts2CharForge.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:local="clr-namespace:Sts2CharForge.App"
@@ -3017,6 +3017,10 @@
                                                     <TextBox Width="70" Margin="8,0,0,0" Style="{StaticResource Field}"
                                                              Text="{Binding TriggerAmount, UpdateSourceTrigger=PropertyChanged}"
                                                              ToolTip="留空或填 0 = 老行为（每次都触发 / 每 1 点）；填 N = 见下面那句说明。"/>
+                                                    <!-- V0.3.1：次数 / 阈值也可以用公式（自定义参数、X/Y、内置只读量…） -->
+                                                    <TextBox Width="150" Margin="8,0,0,0" Style="{StaticResource Field}"
+                                                             Text="{Binding TriggerFormula, UpdateSourceTrigger=PropertyChanged}"
+                                                             ToolTip="公式（可选）：如 {Amount}、{N}*2 —— 填了就以它为准，代替左边那个常数。语法与「数值公式」一致。"/>
                                                     <TextBlock Text="统计范围" VerticalAlignment="Center" Margin="12,0,0,0"
                                                                Visibility="{Binding ShowTriggerScopeField, Converter={StaticResource BoolToVis}}"/>
                                                     <ComboBox Width="130" Margin="8,0,0,0" Style="{StaticResource Pick}"

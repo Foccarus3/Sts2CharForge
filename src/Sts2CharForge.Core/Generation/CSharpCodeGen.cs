@@ -3958,6 +3958,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 「指定敌人」那类参数在这条链上取谁。遗物 / 药水 / 状态没有「玩家选中的目标」，
     /// 惯例是取**可打的第一个敌人**（和这些链上「作用对象 = 单体敌人」的执行口径一致）。
     /// </param>
+    /// <summary>
+    /// V0.3.1：触发时机的**次数 / 阈值公式**（自定义参数、X/Y、内置只读量、算术）。
+    /// 语法与「数值公式」完全一致；解析失败返回 null（校验器会报，退回常数）。
+    /// </summary>
+    public static string? TriggerAmountFormulaExpr(CharacterProfile? p, PowerTriggerSpec? t, string playerExpr, string selfExpr)
+    {
+        // ⚠ 状态那条链上 p 可能是 null（生成壳的辅助方法拿不到 profile）→ 用 Source 开头设好的当前 profile 兜底，
+        // 不然公式永远被当成「没填」（V0.3.1 自检抓到：填了 N*2 仍生成常数）。
+        p ??= Sts2CharForge.Core.Generation.PercentPowers.Current;
+        if (p is null || t is null || !t.UsesTriggerFormula) return null;
+        var root = ForgeFormula.TryParse(t.TriggerFormula, out _);
+        if (root is null) return null;
+        return ForgeFormula.Emit(root, ForgeFormula.InlineResolver(p, playerExpr, selfExpr, null), out _);
+    }
+
     internal static string? InlineAmountFormula(CharacterProfile? p, EffectSpec e, string playerExpr, string selfExpr,
         string? targetExpr = null)
     {
@@ -4169,8 +4184,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     public static string? TriggerAmountCond(string kind, decimal amount, string scope,
         string creatureExpr, string stateExpr, string playerExpr, string? valueExpr = null,
-        string? cardFilter = null, string? currentCardExpr = null)
+        string? cardFilter = null, string? currentCardExpr = null, string? amountExpr = null)
     {
+        // V0.3.1：amountExpr 非空 = 次数/阈值用公式（自定义参数…）→ 直接把表达式拼进去
+        if (amountExpr is not null)
+        {
+            if (valueExpr is not null) return $"{valueExpr} >= (decimal)({amountExpr})";
+            string cnt2 = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter, currentCardExpr);
+            return cnt2.Length == 0 ? null : $"({cnt2}) % Math.Max(1, (int)({amountExpr})) == 0";
+        }
         if (amount <= 0m) return null;
         if (valueExpr is not null) return $"{valueExpr} >= {Lit.Dec(amount)}";
         string count = CountExpr(kind, scope, creatureExpr, stateExpr, playerExpr, cardFilter, currentCardExpr);

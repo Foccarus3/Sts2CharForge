@@ -5317,6 +5317,32 @@ public sealed class PowerTriggerSpec : SpecBase
         set { if (Set(ref _triggerAmount, value)) { Raise(nameof(Display)); Raise(nameof(Summary)); Raise(nameof(TriggerSpendHint)); } }
     }
 
+    private string _triggerFormula = "";
+
+    /// <summary>
+    /// V0.3.1（用户问「自定义参数能不能用在触发次数上」）：**触发次数 / 阈值的公式**。
+    ///
+    /// <para>和「数值公式」同一套语法（<c>ForgeFormula</c>：自定义参数、X / Y、内置只读量、算术）。
+    /// 填了就以它为准（忽略常数）：计数族变成「每累计『公式求值』次触发一次」，
+    /// 阈值族变成「数值 ≥ 『公式求值』」。空 = 老行为（常数，生成文本一个字符都不变）。</para>
+    /// </summary>
+    public string TriggerFormula
+    {
+        get => _triggerFormula;
+        set
+        {
+            if (Set(ref _triggerFormula, (value ?? "").Trim()))
+            {
+                Raise(nameof(UsesTriggerFormula));
+                Raise(nameof(Display));
+                Raise(nameof(Summary));
+            }
+        }
+    }
+
+    /// <summary>这条触发时机的次数 / 阈值是不是用公式算的。</summary>
+    [JsonIgnore] public bool UsesTriggerFormula => !string.IsNullOrWhiteSpace(_triggerFormula);
+
     // ===== 「花掉 N 点能量 / 额外资源量」+「本回合 / 本场战斗」（用户要求：两边触发时机一致）=====
     private string _triggerScope = "Turn";
 

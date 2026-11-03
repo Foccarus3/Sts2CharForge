@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Effects;
+using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
 
@@ -486,17 +486,27 @@ public static class CustomPowerGen
                     : CSharpCodeGen.CountExpr(kind, t.TriggerScope, "base.Owner", "base.Owner.CombatState", "base.Owner.Player",
                         t.CardFilter, currentCardExpr: "cardPlay.Card");   // V0.2.341：CardPlayed 要把正在打出的这一张补上
                 string step = CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount).TrimEnd('m');
-                w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}");
+                // V0.3.1（用户问「自定义参数能不能用在触发次数上」）：填了「触发次数公式」就以它为准。
+                string? stepFormula1 = CSharpCodeGen.TriggerAmountFormulaExpr(p, t, "base.Owner.Player", "base.Owner");
+                w.Line($"// CET:TriggerAmount={CSharpCodeGen.TriggerAmountForMarker(t.TriggerAmount)} CET:TriggerScope={t.TriggerScope}"
+                       + (t.UsesTriggerFormula ? $" CET:TriggerAmountFormula={CSharpCodeGen.EscapeMarker(t.TriggerFormula)}" : ""));
                 w.Open("");   // 裸块：__cnt 这个局部变量不和别条时机 / 外层撞名
                 w.Line($"int __cnt = {countExpr};   // 本体历史里到现在为止一共有多少次（含正在打出的这一张）");
                 w.Line($"if ({field} == int.MinValue || __cnt <= {field}) {field} = __cnt - 1;   // 本状态刚上 / 换了新回合：从现在开始数");
                 // V0.2.173：外加 `__cnt > {field}` —— **施加这个状态的那一张牌不算**。
-                // 本体现在是「先调 BeforeCardPlayed、再记 CardPlayStarted」（见 CardModel.Play），
-                // 所以 CountExpr 里已经 +1 把正在打出的这一张补上了（V0.2.340 修正）；上状态的那一张
-                // 早就在历史里了，于是它落在基准里、不参与计数 —— 不挡掉它的话「施加时正好凑够 N 张」会当场响一次。
-                w.Open($"if (__cnt > {field} && (__cnt - {field}) % {step} == 0)");
-                w.Line($"// 每累计 {t.TriggerAmount:0.##} 次触发一次（范围：{(t.TriggerScope == "Combat" ? "本场战斗" : "本回合")}，"
-                     + "**从这个状态被施加那一刻**起数）");
+                if (stepFormula1 is not null)
+                {
+                    // 公式可能算出 0 / 负数 → 夹到 1，避免除零
+                    w.Line($"int __step = Math.Max(1, (int)({stepFormula1}));   // 触发次数 = 公式求值（自定义参数 / X / Y …）");
+                    w.Open($"if (__cnt > {field} && (__cnt - {field}) % __step == 0)");
+                }
+                else
+                {
+                    w.Open($"if (__cnt > {field} && (__cnt - {field}) % {step} == 0)");
+                }
+                w.Line(stepFormula1 is not null
+                    ? $"// 每累计「公式」次触发一次（范围：{(t.TriggerScope == "Combat" ? "本场战斗" : "本回合")}，**从这个状态被施加那一刻**起数）"
+                    : $"// 每累计 {t.TriggerAmount:0.##} 次触发一次（范围：{(t.TriggerScope == "Combat" ? "本场战斗" : "本回合")}，" + "**从这个状态被施加那一刻**起数）");
                 EmitOne(t, foeFrom, false);
                 w.Close();
                 w.Close();
@@ -504,7 +514,8 @@ public static class CustomPowerGen
             }
             string? cond = CSharpCodeGen.TriggerAmountCond(kind, t.TriggerAmount, t.TriggerScope,
                 "base.Owner", "base.Owner.CombatState", "base.Owner.Player", CSharpCodeGen.TriggerValueExpr(kind),
-                t.CardFilter, currentCardExpr: "cardPlay.Card");
+                t.CardFilter, currentCardExpr: "cardPlay.Card",
+                amountExpr: CSharpCodeGen.TriggerAmountFormulaExpr(p, t, "base.Owner.Player", "base.Owner"));
             if (cond is null)
             {
                 // ⚠ 这一支**不套 if**：多条触发时机合并时，这里就是那个「帮助变量会撞车」的地方 → 必须各自包裸块。

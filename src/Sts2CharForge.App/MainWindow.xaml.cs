@@ -41830,6 +41830,54 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exp2)
 				{
 					Check("V0.2.403：清除所有减益清单", false, "异常：" + exp2.Message);
+				}				// ----- V0.3.1：触发次数 / 阈值支持自定义参数与公式 -----
+				try
+				{
+					var tfProf = ProfileFactory.Sample();
+					tfProf.CustomPowers.Clear();
+					CustomPowerSpec mkTrig(string cls, string formula)
+					{
+						var pw = new CustomPowerSpec { Name = "次数公式" + cls, ClassName = cls };
+						var tr = new PowerTriggerSpec { Kind = "CardPlayed" };
+						tr.TriggerAmount = 3m;
+						tr.TriggerFormula = formula;
+						tr.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m });
+						tr.OwnerPower = pw;
+						pw.Triggers.Add(tr);
+						tfProf.CustomPowers.Add(pw);
+						return pw;
+					}
+					var pConst = mkTrig("TrigConst", "");
+					var pForm = mkTrig("TrigFormula", "2+1");
+					string sConst = CustomPowerGen.Source(tfProf, pConst, 0);
+					string sForm = CustomPowerGen.Source(tfProf, pForm, 1);
+					Check("V0.3.1：不填公式时计数逻辑逐字不变（仍然是 `% 3 == 0`）",
+						sConst.Contains("% 3 == 0") && !sConst.Contains("__step"), "常数档");
+					Check("V0.3.1：填了「触发次数公式」→ 计数条件里用的是公式（Math.Max(1, (int)(…))），不再写死常数",
+						sForm.Contains("Math.Max(1, (int)(") && !sForm.Contains("% 3 == 0"),
+						$"公式线=" + (sForm.Split((char)10).FirstOrDefault(l => l.Contains("Math.Max(1, (int)("))?.Trim() ?? "(没生成)"));
+					// 阈值族（例如「失去生命 ≥ N」）也要能用公式
+					var pwT = new CustomPowerSpec { Name = "阈值公式", ClassName = "TrigThreshold" };
+					var trT = new PowerTriggerSpec { Kind = "HpLost" };
+					trT.TriggerAmount = 5m;
+					trT.TriggerFormula = "4";
+					trT.Effects.Add(new EffectSpec { Kind = "GainBlock", Amount = 1m });
+					trT.OwnerPower = pwT;
+					pwT.Triggers.Add(trT);
+					tfProf.CustomPowers.Add(pwT);
+					string sT = CustomPowerGen.Source(tfProf, pwT, 2);
+					// 诊断：属性本身 / 公式求值辅助 是否真的生效（定位是 setter 还是生成端没读到）
+					Check("V0.3.1-diag：TriggerFormula 能存进对象、公式能求值",
+						trT.UsesTriggerFormula && trT.TriggerFormula == "4"
+						&& Sts2CharForge.Core.Generation.CSharpCodeGen.TriggerAmountFormulaExpr(tfProf, trT, "base.Owner.Player", "base.Owner") is string fe && fe.Length > 0,
+						$"Uses={trT.UsesTriggerFormula} 值=「{trT.TriggerFormula}」 求值=" + (Sts2CharForge.Core.Generation.CSharpCodeGen.TriggerAmountFormulaExpr(tfProf, trT, "base.Owner.Player", "base.Owner") ?? "(null)"));
+					Check("V0.3.1：阈值族（失去生命 ≥ N）也能用公式（生成 `-delta >= (decimal)(…公式…)`）",
+						sT.Contains(">= (decimal)("),
+						$"阈值线=" + (sT.Split((char)10).FirstOrDefault(l => l.Contains("(decimal)("))?.Trim() ?? "(没生成)") + " / delta 行=" + (sT.Split((char)10).FirstOrDefault(l => l.Contains("-delta"))?.Trim() ?? ""));
+				}
+				catch (Exception ext3)
+				{
+					Check("V0.3.1：触发次数公式", false, "异常：" + ext3.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
