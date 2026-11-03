@@ -10273,6 +10273,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         "AllEnemies" => allEnemies + ".FirstOrDefault()",
         "AnyEnemy" => "target",
+        // V0.3.6：友方两档（「指定友方」在单人没有可选目标时落到自己）
+        "AllAllies" => "base.Owner.Creature.CombatState?.Allies.FirstOrDefault(c => c.IsAlive) ?? base.Owner.Creature",
+        "AnyAlly" => "target ?? base.Owner.Creature",
         _ => "base.Owner.Creature",
     };
 
@@ -15097,10 +15100,28 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line(body("target"))
              .Close();
         }
+        else if (potionTarget == "AllAllies")
+        {
+            // V0.3.6：全体友方 = 玩家这一侧（自己 + 召唤物），逐个来一遍
+            w.Open("if (base.Owner.Creature.CombatState is not null)")
+             .Open("foreach (Creature ally in base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive).ToList())")
+             .Line(body("ally"))
+             .Close().Close();
+        }
+        else if (potionTarget == "AnyAlly")
+        {
+            // V0.3.6：指定友方 —— 多人里选了谁就作用到谁；单人没有可选友方时落到自己
+            w.Open("if (target is not null && target != base.Owner.Creature)")
+             .Line(body("target"))
+             .Close()
+             .Open("else")
+             .Line(body("base.Owner.Creature"))
+             .Close();
+        }
         else
             w.Line(body("base.Owner.Creature"));
-    }
 
+    }
     private static void EmitPotionEffectOnce(CodeWriter w, CharacterProfile p, EffectSpec e, string potionTarget,
         Dictionary<EffectSpec, string>? varMap = null)
     {
@@ -15244,6 +15265,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line($"await CreatureCmd.Damage(choiceContext, {allEnemies}, {amt}, ValueProp.Move, base.Owner.Creature);");
                 else if (potionTarget == "AnyEnemy")
                     w.Line($"await CreatureCmd.Damage(choiceContext, target, {amt}, ValueProp.Move, base.Owner.Creature);");
+                else if (potionTarget == "AllAllies")
+                {
+                    // V0.3.6（用户要求「药水的目标加友方 / 全体友方」）：逐个友方（含自己与召唤物）
+                    w.Open("if (base.Owner.Creature.CombatState is not null)")
+                     .Open("foreach (Creature ally in base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive).ToList())")
+                     .Line($"await CreatureCmd.Damage(choiceContext, ally, {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Close().Close();
+                }
+                else if (potionTarget == "AnyAlly")
+                {
+                    // 指定友方：多人里选中谁就作用到谁；单人没有可选友方时落到自己身上
+                    w.Open("if (target is not null && target != base.Owner.Creature)")
+                     .Line($"await CreatureCmd.Damage(choiceContext, target, {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Close()
+                     .Open("else")
+                     .Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Close();
+                }
                 else
                     w.Line("// 目标是自己的药水不会造成伤害");
                 break;

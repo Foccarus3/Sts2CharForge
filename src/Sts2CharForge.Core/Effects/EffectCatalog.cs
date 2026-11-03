@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -2555,7 +2555,7 @@ public static class EffectCatalog
     public static bool SupportsAllUnitsOnPower(string? kind) =>
         kind is "Damage" or "ApplyPower" or "TempPower" or "Stun" or "ClearPowerOne" or "ClearPowerDebuffs";
     public static IReadOnlyList<string> PotionUsages { get; } = new[] { "CombatOnly", "AnyTime" };
-    public static IReadOnlyList<string> PotionTargets { get; } = new[] { "Self", "AnyEnemy", "AllEnemies" };
+    public static IReadOnlyList<string> PotionTargets { get; } = new[] { "Self", "AnyEnemy", "AllEnemies", "AnyAlly", "AllAllies" };
 
     /// <summary>遗物触发时机下拉的全表 = 自带 + 插件贡献的（V0.2.316）。没插件时与 <see cref="RelicTriggers"/> 相同。</summary>
     public static IReadOnlyList<TriggerOption> AllRelicTriggers =>

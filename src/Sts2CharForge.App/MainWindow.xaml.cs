@@ -41978,6 +41978,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exov)
 				{
 					Check("V0.3.5：两布重叠钩子", false, "异常：" + exov.Message);
+				}				// ----- V0.3.6：药水作用目标新增「友方」「全体友方」 -----
+				try
+				{
+					bool hasAlly = EffectCatalog.PotionTargets.Contains("AnyAlly") && EffectCatalog.PotionTargets.Contains("AllAllies");
+					var ptP = ProfileFactory.Sample();
+					var ptAll = new PotionSpec { Name = "群友药", ClassName = "PtAllAllies", TargetType = "AllAllies" };
+					ptAll.Effects.Add(new EffectSpec { Kind = "Block", Amount = 5m });
+					var ptOne = new PotionSpec { Name = "单友药", ClassName = "PtAnyAlly", TargetType = "AnyAlly" };
+					ptOne.Effects.Add(new EffectSpec { Kind = "Block", Amount = 7m });
+					string sAll = CSharpCodeGen.PotionSource(ptP, ptAll, 0);
+					string sOne = CSharpCodeGen.PotionSource(ptP, ptOne, 1);
+					Check("V0.3.6：药水「作用目标」多了「友方 / 全体友方」两档，且生成出来的类声明对应的 TargetType",
+						hasAlly && sAll.Contains("TargetType.AllAllies") && sOne.Contains("TargetType.AnyAlly")
+						&& EffectCatalog.PotionTargets.Count == 5,
+						$"目标档={string.Join("/", EffectCatalog.PotionTargets)}");
+					Check("V0.3.6：全体友方 = 逐个友方（自己 + 召唤物）；指定友方 = 选中谁就作用到谁、没有就落到自己",
+						sAll.Contains("foreach (Creature ally in base.Owner.Creature.CombatState.Allies")
+						&& sOne.Contains("if (target is not null && target != base.Owner.Creature)"),
+						"AllAllies / AnyAlly 生成正常");
+				}
+				catch (Exception expt)
+				{
+					Check("V0.3.6：药水友方目标", false, "异常：" + expt.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
