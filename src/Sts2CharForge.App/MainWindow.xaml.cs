@@ -42001,6 +42001,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception expt)
 				{
 					Check("V0.3.6：药水友方目标", false, "异常：" + expt.Message);
+				}				// ----- V0.3.7：多人卡（只会在多人游戏里出现） -----
+				try
+				{
+					var mpP = ProfileFactory.Sample();
+					mpP.Cards.Clear(); mpP.Curses.Clear(); mpP.AncientCards.Clear();
+					var mpOn = new CardSpec { Name = "多人卡", ClassName = "MpOnlyCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, MultiplayerOnly = true };
+					mpOn.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+					var mpOff = new CardSpec { Name = "普通卡", ClassName = "MpNormalCard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					mpOff.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m });
+					mpP.Cards.Add(mpOn); mpP.Cards.Add(mpOff);
+					string sOn = CSharpCodeGen.CardSource(mpP, mpOn, 0);
+					string sOff = CSharpCodeGen.CardSource(mpP, mpOff, 1);
+					Check("V0.3.7：勾了「多人卡」→ 生成 CardMultiplayerConstraint.MultiplayerOnly；不勾则一行都不写",
+						sOn.Contains("public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;")
+						&& !sOff.Contains("CardMultiplayerConstraint"),
+						$"勾选={sOn.Contains("MultiplayerOnly;")} 未勾={sOff.Contains("CardMultiplayerConstraint")}");
+					// 这条 override 必须在 OnPlay **之外**（写进方法体就是语法错误）
+					int mpOv = sOn.IndexOf("MultiplayerConstraint =>", StringComparison.Ordinal);
+					int mpPlay = sOn.IndexOf("protected override async Task OnPlay", StringComparison.Ordinal);
+					Check("V0.3.7：「多人卡」的 override 写在 OnPlay 之前（在类成员层，不在方法体里）",
+						mpOv > 0 && mpPlay > 0 && mpOv < mpPlay, $"override={mpOv} OnPlay={mpPlay}");
+				}
+				catch (Exception exmp)
+				{
+					Check("V0.3.7：多人卡", false, "异常：" + exmp.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

@@ -1,4 +1,6 @@
 using System.Text.RegularExpressions;
+
+
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Plugins;
 using Sts2CharForge.Core.Profile;
@@ -5567,9 +5569,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
              .Line("//（每次打出时在方法开头清零、每条对应效果之后累加，所以每次打出各算一次）")
              .Line($"public decimal {r.Field} {{ get; private set; }}");
 
+        // V0.3.7（用户要求「多人卡」）：只会在多人游戏里出现在卡池 / 奖励里（本体 CardMultiplayerConstraint）
+        if (c.MultiplayerOnly)
+            w.Line("public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;");
+
         w.Line()
          .Line($"public {cls}() : base({(costIsX ? 0 : CardCostOf(p, c))}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
-         .Line()
+
          .Open("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
 
         // 所有效果都挂在「卡牌时机」/「放回手牌」这类钩子上时，OnPlay 里一句都没有 —— 补一句 await，

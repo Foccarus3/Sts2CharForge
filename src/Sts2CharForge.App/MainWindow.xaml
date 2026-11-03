@@ -25,6 +25,11 @@
                 <TextBlock Text="英文类名（留空 = 自动生成）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                 <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                 <CheckBox Content="加入卡池（可被奖励/商店抽到）" Style="{StaticResource Check}" IsChecked="{Binding InCardPool}"/>
+                <!-- V0.3.7（用户要求）：多人卡 —— 只会在多人游戏里出现（本体 CardMultiplayerConstraint.MultiplayerOnly） -->
+                <CheckBox Style="{StaticResource Check}" Content="多人卡（只会在多人游戏中出现）"
+                          IsChecked="{Binding MultiplayerOnly, Mode=TwoWay}"
+                          ToolTip="勾上：这张牌只会出现在**多人**这一局的卡池 / 奖励 / 商店里（本体 CardMultiplayerConstraint.MultiplayerOnly）。&#10;单人局里它不会出现；已经拿到的牌照旧能用。"/>
+
                         <!-- V0.2.284（用户要求）：回合结束时自动打出这张牌自己 -->
                         <CheckBox Style="{StaticResource Check}" Content="回合结束时自动打出这张牌（只在自己回合结束、且它还在手牌里时）"
                                   IsChecked="{Binding AutoPlayAtTurnEnd, Mode=TwoWay}"

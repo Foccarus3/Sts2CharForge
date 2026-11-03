@@ -3280,6 +3280,14 @@ public sealed class CardSpec : SpecBase, ISlotRow
     public int StartingCopies { get => _startingCopies; set => Set(ref _startingCopies, value); }
     public bool InCardPool { get => _inCardPool; set => Set(ref _inCardPool, value); }
 
+    private bool _multiplayerOnly;
+
+    /// <summary>
+    /// V0.3.7（用户要求）：**多人卡** —— 只会在多人游戏里出现（本体的 <c>CardMultiplayerConstraint.MultiplayerOnly</c>）。
+    /// 单人 / 多人都能看：它在卡池里的筛选由本体按「这一局有几个玩家」决定。
+    /// </summary>
+    public bool MultiplayerOnly { get => _multiplayerOnly; set => Set(ref _multiplayerOnly, value); }
+
     private bool _isColorless;
 
     /// <summary>
