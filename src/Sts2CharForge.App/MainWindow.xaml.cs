@@ -42092,7 +42092,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exvg)
 				{
 					Check("V0.3.13：变量容器类", false, "异常：" + exvg.Message);
-				}				// ---------- ④ AnimationSpec 的派生属性 ----------
+				}				// ----- V0.3.14：公式里能用变量页的变量（解析成 <角色>Vars.名字） -----
+				try
+				{
+					var vfP = ProfileFactory.Sample();
+					vfP.Variables.Clear();
+					vfP.Variables.Add(new VarSpec { Name = "cnt" });
+					string? vfExpr = ForgeFormula.InlineResolver(vfP, "base.Owner", "base.Owner.Creature", "null")("cnt");
+					Check("V0.3.14：公式里的变量名解析成 <角色>Vars.名字",
+						vfExpr is not null && vfExpr.Contains("SevenVars.cnt"), vfExpr ?? "(null)");
+					var vfNo = ProfileFactory.Sample();
+					string? vfNoExpr = ForgeFormula.InlineResolver(vfNo, "base.Owner", "base.Owner.Creature", "null")("cnt");
+					vfNo.Variables.Clear();
+					Check("V0.3.14：没建变量时同名标识符不被误认（仍走参数/内置那条路）",
+						vfNoExpr is null || !vfNoExpr.Contains("Vars."), vfNoExpr ?? "(null)");
+				}
+				catch (Exception exvf)
+				{
+					Check("V0.3.14：变量在公式里可用", false, "异常：" + exvf.Message);
+				}
+				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
 					Idle = "i.gif", Attack = "a.gif", Cast = "c.gif", Hurt = "h.gif",

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
@@ -1020,10 +1020,14 @@ public static class ForgeFormula
         "Y" => $"ForgeFormulaRuntime.Stars({playerExpr})",
         _ => FormulaBuiltins.Find(id) is { } builtin
             ? builtin.Expr(playerExpr, selfExpr)
-            : (p.CustomParams.FirstOrDefault(x => x is not null
+            // V0.3.14：变量页里定义的变量（可读写计数器）→ 直接读生成的容器类
+            : (p.Variables.FirstOrDefault(x => x is not null
+                    && string.Equals((x.Name ?? "").Trim(), id, StringComparison.Ordinal)) is { } vr
+                ? $"{Naming.From(p).CharClass}Vars.{vr.Name}"
+                : (p.CustomParams.FirstOrDefault(x => x is not null
                     && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)) is { } param
                 ? InlineParam(param, playerExpr, selfExpr, targetExpr, p)
-                : null),
+                : null)),
     };
 
     /// <summary>把参数表达式里的局部变量替换成内联写法（见 <see cref="ConditionResolver"/> / <see cref="InlineResolver"/>）。</summary>
