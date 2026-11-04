@@ -268,6 +268,12 @@ public sealed class CharacterProfile
     public ObservableCollection<ParamSpec> CustomParams { get; set; } = new();
 
     /// <summary>
+    /// V0.3.12（用户定稿）：**变量页**里的自定义变量 —— 可读写（计数器）、值可写公式、
+    /// 可勾「全局」（本局内跨战斗保留）。与只读的 <see cref="CustomParams"/> 分开存。
+    /// </summary>
+    public ObservableCollection<VarSpec> Variables { get; set; } = new();
+
+    /// <summary>
     /// 「组」（「自定义参数 / 组」页的下半部分，见 <see cref="CardGroupSpec"/>）。
     /// 卡牌属性栏右边勾选进入组；组只在生成器里用于查看与「范围」筛选，不参与生成出来的模组代码。
     /// </summary>

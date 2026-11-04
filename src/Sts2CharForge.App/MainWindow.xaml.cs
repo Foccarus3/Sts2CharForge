@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -42046,6 +42046,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception expa)
 				{
 					Check("V0.3.10：plugin_assets 保留", false, "异常：" + expa.Message);
+				}				// ----- V0.3.12：变量页模型（名字规范 / 保留字 / 循环引用预留） -----
+				try
+				{
+					Check("V0.3.12：变量名规范化 —— 空白/符号收成下划线、中文被拒（空串）、最多 12 位",
+						VarNames.Normalize("  形态 层数 ") == "" && VarNames.Normalize("  ATK 2 ") == "ATK_2"
+						&& VarNames.Normalize("abcdefghijklmno").Length == 12,
+						$"中文=「{VarNames.Normalize("形态 层数")}」 ATK=「{VarNames.Normalize("  ATK 2 ")}」 超长={VarNames.Normalize("abcdefghijklmno").Length}");
+					Check("V0.3.12：变量名规则 —— X / Y 等保留名被拒绝，多字母名合法",
+						VarNames.Check("X") is not null && VarNames.Check("ATK_2") is null && VarNames.Check("1abc") is not null
+						&& VarNames.Check("abcdefghijklm") is not null,
+						$"X={VarNames.Check("X")} ATK_2={VarNames.Check("ATK_2") ?? "ok"} 1abc={VarNames.Check("1abc")} 13位={VarNames.Check("abcdefghijklm")}");
+					var varProf = ProfileFactory.Sample();
+					varProf.Variables.Add(new VarSpec { Name = "cnt", Formula = "0", Global = true, AllowNegative = true });
+					varProf.Variables.Add(new VarSpec { Name = "atk", Formula = "cnt + 1" });
+					Check("V0.3.12：变量集合能存进 profile（名字 / 公式 / 全局 / 允许负数）",
+						varProf.Variables.Count == 2 && varProf.Variables[0].Global && varProf.Variables[0].AllowNegative
+						&& varProf.Variables[1].Formula == "cnt + 1",
+						string.Join(" | ", varProf.Variables.Select(v => v.Display)));
+					Check("V0.3.12：自动起名会跳过已占用的名字",
+						VarNames.NextFree(varProf.Variables.Select(v => v.Name)) is string nf && nf != "cnt" && nf != "atk",
+						"下一个=" + VarNames.NextFree(varProf.Variables.Select(v => v.Name)));
+				}
+				catch (Exception exvar)
+				{
+					Check("V0.3.12：变量模型", false, "异常：" + exvar.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

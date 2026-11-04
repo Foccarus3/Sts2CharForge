@@ -13738,6 +13738,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Open(AllUnitsGuardLine)
                      .Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList(), {amt}, ValueProp.Move, base.Owner.Creature);")
                      .Close();
+                else if (e.TargetSide == "AllAllies")
+                {
+                    // V0.3.12（用户实测：诅咒「魔弹-绝望」作用对象=全体友方，却打到了敌人）：
+                    // 这里以前只有 Self / AllUnits / **其余一律 HittableEnemies** 三档 ——
+                    // 「全体友方 / 指定友方」掉进了「其余」，变成打全体敌人。现在按友方逐个来。
+                    w.Open("if (base.Owner.Creature.CombatState is not null)")
+                     .Open("foreach (Creature __allyTarget in base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive).ToList())")
+                     .Line($"await CreatureCmd.Damage(choiceContext, __allyTarget, {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Close().Close();
+                }
+                else if (e.TargetSide is "AnyAlly" or "Ally")
+                    // 「指定友方」在这条链上没有选中目标这一说（诅咒 / 遗物 / 状态触发）→ 落到自己身上
+                    w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Move, null, null);");
                 else
                     w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, ValueProp.Move, base.Owner.Creature);");
                 break;
