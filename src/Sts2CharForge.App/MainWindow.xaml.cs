@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -25642,8 +25642,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				formCard.IsForged = true;
 				formCard.ForgeGraph = FormProbe("UiCheckFormSingle", wireWho: true);
 				string singleSrc = CSharpCodeGen.CardSource(formProf, formCard, 0);
-				Check("V0.2.246：「只叠一层」的状态按 0/1 夹取（『等于 1 层』不会再因为内部层数变 2 而失效）",
-					singleSrc.Contains("<= 0m ? 0m : 1m", StringComparison.Ordinal), "夹取了");
+				Check("V0.3.9：【状态】节点读**真实层数**（不再对「只叠一层」的状态夹成 0/1）——「层数 > 1」这类判据才可能成立",
+					!singleSrc.Contains("<= 0m ? 0m : 1m", StringComparison.Ordinal) && singleSrc.Contains("【状态】（真实层数）"), "读原值");
 
 				var multiCard = new CardSpec { Name = "自检层叠卡", ClassName = "UiCheckFormCard2", Rarity = "Common", InCardPool = true, Cost = 1, CardType = "Attack" };
 				multiCard.IsForged = true;
@@ -25651,7 +25651,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				formProf.Cards.Add(formCard);
 				formProf.Cards.Add(multiCard);
 				string multiSrc = CSharpCodeGen.CardSource(formProf, multiCard, 0);
-				Check("V0.2.246：（对照）可叠层的状态不加夹取（层数照原样读）",
+				Check("V0.3.9：（对照）可叠层的状态同样读原值",
 					!multiSrc.Contains("<= 0m ? 0m : 1m", StringComparison.Ordinal), "仍读原值");
 
 				// 【状态】节点没接【对象】→ 默认读「打出时选中的那个敌人」；校验器要把这件事说出来

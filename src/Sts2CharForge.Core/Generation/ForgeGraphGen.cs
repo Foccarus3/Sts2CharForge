@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -2749,15 +2749,11 @@ public static class ForgeGraphGen
                 var inNode = IncomingNode(g, node, 0);
                 string who = (inNode is null ? null : UnitExpr(g, inNode)) ?? ValueDefaultUnit;
                 string amountCall = $"ForgeFormulaRuntime.PowerAmount({who}, \"{powerId}\")";
-                // V0.2.246（用户报「形态生效、效果没生效」）：**只叠一层（Single）**的自定义状态，
-                // 本体的 <c>PowerStackType.Single</c> 只是「层数不显示」，<c>PowerCmd.Apply</c> 第二次照样
-                // <c>SetAmount(2)</c>（内部层数变 2）。而图上「等于 1 层」是按语义写的最自然写法 ——
-                // 一旦这个状态被施加过两次，条件不成立、整段效果被跳过（图标还在，看起来像「效果没生效」）。
-                // 所以读「只叠一层」的状态时**按语义夹成 0 / 1**（有它就是 1 层、没有就是 0），
-                // 让「等于 1 / 小于 1 / 大于等于 1」全都对得上；不碰模型本身（衰减 / 移除都不受影响）。
-                if (IsSingleLayerCustomPower(p, powerId))
-                    amountCall = $"({amountCall} <= 0m ? 0m : 1m)";
-                sb.AppendLine(indent + $"decimal {varName} = {amountCall};   // fg:{node.Id}【状态】");
+                // V0.3.9（用户要求，取代 V0.2.246 的夹取）：【状态】节点读**真实层数**。
+                // 以前对「只叠一层（Single）」的自定义状态夹成 0/1，好处是「等于 1 层」不会被内部层数 2 搞坏，
+                // 代价是「层数 > 1 / < 2」这类判据永远不成立（用户实测：按层数写条件，第一次仍然命中）。
+                // 现在一律读原值；要「有没有这个状态」请用「状态列表」节点，或在关系符上写 >= 1。
+                sb.AppendLine(indent + $"decimal {varName} = {amountCall};   // fg:{node.Id}【状态】（真实层数）");
                 return varName;
             }
             // V0.2.192（用户要求「在锻造增加状态列表」）：【状态列表】—— 一群状态的「个数 / 层数合计」。
