@@ -42071,6 +42071,27 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exvar)
 				{
 					Check("V0.3.12：变量模型", false, "异常：" + exvar.Message);
+				}				// ----- V0.3.13：变量容器类的生成（本场战斗 / 本局两档 + 负数夹取） -----
+				try
+				{
+					var vgP = ProfileFactory.Sample();
+					vgP.Variables.Clear();
+					vgP.Variables.Add(new VarSpec { Name = "cnt", Global = false, AllowNegative = false, Max = 10, Note = "本场计数" });
+					vgP.Variables.Add(new VarSpec { Name = "run_pts", Global = true, AllowNegative = true, Note = "本局累计" });
+					string vgSrc = ForgeVarsGen.Source(vgP, Naming.From(vgP));
+					Check("V0.3.13：变量容器类生成 —— 两个变量、各自作用域的分组重置、负数开关生效",
+						vgSrc.Contains("public static int cnt") && vgSrc.Contains("public static int run_pts")
+						&& vgSrc.Contains("Math.Max(0, value)") && vgSrc.Contains("Math.Min(10,")
+						&& vgSrc.Contains("public static void ResetCombat()") && vgSrc.Contains("public static void ResetRun()")
+						&& vgSrc.Contains("ResetRun()") && vgSrc.Contains("run_pts = 0;"),
+						$"类名={ForgeVarsGen.ClassName(Naming.From(vgP))} 夹取={vgSrc.Contains("Math.Min(10,")} Max行=" + (vgSrc.Split((char)10).FirstOrDefault(x => x.Contains("set =>")) ?? ""));
+					var vgEmpty = ProfileFactory.Sample();
+					vgEmpty.Variables.Clear();
+					Check("V0.3.13：不建变量时不生成容器类（老存档输出不受影响）", !ForgeVarsGen.Needed(vgEmpty), "need=False");
+				}
+				catch (Exception exvg)
+				{
+					Check("V0.3.13：变量容器类", false, "异常：" + exvg.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
