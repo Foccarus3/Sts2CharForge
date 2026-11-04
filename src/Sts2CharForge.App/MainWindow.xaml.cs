@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -42026,6 +42026,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exmp)
 				{
 					Check("V0.3.7：多人卡", false, "异常：" + exmp.Message);
+				}
+				// ----- V0.3.10：清旧工程保留 plugin_assets（插件作者报「构建后图片文件夹消失」） -----
+				try
+				{
+					string paRoot = Path.Combine(Path.GetTempPath(), "cf_pa_" + Guid.NewGuid().ToString("N"));
+					Directory.CreateDirectory(Path.Combine(paRoot, "plugin_assets", "enemygen"));
+					string paKeep = Path.Combine(paRoot, "plugin_assets", "enemygen", "enemy.png");
+					File.WriteAllBytes(paKeep, new byte[] { 1, 2, 3 });
+					File.WriteAllText(Path.Combine(paRoot, "project.godot"), "; generated");
+					Directory.CreateDirectory(Path.Combine(paRoot, "cs"));
+					File.WriteAllText(Path.Combine(paRoot, "cs", "old.cs"), "// stale");
+					Sts2CharForge.Core.Generation.ModGenerator.ClearGeneratedProjectKeepingPluginAssets(paRoot);
+					Check("V0.3.10：清旧工程时保留 plugin_assets（插件图片不随构建消失），其余旧文件照常清掉",
+						File.Exists(paKeep) && !File.Exists(Path.Combine(paRoot, "cs", "old.cs")) && !File.Exists(Path.Combine(paRoot, "project.godot")),
+						$"资产={File.Exists(paKeep)} 旧cs={File.Exists(Path.Combine(paRoot, "cs", "old.cs"))}");
+					try { Directory.Delete(paRoot, true); } catch { }
+				}
+				catch (Exception expa)
+				{
+					Check("V0.3.10：plugin_assets 保留", false, "异常：" + expa.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

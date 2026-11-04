@@ -118,7 +118,13 @@ public static class ModGenerator
         // 会引用已经不存在的类 → 编译直接失败。清干净重新写，保证「生成出来的 = 当前配置」。
         if (Directory.Exists(root) && LooksLikeGeneratedProject(root))
         {
-            try { FsSafe.DeleteTree(root); Log("  已清掉上一次生成的工程（避免旧文件残留导致编译失败）"); }
+            try
+            {
+                // V0.3.10：清旧工程但保留 `plugin_assets/`（插件的图片不随构建消失，详见
+                // ClearGeneratedProjectKeepingPluginAssets 的注释）。
+                ClearGeneratedProjectKeepingPluginAssets(root);
+                Log("  已清掉上一次生成的工程（保留 plugin_assets：插件资产不随构建删除）");
+            }
             catch (Exception ex)
             {
                 // 旧工程里只要有一个带「只读 / 隐藏」属性的文件，整棵目录就删不掉（异常消息里出现的
@@ -720,6 +726,25 @@ public static class ModGenerator
         foreach (char bad in Path.GetInvalidFileNameChars()) s = s.Replace(bad, '_');
         s = s.Trim().TrimEnd('.');
         return s.Length == 0 ? null : s;
+    }
+
+    /// <summary>
+    /// V0.3.10：清掉上一次生成的工程，但**保留 `plugin_assets/`**。
+    ///
+    /// <para>插件的图片 / 资产（敌人生成器这类）是插件自己的数据，不该被「清理旧工程」删掉 ——
+    /// 插件作者实测「点击构建后，工程里放图片的文件夹直接消失」。约定：原图放
+    /// <c>plugins/&lt;插件id&gt;/assets/</c>（永久），工程里的 <c>plugin_assets/&lt;插件id&gt;/</c>
+    /// 是每次生成重新拷出来的副本；清工程时保留它，避免「清一次就永久丢图」。</para>
+    /// </summary>
+    public static void ClearGeneratedProjectKeepingPluginAssets(string root)
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (string child in Directory.GetFileSystemEntries(root))
+        {
+            if (string.Equals(Path.GetFileName(child), "plugin_assets", StringComparison.OrdinalIgnoreCase)) continue;
+            if (Directory.Exists(child)) FsSafe.DeleteTree(child);
+            else FsSafe.DeleteFile(child);
+        }
     }
 
     /// <summary>这个目录看着像「本工具生成过的工程」吗？（清理旧工程前的安全阀，别把随便一个目录删了）</summary>
