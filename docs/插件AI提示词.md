@@ -407,3 +407,34 @@ emit 里的 `{amount}` → `base.DynamicVars["Heal"].BaseValue`，text 里的 `{
 `"signature": "async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)"`。
 写了它，`hook` 只当方法名（必须出现在签名里），生成端原样写 override + 你的 guard + 效果体；
 签名里若已声明 choiceContext 就不会重复声明。写错是编译期报错。
+
+---
+
+## 24. 图片 / 资源文件放哪里（**硬规则**，V0.3.10）
+
+需要图片的插件（敌人生成器、自定义美术这类）**必须**按下面两条走，否则点一次「构建」图片就没了：
+
+**① 原图只放插件自己的 `assets\`，路径存相对的**
+
+* 页面上让用户选图 → 代码里调用 `host.ImportAsset(源路径, "名字.png")`：
+  它把文件复制到 `plugins\<你的插件id>\assets\名字.png`，并返回**相对路径** `assets/名字.png`；
+* 把返回的相对路径存进插件自己的数据（`IPluginStore` / 页面栏位 / 清单默认值都行），
+  **不要**存 `C:\Users\...\Downloads\x.png` 这种绝对路径（换机器 / 重装就失效）；
+* 也**不要**把图写到工程根目录或 `cs\` 里 —— 那些地方每次生成都会被清。
+
+**② 工程里的 `plugin_assets\<插件id>\` 是副本，构建不会删它**
+
+* 生成时工具会把 `plugins\<id>\assets\*` 复制到 `<工程>\plugin_assets\<id>\`；
+* 要把资源写进生成出来的文件，用 `EditorOutputFile { Path = "cs/…cs", AssetPath = "assets/名字.png" }`，
+  工具负责复制到工程内并给出 `plugin_assets\<id>\名字.png`；
+* **V0.3.10 起**清理旧工程时**保留** `plugin_assets\`（其余旧文件照常清），所以图片不会「构建一次就消失」；
+* 保留的是**固定目录名** `plugin_assets`；插件自建别的目录（`images\` 之类）不在保留名单里。
+
+**③ 自检清单（交付前过一遍）**
+
+| 检查 | 合格标准 |
+|---|---|
+| 存的是相对路径吗 | 数据里出现 `assets/…`，**没有**盘符 / `C:\` |
+| 图片在插件目录里吗 | `plugins\<id>\assets\` 下能看到那个文件 |
+| 连续生成两次 | 第二次点「构建」后 `plugin_assets\<id>\` 里图片**还在** |
+| 生成出来的 cs 里怎么引用 | 用工程内相对路径 `plugin_assets\<id>\名字.png`（或你生成时自己拼的等价相对路径） |
