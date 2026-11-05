@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Plugins;
+using Sts2CharForge.Core.Plugins;
 
 namespace Sts2CharForge.Core.Effects;
 
@@ -89,7 +89,9 @@ public static class EffectFieldPolicy
         // V0.2.154：播放音效 —— 它的「数值」是音量%（SfxCmd.Play 那一句里写死），没有可升级的数值
         or "PlaySfx"
         // V0.2.155：播放上传的音频文件同理（音量写死在 AudioStreamPlayer 那个块里）
-        or "PlaySoundFile");
+        or "PlaySoundFile"
+        // V0.3.16：变量写操作没有「升级增量」这个落点（数值在触发时现算）
+        or "VarWrite");
 
     /// <summary>
     /// 「下回合生效」那一栏要不要显示。

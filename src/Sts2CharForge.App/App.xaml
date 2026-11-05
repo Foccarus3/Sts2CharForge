@@ -395,7 +395,30 @@
                      ⚠ V0.2.132：卡牌链的「概率」「下回合生效」已经搬到上面的 5、6 行，
                      这里那两行的 Visibility 因此多了一个「非卡牌链」条件（其余四条链照旧）。 -->
                 <StackPanel Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="2" Margin="6,4,0,0">
-                    <!-- 「取几张」（V0.2.150 起绑 ShowCountModeRow）：恰好 N / 最多 N（可以少选）/ 任意张。
+                    <!-- V0.3.16：「变量」效果——先选变量页里的哪个变量，再选 + / - / = / 清零。
+                         值走上面的「数值（公式）」那一栏（留空 = 0）。 -->
+                    <Grid Visibility="{Binding IsVarWrite, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="变量（变量页）" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding VarChoices, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  SelectedItem="{Binding WriteVar}"
+                                  ToolTip="「变量」页里定义的变量名（计数器）。还没建变量时这里是空的 —— 到「变量」页点「新建变量」。"/>
+                    </Grid>
+                    <Grid Visibility="{Binding IsVarWrite, Converter={StaticResource BoolToVis}}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="怎么改" Style="{StaticResource Label}" MinWidth="96"/>
+                        <ComboBox Grid.Column="1" Style="{StaticResource Pick}"
+                                  ItemsSource="{Binding VarWriteOps, RelativeSource={RelativeSource AncestorType=Window}}"
+                                  DisplayMemberPath="Display" SelectedValuePath="Id"
+                                  SelectedValue="{Binding WriteOp}"
+                                  ToolTip="「+ 加 / - 减」= 在现有值上加减；「= 设为」= 直接改成这个值；「清零」= 设成 0（这一档不看数值）。&#10;不允许负数 / 上限由「变量」页那一栏决定，这里不用重复夹取。"/>
+                    </Grid>
+                    <!-- 取几张（V0.2.150 起绑 ShowCountModeRow）：恰好 N / 最多 N（可以少选）/ 任意张。
                          判据 = 机械测量出来的「生成端真的读 CountMode 的种类」（比旧的 UsesCountMode 多几种）。 -->
                     <Grid Visibility="{Binding ShowCountModeRow, Converter={StaticResource BoolToVis}}">
                         <Grid.ColumnDefinitions>

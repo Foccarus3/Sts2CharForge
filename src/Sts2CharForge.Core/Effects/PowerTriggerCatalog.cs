@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Generation;
+using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
 
 using Sts2CharForge.Core.Plugins;
@@ -205,6 +205,8 @@ public static class PowerTriggers
         // ⚠ 以前漏了这一条：生成端（CustomPowerGen）其实**已经**实现了，但这份清单没写上 →
         // 校验器会把「状态里放声音」直接拦成错误（用户根本用不了）。
         "PlaySfx", "PlaySoundFile",
+        // V0.3.16：变量写操作（只改生成的容器类静态属性，一个上下文都不需要）
+        "VarWrite",
         // 「升级卡牌（全局）」= 直接改牌组（本体「香盒 Pomander」那种），不需要卡牌上下文，状态里也能用
         "UpgradeCardGlobal",
         // 获得药水（需求 ⑨）：本体 PotionCmd.TryToProcure 只收玩家（不收 choiceContext），
@@ -394,6 +396,9 @@ public static class PowerTriggers
             // 播放上传的音频文件（V0.2.155）：这里拿不到配置（没有 profile 参数），直接用文件名
             "PlaySoundFile" => $"播放音频：{(string.IsNullOrWhiteSpace(e.Sfx) ? "（没选音频）" : e.Sfx.Trim())}"
                 + (e.SfxVolumePercent == 100m ? "" : $"（音量 {e.SfxVolumePercent:0.##}%）"),
+            // V0.3.16：变量写操作（状态描述里也要写清是哪个变量、怎么改）
+            "VarWrite" => $"变量「{(string.IsNullOrWhiteSpace(e.WriteVar) ? "（没选）" : e.WriteVar)}」{e.VarWriteOpZh}"
+                + (e.WriteOp == "Clear" ? "" : $" [blue]{n}[/blue]"),
             // 获得药水（需求 ⑨）：指定档写清是哪一瓶（中文名从「目标药水」目录里取），随机档写「随机」。
             // 不写这一条的话状态描述里会原样印出「GainPotion」（界面 / 卡面都是给人看的）。
             "GainPotion" => e.IsPotionRandom

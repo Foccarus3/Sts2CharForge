@@ -378,7 +378,9 @@ public static class ModGenerator
         if (ForgeVarsGen.Needed(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, ForgeVarsGen.ClassName(n) + ".cs"), ForgeVarsGen.Source(profile, n));
+            ProjectFilesGen.WriteText(Path.Combine(cs, ForgeVarsGen.ClassName(n) + "Reset.cs"), ForgeVarsGen.ResetPatchSource(profile, n));
             Log($"  已生成变量容器：cs/{ForgeVarsGen.ClassName(n)}.cs（{profile.Variables.Count(v => v is not null && v.Name.Length > 0)} 个变量）");
+            Log($"  已生成变量重置：cs/{ForgeVarsGen.ClassName(n)}Reset.cs（战斗开始 / 新开一局）");
         }
 
         // 「数值公式」的卡面现算变量（用户要求：卡面要看到算出来的数字，不是「M/2」这种公式文本）

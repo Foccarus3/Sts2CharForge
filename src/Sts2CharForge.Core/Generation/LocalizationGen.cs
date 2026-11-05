@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -439,6 +439,9 @@ public static class LocalizationGen
             NextTurn = node.GetFlag("NextTurn", false),
             ChanceEnabled = chanceN.Runtime || (int)Math.Round((double)chanceN.Value) < 100,
             ChancePercent = chanceN.Runtime ? 100m : (decimal)chanceN.Value,
+            // V0.3.16：变量写操作（图上的两个字段）
+            WriteVar = node.Get("WriteVar", ""),
+            WriteOp = EffectSpec.NormalizeVarOp(node.Get("WriteOp", "")),
         };
         if (hitsN.Runtime) spec.RepeatFormula = hitsN.Text;
         if (timesN.Runtime) spec.TimesFormula = timesN.Text;
@@ -1507,7 +1510,11 @@ public static class LocalizationGen
         }
         string? formulaText = e.UsesAmountFormula && isCard ? ForgeFormula.DisplayText(e.AmountFormula) : null;
         string var = varOverride
-            ?? (e.AmountIsXEffective && isCard ? "X"
+            ?? (e.IsVarWrite
+                ? (e.UsesAmountFormula
+                    ? ForgeFormula.DisplayText(e.AmountFormula)
+                    : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture))
+                : e.AmountIsXEffective && isCard ? "X"
                 : literalAmount ? e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
                 : "{" + CSharpCodeGen.DisplayVarNameOf(e, varMap) + ":diff()}");
         // 「取任意张 / 最多 N 张 / 全部」（需求：「消耗任意张手牌」+「选择所有手牌」）：
@@ -1584,6 +1591,9 @@ public static class LocalizationGen
 
         string text = e.Kind switch
         {
+            // V0.3.16：变量写操作（卡面 / 遗物 / 药水 / 状态描述共用这一句）
+            "VarWrite" => $"{repeat}变量「{e.WriteVar}」{e.VarWriteOpZh}"
+                + (e.WriteOp == "Clear" ? "。" : " " + var + "。"),
             // 伤害：命中次数 > 1（或 = X）要写出来，本体「旋风斩 / 天际钻头」的描述就是「造成 X 点伤害 X 次」
             // V0.2.194：「等同于本牌获得格挡」那种写法（先获得格挡、再按格挡打伤害，像本体「全身撞击」）
             // 卡面印不出数字（这条读数没有现算预览值），改印一句说人话的。

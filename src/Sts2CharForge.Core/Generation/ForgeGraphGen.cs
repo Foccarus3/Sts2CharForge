@@ -3727,6 +3727,8 @@ public static class ForgeGraphGen
                 ? "this.SetToFreeThisTurn();   // 本回合这张牌自己费用变 0（本体 CardModel.SetToFreeThisTurn：能量费 + 额外资源量费一起）"
                 : null,
             "PlaySfx" => ViaCodeWriter(w => CSharpCodeGen.EmitPlaySfx(w, EffectFromNode(node))),
+            // V0.3.16：变量写操作（数值入口 / 本模块的数字都能用，amount 已是公式或字面量）
+            "VarWrite" => ViaCodeWriter(w => w.Line(CSharpCodeGen.VarWriteLine(p, EffectFromNode(node), amount))),
             // V0.2.231：「会被下一个自定义音频顶替」在锻造图上同样生效（把 p 传下去才知道要不要走小助手）
             "PlaySoundFile" => ViaCodeWriter(w => CSharpCodeGen.EmitPlaySoundFile(w, EffectFromNode(node), p)),
             "Outbreak" => ViaCodeWriter(w => CSharpCodeGen.EmitOutbreak(w, EffectFromNode(node), amount,
@@ -4393,6 +4395,8 @@ public static class ForgeGraphGen
         // V0.2.168：卡牌页 / 状态页早就支持、节点图以前没接的这几档（用户截图报的「删除卡牌（全局：从牌组删牌）」）
         "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal", "UpgradeCardGlobal",
         "Outbreak", "PlaySfx", "PlaySoundFile", "BoostCard",
+        // V0.3.16：变量写操作（+ / - / = / 清零）—— 四张布都能用，数值入口 / 本模块数字都行
+        "VarWrite",
         "CopyCard", "Scry", "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust",
         // V0.2.170：要「打出这张牌」那一刻上下文的几种（用户点的第 3 条）——
         // 重放卡牌 / 回合结束时自动打出 / 将此牌放回手牌（和卡牌页共用同一份发射器）。

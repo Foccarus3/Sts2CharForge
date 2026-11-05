@@ -366,11 +366,14 @@ public static class ForgeFormula
                 if (name.Length > 1)
                 {
                     FormulaBuiltin? builtin = FormulaBuiltins.Find(name);
-                    if (builtin is null)
-                        throw new FormulaError($"「{name}」不是一个参数，也不是内置只读量。参数名只有一个字母（M、N…）；"
-                            + $"想用「当前回合数 / 丢了第几张 / 身上有几个状态」这类实时读数，请用内置名字：{FormulaBuiltins.Names}。"
-                            + "（true / false 也可以直接写。）");
-                    return new VarNode(builtin.Id);
+                    if (builtin is not null) return new VarNode(builtin.Id);
+                    // V0.3.16：变量页的变量名可以超过 1 个字母（用户定稿：最多 12 位）。
+                    // 这里先当成变量名交给 resolver / 校验器（它们认得变量页里有什么）；
+                    // **超过 12 位的不可能是变量名**，仍按老行为当场报错（保留「乱名字拦住 + 列内置名单」的回归）。
+                    if (name.Length <= VarNames.MaxLength) return new VarNode(name);
+                    throw new FormulaError($"「{name}」不是一个参数，也不是内置只读量。参数名只有一个字母（M、N…）；"
+                        + $"想用「当前回合数 / 丢了第几张 / 身上有几个状态」这类实时读数，请用内置名字：{FormulaBuiltins.Names}。"
+                        + "（变量页的变量名最多 12 位。）");
                 }
                 return new VarNode(name.ToUpperInvariant());
             }
@@ -1056,9 +1059,14 @@ public static class ForgeFormula
         "Y" => "__Y",
         _ => FormulaBuiltins.Find(id) is { } builtin
             ? builtin.Expr("__fgPlayer", "__fgSelf")
-            : (p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal))
-                ? ParamVar(id)
-                : null),
+            // V0.3.16：变量页的变量在**卡牌公式**里也要能读（V0.3.14 只接了内联解析器，
+            // 卡牌走的是这个 CardResolver —— 不补的话 `cnt + 3` 会退回「动态变量 Value」）
+            : (p.Variables.FirstOrDefault(x => x is not null
+                    && string.Equals((x.Name ?? "").Trim(), id, StringComparison.Ordinal)) is { } vr
+                ? $"{Naming.From(p).CharClass}Vars.{vr.Name}"
+                : (p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal))
+                    ? ParamVar(id)
+                    : null)),
     };
 
     /// <summary>

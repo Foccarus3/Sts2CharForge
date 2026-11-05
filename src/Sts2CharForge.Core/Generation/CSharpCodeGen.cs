@@ -8687,6 +8687,32 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 所以放在 <see cref="HasNoDynamicVar"/> 里 —— 两件事分开写（混在一起时踩过坑，见那边的注释）。
     /// </summary>
     /// <summary>
+    /// V0.3.16：生成「变量」写操作那一条语句。
+    ///
+    /// <para>夹取（不允许负数 / 上限）由生成的 <c>&lt;角色&gt;Vars</c> 属性 setter 负责，这里只管
+    /// <c>+= / -= / = 0</c> 四种写法。值一律先转 <c>int</c>（小数截断）。</para>
+    /// <para>变量名在变量页里找不到时只写一行注释、不生成编译不过的代码；这个组合由校验器**报错**拦住。</para>
+    /// </summary>
+    public static string VarWriteLine(CharacterProfile p, EffectSpec e, string amountExpr)
+    {
+        string cls = ForgeVarsGen.ClassName(Naming.From(p));
+        string name = (e.WriteVar ?? "").Trim();
+        if (name.Length == 0)
+            return "// ⚠「变量」效果没有选变量（变量页里的名字）：这一条不生成（校验器会报错）";
+        if (!p.Variables.Any(v => v is not null && string.Equals(v.Name, name, StringComparison.Ordinal)))
+            return $"// ⚠ 变量「{name}」不在变量页里（可能改名 / 删除了）：这一条不生成（校验器会报错）";
+        string val = $"(int)({amountExpr})";
+        string shown = e.UsesAmountFormula ? e.AmountFormulaText : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+        return e.WriteOp switch
+        {
+            "Sub" => $"{cls}.{name} -= {val};   // 变量 {name} 减 {shown}",
+            "Set" => $"{cls}.{name} = {val};   // 变量 {name} 设为 {shown}",
+            "Clear" => $"{cls}.{name} = 0;   // 变量 {name} 清零",
+            _ => $"{cls}.{name} += {val};   // 变量 {name} 加 {shown}",
+        };
+    }
+
+    /// <summary>
     /// 「播放音效」（V0.2.154）：本体所有声音都走 FMOD，一句 <c>SfxCmd.Play(事件路径, 音量)</c> 就行
     /// （本体自己也是这么放的：<c>CreatureCmd</c> 里的 block_gain / heal / PlayDamage…）。
     ///
@@ -8980,7 +9006,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 和别的「没有数值的效果」撞名 → 本体 DynamicVarSet 抛 duplicate key（开新局就崩）。
         or "ReturnSelfToHand"
         // 「抽到这张牌时它本场战斗费用 -N」：同样写死在卡自己的 AfterCardDrawn 里，不声明动态变量
-        or "CheapenSelfOnDraw";
+        or "CheapenSelfOnDraw"
+        // V0.3.16：变量写操作没有「这张牌的数值」这个动态变量（值直接写进容器类的属性）
+        or "VarWrite";
 
     /// <summary>
     /// 这一条效果到底有没有动态变量（CanonicalVars 会不会给它声明一个）。分成两部分：
@@ -9419,14 +9447,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 求值用的局部变量（__pM / __X / __Y…）由 OnPlay（或卡牌时机钩子）开头的
         // ForgeGraphGen.EmitCardFormulaPrologue 先声明好 —— 这里只管用。
         string? formula = ForgeGraphGen.CardFormulaExpr(p, e, out _);
-        string amt = formula ?? AmountExpr(e, useX, varMap);
+        // V0.3.16：变量写操作的固定数值不走动态变量（这一档不声明它，会 CS0103 / KeyNotFound）
+        string amt = formula ?? (e.Kind == "VarWrite" ? Lit.Dec(e.Amount) : AmountExpr(e, useX, varMap));
         // ===== 升级增量（用户实测：「升级增量怎么没效果了」）=====
         // 打了「数值公式」的卡，打出时用的是**公式算出来的那个值**（不读 CanonicalVars 里的变量），
         // 而本体的升级增量是 `OnUpgrade` 里 `base.DynamicVars["Damage"].UpgradeValueBy(3m)` —— 改的是变量，
         // 两边不搭界，于是升级前后打出来一样多。这里把增量直接并进「打出时」的表达式
         // （写法沿用本体习惯的「升级前后两个数」，见 <see cref="UpgradeAwareAmount"/>）。
         // 变量那边也同步带上增量（见 VarDeclarationCore / FormulaVarsSource），卡面数字才和打出来的一致。
-        if (formula is not null && e.UpgradeAmount != 0m) amt = UpgradeAwareAmount(e, formula);
+        if (formula is not null && e.UpgradeAmount != 0m && e.Kind != "VarWrite") amt = UpgradeAwareAmount(e, formula);
         // 作用对象是「队友」时写一行标记：生成出来的语句和「指定敌人」**长得一模一样**
         //（都是 `cardPlay.Target`），回读分不出这两档，只能靠标记还原（见 ProjectRecovery 的 pendingTargetSide）。
         // V0.2.132：「全体单位」的循环体（CombatState.Creatures）也认不出来，一起写标记；
@@ -9522,6 +9551,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 播放音效（V0.2.154）：一句 SfxCmd.Play 就完事（三条链共用同一个发射器）
             case "PlaySfx":
                 EmitPlaySfx(w, e);
+                break;
+
+            // V0.3.16：变量写操作（卡牌链 —— 值走 amt，公式已在 EmitCardEffectOnce 里算好）
+            case "VarWrite":
+                w.Line(VarWriteLine(p, e, amt));
                 break;
 
             // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer（不走 FMOD —— 模组注册不了 FMOD 事件）
@@ -13579,6 +13613,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitPlaySfx(w, e);
                 break;
 
+            // V0.3.16：变量写操作（遗物链 —— amt 已是内联公式 / 固定值）
+            case "VarWrite":
+                w.Line(VarWriteLine(p, e, amt));
+                break;
+
             // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer，同样不需要 choiceContext / 目标
             case "PlaySoundFile":
                 EmitPlaySoundFile(w, e, p);
@@ -15186,6 +15225,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 播放音效（V0.2.154）：药水上也能放（SfxCmd 静态，不需要 choiceContext / 目标）
             case "PlaySfx":
                 EmitPlaySfx(w, e);
+                break;
+
+            // V0.3.16：变量写操作（药水链 —— 同遗物链，amt 是内联公式 / 固定值）
+            case "VarWrite":
+                w.Line(VarWriteLine(p, e, amt));
                 break;
 
             // 播放上传的音频文件（V0.2.155）：药水上也能放

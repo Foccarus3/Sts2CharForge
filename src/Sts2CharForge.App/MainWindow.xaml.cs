@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -488,6 +488,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			// 「自定义参数 / 组」两页：换存档要重新挂监听（列表里的显示文字是算出来的）
 			HookParamsAndGroups();
 			Raise("Profile");
+			// V0.3.16：「变量」效果的下拉候选也跟当前存档走
+			Raise("VarChoices");
+			Raise("VarWriteOps");
 			Raise("PresetSelection");
 			Raise("FrameSelection");
 			// V0.2.358：插件页的值按**当前存档**隔离存（换存档 = 换一套值）；这里把「当前是哪个存档」告诉注册表。
@@ -2240,6 +2243,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			return rows;
 		}
 	}
+
+	/// <summary>V0.3.16：「变量」效果里那个「变量」下拉的候选（变量页里定义的名字）。</summary>
+	public IReadOnlyList<string> VarChoices =>
+		_profile.Variables.Where(v => v is not null && v.Name.Length > 0).Select(v => v.Name).ToList();
+
+	/// <summary>V0.3.16：「变量」效果里「怎么改」下拉的候选（+ / - / = / 清零）。</summary>
+	public IReadOnlyList<VarWriteOpOption> VarWriteOps => EffectSpec.VarWriteOps;
 
 	/// <summary>组右边那个「这个组里有哪些牌」的勾选列表（一行一张卡）。 /summary>
 	public IReadOnlyList<CardGroupMemberRow> GroupCardRows
@@ -42128,6 +42138,104 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exvv)
 				{
 					Check("V0.3.15：变量校验", false, "异常：" + exvv.Message);
+				}
+				// ----- V0.3.16：变量重置（战斗开始 / 新开一局）+ 写操作（四链 + 锻造节点） -----
+				try
+				{
+					var vw = ProfileFactory.Sample();
+					vw.Variables.Clear();
+					vw.Variables.Add(new VarSpec { Name = "cnt", Formula = "2", Max = 10, Note = "本场计数" });
+					vw.Variables.Add(new VarSpec { Name = "run_pts", Formula = "cnt + 1", Global = true, AllowNegative = true, Note = "本局累计" });
+					var vwN = Naming.From(vw);
+					string vwVars = ForgeVarsGen.Source(vw, vwN);
+					bool vwInit0 = ForgeVarsGen.TryInitialValue(vw, vw.Variables[0], out int iv0);
+					bool vwInit1 = ForgeVarsGen.TryInitialValue(vw, vw.Variables[1], out int iv1);
+					Check("V0.3.16：初值公式能引用别的变量（cnt=2、run_pts=cnt+1 → 3）",
+						vwInit0 && iv0 == 2 && vwInit1 && iv1 == 3,
+						$"cnt={iv0} run_pts={iv1}");
+					Check("V0.3.16：重置按初值（不是无脑 0）—— ResetCombat 里有 cnt=2、ResetRun 里有 run_pts=3",
+						vwVars.Contains("cnt = 2;") && vwVars.Contains("run_pts = 3;") && vwVars.Contains("private static int _run_pts = 3;"),
+						vwVars.Split((char)10).FirstOrDefault(x => x.Contains("_run_pts")) ?? "");
+					string vwReset = ForgeVarsGen.ResetPatchSource(vw, vwN);
+					Check("V0.3.16：战斗开始挂 Hook.BeforeCombatStart、新开一局挂 RunManager.Launch（都只对本角色生效）",
+						vwReset.Contains("Hook.BeforeCombatStart") && vwReset.Contains("RunManager.Launch")
+						&& vwReset.Contains("runState.Players.Any(p => p.Character is Seven)")
+						&& vwReset.Contains("SevenVars.ResetCombat()") && vwReset.Contains("SevenVars.ResetRun()"),
+						$"BeforeCombatStart={vwReset.Contains("Hook.BeforeCombatStart")} Launch={vwReset.Contains("RunManager.Launch")}");
+
+					var vwCard = new CardSpec { Name = "变量写探针", ClassName = "SevenVarWriteProbe", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
+					vwCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Add", AmountFormula = "1+1" });
+					vwCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Sub", Amount = 2m });
+					vwCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Set", AmountFormula = "cnt + 3" });
+					vwCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Clear" });
+					vw.Cards.Add(vwCard);
+					string vwCardSrc = CSharpCodeGen.CardSource(vw, vwCard, vw.Cards.Count - 1);
+					Check("V0.3.16：卡牌链四种写操作都生成（+ / - / = / 清零；公式里的 cnt 解析成 SevenVars.cnt）",
+						vwCardSrc.Contains("SevenVars.cnt += (int)(((1m) + (1m)))")
+						&& vwCardSrc.Contains("SevenVars.cnt -= (int)(2m)")
+						&& vwCardSrc.Contains("SevenVars.cnt = (int)((SevenVars.cnt + (3m)))")
+						&& vwCardSrc.Contains("SevenVars.cnt = 0;"),
+						vwCardSrc.Split((char)10).FirstOrDefault(x => x.Contains("SevenVars.cnt +=")) ?? "");
+
+					var vwRelic = new RelicSpec { Name = "变量遗物探针", ClassName = "SevenVarWriteRelic" };
+					vwRelic.Triggers.Add(new RelicTriggerSpec { Kind = "CombatStart" });
+					vwRelic.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "run_pts", WriteOp = "Add", AmountFormula = "cnt" });
+					vw.Relics.Add(vwRelic);
+					Check("V0.3.16：遗物链变量写操作生成（内联公式 → SevenVars.cnt）",
+						CSharpCodeGen.RelicSource(vw, vwRelic, vw.Relics.Count - 1).Contains("SevenVars.run_pts += (int)(SevenVars.cnt)"));
+
+					var vwPotion = new PotionSpec { Name = "变量药水探针", ClassName = "SevenVarWritePotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "Self" };
+					vwPotion.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "run_pts", WriteOp = "Set", AmountFormula = "cnt + 2" });
+					vw.Potions.Add(vwPotion);
+					Check("V0.3.16：药水链变量写操作生成",
+						CSharpCodeGen.PotionSource(vw, vwPotion, vw.Potions.Count - 1).Contains("SevenVars.run_pts = (int)((SevenVars.cnt + (2m)))"));
+
+					var vwPow = new CustomPowerSpec { Name = "变量状态探针", ClassName = "SevenVarWritePower", Type = "Buff", Enabled = true };
+					var vwTrig = new PowerTriggerSpec { Kind = "TurnStart" };
+					vwTrig.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Sub", Amount = 1m });
+					vwPow.Triggers.Add(vwTrig);
+					vw.CustomPowers.Add(vwPow);
+					Check("V0.3.16：自定义状态链变量写操作生成（状态链也在支持名单里）",
+						PowerTriggers.Supports("VarWrite")
+						&& CustomPowerGen.Source(vw, vwPow, vw.CustomPowers.Count - 1).Contains("SevenVars.cnt -= (int)(1m)"));
+
+					var vwGraphPow = new CustomPowerSpec { Name = "变量图状态探针", ClassName = "SevenVarWriteGraphPower", Type = "Buff", Enabled = true };
+					var vwGraph = new ForgeGraphSpec();
+					var vwTrg = new ForgeNodeSpec { Kind = "Trigger" };
+					vwTrg.SetField("Timing", "DamageDealt");
+					var vwEff = new ForgeNodeSpec { Kind = "Effect" };
+					vwEff.SetField("Effect", "VarWrite");
+					vwEff.SetField("WriteVar", "cnt");
+					vwEff.SetField("WriteOp", "Add");
+					vwEff.SetField("Amount", "2");
+					vwGraph.Nodes.AddRange(new[] { vwTrg, vwEff });
+					vwGraph.Links.Add(new ForgeLinkSpec { From = vwTrg.Id, To = vwEff.Id, FromPort = 0, ToPort = 0 });
+					vwGraphPow.ForgeGraph = vwGraph;
+					vw.CustomPowers.Add(vwGraphPow);
+					Check("V0.3.16：锻造【效果】节点的变量写操作也生成（图链支持名单已加）",
+						ForgeGraphGen.SupportedEffectKinds.Contains("VarWrite")
+						&& CustomPowerGen.Source(vw, vwGraphPow, vw.CustomPowers.Count - 1).Contains("SevenVars.cnt += (int)((2m))"));
+
+					var vwBad = ProfileFactory.Sample();
+					vwBad.Variables.Clear();
+					vwBad.Variables.Add(new VarSpec { Name = "cnt" });
+					var vwBadCard = new CardSpec { Name = "变量写坏探针", ClassName = "SevenVarWriteBad", Cost = 1 };
+					vwBadCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "nope", WriteOp = "Add", Amount = 1m });
+					vwBad.Cards.Add(vwBadCard);
+					Check("V0.3.16：写了变量页里没有的变量名 → 校验器报错（不静默生成一行注释）",
+						ProfileValidator.Validate(vwBad).Any(x => x.IsError && x.Message.Contains("不在变量页里")));
+
+					var vwRoot = ForgeFormula.TryParse("cnt + 3", out string vwParseErr);
+					Check("V0.3.16：公式解析器接受多字母变量名（V0.3.14 只接了内联解析器，卡牌公式里其实读不到 cnt）",
+						vwRoot is not null && vwParseErr.Length == 0 && ForgeFormula.CardResolver(vw)("cnt") is { } vwCr
+						&& vwCr.Contains("SevenVars.cnt"),
+						vwRoot is null ? vwParseErr : (ForgeFormula.CardResolver(vw)("cnt") ?? "(null)"));
+					Check("V0.3.16：变量写操作没有「升级增量」，也不声明卡牌动态变量",
+						!EffectFieldPolicy.UsesUpgradeAmount("VarWrite") && !vwCardSrc.Contains("new DynamicVar("));
+				}
+				catch (Exception exvw)
+				{
+					Check("V0.3.16：变量重置 / 写操作", false, "异常：" + exvw.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

@@ -179,6 +179,28 @@ public static class ProfileValidator
                 }
                 if (cycle) issues.Add(new("错误", $"变量「{v.Name}」的公式存在**循环引用**（顺着变量互相引用又回到了它自己），求值会死循环。"));
             }
+            // V0.3.16：初值公式折不出常数时，重置只能按 0（说清，不让用户以为写了公式却没生效）
+            foreach (var v in p.Variables.Where(x => x is not null && x.Name.Length > 0))
+                if (EffectSpec.FormulaText(v.Formula).Length > 0 && !ForgeVarsGen.TryInitialValue(p, v, out _))
+                    issues.Add(new("提示", $"变量「{v.Name}」的初值公式含 X / Y / 内置读数 / 自定义参数 —— "
+                        + "这些值在战斗开始时还没有，所以重置时按 0。想每场从固定值开始，请把初值写成常数或别的变量。"));
+        }
+
+        // V0.3.16：「变量」效果引用的变量必须真的存在（改名 / 删除后不能静默生成一行注释）
+        {
+            var defined = new HashSet<string>(p.Variables.Where(x => x is not null && x.Name.Length > 0)
+                .Select(x => x.Name), StringComparer.Ordinal);
+            foreach (var e in CSharpCodeGen.AllEffects(p).Where(x => x is not null && x.Kind == "VarWrite"))
+            {
+                string name = (e.WriteVar ?? "").Trim();
+                if (name.Length == 0)
+                    issues.Add(new("错误", "有一条「变量」效果没有选变量（变量页里的名字）：请先在「变量」页建一个变量，再在这条效果里选中它。"));
+                else if (!defined.Contains(name))
+                    issues.Add(new("错误", $"「变量」效果引用的「{name}」不在变量页里（可能改名或删除了）—— "
+                        + "生成出来会引用一个不存在的变量。请重新选一个变量，或把变量页里那个名字改回来。"));
+                if (e.WriteOp is not ("Add" or "Sub" or "Set" or "Clear"))
+                    issues.Add(new("错误", $"「变量」效果的写操作「{e.WriteOp}」不认识（只能是 + / - / = / 清零）。"));
+            }
         }
 
         var powerClassNames = new HashSet<string>(StringComparer.Ordinal);
@@ -3458,7 +3480,9 @@ public static class ProfileValidator
             if (!kind.NeedsTarget && e.TargetSide != "Self" && e.Kind != "Outbreak"
                 // 「转化为先古卡 / 先古遗物」本来就是改自己的牌组 / 遗物（没有「作用对象」这一说），
                 // 别报「选项将被忽略」
-                && e.Kind != "AncientTranscend" && e.Kind != "AncientRelicSwap")
+                && e.Kind != "AncientTranscend" && e.Kind != "AncientRelicSwap"
+                // V0.3.16：变量写操作固定改的是自己的计数器，没有「作用对象」这一栏
+                && e.Kind != "VarWrite")
                 issues.Add(new("警告", $"{owner} 的「{kind.Display}」作用对象固定为自己，选项将被忽略。"));
             if (e.RepeatCount is < 1 or > 20)
                 issues.Add(new("错误", $"{owner} 的重复次数 {e.RepeatCount} 超出范围（1~20）。"));
@@ -4265,6 +4289,10 @@ public static class ProfileValidator
         if (p is not null)
             foreach (var cp in p.CustomParams)
                 if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
+        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
+        if (p is not null)
+            foreach (var v in p.Variables)
+                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
         var knownIds = ForgeFormula.Identifiers(root).ToList();
         foreach (string id in knownIds)
         {
@@ -4361,6 +4389,10 @@ public static class ProfileValidator
         if (p is not null)
             foreach (var cp in p.CustomParams)
                 if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
+        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
+        if (p is not null)
+            foreach (var v in p.Variables)
+                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
         foreach (string key in EffectSpec.CountFormulaKeys)
         {
             string raw = e.CountFormula(key);
@@ -4425,6 +4457,10 @@ public static class ProfileValidator
         if (p is not null)
             foreach (var cp in p.CustomParams)
                 if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
+        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
+        if (p is not null)
+            foreach (var v in p.Variables)
+                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
         foreach (var (which, raw) in new[] { ("数值 N", c.AmountFormula), ("数值 M", c.Amount2Formula) })
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;

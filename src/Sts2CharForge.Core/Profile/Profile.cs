@@ -497,6 +497,8 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(IsTempPowerNextTurn));
                 Raise(nameof(IsGiveKeyword));    // 「给予关键词 / 是否为临时关键词」两行的显隐绑的就是它
                 Raise(nameof(IsBoostCard));      // 「强化什么（伤害 / 格挡）」那一行的显隐绑的就是它
+                // V0.3.16：换成「变量」时，「变量 / 怎么改」两行要当场出现（同一个老坑）
+                Raise(nameof(IsVarWrite));
                 // 「生成 / 变化」那几行（取卡方式 / 范围限定 / 四个附加处理勾选框）的显隐绑的是这两个 ——
                 // 不通知的话：把「效果种类」改成「生成卡牌」时那几行**不会出现**（用户报过「找不到在哪限定范围」）。
                 Raise(nameof(UsesSpawnOptions));
@@ -659,7 +661,8 @@ public sealed class EffectSpec : SpecBase
     /// <summary>这个效果种类能不能用「数值公式」（见上面那段注释里为什么只有这 5 种）。</summary>
     public static bool FormulaSupports(string? kind) =>
         kind is "Damage" or "Block" or "HpLoss" or "Heal" or "ApplyPower"
-        or "Gold";   // V0.2.281（用户问「金币怎么不能填公式」）：获得金币也支持「数值公式」
+        or "Gold"   // V0.2.281（用户问「金币怎么不能填公式」）：获得金币也支持「数值公式」
+        or "VarWrite";   // V0.3.16：变量写操作的值就是公式（+ - = 的右边）
 
     /// <summary>
     /// 公式的「显示 / 解析」统一写法：去掉首尾空格、去掉用户习惯写在最前面的那个 <c>=</c>。
@@ -2254,6 +2257,61 @@ public sealed class EffectSpec : SpecBase
     [JsonIgnore]
     public decimal SfxVolumePercent => Amount <= 0m ? 100m : Amount;
 
+    // ===== 变量页（V0.3.16）：把「变量」当成一种效果 =====
+    private string _writeVar = "";
+    private string _writeOp = "Add";
+
+    /// <summary>要改哪个变量（变量页里定义的变量名；空 = 没选，校验器报错）。</summary>
+    public string WriteVar
+    {
+        get => _writeVar;
+        set { if (Set(ref _writeVar, (value ?? "").Trim())) Raise(nameof(Display)); }
+    }
+
+    /// <summary>怎么改：<c>Add</c> / <c>Sub</c> / <c>Set</c> / <c>Clear</c>（见 <see cref="VarWriteOps"/>）。</summary>
+    public string WriteOp
+    {
+        get => _writeOp;
+        set
+        {
+            if (!Set(ref _writeOp, NormalizeVarOp(value))) return;
+            Raise(nameof(Display));
+            Raise(nameof(VarWriteOpZh));
+        }
+    }
+
+    /// <summary>把界面 / 存档里的写法收成四档（认不出来 = 加）。</summary>
+    public static string NormalizeVarOp(string? op) => (op ?? "").Trim() switch
+    {
+        "Sub" or "-" or "减" => "Sub",
+        "Set" or "=" or "设为" => "Set",
+        "Clear" or "清零" => "Clear",
+        _ => "Add",
+    };
+
+    /// <summary>四档写操作（界面下拉）。</summary>
+    public static IReadOnlyList<VarWriteOpOption> VarWriteOps { get; } = new[]
+    {
+        new VarWriteOpOption("Add", "+ 加"),
+        new VarWriteOpOption("Sub", "- 减"),
+        new VarWriteOpOption("Set", "= 设为"),
+        new VarWriteOpOption("Clear", "清零"),
+    };
+
+    /// <summary>界面用：这几行只在「变量」这一档显示。</summary>
+    [JsonIgnore]
+    public bool IsVarWrite => Kind == "VarWrite";
+
+    /// <summary>「怎么改」的中文（列表摘要 / 卡面文案共用）。</summary>
+    [JsonIgnore]
+    public string VarWriteOpZh => WriteOp switch
+    {
+        "Sub" => "减",
+        "Set" => "设为",
+        "Clear" => "清零",
+        _ => "加",
+    };
+
 
     /// <summary>
     /// 「数值 0 = 这张牌自己」——**只有「丢弃卡牌」这一档**（本批新增）。
@@ -2765,6 +2823,9 @@ public sealed class EffectSpec : SpecBase
                 "GainPotion" => IsPotionRandom
                     ? "获得随机药水"
                     : "获得指定药水：" + (string.IsNullOrWhiteSpace(PotionId) ? "（还没选「目标药水」）" : PotionNameZh),
+                // V0.3.16：变量写操作（列表摘要里把「哪个变量、怎么改、值」都写出来）
+                "VarWrite" => $"变量「{(string.IsNullOrWhiteSpace(WriteVar) ? "（没选）" : WriteVar)}」{VarWriteOpZh}"
+                    + (WriteOp == "Clear" ? "" : UsesAmountFormula ? $" {AmountFormulaText}" : $" {Amount:0.##}"),
                 // 毒性爆发 / 大限已至：本体那两张牌的效果（界面上把关键说明写出来）
                 "Outbreak" => "毒性爆发（全体上毒并立即触发）",
                 "TimesUp" => "大限已至（伤害 = 目标灾厄层数）",
@@ -2802,6 +2863,8 @@ public sealed class EffectSpec : SpecBase
                 : UsesAmountFormula
                     ? $" 数值公式 {AmountFormulaText}"
                     : $" {(AmountIsXEffective ? "X" : Amount.ToString("0.##"))}";
+            // 变量写操作：kind 文案里已经写完「变量 / 怎么改 / 值」，别再把数值追加一遍
+            if (IsVarWrite) amountPart = "";
             // 写了公式时不再显示「（升级 +N）」：公式取代了数值，升级增量对这条不生效
             //（校验器也会给一条提示说清这件事）。
             //

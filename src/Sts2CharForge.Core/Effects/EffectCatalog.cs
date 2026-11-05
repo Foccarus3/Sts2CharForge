@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System.Text.Json;
 using Sts2CharForge.Core.Generation;
 using Sts2CharForge.Core.Profile;
@@ -171,6 +171,9 @@ public static class CountModes
 
 /// <summary>「生成 / 变化卡牌」是「指定卡」还是「按范围随机」。</summary>
 public sealed record SpawnPickOption(string Id, string Display);
+
+/// <summary>V0.3.16：「变量」效果的写操作一档（Id = Add / Sub / Set / Clear）。</summary>
+public sealed record VarWriteOpOption(string Id, string Display);
 
 /// <summary>
 /// 「临时增益」什么时候把这次加的层数撤掉（<see cref="EffectSpec.TempPowerReverse"/>）。
@@ -1242,6 +1245,11 @@ public static class EffectCatalog
         //     运行时用 Godot 的 AudioStreamPlayer + GD.Load<AudioStream>("res://audio/…") 播。
         // 「音效」那一栏换成「音频文件」（下拉列出「美术资源」页上传的那些）；数值同样是音量%。
         new EffectKindOption(Kind: "PlaySoundFile", Display: "播放音频文件（我上传的）", Unit: "%音量", Min: 0, Max: 200, NeedsTarget: false),
+        // ===== 变量页（V0.3.16，用户要求）=====
+        // 计数器写操作：+ / - / = / 清零。数值走「数值（公式）」那一栏（可引用别的变量 / 参数 / X、Y / 内置读数），
+        // 生成一句 `<角色>Vars.<变量> += (int)(…);` —— 夹取（允许负数 / 上限）由变量属性的 setter 负责。
+        // 它**不声明卡牌动态变量**（见 CSharpCodeGen.NoDynamicVarKind），也不会出现在「下回合生效」里。
+        new EffectKindOption(Kind: "VarWrite", Display: "变量（+ / - / = / 清零）", Unit: "点", Min: -999, Max: 999, NeedsTarget: false),
     };
 
     /// <summary>

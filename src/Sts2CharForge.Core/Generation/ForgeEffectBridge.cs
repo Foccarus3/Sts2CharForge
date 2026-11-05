@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
@@ -195,6 +195,9 @@ public static class ForgeEffectBridge
             CostDownThisTurn = node.GetFlag("CostDownThisTurn"),
             AllowDuplicates = node.GetFlag("AllowDuplicate", true),
             TargetSideCustom = false,
+            // V0.3.16：变量写操作（没有这两个键的老图 = 没选变量 / 加）
+            WriteVar = node.Get("WriteVar").Trim(),
+            WriteOp = EffectSpec.NormalizeVarOp(node.Get("WriteOp")),
         };
 
         // ---- 数值（老图的默认值是 6，见 ForgeGraphGen.EmitEffect 里的 Resolve(..., "Amount", 6)）----
@@ -296,6 +299,12 @@ public static class ForgeEffectBridge
             node.SetField("CostDownThisTurn", e.CostDownThisTurn ? "1" : "0");
         node.SetField("Reverse", e.TempPowerReverse);
         node.SetField("NextTurn", e.NextTurn ? "1" : "0");
+        // V0.3.16：变量写操作的两个键——只在这一档写，别让别的效果的积木摘要多出空栏位
+        if (string.Equals(e.Kind, "VarWrite", StringComparison.Ordinal))
+        {
+            node.SetField("WriteVar", (e.WriteVar ?? "").Trim());
+            node.SetField("WriteOp", e.WriteOp);
+        }
     }
 
     /// <summary>「数值」栏回写成什么文字（优先锻造链存的原文，其次卡牌那套公式 / 固定值）。</summary>

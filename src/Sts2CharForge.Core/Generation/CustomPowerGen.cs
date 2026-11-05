@@ -1891,6 +1891,12 @@ public static class CustomPowerGen
                 CSharpCodeGen.EmitPlaySfx(w, e);
                 break;
 
+            // V0.3.16：变量写操作（状态链 —— amt 已按「数值公式 / 层数 / 固定值」算好）
+            case "VarWrite":
+                if (p is not null) w.Line(CSharpCodeGen.VarWriteLine(p, e, amt));
+                else w.Line("// ⚠「变量」效果缺少角色配置：这一条不生成");
+                break;
+
             // 播放上传的音频文件（V0.2.155）：Godot AudioStreamPlayer，状态触发时也能放
             //（V0.2.231：「会被下一个自定义音频顶替」那一档在状态链上同样生效）
             case "PlaySoundFile":
