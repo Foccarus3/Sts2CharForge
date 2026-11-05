@@ -2325,12 +2325,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private string _varTrialFormula = "";
 	private string _varTrialResult = "";
+	private VarSpec? _varTrialBound;
+	private string _varTrialBoundFormula = "";
 
 	/// <summary>V0.3.17：试算框里的公式（界面绑的是窗口属性，不是 VarSpec 字段）。</summary>
 	public string VarTrialFormula
 	{
 		get => _varTrialFormula;
-		set { if (_varTrialFormula == (value ?? "")) return; _varTrialFormula = value ?? ""; Raise(nameof(VarTrialFormula)); }
+		set
+		{
+			if (_varTrialFormula == (value ?? "")) return;
+			_varTrialFormula = value ?? "";
+			Raise(nameof(VarTrialFormula));
+			// V0.3.19（用户截图：变量公式 A+3，试算框却还是 0 → 点了试算 = 0）：
+			// 公式一改，上一次的试算结果就作废，别让旧结果挂在那里骗人。
+			VarTrialResult = "";
+		}
 	}
 
 	/// <summary>V0.3.17：试算结果（「= 12」或「算不出来：…」）。</summary>
@@ -2345,8 +2355,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		if (VarList?.SelectedItem is VarSpec v)
 		{
+			_varTrialBound = v;
+			_varTrialBoundFormula = v.Formula;
 			VarTrialFormula = v.Formula;
 			VarTrialResult = "";
+		}
+		else
+		{
+			_varTrialBound = null;
+			_varTrialBoundFormula = "";
 		}
 		Raise("VarNameWarnText");
 		Raise("VarInitialPreview");
@@ -2420,6 +2437,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void OnVarSpecChanged(object? sender, PropertyChangedEventArgs e)
 	{
+		// V0.3.19：当前选中的变量改了「初值 / 取值公式」时，试算框如果还停在旧公式上，
+		// 就跟着换成新公式（用户改了公式却还拿旧值试算 = 结果对不上）。
+		if (sender is VarSpec v && ReferenceEquals(v, _varTrialBound)
+			&& string.Equals(e.PropertyName, nameof(VarSpec.Formula), StringComparison.Ordinal))
+		{
+			if (string.Equals(VarTrialFormula, _varTrialBoundFormula, StringComparison.Ordinal))
+				VarTrialFormula = v.Formula;
+			_varTrialBoundFormula = v.Formula;
+			VarTrialResult = "";
+		}
 		Raise("VarSummaryRows");
 		Raise("VarNameWarnText");
 		Raise("VarInitialPreview");
@@ -42538,6 +42565,60 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception extp)
 				{
 					Check("V0.3.18：临时增益友方目标", false, "异常：" + extp.Message);
+				}
+				// ----- V0.3.19：初值里的固定值参数 + 试算框跟着公式走（用户截图：公式 A+3、试算却是 0） -----
+				try
+				{
+					var v19Prof = new CharacterProfile { ModId = "UiCheckVarParam", CharacterClass = "UiCheckVarParam" };
+					v19Prof.CustomParams.Add(new ParamSpec { Name = "A", Source = ParamSources.Value, Value = 3m });
+					v19Prof.Variables.Add(new VarSpec { Name = "a", Formula = "A + 3" });
+					bool vpOk = ForgeVarsGen.TryInitialValue(v19Prof, v19Prof.Variables[0], out int vpInit);
+					Check("V0.3.19：初值公式里的「固定数值」参数能折（A=3 → a 复位 6）",
+						vpOk && vpInit == 6 && ForgeVarsGen.ResetPreview(v19Prof, v19Prof.Variables[0]).Contains("复位为 6"),
+						$"ok={vpOk} init={vpInit}");
+					v19Prof.CustomParams[0].Source = ParamSources.MaxHp;
+					bool vpBad = ForgeVarsGen.TryInitialValue(v19Prof, v19Prof.Variables[0], out _);
+					Check("V0.3.19：初值公式里的运行时参数（最大生命）仍按 0 复位，并说清原因",
+						!vpBad && ForgeVarsGen.ResetPreview(v19Prof, v19Prof.Variables[0]).Contains("复位为 0")
+						&& ForgeVarsGen.ResetPreview(v19Prof, v19Prof.Variables[0]).Contains("非固定值参数"),
+						ForgeVarsGen.ResetPreview(v19Prof, v19Prof.Variables[0]));
+
+					var vLive = Profile;
+					var vSaved = vLive.Variables.ToList();
+					object? vOldSel = VarList.SelectedItem;
+					try
+					{
+						vLive.Variables.Clear();
+						var vCnt = new VarSpec { Name = "cnt", Formula = "2" };
+						var vA = new VarSpec { Name = "a", Formula = "0" };
+						vLive.Variables.Add(vCnt);
+						vLive.Variables.Add(vA);
+						HookVariables();
+						RaiseVariablesChanged();
+						VarList.SelectedItem = vA;
+						Check("V0.3.19：选中变量时试算框先跟着它的公式（a 的初值 0）", VarTrialFormula == "0", VarTrialFormula);
+						vA.Formula = "cnt + 3";
+						Check("V0.3.19：改了初值公式 → 试算框当场跟着换（不再停在旧的 0）",
+							VarTrialFormula == "cnt + 3" && VarTrialResult.Length == 0, $"试算=「{VarTrialFormula}」结果=「{VarTrialResult}」");
+						OnVarTrial(this, new RoutedEventArgs());
+						Check("V0.3.19：跟着换之后点试算 → 按变量初值算出 = 5", VarTrialResult == "= 5", VarTrialResult);
+						vA.Formula = "Zzz + 3";
+						OnVarTrial(this, new RoutedEventArgs());
+						Check("V0.3.19：公式里是不存在的名字 → 试算明确说「算不出来」，不再显示 0",
+							VarTrialResult.StartsWith("算不出来", StringComparison.Ordinal), VarTrialResult);
+					}
+					finally
+					{
+						vLive.Variables.Clear();
+						foreach (var x in vSaved) vLive.Variables.Add(x);
+						HookVariables();
+						RaiseVariablesChanged();
+						VarList.SelectedItem = vOldSel;
+					}
+				}
+				catch (Exception exv19)
+				{
+					Check("V0.3.19：变量试算", false, "异常：" + exv19.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

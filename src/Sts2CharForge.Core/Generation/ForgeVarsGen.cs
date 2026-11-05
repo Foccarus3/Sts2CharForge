@@ -133,19 +133,36 @@ public static class ForgeVarsGen
     }
 
     /// <summary>
-    /// 初值公式能不能在生成时折成一个整数（只允许数字 / 其他变量的初值 / 四则与常量函数）。
-    /// 用到 X / Y / 内置只读量 / 自定义参数（它们要运行时才有值）→ 返回 false，重置按 0。
+    /// 初值公式能不能在生成时折成一个整数（数字 / 其他变量的初值 / **固定数值的自定义参数** / 四则与常量函数）。
+    /// 用到 X / Y / 内置只读量 / 非固定值参数（它们要运行时才有值）→ 返回 false，重置按 0。
     /// </summary>
     public static bool TryInitialValue(CharacterProfile p, VarSpec v, out int value)
     {
         value = 0;
-        var map = p.Variables.Where(x => x is not null && x.Name.Length > 0)
-            .GroupBy(x => x.Name, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        return TryVar(v, map, new HashSet<string>(StringComparer.Ordinal), out value);
+        var map = VarMap(p);
+        return TryVar(v, p, map, new HashSet<string>(StringComparer.Ordinal), out value);
     }
 
-    private static bool TryVar(VarSpec v, IReadOnlyDictionary<string, VarSpec> map, HashSet<string> stack, out int value)
+    private static Dictionary<string, VarSpec> VarMap(CharacterProfile p) =>
+        p.Variables.Where(x => x is not null && x.Name.Length > 0)
+            .GroupBy(x => x.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+    /// <summary>把一个标识符折成常数：先看变量初值，再看「固定数值」的自定义参数；其余返回 null。</summary>
+    private static decimal? ResolveConst(CharacterProfile p, string id, IReadOnlyDictionary<string, VarSpec> map,
+        HashSet<string> stack)
+    {
+        if (map.TryGetValue(id, out var other) && TryVar(other, p, map, stack, out int ov))
+            return ov;
+        var param = p.CustomParams.FirstOrDefault(x => x is not null
+            && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal));
+        if (param is not null && string.Equals(param.Source, ParamSources.Value, StringComparison.OrdinalIgnoreCase))
+            return param.Value;
+        return null;
+    }
+
+    private static bool TryVar(VarSpec v, CharacterProfile p, IReadOnlyDictionary<string, VarSpec> map,
+        HashSet<string> stack, out int value)
     {
         value = 0;
         if (!stack.Add(v.Name)) return false;   // 环（校验器会报错，这里只防死循环）
@@ -155,11 +172,7 @@ public static class ForgeVarsGen
             if (f.Length == 0) return true;
             var root = ForgeFormula.TryParse(f, out _);
             if (root is null) return false;
-            if (!ForgeFormula.TryEvalConst(root, id =>
-                {
-                    if (!map.TryGetValue(id, out var other)) return null;
-                    return TryVar(other, map, stack, out int ov) ? ov : (decimal?)null;
-                }, out decimal d, out _))
+            if (!ForgeFormula.TryEvalConst(root, id => ResolveConst(p, id, map, stack), out decimal d, out _))
                 return false;
             value = ClampInitial(v, d);
             return true;
@@ -176,7 +189,7 @@ public static class ForgeVarsGen
         string where = v.Global ? "新开一局时" : "每场战斗开始时";
         if (TryInitialValue(p, v, out int n))
             return $"{where}复位为 {n.ToString(CultureInfo.InvariantCulture)}。";
-        return $"{where}复位为 0（初值公式里有 X / Y / 内置读数 / 参数，生成时折不出常数）。";
+        return $"{where}复位为 0（初值公式里有 X / Y / 内置读数 / 非固定值参数，生成时折不出常数）。";
     }
 
     /// <summary>
@@ -191,19 +204,9 @@ public static class ForgeVarsGen
         if (f.Length == 0) { error = "公式是空的。"; return false; }
         var root = ForgeFormula.TryParse(f, out error);
         if (root is null) return false;
-        var map = p.Variables.Where(x => x is not null && x.Name.Length > 0)
-            .GroupBy(x => x.Name, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-        bool ok = ForgeFormula.TryEvalConst(root, id =>
-        {
-            if (map.TryGetValue(id, out var v) && TryVar(v, map, new HashSet<string>(StringComparer.Ordinal), out int iv))
-                return iv;
-            var param = p.CustomParams.FirstOrDefault(x => x is not null
-                && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal));
-            if (param is not null && string.Equals(param.Source, ParamSources.Value, StringComparison.OrdinalIgnoreCase))
-                return param.Value;
-            return null;
-        }, out value, out string evalErr);
+        var map = VarMap(p);
+        bool ok = ForgeFormula.TryEvalConst(root, id => ResolveConst(p, id, map, new HashSet<string>(StringComparer.Ordinal)),
+            out value, out string evalErr);
         if (!ok)
             error = $"「{evalErr}」不是常数（X / Y / 内置读数 / 非固定值参数要等战斗里才有值）。";
         return ok;

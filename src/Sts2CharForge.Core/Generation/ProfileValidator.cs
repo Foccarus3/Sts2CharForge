@@ -182,8 +182,9 @@ public static class ProfileValidator
             // V0.3.16：初值公式折不出常数时，重置只能按 0（说清，不让用户以为写了公式却没生效）
             foreach (var v in p.Variables.Where(x => x is not null && x.Name.Length > 0))
                 if (EffectSpec.FormulaText(v.Formula).Length > 0 && !ForgeVarsGen.TryInitialValue(p, v, out _))
-                    issues.Add(new("提示", $"变量「{v.Name}」的初值公式含 X / Y / 内置读数 / 自定义参数 —— "
-                        + "这些值在战斗开始时还没有，所以重置时按 0。想每场从固定值开始，请把初值写成常数或别的变量。"));
+                    issues.Add(new("提示", $"变量「{v.Name}」的初值公式含 X / Y / 内置读数 / 非固定值参数 —— "
+                        + "这些值在战斗开始时还没有，所以重置时按 0。想每场从固定值开始，请把初值写成常数、"
+                        + "固定数值的自定义参数、或别的变量。"));
         }
 
         // V0.3.16：「变量」效果引用的变量必须真的存在（改名 / 删除后不能静默生成一行注释）
