@@ -42619,6 +42619,43 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv19)
 				{
 					Check("V0.3.19：变量试算", false, "异常：" + exv19.Message);
+				}
+				// ----- V0.3.20：卡牌描述不写变量变化 + 乘/除 + 0 的语义 -----
+				try
+				{
+					var v20 = ProfileFactory.Sample();
+					v20.Variables.Add(new VarSpec { Name = "a", Formula = "0" });
+					var v20Card = new CardSpec { Name = "变量伤害卡", ClassName = "UiCheckVarDamage", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+					v20Card.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, AmountFormula = "a", TargetSide = "Enemy" });
+					v20Card.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Add", Amount = 1m });
+					v20.Cards.Add(v20Card);
+					string v20Desc = LocalizationGen.CardAutoText(v20, v20Card, upgraded: false);
+					Check("V0.3.20：卡牌描述不生成「变量变化」（自定义描述里不再出现「变量「a」加 1」）",
+						!v20Desc.Contains("变量") && v20Desc.Contains("造成"), v20Desc);
+
+					v20Card.Effects.Clear();
+					v20Card.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Mul", Amount = 2m });
+					v20Card.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Div", Amount = 3m });
+					string v20Src = CSharpCodeGen.CardSource(v20, v20Card, v20.Cards.Count - 1);
+					Check("V0.3.20：「怎么改」新增乘 / 除 —— 乘生成 *=，除生成「除数为 0 时不变」的守卫",
+						v20Src.Contains("SevenVars.a *= (int)(2m)") && v20Src.Contains("== 0 ? SevenVars.a : SevenVars.a /"),
+						v20Src.Split((char)10).FirstOrDefault(x => x.Contains("SevenVars.a *=")) ?? "");
+
+					Check("V0.3.20：变量效果的值 0 不是「整条不生效」，提示里把 0 的含义写清",
+						new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Add" }.AmountFormulaHint.Contains("不是整条不生效"));
+
+					var v20Zero = ProfileFactory.Sample();
+					v20Zero.Variables.Add(new VarSpec { Name = "a" });
+					var v20ZeroCard = new CardSpec { Name = "变量加零卡", ClassName = "UiCheckVarZero", Cost = 1, CardType = "Skill", Rarity = "Common" };
+					v20ZeroCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Add", Amount = 0m });
+					v20Zero.Cards.Add(v20ZeroCard);
+					Check("V0.3.20：+0 / -0 会提示「不会改变变量」（用户截图里伤害一直 0 的直接原因）",
+						ProfileValidator.Validate(v20Zero).Any(x => x.Message.Contains("不会改变变量")),
+						string.Join(" | ", ProfileValidator.Validate(v20Zero).Where(x => x.Message.Contains("变量")).Select(x => x.Level + ":" + x.Message)));
+				}
+				catch (Exception exv20)
+				{
+					Check("V0.3.20：变量卡牌描述 / 乘除", false, "异常：" + exv20.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

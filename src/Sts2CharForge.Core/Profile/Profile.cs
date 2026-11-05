@@ -975,6 +975,14 @@ public sealed class EffectSpec : SpecBase
             string __preview = Generation.ForgeFormula.Preview(_amountFormula, Generation.PercentPowers.Current);
             string __prefix = __preview.Length == 0 ? "" : __preview + "\n";
 
+            // V0.3.20（用户问「数值 0 是不生效还是赋值为 0」）：「变量」效果和普通效果不一样 ——
+            // 0 不是「整条不生效」，按操作解释。这里写清，免得以为 +1 已经填了。
+            if (IsVarWrite)
+                return __prefix + "「变量」效果：留空 / 0 **不是整条不生效** —— "
+                     + "「+ 加 0 / - 减 0」什么都不改；「= 设为 0」把变量设成 0；「清零」设成 0；"
+                     + "「* 乘 0」把变量乘成 0；「/ 除以 0」保持原值（不会崩）。"
+                     + "要 +1 请把这里填 1。公式里可以引用别的变量（如 cnt + 1）、自定义参数、X / Y、内置只读量。";
+
             if (!FormulaSupports(Kind))
                 return __prefix + $"「{EffectCatalog.FindKind(Kind).Display}」的数值要在生成的时候就得定下来"
                      + "（抽几张 / 生成几张这类要提前分配变量和选牌上限），所以这一栏**只认两种写法**："
@@ -2284,16 +2292,20 @@ public sealed class EffectSpec : SpecBase
     public static string NormalizeVarOp(string? op) => (op ?? "").Trim() switch
     {
         "Sub" or "-" or "减" => "Sub",
+        "Mul" or "*" or "×" or "乘" => "Mul",
+        "Div" or "/" or "÷" or "除" => "Div",
         "Set" or "=" or "设为" => "Set",
         "Clear" or "清零" => "Clear",
         _ => "Add",
     };
 
-    /// <summary>四档写操作（界面下拉）。</summary>
+    /// <summary>六档写操作（界面下拉）。</summary>
     public static IReadOnlyList<VarWriteOpOption> VarWriteOps { get; } = new[]
     {
         new VarWriteOpOption("Add", "+ 加"),
         new VarWriteOpOption("Sub", "- 减"),
+        new VarWriteOpOption("Mul", "* 乘"),
+        new VarWriteOpOption("Div", "/ 除"),
         new VarWriteOpOption("Set", "= 设为"),
         new VarWriteOpOption("Clear", "清零"),
     };
@@ -2307,6 +2319,8 @@ public sealed class EffectSpec : SpecBase
     public string VarWriteOpZh => WriteOp switch
     {
         "Sub" => "减",
+        "Mul" => "乘",
+        "Div" => "除以",
         "Set" => "设为",
         "Clear" => "清零",
         _ => "加",

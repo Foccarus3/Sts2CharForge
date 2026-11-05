@@ -199,8 +199,20 @@ public static class ProfileValidator
                 else if (!defined.Contains(name))
                     issues.Add(new("错误", $"「变量」效果引用的「{name}」不在变量页里（可能改名或删除了）—— "
                         + "生成出来会引用一个不存在的变量。请重新选一个变量，或把变量页里那个名字改回来。"));
-                if (e.WriteOp is not ("Add" or "Sub" or "Set" or "Clear"))
-                    issues.Add(new("错误", $"「变量」效果的写操作「{e.WriteOp}」不认识（只能是 + / - / = / 清零）。"));
+                if (e.WriteOp is not ("Add" or "Sub" or "Mul" or "Div" or "Set" or "Clear"))
+                    issues.Add(new("错误", $"「变量」效果的写操作「{e.WriteOp}」不认识（只能是 + / - / × / ÷ / = / 清零）。"));
+                // V0.3.20（用户截图：+ 的值是 0，变量一直不变，伤害一直 0）：
+                // 「变量」效果的 0 **不是「整条不生效」**，而是按操作解释 —— 但 +0 / -0 确实什么都没改，
+                // 不提示的话用户会以为「+1 已经填了」。这里给一条提示，说清 0 的含义。
+                bool varAmountZero = !e.UsesAmountFormula
+                    ? e.Amount == 0m
+                    : (ForgeFormula.TryParse(e.AmountFormula, out _) is { } zroot
+                       && ForgeFormula.TryEvalConst(zroot, _ => null, out decimal zv, out _) && zv == 0m);
+                if (varAmountZero && e.WriteOp is ("Add" or "Sub"))
+                    issues.Add(new("提示", "这条「变量」效果的值是 0：+0 / -0 **不会改变变量**。"
+                        + "要 +1 请把「数值（公式）」填 1；要清零请用「清零」或「= 设为 0」。"));
+                if (varAmountZero && e.WriteOp == "Div")
+                    issues.Add(new("提示", "这条「变量」效果是除以 0：生成代码会保持变量不变（不会崩）。"));
             }
         }
 

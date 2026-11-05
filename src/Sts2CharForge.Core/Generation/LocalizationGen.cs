@@ -1274,6 +1274,9 @@ public static class LocalizationGen
         var varMap = CSharpCodeGen.VarNamesOf(list);
         foreach (var e in list)
         {
+            // V0.3.20（用户要求）：「变量」效果是内部记账，**卡牌描述里不生成它的变化**
+            //（遗物 / 药水 / 状态那边的描述仍保留，见下面的 DescribeEffect）。
+            if (isCard && e.IsVarWrite) continue;
             // 数值 0 且升级也不加数值：连描述都不写（用户要求：游戏里不显示这条效果）
             if (CSharpCodeGen.IsInertZero(e)) continue;
             var one = new StringBuilder();
@@ -1478,6 +1481,8 @@ public static class LocalizationGen
         // `Localization formatting error! No source extension could handle the selector named "VulnerablePower"`。
         bool literalAmount = false)
     {
+        // V0.3.20（用户要求）：卡牌描述不写「变量变化」这一句（内部记账）；遗物 / 药水 / 状态仍可写。
+        if (isCard && e.IsVarWrite) return "";
         // 「数值 = X」的卡牌：描述里写 X，而不是那个用不上的固定数值。
         // 变量名必须用 DisplayVarNameOf（= CanonicalVars 里真实声明的那个键）：三个「按生命值算」的
         // 伙伴攻击 / 牺牲伙伴声明的是本体的 CalculatedDamage / CalculatedBlock，直接用 VarNameOf 的

@@ -8706,6 +8706,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return e.WriteOp switch
         {
             "Sub" => $"{cls}.{name} -= {val};   // 变量 {name} 减 {shown}",
+            // 乘 / 除（V0.3.20）：除法的值可能是 0（公式算出来），不能直接 `/=` ——
+            // 用条件表达式，除数为 0 时保持原值（和「0 = 不生效」同一个意思）。
+            "Mul" => $"{cls}.{name} *= {val};   // 变量 {name} 乘 {shown}",
+            "Div" => $"{cls}.{name} = ({val}) == 0 ? {cls}.{name} : {cls}.{name} / ({val});   // 变量 {name} 除以 {shown}（除数为 0 时不变）",
             "Set" => $"{cls}.{name} = {val};   // 变量 {name} 设为 {shown}",
             "Clear" => $"{cls}.{name} = 0;   // 变量 {name} 清零",
             _ => $"{cls}.{name} += {val};   // 变量 {name} 加 {shown}",
