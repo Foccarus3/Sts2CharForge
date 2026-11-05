@@ -14035,6 +14035,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Close()
                      .Close();
                 }
+                // V0.3.18：遗物上也能给「全体友方 / 指定队友」上临时增益（以前掉进下面的
+                // 「第一个敌人」分支 —— 选了友方却打到敌人，和 V0.3.12 那条伤害 bug 同一族）。
+                else if (e.TargetSide == "AllAllies")
+                {
+                    w.Open("if (base.Owner.Creature.CombatState is not null)")
+                     .Open($"foreach (Creature ally in base.Owner.Creature.CombatState.Allies.Where({AllyLoopWhere(e)}).ToList())")
+                     .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, ally, {amt}, base.Owner.Creature, null);")
+                     .Close()
+                     .Close();
+                }
+                else if (e.TargetSide is "Ally" or "AnyAlly")
+                {
+                    // 遗物没有「玩家选中的队友」这个上下文（和 V0.3.12 伤害那条同一口径 → 按自己处理）
+                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);   // 指定队友：遗物没有选中目标，按自己处理");
+                }
                 else
                 {
                     EmitRelicFoeDecl(w)
@@ -15445,20 +15460,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "TempPower":
                 // 「生成调试日志」（V0.2.142，默认关）：目标 + 实际施加的层数
                 DebugLogGen.Target(w, e, PotionAttackTargetExpr(potionTarget, allEnemies), amt, inLoop: potionTarget == "AllEnemies");
-                if (potionTarget == "AllEnemies")
-                {
-                    w.Open($"foreach (Creature foe in {allEnemies})")
-                     .Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, foe, {amt}, base.Owner.Creature, null);")
-                     .Close();
-                }
-                else if (potionTarget == "AnyEnemy")
-                {
-                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, target, {amt}, base.Owner.Creature, null);");
-                }
-                else
-                {
-                    w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, base.Owner.Creature, {amt}, base.Owner.Creature, null);");
-                }
+                // V0.3.18：以前只写了「全体敌人 / 指定敌人 / 其余 = 自己」 —— 药水的
+                // 「全体友方 / 指定队友」两档（V0.3.6 加的）会掉进「自己」。现在复用同一份按目标展开的助手。
+                EmitPotionPerCreature(w, potionTarget, allEnemies,
+                    c => $"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, {c}, {amt}, base.Owner.Creature, null);");
                 break;
 
             // ===== 给予卡牌关键词：药水也能用（数值 0 在药水上没有意义）=====

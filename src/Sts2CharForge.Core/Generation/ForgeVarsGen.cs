@@ -103,19 +103,31 @@ public static class ForgeVarsGen
 
         if (hasGlobal)
         {
-            w.Line()
-             .Line("/// <summary>新开一局（RunManager.Launch）时连全局变量一起复位。</summary>")
-             .Line("[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Runs.RunManager), nameof(MegaCrit.Sts2.Core.Runs.RunManager.Launch))]")
-             .Open($"public static class {n.CharClass}ForgeVarsResetRun")
-             .Open("static void Postfix(MegaCrit.Sts2.Core.Runs.RunManager __instance)")
-             .Open("try")
-             .Line("var state = __instance.DebugOnlyGetState();")
-             .Line($"if (state is not null && state.Players.Any(p => p.Character is {n.CharClass})) {vars}.ResetRun();")             .Close()
-             .Open("catch (Exception e)")
-             .Line("Log.Warn(\"[变量页] 新开一局重置变量失败：\" + e.Message);")
-             .Close()
-             .Close()
-             .Close();
+            // V0.3.18：重置时机从 `RunManager.Launch` **提前到 SetUp 阶段**。
+            // 原因：本体新开一局的顺序是 `SetUpNew*()` → `FinalizeStartingRelics()`（起始遗物的「获得时」）→ `Launch()`；
+            // 挂在 Launch 上是**起始遗物效果之后**才复位 —— 起始遗物「获得时 变量 +5」会被当场抹掉。
+            // 现在在四个入口的**最前面**复位：新开一局（单 / 联机）、读档（单 / 联机）。
+            // 读档也复位：变量本来就不进存档（静态字段），不复位会拿到上一次进程里的残值。
+            void ResetPatch(string method, string label)
+            {
+                w.Line()
+                 .Line($"/// <summary>{label}：在开局 / 读档的最前面把全局变量复位（早于起始遗物的「获得时」）。</summary>")
+                 .Line($"[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Runs.RunManager), nameof(MegaCrit.Sts2.Core.Runs.RunManager.{method}))]")
+                 .Open($"public static class {n.CharClass}ForgeVarsReset{method}")
+                 .Open("static void Prefix(MegaCrit.Sts2.Core.Runs.RunState state)")
+                 .Open("try")
+                 .Line($"if (state is not null && state.Players.Any(p => p.Character is {n.CharClass})) {vars}.ResetRun();")
+                 .Close()
+                 .Open("catch (Exception e)")
+                 .Line($"Log.Warn(\"[变量页] {label}重置变量失败：\" + e.Message);")
+                 .Close()
+                 .Close()
+                 .Close();
+            }
+            ResetPatch("SetUpNewSingleplayer", "新开一局（单机）");
+            ResetPatch("SetUpNewMultiplayer", "新开一局（联机）");
+            ResetPatch("SetUpSavedSingleplayer", "读档（单机）");
+            ResetPatch("SetUpSavedMultiplayer", "读档（联机）");
         }
         return w.ToString();
     }

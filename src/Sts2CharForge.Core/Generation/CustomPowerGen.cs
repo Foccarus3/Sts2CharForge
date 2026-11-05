@@ -2423,6 +2423,19 @@ public static class CustomPowerGen
                          .Close()
                          .Close();
                         break;
+                    // V0.3.18：状态链也补「全体友方 / 指定队友」（以前掉进 default 的「第一个敌人」，
+                    // 选了友方却打到敌人 —— 和 V0.3.12 那条伤害 bug 同一族）。
+                    case "AllAllies":
+                        w.Open("if (base.Owner.CombatState is not null)")
+                         .Open($"foreach (Creature other in base.Owner.CombatState.Allies.Where({CSharpCodeGen.AllyLoopWhere(e, "base.Owner")}).ToList())")
+                         .Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, other, {amt}, base.Owner, null);")
+                         .Close()
+                         .Close();
+                        break;
+                    case "Ally" or "AnyAlly":
+                        // 状态触发链里没有「玩家选中的队友」这个上下文 → 按自己处理（和 V0.3.12 同一口径）
+                        w.Line($"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, base.Owner, {amt}, base.Owner, null);   // 指定队友：状态链没有选中目标，按自己处理");
+                        break;
                     default:
                         EmitFoeBlock(w, foeFrom, foe =>
                             $"await PowerCmd.Apply<{Naming.AmbientTempPowerClass(e)}>(choiceContext, {foe}, {amt}, base.Owner, null);");

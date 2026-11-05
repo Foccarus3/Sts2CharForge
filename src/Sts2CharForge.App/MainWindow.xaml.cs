@@ -42333,11 +42333,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						vwVars.Contains("cnt = 2;") && vwVars.Contains("run_pts = 3;") && vwVars.Contains("private static int _run_pts = 3;"),
 						vwVars.Split((char)10).FirstOrDefault(x => x.Contains("_run_pts")) ?? "");
 					string vwReset = ForgeVarsGen.ResetPatchSource(vw, vwN);
-					Check("V0.3.16：战斗开始挂 Hook.BeforeCombatStart、新开一局挂 RunManager.Launch（都只对本角色生效）",
-						vwReset.Contains("Hook.BeforeCombatStart") && vwReset.Contains("RunManager.Launch")
+					Check("V0.3.16/18：战斗开始挂 Hook.BeforeCombatStart；新开一局 / 读档在 SetUp 阶段复位（早于起始遗物「获得时」）",
+						vwReset.Contains("Hook.BeforeCombatStart")
+						&& vwReset.Contains("RunManager.SetUpNewSingleplayer") && vwReset.Contains("RunManager.SetUpNewMultiplayer")
+						&& vwReset.Contains("RunManager.SetUpSavedSingleplayer") && vwReset.Contains("RunManager.SetUpSavedMultiplayer")
+						&& !vwReset.Contains("RunManager.Launch")
 						&& vwReset.Contains("runState.Players.Any(p => p.Character is Seven)")
+						&& vwReset.Contains("state.Players.Any(p => p.Character is Seven)")
 						&& vwReset.Contains("SevenVars.ResetCombat()") && vwReset.Contains("SevenVars.ResetRun()"),
-						$"BeforeCombatStart={vwReset.Contains("Hook.BeforeCombatStart")} Launch={vwReset.Contains("RunManager.Launch")}");
+						$"BeforeCombatStart={vwReset.Contains("Hook.BeforeCombatStart")} 四个 SetUp={vwReset.Contains("SetUpNewSingleplayer")}/{vwReset.Contains("SetUpNewMultiplayer")}/{vwReset.Contains("SetUpSavedSingleplayer")}/{vwReset.Contains("SetUpSavedMultiplayer")} Launch={vwReset.Contains("RunManager.Launch")}");
 
 					var vwCard = new CardSpec { Name = "变量写探针", ClassName = "SevenVarWriteProbe", Cost = 1, CardType = "Skill", Rarity = "Common", InCardPool = true };
 					vwCard.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "cnt", WriteOp = "Add", AmountFormula = "1+1" });
@@ -42488,6 +42492,52 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exvui)
 				{
 					Check("V0.3.17：变量页 UI", false, "异常：" + exvui.Message);
+				}
+				// ----- V0.3.18：临时增益的「友方」目标（遗物 / 状态 / 药水）+ 重置时机提前 -----
+				try
+				{
+					var tp = ProfileFactory.Sample();
+					var tpRelic = new RelicSpec { Name = "临时友方遗物", ClassName = "UiCheckTempAllyRelic" };
+					tpRelic.Triggers.Add(new RelicTriggerSpec { Kind = "CombatStart" });
+					tpRelic.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 2m, TargetSide = "AllAllies" });
+					tp.Relics.Add(tpRelic);
+					string tpRSrc = CSharpCodeGen.RelicSource(tp, tpRelic, tp.Relics.Count - 1);
+					Check("V0.3.18：遗物「临时增益 → 全体友方」逐个对自己的友方施加（以前掉进「第一个敌人」）",
+						tpRSrc.Contains("base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner.Creature)")
+						&& tpRSrc.Contains("choiceContext, ally,"), tpRSrc.Split((char)10).FirstOrDefault(x => x.Contains("Allies.Where")) ?? "");
+					tpRelic.Effects[0].TargetSide = "Ally";
+					string tpRAlly = CSharpCodeGen.RelicSource(tp, tpRelic, tp.Relics.Count - 1);
+					Check("V0.3.18：遗物「临时增益 → 指定队友」没有选中目标时按自己（不再打到第一个敌人）",
+						tpRAlly.Contains("choiceContext, base.Owner.Creature,") && !tpRAlly.Contains("HittableEnemies.FirstOrDefault()"),
+						tpRAlly.Split((char)10).FirstOrDefault(x => x.Contains("Apply<")) ?? "");
+
+					var tpPow = new CustomPowerSpec { Name = "临时友方状态", ClassName = "UiCheckTempAllyPower", Type = "Buff", Enabled = true };
+					var tpTrig = new PowerTriggerSpec { Kind = "TurnStart" };
+					tpTrig.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 1m, TargetSide = "AllAllies" });
+					tpPow.Triggers.Add(tpTrig);
+					tp.CustomPowers.Add(tpPow);
+					string tpPSrc = CustomPowerGen.Source(tp, tpPow, tp.CustomPowers.Count - 1);
+					Check("V0.3.18：状态「临时增益 → 全体友方」也逐个施加（base.Owner 就是自己）",
+						tpPSrc.Contains("base.Owner.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner)")
+						&& tpPSrc.Contains("choiceContext, other,"), tpPSrc.Split((char)10).FirstOrDefault(x => x.Contains("Allies.Where")) ?? "");
+
+					var tpPotAll = new PotionSpec { Name = "临时友方药水", ClassName = "UiCheckTempAllyPotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "AllAllies" };
+					tpPotAll.Effects.Add(new EffectSpec { Kind = "TempPower", PowerId = "StrengthPower", Amount = 1m });
+					tp.Potions.Add(tpPotAll);
+					string tpPotSrc = CSharpCodeGen.PotionSource(tp, tpPotAll, tp.Potions.Count - 1);
+					Check("V0.3.18：药水「临时增益 → 全体友方」也走同一份按目标展开（以前只有敌 / 自己）",
+						tpPotSrc.Contains("base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive)")
+						&& tpPotSrc.Contains("choiceContext, ally,"), tpPotSrc.Split((char)10).FirstOrDefault(x => x.Contains("Allies.Where")) ?? "");
+					tpPotAll.TargetType = "AnyAlly";
+					string tpPotAny = CSharpCodeGen.PotionSource(tp, tpPotAll, tp.Potions.Count - 1);
+					Check("V0.3.18：药水「临时增益 → 指定队友」优先给选中的队友（单人落自己）",
+						tpPotAny.Contains("target is not null && target != base.Owner.Creature")
+						&& tpPotAny.Contains("choiceContext, target,") && tpPotAny.Contains("choiceContext, base.Owner.Creature,"),
+						tpPotAny.Split((char)10).FirstOrDefault(x => x.Contains("target is not null")) ?? "");
+				}
+				catch (Exception extp)
+				{
+					Check("V0.3.18：临时增益友方目标", false, "异常：" + extp.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
