@@ -374,6 +374,13 @@ public static class ModGenerator
             Log($"  已生成触发链递归保护：cs/{RecursionGuardGen.FileName}（状态层数变化嵌套超过 {RecursionGuardGen.Limit} 层就跳过这一次）");
         }
 
+        // V0.3.15：变量页定义的变量 → cs/<角色>Vars.cs（没建变量时一个文件都不写）
+        if (ForgeVarsGen.Needed(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, ForgeVarsGen.ClassName(n) + ".cs"), ForgeVarsGen.Source(profile, n));
+            Log($"  已生成变量容器：cs/{ForgeVarsGen.ClassName(n)}.cs（{profile.Variables.Count(v => v is not null && v.Name.Length > 0)} 个变量）");
+        }
+
         // 「数值公式」的卡面现算变量（用户要求：卡面要看到算出来的数字，不是「M/2」这种公式文本）
         if (CSharpCodeGen.UsesFormulaVars(profile))
         {
