@@ -5136,7 +5136,14 @@ public static class ForgeFormulaRuntime
         foreach (var power in creature.Powers)
         {
             if (power is null) continue;
-            if (string.Equals(power.GetType().Name, powerId, StringComparison.Ordinal)) return power.Amount;
+            if (string.Equals(power.GetType().Name, powerId, StringComparison.Ordinal))
+            {
+                // V0.3.22：Single 状态的 Amount 会被重复 Apply 累加（本体 SetAmount 不夹），
+                // 但它的语义就是「有 / 没有」—— 公式里读它一律按 1，否则「渲染」每回合 +1 会让
+                // 「间色」的触发次数每回合越滚越多。
+                if (power.StackType == PowerStackType.Single) return 1m;
+                return power.Amount;
+            }
         }
         return 0m;
     }

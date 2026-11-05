@@ -25193,7 +25193,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("V0.2.241：（回归）「回复生命值 + 自己」还是原来那句 `CreatureCmd.Heal(base.Owner, N)`",
 				tgtSrc.Contains("await CreatureCmd.Heal(base.Owner, 5m);"), "没变");
 			Check("V0.2.241：状态触发链上「回复生命值 + 单体敌人」→ 回的是那个敌人（以前只回自己）",
-				tgtSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();")
+				tgtSrc.Contains("Creature? other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();")
 				&& tgtSrc.Contains("await CreatureCmd.Heal(other, 6m);"), "按作用对象");
 			Check("V0.2.241：「回复生命值 + 全部友方」→ 遍历同一边的存活单位（默认不含自己、含召唤物）",
 				tgtSrc.Contains("foreach (Creature other in base.Owner.CombatState.Allies.Where(c => c.IsAlive && c != base.Owner).ToList())")
@@ -37983,7 +37983,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& hpLostSrc.Contains("if (delta >= 0m) return;"), "对");
 			Check("这个钩子本体不给 choiceContext：效果要用它时按本体做法自己造一个（不然造成伤害会 CS0103）",
 				hpLostDmgSrc.Contains("choiceContext = new MegaCrit.Sts2.Core.GameActions.Multiplayer.HookPlayerChoiceContext(this, __netId, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
-				&& hpLostDmgSrc.Contains("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();"), "造了");
+				&& hpLostDmgSrc.Contains("Creature? other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();"), "造了");
 			Check("校验器把「失去生命时」和「受到伤害后」的差别写清楚（前者是后者的超集）",
 				ProfileValidator.Validate(hpLostProbe).Any((ValidationIssue i) => i.Level == "提示" && i.Message.Contains("生命值真的少了")), "写了");
 
@@ -42695,6 +42695,39 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv21)
 				{
 					Check("V0.3.21：单字母变量大小写", false, "异常：" + exv21.Message);
+				}
+				// ----- V0.3.22：间色/触媒（逐次结算 + Single 不累加 + 毒死后不卡回合） -----
+				try
+				{
+					var v22 = ProfileFactory.Sample();
+					var v22Single = new CustomPowerSpec { Name = "测试单层", ClassName = "UiCheckSinglePower", Type = "Buff", Single = true, Enabled = true };
+					v22.CustomPowers.Add(v22Single);
+					string v22Runtime = ForgeGraphGen.RuntimeSource(v22);
+					Check("V0.3.22：Single 状态在公式里按 1 层读（PowerAmount 不再随重复 Apply 越滚越大）",
+						v22Runtime.Contains("PowerStackType.Single") && v22Runtime.Contains("return 1m;"),
+						v22Runtime.Split((char)10).FirstOrDefault(x => x.Contains("StackType.Single")) ?? "");
+
+					var v22Seq = new CustomPowerSpec { Name = "测试逐次", ClassName = "UiCheckSeqPower", Type = "Debuff", Enabled = true };
+					var v22Trig = new PowerTriggerSpec { Kind = "EnemyTurnStart" };
+					v22Trig.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 1m, AmountIsStack = true, TargetSide = "Self", TimesFormula = "1+1" });
+					v22Trig.Effects.Add(new EffectSpec { Kind = "ApplyPower", PowerId = "UiCheckSinglePower", Amount = -1m, TargetSide = "Enemy", TimesFormula = "1+1" });
+					v22Seq.Triggers.Add(v22Trig);
+					v22.CustomPowers.Add(v22Seq);
+					string v22Src = CustomPowerGen.Source(v22, v22Seq, v22.CustomPowers.Count - 1);
+					int v22Damage = v22Src.IndexOf("CreatureCmd.Damage", StringComparison.Ordinal);
+					int v22Decay = v22Src.IndexOf("ModifyAmount", StringComparison.Ordinal);
+					Check("V0.3.22：两条效果次数相同 → 逐次交替执行（伤害 → 扣层 → 下一次，5+4 而不是 5+5 再扣 2）",
+						v22Src.Contains("for (int __repSeq = 0;") && v22Damage >= 0 && v22Decay > v22Damage
+						&& v22Src.IndexOf("for (int __rep = 0;", StringComparison.Ordinal) < 0,
+						v22Src.Split((char)10).FirstOrDefault(x => x.Contains("__repSeq")) ?? "");
+					Check("V0.3.22：毒死之后不再访问空的 CombatState（有 IsAlive 守卫 + ?.HittableEnemies）",
+						v22Src.Contains("if (!base.Owner.IsAlive || base.Owner.CombatState is null) break;")
+						&& v22Src.Contains("base.Owner.CombatState?.HittableEnemies.FirstOrDefault()"),
+						v22Src.Split((char)10).FirstOrDefault(x => x.Contains("?.HittableEnemies")) ?? "");
+				}
+				catch (Exception exv22)
+				{
+					Check("V0.3.22：逐次结算 / Single / 毒死", false, "异常：" + exv22.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

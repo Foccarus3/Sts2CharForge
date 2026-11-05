@@ -1491,17 +1491,67 @@ public static class CustomPowerGen
         // （状态钩子里 base.Owner 本身就是 Creature，所以「自己」= base.Owner）。
         // 状态名字直接取生成期那个「当前状态」（_powerOwner），不额外往二十几个调用点加参数。
         using (DebugLogGen.Begin(p, "自定义状态", _powerOwner is { } dbgPow ? dbgPow.Name : "", DebugLogClassNameOf(p), "base.Owner"))
-        foreach (var e in t.Effects)
         {
-            // 每条效果自己的条件：不满足时只跳过这一条
-            string? cond = CSharpCodeGen.EffectConditionGuard(e, CSharpCodeGen.CondCtx.Power, chanceSlices: powerChanceSlices);
-            if (cond is not null)
+            var fx = t.Effects.ToList();
+
+            // V0.3.22（用户实测「间色：绿」：5 层毒结算成 5+5 再扣 2 层，不是 5+4）：
+            // 同一触发时机里**连续几条效果写了同一个「生效次数」公式**时，按次数逐次交替执行
+            //（A→B→下一次），而不是「先把 A 循环完、再循环 B」。
+            // 只在这一种明确形状下合并：公式非空且相同、没有条件、没有概率、不是「= 层数」。
+            static bool Groupable(EffectSpec x) =>
+                x is not null
+                && !x.TimesIsStack
+                && !string.IsNullOrWhiteSpace(x.TimesFormula)
+                && (x.Condition is null || x.Condition.IsNone)
+                && !x.ChanceEnabled
+                && string.IsNullOrWhiteSpace(x.ChanceFormula);
+            static string FormulaOf(EffectSpec x) => EffectSpec.FormulaText(x.TimesFormula);
+
+            void EmitOne(EffectSpec e, bool suppressTimes)
             {
-                w.Line($"// 条件（只对「{EffectCatalog.FindKind(e.Kind).Display}」这条效果）：{CSharpCodeGen.ConditionText(e.Condition)}（不满足时这条效果不生效）");
-                w.Open(cond);
+                // 每条效果自己的条件：不满足时只跳过这一条
+                string? cond = CSharpCodeGen.EffectConditionGuard(e, CSharpCodeGen.CondCtx.Power, chanceSlices: powerChanceSlices);
+                if (cond is not null)
+                {
+                    w.Line($"// 条件（只对「{EffectCatalog.FindKind(e.Kind).Display}」这条效果）：{CSharpCodeGen.ConditionText(e.Condition)}（不满足时这条效果不生效）");
+                    w.Open(cond);
+                }
+                EmitEffect(w, e, foeFrom, roomVar, p, suppressTimes);
+                if (cond is not null) w.Close();
             }
-            EmitEffect(w, e, foeFrom, roomVar, p);
-            if (cond is not null) w.Close();
+
+            for (int ei = 0; ei < fx.Count;)
+            {
+                if (Groupable(fx[ei]))
+                {
+                    string formula = FormulaOf(fx[ei]);
+                    int ej = ei + 1;
+                    while (ej < fx.Count && Groupable(fx[ej])
+                        && string.Equals(FormulaOf(fx[ej]), formula, StringComparison.Ordinal))
+                        ej++;
+                    if (ej - ei >= 2)
+                    {
+                        string timesExpr = CSharpCodeGen.InlineCountFormula(p, fx[ei], "Times",
+                            "base.Owner.Player", "base.Owner", CSharpCodeGen.FirstEnemyOf("base.Owner.Player")) ?? "1m";
+                        w.Line();
+                        w.Line("// 同一触发时机的连续几条效果「生效次数」相同：按次数逐次交替执行（A→B→下一次）");
+                        w.Open($"for (int __repSeq = 0; __repSeq < (int)System.Math.Clamp({timesExpr}, 1m, 20m); __repSeq++)");
+                        w.Line("if (!base.Owner.IsAlive || base.Owner.CombatState is null) break;");
+                        for (int k = ei; k < ej; k++)
+                        {
+                            // 前一条效果可能把 owner 打死（例如毒）；死了之后不要再访问 CombatState 扣层 / 施加状态
+                            w.Open("if (base.Owner.IsAlive && base.Owner.CombatState is not null)");
+                            EmitOne(fx[k], suppressTimes: true);
+                            w.Close();
+                        }
+                        w.Close();
+                        ei = ej;
+                        continue;
+                    }
+                }
+                EmitOne(fx[ei], suppressTimes: false);
+                ei++;
+            }
         }
         if (ownScope) w.Close();   // 关掉这条触发时机自己的裸块（见方法开头）
     }
@@ -1720,7 +1770,7 @@ public static class CustomPowerGen
     /// <summary>一条效果在状态钩子里的写法（上下文：choiceContext + base.Owner 是 Creature）。
     /// roomVar 非空 = 钩子里有 CombatRoom（战斗胜利后），卡牌奖励走本体的战斗奖励。</summary>
     private static void EmitEffect(CodeWriter w, EffectSpec e, string? foeFrom, string? roomVar = null,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, bool suppressTimes = false)
     {
         // 数值 0 且升级也不加数值：整条丢掉（用户要求：不显示、也不执行 —— 0 点会被力量/敏捷加成）
         if (CSharpCodeGen.IsInertZero(e)) return;
@@ -1750,11 +1800,11 @@ public static class CustomPowerGen
         // 生效次数：勾了「= 本状态的层数」就按层数循环，否则用填的数字（层数本身不会让效果多跑，这点用户问过）
         // V0.2.238（用户问「生效次数可以填写公式吗」）：状态链也能写了 —— 和这条链的「数值公式」同一套内联口径
         // （状态钩子里没有卡牌那套前置局部变量）：上界现算，夹到 1~20，免得公式算出 999 把一局卡死。
-        int times = Math.Max(1, Math.Min(20, e.Times));
-        string? timesFormula = e.TimesIsStack ? null
+        int times = suppressTimes ? 1 : Math.Max(1, Math.Min(20, e.Times));
+        string? timesFormula = suppressTimes ? null : e.TimesIsStack ? null
             : CSharpCodeGen.InlineCountFormula(p, e, "Times", "base.Owner.Player", "base.Owner",
                 CSharpCodeGen.FirstEnemyOf("base.Owner.Player"));
-        bool loop = e.TimesIsStack || timesFormula is not null || times > 1;
+        bool loop = !suppressTimes && (e.TimesIsStack || timesFormula is not null || times > 1);
         // 每条效果外面永远包一层作用域：里面会声明 other / pick 这类临时变量，
         // 同一个触发时机里两条效果都声明同名变量时 C# 会 CS0136/CS0128 编译不过
         w.Open("");
@@ -2195,7 +2245,14 @@ public static class CustomPowerGen
                 // 详见 CSharpCodeGen.ApplyPowerLine 重载的说明）。
                 // 目标 / 施加者都写 base.Owner：这条链里 base.Owner **本身就是 Creature**（不是 Player），
                 // 别自作主张加上 .Creature。
-                switch (e.TargetSide)
+                // V0.3.22：自定义状态的「扣自己层数」最常见的写法是「作用对象 = 单体敌人」——
+                // 但这个状态挂在敌人身上时，「自己」= base.Owner，而不是「玩家视角的第一个敌人」。
+                // 当效果扣的正是**当前这个状态**的层数时，把 Enemy 收成 Self，避免多敌人时扣错人。
+                string applySide = e.TargetSide;
+                if (e.Amount < 0m && string.Equals(e.PowerId, _powerOwner?.ClassName, StringComparison.Ordinal)
+                    && string.Equals(applySide, "Enemy", StringComparison.Ordinal))
+                    applySide = "Self";
+                switch (applySide)
                 {
                     case "Self":
                         w.Line(CSharpCodeGen.ApplyPowerInstr(e, useX: false, e.PowerId, "base.Owner", amt, "base.Owner", cardSourceExpr: "null"));
@@ -2545,11 +2602,13 @@ public static class CustomPowerGen
         if (foeFrom is not null)
         {
             w.Line($"Creature? other = {foeFrom};");
-            w.Line("if (other is null || !other.IsEnemy || !other.IsAlive) other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();");
+            // V0.3.22：状态被毒死之后 CombatState 会变成 null；这里必须空安全，
+            // 否则「间色：绿」第二段扣层会在 AfterSideTurnStart 里抛 NRE、回合循环直接死掉。
+            w.Line("if (other is null || !other.IsEnemy || !other.IsAlive) other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
         }
         else
         {
-            w.Line("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();");
+            w.Line("Creature? other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
         }
         w.Open("if (other is not null)");
         body(w, "other");
@@ -2624,11 +2683,13 @@ public static class CustomPowerGen
         if (foeFrom is not null)
         {
             w.Line($"Creature? other = {foeFrom};");
-            w.Line("if (other is null || !other.IsEnemy || !other.IsAlive) other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();");
+            // V0.3.22：状态被毒死之后 CombatState 会变成 null；这里必须空安全，
+            // 否则「间色：绿」第二段扣层会在 AfterSideTurnStart 里抛 NRE、回合循环直接死掉。
+            w.Line("if (other is null || !other.IsEnemy || !other.IsAlive) other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
         }
         else
         {
-            w.Line("Creature? other = base.Owner.CombatState.HittableEnemies.FirstOrDefault();");
+            w.Line("Creature? other = base.Owner.CombatState?.HittableEnemies.FirstOrDefault();");
         }
         w.Open("if (other is not null)");
         w.Line(body("other"));
