@@ -375,7 +375,12 @@ public static class ForgeFormula
                         + $"想用「当前回合数 / 丢了第几张 / 身上有几个状态」这类实时读数，请用内置名字：{FormulaBuiltins.Names}。"
                         + "（变量页的变量名最多 12 位。）");
                 }
-                return new VarNode(name.ToUpperInvariant());
+                // V0.3.21（用户实测：变量 `a` + 参数 `A`，公式 `a` 被当成参数 A → 伤害读到破绽层数，一直 0）：
+                // **单字母也要保留大小写** —— 否则 `a` 在解析期就被改成 `A`，变量名的大小写信息丢了。
+                // X / Y 仍按老的「不区分大小写」处理（变量页保留名，不会和变量撞）。
+                if (name is "x" or "X") return new VarNode("X");
+                if (name is "y" or "Y") return new VarNode("Y");
+                return new VarNode(name);
             }
             throw new FormulaError(Cur == '\0'
                 ? "公式写到一半就没了（多半是少了一个数字或右括号）。"
@@ -497,6 +502,9 @@ public static class ForgeFormula
         decimal? ConstOf(string id)
         {
             if (p is null) return null;
+            // 变量是运行时值：不要被同名（忽略大小写）的固定值参数骗了
+            if (p.Variables.Any(v => v is not null && string.Equals((v.Name ?? "").Trim(), id, StringComparison.Ordinal)))
+                return null;
             var param = p.CustomParams?.FirstOrDefault(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase));
             if (param is null) return null;
             // 「取值来源 = 固定数值」才算常量；别的来源都要等打出那一刻
@@ -1028,7 +1036,7 @@ public static class ForgeFormula
                     && string.Equals((x.Name ?? "").Trim(), id, StringComparison.Ordinal)) is { } vr
                 ? $"{Naming.From(p).CharClass}Vars.{vr.Name}"
                 : (p.CustomParams.FirstOrDefault(x => x is not null
-                    && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)) is { } param
+                    && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase)) is { } param
                 ? InlineParam(param, playerExpr, selfExpr, targetExpr, p)
                 : null)),
     };
@@ -1064,7 +1072,7 @@ public static class ForgeFormula
             : (p.Variables.FirstOrDefault(x => x is not null
                     && string.Equals((x.Name ?? "").Trim(), id, StringComparison.Ordinal)) is { } vr
                 ? $"{Naming.From(p).CharClass}Vars.{vr.Name}"
-                : (p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal))
+                : (p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase))
                     ? ParamVar(id)
                     : null)),
     };

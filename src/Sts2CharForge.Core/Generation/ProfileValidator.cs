@@ -4267,6 +4267,23 @@ public static class ProfileValidator
     /// 为什么种类和上下文都要拦：写成非空却没人读它 = **静默不生效**，
     /// 用户看到的是「公式填了，游戏里伤害还是那个固定数值」（最难查的一类问题）。
     /// </summary>
+    /// <summary>
+    /// 公式里「能认出来的名字」分成两份：
+    /// 变量**区分大小写**（`a` 和 `A` 是两个名字）；参数**不区分大小写**（老习惯，字母占位）。
+    /// V0.3.21：不能再混成一个 HashSet —— 混在一起会让 `a` 被当成参数 `A`（用户实测伤害一直 0）。
+    /// </summary>
+    private static (HashSet<string> Vars, HashSet<string> Params) FormulaNameSets(CharacterProfile? p)
+    {
+        var vars = new HashSet<string>(StringComparer.Ordinal);
+        var pars = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (p is null) return (vars, pars);
+        foreach (var v in p.Variables)
+            if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) vars.Add(v.Name.Trim());
+        foreach (var cp in p.CustomParams)
+            if (cp is not null) pars.Add(ParamNames.Normalize(cp.Name));
+        return (vars, pars);
+    }
+
     private static void ValidateAmountFormula(List<ValidationIssue> issues, string owner, EffectSpec e,
         EffectKindOption kind, string ctx, CharacterProfile? p)
     {
@@ -4298,21 +4315,14 @@ public static class ProfileValidator
             issues.Add(new("错误", $"{owner} 的「{kindZh}」数值公式看不懂：{err}"));
             return;
         }
-        var known = new HashSet<string>(StringComparer.Ordinal);
-        if (p is not null)
-            foreach (var cp in p.CustomParams)
-                if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
-        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
-        if (p is not null)
-            foreach (var v in p.Variables)
-                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
+        var (knownVars, knownParams) = FormulaNameSets(p);
         var knownIds = ForgeFormula.Identifiers(root).ToList();
         foreach (string id in knownIds)
         {
             if (id is "X" or "Y") continue;
             // 内置只读量（用户要求：参数监听）：Turn / DiscardedThisTurn / PowersOnMe… 直接写就能用
             if (FormulaBuiltins.Find(id) is not null) continue;
-            if (known.Contains(id)) continue;
+            if (knownVars.Contains(id) || knownParams.Contains(id)) continue;
             issues.Add(new("错误", $"{owner} 的「{kindZh}」数值公式里的「{id}」不是一个参数："
                 + $"到「自定义参数 / 组」页加一个 {id}=（并选好它从哪来），或者把公式改掉。"
                 + "X = 打出这张牌那一刻的当前能量，Y = 当前额外资源量，这两个不用定义；"
@@ -4329,9 +4339,10 @@ public static class ProfileValidator
                     + "（不是「这张牌花掉的那点」；想避开歧义可以改用 MyEnergy / MyStars 这类实时读数）。"));
             if (p is not null)
             {
-                var chosen = knownIds.Where(id => p.CustomParams.Any(cp => cp is not null
-                        && string.Equals(ParamNames.Normalize(cp.Name), id, StringComparison.Ordinal)
-                        && ParamTargets.Normalize(cp.Target) == ParamTargets.ChosenEnemy)).ToList();
+                var chosen = knownIds.Where(id => !knownVars.Contains(id) && knownParams.Contains(id)
+                        && p.CustomParams.Any(cp => cp is not null
+                            && string.Equals(ParamNames.Normalize(cp.Name), id, StringComparison.OrdinalIgnoreCase)
+                            && ParamTargets.Normalize(cp.Target) == ParamTargets.ChosenEnemy)).ToList();
                 if (chosen.Count > 0)
                     issues.Add(new("提示", $"{owner} 的「{kindZh}」公式里用了「指定敌人」来源的参数"
                         + $"（{string.Join(" / ", chosen)}）：{where}上没有「玩家选中的目标」，"
@@ -4398,14 +4409,7 @@ public static class ProfileValidator
                     + "「命中次数 / 复制份数 / 重放次数 / 概率」的公式目前只做在卡牌和锻造【效果】里。"
                     + "请清空这几栏的公式，改用左边的固定值。"));
         }
-        var known = new HashSet<string>(StringComparer.Ordinal);
-        if (p is not null)
-            foreach (var cp in p.CustomParams)
-                if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
-        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
-        if (p is not null)
-            foreach (var v in p.Variables)
-                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
+        var (knownVars, knownParams) = FormulaNameSets(p);
         foreach (string key in EffectSpec.CountFormulaKeys)
         {
             string raw = e.CountFormula(key);
@@ -4431,7 +4435,7 @@ public static class ProfileValidator
             {
                 if (id is "X" or "Y") continue;
                 if (FormulaBuiltins.Find(id) is not null) continue;
-                if (known.Contains(id)) continue;
+                if (knownVars.Contains(id) || knownParams.Contains(id)) continue;
                 issues.Add(new("错误", $"{owner} 的「{zh}」次数公式里的「{id}」不是一个参数："
                     + $"到「自定义参数 / 组」页加一个 {id}=（并选好它从哪来），或者把公式改掉。"
                     + "X = 打出这张牌那一刻的当前能量，Y = 当前额外资源量，这两个不用定义；"
@@ -4466,14 +4470,7 @@ public static class ProfileValidator
                 + $"{where}的代码链里没有那两个「自己 / 玩家」的局部变量。请清空公式，改用固定数值。"));
             return;
         }
-        var known = new HashSet<string>(StringComparer.Ordinal);
-        if (p is not null)
-            foreach (var cp in p.CustomParams)
-                if (cp is not null) known.Add(ParamNames.Normalize(cp.Name));
-        // V0.3.16：变量页里的变量在公式里也能直接写（和参数同一条解析链）
-        if (p is not null)
-            foreach (var v in p.Variables)
-                if (v is not null && !string.IsNullOrWhiteSpace(v.Name)) known.Add(v.Name.Trim());
+        var (knownVars, knownParams) = FormulaNameSets(p);
         foreach (var (which, raw) in new[] { ("数值 N", c.AmountFormula), ("数值 M", c.Amount2Formula) })
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
@@ -4487,7 +4484,7 @@ public static class ProfileValidator
             {
                 if (id is "X" or "Y") continue;
                 if (FormulaBuiltins.Find(id) is not null) continue;
-                if (known.Contains(id)) continue;
+                if (knownVars.Contains(id) || knownParams.Contains(id)) continue;
                 issues.Add(new("错误", $"{owner} 的条件「{which}」公式里的「{id}」不是一个参数："
                     + $"到「自定义参数 / 组」页加一个 {id}=，或者把公式改掉。"
                     + $"内置只读量（不用定义）：{FormulaBuiltins.HintList}。"));

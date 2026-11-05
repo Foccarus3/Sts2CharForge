@@ -277,8 +277,12 @@ public static class ForgeNumbers
     private static decimal? ConstParam(CharacterProfile? p, string id)
     {
         if (p is null) return null;
+        // V0.3.21：变量是运行时值，不能当编译期常量（即使同名参数是固定值）。
+        // 先按**精确大小写**认变量：`a` 是变量、`A` 是参数时，`a` 必须走运行时那条路。
+        if (p.Variables.Any(v => v is not null && string.Equals((v.Name ?? "").Trim(), id, StringComparison.Ordinal)))
+            return null;
         var param = p.CustomParams.FirstOrDefault(x => x is not null
-            && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal));
+            && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase));
         if (param is null) return null;
         // ⚠ 参数来源写成某条「实时读数」时它是跑起来才知道的（ParamExpr 会借 FormulaBuiltins 的表达式）
         if (FormulaBuiltins.Find(ParamSources.Normalize(param.Source)) is not null) return null;

@@ -19764,7 +19764,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					string Emit2(string f, params (string Name, string Expr)[] vars)
 						=> ForgeFormula.Emit(ForgeFormula.TryParse(f, out _),
-							id => vars.FirstOrDefault(v => v.Name == id).Expr, out _) ?? "";
+							id => vars.FirstOrDefault(v => string.Equals(v.Name, id, StringComparison.OrdinalIgnoreCase)).Expr, out _) ?? "";
 					Check("公式支持比较 / 逻辑 / 三元：a > 0 && b > 0 ? 1 : 0 认得出、翻成 C#",
 						Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")).Contains("&& ") && Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")).Contains("? (1m) : (0m)"),
 						Emit2("a > 0 && b > 0 ? 1 : 0", ("A", "__pA"), ("B", "__pB")));
@@ -19786,8 +19786,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("比较 / 逻辑 / 三元都能在生成期折成常数（真 1 假 0）",
 						ForgeFormula.TryEvalConst(ForgeFormula.TryParse("((2 > 1) ? 1 : 0) * 2", out _), _ => null, out decimal f1, out _) && f1 == 2m
 						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("(a > 0 ? 1 : 0) + (b > 0 ? 1 : 0) + (c > 0 ? 1 : 0)", out _),
-							id => id switch { "A" => 5m, "B" => 3m, "C" => -2m, _ => null }, out decimal f2, out _) && f2 == 2m
-						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("a % 2 == 1 ? 10 : 0", out _), id => id == "A" ? 5m : null, out decimal f3, out _) && f3 == 10m,
+							id => id.ToUpperInvariant() switch { "A" => 5m, "B" => 3m, "C" => -2m, _ => null }, out decimal f2, out _) && f2 == 2m
+						&& ForgeFormula.TryEvalConst(ForgeFormula.TryParse("a % 2 == 1 ? 10 : 0", out _), id => id.Equals("A", StringComparison.OrdinalIgnoreCase) ? 5m : null, out decimal f3, out _) && f3 == 10m,
 						$"2 / 2 / 10");
 					Check("三元少写冒号时给一句中文原因（不丢给 dotnet 报 CS 错）",
 						ForgeFormula.TryParse("a > 0 ? 1", out string terr) is null && terr.Contains("冒号"), terr);
@@ -42656,6 +42656,45 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv20)
 				{
 					Check("V0.3.20：变量卡牌描述 / 乘除", false, "异常：" + exv20.Message);
+				}
+				// ----- V0.3.21：单字母变量 a 不再被参数 A 抢走（用户实测伤害一直 0 的真因） -----
+				try
+				{
+					var v21 = ProfileFactory.Sample();
+					v21.Variables.Clear();
+					v21.Variables.Add(new VarSpec { Name = "a", Formula = "0" });
+					v21.CustomParams.Add(new ParamSpec { Name = "A", Source = ParamSources.Value, Value = 7m });
+					var v21Card = new CardSpec { Name = "小写变量伤害卡", ClassName = "UiCheckVarLowerA", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+					v21Card.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, AmountFormula = "a", TargetSide = "Enemy" });
+					v21Card.Effects.Add(new EffectSpec { Kind = "VarWrite", WriteVar = "a", WriteOp = "Add", Amount = 1m });
+					v21.Cards.Add(v21Card);
+					string v21Cls = ForgeVarsGen.ClassName(Naming.From(v21));
+					string v21Src = CSharpCodeGen.CardSource(v21, v21Card, v21.Cards.Count - 1);
+					Check("V0.3.21：公式 a（小写变量）不再被解析成参数 A —— 伤害读的是 <角色>Vars.a",
+						v21Src.Contains(v21Cls + ".a") && !v21Src.Contains("__pA"),
+						v21Src.Split((char)10).FirstOrDefault(x => x.Contains("DamageCmd.Attack")) ?? "");
+					Check("V0.3.21：公式解析器保留单字母的大小写（a ≠ A）",
+						ForgeFormula.Identifiers(ForgeFormula.TryParse("a", out _)).SequenceEqual(new[] { "a" }),
+						string.Join(",", ForgeFormula.Identifiers(ForgeFormula.TryParse("a", out _))));
+					Check("V0.3.21：变量 a 与参数 A 并存时校验器不误报",
+						!ProfileValidator.Validate(v21).Any(x => x.IsError && x.Message.Contains("不是一个参数")),
+						string.Join(" | ", ProfileValidator.Validate(v21).Where(x => x.Message.Contains("参数")).Select(x => x.Level + ":" + x.Message)));
+
+					// 小写参数 m 仍然要能用 M 参数（老习惯：参数名不区分大小写）
+					var v21b = ProfileFactory.Sample();
+					v21b.Variables.Clear();
+					v21b.CustomParams.Add(new ParamSpec { Name = "M", Source = ParamSources.Value, Value = 5m });
+					var v21bCard = new CardSpec { Name = "小写参数伤害卡", ClassName = "UiCheckParamLowerM", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true };
+					v21bCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 0m, AmountFormula = "m", TargetSide = "Enemy" });
+					v21b.Cards.Add(v21bCard);
+					string v21bSrc = CSharpCodeGen.CardSource(v21b, v21bCard, v21b.Cards.Count - 1);
+					Check("V0.3.21：小写 m 仍然认参数 M（不区分大小写），并真的声明 __pM",
+						v21bSrc.Contains("decimal __pM") && v21bSrc.Contains("Attack(__pM)"),
+						v21bSrc.Split((char)10).FirstOrDefault(x => x.Contains("__pM")) ?? "");
+				}
+				catch (Exception exv21)
+				{
+					Check("V0.3.21：单字母变量大小写", false, "异常：" + exv21.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

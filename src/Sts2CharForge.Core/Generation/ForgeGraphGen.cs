@@ -2522,8 +2522,18 @@ public static class ForgeGraphGen
         if (formulaExprs.Count == 0) return;
 
         // 2) 参数（按配置里的顺序）
+        // V0.3.21：参数名按**不区分大小写**认（公式里写小写 m 也要能用 M 参数）；
+        // 但如果公式里出现的是**精确同名的变量**（变量 a / 参数 A），这个参数就不声明 —— 别多算一个用不上的。
         var usedParams = p.CustomParams
-            .Where(x => x is not null && names.Contains(ParamNames.Normalize(x.Name))).ToList();
+            .Where(x => x is not null)
+            .Where(x =>
+            {
+                string n = ParamNames.Normalize(x.Name);
+                bool usedAsVar = p.Variables.Any(v => v is not null
+                    && names.Contains((v.Name ?? "").Trim())
+                    && string.Equals((v.Name ?? "").Trim(), n, StringComparison.OrdinalIgnoreCase));
+                return !usedAsVar && names.Any(id => string.Equals(id, n, StringComparison.OrdinalIgnoreCase));
+            }).ToList();
         var paramDecls = usedParams
             .Select(param =>
             {
@@ -4753,7 +4763,8 @@ public static class ForgeGraphGen
                         continue;
                     }
                     if (FormulaBuiltins.Find(id) is not null) continue;
-                    if (!p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)))
+                    if (!p.Variables.Any(v => v is not null && string.Equals((v.Name ?? "").Trim(), id, StringComparison.Ordinal))
+                        && !p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase)))
                         list.Add(("错误", $"【{kindZh}】的「{label}」用了参数 {id}=，但「自定义参数 / 组」页里没有这个参数"
                             + $"（内置只读量可以直接写：{FormulaBuiltins.Names}）。"));
                 }
@@ -4826,7 +4837,8 @@ public static class ForgeGraphGen
                     }
                     // 内置只读量（Turn / DiscardedThisTurn…）不用定义，直接可用
                     if (FormulaBuiltins.Find(id) is not null) continue;
-                    if (!p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal)))
+                    if (!p.Variables.Any(v => v is not null && string.Equals((v.Name ?? "").Trim(), id, StringComparison.Ordinal))
+                        && !p.CustomParams.Any(x => x is not null && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase)))
                         list.Add(("错误", $"【数值】的公式「{f}」用了参数 {id}=，但「自定义参数 / 组」页里没有这个参数"
                             + $"（内置只读量可以直接写：{FormulaBuiltins.Names}）。"));
                 }

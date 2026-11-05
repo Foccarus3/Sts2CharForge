@@ -155,7 +155,7 @@ public static class ForgeVarsGen
         if (map.TryGetValue(id, out var other) && TryVar(other, p, map, stack, out int ov))
             return ov;
         var param = p.CustomParams.FirstOrDefault(x => x is not null
-            && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal));
+            && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.OrdinalIgnoreCase));
         if (param is not null && string.Equals(param.Source, ParamSources.Value, StringComparison.OrdinalIgnoreCase))
             return param.Value;
         return null;
