@@ -1313,6 +1313,136 @@
                 </Grid>
             </TabItem>
 
+            <!-- ============ 变量 ============ -->
+            <TabItem x:Name="VarTab" Header="变量">
+                <Grid Margin="8">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- V0.3.17：命名规范横幅（常驻，不用点开就知道规则） -->
+                    <Border Grid.Row="0" Background="#FFF8E1" BorderBrush="#E0C060" BorderThickness="1" Padding="10,6">
+                        <StackPanel>
+                            <TextBlock FontWeight="Bold" TextWrapping="Wrap"
+                                       Text="变量（计数器）—— 名字规则：字母 / 数字 / 下划线，1~12 位，不能以数字开头；X / Y 与内置读数名不能用。"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="#7A5" Margin="0,3,0,0"
+                                       Text="不勾「全局」= 每场战斗开始时复位；勾上 = 本局内跨战斗保留（新开一局清零，不是跨局存档）。"/>
+                        </StackPanel>
+                    </Border>
+
+                    <Grid Grid.Row="1" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="300"/>
+                            <ColumnDefinition Width="8"/>
+                            <ColumnDefinition Width="*" MinWidth="480"/>
+                        </Grid.ColumnDefinitions>
+
+                        <GroupBox Grid.Column="0" Header="变量">
+                            <DockPanel>
+                                <WrapPanel DockPanel.Dock="Bottom" Margin="0,6,0,0">
+                                    <Button x:Name="AddVarButton" Content="新建变量" Padding="8,4" Margin="0,0,6,0" Click="OnAddVar"
+                                            ToolTip="自动挑一个没被占用的短名字（a、b…；被占了就 a2、b2…）"/>
+                                    <Button x:Name="RemoveVarButton" Content="删除" Padding="8,4" Click="OnRemoveVar"/>
+                                </WrapPanel>
+                                <ListBox x:Name="VarList" DisplayMemberPath="Display"
+                                         ItemsSource="{Binding Profile.Variables}"
+                                         SelectionChanged="OnVarSelectionChanged"/>
+                            </DockPanel>
+                        </GroupBox>
+
+                        <TextBlock x:Name="VarEmptyHint" Grid.Column="2" FontSize="16" Foreground="#999"
+                                   HorizontalAlignment="Center" VerticalAlignment="Center" TextWrapping="Wrap"
+                                   Text="还没有变量。点左边的「新建变量」建一个 —— 建好之后，效果编辑器里就能选「变量（+ / - / = / 清零）」。"
+                                   Visibility="{Binding SelectedItem, ElementName=VarList, Converter={StaticResource EmptyToVisibility}}"/>
+
+                        <Grid x:Name="VarDetail" Grid.Column="2" DataContext="{Binding SelectedItem, ElementName=VarList}"
+                              Visibility="{Binding SelectedItem, ElementName=VarList, Converter={StaticResource NotEmptyToVisibility}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.15*" MinWidth="300"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="*" MinWidth="300"/>
+                            </Grid.ColumnDefinitions>
+
+                            <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="变量名（1~12 位）" Style="{StaticResource Label}"/>
+                                    <TextBox Style="{StaticResource Field}" MaxLength="12"
+                                             Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="只能字母 / 数字 / 下划线，且不能以数字开头；X / Y 与内置读数名不能用。"/>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#B00" FontSize="11" Margin="0,2,0,0"
+                                               Text="{Binding VarNameWarnText, RelativeSource={RelativeSource AncestorType=Window}}"/>
+
+                                    <TextBlock Text="初值 / 取值公式（空 = 0）" Style="{StaticResource Label}"/>
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Content="…" Padding="6,1" Margin="4,0,0,0"
+                                                Click="OnVarInsertFormulaParam" Tag="{Binding ElementName=VarFormulaBox}"
+                                                ToolTip="插入参数 / 内置读数（变量名也可以直接写）"/>
+                                        <TextBox x:Name="VarFormulaBox" Style="{StaticResource Field}"
+                                                 Text="{Binding Formula, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="例：cnt + 1、max(0, Turn - 2)。可以引用别的变量（会做循环引用检测）、自定义参数、X / Y、内置只读量。&#10;⚠ 初值在战斗开始时就要算出来：只含数字 / 别的变量的公式会按它复位；含 X / Y / 内置读数 / 参数的公式会按 0 复位（下面会实时说明）。"/>
+                                    </DockPanel>
+                                    <TextBlock TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,2,0,0"
+                                               Text="初值在战斗开始时折算成常数；折不出来（用到 X / Y / 内置读数 / 参数）就按 0 复位。"/>
+
+                                    <CheckBox Style="{StaticResource Check}" Margin="0,10,0,0"
+                                              Content="全局（本局内跨战斗保留，新开一局清零）"
+                                              IsChecked="{Binding Global}"
+                                              ToolTip="不勾 = 每场战斗开始时复位；勾上 = 这一局里跨战斗保留（换一局才清零）。不是跨局存档。"/>
+                                    <CheckBox Style="{StaticResource Check}" Margin="0,6,0,0"
+                                              Content="允许负数（不勾 = 减到 0 就停）"
+                                              IsChecked="{Binding AllowNegative}"
+                                              ToolTip="不勾：任何写入都会被夹到 ≥ 0。勾上：可以变成负数（例如欠账计数器）。"/>
+                                    <TextBlock Text="上限（留空 = 不封顶）" Style="{StaticResource Label}"/>
+                                    <TextBox Style="{StaticResource Field}" Width="120" HorizontalAlignment="Left"
+                                             Text="{Binding MaxText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="正整数；留空 = 不封顶。写入超过上限时按上限算。"/>
+                                    <TextBlock Text="备注（只给你自己看，不参与生成）" Style="{StaticResource Label}"/>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding Note, UpdateSourceTrigger=PropertyChanged}"/>
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                <StackPanel>
+                                    <TextBlock Text="这个变量" FontWeight="Bold" Margin="0,0,0,4"/>
+                                    <Border BorderBrush="#DDD" BorderThickness="1" Background="#FAFAFA" Padding="8">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding Display}" FontSize="16" FontWeight="Bold" TextWrapping="Wrap"/>
+                                            <TextBlock TextWrapping="Wrap" Margin="0,4,0,0"
+                                                       Text="生成出来的类是「&lt;角色&gt;Vars」，效果里写「变量（+ / - / = / 清零）」即可读写它。"/>
+                                        </StackPanel>
+                                    </Border>
+
+                                    <TextBlock Text="重置" FontWeight="Bold" Margin="0,12,0,4"/>
+                                    <Border BorderBrush="#CFE6CF" BorderThickness="1" Background="#F6FFF6" Padding="8">
+                                        <TextBlock TextWrapping="Wrap" Text="{Binding VarInitialPreview, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    </Border>
+
+                                    <TextBlock Text="试算（按当前初值算一次，不会改存档）" FontWeight="Bold" Margin="0,14,0,4"/>
+                                    <DockPanel>
+                                        <Button x:Name="VarTrialButton" DockPanel.Dock="Right" Content="试算" Padding="10,3" Margin="6,0,0,0" Click="OnVarTrial"/>
+                                        <TextBox Style="{StaticResource Field}"
+                                                 Text="{Binding VarTrialFormula, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"
+                                                 ToolTip="写一个公式，按「所有变量都取初值」算一次。例：cnt + 1。"/>
+                                    </DockPanel>
+                                    <TextBlock TextWrapping="Wrap" Margin="0,4,0,0" FontWeight="Bold"
+                                               Text="{Binding VarTrialResult, RelativeSource={RelativeSource AncestorType=Window}}"/>
+
+                                    <TextBlock Text="当前所有变量" FontWeight="Bold" Margin="0,14,0,6"/>
+                                    <ItemsControl ItemsSource="{Binding VarSummaryRows, RelativeSource={RelativeSource AncestorType=Window}}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <TextBlock Text="{Binding}" TextWrapping="Wrap" Margin="0,1,0,1"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Grid>
+                    </Grid>
+                </Grid>
+            </TabItem>
+
             <!-- ============ 锻造 ============ -->
             <TabItem x:Name="ForgeTab" Header="锻造">
                 <Grid Margin="8">

@@ -69,6 +69,24 @@ public partial class App : Application
             return;
         }
 
+        // 观感截图模式：把「变量」页整个窗口渲染成 PNG（看横幅 / 行内校验 / 试算版式）
+        if (e.Args.Any(a => a.Equals("--varshot", StringComparison.OrdinalIgnoreCase)))
+        {
+            string outPng = Path.Combine(AppContext.BaseDirectory, "varshot.png");
+            try
+            {
+                var w = new MainWindow();
+                w.ShotVarPage(outPng);
+                Shutdown(0);
+            }
+            catch (Exception ex)
+            {
+                File.WriteAllText(Path.Combine(AppContext.BaseDirectory, "varshot_error.txt"), ex.ToString(), new UTF8Encoding(false));
+                Shutdown(1);
+            }
+            return;
+        }
+
         // 观感截图模式：把「角色」页整个窗口渲染成 PNG（用来肉眼确认布局）
         if (e.Args.Any(a => a.Equals("--roleshot", StringComparison.OrdinalIgnoreCase)))
         {

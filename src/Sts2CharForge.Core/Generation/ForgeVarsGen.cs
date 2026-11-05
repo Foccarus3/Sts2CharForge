@@ -167,6 +167,36 @@ public static class ForgeVarsGen
         return $"{where}复位为 0（初值公式里有 X / Y / 内置读数 / 参数，生成时折不出常数）。";
     }
 
+    /// <summary>
+    /// 界面「试算」：按**当前初值**求一个表达式（不会改存档）。变量取初值；固定数值参数取它填的数；
+    /// 其余（X / Y / 内置读数 / 非固定值参数）算不出来 → 返回 false + 一句人话。
+    /// </summary>
+    public static bool TryEvalFormula(CharacterProfile p, string? formula, out decimal value, out string error)
+    {
+        value = 0m;
+        error = "";
+        string f = EffectSpec.FormulaText(formula);
+        if (f.Length == 0) { error = "公式是空的。"; return false; }
+        var root = ForgeFormula.TryParse(f, out error);
+        if (root is null) return false;
+        var map = p.Variables.Where(x => x is not null && x.Name.Length > 0)
+            .GroupBy(x => x.Name, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        bool ok = ForgeFormula.TryEvalConst(root, id =>
+        {
+            if (map.TryGetValue(id, out var v) && TryVar(v, map, new HashSet<string>(StringComparer.Ordinal), out int iv))
+                return iv;
+            var param = p.CustomParams.FirstOrDefault(x => x is not null
+                && string.Equals(ParamNames.Normalize(x.Name), id, StringComparison.Ordinal));
+            if (param is not null && string.Equals(param.Source, ParamSources.Value, StringComparison.OrdinalIgnoreCase))
+                return param.Value;
+            return null;
+        }, out value, out string evalErr);
+        if (!ok)
+            error = $"「{evalErr}」不是常数（X / Y / 内置读数 / 非固定值参数要等战斗里才有值）。";
+        return ok;
+    }
+
     /// <summary>计数器的夹取表达式：不允许负数 → <c>Math.Max(0, x)</c>；有上限 → 再 <c>Math.Min(Max, x)</c>。</summary>
     private static string ClampExpr(VarSpec v)
     {

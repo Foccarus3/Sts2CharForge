@@ -47,7 +47,38 @@ public sealed class VarSpec : SpecBase
     public bool AllowNegative { get => _allowNegative; set => Set(ref _allowNegative, value); }
 
     /// <summary>计数器上限（int.MaxValue = 不封顶）。</summary>
-    public int Max { get => _max; set => Set(ref _max, value); }
+    public int Max
+    {
+        get => _max;
+        set
+        {
+            if (!Set(ref _max, value)) return;
+            Raise(nameof(MaxText));
+            Raise(nameof(Display));
+        }
+    }
+
+    /// <summary>
+    /// 界面用：上限的**文本**形式。空串 = 不封顶（<see cref="int.MaxValue"/>）。
+    ///
+    /// <para>为什么不直接绑 <see cref="Max"/>：WPF 对 <c>int</c> 的 TextBox 绑定时，清空 / 打到一半
+    /// （例如刚删掉数字）会解析失败 → 这次改动被丢弃，用户体感是「填不进去」。照
+    /// <c>AnimationSpec.ScaleText</c> 的老写法：文本照收，**只有解析成功才写回 int**。</para>
+    /// </summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string MaxText
+    {
+        get => _max == int.MaxValue ? "" : _max.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        set
+        {
+            string s = (value ?? "").Trim();
+            if (s.Length == 0) { Max = int.MaxValue; return; }
+            if (int.TryParse(s, System.Globalization.NumberStyles.Integer,
+                    System.Globalization.CultureInfo.InvariantCulture, out int n) && n >= 0)
+                Max = n;
+            // 解析失败 / 负数：保持原值（不把中间态写进存档）
+        }
+    }
 
     /// <summary>列表里显示的那行字。</summary>
     public string Display => Name.Length == 0

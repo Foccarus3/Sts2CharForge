@@ -487,6 +487,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			EnsureKeywordRenameRows();
 			// 「自定义参数 / 组」两页：换存档要重新挂监听（列表里的显示文字是算出来的）
 			HookParamsAndGroups();
+			// V0.3.17：变量页同理（新存档的变量集合换了一套）
+			HookVariables();
+			RaiseVariablesChanged();
 			Raise("Profile");
 			// V0.3.16：「变量」效果的下拉候选也跟当前存档走
 			Raise("VarChoices");
@@ -1670,6 +1673,40 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		enc.Save(fs);
 	}
 
+	/// <summary>
+	/// 【开发用，不参与生成、不写存档】把「变量」页整个窗口渲染成 PNG（看版式 / 横幅 / 输入框）。
+	/// 用法：<c>Sts2CharForge.exe --varshot</c>（写到 exe 旁边的 varshot.png）。
+	/// </summary>
+	public void ShotVarPage(string path)
+	{
+		SelectTabRoot("变量");
+		if (Profile.Variables.Count == 0)
+		{
+			Profile.Variables.Add(new VarSpec { Name = "cnt", Formula = "2", Max = 10, Note = "本场连击" });
+			Profile.Variables.Add(new VarSpec { Name = "run_pts", Formula = "cnt + 1", Global = true, AllowNegative = true, Note = "本局累计" });
+			HookVariables();
+			RaiseVariablesChanged();
+		}
+		if (VarList.Items.Count > 0) VarList.SelectedIndex = 0;
+		Width = 1420;
+		Height = 880;
+		Show();
+		UpdateLayout();
+		// 选中项要在窗口 Loaded / 绑定都跑完之后再设一次（不然截图里是空状态）
+		if (VarList.Items.Count > 0) VarList.SelectedIndex = 0;
+		UpdateLayout();
+		UpdateLayout();
+
+		int w = Math.Max(800, (int)Math.Ceiling(ActualWidth));
+		int h = Math.Max(600, (int)Math.Ceiling(ActualHeight));
+		var bmp = new RenderTargetBitmap(w, h, 96, 96, PixelFormats.Pbgra32);
+		bmp.Render(this);
+		var enc = new PngBitmapEncoder();
+		enc.Frames.Add(BitmapFrame.Create(bmp));
+		using var fs = File.Create(path);
+		enc.Save(fs);
+	}
+
 	/// <summary>自检用：带一条「负数临时增益」的存档（验「让敌人失去 N 点临时力量」那条路）。 /summary>
 	private CharacterProfile tpProfWithNeg(string powerId = "StrengthPower")
 	{
@@ -2250,6 +2287,144 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	/// <summary>V0.3.16：「变量」效果里「怎么改」下拉的候选（+ / - / = / 清零）。</summary>
 	public IReadOnlyList<VarWriteOpOption> VarWriteOps => EffectSpec.VarWriteOps;
+
+	/// <summary>V0.3.17：变量名那一行的红字（不合规范 / 重名 / 和参数撞名）。</summary>
+	public string VarNameWarnText
+	{
+		get
+		{
+			if (VarList?.SelectedItem is not VarSpec me) return "";
+			string name = (me.Name ?? "").Trim();
+			if (VarNames.Check(name) is { } why) return $"名字不合格：{why}";
+			int dup = _profile.Variables.Count(x => !ReferenceEquals(x, me)
+				&& string.Equals((x.Name ?? "").Trim(), name, StringComparison.Ordinal));
+			if (dup > 0) return $"「{name}」已经有别的变量在用了（重名的会被校验器拦下）。";
+			if (_profile.CustomParams.Any(x => x is not null
+				&& string.Equals(ParamNames.Normalize(x.Name), name, StringComparison.Ordinal)))
+				return $"「{name}」和自定义参数同名 —— 公式里写这个名字时不知道该算哪个，请改名。";
+			return "";
+		}
+	}
+
+	/// <summary>V0.3.17：变量页右侧的「当前所有变量」汇总。</summary>
+	public IReadOnlyList<string> VarSummaryRows
+	{
+		get
+		{
+			var rows = new List<string>();
+			foreach (var v in _profile.Variables.Where(x => x is not null))
+				rows.Add("·  " + v.Display + " ｜ " + ForgeVarsGen.ResetPreview(_profile, v));
+			if (rows.Count == 0) rows.Add("（还没有变量。点左边的「新建变量」建一个。）");
+			return rows;
+		}
+	}
+
+	/// <summary>V0.3.17：选中的变量复位成多少（每场战斗 / 新开一局）。</summary>
+	public string VarInitialPreview
+		=> VarList?.SelectedItem is VarSpec v ? ForgeVarsGen.ResetPreview(_profile, v) : "（先选一个变量）";
+
+	private string _varTrialFormula = "";
+	private string _varTrialResult = "";
+
+	/// <summary>V0.3.17：试算框里的公式（界面绑的是窗口属性，不是 VarSpec 字段）。</summary>
+	public string VarTrialFormula
+	{
+		get => _varTrialFormula;
+		set { if (_varTrialFormula == (value ?? "")) return; _varTrialFormula = value ?? ""; Raise(nameof(VarTrialFormula)); }
+	}
+
+	/// <summary>V0.3.17：试算结果（「= 12」或「算不出来：…」）。</summary>
+	public string VarTrialResult
+	{
+		get => _varTrialResult;
+		set { if (_varTrialResult == (value ?? "")) return; _varTrialResult = value ?? ""; Raise(nameof(VarTrialResult)); }
+	}
+
+	/// <summary>V0.3.17：变量页选中项变了 —— 红字 / 重置说明 / 试算框都跟着换。</summary>
+	private void OnVarSelectionChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (VarList?.SelectedItem is VarSpec v)
+		{
+			VarTrialFormula = v.Formula;
+			VarTrialResult = "";
+		}
+		Raise("VarNameWarnText");
+		Raise("VarInitialPreview");
+	}
+
+	/// <summary>V0.3.17：「新建变量」——自动挑一个没被占用的短名字。</summary>
+	private void OnAddVar(object sender, RoutedEventArgs e)
+	{
+		string name = VarNames.NextFree(_profile.Variables.Where(v => v is not null).Select(v => v.Name));
+		var spec = new VarSpec { Name = name, Formula = "0" };
+		_profile.Variables.Add(spec);
+		HookVariables();
+		RaiseVariablesChanged();
+		VarList.SelectedItem = spec;
+		SetStatus($"已新建变量「{name}」（初值 0）。名字 / 初值 / 全局 / 允许负数 / 上限都在右边改。");
+	}
+
+	/// <summary>V0.3.17：「删除」选中的变量。</summary>
+	private void OnRemoveVar(object sender, RoutedEventArgs e)
+	{
+		var picked = VarList.SelectedItems.Cast<object>().OfType<VarSpec>().ToList();
+		if (picked.Count == 0) { SetStatus("请先在左边选中要删除的变量。"); return; }
+		if (!Confirm(picked.Count == 1
+			? $"确定要删除变量「{picked[0].Name}」吗？用到它的「变量」效果会变成「变量页里找不到」，校验器会拦下来。"
+			: $"确定要删除选中的 {picked.Count} 个变量吗？", "确认删除"))
+			return;
+		foreach (var v in picked) _profile.Variables.Remove(v);
+		HookVariables();
+		RaiseVariablesChanged();
+		SetStatus($"已删除 {picked.Count} 个变量。");
+	}
+
+	/// <summary>V0.3.17：变量页公式框旁边的「…」——复用卡牌 / 效果编辑器那个插入菜单。</summary>
+	private void OnVarInsertFormulaParam(object sender, RoutedEventArgs e)
+	{
+		if (sender is Button b) InsertFormulaParamInto(b);
+	}
+
+	/// <summary>V0.3.17：「试算」按钮 —— 按当前初值算一次，不改存档。</summary>
+	private void OnVarTrial(object sender, RoutedEventArgs e)
+	{
+		if (ForgeVarsGen.TryEvalFormula(_profile, VarTrialFormula, out decimal v, out string why))
+			VarTrialResult = "= " + v.ToString("0.####", CultureInfo.InvariantCulture);
+		else
+			VarTrialResult = "算不出来：" + why;
+		SetStatus(VarTrialResult);
+	}
+
+	/// <summary>V0.3.17：变量集合 / 字段变了之后，页面与「变量」效果的下拉都要刷新。</summary>
+	private void RaiseVariablesChanged()
+	{
+		Raise("VarChoices");
+		Raise("VarNameWarnText");
+		Raise("VarSummaryRows");
+		Raise("VarInitialPreview");
+	}
+
+	private readonly List<VarSpec> _varHooked = new();
+
+	/// <summary>V0.3.17：换存档 / 增删变量后重新挂监听（和参数页 HookParamsAndGroups 同一个套路）。</summary>
+	private void HookVariables()
+	{
+		foreach (var old in _varHooked) old.PropertyChanged -= OnVarSpecChanged;
+		_varHooked.Clear();
+		foreach (var v in _profile.Variables.Where(x => x is not null))
+		{
+			v.PropertyChanged += OnVarSpecChanged;
+			_varHooked.Add(v);
+		}
+	}
+
+	private void OnVarSpecChanged(object? sender, PropertyChangedEventArgs e)
+	{
+		Raise("VarSummaryRows");
+		Raise("VarNameWarnText");
+		Raise("VarInitialPreview");
+		Raise("VarChoices");
+	}
 
 	/// <summary>组右边那个「这个组里有哪些牌」的勾选列表（一行一张卡）。 /summary>
 	public IReadOnlyList<CardGroupMemberRow> GroupCardRows
@@ -19056,7 +19231,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			TabItem summonTabItem = FindTab("召唤物");
 			Check("有「召唤物」选项卡", summonTabItem != null, summonTabItem is null ? "没找到" : "找到了");
-			int idxRole = -1, idxSummon = -1, idxExtra = -1, idxCard = -1, idxParam = -1, idxForge = -1, idxRelic = -1, idxPotion = -1;
+			int idxRole = -1, idxSummon = -1, idxExtra = -1, idxCard = -1, idxParam = -1, idxVar = -1, idxForge = -1, idxRelic = -1, idxPotion = -1;
 			int idxCurse = -1, idxKeyword = -1, idxAncient = -1, idxPowerOverride = -1, idxCustomPower = -1, idxArt = -1;
 			for (int ti = 0; ti < MainTabs.Items.Count; ti++)
 			{
@@ -19068,6 +19243,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					case "额外资源量": idxExtra = ti; break;
 					case "卡牌": idxCard = ti; break;
 					case "自定义参数 / 组": idxParam = ti; break;
+					case "变量": idxVar = ti; break;
 					case "锻造": idxForge = ti; break;
 					case "遗物": idxRelic = ti; break;
 					case "药水": idxPotion = ti; break;
@@ -19079,11 +19255,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					case "美术资源": idxArt = ti; break;
 				}
 			}
-			Check("选项卡顺序：角色=0、召唤物=1、额外资源量=2、卡牌=3、自定义参数 / 组=4、锻造=5、遗物=6、药水=7、诅咒 / 先古 / 状态=8、自定义关键词=9、先古之民=10、本体状态改写=11、自定义状态=12、美术资源=13",
-				idxRole == 0 && idxSummon == 1 && idxExtra == 2 && idxCard == 3 && idxParam == 4 && idxForge == 5
-				&& idxRelic == 6 && idxPotion == 7
-				&& idxCurse == 8 && idxKeyword == 9 && idxAncient == 10 && idxPowerOverride == 11 && idxCustomPower == 12 && idxArt == 13,
-				$"角色={idxRole} / 召唤物 {idxSummon} / 额外资源量 {idxExtra} / 卡牌={idxCard} / 自定义参数组={idxParam} / 锻造 {idxForge}"
+			Check("选项卡顺序：角色=0、召唤物=1、额外资源量=2、卡牌=3、自定义参数 / 组=4、变量=5、锻造=6、遗物=7、药水=8、诅咒 / 先古 / 状态=9、自定义关键词=10、先古之民=11、本体状态改写=12、自定义状态=13、美术资源=14",
+				idxRole == 0 && idxSummon == 1 && idxExtra == 2 && idxCard == 3 && idxParam == 4 && idxVar == 5 && idxForge == 6
+				&& idxRelic == 7 && idxPotion == 8
+				&& idxCurse == 9 && idxKeyword == 10 && idxAncient == 11 && idxPowerOverride == 12 && idxCustomPower == 13 && idxArt == 14,
+				$"角色={idxRole} / 召唤物 {idxSummon} / 额外资源量 {idxExtra} / 卡牌={idxCard} / 自定义参数组={idxParam} / 变量={idxVar} / 锻造 {idxForge}"
 				+ $" / 遗物={idxRelic} / 药水={idxPotion}"
 				+ $" / 诅咒先古卡={idxCurse} / 自定义关键词={idxKeyword} / 先古之民={idxAncient} / 本体状态改写={idxPowerOverride} / 自定义状态={idxCustomPower} / 美术资源={idxArt}");
 
@@ -42236,6 +42412,82 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exvw)
 				{
 					Check("V0.3.16：变量重置 / 写操作", false, "异常：" + exvw.Message);
+				}
+				// ----- V0.3.17：变量页 UI（横幅 / 行内校验 / 试算 / 允许负数 / 自动起名） -----
+				try
+				{
+					Check("V0.3.17：变量页签存在且标题是「变量」",
+						VarTab is not null && string.Equals(VarTab.Header?.ToString(), "变量", StringComparison.Ordinal),
+						VarTab?.Header?.ToString() ?? "(null)");
+					DependencyObject vtabRoot = SelectTabRoot("变量");
+					string[] vtabTexts = TextsIn(vtabRoot).ToArray();
+					Check("V0.3.17：命名规范横幅常驻（1~12 位 / X、Y 不能用 / 每场战斗复位 / 全局的意思都写了）",
+						vtabTexts.Any(t => t.Contains("1~12 位")) && vtabTexts.Any(t => t.Contains("X / Y"))
+						&& vtabTexts.Any(t => t.Contains("每场战斗开始时复位"))
+						&& vtabTexts.Any(t => t.Contains("本局内跨战斗保留")),
+						$"{vtabTexts.Length} 个文本");
+					Check("V0.3.17：变量页有列表 / 新建 / 删除 / 试算四个入口，且列表绑当前存档的 Variables",
+						VarList is not null && AddVarButton is not null && RemoveVarButton is not null && VarTrialButton is not null
+						&& BindingOperations.GetBinding(VarList, ItemsControl.ItemsSourceProperty)?.Path?.Path == "Profile.Variables",
+						BindingOperations.GetBinding(VarList, ItemsControl.ItemsSourceProperty)?.Path?.Path ?? "(没有绑定)");
+					var vTpl = Application.Current?.Resources["EffectCommon"] as DataTemplate;
+					string[] vTplTexts = (vTpl?.LoadContent() is DependencyObject vtRoot) ? TextsIn(vtRoot).ToArray() : Array.Empty<string>();
+					Check("V0.3.17：效果编辑面板上有「变量（变量页）」和「怎么改」两行（卡牌 / 遗物 / 药水 / 状态 / 锻造共用）",
+						vTplTexts.Any(t => t.Contains("变量（变量页）")) && vTplTexts.Any(t => t.Contains("怎么改")),
+						$"模板里 {vTplTexts.Length} 个文本");
+
+					var vm = new VarSpec { Max = 10 };
+					Check("V0.3.17：上限用文本绑定（填得进、清得掉；乱写保持原值）",
+						vm.MaxText == "10" && (vm.MaxText = "") == "" && vm.Max == int.MaxValue
+						&& (vm.MaxText = "5") == "5" && vm.Max == 5
+						&& (vm.MaxText = "abc") == "abc" && vm.Max == 5,
+						$"Max={vm.Max} Text=「{vm.MaxText}」");
+
+					var ve = new CharacterProfile { ModId = "UiCheckVarsEval", CharacterClass = "UiCheckVarsEval" };
+					ve.Variables.Add(new VarSpec { Name = "cnt", Formula = "2" });
+					ve.Variables.Add(new VarSpec { Name = "run", Formula = "cnt + 1", Global = true });
+					bool vEvalOk = ForgeVarsGen.TryEvalFormula(ve, "cnt*3", out decimal ev1, out _);
+					bool vEvalBad = !ForgeVarsGen.TryEvalFormula(ve, "X + 1", out _, out string evWhy);
+					Check("V0.3.17：试算按当前初值算（cnt*3 = 6）；含 X 的算式明确说「算不出来」",
+						vEvalOk && ev1 == 6m && vEvalBad && evWhy.Contains("不是常数"),
+						$"cnt*3={ev1} X+1={evWhy}");
+					Check("V0.3.17：重置说明按初值 / 折不出常数时说清按 0",
+						ForgeVarsGen.ResetPreview(ve, ve.Variables[0]).Contains("复位为 2")
+						&& ForgeVarsGen.ResetPreview(ve, new VarSpec { Name = "z", Formula = "X" }).Contains("复位为 0"),
+						ForgeVarsGen.ResetPreview(ve, ve.Variables[0]));
+
+					// 行内校验 / 试算按钮：临时改当前存档的变量集合，跑完恢复（不留下自检数据）
+					var vLive = Profile;
+					var vSaved = vLive.Variables.ToList();
+					object? vOldSel = VarList.SelectedItem;
+					try
+					{
+						vLive.Variables.Clear();
+						vLive.Variables.Add(new VarSpec { Name = "cnt", Formula = "2" });
+						vLive.Variables.Add(new VarSpec { Name = "cnt", Formula = "3" });
+						HookVariables();
+						RaiseVariablesChanged();
+						VarList.SelectedItem = vLive.Variables[1];
+						Check("V0.3.17：行内校验当场报重名（红字）", VarNameWarnText.Contains("已经有别的变量"), VarNameWarnText);
+						VarList.SelectedItem = vLive.Variables[0];
+						Check("V0.3.17：重置说明跟着选中的变量走", VarInitialPreview.Contains("复位为 2"), VarInitialPreview);
+						VarTrialFormula = "cnt + 1";
+						OnVarTrial(this, new RoutedEventArgs());
+						Check("V0.3.17：「试算」按钮真的按初值算出 = 3", VarTrialResult == "= 3", VarTrialResult);
+					}
+					finally
+					{
+						vLive.Variables.Clear();
+						foreach (var x in vSaved) vLive.Variables.Add(x);
+						HookVariables();
+						RaiseVariablesChanged();
+						VarList.SelectedItem = vOldSel;
+					}
+					SelectTabRoot("卡牌");
+				}
+				catch (Exception exvui)
+				{
+					Check("V0.3.17：变量页 UI", false, "异常：" + exvui.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
