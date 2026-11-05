@@ -138,6 +138,49 @@ public static class ProfileValidator
 
         // 自定义状态（能力牌用的「你自己的状态」）
         // 类名唯一：生成是「一个类名一个文件」（cs/Powers/&lt;类名&gt;.cs）—— 见下面那条检查。
+        // V0.3.15：**变量页**的校验（名字规范 / 重名 / 和参数撞名 / 循环引用）
+        if (p.Variables.Count > 0)
+        {
+            var varSeen = new HashSet<string>(StringComparer.Ordinal);
+            var paramNames = new HashSet<string>(p.CustomParams.Where(x => x is not null)
+                .Select(x => ParamNames.Normalize(x.Name)), StringComparer.Ordinal);
+            foreach (var v in p.Variables.Where(x => x is not null))
+            {
+                if (VarNames.Check(v.Name) is { } why)
+                    issues.Add(new("错误", $"变量「{(v.Name.Length == 0 ? "(空)" : v.Name)}」名字不合格：{why}"));
+                else if (!varSeen.Add(v.Name))
+                    issues.Add(new("错误", $"变量名重复：「{v.Name}」定义了两次（生成出来会冲突）。"));
+                else if (paramNames.Contains(v.Name))
+                    issues.Add(new("错误", $"变量「{v.Name}」和自定义参数同名 —— 公式里写这个名字时不知道该算哪个，请改名。"));
+            }
+            // 循环引用：a = b + 1，b = a + 1 → 求值时死循环（生成出来的代码也会互相引用成环）
+            var map = p.Variables.Where(x => x is not null && x.Name.Length > 0)
+                .GroupBy(x => x.Name, StringComparer.Ordinal).ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+            foreach (var v in map.Values)
+            {
+                var seen = new HashSet<string>(StringComparer.Ordinal) { v.Name };
+                var stack = new Stack<string>();
+                stack.Push(v.Name);
+                bool cycle = false;
+                while (stack.Count > 0 && !cycle)
+                {
+                    string cur = stack.Pop();
+                    if (!map.TryGetValue(cur, out var node)) continue;
+                    // ⚠ 不用 ForgeFormula.TryParse：它对「还没定义的标识符」会直接失败（返回 null），
+                    // 那样循环引用永远查不出来。直接从公式原文抽标识符。
+                    foreach (System.Text.RegularExpressions.Match mt in System.Text.RegularExpressions.Regex.Matches(
+                                 node.Formula ?? "", @"[A-Za-z_][A-Za-z0-9_]*"))
+                    {
+                        string id = mt.Value;
+                        if (!map.ContainsKey(id)) continue;
+                        if (!seen.Add(id)) { cycle = true; break; }
+                        stack.Push(id);
+                    }
+                }
+                if (cycle) issues.Add(new("错误", $"变量「{v.Name}」的公式存在**循环引用**（顺着变量互相引用又回到了它自己），求值会死循环。"));
+            }
+        }
+
         var powerClassNames = new HashSet<string>(StringComparer.Ordinal);
         for (int ci = 0; ci < p.CustomPowers.Count; ci++)
         {

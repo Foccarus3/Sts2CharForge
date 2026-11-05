@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.CodeDom.Compiler;
 using System.Collections;
 using System.Collections.Generic;
@@ -42111,7 +42111,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					Check("V0.3.14：变量在公式里可用", false, "异常：" + exvf.Message);
 				}
-				// ---------- ④ AnimationSpec 的派生属性 ----------
+				// ----- V0.3.15：变量校验（名字 / 重名 / 撞参数 / 循环引用） -----
+				try
+				{
+					var vv = ProfileFactory.Sample();
+					vv.Variables.Clear();
+					vv.Variables.Add(new VarSpec { Name = "cnt" });
+					vv.Variables.Add(new VarSpec { Name = "cnt" });
+					vv.Variables.Add(new VarSpec { Name = "a", Formula = "b + 1" });
+					vv.Variables.Add(new VarSpec { Name = "b", Formula = "a + 1" });
+					var vvIssues = ProfileValidator.Validate(vv);
+					Check("V0.3.15：变量重名 / 循环引用都会报「错误」",
+						vvIssues.Any(x => x.Message.Contains("变量名重复")) && vvIssues.Any(x => x.Message.Contains("循环引用")),
+						$"重名={vvIssues.Any(x => x.Message.Contains("变量名重复"))} 循环={vvIssues.Any(x => x.Message.Contains("循环引用"))}");
+				}
+				catch (Exception exvv)
+				{
+					Check("V0.3.15：变量校验", false, "异常：" + exvv.Message);
+				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
 					Idle = "i.gif", Attack = "a.gif", Cast = "c.gif", Hurt = "h.gif",
