@@ -1,4 +1,4 @@
-﻿using Sts2CharForge.Core.Profile;
+using Sts2CharForge.Core.Profile;
 
 namespace Sts2CharForge.Core.Generation;
 
@@ -103,7 +103,16 @@ public static class AncientItemPatchGen
              .Open("private static bool Prefix(ArchaicTooth __instance, ref Task __result)")
              .Line($"if (__instance.Owner?.Character is not {n.CharClass}) return true;")
              .Line($"CardModel? starter = __instance.Owner.Deck.Cards.FirstOrDefault(c => c is {starterCls});")
-             .Line("if (starter is null) return true;   // 牌组里没有那张初始卡：交给本体（它会换「怀疑」）")
+             .Line("if (starter is null)")
+             .Open("")
+             // V0.3.29（用户报「牙齿变化先古会报错」）：以前这里 return true 交回本体；本体
+             // GetTranscendenceStarterCard 找不到我们的初始卡 → 返回 null → GetTranscendenceTransformedCard(null)
+             // 直接解引用 starterCard.Id = NullReferenceException（Loadout 直接塞牙齿时必现）。
+             // 没有初始卡就**什么都不做**，绝不能交回本体。
+             .Line($"Log.Warn(\"[{n.ModId}] 古老牙齿：牌组里没有初始卡「{starter.Name}」，跳过换牌（不交回本体，避免空引用）\");")
+             .Line("__result = Task.CompletedTask;")
+             .Line("return false;")
+             .Close()
              .Line("__result = TransformAsync(__instance, starter);")
              .Line("return false;")
              .Close()

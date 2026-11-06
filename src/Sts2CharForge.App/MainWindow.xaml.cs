@@ -26568,6 +26568,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.263：欧洛巴斯之触 → 还生成 AfterObtained 前缀，直接 RelicCmd.Replace 成这只",
 						aiSrc.Contains("typeof(TouchOfOrobas), nameof(TouchOfOrobas.AfterObtained)") && aiSrc.Contains("await RelicCmd.Replace(starter, replace);"),
 						"AfterObtained 补丁在");
+					Check("V0.3.29：古老牙齿找不到初始卡时**不再交回本体**（本体 GetTranscendenceTransformedCard(null) 会 NRE）",
+						aiSrc.Contains("if (starter is null)")
+						&& aiSrc.Contains("__result = Task.CompletedTask;")
+						&& !aiSrc.Contains("牌组里没有那张初始卡：交给本体"),
+						"有跳过守卫");
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
