@@ -82,10 +82,32 @@
                 <!-- 效果种类（全量）：卡牌 / 遗物 / 药水用这一份。
                      宠物类效果也在这里面 —— 12 个宠物效果都能直接选，选到宠物效果时
                      下面那个「召唤物（哪一只）」下拉会出现。 -->
-                <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类" Style="{StaticResource Label}"/>
-                <ComboBox Grid.Row="0" Grid.Column="1" Style="{StaticResource Pick}"
+                <TextBlock Grid.Row="0" Grid.Column="0" Text="效果种类">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock" BasedOn="{StaticResource Label}">
+                            <Style.Triggers>
+                                <!-- 自定义状态页的外层已经有一个收窄过的「效果种类」下拉（PowerKinds）；
+                                     这里再把全量下拉摆出来就会让用户选到状态里不支持的种类。 -->
+                                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ContentControl}}" Value="Power">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+                <ComboBox Grid.Row="0" Grid.Column="1"
                           ItemsSource="{Binding Kinds, RelativeSource={RelativeSource AncestorType=Window}}"
-                          DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}"/>
+                          DisplayMemberPath="Display" SelectedValuePath="Kind" SelectedValue="{Binding Kind}">
+                    <ComboBox.Style>
+                        <Style TargetType="ComboBox" BasedOn="{StaticResource Pick}">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=ContentControl}}" Value="Power">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ComboBox.Style>
+                </ComboBox>
 
                 <!-- 「数值」+「数值公式」：用户要求（V0.2.112）「效果那边只要保留公式就行，去掉数值框」——
                      支持公式的 5 种（伤害 / 格挡 / 失去生命 / 回复生命 / 施加状态）只留「数值公式」那一栏，
@@ -1270,7 +1292,7 @@
                               ToolTip="只对「随机敌人」这类按次数挑目标的效果有意义：层数 = 挑几个目标。"/>
                     <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11"
                                Text="注意：层数本身不会让效果多跑几遍 —— 想让层数决定强度就勾「数值 = 层数」，想让层数决定次数就勾「生效次数 = 层数」。&#10;⚠ 勾了「数值 = 本状态的层数」之后，下面效果里的「数值」框填什么都**不用**了（用的是触发那一刻的当前层数）—— 所以「生成卡牌」会按当时的层数生成那么多张、伤害也会按层数算。想用固定数字就把这个勾去掉。"/>
-                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}"/>
+                    <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectCommon}" Tag="Power"/>
                     <ContentControl Content="{Binding}" ContentTemplate="{StaticResource EffectConditionPower}"/>
                 </StackPanel>
             </ScrollViewer>

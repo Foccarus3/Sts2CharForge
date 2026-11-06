@@ -42823,6 +42823,78 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv25)
 				{
 					Check("V0.3.25：两布 OnTurnEndInHand", false, "异常：" + exv25.Message);
+				}
+				// ----- V0.3.26：自定义状态的效果下拉只留 PowerKinds（下面那份全量下拉要藏掉） -----
+				try
+				{
+					var v26Extra = Kinds.FirstOrDefault(k => PowerKinds.All(p => !string.Equals(p.Kind, k.Kind, StringComparison.Ordinal)));
+					Check("V0.3.26：自定义状态页的全量「效果种类」比 PowerKinds 多（多出来的正是以前能误选的卡牌/伙伴类效果）",
+						v26Extra is not null && !PowerKinds.Any(p => string.Equals(p.Kind, v26Extra.Kind, StringComparison.Ordinal)),
+						v26Extra is null ? "(两份一样)" : $"多出来：{v26Extra.Kind} / {v26Extra.Display}；PowerKinds={PowerKinds.Count} 全量={Kinds.Count}");
+					Check("V0.3.26：「伙伴攻击」不在 PowerKinds 里（状态钩子没有选牌 / 伙伴上下文）",
+						!PowerKinds.Any(p => p.Kind == "PetAttack") && Kinds.Any(p => p.Kind == "PetAttack"),
+						$"PowerKinds 有={PowerKinds.Any(p => p.Kind == "PetAttack")} 全量有={Kinds.Any(p => p.Kind == "PetAttack")}");
+
+					// 真的把 EffectCommon 实例化出来看：外层 Tag=Power 时，模板里那份全量下拉必须被藏掉。
+					if (Application.Current?.Resources["EffectCommon"] is DataTemplate commonTpl)
+					{
+						ContentControl MakeHost(string? tag) => new()
+						{
+							Content = new EffectSpec { Kind = "PetAttack" },
+							ContentTemplate = commonTpl,
+							Tag = tag,
+						};
+						var hostPower = MakeHost("Power");
+						var hostNormal = MakeHost(null);
+						var panel = new StackPanel();
+						panel.Children.Add(hostNormal);
+						panel.Children.Add(hostPower);
+						var hostWin = new Window
+						{
+							Content = panel,
+							Width = 640,
+							Height = 480,
+							ShowInTaskbar = false,
+							WindowStyle = WindowStyle.ToolWindow,
+							Title = "uicheck-effectcommon",
+						};
+						try
+						{
+							hostWin.Show();
+							hostWin.UpdateLayout();
+							void CollectKindCombos(DependencyObject root, List<ComboBox> into)
+							{
+								for (int i = 0; i < VisualTreeHelper.GetChildrenCount(root); i++)
+								{
+									var child = VisualTreeHelper.GetChild(root, i);
+									if (child is ComboBox cb && cb.SelectedValuePath == "Kind") into.Add(cb);
+									CollectKindCombos(child, into);
+								}
+							}
+							var powerCombos = new List<ComboBox>();
+							var normalCombos = new List<ComboBox>();
+							CollectKindCombos(hostPower, powerCombos);
+							CollectKindCombos(hostNormal, normalCombos);
+							Check("V0.3.26：状态页实例化后，EffectCommon 的全量「效果种类」下拉是 Collapsed（只留外层 PowerKinds 那个）",
+								powerCombos.Count > 0 && powerCombos.All(c => c.Visibility == Visibility.Collapsed),
+								$"找到 {powerCombos.Count} 个，可见={powerCombos.Count(c => c.Visibility == Visibility.Visible)}");
+							Check("V0.3.26：卡牌/遗物等普通编辑器里同一份全量下拉仍然 Visible（没有被误藏）",
+								normalCombos.Count > 0 && normalCombos.All(c => c.Visibility == Visibility.Visible),
+								$"找到 {normalCombos.Count} 个，可见={normalCombos.Count(c => c.Visibility == Visibility.Visible)}");
+						}
+						finally
+						{
+							hostWin.Close();
+						}
+					}
+					else
+					{
+						Check("V0.3.26：EffectCommon 模板存在", false, "Application.Current.Resources 里找不到 EffectCommon");
+					}
+				}
+				catch (Exception exv26)
+				{
+					Check("V0.3.26：状态效果下拉收窄", false, "异常：" + exv26.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
