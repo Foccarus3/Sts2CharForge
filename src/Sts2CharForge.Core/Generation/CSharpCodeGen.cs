@@ -6028,12 +6028,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line("choiceContext = new BlockingPlayerChoiceContext();");
                     break;
                 default:
-                    // V0.3.5：插件触发时机自带 `guard` 就照它写（没有就只判「还在战斗里」）；
-                    // 另外 OnTurnEndInHand 必须同时打开 HasTurnEndInHandEffect，否则本体根本不会调它。
+                    // V0.3.5：插件触发时机自带 `guard` 就照它写（没有就只判「还在战斗里」）。
+                    // ⚠ V0.3.25（缺陷报告 V0.3.8：两张布同用 OnTurnEndInHand → 属性落进方法体）：
+                    // `HasTurnEndInHandEffect` **只允许在 .Open(sig) 之前声明一次**（见上面那段）；
+                    // 这里已经在方法体里，再写一次就是成员声明落进方法体 → CS1513/CS1026/CS1031/CS1519。
                     w.Line("if (base.CombatState is null) return;");
                     if (!string.IsNullOrWhiteSpace(plugGuard)) w.Line(plugGuard!);
-                    if (string.Equals(hook, "OnTurnEndInHand", StringComparison.Ordinal))
-                        w.Line("public override bool HasTurnEndInHandEffect => true;");
                     break;
             }
             // ⚠ 嵌套私有方法**只带一个 choiceContext 参数**（见 ForgeGraphGen.CardNestedMethod 那一套写法 /

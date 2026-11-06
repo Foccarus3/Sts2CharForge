@@ -42769,6 +42769,60 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv24)
 				{
 					Check("V0.3.24：X 费卡 0 能量", false, "异常：" + exv24.Message);
+				}
+				// ----- V0.3.25：两张布同用 OnTurnEndInHand 插件时机 → 属性只能出现一次（缺陷报告 V0.3.8） -----
+				try
+				{
+					var allCoreProp = typeof(ForgeTimings).GetProperty("AllCore",
+						System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+					var allCore = allCoreProp?.GetValue(null) as System.Collections.Generic.IList<ForgeTimings.TimingOption>;
+					var fakeTiming = new ForgeTimings.TimingOption(
+						"UiCheckOnTurnEndInHand", "自检：回合结束前（手牌里）", "Card", "OnTurnEndInHand",
+						"自检用：模拟带 signature 的插件时机",
+						Signature: "async Task OnTurnEndInHand(PlayerChoiceContext choiceContext)");
+					bool v25Added = false;
+					if (allCore is not null && !allCore.Any(t => t.Id == fakeTiming.Id))
+					{
+						allCore.Add(fakeTiming);
+						v25Added = true;
+					}
+					try
+					{
+						var v25 = ProfileFactory.Sample();
+						v25.Cards.Clear(); v25.Curses.Clear(); v25.AncientCards.Clear();
+						var v25Card = new CardSpec { Name = "两布回合结束前", ClassName = "UiCheckTwoBoardsTurnEnd", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+						ForgeGraphSpec Mk25()
+						{
+							var g = new ForgeGraphSpec();
+							var trg = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+							trg.SetField("Timing", fakeTiming.Id);
+							var eff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+							eff.SetField("Effect", "Block");
+							eff.SetField("Amount", "3");
+							g.Nodes.AddRange(new[] { trg, eff });
+							g.Links.Add(new ForgeLinkSpec { From = trg.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+							return g;
+						}
+						v25Card.ForgeGraph = Mk25();
+						v25Card.UpgradedForgeGraph = Mk25();
+						v25.Cards.Add(v25Card);
+						string v25Src = CSharpCodeGen.CardSource(v25, v25Card, 0);
+						int v25PropCount = v25Src.Split((char)10).Count(l => l.Contains("public override bool HasTurnEndInHandEffect"));
+						int v25HookCount = v25Src.Split((char)10).Count(l => l.Contains("async Task OnTurnEndInHand(PlayerChoiceContext"));
+						int v25PropAt = v25Src.IndexOf("public override bool HasTurnEndInHandEffect", StringComparison.Ordinal);
+						int v25HookAt = v25Src.IndexOf("async Task OnTurnEndInHand(PlayerChoiceContext", StringComparison.Ordinal);
+						Check("V0.3.25：两张布同用 OnTurnEndInHand 插件时机 → HasTurnEndInHandEffect 恰 1 处、且在方法外",
+							v25PropCount == 1 && v25HookCount == 1 && v25PropAt > 0 && v25PropAt < v25HookAt,
+							$"属性={v25PropCount} 钩子={v25HookCount} 属性位置={v25PropAt} 钩子位置={v25HookAt}");
+					}
+					finally
+					{
+						if (v25Added) allCore?.Remove(fakeTiming);
+					}
+				}
+				catch (Exception exv25)
+				{
+					Check("V0.3.25：两布 OnTurnEndInHand", false, "异常：" + exv25.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
