@@ -3319,7 +3319,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// V0.2.287（用户要求「条件增加『当卡牌因预见被丢弃时』」）：用不用得到那个「正在因预见丢牌」的标记。
     /// 用到才在「预见」那段外面加 try/finally 打标记，老存档生成文本逐字不变。
     /// </summary>
-    public static bool UsesScryDiscardCond(CharacterProfile p) => UsesCondition(p, "DiscardedByScry");
+    public static bool UsesScryDiscardCond(CharacterProfile p) =>
+        UsesCondition(p, "DiscardedByScry") || UsesCardTiming(p, "DiscardedByScry");
 
     /// <summary>「因预见被丢弃」那个标记的读写（静态字段，在「预见」丢牌那一小段时间里为 true）。</summary>
     public static string ScryDiscardFlag(CharacterProfile p) => CombatCountersClass(p) + ".__inScryDiscard";
@@ -5917,6 +5918,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "Generated" => "AfterCardGeneratedForCombat",
         "Retained" => "AfterFlush",
         "Discarded" => "AfterCardDiscarded",
+        "DiscardedByScry" => "AfterCardDiscarded",
         "Transformed" => "ForgeOnTransformedFrom",
         "GivenKeyword" => "ForgeOnGivenCustomKeyword",
         // ⚠ V0.2.167：以前这里漏了 HpLost → 走下面的兜底变成 "AfterCardExhausted"，
@@ -6087,6 +6089,39 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「这张牌花掉的那部分」算（见 ForgeGraphGen.EmitCardFormulaPrologue 里的说明）。
         bool timingCostIsX = IsCostX(c);
         bool timingStarCostIsX = IsStarCostX(c);
+
+        // V0.3.27：新档位「因预见而被丢弃」和「被丢弃」共用 AfterCardDiscarded 钩子。
+        // 两个都选了就只生成**一个** override，用「正在因预见丢牌」标记二选一；
+        // 否则一个类里两个同名 override = CS0111。只选一个时输出和以前一致。
+        var discGroup = groups.FirstOrDefault(g => string.Equals(g.Timing, "Discarded", StringComparison.Ordinal));
+        var scryGroup = groups.FirstOrDefault(g => string.Equals(g.Timing, "DiscardedByScry", StringComparison.Ordinal));
+        if (discGroup.Effects is not null && scryGroup.Effects is not null)
+        {
+            string discText = TimingBodyText(discGroup.Effects, p, cardVars);
+            string scryText = TimingBodyText(scryGroup.Effects, p, cardVars);
+            bool discNeedsCardPlay = discText.Contains("cardPlay", StringComparison.Ordinal);
+            bool scryNeedsCardPlay = scryText.Contains("cardPlay", StringComparison.Ordinal);
+            w.Line()
+             .Line("// 卡牌时机「被丢弃」+「因预见而被丢弃」：共用 AfterCardDiscarded，按「正在因预见丢牌」标记二选一")
+             .Open("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)")
+             .Line("if (card != this || base.CombatState is null) return;");
+            if (!discText.Contains("await ", StringComparison.Ordinal) && !scryText.Contains("await ", StringComparison.Ordinal))
+                w.Line("await Task.CompletedTask;   // 这两组效果都不 await（补一句，免得 async 方法里没有 await）");
+            w.Open($"if ({ScryDiscardFlag(p)})")
+             .Line("// CET:CardTiming=DiscardedByScry");
+            if (scryNeedsCardPlay) EmitCardPlayPlaceholder(w);
+            EmitCardTimingBody(w, p, scryGroup.Effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
+            w.Close()
+             .Open("else")
+             .Line("// CET:CardTiming=Discarded");
+            if (discNeedsCardPlay) EmitCardPlayPlaceholder(w);
+            EmitCardTimingBody(w, p, discGroup.Effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
+            w.Close();
+            EmitNestedForgeGraphCall(w, c, "AfterCardDiscarded");
+            w.Close();
+            groups = groups.Where(g => !string.Equals(g.Timing, "Discarded", StringComparison.Ordinal)
+                && !string.Equals(g.Timing, "DiscardedByScry", StringComparison.Ordinal)).ToList();
+        }
         foreach (var (timing, effects) in groups)
         {
             // 要不要声明 `CardPlay? cardPlay = null;`：由**生成出来的文本**决定（有没有真的引用 cardPlay），
@@ -6107,6 +6142,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
                     EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
                     EmitNestedForgeGraphCall(w, c, "AfterCardDiscarded");   // V0.2.169：图上也有这一支时嵌进来的那一块
+                    w.Close();
+                    break;
+
+                case "DiscardedByScry":
+                    w.Line()
+                     .Line("// 卡牌时机「因预见而被丢弃」（V0.3.27）：同样覆写 AfterCardDiscarded，但只在「预见」丢牌那一小段里成立")
+                     .Open("public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)")
+                     .Line($"if (card != this || base.CombatState is null || !{ScryDiscardFlag(p)}) return;")
+                     .Line("// CET:CardTiming=DiscardedByScry");
+                    if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这条效果不 await（补一句，免得 async 方法里没有 await）");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
+                    EmitNestedForgeGraphCall(w, c, "AfterCardDiscarded");
                     w.Close();
                     break;
 

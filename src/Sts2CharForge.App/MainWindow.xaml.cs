@@ -18276,9 +18276,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				list26.Any((ComboBox c) => c.ItemsSource == ConditionTargets && BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Target"),
 				$"{ConditionTargets.Count} 个指向对象");
 			// 需求⑩：条件选到「卡牌时机」时，条件区底下要出现「子时机」下拉（被消耗 / 被生成 / 被保留 / 被丢弃 / 被变化 / 被给予自定义关键词）
-			Check("每条效果的「条件选项」有「卡牌时机」的子时机下拉（绑 Condition.Timing，7 个候选）",
+			Check("每条效果的「条件选项」有「卡牌时机」的子时机下拉（绑 Condition.Timing，8 个候选）",
 				list26.Any((ComboBox c) => c.ItemsSource == ConditionTimings && BindingOperations.GetBinding(c, Selector.SelectedValueProperty)?.Path?.Path == "Condition.Timing")
-				&& ConditionTimings.Count == 7,
+				&& ConditionTimings.Count == 8,
 				$"{ConditionTimings.Count} 个子时机");
 			List<CheckBox> list27 = new List<CheckBox>();
 			CollectCheckBoxes(groupBox, list27);
@@ -38924,9 +38924,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			//（本体「战鼓」DrumOfBattle 的做法），所以断言要同时看「钩子挂对了」和「OnPlay 里没有它」。
 			Check("条件选项里有「卡牌时机」，而且只给卡牌用（遗物 / 药水 / 自定义状态没有「这张牌被消耗」这一说）",
 				EffectCatalog.Conditions.Any((ConditionOption o) => o.Id == "CardTiming" && o.ForCard && !o.ForRelic && !o.ForPower && o.NeedsTiming), "在");
-			Check("「卡牌时机」的子时机齐、中文名就是需求里那几个 + 后加的「失去生命时」",
+			Check("「卡牌时机」的子时机齐、中文名就是需求里那几个 + 后加的「失去生命时」「因预见而被丢弃时」",
 				ConditionTimings.Select((CardTimingOption t) => t.Display)
-					.SequenceEqual(new[] { "被消耗", "被生成", "被保留", "被丢弃", "被变化", "被给予自定义关键词", "失去生命时" }),
+					.SequenceEqual(new[] { "被消耗", "被生成", "被保留", "被丢弃", "因预见而被丢弃时", "被变化", "被给予自定义关键词", "失去生命时" }),
 				string.Join(" / ", ConditionTimings.Select((CardTimingOption t) => t.Display)));
 			Check("「卡牌时机」不在遗物 / 自定义状态的条件表里（选了会被校验器拦住）",
 				!RelicConditions.Any((ConditionOption o) => o.Id == "CardTiming")
@@ -42895,6 +42895,51 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv26)
 				{
 					Check("V0.3.26：状态效果下拉收窄", false, "异常：" + exv26.Message);
+				}
+				// ----- V0.3.27：卡牌时机新增「因预见而被丢弃时」 -----
+				try
+				{
+					var v27Timing = EffectCatalog.FindCardTiming("DiscardedByScry");
+					Check("V0.3.27：卡牌时机下拉里有「因预见而被丢弃时」",
+						v27Timing is not null && v27Timing.Display.Contains("因预见"),
+						v27Timing?.Display ?? "(没有)");
+
+					var v27 = ProfileFactory.Sample();
+					v27.Cards.Clear(); v27.Curses.Clear(); v27.AncientCards.Clear();
+					var v27One = new CardSpec { Name = "预见丢弃卡", ClassName = "UiCheckScryDiscard", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					v27One.Effects.Add(new EffectSpec
+					{
+						Kind = "Block", Amount = 5m, TargetSide = "Self",
+						Condition = new ConditionSpec { Kind = "CardTiming", Timing = "DiscardedByScry" },
+					});
+					v27.Cards.Add(v27One);
+					string v27Src = CSharpCodeGen.CardSource(v27, v27One, 0);
+					Check("V0.3.27：只选「因预见而被丢弃」→ 生成 AfterCardDiscarded + 检查 __inScryDiscard 标记",
+						v27Src.Split((char)10).Count(l => l.Contains("AfterCardDiscarded(")) == 1
+						&& v27Src.Contains("__inScryDiscard")
+						&& v27Src.Contains("CET:CardTiming=DiscardedByScry")
+						&& !v27Src.Contains("CET:CardTiming=Discarded\n"),
+						v27Src.Split((char)10).FirstOrDefault(l => l.Contains("AfterCardDiscarded(")) ?? "");
+					Check("V0.3.27：只选这个时机时，运行时也生成 __inScryDiscard 标记（否则编译不过）",
+						CSharpCodeGen.CombatCountersSource(v27).Contains("__inScryDiscard"),
+						"CombatCounters 里有");
+
+					var v27Both = new CardSpec { Name = "两种丢弃卡", ClassName = "UiCheckScryDiscardBoth", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+					v27Both.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "Discarded" } });
+					v27Both.Effects.Add(new EffectSpec { Kind = "Block", Amount = 7m, TargetSide = "Self", Condition = new ConditionSpec { Kind = "CardTiming", Timing = "DiscardedByScry" } });
+					v27.Cards.Add(v27Both);
+					string v27BothSrc = CSharpCodeGen.CardSource(v27, v27Both, 1);
+					Check("V0.3.27：两种「丢弃」都选 → 只生成一个 AfterCardDiscarded，用标记二选一（不会 CS0111）",
+						v27BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded(")) == 1
+						&& v27BothSrc.Contains("CET:CardTiming=Discarded")
+						&& v27BothSrc.Contains("CET:CardTiming=DiscardedByScry")
+						&& v27BothSrc.Contains("if (")
+						&& v27BothSrc.Contains("__inScryDiscard"),
+						$"AfterCardDiscarded={v27BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded("))} 标记={v27BothSrc.Contains("CET:CardTiming=DiscardedByScry")}");
+				}
+				catch (Exception exv27)
+				{
+					Check("V0.3.27：因预见被丢弃时机", false, "异常：" + exv27.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{

@@ -2043,7 +2043,7 @@ public static class EffectCatalog
     };
 
     /// <summary>
-    /// 「卡牌时机」的 6 个子时机（需求⑩）。顺序 = 界面下拉里的顺序（也是存档里没写 Timing 时的默认值：第一项）。
+    /// 「卡牌时机」的 8 个子时机（需求⑩ + 后加的「失去生命时」「因预见而被丢弃时」）。顺序 = 界面下拉里的顺序（也是存档里没写 Timing 时的默认值：第一项）。
     ///
     /// 每个子时机**挂哪个钩子**写在 <c>CSharpCodeGen.CardTimingHook</c> 里（连同为什么选那个钩子的说明）：
     /// 被消耗 → AbstractModel.AfterCardExhausted；被丢弃 → AbstractModel.AfterCardDiscarded；
@@ -2056,6 +2056,10 @@ public static class EffectCatalog
         new CardTimingOption("Generated", "被生成"),
         new CardTimingOption("Retained", "被保留"),
         new CardTimingOption("Discarded", "被丢弃"),
+        // 用户要求：把「因预见而被丢弃时」加到卡牌时机里。
+        // 和「被丢弃」共用 AfterCardDiscarded 钩子，但只在「预见」丢牌那一小段里成立
+        //（标记由工具自己生成的预见代码置 true/false，见 CSharpCodeGen.ScryDiscardFlag）。
+        new CardTimingOption("DiscardedByScry", "因预见而被丢弃时"),
         new CardTimingOption("Transformed", "被变化"),
         new CardTimingOption("GivenKeyword", "被给予自定义关键词"),
         // 用户要求：再加一个「失去生命时」（这张牌在你手上时你掉血 → 触发）。
@@ -2083,6 +2087,7 @@ public static class EffectCatalog
         "Generated" => "当这张牌被生成时",
         "Retained" => "当这张牌被保留时",
         "Discarded" => "当这张牌被丢弃时",
+        "DiscardedByScry" => "当这张牌因预见被丢弃时",
         "Transformed" => "当这张牌被变化（被变成别的牌）时",
         "GivenKeyword" => "当这张牌被给予自定义关键词时",
         _ => "当这张牌被" + CardTimingZh(id) + "时",

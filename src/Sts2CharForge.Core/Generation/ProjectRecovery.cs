@@ -693,9 +693,14 @@ public static class ProjectRecovery
         string body = BodyOf(text, curse ? "OnTurnEndInHand" : "OnPlay");
         if (!curse)
         {
+            var seenTimingMethods = new HashSet<string>(StringComparer.Ordinal);
             foreach (var opt in EffectCatalog.CardTimings)
             {
-                string hookBody = BodyOf(text, CSharpCodeGen.CardTimingMethodName(opt.Id) + "(");
+                string timingMethod = CSharpCodeGen.CardTimingMethodName(opt.Id);
+                // 「被丢弃」和「因预见而被丢弃」共用 AfterCardDiscarded：同一个方法体只拼一次，
+                // 里面的两个 `CET:CardTiming=` 标记会分别把两组效果认回去（拼两次 = 效果翻倍）。
+                if (!seenTimingMethods.Add(timingMethod)) continue;
+                string hookBody = BodyOf(text, timingMethod + "(");
                 if (hookBody.Length == 0) continue;
                 body += "\n" + hookBody + "\n";
             }
