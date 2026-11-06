@@ -1252,8 +1252,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // V0.2.288（用户要求「条件增加『指定敌人的意图为（）』，参考原版故障机器人「眼部攻击」」）：
             // 本体 GoForTheEyes 只判「是否攻击」（MonsterModel.IntendsToAttack）；这里按 IntentType 判任意意图。
             // NextMove 可能为 null（沉睡 / 刚出生），所以写成模式匹配，不裸调。
-            // 目标取「可打的第一个敌人」（技能 / 遗物上没有「选中的目标」这个概念，和别的条件一个口径）
-            "EnemyIntent" => $"(({player}.Creature.CombatState?.HittableEnemies?.FirstOrDefault())?.Monster?.NextMove?.Intents?.Any(i => i.IntentType == MegaCrit.Sts2.Core.MonsterMoves.Intents.IntentType.{IntentIdOf(c)}) ?? false)",
+            // V0.3.23（用户实测：场上两个敌人，指向减益的那个却触发了「意图攻击」分支）：
+            // 卡牌 OnPlay 里必须看**这张牌选中的目标**（cardPlay.Target），不能看「可打的第一个敌人」；
+            // 只有 IsPlayable / 遗物 / 药水 / 状态这些没有「选中的目标」的上下文才退回第一个敌人。
+            "EnemyIntent" =>
+                (ctx == CondCtx.Card && inOnPlay
+                    ? $"((cardPlay.Target)?.Monster?.NextMove?.Intents?.Any(i => i.IntentType == MegaCrit.Sts2.Core.MonsterMoves.Intents.IntentType.{IntentIdOf(c)}) ?? false)"
+                    : $"(({player}.Creature.CombatState?.HittableEnemies?.FirstOrDefault())?.Monster?.NextMove?.Intents?.Any(i => i.IntentType == MegaCrit.Sts2.Core.MonsterMoves.Intents.IntentType.{IntentIdOf(c)}) ?? false)"),
             "ScryAtLeast" => $"{player} is not null && {CountersClassForConditions()}.ScryThisTurn({player}) {(inverted ? "<" : ">=")} {ni}",
             "NoHurtThisTurn" =>
                 $"{st} is not null && !CombatManager.Instance.History.Entries.OfType<DamageReceivedEntry>().Any(e => e.Receiver == {ownerCreature} && e.Result.UnblockedDamage > 0 && e.HappenedThisTurn({st}))",

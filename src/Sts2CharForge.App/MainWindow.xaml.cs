@@ -42728,6 +42728,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv22)
 				{
 					Check("V0.3.22：逐次结算 / Single / 毒死", false, "异常：" + exv22.Message);
+				}
+				// ----- V0.3.23：意图条件必须看「这张牌选中的目标」，不能看第一个敌人 -----
+				try
+				{
+					var v23Cond = new ConditionSpec { Kind = "EnemyIntent", Amount = 1, Intent = "Attack" };
+					string v23OnPlay = CSharpCodeGen.ConditionExpr(v23Cond, CSharpCodeGen.CondCtx.Card, inOnPlay: true);
+					string v23Playable = CSharpCodeGen.ConditionExpr(v23Cond, CSharpCodeGen.CondCtx.Card, inOnPlay: false);
+					Check("V0.3.23：卡牌 OnPlay 里「意图为攻击」看 cardPlay.Target（指向减益的敌人不会再触发攻击分支）",
+						v23OnPlay.Contains("cardPlay.Target") && !v23OnPlay.Contains("HittableEnemies") && v23OnPlay.Contains("IntentType.Attack"),
+						v23OnPlay);
+					Check("V0.3.23：IsPlayable 这种没有「选中目标」的场合才退回第一个敌人",
+						v23Playable.Contains("HittableEnemies") && !v23Playable.Contains("cardPlay.Target"),
+						v23Playable);
+				}
+				catch (Exception exv23)
+				{
+					Check("V0.3.23：意图条件目标", false, "异常：" + exv23.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
