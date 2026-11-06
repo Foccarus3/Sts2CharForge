@@ -121,11 +121,13 @@ public static class LocalizationGen
             string bodyBase = MergeAutoAndCustom(autoBase, customDesc, c.CustomDescriptionReplaces);
             string bodyUp = MergeAutoAndCustom(autoUp, customUpWanted, c.CustomDescriptionReplaces);
             // 正文那段（不含关键词行）：升级前后一样就直接用，不一样才包 {IfUpgraded}
+            // V0.3.30（用户报「依赖」升级后描述还是升级前的）：以前这里看到正文里有 `{...}`（动态变量）
+            // 就退回 bodyBase，理由是「内层 } 会破坏结构」—— 但本体的 ShowIfUpgradedFormatter 是
+            // `Format.Split('|')` + `FormatAsChild`，SmartFormat 3.0 本来就支持嵌套占位符；
+            // 这条守卫会把**带 {Power:diff()} 的升级后描述**直接丢掉。现在一律按 IfUpgraded 包。
             string cardBody = string.Equals(bodyBase, bodyUp, StringComparison.Ordinal)
                 ? bodyBase
-                    : (bodyBase.Contains('{') || bodyUp.Contains('{'))   // V0.2.280：含占位符就不套 IfUpgraded（内层 } 会破坏结构）
-                        ? bodyBase
-                        : IfUpgradedText(bodyUp, bodyBase);
+                : IfUpgradedText(bodyUp, bodyBase);
             if (keywordDiffers)
             {
                 // 关键词那行也要按升级前后分叉 → 整段（关键词 + 正文）一起包进 {IfUpgraded:show:升级后|没升级}。

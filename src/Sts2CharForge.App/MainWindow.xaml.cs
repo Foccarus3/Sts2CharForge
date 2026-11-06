@@ -26573,6 +26573,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& aiSrc.Contains("__result = Task.CompletedTask;")
 						&& !aiSrc.Contains("牌组里没有那张初始卡：交给本体"),
 						"有跳过守卫");
+					// V0.3.30（用户报「依赖」升级后描述还是升级前的）：升级后自定义描述里带 {Power:diff()}
+					// 时，以前 LocalizationGen 看到 `{` 就退回升级前那段。SmartFormat 3.0 的
+					// ShowIfUpgradedFormatter 是 Format.Split('|') + FormatAsChild，支持嵌套占位符。
+					var v30Prof = ProfileFactory.Sample();
+					var v30Card = new CardSpec
+					{
+						Name = "描述升级探针", ClassName = "UiCheckDescUpgrade", CardType = "Skill", Rarity = "Common", Cost = 1,
+						CustomDescription = "升级手中所有的牌。",
+						UpgradedCustomDescription = "对自己施加 {Block:diff()} 层格挡。升级手中所有的牌。",
+						CustomDescriptionReplaces = true,
+					};
+					v30Card.Effects.Add(new EffectSpec { Kind = "Block", Amount = 0m, UpgradeAmount = 4m, TargetSide = "Self" });
+					v30Prof.Cards.Add(v30Card);
+					string v30Loc = LocalizationGen.CardsJson(v30Prof);
+					Check("V0.3.30：升级后自定义描述带 {Block:diff()} 时仍然生成 {IfUpgraded:show:…|…}",
+						v30Loc.Contains("{IfUpgraded:show:对自己施加 {Block:diff()} 层格挡。升级手中所有的牌。|升级手中所有的牌。}")
+						&& !v30Loc.Contains("\"UI_CHECK_DESC_UPGRADE.description\": \"升级手中所有的牌。\""),
+						v30Loc.Split('\n').FirstOrDefault(l => l.Contains("UI_CHECK_DESC_UPGRADE.description"))?.Trim() ?? "(没找到)");
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
