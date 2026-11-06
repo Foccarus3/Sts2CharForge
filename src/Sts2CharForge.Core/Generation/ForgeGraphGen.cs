@@ -3064,7 +3064,7 @@ public static class ForgeGraphGen
         if (timesN.Runtime)
         {
             timesExpr = UniqueVar(node, "__fgTimes");
-            sb.AppendLine(indent + $"int {timesExpr} = Math.Max(1, (int)({timesN.Expr}));   // fg:{node.Id}【效果】生效次数（公式：{timesN.Text}）");
+            sb.AppendLine(indent + $"int {timesExpr} = Math.Max(0, (int)({timesN.Expr}));   // fg:{node.Id}【效果】生效次数（公式：{timesN.Text}）");
         }
 
         var hitsN = ForgeNumbers.Resolve(p, node, "Hits", 1);

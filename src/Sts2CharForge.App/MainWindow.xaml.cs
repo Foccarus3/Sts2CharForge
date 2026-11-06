@@ -21136,7 +21136,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("生成端：数值写 X → decimal __fgAmt… = __X;（不再当成默认值 6）",
 							fSrc.Contains("= __X;") && fSrc.Contains("【效果】数值（公式：X）"), "数值公式在");
 						Check("生成端：生效次数写 Y → 真的生成一个以公式为界的 for 循环",
-							fSrc.Contains("= Math.Max(1, (int)(__Y))") && fSrc.Contains("for (int t = 0; t <"), "运行时循环在");
+							fSrc.Contains("= Math.Max(0, (int)(__Y))") && fSrc.Contains("for (int t = 0; t <"), "运行时循环在");
 						Check("生成端：概率写 Turn（内置只读量）→ 概率判定用算出来的值",
 							fSrc.Contains("int __fgChance") && fSrc.Contains("ForgeFormulaRuntime.Roll(__fgPlayer, __fgChance"), "概率公式在");
 						Check("生成端：命中次数写 A（固定数值参数）→ 生成期折叠成 2（老写法 .WithHitCount(2)）",
@@ -42745,6 +42745,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv23)
 				{
 					Check("V0.3.23：意图条件目标", false, "异常：" + exv23.Message);
+				}
+				// ----- V0.3.24：X 费卡「生效次数 = X」在 X=0 时不能再执行一次 -----
+				try
+				{
+					var v24 = ProfileFactory.Sample();
+					var v24Card = new CardSpec { Name = "X费探针", ClassName = "UiCheckXTimes", Cost = 1, CardType = "Attack", Rarity = "Common", InCardPool = true, IsForged = true };
+					var v24g = new ForgeGraphSpec();
+					var v24tr = new ForgeNodeSpec { Kind = "Trigger" }; v24tr.SetField("Timing", "CardPlayed");
+					var v24tg = new ForgeNodeSpec { Kind = "Target" }; v24tg.SetField("Pick", "ChosenEnemy");
+					var v24ef = new ForgeNodeSpec { Kind = "Effect" };
+					v24ef.SetField("Effect", "Damage"); v24ef.SetField("Amount", "5"); v24ef.SetField("Times", "X");
+					v24g.Nodes.AddRange(new[] { v24tr, v24tg, v24ef });
+					v24g.Links.Add(new ForgeLinkSpec { From = v24tr.Id, To = v24tg.Id, FromPort = 0, ToPort = 0 });
+					v24g.Links.Add(new ForgeLinkSpec { From = v24tg.Id, To = v24ef.Id, FromPort = 0, ToPort = 0 });
+					v24Card.ForgeGraph = v24g;
+					v24.Cards.Add(v24Card);
+					string v24Src = CSharpCodeGen.CardSource(v24, v24Card, v24.Cards.Count - 1);
+					Check("V0.3.24：X 费卡「生效次数 = X」生成 Math.Max(0, X)（0 能量时循环 0 次，不再白打一次）",
+						v24Src.Contains("Math.Max(0, (int)(__X))") && !v24Src.Contains("Math.Max(1, (int)(__X))"),
+						v24Src.Split((char)10).FirstOrDefault(x => x.Contains("__fgTimes")) ?? "");
+				}
+				catch (Exception exv24)
+				{
+					Check("V0.3.24：X 费卡 0 能量", false, "异常：" + exv24.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
