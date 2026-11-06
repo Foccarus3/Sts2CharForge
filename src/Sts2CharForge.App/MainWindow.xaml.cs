@@ -42940,6 +42940,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				catch (Exception exv27)
 				{
 					Check("V0.3.27：因预见被丢弃时机", false, "异常：" + exv27.Message);
+				}
+				// ----- V0.3.28：GIF 必须跟着 NCreature.Body 的 Scale.X 翻面（螃蟹 Boss 的 SurroundedPower） -----
+				try
+				{
+					var v28 = ProfileFactory.Sample();
+					string v28Runtime = FrameAnimGen.RuntimeSource(v28);
+					string v28Patches = FrameAnimGen.PatchesSource(v28);
+					Check("V0.3.28：帧动画 Sprite 挂在静态立绘内部（s2d.AddChild），才能继承 Body.Scale.X 的转向",
+						v28Runtime.Contains("s2d.AddChild(asp);")
+						&& !v28Runtime.Contains("sp.AddChild(asp);")
+						&& v28Runtime.Contains("Position = new Vector2((float)def.XOffset, (float)def.YOffset)"),
+						v28Runtime.Split((char)10).FirstOrDefault(l => l.Contains("AddChild(asp)")) ?? "");
+					Check("V0.3.28：收静态图改成摘 Texture（Visible=false 会把子动画一起隐藏）",
+						v28Runtime.Contains("st.Texture = null;")
+						&& !v28Runtime.Contains("st.Visible = false;")
+						&& v28Runtime.Contains("st.Texture = _staticTexture;"),
+						v28Runtime.Split((char)10).FirstOrDefault(l => l.Contains("st.Texture")) ?? "");
+					Check("V0.3.28：篝火不再单独翻 __FrameAnimSprite（它已经跟着 %Visuals 翻了，再翻会抵消）",
+						!v28Patches.Contains("MirrorX(__instance.GetNodeOrNull<Node2D>(\"__FrameAnimSprite\"))"),
+						"没有二次镜像");
+				}
+				catch (Exception exv28)
+				{
+					Check("V0.3.28：GIF 转向", false, "异常：" + exv28.Message);
 				}				// ---------- ④ AnimationSpec 的派生属性 ----------
 				var animAll = new AnimationSpec
 				{
@@ -43013,10 +43037,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& animPatchSrc.Contains("nameof(NRestSiteCharacter.FlipX)")
 						&& animPatchSrc.Contains("TryFieldRef<NRestSiteCharacter, Control>(\"_controlRoot\")"),
 						"有兜底");
-					Check("V0.2.227：非 Spine 篝火立绘在 FlipX 之后补一次水平镜像（本体只会翻 Spine 子节点）",
+					Check("V0.2.227：非 Spine 篝火立绘在 FlipX 之后补一次水平镜像（帧动画 Sprite 已改成 %Visuals 的子节点，不再单独翻）",
 						animPatchSrc.Contains("FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>(\"%Visuals\"))")
-						&& animPatchSrc.Contains("FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>(\"__FrameAnimSprite\"))"),
-						"补了镜像");
+						&& !animPatchSrc.Contains("FrameAnimSpineProbe.MirrorX(__instance.GetNodeOrNull<Node2D>(\"__FrameAnimSprite\"))"),
+						"补了镜像（子节点跟着翻）");
 					Check("V0.2.227：商店补丁保持原样（NMerchantCharacter._Ready 只做「包第一个子节点」，跳过它是对的）",
 						animPatchSrc.Contains("FrameAnimMerchantPatch")
 						&& animPatchSrc.Contains("player?.Play(\"relaxed_loop\");"),
@@ -45196,8 +45220,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			animProf.Animation.YOffset = -40;
 			animProf.Animation.SpeedScale = 1.5;
 			string reg = FrameAnimGen.RuntimeSource(animProf);
-			Check("V0.2.331：运行时里位置 = 静态立绘位置 + (X 偏移, Y 偏移)，缩放 = 静态缩放 × 计划缩放",
-				reg.Contains("def.XOffset * s2d.Scale.X") && reg.Contains("s2d.Scale.X * def.Scale")
+			Check("V0.2.331：运行时里位置 / 缩放写在静态立绘子节点的局部坐标（父节点会继承静态缩放与翻面）",
+				reg.Contains("Position = new Vector2((float)def.XOffset, (float)def.YOffset)")
+				&& reg.Contains("Scale = new Vector2((float)def.Scale, (float)def.Scale)")
 				&& reg.Contains("float xOffset = 0f"), "改到位了");
 		}
 
