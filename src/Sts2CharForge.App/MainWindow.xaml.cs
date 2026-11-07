@@ -874,6 +874,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		};
 		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
 		var hints = CSharpCodeGen.ParamHints(effects ?? Enumerable.Empty<EffectSpec>(), isCard);
+		// V0.3.35：锻造卡没有 Effects、也没有声明 DynamicVars（图上的数字是字面量 / 公式），
+		// 所以「填入参数…」以前只剩能量图标。这里从节点图里把每条【效果】的数值拿出来，
+		// 按**字面量**插进自定义描述；升级前 / 升级后不同时包成 {IfUpgraded:show:...|...}。
+		if (isCard && ActivePortraitCard() is { ForgeGraph: not null } forgeCard)
+			hints.AddRange(ForgeGraphValueHints(forgeCard));
 		// V0.2.276（用户要求「自定义描述里能填能量图标」）：本体卡面描述用的就是 SmartFormat 的
 		// `{Energy:energyIcons()}`（本体 ADRENALINE / ALIGNMENT：`Gain {Energy:energyIcons()}.`）——
 		// 图标由本体 EnergyIconsFormatter 按**你角色的能量颜色**画，所以这里只给写法、不塞资源路径。
@@ -900,11 +905,52 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	}
 
 	/// <summary>
-	/// 「自动填入」：把这张牌**自动生成的那段描述**填进自定义描述框（锻造卡=从节点图写出来的那句）。"
-	/// 用户要求：「给卡牌的自定义描述加个自动填入」。"
+	/// V0.3.35：锻造卡的自定义描述「填入参数…」——把节点图里每条【效果】的数值写成**字面量**。
+	/// 锻造卡不声明 DynamicVars（图上的数字是字面量 / 公式），所以不能给 {Damage:diff()} 这种占位符；
+	/// 但可以给「20」或「A+3」这样的文本。升级前 / 升级后数值不同时用
+	/// <c>{IfUpgraded:show:升级后|升级前}</c> 包起来。
+	/// </summary>
+	private static List<(string Token, string Desc)> ForgeGraphValueHints(CardSpec card)
+	{
+		static string AmountText(EffectSpec? e)
+		{
+			if (e is null) return "";
+			string formula = (e.AmountFormula ?? "").Trim();
+			if (formula.Length > 0) return formula;
+			return e.Amount == 0m ? "" : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+		}
+		static string Esc(string s) => s.Replace("|", "｜", StringComparison.Ordinal);
+
+		var baseNodes = card.ForgeGraph?.Nodes.Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
+			?? new List<ForgeNodeSpec>();
+		var upNodes = card.UpgradedForgeGraph?.Nodes.Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
+			?? new List<ForgeNodeSpec>();
+		int count = Math.Max(baseNodes.Count, upNodes.Count);
+		var list = new List<(string Token, string Desc)>();
+		for (int i = 0; i < count; i++)
+		{
+			EffectSpec? b = i < baseNodes.Count ? ForgeEffectBridge.Ensure(baseNodes[i]) : null;
+			EffectSpec? u = i < upNodes.Count ? ForgeEffectBridge.Ensure(upNodes[i]) : null;
+			string bText = AmountText(b);
+			string uText = AmountText(u);
+			if (bText.Length == 0 && uText.Length == 0) continue;
+			string token;
+			if (uText.Length == 0) token = bText;
+			else if (bText.Length == 0 || string.Equals(bText, uText, StringComparison.Ordinal)) token = uText;
+			else token = "{IfUpgraded:show:" + Esc(uText) + "|" + Esc(bText) + "}";
+			string kind = EffectCatalog.FindKind((b ?? u)!.Kind)?.Display ?? (b ?? u)!.Kind;
+			string desc = $"锻造图【效果】{kind}：{bText}{(uText.Length > 0 && !string.Equals(bText, uText, StringComparison.Ordinal) ? " → " + uText : "")}";
+			list.Add((token, desc));
+		}
+		return list;
+	}
+
+
+	/// <summary>
+	/// 用户要求：「给卡牌的自定义描述加个自动填入」。
 	///
-	/// ⚠ 填完会顺手勾上「替换掉自动生成的描述」：不勾的话卡面上会变成「自动那段 + 你填的这段」—— 
-	/// 而这一段本来**就是**自动那段，等于同一句话印两遍。"
+	/// ⚠ 填完会顺手勾上「替换掉自动生成的描述」：不勾的话卡面上会变成「自动那段 + 你填的这段」——
+	/// 而这一段本来**就是**自动那段，等于同一句话印两遍。
 	/// </summary>
 	private void OnAutoFillCardDesc(object sender, RoutedEventArgs e) => AutoFillCardDesc(sender, upgraded: false);
 
@@ -26692,6 +26738,29 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// V0.3.34：示例插件「本回合失去过生命值」
 					// 这个插件现在按用户要求**从生成器剥离**，不再随程序加载 / 打包；
 					// 自检里不再断言它存在（否则剥离后 uicheck 会失败）。
+					// V0.3.35：锻造卡自定义描述的「填入参数…」要能从节点图拿到数值（20 点伤害 → 菜单有 20）
+					{
+						var v35Card = new CardSpec { Name = "锻造描述数值卡", ClassName = "UiCheckForgeDescValue", CardType = "Attack", Rarity = "Common", Cost = 1, IsForged = true };
+						ForgeGraphSpec mk35(int amount)
+						{
+							var g35 = new ForgeGraphSpec();
+							var tr35 = new ForgeNodeSpec { Kind = "Trigger" }; tr35.SetField("Timing", ForgeTimings.CardPlayed);
+							var ef35 = new ForgeNodeSpec { Kind = "Effect" }; ef35.SetField("Effect", "Damage"); ef35.SetField("Amount", amount.ToString());
+							g35.Nodes.AddRange(new[] { tr35, ef35 });
+							g35.Links.Add(new ForgeLinkSpec { From = tr35.Id, To = ef35.Id, FromPort = 0, ToPort = 0 });
+							return g35;
+						}
+						v35Card.ForgeGraph = mk35(20);
+						var v35Hints = ForgeGraphValueHints(v35Card);
+						Check("V0.3.35：锻造卡 20 点伤害 → 自定义描述「填入参数…」有 20",
+							v35Hints.Any(h => h.Token == "20" && h.Desc.Contains("伤害")),
+							string.Join(" / ", v35Hints.Select(h => h.Token)));
+						v35Card.UpgradedForgeGraph = mk35(30);
+						var v35UpHints = ForgeGraphValueHints(v35Card);
+						Check("V0.3.35：升级前后伤害不同 → 插入 {IfUpgraded:show:30|20}",
+							v35UpHints.Any(h => h.Token == "{IfUpgraded:show:30|20}"),
+							string.Join(" / ", v35UpHints.Select(h => h.Token)));
+					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
