@@ -26690,26 +26690,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& ForgeGraphCatalog.Find("Trigger")!.Fields.First(f => f.Key == "CardFilter").Searchable,
 						ForgeGraphCatalog.Find("Trigger")!.Fields.First(f => f.Key == "CardFilter").Type.ToString());
 					// V0.3.34：示例插件「本回合失去过生命值」
-					var v34Cond = PluginRegistry.ConditionOf("HpLostThisTurn");
-					Check("V0.3.34：插件条件「本回合失去过生命值」已加载",
-						v34Cond is not null && v34Cond.Display.Contains("失去过生命值"),
-						v34Cond?.Display ?? "(插件没加载)");
-					if (v34Cond is not null)
-					{
-						var v34 = ProfileFactory.Sample();
-						var v34Card = new CardSpec { Name = "掉血条件卡", ClassName = "UiCheckHpLostCondition", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
-						v34Card.Effects.Add(new EffectSpec
-						{
-							Kind = "Block", Amount = 3m, TargetSide = "Self",
-							Condition = new ConditionSpec { Kind = "HpLostThisTurn" },
-						});
-						v34.Cards.Add(v34Card);
-						string v34Src = CSharpCodeGen.CardSource(v34, v34Card, v34.Cards.Count - 1);
-						Check("V0.3.34：插件条件真的展开成 DamageReceivedEntry + UnblockedDamage 判据",
-							v34Src.Contains("DamageReceivedEntry") && v34Src.Contains("UnblockedDamage > 0")
-							&& v34Src.Contains("HappenedThisTurn"),
-							v34Src.Split((char)10).FirstOrDefault(l => l.Contains("DamageReceivedEntry")) ?? "");
-					}
+					// 这个插件现在按用户要求**从生成器剥离**，不再随程序加载 / 打包；
+					// 自检里不再断言它存在（否则剥离后 uicheck 会失败）。
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
