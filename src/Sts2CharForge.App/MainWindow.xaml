@@ -227,8 +227,15 @@
             <StackPanel Orientation="Horizontal">
                 <Button Content="新建配置" Padding="10,4" Margin="2" Click="OnNewProfile"/>
                 <Button Content="打开配置…" Padding="10,4" Margin="2" Click="OnOpenProfile"/>
-                <Button Content="保存配置" Padding="10,4" Margin="2" Click="OnSaveProfile"
+                <Button x:Name="SaveProfileButton" Content="保存配置" Padding="10,4" Margin="2" Click="OnSaveProfile"
                         ToolTip="直接保存进当前这个存档文件（不再弹路径选择）。若「模组 ID」和存档文件名不一样，会问一次要不要把存档名也改成 &lt;模组 ID&gt;.json；答「否」就仍然保存进原文件。想存成另一个文件请用「配置存档」页的「另存为新存档…」"/>
+                <!-- V0.3.37（用户要求）：界面缩放挪到「保存配置」右边。
+                     以前它在整条工具栏最右边、紧挨着超长的安装目录输入框，小屏 / 窄窗口下会被裁掉，
+                     用户点不到。现在放在保存旁边，始终看得到。 -->
+                <TextBlock Text="界面缩放：" VerticalAlignment="Center"/>
+                <ComboBox x:Name="UiScaleBox" Width="86" VerticalAlignment="Center" Padding="4,2"
+                          SelectionChanged="OnUiScaleChanged"
+                          ToolTip="整窗等比缩放（布局也会跟着缩，文字不糊）。&#10;小屏幕会自动选一档：高 ≥ 1000 → 100%；≥ 900 → 100%；≥ 800 → 90%；≥ 700 → 80%；更矮 → 70%（窄屏还会再降一档）。&#10;手动选过之后会记住（存在 %LOCALAPPDATA%\Sts2CharForge\ui-scale.txt）。"/>
                 <Separator Margin="8,0"/>
                 <Button Content="① 一键生成 · 构建 · 安装" Padding="12,4" Margin="2" FontWeight="Bold"
                         ToolTip="按当前配置重新生成工程 → 编译 → 导出 PCK → 安装到安装目录（后台执行，界面不会卡住）"
@@ -240,14 +247,6 @@
                 <TextBox Width="380" VerticalAlignment="Center" Padding="3"
                          Text="{Binding Profile.Paths.InstallDir, UpdateSourceTrigger=PropertyChanged}"/>
                 <Button Content="选择…" Padding="8,4" Margin="4,0" Click="OnPickInstallDir"/>
-                <Separator Margin="8,0"/>
-                <!-- V0.2.240（用户反馈「屏幕小的时候有些地方被遮挡」）：整窗缩放。
-                     小屏启动时会自动挑一档（见 MainWindow.FitWindowToScreen），这里也能手动改。
-                     缩放走 RootPanel.LayoutTransform，所以布局也跟着变 —— 不是把画面糊掉那种缩放。 -->
-                <TextBlock Text="界面缩放：" VerticalAlignment="Center"/>
-                <ComboBox x:Name="UiScaleBox" Width="86" VerticalAlignment="Center" Padding="4,2"
-                          SelectionChanged="OnUiScaleChanged"
-                          ToolTip="整窗等比缩放（布局也会跟着缩，文字不糊）。&#10;小屏幕会自动选一档：高 ≥ 1000 → 100%；≥ 900 → 100%；≥ 800 → 90%；≥ 700 → 80%；更矮 → 70%（窄屏还会再降一档）。&#10;手动选过之后会记住（存在 %LOCALAPPDATA%\Sts2CharForge\ui-scale.txt）。"/>
             </StackPanel>
         </Border>
 

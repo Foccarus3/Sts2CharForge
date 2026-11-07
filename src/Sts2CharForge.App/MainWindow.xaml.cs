@@ -26843,6 +26843,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							MoveEffectTo(lb, c, b) && list[0] == c && list[1] == b,
 							string.Join(",", list.Select(x => x.Kind)));
 					}
+					// V0.3.37：界面缩放挪到保存配置右边（小屏不再被安装目录挤到屏幕外）
+					{
+						var topBar = UiScaleBox.Parent as System.Windows.Controls.StackPanel;
+						int saveAt = topBar?.Children.IndexOf(SaveProfileButton) ?? -1;
+						int scaleAt = topBar?.Children.IndexOf(UiScaleBox) ?? -1;
+						Check("V0.3.37：界面缩放在「保存配置」右侧（且不再排在安装目录后面）",
+							topBar is not null && saveAt >= 0 && scaleAt > saveAt,
+							$"save={saveAt} scale={scaleAt}");
+					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
