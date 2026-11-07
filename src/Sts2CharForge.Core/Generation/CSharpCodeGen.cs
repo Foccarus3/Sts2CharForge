@@ -4285,6 +4285,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         string f = (cardFilter ?? "").Trim();
         if (f.Length == 0 || string.Equals(f, "Any", StringComparison.Ordinal)) return null;
+        if (PowerTriggers.IsSpecificCardFilter(f))
+        {
+            string? cls = PowerTriggers.SpecificCardFilterClass(f);
+            return cls is null ? null : $"c.GetType().Name == {Lit.Str(cls)}".Replace("c.", cardExpr + ".");
+        }
         string? cond = ScopeCondForFilter(f, p);
         if (!EffectCatalog.IsKeywordFilter(f)) return cond?.Replace("c.", cardExpr + ".");
         string key = (EffectCatalog.KeywordFilterKey(f) ?? "").Trim();
@@ -4310,6 +4315,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         string f = (cardFilter ?? "").Trim();
         if (f.Length == 0 || string.Equals(f, "Any", StringComparison.Ordinal)) return null;
+        // V0.3.33：指定某一张卡（值 = 生成出来的卡牌类名）。用 GetType().Name 判，
+        // 不用 `c is XXX`，这样本体卡 / 别的模组的类名也不用在这里引用类型。
+        if (PowerTriggers.IsSpecificCardFilter(f))
+        {
+            string? cls = PowerTriggers.SpecificCardFilterClass(f);
+            return cls is null ? null : $"c.GetType().Name == {Lit.Str(cls)}".Replace("c.", cardExpr + ".");
+        }
         string? cond = f switch
         {
             "Attack" => "c.Type == CardType.Attack",

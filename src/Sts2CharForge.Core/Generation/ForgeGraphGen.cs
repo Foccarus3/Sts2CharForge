@@ -1465,6 +1465,18 @@ public static class ForgeGraphGen
             // 否则普通丢弃也会跑这块图。
             sb.AppendLine("        " + ScryGuardLine(p));
 
+        // V0.3.33：锻造卡牌【触发时机】的「只对哪类牌生效」以前只摆了一栏、生成端没读 →
+        // 选什么都等于任意牌。这里按同一份 TriggerCardFilterCond 加守卫（和遗物 / 状态一个口径）。
+        if (!ctx.NoHookParams && ctx.Scope is "Card" or "Relic"
+            && plan.Timing.Id is ForgeTimings.CardPlayed or ForgeTimings.CardResolved)
+        {
+            string filter = CardFilterOf(plan.Trigger);
+            string playExpr = HookHasCardPlay(plan.Timing) ? "cardPlay" : ctx.CardPlayExpr;
+            string? filterCond = CSharpCodeGen.TriggerCardFilterCond(filter, p, playExpr + ".Card");
+            if (filterCond is not null)
+                sb.AppendLine($"        if (!({filterCond})) return;   // 只对「{PowerTriggers.CardFilterZh(filter)}」生效");
+        }
+
         // ---- 0) 血量阈值 / 生效次数（遗物的「当遗物被点击时」「血量低于 N」用得到）----
         // 注意：这一段在「自己 / 目标」那两个变量之前，所以里面只用 base.Owner 推算，
         // 不能引用 __fgSelf（会「在使用之前声明」编译不过）。
@@ -1704,7 +1716,7 @@ public static class ForgeGraphGen
     /// 被消耗 / 被丢弃 / 被抽到 / **被保留（AfterFlush）** 都没有 —— 那几档要自己补一句占位（见 EmitHook 末尾）。
     /// </summary>
     private static bool HookHasCardPlay(ForgeTimings.TimingOption t) =>
-        t.Hook is "OnPlay" or "AfterCardPlayed";
+        t.Hook is "OnPlay" or "AfterCardPlayed" or "AfterCardPlayedLate";
 
     /// <summary>
     /// 【触发时机】自己的进门守卫（V0.2.128：「卡牌被保留时」用得到）。

@@ -156,14 +156,40 @@ public static class PowerTriggers
         var list = new List<SpawnFilterOption> { new("Any", "任意牌（不过滤）", "任意") };
         foreach (var f in EffectCatalog.SpawnFiltersFor(p))
             if (f.Id.Length > 0) list.Add(f);   // "" = 「不限」，跟「任意」重复，跳过
+        // V0.3.33：用户要求「只对哪类牌生效」也能选**某一张卡**。
+        // 只列自己的牌（本体卡没有本模组生成的类名，运行时用 GetType().Name 判不了）。
+        if (p is not null)
+        {
+            var nm = Naming.From(p);
+            foreach (var c in p.AllCards)
+            {
+                if (c is null || c.IsVanillaCard) continue;
+                string cls = nm.CardClassName(p, c);
+                if (string.IsNullOrWhiteSpace(cls)) continue;
+                list.Add(new SpawnFilterOption(CardFilterSpecificPrefix + cls,
+                    $"指定卡：{c.Name}（{cls}）", c.Name));
+            }
+        }
         return list;
     }
+
+    /// <summary>「只对哪类牌生效」里「指定某一张卡」的 Id 前缀（值是生成出来的卡牌类名）。</summary>
+    public const string CardFilterSpecificPrefix = "Card:";
+
+    /// <summary>这个筛选值是不是「指定某一张卡」。</summary>
+    public static bool IsSpecificCardFilter(string? v) =>
+        v is not null && v.StartsWith(CardFilterSpecificPrefix, StringComparison.Ordinal);
+
+    /// <summary>「Card:XXX」里的卡牌类名（不是就返回 null）。</summary>
+    public static string? SpecificCardFilterClass(string? v) =>
+        IsSpecificCardFilter(v) ? v![CardFilterSpecificPrefix.Length..].Trim() : null;
 
     /// <summary>「只对哪类牌生效」的中文短名（列表 / 说明 / 回读用）。</summary>
     public static string CardFilterZh(string? v)
     {
         string f = (v ?? "").Trim();
         if (f.Length == 0 || f == "Any") return "任意";
+        if (IsSpecificCardFilter(f)) return "卡：" + (SpecificCardFilterClass(f) ?? f);
         if (EffectCatalog.IsKeywordFilter(f)) return "关键词：" + EffectCatalog.SpawnFilterZh(f);
         if (EffectCatalog.IsCardGroupFilter(f)) return "组：" + EffectCatalog.SpawnFilterZh(f);
         return f switch { "Attack" => "攻击", "Skill" => "技能", "Power" => "能力", "Curse" => "诅咒", "Status" => "状态", "Quest" => "任务", _ => f };

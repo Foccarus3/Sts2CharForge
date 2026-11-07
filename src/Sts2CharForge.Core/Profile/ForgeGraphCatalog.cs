@@ -583,6 +583,15 @@ public static class ForgeGraphCatalog
     public static IReadOnlyList<ForgeFieldOption> CardChoices { get; private set; } = Array.Empty<ForgeFieldOption>();
     public static IReadOnlyList<ForgeFieldOption> PotionChoices { get; private set; } = Array.Empty<ForgeFieldOption>();
 
+    /// <summary>V0.3.33：【触发时机】「只对哪类牌生效」的候选（任意 / 牌型 / 组 / 关键词 / 指定某张卡）。</summary>
+    public static IReadOnlyList<ForgeFieldOption> CardFilterChoices { get; private set; } =
+        PowerTriggers.CardFiltersFor(null).Select(f => new ForgeFieldOption(f.Id, f.Display)).ToList();
+
+    /// <summary>界面把当前配置灌进来（加删卡 / 改组之后要再灌一次，指定卡选项才跟着变）。</summary>
+    public static void SetCardFilterChoices(CharacterProfile? p) =>
+        CardFilterChoices = PowerTriggers.CardFiltersFor(p)
+            .Select(f => new ForgeFieldOption(f.Id, f.Display)).ToList();
+
     /// <summary>界面把当前配置里的卡灌进来（改名字 / 加删卡之后要再灌一次）。</summary>
     public static void SetCardChoices(IEnumerable<(string ClassName, string Name, bool IsVanilla)> cards)
     {
@@ -675,9 +684,10 @@ public static class ForgeGraphCatalog
                 // 就会变成「任意一张牌都触发」—— 那是**静默的行为变化**，用户最烦这个。
                 // 填法就是本体那套筛选值：Attack / Skill / Power / Curse / Status / Keyword:xxx / Group:xxx，
                 // 留空或 Any = 任意牌。
-                new ForgeNodeField("CardFilter", "只对哪类牌生效（打牌类时机用）", ForgeFieldType.Text,
-                    "留空 / Any = 任意牌；也可以填 Attack / Skill / Power / Curse / Status / Keyword:关键词 / Group:组的Id",
-                    null, ""),
+                new ForgeNodeField("CardFilter", "只对哪类牌生效（打牌类时机用）", ForgeFieldType.Pick,
+                    "任意牌 / 攻击 / 技能 / 能力 / 诅咒 / 状态 / 任务 / 自定义关键词 / 组 / 指定某一张卡",
+                    Options: null, Default: "Any", Searchable: true, Wide: true,
+                    OptionsFactory: () => CardFilterChoices),
                 new ForgeNodeField("CountScope", "生效次数的作用域", ForgeFieldType.Pick, "本场战斗 / 本回合 / 本次游玩", null, "Combat"),
                 new ForgeNodeField("CountLimit", "仅生效 N 次（填 0 = 无限次）", ForgeFieldType.Number, "用完这一只遗物会像本体那样变灰并显示次数耗尽", null, "0"),
             },

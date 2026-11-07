@@ -1362,6 +1362,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ForgeGraphCatalog.SetCardChoices(_profile.AllCards
 			.Where(c => c is not null && !string.IsNullOrWhiteSpace(c.ClassName))
 			.Select(c => (c.ClassName.Trim(), c.Name, c.IsVanillaCard)));
+		// V0.3.33：【触发时机】的「只对哪类牌生效」现在也能选指定某张卡，候选按当前配置生成。
+		ForgeGraphCatalog.SetCardFilterChoices(_profile);
 		// V0.2.329：图上【获得药水】的药水候选也要带上自己做的药水
 		ForgeGraphCatalog.SetPotionChoices(EffectCatalog.AllPotionEntries
 			.Select(x => (x.Id, x.Display)));
@@ -13802,7 +13804,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& cfOptions.Any((SpawnFilterOption o) => o.Id == "Curse") && cfOptions.Any((SpawnFilterOption o) => o.Id == "Status"),
 				string.Join("/", cfOptions.Select((SpawnFilterOption o) => o.Id)));
 			Check("候选取自卡牌那边同一份「范围界定」表（所以「自定义关键词 / 组」也会列出来）",
-				cfOptions.Count == 1 + EffectCatalog.SpawnFiltersFor(cfOptProfile).Count((SpawnFilterOption o) => o.Id.Length > 0), $"{cfOptions.Count} 项");
+				cfOptions.Count == 1 + EffectCatalog.SpawnFiltersFor(cfOptProfile).Count((SpawnFilterOption o) => o.Id.Length > 0)
+					+ cfOptProfile.AllCards.Count(c => c is not null && !c.IsVanillaCard), $"{cfOptions.Count} 项");
 			Check("中文短名：任意 / 攻击 / 诅咒 / 状态（列表与说明都用它）",
 				PowerTriggers.CardFilterZh("Attack") == "攻击" && PowerTriggers.CardFilterZh("Curse") == "诅咒"
 				&& PowerTriggers.CardFilterZh("Status") == "状态" && PowerTriggers.CardFilterZh("Any") == "任意", "对");
@@ -26661,6 +26664,31 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							!v32Src.Contains("if (true)") && (v32Src.Contains("Block") || v32Src.Contains("GetPower")),
 							v32Src.Split((char)10).FirstOrDefault(l => l.Contains("if (")) ?? "");
 					}
+					// V0.3.33：锻造【触发时机】的「只对哪类牌生效」改成下拉，支持指定某一张卡
+					var v33Prof = ProfileFactory.Sample();
+					var v33Card = new CardSpec { Name = "指定卡筛选源", ClassName = "UiCheckSpecificCard", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+					v33Prof.Cards.Add(v33Card);
+					var v33Relic = new RelicSpec { Name = "指定卡筛选遗物", ClassName = "UiCheckSpecificRelic", Rarity = "Common", InRelicPool = true };
+					var v33g = new ForgeGraphSpec();
+					var v33t = new ForgeNodeSpec { Kind = "Trigger" }; v33t.SetField("Timing", ForgeTimings.CardResolved); v33t.SetField("CardFilter", "Card:UiCheckSpecificCard");
+					var v33e = new ForgeNodeSpec { Kind = "Effect" }; v33e.SetField("Effect", "Block"); v33e.SetField("Amount", "3");
+					v33g.Nodes.AddRange(new[] { v33t, v33e });
+					v33g.Links.Add(new ForgeLinkSpec { From = v33t.Id, To = v33e.Id, FromPort = 0, ToPort = 0 });
+					v33Relic.ForgeGraph = v33g;
+					v33Prof.Relics.Add(v33Relic);
+					ForgeGraphCatalog.SetCardFilterChoices(v33Prof);
+					Check("V0.3.33：CardFiltersFor 里有「指定某一张卡」选项，锻造下拉也能拿到",
+						PowerTriggers.CardFiltersFor(v33Prof).Any(f => f.Id == "Card:UiCheckSpecificCard")
+						&& ForgeGraphCatalog.CardFilterChoices.Any(f => f.Id == "Card:UiCheckSpecificCard"),
+						string.Join(" / ", ForgeGraphCatalog.CardFilterChoices.Where(f => f.Id.StartsWith("Card:", StringComparison.Ordinal)).Select(f => f.Id)));
+					string v33Src = CSharpCodeGen.RelicSource(v33Prof, v33Relic, v33Prof.Relics.Count - 1);
+					Check("V0.3.33：指定某张卡的筛选生成 GetType().Name 判据（不是只认牌型）",
+						v33Src.Contains("cardPlay.Card.GetType().Name == \"UiCheckSpecificCard\""),
+						v33Src.Split((char)10).FirstOrDefault(l => l.Contains("GetType().Name")) ?? "");
+					Check("V0.3.33：锻造【触发时机】的 CardFilter 是下拉 + 可搜索，不再是手填文本",
+						ForgeGraphCatalog.Find("Trigger")!.Fields.First(f => f.Key == "CardFilter").Type == ForgeFieldType.Pick
+						&& ForgeGraphCatalog.Find("Trigger")!.Fields.First(f => f.Key == "CardFilter").Searchable,
+						ForgeGraphCatalog.Find("Trigger")!.Fields.First(f => f.Key == "CardFilter").Type.ToString());
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };
