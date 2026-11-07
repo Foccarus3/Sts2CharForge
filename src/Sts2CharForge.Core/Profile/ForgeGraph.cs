@@ -358,9 +358,10 @@ public sealed record ForgeNodeField(
     IReadOnlyList<ForgeFieldOption>? Options = null,
     string Default = "",
     bool Searchable = false,
-    bool Wide = false)
+    bool Wide = false,
+    Func<IReadOnlyList<ForgeFieldOption>>? OptionsFactory = null)
 {
-    public IReadOnlyList<ForgeFieldOption> OptionList => Options ?? Array.Empty<ForgeFieldOption>();
+    public IReadOnlyList<ForgeFieldOption> OptionList => OptionsFactory?.Invoke() ?? Options ?? Array.Empty<ForgeFieldOption>();
 }
 
 /// <summary>字段的编辑方式。</summary>

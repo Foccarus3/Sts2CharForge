@@ -616,8 +616,11 @@ public static class ForgeGraphCatalog
     }
 
     /// <summary>「条件」模块能选的条件（= 卡牌页那份候选）。</summary>
-    public static IReadOnlyList<ForgeFieldOption> ConditionPicks { get; } =
-        EffectCatalog.Conditions.Where(c => c.ForCard).Select(c => new ForgeFieldOption(c.Id, c.Display)).ToList();
+    // V0.3.32：插件条件也会合并进 EffectCatalog.AllConditions；这里必须每次现取，
+    // 不能缓存成静态列表，否则「重新加载插件」之后锻造页的下拉还是旧的。
+    public static IReadOnlyList<ForgeFieldOption> ConditionPicks =>
+        EffectCatalog.AllConditions.Where(c => c.ForCard)
+            .Select(c => new ForgeFieldOption(c.Id, c.Display)).ToList();
 
     /// <summary>「且 / 或」的门没有下拉，只把端口摆好。</summary>
     /// <remarks>
@@ -899,7 +902,9 @@ public static class ForgeGraphCatalog
             new[] { new ForgePort("Out", "结果", "满足 / 不满足", false, "Bool") },
             new[]
             {
-                new ForgeNodeField("Cond", "条件", ForgeFieldType.Pick, "和「卡牌」页条件栏同一份候选", ConditionPicks, "None", false, true),
+                new ForgeNodeField("Cond", "条件", ForgeFieldType.Pick, "和「卡牌」页条件栏同一份候选（含插件条件）",
+                    Options: null, Default: "None", Searchable: false, Wide: true,
+                    OptionsFactory: () => ConditionPicks),
                 new ForgeNodeField("Amount", "数值 N", ForgeFieldType.Number, "条件里那个 N（填负数 = 反向判断，见卡牌页说明）", null, "1"),
                 new ForgeNodeField("Amount2", "数值 M（生命区间用）", ForgeFieldType.Number, "只有「生命值在 N%~M% 之间」用得到", null, "0"),
                 new ForgeNodeField("PowerId", "状态（拥有某状态用）", ForgeFieldType.Pick, "只有「拥有某状态至少 N 层」用得到", null, "", true, true),

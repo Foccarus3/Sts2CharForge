@@ -26635,6 +26635,32 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded(")) == 1
 						&& v31BothSrc.Contains("同一个时刻（这张牌因预见被丢弃时）"),
 						$"AfterCardDiscarded={v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded("))}");
+					// V0.3.32：插件条件要进锻造【条件】模块的下拉（ConditionPicks 以前只读内置 Conditions）
+					var v32PluginConds = PluginRegistry.ConditionOptions;
+					Check("V0.3.32：锻造条件下的候选包含全部插件条件（ConditionPicks 每次现取 AllConditions）",
+						v32PluginConds.Count == 0
+						|| v32PluginConds.All(pc => ForgeGraphCatalog.ConditionPicks.Any(f => string.Equals(f.Id, pc.Id, StringComparison.Ordinal))),
+						v32PluginConds.Count == 0 ? "(自检环境没加载插件条件，跳过)" : string.Join(" / ", v32PluginConds.Select(x => x.Id)));
+					if (v32PluginConds.Count > 0)
+					{
+						string v32CondId = v32PluginConds[0].Id;
+						var v32Card = new CardSpec { Name = "插件条件图", ClassName = "UiCheckPluginCondGraph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+						var v32g = new ForgeGraphSpec();
+						var v32t = new ForgeNodeSpec { Kind = "Trigger" }; v32t.SetField("Timing", ForgeTimings.CardPlayed);
+						var v32c = new ForgeNodeSpec { Kind = "Condition" }; v32c.SetField("Cond", v32CondId);
+						var v32b = new ForgeNodeSpec { Kind = "If" };
+						var v32e = new ForgeNodeSpec { Kind = "Effect" }; v32e.SetField("Effect", "Block"); v32e.SetField("Amount", "3");
+						v32g.Nodes.AddRange(new[] { v32t, v32c, v32b, v32e });
+						v32g.Links.Add(new ForgeLinkSpec { From = v32t.Id, To = v32b.Id, FromPort = 0, ToPort = 0 });
+						v32g.Links.Add(new ForgeLinkSpec { From = v32c.Id, To = v32b.Id, FromPort = 0, ToPort = 1 });
+						v32g.Links.Add(new ForgeLinkSpec { From = v32b.Id, To = v32e.Id, FromPort = 0, ToPort = 0 });
+						v32Card.ForgeGraph = v32g;
+						v31Prof.Cards.Add(v32Card);
+						string v32Src = CSharpCodeGen.CardSource(v31Prof, v32Card, 2);
+						Check("V0.3.32：锻造【条件】选插件条件 → 生成端真的展开插件 expr（不是退回 true）",
+							!v32Src.Contains("if (true)") && (v32Src.Contains("Block") || v32Src.Contains("GetPower")),
+							v32Src.Split((char)10).FirstOrDefault(l => l.Contains("if (")) ?? "");
+					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };

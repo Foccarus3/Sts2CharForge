@@ -966,10 +966,14 @@ public static class PluginRegistry
             }
             // V0.2.316：条件现在**真的接进生成端了**（四链通用；插件条件对卡牌/遗物/状态都开放）。
             _conditionsById[c.Id.Trim()] = c;
+            // V0.3.32：插件条件如果用了 {amount} / {power} 占位符，就把「数值 N / 状态」两栏放开，
+            // 否则下拉里选了插件条件也没有输入框（用户截图里说的「加不了输入框」）。
+            bool needsAmount = c.Expr.Contains("{amount}", StringComparison.OrdinalIgnoreCase);
+            bool needsPower = c.Expr.Contains("{power}", StringComparison.OrdinalIgnoreCase);
             _conditionOptions.Add(new ConditionOption(
                 Id: c.Id.Trim(),
                 Display: string.IsNullOrWhiteSpace(c.Display) ? c.Id.Trim() : c.Display.Trim(),
-                ForCard: true, ForRelic: true, NeedsAmount: false, NeedsPower: false,
+                ForCard: true, ForRelic: true, NeedsAmount: needsAmount, NeedsPower: needsPower,
                 Hint: string.IsNullOrWhiteSpace(c.Note) ? "插件条件：" + c.Expr.Trim() : c.Note.Trim(),
                 ForPower: true));
         }
