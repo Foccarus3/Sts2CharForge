@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using Sts2CharForge.Core.Effects;
@@ -20,6 +20,8 @@ public static class ForgeTimings
     public const string CardAutoPlayed = "CardAutoPlayed";
     public const string CardExhausted = "CardExhausted";
     public const string CardDiscarded = "CardDiscarded";
+    /// <summary>V0.3.31：这张牌**因预见**被丢弃时（和 CardDiscarded 共用 AfterCardDiscarded，用 __inScryDiscard 区分）。</summary>
+    public const string CardDiscardedByScry = "CardDiscardedByScry";
     public const string CardDrawn = "CardDrawn";
     /// <summary>卡牌（用户要求 V0.2.128）：这张牌被保留时 —— 和「卡牌」页「卡牌时机」那一档同名同语义。</summary>
     public const string CardRetained = "Retained";
@@ -92,6 +94,11 @@ public static class ForgeTimings
         new TimingOption(CardExhausted, "这张牌被消耗时", "Card", "AfterCardExhausted",
             "本体「战鼓」的做法：override AfterCardExhausted 里判 card == this。"),
         new TimingOption(CardDiscarded, "这张牌被丢弃时", "Card", "AfterCardDiscarded", "override AfterCardDiscarded 里判 card == this。"),
+        // V0.3.31（用户问「V0.3.27 的因预见被丢弃怎么在锻造触发时机里没有」）：
+        // 卡牌页的「卡牌时机」和锻造图的「触发时机」是两张不同的候选表；这条补进锻造图。
+        // 和 CardDiscarded 共用 AfterCardDiscarded，靠工具自己生成的 __inScryDiscard 标记区分。
+        new TimingOption(CardDiscardedByScry, "这张牌因预见被丢弃时", "Card", "AfterCardDiscarded",
+            "只在工具自己生成的「预见」把这张牌丢进弃牌堆时触发（和「这张牌被丢弃时」共用钩子，用 __inScryDiscard 区分）。"),
         new TimingOption(CardDrawn, "这张牌被抽到时", "Card", "AfterCardDrawn", "override AfterCardDrawn 里判 card == this。"),
         // 用户要求（V0.2.128）：新增「卡牌被保留时」。
         //   · Id = 卡牌页「卡牌时机」那一档的 Retained（同一套语义，回读 / 文案对得上）；

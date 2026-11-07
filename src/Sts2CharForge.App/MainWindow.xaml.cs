@@ -21965,7 +21965,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& CustomPowerGen.PowerHookOf("CombatEnd") == "CombatVictory", "同一份");
 				Check("状态那一档的时机没有混进卡牌 / 药水 / 遗物那三档（默认档输出不变的前提）",
 					ForgeTimings.For("Card").All(x => x.Scope == "Card")
-					&& ForgeTimings.For("Card").Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == 6
+					&& ForgeTimings.For("Card").Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == 7
 					&& ForgeTimings.For("Potion").Count(x => !ForgeTimings.IsPluginTiming(x.Id)) == 1
 					&& ForgeTimings.For("Relic").All(x => x.Scope == "Relic"), "各归各档");
 
@@ -26591,6 +26591,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						v30Loc.Contains("{IfUpgraded:show:对自己施加 {Block:diff()} 层格挡。升级手中所有的牌。|升级手中所有的牌。}")
 						&& !v30Loc.Contains("\"UI_CHECK_DESC_UPGRADE.description\": \"升级手中所有的牌。\""),
 						v30Loc.Split('\n').FirstOrDefault(l => l.Contains("UI_CHECK_DESC_UPGRADE.description"))?.Trim() ?? "(没找到)");
+					// V0.3.31：锻造图【触发时机】也要有「这张牌因预见被丢弃时」
+					var v31Prof = ProfileFactory.Sample();
+					v31Prof.Cards.Clear(); v31Prof.Curses.Clear(); v31Prof.AncientCards.Clear();
+					var v31Card = new CardSpec { Name = "预见丢弃图", ClassName = "UiCheckScryGraph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					ForgeGraphSpec Mk31(string timing)
+					{
+						var g = new ForgeGraphSpec();
+						var trg = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+						trg.SetField("Timing", timing);
+						var eff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+						eff.SetField("Effect", "Block");
+						eff.SetField("Amount", "3");
+						g.Nodes.AddRange(new[] { trg, eff });
+						g.Links.Add(new ForgeLinkSpec { From = trg.Id, To = eff.Id, FromPort = 0, ToPort = 0 });
+						return g;
+					}
+					v31Card.ForgeGraph = Mk31(ForgeTimings.CardDiscardedByScry);
+					v31Prof.Cards.Add(v31Card);
+					string v31Src = CSharpCodeGen.CardSource(v31Prof, v31Card, 0);
+					Check("V0.3.31：锻造图「因预见被丢弃」生成 AfterCardDiscarded + __inScryDiscard 守卫",
+						v31Src.Contains("AfterCardDiscarded")
+						&& v31Src.Contains("__inScryDiscard")
+						&& v31Src.Contains("if (card != this || base.CombatState is null || !"),
+						v31Src.Split((char)10).FirstOrDefault(l => l.Contains("__inScryDiscard")) ?? "");
+					Check("V0.3.31：只选这个时机时也生成 __inScryDiscard 标记（否则编译不过）",
+						CSharpCodeGen.CombatCountersSource(v31Prof).Contains("__inScryDiscard"), "CombatCounters 里有");
+
+					var v31Both = new CardSpec { Name = "两种丢弃图", ClassName = "UiCheckScryGraphBoth", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+					v31Both.ForgeGraph = Mk31(ForgeTimings.CardDiscarded);
+					// 同一张图再加一块「因预见」触发，两块共用 AfterCardDiscarded
+					var bothGraph = v31Both.ForgeGraph!;
+					var trg2 = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 180 };
+					trg2.SetField("Timing", ForgeTimings.CardDiscardedByScry);
+					var eff2 = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 180 };
+					eff2.SetField("Effect", "Block");
+					eff2.SetField("Amount", "5");
+					bothGraph.Nodes.AddRange(new[] { trg2, eff2 });
+					bothGraph.Links.Add(new ForgeLinkSpec { From = trg2.Id, To = eff2.Id, FromPort = 0, ToPort = 0 });
+					v31Prof.Cards.Add(v31Both);
+					string v31BothSrc = CSharpCodeGen.CardSource(v31Prof, v31Both, 1);
+					Check("V0.3.31：同一张图同时有「被丢弃」和「因预见被丢弃」→ 仍只有一个 AfterCardDiscarded，且第二块单独带标记守卫",
+						v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded(")) == 1
+						&& v31BothSrc.Contains("同一个时刻（这张牌因预见被丢弃时）"),
+						$"AfterCardDiscarded={v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded("))}");
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
 					var aiToothOnly = new CardSpec { Name = "只勾牙齿", ClassName = "UiCheckToothOnly", CardType = "Skill", Rarity = "Ancient", Cost = 1, ToothReplace = true };

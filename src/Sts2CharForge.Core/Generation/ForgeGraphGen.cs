@@ -705,6 +705,10 @@ public static class ForgeGraphGen
     public static bool GraphHasHook(ForgeGraphSpec? g, string hook) =>
         Plans(g, "Card").Any(pl => string.Equals(pl.Timing.Hook, hook, StringComparison.Ordinal));
 
+    /// <summary>某一块布上有没有这个 Timing Id（V0.3.31：用来判断要不要生成 __inScryDiscard 标记）。</summary>
+    public static bool GraphHasTiming(ForgeGraphSpec? g, string id) =>
+        g is not null && g.TriggerNodes.Any(t => string.Equals(t.Get("Timing", ""), id, StringComparison.Ordinal));
+
     /// <summary>
     /// 图嵌进卡牌钩子时那个私有方法的名字（调用方 = <c>CSharpCodeGen.EmitCardTimingHooks</c> /
     /// <c>EmitSelfDrawHook</c>）。照 <see cref="PlayMethodName"/> 那个规矩：升级前 / 升级后两块布
@@ -1454,8 +1458,12 @@ public static class ForgeGraphGen
         // EmitSelfDrawHook）里已经判过同一条，而且这里根本没有 card / player / retainedCards 那几个参数，
         // 写了就是 CS0103（和上面遗物嵌进触发钩子那一段同一个理由）。
         if (!ctx.NoHookParams)
-            foreach (string line in TimingEntryGuardLines(plan.Timing, ctx.Scope))
+            foreach (string line in TimingEntryGuardLines(plan.Timing, ctx.Scope, p))
                 sb.AppendLine("        " + line);
+        else if (string.Equals(plan.Timing.Id, ForgeTimings.CardDiscardedByScry, StringComparison.Ordinal))
+            // 嵌进卡牌自己的 AfterCardDiscarded 钩子时没有 card 参数，但「因预见」这一层仍要判，
+            // 否则普通丢弃也会跑这块图。
+            sb.AppendLine("        " + ScryGuardLine(p));
 
         // ---- 0) 血量阈值 / 生效次数（遗物的「当遗物被点击时」「血量低于 N」用得到）----
         // 注意：这一段在「自己 / 目标」那两个变量之前，所以里面只用 base.Owner 推算，
@@ -1506,6 +1514,12 @@ public static class ForgeGraphGen
                 bool exPlay = HookHasCardPlay(exPlan.Timing) && !ctx.NoHookParams;
                 sb.AppendLine($"        // ---- 同一个时刻（{exPlan.Timing.Display}）的第 {__ex + 2} 块 ----");
                 sb.AppendLine("        {");
+                // V0.3.31：同一钩子下「因预见被丢弃」那一块要单独判标记，不能跟着主块一起跑
+                if (!ctx.NoHookParams)
+                    foreach (string line in TimingEntryGuardLines(exPlan.Timing, ctx.Scope, p))
+                        sb.AppendLine("        " + line);
+                else if (string.Equals(exPlan.Timing.Id, ForgeTimings.CardDiscardedByScry, StringComparison.Ordinal))
+                    sb.AppendLine("        " + ScryGuardLine(p));
                 EmitHookBody(sb, p, g, exPlan, ctx with { PlanIdx = __ex + 1 }, exPlay, false,
                     exReward && string.Equals(exPlan.Timing.Hook, "AfterCombatVictory", StringComparison.Ordinal));
                 sb.AppendLine("        }");
@@ -1701,15 +1715,24 @@ public static class ForgeGraphGen
     /// 会在**任何**一张牌被消耗时触发（用户配了「被消耗时抽 1 张」就会变成每消耗一张牌都抽）。
     /// 判据和卡牌页「卡牌时机」那一份（<c>CSharpCodeGen.EmitCardTimingHooks</c>）**逐字相同**。
     /// </summary>
-    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t, string scope) =>
+    private static string ScryGuardLine(CharacterProfile p) =>
+        $"if (!{CSharpCodeGen.ScryDiscardFlag(p)}) return;   // 只在「预见」丢牌那一小段里成立";
+
+    private static IReadOnlyList<string> TimingEntryGuardLines(ForgeTimings.TimingOption t, string scope, CharacterProfile p) =>
         // V0.2.367：插件时机自带的守卫优先（那段代码本来就是在它的钩子参数上写的，
         // 和内置那张「按钩子名猜守卫」的表对不上 —— 用插件自己那句最稳）。
         !string.IsNullOrWhiteSpace(t.PluginGuard)
             ? new[] { t.PluginGuard.Trim() }
-            : BuiltInGuardLines(t, scope);
+            : BuiltInGuardLines(t, scope, p);
 
-    private static IReadOnlyList<string> BuiltInGuardLines(ForgeTimings.TimingOption t, string scope) => t.Hook switch
+    private static IReadOnlyList<string> BuiltInGuardLines(ForgeTimings.TimingOption t, string scope, CharacterProfile p) => t.Hook switch
     {
+        "AfterCardDiscarded" when string.Equals(scope, "Card", StringComparison.Ordinal)
+            && string.Equals(t.Id, ForgeTimings.CardDiscardedByScry, StringComparison.Ordinal) => new[]
+        {
+            "// 本体这个钩子会广播给所有模型；先判是我，再判「正在因预见丢牌」",
+            $"if (card != this || base.CombatState is null || !{CSharpCodeGen.ScryDiscardFlag(p)}) return;",
+        },
         "AfterCardExhausted" or "AfterCardDiscarded" when string.Equals(scope, "Card", StringComparison.Ordinal) => new[]
         {
             "// 本体这个钩子会广播给场上**所有**模型（不只是被消耗 / 被丢弃的那张牌），所以先判就是我",

@@ -3320,7 +3320,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 用到才在「预见」那段外面加 try/finally 打标记，老存档生成文本逐字不变。
     /// </summary>
     public static bool UsesScryDiscardCond(CharacterProfile p) =>
-        UsesCondition(p, "DiscardedByScry") || UsesCardTiming(p, "DiscardedByScry");
+        UsesCondition(p, "DiscardedByScry")
+        || UsesCardTiming(p, "DiscardedByScry")
+        // V0.3.31：锻造图【触发时机】=「这张牌因预见被丢弃时」也要用 __inScryDiscard
+        || p.AllCards.Any(c => ForgeGraphGen.GraphHasTiming(c.ForgeGraph, ForgeTimings.CardDiscardedByScry)
+            || ForgeGraphGen.GraphHasTiming(c.UpgradedForgeGraph, ForgeTimings.CardDiscardedByScry));
 
     /// <summary>「因预见被丢弃」那个标记的读写（静态字段，在「预见」丢牌那一小段时间里为 true）。</summary>
     public static string ScryDiscardFlag(CharacterProfile p) => CombatCountersClass(p) + ".__inScryDiscard";
