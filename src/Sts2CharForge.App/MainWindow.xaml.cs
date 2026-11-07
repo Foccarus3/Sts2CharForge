@@ -26725,6 +26725,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("V0.3.35：自定义描述「填入参数…」给出 {Damage:diff()} 动态占位符",
 							v35Hints.Any(h => h.Token == "{Damage:diff()}"),
 							string.Join(" / ", v35Hints.Select(h => h.Token)));
+						v35Card.CustomDescription = "造成 {Damage:diff()} 点伤害。";
+						v35Card.CustomDescriptionReplaces = true;
+						var v35Issues = ProfileValidator.Validate(v35Prof);
+						Check("V0.3.35：锻造卡描述里的 {Damage:diff()} 不会被误报「没有声明过」",
+							!v35Issues.Any(i => i.IsError && i.Message.Contains("没有声明过")),
+							string.Join(" / ", v35Issues.Where(i => i.IsError).Select(i => i.Message)));
 					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();

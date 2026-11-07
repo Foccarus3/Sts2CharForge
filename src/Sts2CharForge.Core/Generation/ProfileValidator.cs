@@ -4878,8 +4878,12 @@ public static class ProfileValidator
     /// </summary>
     private static void ValidateHighlightVars(List<ValidationIssue> issues, CardSpec c)
     {
-        // 这张牌**真的声明过**的动态变量（含重名别名 Cards2；口径见 CSharpCodeGen.DeclaredVarKeysOf）
-        var declared = CSharpCodeGen.DeclaredVarKeysOf(c.Effects);
+        // 这张牌**真的声明过**的动态变量（含重名别名 Cards2；口径见 CSharpCodeGen.DeclaredVarKeysOf）。
+        // V0.3.35：锻造卡的效果在节点图里，生成端会用 ForgeGraphGen.CardValueEffects 合成一批
+        // 描述变量（Damage / Block…），校验器也要把同一批算进来，否则 {Damage:diff()} 会被误报成
+        // 「没有声明过」。
+        var declaredEffects = c.Effects.Concat(ForgeGraphGen.CardValueEffects(c)).ToList();
+        var declared = CSharpCodeGen.DeclaredVarKeysOf(declaredEffects);
 
         // 两段用户文本里的占位符都要查（自定义描述也可能写 {Damage:diff()}）
         var undeclaredDiff = new List<string>();

@@ -42,7 +42,8 @@ new ForgeFormulaDamageVar(static (card, target) => (20m), 10m)
 | 锻造图 20 点伤害 → 合成 `Damage:20+10`（升级后 30） | PASS |
 | 生成卡声明 `ForgeFormulaDamageVar(..., 10m)` | PASS |
 | 「填入参数…」给出 `{Damage:diff()}` | PASS |
-| 开发版 `--uicheck` | **4885 PASS / 0 FAIL**（+3 条 V0.3.35 断言） |
-| 部署版 `--uicheck` | **4884 PASS / 0 FAIL** |
+| 校验器不再把锻造卡的 `{Damage:diff()}` 误报成「没有声明过」 | PASS |
+| 开发版 `--uicheck` | **4886 PASS / 0 FAIL**（+4 条 V0.3.35 断言） |
+| 部署版 `--uicheck` | **4885 PASS / 0 FAIL** |
 
 ⚠ 需要重新生成工程；旧工程里的自定义描述还是老的固定文本。
