@@ -3944,6 +3944,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static bool UsesFormulaVars(CharacterProfile p) =>
         p.Cards.Any(c => c is not null && c.Effects.Any(e => e is not null
             && e.UsesAmountFormula && FormulaVarClassOf(e.Kind) is not null))
+        // V0.3.35：锻造图的合成变量也走 ForgeFormulaDamageVar 这类
+        || p.Cards.Any(c => c is not null && ForgeGraphGen.CardValueEffects(c).Any(HasFormulaVar))
         || p.Relics.Any(r => r is not null && r.Effects.Any(HasFormulaVar))
         || p.Potions.Any(s => s is not null && s.Effects.Any(HasFormulaVar));
     // ⚠ 自定义状态**不列进来**：状态类不声明 CanonicalVars（它的数值直接内联进钩子里），
@@ -5326,6 +5328,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         IReadOnlyList<EffectSpec> varOrder = hasCardHooks
             ? onPlayEffects.Concat(timingGroups.SelectMany(g => g.Effects)).ToList()
             : c.Effects;
+        // V0.3.35：锻造卡的节点图效果也要声明动态变量（卡面 {Damage:diff()} 跟着易伤/虚弱变）。
+        var graphDescVars = ForgeGraphGen.CardValueEffects(c);
+        if (graphDescVars.Count > 0) varOrder = varOrder.Concat(graphDescVars).ToList();
         cardVars = VarNamesOf(varOrder);
         // 「按生命值算」的宠物效果：倍率 lambda 里要写 <Pet>Cmd.Get(card.Owner)，但 CanonicalVars
         // 声明那一刻还不知道是哪只（一张牌可以同时指向两只不同的宠物）→ 先写占位符，
@@ -5831,7 +5836,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         //（两块各写一个 override 就是 CS0111；单块布时这里一个字都不写）
         EmitGraphOnlyHookContainers(w, p, c);
 
-        var upgradeable = c.Effects.Where(e => e.UpgradeAmount != 0 && !HasNoDynamicVar(e)).ToList();
+        var upgradeable = c.Effects.Where(e => e.UpgradeAmount != 0 && !HasNoDynamicVar(e))
+            .Concat(ForgeGraphGen.CardValueEffects(c).Where(e => e.UpgradeAmount != 0 && !HasNoDynamicVar(e)))
+            .ToList();
         int cardCostNow = CardCostOf(p, c);
         int? targetCost = c.UpgradeCost;
         // V0.2.131：「升级后费用」框里写的**常量式子**（`2` / `1+1` / `A+3`）也当目标费用用。

@@ -710,6 +710,47 @@ public static class ForgeGraphGen
         g is not null && g.TriggerNodes.Any(t => string.Equals(t.Get("Timing", ""), id, StringComparison.Ordinal));
 
     /// <summary>
+    /// V0.3.35：锻造卡也要有**动态描述变量**（卡面 {Damage:diff()} 遇到易伤 / 虚弱会变）。
+    /// 从升级前 / 升级后的节点图里按顺序取【效果】，合成一份只给 CanonicalVars / ParamHints 用的
+    /// EffectSpec：数值写成字面量公式（这样会走 ForgeFormulaDamageVar，不是普通 DamageVar），
+    /// 升级前后的差值放进 UpgradeAmount。
+    /// </summary>
+    public static List<EffectSpec> CardValueEffects(CardSpec card)
+    {
+        var baseNodes = card.ForgeGraph?.Nodes
+            .Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
+            ?? new List<ForgeNodeSpec>();
+        var upNodes = card.UpgradedForgeGraph?.Nodes
+            .Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
+            ?? new List<ForgeNodeSpec>();
+        int count = Math.Max(baseNodes.Count, upNodes.Count);
+        var list = new List<EffectSpec>();
+        for (int i = 0; i < count; i++)
+        {
+            var b = i < baseNodes.Count ? ForgeEffectBridge.Ensure(baseNodes[i]) : null;
+            var u = i < upNodes.Count ? ForgeEffectBridge.Ensure(upNodes[i]) : null;
+            var src = b ?? u;
+            if (src is null) continue;
+            string baseFormula = (b?.AmountFormula ?? "").Trim();
+            if (baseFormula.Length == 0)
+                baseFormula = (b?.Amount ?? 0m).ToString("0.##", CultureInfo.InvariantCulture);
+            decimal baseAmount = b?.Amount ?? 0m;
+            decimal upAmount = u?.Amount ?? baseAmount;
+            bool sameFormula = u is null || string.Equals((u.AmountFormula ?? "").Trim(), (b?.AmountFormula ?? "").Trim(), StringComparison.Ordinal);
+            list.Add(new EffectSpec
+            {
+                Kind = src.Kind,
+                PowerId = src.PowerId,
+                Amount = baseAmount,
+                AmountFormula = baseFormula,
+                UpgradeAmount = sameFormula ? upAmount - baseAmount : 0m,
+                TargetSide = src.TargetSide,
+            });
+        }
+        return list;
+    }
+
+    /// <summary>
     /// 图嵌进卡牌钩子时那个私有方法的名字（调用方 = <c>CSharpCodeGen.EmitCardTimingHooks</c> /
     /// <c>EmitSelfDrawHook</c>）。照 <see cref="PlayMethodName"/> 那个规矩：升级前 / 升级后两块布
     /// 各一个名字，否则两块布都撞同一个钩子时又变成 CS0111。

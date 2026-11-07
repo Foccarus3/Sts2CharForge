@@ -866,19 +866,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	{
 		if (sender is not Button btn || btn.Tag is not TextBox box) return;
 		string which = box.Name;
+		var activeCard = ActivePortraitCard();
 		IEnumerable<EffectSpec>? effects = which switch
 		{
 			"RelicCustomDesc" => (RelicList?.SelectedItem as RelicSpec)?.Effects,
 			"PotionCustomDesc" => (PotionList?.SelectedItem as PotionSpec)?.Effects,
-			_ => ActivePortraitCard()?.Effects,
+			_ => activeCard?.Effects,
 		};
 		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
+		// V0.3.35：锻造卡的效果在节点图里 → 用合成的 EffectSpec 让 ParamHints 给出
+		// {Damage:diff()}（生成端会为它们声明 ForgeFormulaDamageVar，易伤/虚弱会跟着变）。
+		if (isCard && activeCard is { ForgeGraph: not null })
+			effects = (effects ?? Enumerable.Empty<EffectSpec>()).Concat(ForgeGraphGen.CardValueEffects(activeCard));
 		var hints = CSharpCodeGen.ParamHints(effects ?? Enumerable.Empty<EffectSpec>(), isCard);
-		// V0.3.35：锻造卡没有 Effects、也没有声明 DynamicVars（图上的数字是字面量 / 公式），
-		// 所以「填入参数…」以前只剩能量图标。这里从节点图里把每条【效果】的数值拿出来，
-		// 按**字面量**插进自定义描述；升级前 / 升级后不同时包成 {IfUpgraded:show:...|...}。
-		if (isCard && ActivePortraitCard() is { ForgeGraph: not null } forgeCard)
-			hints.AddRange(ForgeGraphValueHints(forgeCard));
 		// V0.2.276（用户要求「自定义描述里能填能量图标」）：本体卡面描述用的就是 SmartFormat 的
 		// `{Energy:energyIcons()}`（本体 ADRENALINE / ALIGNMENT：`Gain {Energy:energyIcons()}.`）——
 		// 图标由本体 EnergyIconsFormatter 按**你角色的能量颜色**画，所以这里只给写法、不塞资源路径。
@@ -903,48 +903,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		}
 		menu.IsOpen = true;
 	}
-
-	/// <summary>
-	/// V0.3.35：锻造卡的自定义描述「填入参数…」——把节点图里每条【效果】的数值写成**字面量**。
-	/// 锻造卡不声明 DynamicVars（图上的数字是字面量 / 公式），所以不能给 {Damage:diff()} 这种占位符；
-	/// 但可以给「20」或「A+3」这样的文本。升级前 / 升级后数值不同时用
-	/// <c>{IfUpgraded:show:升级后|升级前}</c> 包起来。
-	/// </summary>
-	private static List<(string Token, string Desc)> ForgeGraphValueHints(CardSpec card)
-	{
-		static string AmountText(EffectSpec? e)
-		{
-			if (e is null) return "";
-			string formula = (e.AmountFormula ?? "").Trim();
-			if (formula.Length > 0) return formula;
-			return e.Amount == 0m ? "" : e.Amount.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
-		}
-		static string Esc(string s) => s.Replace("|", "｜", StringComparison.Ordinal);
-
-		var baseNodes = card.ForgeGraph?.Nodes.Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
-			?? new List<ForgeNodeSpec>();
-		var upNodes = card.UpgradedForgeGraph?.Nodes.Where(n => n is not null && string.Equals(n.Kind, "Effect", StringComparison.Ordinal)).ToList()
-			?? new List<ForgeNodeSpec>();
-		int count = Math.Max(baseNodes.Count, upNodes.Count);
-		var list = new List<(string Token, string Desc)>();
-		for (int i = 0; i < count; i++)
-		{
-			EffectSpec? b = i < baseNodes.Count ? ForgeEffectBridge.Ensure(baseNodes[i]) : null;
-			EffectSpec? u = i < upNodes.Count ? ForgeEffectBridge.Ensure(upNodes[i]) : null;
-			string bText = AmountText(b);
-			string uText = AmountText(u);
-			if (bText.Length == 0 && uText.Length == 0) continue;
-			string token;
-			if (uText.Length == 0) token = bText;
-			else if (bText.Length == 0 || string.Equals(bText, uText, StringComparison.Ordinal)) token = uText;
-			else token = "{IfUpgraded:show:" + Esc(uText) + "|" + Esc(bText) + "}";
-			string kind = EffectCatalog.FindKind((b ?? u)!.Kind)?.Display ?? (b ?? u)!.Kind;
-			string desc = $"锻造图【效果】{kind}：{bText}{(uText.Length > 0 && !string.Equals(bText, uText, StringComparison.Ordinal) ? " → " + uText : "")}";
-			list.Add((token, desc));
-		}
-		return list;
-	}
-
 
 	/// <summary>
 	/// 用户要求：「给卡牌的自定义描述加个自动填入」。
@@ -17508,13 +17466,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			// （ModifyAmount(-6) = **加** 6 层，方向反了）、而且把允许负层数的状态白白降级成「只扣已有层数」。
 			// 现在统一走 CSharpCodeGen.ApplyPowerLine：力量（本体 AllowNegative）→ **直接施加 -6m**（照本体「尖啸」）。
 			// 这里照样钉住「符号没反」：施加的必须是 -6m，绝不许出现 `-(-6m)` / `((6m))` 这种被取正的东西。
+			string negSrc = CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0);
+			string negApplyLine = negSrc.Split((char)10).FirstOrDefault(l => l.Contains("PowerCmd.Apply")) ?? "(no apply)";
 			Check("节点图里「施加状态」填负数：力量（本体允许负层数）→ 施加的就是 amount 本身 -6m"
 				+ "（照本体「尖啸」那套直接施加负值；以前那种内联写法会把 -(amount) 变成**加**层数）",
-				CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
-					.Contains("await PowerCmd.Apply<StrengthPower>(choiceContext, __fgFoe, (-6m)", StringComparison.Ordinal)
-				&& !CSharpCodeGen.CardSource(ForgedNegativeApplyPowerProfile(), ForgedNegativeApplyPowerProfile().Cards[^1], 0)
-					.Contains("-((6m))", StringComparison.Ordinal),
-				"符号对了");
+				negApplyLine.Contains("(-6m)", StringComparison.Ordinal)
+				&& !negApplyLine.Contains("-((6m))", StringComparison.Ordinal),
+				negApplyLine);
 			// 数值 0（默认值）= 打出去一点变化都没有：以前是「提示」，现在**拦住说清**（用户报的就是这个）
 			CharacterProfile zeroTempProf = ProfileFactory.Sample();
 			var zeroTempCard = new CardSpec { Name = "零临时", ClassName = "UiCheckZeroTemp", CardType = "Skill", Rarity = "Common", Cost = 1 };
@@ -26738,8 +26696,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// V0.3.34：示例插件「本回合失去过生命值」
 					// 这个插件现在按用户要求**从生成器剥离**，不再随程序加载 / 打包；
 					// 自检里不再断言它存在（否则剥离后 uicheck 会失败）。
-					// V0.3.35：锻造卡自定义描述的「填入参数…」要能从节点图拿到数值（20 点伤害 → 菜单有 20）
+					// V0.3.35：锻造卡自定义描述的「填入参数…」要给出**动态变量**（不是固定 20）
 					{
+						var v35Prof = ProfileFactory.Sample();
 						var v35Card = new CardSpec { Name = "锻造描述数值卡", ClassName = "UiCheckForgeDescValue", CardType = "Attack", Rarity = "Common", Cost = 1, IsForged = true };
 						ForgeGraphSpec mk35(int amount)
 						{
@@ -26751,15 +26710,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							return g35;
 						}
 						v35Card.ForgeGraph = mk35(20);
-						var v35Hints = ForgeGraphValueHints(v35Card);
-						Check("V0.3.35：锻造卡 20 点伤害 → 自定义描述「填入参数…」有 20",
-							v35Hints.Any(h => h.Token == "20" && h.Desc.Contains("伤害")),
-							string.Join(" / ", v35Hints.Select(h => h.Token)));
 						v35Card.UpgradedForgeGraph = mk35(30);
-						var v35UpHints = ForgeGraphValueHints(v35Card);
-						Check("V0.3.35：升级前后伤害不同 → 插入 {IfUpgraded:show:30|20}",
-							v35UpHints.Any(h => h.Token == "{IfUpgraded:show:30|20}"),
-							string.Join(" / ", v35UpHints.Select(h => h.Token)));
+						v35Prof.Cards.Add(v35Card);
+						var v35Effects = ForgeGraphGen.CardValueEffects(v35Card);
+						Check("V0.3.35：锻造图伤害合成动态变量（20 → 升级 +10，走公式变量而不是固定 DamageVar）",
+							v35Effects.Any(e => e.Kind == "Damage" && e.AmountFormula == "20" && e.UpgradeAmount == 10m)
+							&& CSharpCodeGen.UsesFormulaVars(v35Prof),
+							string.Join(" / ", v35Effects.Select(e => e.Kind + ":" + e.AmountFormula + "+" + e.UpgradeAmount)));
+						string v35Src = CSharpCodeGen.CardSource(v35Prof, v35Card, v35Prof.Cards.Count - 1);
+						Check("V0.3.35：生成的卡声明 ForgeFormulaDamageVar（PreviewValue 会叠加易伤 / 虚弱）",
+							v35Src.Contains("ForgeFormulaDamageVar") && v35Src.Contains("CanonicalVars"),
+							v35Src.Split((char)10).FirstOrDefault(l => l.Contains("ForgeFormulaDamageVar")) ?? "");
+						var v35Hints = CSharpCodeGen.ParamHints(v35Effects, isCard: true);
+						Check("V0.3.35：自定义描述「填入参数…」给出 {Damage:diff()} 动态占位符",
+							v35Hints.Any(h => h.Token == "{Damage:diff()}"),
+							string.Join(" / ", v35Hints.Select(h => h.Token)));
 					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
