@@ -3965,6 +3965,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	public MainWindow()
 	{
 		InitializeComponent();
+		HookEffectListDrag();
 		// V0.2.240：先把窗口压进屏幕、挑好缩放档（必须在其它初始化之前 —— 后面很多地方按控件实际宽度算排版）
 		try
 		{
@@ -10059,6 +10060,102 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (CardList.SelectedItem is CardSpec card)
 			foreach (EffectSpec fx in card.Effects)
 				if (fx is not null) fx.IsCardChain = true;
+	}
+
+	// ==================== 效果列表拖动换顺序 ====================
+	//
+	// 顺序 = 效果栏里自上而下的顺序（生成端就是按这个顺序写 OnPlay / 各触发块）。
+	// 锻造图不走这里：它由节点图连线的先后决定。
+	private Point _effectDragStart;
+	private EffectSpec? _effectDragItem;
+	private ListBox? _effectDragList;
+
+	private void HookEffectListDrag()
+	{
+		foreach (ListBox lb in new[]
+		         {
+			         CardEffectList, RelicEffectList, PotionEffectList, ExtraResourceEffectList,
+			         CurseEffectList, AncientEffectList, CustomEffectList,
+		         })
+		{
+			if (lb is null) continue;
+			lb.AllowDrop = true;
+			lb.PreviewMouseLeftButtonDown += OnEffectListPreviewMouseLeftButtonDown;
+			lb.MouseMove += OnEffectListMouseMove;
+			lb.DragOver += OnEffectListDragOver;
+			lb.Drop += OnEffectListDrop;
+		}
+	}
+
+	private void OnEffectListPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+	{
+		if (sender is not ListBox lb) return;
+		_effectDragList = lb;
+		_effectDragStart = e.GetPosition(lb);
+		_effectDragItem = EffectAtPoint(lb, _effectDragStart);
+	}
+
+	private void OnEffectListMouseMove(object sender, MouseEventArgs e)
+	{
+		if (e.LeftButton != MouseButtonState.Pressed) { _effectDragItem = null; return; }
+		if (sender is not ListBox lb || _effectDragItem is null || !ReferenceEquals(lb, _effectDragList)) return;
+		Point now = e.GetPosition(lb);
+		if (Math.Abs(now.X - _effectDragStart.X) < SystemParameters.MinimumHorizontalDragDistance
+		    && Math.Abs(now.Y - _effectDragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
+			return;
+		EffectSpec dragged = _effectDragItem;
+		_effectDragItem = null;
+		try { DragDrop.DoDragDrop(lb, new DataObject(typeof(EffectSpec), dragged), DragDropEffects.Move); }
+		catch (Exception ex) { SetStatus("拖动效果失败：" + ex.Message); }
+	}
+
+	private void OnEffectListDragOver(object sender, DragEventArgs e)
+	{
+		e.Effects = e.Data.GetDataPresent(typeof(EffectSpec)) && ReferenceEquals(sender, _effectDragList)
+			? DragDropEffects.Move : DragDropEffects.None;
+		e.Handled = true;
+	}
+
+	private void OnEffectListDrop(object sender, DragEventArgs e)
+	{
+		if (sender is not ListBox lb || e.Data.GetData(typeof(EffectSpec)) is not EffectSpec dragged) return;
+		EffectSpec? over = EffectAtPoint(lb, e.GetPosition(lb));
+		if (MoveEffectTo(lb, dragged, over))
+			SetStatus($"已把效果「{dragged.Display}」移到第 {lb.Items.IndexOf(dragged) + 1} 位。");
+		else if (ReferenceEquals(over, dragged))
+			SetStatus("效果已经在这个位置了。");
+		e.Handled = true;
+	}
+
+	/// <summary>
+	/// 拖动落点（纯逻辑，自检可直接调）：把 <paramref name="dragged"/> 插到
+	/// <paramref name="over"/> 这一行的位置；<paramref name="over"/> 为 null 时放到最后。
+	/// 只改 <see cref="ObservableCollection{T}"/> 的顺序，不复制效果对象 —— 生成端按列表顺序写代码。
+	/// </summary>
+	internal bool MoveEffectTo(ListBox lb, EffectSpec dragged, EffectSpec? over)
+	{
+		if (lb.ItemsSource is not System.Collections.IList list) return false;
+		int from = list.IndexOf(dragged);
+		if (from < 0) return false;
+		if (ReferenceEquals(over, dragged)) return false;
+		int to = over is null ? list.Count : list.IndexOf(over);
+		if (to < 0) return false;
+		if (from < to) to--;
+		if (to < 0) to = 0;
+		if (to > list.Count - 1 && from != list.Count - 1) to = list.Count - 1;
+		list.RemoveAt(from);
+		if (to < 0) to = 0;
+		if (to > list.Count) to = list.Count;
+		list.Insert(to, dragged);
+		lb.SelectedItem = dragged;
+		return true;
+	}
+
+	private static EffectSpec? EffectAtPoint(ListBox lb, Point pt)
+	{
+		DependencyObject? hit = lb.InputHitTest(pt) as DependencyObject;
+		if (hit is null) return null;
+		return (ItemsControl.ContainerFromElement(lb, hit) as ListBoxItem)?.DataContext as EffectSpec;
 	}
 
 	private void OnAddEffect(object sender, RoutedEventArgs e)	{
@@ -26731,6 +26828,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("V0.3.35：锻造卡描述里的 {Damage:diff()} 不会被误报「没有声明过」",
 							!v35Issues.Any(i => i.IsError && i.Message.Contains("没有声明过")),
 							string.Join(" / ", v35Issues.Where(i => i.IsError).Select(i => i.Message)));
+					}
+					// V0.3.36：效果列表拖动换顺序（列表顺序 = 生成顺序）
+					{
+						var a = new EffectSpec { Kind = "Damage", Amount = 1m };
+						var b = new EffectSpec { Kind = "Block", Amount = 2m };
+						var c = new EffectSpec { Kind = "Draw", Amount = 3m };
+						var list = new List<EffectSpec> { a, b, c };
+						var lb = new ListBox { ItemsSource = list };
+						Check("V0.3.36：效果拖动到另一条上会真的改列表顺序（a 拖到 c 上 → b,a,c）",
+							MoveEffectTo(lb, a, c) && list.IndexOf(a) == 1 && list.IndexOf(b) == 0,
+							string.Join(",", list.Select(x => x.Kind)));
+						Check("V0.3.36：把最后一条拖到最前面一条之前 → c,b,a",
+							MoveEffectTo(lb, c, b) && list[0] == c && list[1] == b,
+							string.Join(",", list.Select(x => x.Kind)));
 					}
 					// 「只勾古老牙齿、不勾尘封魔典」的那份配置：尘封魔典的随机池要排掉这张牙齿专用卡
 					var aiExProf = ProfileFactory.Sample();
