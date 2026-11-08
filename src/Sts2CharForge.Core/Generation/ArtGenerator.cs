@@ -1,4 +1,4 @@
-﻿using System.IO.Compression;
+using System.IO.Compression;
 using System.Text.Json.Nodes;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -790,42 +790,57 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         if (string.IsNullOrWhiteSpace(icon) || !File.Exists(icon))
             return;                                                // 没上传图标 → 保持本体配色
 
-        if (!PngUtil.TryGetDominantHue(icon, out double hue))
-        {
-            log?.Invoke("  左侧能量球：能量图标是灰阶/太透明，取不到主色相 → 保持本体配色");
-            return;
-        }
+        // 灰阶 / 太透明的图标取不到主色相 —— 以前这里直接 return，结果左侧能量球继续用本体
+        // 铁甲战士的橙色球（用户实测：「卡牌能量图标正常，左侧还是战士图标」）。
+        // 现在改成：颜色转不了就**不转色**，但球体贴图仍然换成用户上传的这张图。
+        bool hasHue = PngUtil.TryGetDominantHue(icon, out double hue);
+        if (!hasHue)
+            log?.Invoke("  左侧能量球：能量图标是灰阶/太透明，取不到主色相 → 球体直接用这张图，粒子光效隐藏");
 
         string srcDir = Path.Combine(p.Paths.VanillaProject, "images/ui/combat/energy_counters/ironclad");
         string dstDir = Path.Combine(projectRoot, "images/ui/combat/energy_counters", n.CharSlug);
-        if (!Directory.Exists(srcDir)) { log?.Invoke("  [警告] 找不到本体能量球贴图，左侧能量球保持本体配色"); return; }
+        bool canShift = hasHue && Directory.Exists(srcDir);
+        if (hasHue && !canShift)
+            log?.Invoke("  [警告] 找不到本体能量球贴图，左侧能量球只替换球体、不做色相");
 
         string sceneText = File.ReadAllText(sceneDst);
         int done = 0;
-        foreach (string src in Directory.GetFiles(srcDir, "*.png"))
+        if (canShift)
         {
-            string file = Path.GetFileName(src);
-            string dst = Path.Combine(dstDir, file);
-            if (PngUtil.HueShiftTo(src, dst, hue)) done++;
-            else FsSafe.Copy(src, dst, overwrite: true);
-            sceneText = sceneText.Replace($"res://images/ui/combat/energy_counters/ironclad/{file}",
-                                          $"res://images/ui/combat/energy_counters/{n.CharSlug}/{file}");
+            foreach (string src in Directory.GetFiles(srcDir, "*.png"))
+            {
+                string file = Path.GetFileName(src);
+                string dst = Path.Combine(dstDir, file);
+                if (PngUtil.HueShiftTo(src, dst, hue)) done++;
+                else FsSafe.Copy(src, dst, overwrite: true);
+                sceneText = sceneText.Replace($"res://images/ui/combat/energy_counters/ironclad/{file}",
+                                              $"res://images/ui/combat/energy_counters/{n.CharSlug}/{file}");
+            }
         }
 
-        // 能量球周围的粒子 VFX 里颜色也是写死的橙色 → 一起转到目标色相，否则球变蓝了光还是橙的
+        // 能量球周围的粒子 VFX 里颜色也是写死的橙色 → 一起转到目标色相，否则球变蓝了光还是橙的。
+        // 灰阶图标没有目标色相：直接把 VFX 收掉，别留一圈橙色光。
         int vfx = 0;
-        foreach (var (srcRel, dstRel) in new[]
+        if (hasHue)
         {
-            ("scenes/vfx/energy/ironclad/ironclad_energy_vfx_back.tscn",  $"scenes/vfx/energy/{n.CharSlug}/{n.CharSlug}_energy_vfx_back.tscn"),
-            ("scenes/vfx/energy/ironclad/ironclad_energy_vfx_front.tscn", $"scenes/vfx/energy/{n.CharSlug}/{n.CharSlug}_energy_vfx_front.tscn"),
-        })
+            foreach (var (srcRel, dstRel) in new[]
+            {
+                ("scenes/vfx/energy/ironclad/ironclad_energy_vfx_back.tscn",  $"scenes/vfx/energy/{n.CharSlug}/{n.CharSlug}_energy_vfx_back.tscn"),
+                ("scenes/vfx/energy/ironclad/ironclad_energy_vfx_front.tscn", $"scenes/vfx/energy/{n.CharSlug}/{n.CharSlug}_energy_vfx_front.tscn"),
+            })
+            {
+                string srcFile = Path.Combine(p.Paths.VanillaProject, srcRel);
+                if (!File.Exists(srcFile)) continue;
+                string text = HueShiftColorsInScene(File.ReadAllText(srcFile), hue);
+                ProjectFilesGen.WriteText(Path.Combine(projectRoot, dstRel), text);
+                sceneText = sceneText.Replace("res://" + srcRel, "res://" + dstRel);
+                vfx++;
+            }
+        }
+        else
         {
-            string srcFile = Path.Combine(p.Paths.VanillaProject, srcRel);
-            if (!File.Exists(srcFile)) continue;
-            string text = HueShiftColorsInScene(File.ReadAllText(srcFile), hue);
-            ProjectFilesGen.WriteText(Path.Combine(projectRoot, dstRel), text);
-            sceneText = sceneText.Replace("res://" + srcRel, "res://" + dstRel);
-            vfx++;
+            sceneText = HideSceneNode(sceneText, "EnergyVfxBack");
+            sceneText = HideSceneNode(sceneText, "EnergyVfxFront");
         }
 
         // 只改色相是不够的（用户给的图标要是本来就偏橙，改完跟本体球几乎一样，看着就像「还是本体美术」）。
@@ -837,6 +852,8 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
         if (!orbOk) FsSafe.Copy(icon, orbDst, overwrite: true);
 
         string layer1 = $"res://images/ui/combat/energy_counters/{n.CharSlug}/ironclad_orb_layer_1.png";
+        if (!sceneText.Contains(layer1, StringComparison.Ordinal))
+            layer1 = "res://images/ui/combat/energy_counters/ironclad/ironclad_orb_layer_1.png";
         if (sceneText.Contains(layer1, StringComparison.Ordinal))
         {
             sceneText = sceneText.Replace(layer1, "res://" + orbRel);
@@ -844,12 +861,16 @@ shader_parameter/v = {vv.ToString("0.####", System.Globalization.CultureInfo.Inv
             sceneText = HideSceneNode(sceneText, "Layer4");
             sceneText = HideSceneNode(sceneText, "Layer5");
             FsSafe.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
-            log?.Invoke($"  左侧能量球：球体贴图换成了你上传的能量图标（128×128，本体的另外 4 层已隐藏），粒子光效按色相 {hue:0.###} 着色");
+            log?.Invoke(hasHue
+                ? $"  左侧能量球：球体贴图换成了你上传的能量图标（128×128，本体的另外 4 层已隐藏），粒子光效按色相 {hue:0.###} 着色"
+                : "  左侧能量球：球体贴图换成了你上传的能量图标（128×128，本体的另外 4 层与粒子光效已隐藏）");
             return;
         }
 
         FsSafe.WriteAllText(sceneDst, sceneText, ProjectFilesGen.Utf8NoBom);
-        log?.Invoke($"  左侧能量球：{done} 层贴图 + {vfx} 个粒子光效已按能量图标的颜色（色相 {hue:0.###}）重新着色");
+        log?.Invoke(hasHue
+            ? $"  左侧能量球：{done} 层贴图 + {vfx} 个粒子光效已按能量图标的颜色（色相 {hue:0.###}）重新着色"
+            : "  左侧能量球：球体贴图已换成上传图标");
     }
 
     /// <summary>给场景文本里某个节点加一行 visible = false（节点名对不上就原样返回）。</summary>
