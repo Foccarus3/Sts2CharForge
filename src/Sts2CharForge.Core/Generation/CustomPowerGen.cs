@@ -2274,6 +2274,23 @@ public static class CustomPowerGen
                         w.Close()
                          .Close();
                         break;
+                    // V0.3.40：「全体友方 / 指定队友」在 ApplyPower 这条分支上以前掉进 default
+                    // （= EmitFoeBlock 的「第一个敌人」），于是「给所有队友发活力」变成了给敌人发。
+                    // 这里和 TempPower / EmitPowerTargets 用同一份 PowerAllyWhere 口径。
+                    case "AllAllies":
+                        w.Open("if (base.Owner.CombatState is not null)")
+                         .Open($"foreach (Creature other in base.Owner.CombatState.Allies.Where({PowerAllyWhere(e)}).ToList())")
+                         .Line(CSharpCodeGen.ApplyPowerInstr(e, useX: false, e.PowerId, "other", amt, "base.Owner", cardSourceExpr: "null"));
+                        CSharpCodeGen.EmitSlowPercentFix(w, e, "other");
+                        w.Close()
+                         .Close();
+                        break;
+                    case "Ally" or "AnyAlly":
+                        // 状态触发链里没有「玩家选中的队友」这个上下文 → 按自己处理（和 TempPower 同一口径）
+                        w.Line(CSharpCodeGen.ApplyPowerInstr(e, useX: false, e.PowerId, "base.Owner", amt, "base.Owner", cardSourceExpr: "null")
+                            + "   // 指定队友：状态链没有选中目标，按自己处理");
+                        CSharpCodeGen.EmitSlowPercentFix(w, e, "base.Owner");
+                        break;
                     case "RandomEnemies":
                         {
                             string times2 = e.RepeatIsStack ? "(int)base.Amount" : Math.Max(1, e.RepeatCount).ToString();

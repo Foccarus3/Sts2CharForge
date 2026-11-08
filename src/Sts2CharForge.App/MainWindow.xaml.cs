@@ -18206,6 +18206,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("V0.3.39：额外资源量图标首次加载失败会重试（不再永久缓存 null），并有 PNG 原始字节兜底",
 			text25.Contains("GetTicksMsec") && text25.Contains("LoadPngFromBuffer") && text25.Contains("_iconRetryAt"),
 			text25.Contains("GetTicksMsec") ? "有重试" : "没有重试");
+		// V0.3.40（Doris 报「给所有队友发活力，实际发给敌人」）：
+		// 自定义状态的 ApplyPower 分支漏了 AllAllies，掉进 default 的「第一个敌人」。
+		{
+			var allyProf = ProfileFactory.Sample();
+			var allyPower = new CustomPowerSpec { Name = "友方状态测试", ClassName = "UiCheckAllyPower" };
+			allyPower.Triggers.Add(new PowerTriggerSpec { Kind = "PowerChanged" });
+			allyPower.Triggers[0].Effects.Add(new EffectSpec
+			{
+				Kind = "ApplyPower", PowerId = "VigorPower", Amount = 1m, TargetSide = "AllAllies",
+			});
+			allyProf.CustomPowers.Add(allyPower);
+			string allySrc = CustomPowerGen.Source(allyProf, allyPower, allyProf.CustomPowers.Count - 1);
+			Check("V0.3.40：自定义状态 ApplyPower 选「全体友方」生成 Allies（不再落到 HittableEnemies 的第一个敌人）",
+				allySrc.Contains("CombatState.Allies") && !allySrc.Contains("HittableEnemies.FirstOrDefault()"),
+				allySrc.Split((char)10).FirstOrDefault(l => l.Contains("VigorPower")) ?? "没找到");
+		}
 		// 用户报过「左侧还是本体星辉图标」：一次性的补丁可能被别的模组改回去，或者计数器是「先建好再设归属」的。
 		Check("计数器图标有「每帧兜底」（别人把贴图改回本体星星时会再贴一次）",
 			text25.Contains("NStarCounter._Process") && text25.Contains("EnsureIcon"), "有 _Process 兜底");
