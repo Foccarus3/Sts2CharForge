@@ -624,17 +624,28 @@ public static class ExtraResourceCardIconPatch
 internal static class ExtraResourceUi
 {
     private static Texture2D? _icon;
-    private static bool _iconTried;
+    private static bool _iconWarned;
+    private static ulong _iconRetryAt;
 
     /// <summary>本体那颗星星的贴图名（节点名万一和本体版本对不上时，靠贴图本身认）。</summary>
     private const string VanillaStarTexture = "energy_star";
 
-    /// <summary>加载自定义图标；没配 / 加载不出来都返回 null（界面保持本体原样）。</summary>
+    /// <summary>
+    /// 加载自定义图标；没配 / 加载不出来都返回 null（界面保持本体原样）。
+    ///
+    /// ⚠ 不能像以前那样把「第一次没加载到」永久缓存：模组 pck 是运行时挂载的，
+    /// 某些机器 / 某些加载顺序下第一次 GD.Load 会返回 null（用户报过「有时图标还是本体星星」）。
+    /// 现在失败后每秒重试一次；成功前只打一条日志，不刷屏。
+    /// 另外 GD.Load 失败时再用 PNG 原始字节兜底，避免 .import / pck 缓存状态导致静默失败。
+    /// </summary>
     internal static Texture2D? LoadIcon()
     {
-        if (_iconTried) return _icon;
-        _iconTried = true;
+        if (_icon is not null) return _icon;
+        ulong now = Time.GetTicksMsec();
+        if (now < _iconRetryAt) return null;
+        _iconRetryAt = now + 1000;
         if (ExtraResourceUiConst.IconPath.Length == 0) return null;
+
         try
         {
             // 这里特意不用 ResourceLoader.Exists 做前置判断：模组 pck 是运行时挂载的，
@@ -644,10 +655,33 @@ internal static class ExtraResourceUi
         }
         catch (Exception e)
         {
-            Log.Error("额外资源量：图标加载失败（已忽略）：" + e.Message);
+            Log.Warn("额外资源量：图标 GD.Load 失败，尝试原始 PNG 兜底：" + e.Message);
         }
+
         if (_icon is null)
-            Log.Warn("额外资源量：图标没加载出来，计数器保持本体外观：" + ExtraResourceUiConst.IconPath);
+        {
+            try
+            {
+                byte[] bytes = FileAccess.GetFileAsBytes(ExtraResourceUiConst.IconPath);
+                if (bytes is { Length: > 0 })
+                {
+                    var img = new Image();
+                    if (img.LoadPngFromBuffer(bytes) == Error.Ok)
+                        _icon = ImageTexture.CreateFromImage(img);
+                }
+            }
+            catch (Exception e)
+            {
+                Log.Warn("额外资源量：图标原始 PNG 兜底失败：" + e.Message);
+            }
+        }
+
+        if (_icon is null && !_iconWarned)
+        {
+            _iconWarned = true;
+            Log.Warn("额外资源量：图标没加载出来，继续每秒重试；计数器暂时保持本体外观：" + ExtraResourceUiConst.IconPath);
+        }
+        if (_icon is not null) _iconWarned = false;
         return _icon;
     }
 

@@ -18203,6 +18203,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			text25.Contains("CollectStarTextures") && text25.Contains("energy_star"), "CollectStarTextures + energy_star");
 		Check("图标没加载出来 / 没找到节点时会写日志（不再静默失败）",
 			text25.Contains("图标没加载出来") && text25.Contains("没找到星星贴图节点"), "有日志");
+		Check("V0.3.39：额外资源量图标首次加载失败会重试（不再永久缓存 null），并有 PNG 原始字节兜底",
+			text25.Contains("GetTicksMsec") && text25.Contains("LoadPngFromBuffer") && text25.Contains("_iconRetryAt"),
+			text25.Contains("GetTicksMsec") ? "有重试" : "没有重试");
 		// 用户报过「左侧还是本体星辉图标」：一次性的补丁可能被别的模组改回去，或者计数器是「先建好再设归属」的。
 		Check("计数器图标有「每帧兜底」（别人把贴图改回本体星星时会再贴一次）",
 			text25.Contains("NStarCounter._Process") && text25.Contains("EnsureIcon"), "有 _Process 兜底");
