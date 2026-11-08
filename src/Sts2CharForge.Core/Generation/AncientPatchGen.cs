@@ -261,7 +261,11 @@ internal static class ForgeAncientRelicReplace
         MegaCrit.Sts2.Core.Models.AncientEventModel ancient, string fromRelicId, int slot = 0) where T : MegaCrit.Sts2.Core.Models.RelicModel
     {
         if (options.Count == 0) return;
-        var relic = ModelDb.Relic<T>().ToMutable();
+        // V0.3.42（用户报 CanonicalModelException：先古之民只出台词、没有遗物选项）：
+        // AncientEventModel.RelicOption 内部还会再取一次 canonical / mutable，不能提前 ToMutable()，
+        // 否则本体抛「Canonical model of type X used in incorrect place」。
+        // 这里必须传 canonical 本体；MakeOption 内部（RelicOption）自己负责 mutable。
+        var relic = ModelDb.Relic<T>();
         string before = string.Join(" / ", options.Select(o => o.Relic is null ? "(非遗物选项)" : o.Relic.Id.Entry));
         if (options.Any(o => o.Relic is not null && o.Relic.Id == relic.Id))
         {

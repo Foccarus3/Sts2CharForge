@@ -18879,6 +18879,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		anc.Ancients.Add(ancTalk);
 		string ancSrc = AncientPatchGen.HasRelicReplacements(anc) ? AncientPatchGen.RelicReplacementSource(anc) : "";
 		Check("先古遗物替换补丁能生成（这次选项里有它才换）", ancSrc.Contains("ForgeAncientRelicReplace.Replace<SneckoEye>"), ancSrc.Length > 0 ? "已生成" : "没生成");
+		Check("V0.3.42：先古遗物替换传 canonical（不再 ToMutable，避免 CanonicalModelException）",
+			ancSrc.Contains("ModelDb.Relic<T>()") && !ancSrc.Contains("ModelDb.Relic<T>().ToMutable()"),
+			ancSrc.Contains("ModelDb.Relic<T>().ToMutable()") ? "还有 ToMutable" : "canonical");
 		Check("替换代码里不再有「没抽到就顶掉最后一个选项」的兜底",
 			!ancSrc.Contains("index = options.Count - 1") && ancSrc.Contains("本次不替换"), "只换不挤");
 		AncientRelicReplaceSpec bare = new AncientRelicReplaceSpec { RelicId = "SneckoEye" };
