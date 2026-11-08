@@ -2472,6 +2472,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             .Concat(p.Relics.SelectMany(RelicEffects))
             .Concat(p.Potions.SelectMany(s => s.Effects))
             .Concat(p.CustomPowers.SelectMany(cp => cp.Triggers).SelectMany(t => t.Effects))
+        // V0.3.44：「额外资源」那页的效果以前**没算进来** —— 于是所有「用到才生成」的判定
+        //（UsesTempUpgrade / UsesKind / 各种助手文件）都看不见它：用户在「额外资源」的效果里给
+        //「生成卡牌」勾了「仅本回合升级」，生成的 cs/ExtraResource.cs 会引用
+        // `<角色>ForgeTempUpgradePower`，但那个 Power 类因为判定没命中而**没生成** → CS0246
+        //「未能找到类型或命名空间名」。用户实测报过：`ExtraResource.cs(64,49) NitroForgeTempUpgradePower`。
+        .Concat(p.ExtraResource is { Enabled: true } extraRes
+            ? extraRes.Effects
+            : Enumerable.Empty<EffectSpec>())
             // V0.2.176：节点图上的效果（四类布都收）
             .Concat(ForgeEffectBridge.GraphsOf(p)
                 .SelectMany(g => g.Nodes ?? new List<ForgeNodeSpec>())
@@ -12523,14 +12531,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "EnemyDamaged":
                 // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
                 //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
-                lines.Add("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
+                lines.Add("if (!target.IsEnemy || !target.IsAlive) return;   // 受伤的是敌人（队友 / 宠物不算）");
                 break;
             case "EnemyDealtDamage":
                 // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
-                lines.Add("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
+                lines.Add("if (dealer is null || !dealer.IsEnemy) return;   // 打人的是敌人（队友 / 宠物不算）");
                 break;
             case "EnemyBlockGained":
-                lines.Add("if (creature == base.Owner.Creature) return;   // 拿格挡的是敌人（自己不算）");
+                lines.Add("if (!creature.IsEnemy) return;   // 拿格挡的是敌人（队友 / 宠物不算）");
                 break;
             case "Shuffle":
                 lines.Add("if (shuffler != base.Owner) return;");
@@ -12768,14 +12776,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
             case "EnemyDamaged":
                 // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
                 //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
-                lines.Add("if (target == base.Owner.Creature || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
+                lines.Add("if (!target.IsEnemy || !target.IsAlive) return;   // 受伤的是敌人（队友 / 宠物不算）");
                 break;
             case "EnemyDealtDamage":
                 // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
-                lines.Add("if (dealer is null || dealer == base.Owner.Creature) return;   // 打人的是敌人（自己不算）");
+                lines.Add("if (dealer is null || !dealer.IsEnemy) return;   // 打人的是敌人（队友 / 宠物不算）");
                 break;
             case "EnemyBlockGained":
-                lines.Add("if (creature == base.Owner.Creature) return;   // 拿格挡的是敌人（自己不算）");
+                lines.Add("if (!creature.IsEnemy) return;   // 拿格挡的是敌人（队友 / 宠物不算）");
                 break;
             // 洗牌：只看**自己**的抽牌堆被洗（本体 BiiigHug / TheAbacus 都是这个判法）。
             // 条件「本回合 / 本场战斗洗过牌」不靠这里记 —— 那是 ShuffleTracker 的补丁负责的（用到才生成）。

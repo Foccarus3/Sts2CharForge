@@ -1,4 +1,28 @@
-﻿# 待办队列（用户要求「全做完，不用一步步报备」）
+# 待办队列（用户要求「全做完，不用一步步报备」）
+
+## 第 173 批需求（**「额外资源」页的效果没算进「用到才生成」→ `TempUpgradePower.cs` 没生成 → `ExtraResource.cs` 报 CS0246**；已发版 V0.3.44）
+
+> 用户转来别人的构建失败截图（V0.3.43，`NitroMod`）：
+> ```
+> cs\ExtraResource.cs(64,49): error CS0246: 未能找到类型或命名空间名
+>     "NitroForgeTempUpgradePower"(是否缺少 using 指令或程序集引用?)
+> ```
+>
+> **真因**：他在「额外资源」页的效果里给「生成卡牌」勾了「仅本回合升级」（`SpawnUpgradedThisTurn`），
+> 生成端照着把 `<角色>ForgeTempUpgradePower` 写进了 `ExtraResource.cs`；但「要不要生成那个 Power 类」
+> 的判据 `CSharpCodeGen.UsesTempUpgrade` 走的是 `AllEffects(p)`，而 `AllEffects` 只收
+> **卡牌 / 遗物 / 药水 / 自定义状态的触发器 / 四块锻造图**，**漏了 `p.ExtraResource.Effects`**
+> → `ModGenerator`（L331-333）没写 `TempUpgradePower.cs` → 编译时 CS0246。
+>
+> **修法**：`AllEffects` 里补上额外资源的效果（只在 `Enabled` 时收，禁用时输出一个字符都不变）。
+> 顺带这一处对所有「用到才生成」的判定都生效（`UsesKind` / `UsesCondition` / 各种助手文件），
+> 以后「额外资源里用了某个只在该处出现的效果 → 助手文件没生成」这类问题一并消失。
+>
+> **验收**：
+> * 探针 `_probe/extratempup`：**5/5 PASS**（① 只有额外资源用「仅本回合升级」时 `UsesTempUpgrade` 为 true；
+>   ② 那个 Power 源能生成；③ `ExtraResource.cs` 引用的类名与声明一致；④ 两条红线：没勾 / 额外资源没启用都不生成）
+> * 同一份探针挂到**已发布 V0.3.43 的 Core.dll** 上：① **FAIL**（`UsesTempUpgrade` 返回 false）—— 正好复现他的 CS0246
+> * `dotnet build` 全解决方案 **0 error**；`--uicheck` **4897 PASS / 0 FAIL**（新增 4 条，含两条红线）
 
 ## 第 172 批需求（V0.2.280：**IfUpgraded 嵌套占位符炸卡面 / 中文花括号 / 先古牙齿不显示**）
 

@@ -832,7 +832,7 @@ public static class CustomPowerGen
                     if (t.Kind == "EnemyDamaged")
                     {
                         w.Line("// 触发时机：敌人受到伤害后 —— 受伤的是敌人（自己不算）");
-                        w.Open("if (target != base.Owner && target.IsAlive)");
+                        w.Open("if (target.IsEnemy && target.IsAlive)");
                         EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "target");
                         w.Close();
                     }
@@ -861,7 +861,7 @@ public static class CustomPowerGen
                     if (t.Kind == "EnemyDealtDamage")
                     {
                         w.Line("// 触发时机：敌人造成伤害后 —— 打人的是敌人（自己不算）");
-                        w.Open("if (dealer is not null && dealer != base.Owner)");
+                        w.Open("if (dealer is not null && dealer.IsEnemy)");
                         EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "dealer");
                         w.Close();
                     }
@@ -887,7 +887,7 @@ public static class CustomPowerGen
                     w.Line(enemy
                         ? "// 触发时机：敌人获得格挡后 —— 拿格挡的是敌人（自己不算）"
                         : "// 触发时机：自己获得格挡后 —— 只认自己");
-                    w.Open(enemy ? "if (creature != base.Owner)" : "if (creature == base.Owner)");
+                    w.Open(enemy ? "if (!creature.IsEnemy)" : "if (creature == base.Owner)");
                     if (enemy) EmitItemsWithAmountGate(w, new[] { t }, p, foeFrom: "creature");
                     else EmitItemsWithAmountGate(w, new[] { t }, p);
                     w.Close();
@@ -1377,7 +1377,7 @@ public static class CustomPowerGen
                 EmitChoiceContextBootstrap(w, "EnemyDamaged", items);
                 // ⚠ 这里**故意不**加「失去生命不算受到伤害」那句守卫：敌人侧没有「敌人失去生命」这条触发时机
                 //   可以替代，排掉就等于「敌人被血祭 / 中毒扣血」再也收不到通知 —— 功能直接丢了（自己那两条才有替代）。
-                w.Line("if (target == base.Owner || !target.IsAlive) return;   // 受伤的是敌人（自己不算）");
+                w.Line("if (!target.IsEnemy || !target.IsAlive) return;   // 受伤的是敌人（队友 / 宠物不算）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "target");
                 w.Close();
                 break;
@@ -1386,7 +1386,7 @@ public static class CustomPowerGen
                 w.Open("public override async Task AfterDamageGiven(PlayerChoiceContext choiceContext, Creature? dealer, DamageResult result, ValueProp props, Creature target, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyDealtDamage", items);
                 // 同上：敌人造成的伤害也没有「敌人失去生命」这条时机兜底，守卫保持原样。
-                w.Line("if (dealer is null || dealer == base.Owner) return;   // 打人的是敌人（自己不算）");
+                w.Line("if (dealer is null || !dealer.IsEnemy) return;   // 打人的是敌人（队友 / 宠物不算）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "dealer");
                 w.Close();
                 break;
@@ -1394,7 +1394,7 @@ public static class CustomPowerGen
             case "EnemyBlockGained":
                 w.Open("public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)");
                 EmitChoiceContextBootstrap(w, "EnemyBlockGained", items);
-                w.Line("if (creature == base.Owner) return;   // 拿格挡的是敌人（自己不算）");
+                w.Line("if (!creature.IsEnemy) return;   // 拿格挡的是敌人（队友 / 宠物不算）");
                 EmitItemsWithAmountGate(w, items, p, foeFrom: "creature");
                 w.Close();
                 break;

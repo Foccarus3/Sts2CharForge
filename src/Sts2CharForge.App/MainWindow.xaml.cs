@@ -18222,7 +18222,24 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				allySrc.Contains("CombatState.Allies") && !allySrc.Contains("HittableEnemies.FirstOrDefault()"),
 				allySrc.Split((char)10).FirstOrDefault(l => l.Contains("VigorPower")) ?? "没找到");
 		}
-		// V0.3.41（Carmen 报「虚伪王座：消耗卡牌数值 0 会卡死」）：
+		// V0.3.44：联机里「敌人造成伤害后 / 敌人受到伤害后 / 敌人获得格挡后」不能把队友算成敌人
+		{
+			var coProf = ProfileFactory.Sample();
+			var coPower = new CustomPowerSpec { Name = "联机敌人判定", ClassName = "UiCheckCoopEnemyPower" };
+			var coDealt = new PowerTriggerSpec { Kind = "EnemyDealtDamage" };
+			coDealt.Effects.Add(new EffectSpec { Kind = "HpLoss", Amount = 1m, TargetSide = "AllEnemies" });
+			var coDamaged = new PowerTriggerSpec { Kind = "EnemyDamaged" };
+			coDamaged.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+			var coBlocked = new PowerTriggerSpec { Kind = "EnemyBlockGained" };
+			coBlocked.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+			foreach (var cot in new[] { coDealt, coDamaged, coBlocked }) coPower.Triggers.Add(cot);
+			coProf.CustomPowers.Add(coPower);
+			string coSrc = CustomPowerGen.Source(coProf, coPower, coProf.CustomPowers.Count - 1);
+			Check("V0.3.44：联机敌人触发只认 IsEnemy（队友 / 宠物不算敌人）",
+				coSrc.Contains("!dealer.IsEnemy") && coSrc.Contains("!target.IsEnemy") && coSrc.Contains("!creature.IsEnemy")
+				&& !coSrc.Contains("dealer == base.Owner") && !coSrc.Contains("target == base.Owner"),
+				coSrc.Split((char)10).FirstOrDefault(l => l.Contains("dealer is null")) ?? "没找到");
+		}
 		// 锻造图的 EmitCardPick 以前在 0 时仍生成 CardSelectorPrefs(prompt, 0)，选择框永远等不到确认。
 		{
 			var zeroProf = ProfileFactory.Sample();
@@ -20613,9 +20630,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						(ForgeTimings.EnemyDeath, "if (!creature.IsEnemy) return;"),
 						(ForgeTimings.EnemyTurnStart, "if (side != CombatSide.Enemy) return;"),
 						(ForgeTimings.EnemyTurnEnd, "if (side != CombatSide.Enemy) return;"),
-						(ForgeTimings.EnemyDamaged, "if (target == base.Owner.Creature || !target.IsAlive) return;"),
-						(ForgeTimings.EnemyDealtDamage, "if (dealer is null || dealer == base.Owner.Creature) return;"),
-						(ForgeTimings.EnemyBlockGained, "if (creature == base.Owner.Creature) return;"),
+						(ForgeTimings.EnemyDamaged, "if (!target.IsEnemy || !target.IsAlive) return;"),
+						(ForgeTimings.EnemyDealtDamage, "if (dealer is null || !dealer.IsEnemy) return;"),
+						(ForgeTimings.EnemyBlockGained, "if (!creature.IsEnemy) return;"),
 						(ForgeTimings.PowerChanged, "if (power is not StrengthPower) return;"),
 						(ForgeTimings.PowerRemoved, "if (power is not StrengthPower) return;"),
 						(ForgeTimings.Shuffle, "if (shuffler != base.Owner) return;"),
@@ -26496,6 +26513,44 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							!CSharpCodeGen.CardSource(prof, c, prof.Cards.Count - 1).Contains("ForgeThisCardDamage", StringComparison.Ordinal),
 							"干净");
 					}
+				}
+
+				// ===== 「额外资源」页的效果没被算进「用到才生成」的判定 → TempUpgradePower.cs 没生成 =====
+				// 用户实测报的：`cs\ExtraResource.cs(64,49) error CS0246: 未能找到类型或命名空间名
+				// "NitroForgeTempUpgradePower"` —— 他在「额外资源」的效果里给「生成卡牌」勾了「仅本回合升级」，
+				// 生成端照着写了那个 Power 类名，但 `UsesTempUpgrade` 只扫卡牌/遗物/药水/自定义状态/锻造图，
+				// 漏了额外资源 → ModGenerator 没写 TempUpgradePower.cs。
+				{
+					CharacterProfile ExtraResProfile(bool tempUp, bool enabled = true)
+					{
+						var prof = ProfileFactory.Sample();
+						prof.Cards.Add(new CardSpec
+						{
+							Name = "目标卡", ClassName = "UiExtraTarget", CardType = "Attack", Rarity = "Common",
+							Cost = 1, InCardPool = true,
+						});
+						prof.ExtraResource.Enabled = enabled;
+						prof.ExtraResource.Initial = 3;
+						var fx = new EffectSpec
+						{
+							Kind = "GenerateCard", Amount = 1m, SpawnPick = "Fixed", SpawnCardId = "UiExtraTarget",
+						};
+						if (tempUp) fx.SpawnUpgradedThisTurn = true;
+						prof.ExtraResource.Effects.Add(fx);
+						return prof;
+					}
+					var extraProf = ExtraResProfile(true);
+					var extraNaming = Naming.From(extraProf);
+					Check("「额外资源」的效果勾了「仅本回合升级」→ 会生成 TempUpgradePower.cs（不然 ExtraResource.cs 报 CS0246）",
+						CSharpCodeGen.UsesTempUpgrade(extraProf), "会生成");
+					Check("「额外资源」引用的临时升级 Power 类名，和 TempUpgradePower.cs 里声明的一致",
+						CSharpCodeGen.ExtraResourceSource(extraProf).Contains(extraNaming.TempUpgradePowerClass, StringComparison.Ordinal)
+						&& CSharpCodeGen.TempUpgradePowerSource(extraProf).Contains("class " + extraNaming.TempUpgradePowerClass, StringComparison.Ordinal),
+						extraNaming.TempUpgradePowerClass);
+					Check("（红线）没勾「仅本回合升级」→ 不生成 TempUpgradePower.cs",
+						!CSharpCodeGen.UsesTempUpgrade(ExtraResProfile(false)), "不生成");
+					Check("（红线）额外资源没启用 → 也不生成",
+						!CSharpCodeGen.UsesTempUpgrade(ExtraResProfile(true, enabled: false)), "不生成");
 				}
 
 				// ===== 锻造图「仅本回合升级」的变量名：声明写死了 `__fgTempUp`，引用却带节点哈希 =====
@@ -45711,7 +45766,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				gSrc.Split(new[] { "fgPlayer = base.Owner.Player" }, StringSplitOptions.None).Length == 2, "只一次");
 		}
 
-		// ===== V0.2.317：药水「指定敌人」在多目标下打错人 + 遗物「获得药水」指向自己做���药水 =====
+		// ===== V0.2.317：药水「指定敌人」在多目标下打错人 + 遗物「获得药水」指向自己的药水 =====
 		{
 			var potProf = ProfileFactory.Sample();
 			var pot = new PotionSpec { Name = "自检目标药水", ClassName = "UiCheckTargetPotion", Rarity = "Common", Usage = "CombatOnly", TargetType = "AnyEnemy" };
