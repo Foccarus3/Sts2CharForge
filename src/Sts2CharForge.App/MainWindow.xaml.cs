@@ -18222,7 +18222,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				allySrc.Contains("CombatState.Allies") && !allySrc.Contains("HittableEnemies.FirstOrDefault()"),
 				allySrc.Split((char)10).FirstOrDefault(l => l.Contains("VigorPower")) ?? "没找到");
 		}
-		// 用户报过「左侧还是本体星辉图标」：一次性的补丁可能被别的模组改回去，或者计数器是「先建好再设归属」的。
+		// V0.3.41（Carmen 报「虚伪王座：消耗卡牌数值 0 会卡死」）：
+		// 锻造图的 EmitCardPick 以前在 0 时仍生成 CardSelectorPrefs(prompt, 0)，选择框永远等不到确认。
+		{
+			var zeroProf = ProfileFactory.Sample();
+			var zeroCard = ForgedCardWith("UiCheckZeroExhaust", ForgeEffectNode("ExhaustCard", "", 0, ""));
+			zeroCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect").SetField("Pick", "Chosen");
+			zeroCard.ForgeGraph.Nodes.First(n => n.Kind == "Effect").SetField("SelectPile", "Hand");
+			zeroProf.Cards.Add(zeroCard);
+			string zeroSrc = CSharpCodeGen.CardSource(zeroProf, zeroCard, zeroProf.Cards.Count - 1);
+			Check("V0.3.41：锻造图消耗卡牌数值 0 = 直接消耗这张牌自己（不再弹 0 张选择框卡死）",
+				zeroSrc.Contains("CardCmd.Exhaust(choiceContext, this)") && !zeroSrc.Contains("ExhaustSelectionPrompt"),
+				zeroSrc.Split((char)10).FirstOrDefault(l => l.Contains("CardCmd.Exhaust")) ?? "没找到");
+		}
 		Check("计数器图标有「每帧兜底」（别人把贴图改回本体星星时会再贴一次）",
 			text25.Contains("NStarCounter._Process") && text25.Contains("EnsureIcon"), "有 _Process 兜底");
 		Check("归属判断除了 meta 还会反射读本体的 _player 字段（Initialize 补丁没走到也能认出来）",

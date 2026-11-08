@@ -3365,7 +3365,7 @@ public static class ForgeGraphGen
         // ⚠ 只对「必须弹选择框」的这几档生效：复制卡牌 / 生成卡牌 的 0 有专门含义（= 这张牌自己），不能跳过。
         if (kind is "TransformCard" or "TransformCardGlobal" or "UpgradeCard" or "Scry" && IsZeroGraphCount(amount))
         {
-            sb.AppendLine($"{indent}// fg:{node.Id}【{def.Display}】取 0 张：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）");
+            sb.AppendLine($"{indent}// fg:{node.Id}【{kind}】取 0 张：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）");
             return;
         }
             string selVar = UniqueVar(node, "__fgSel");
@@ -4361,6 +4361,28 @@ public static class ForgeGraphGen
         CharacterProfile? p = null)
     {
         var spec = GraphSpec(node);
+        // V0.3.41（用户报「虚伪王座：消耗卡牌数值填 0 会卡死」）：
+        // 锻造图的「消耗 / 丢弃 / 升级」以前在数值 0 时仍然生成 CardSelectorPrefs(prompt, 0)，
+        // 本体的选择框会一直等一个不可能成立的确认 → 整场战斗卡死。
+        // 「消耗 / 丢弃」的 0 和卡牌页同一语义 = 这张牌自己，直接动手、不弹框；
+        // 「升级」没有「0 = 自己」的语义，直接跳过（不能弹 0 张的框）。
+        if (!(spec?.CountIsAll == true) && IsZeroGraphCount(amount))
+        {
+            if (kind is "ExhaustCard" or "DiscardCard"
+                && !string.Equals(ctx.CardSelfExpr, "null", StringComparison.Ordinal))
+            {
+                string selfAct = kind == "ExhaustCard"
+                    ? $"await CardCmd.Exhaust({ctx.ChoiceVar}, {ctx.CardSelfExpr});"
+                    : $"await CardCmd.Discard({ctx.ChoiceVar}, {ctx.CardSelfExpr});";
+                sb.AppendLine($"{indent}// fg:{node.Id}【{kind}】数值 0 = 这张牌自己：直接{(kind == "ExhaustCard" ? "消耗" : "丢弃")}自己（不弹 0 张选择框）");
+                sb.AppendLine(indent + selfAct);
+            }
+            else
+            {
+                sb.AppendLine($"{indent}// fg:{node.Id}【{kind}】取 0 张：这条效果什么都不做（选 0 张会让本体的选择框一直等待 → 卡死）");
+            }
+            return;
+        }
         bool chosen = !string.Equals(node.Get("Pick", "Chosen"), "Random", StringComparison.OrdinalIgnoreCase);
         string var = UniqueVar(node, "__fgPick");
         // V0.2.221（用户报的「消耗丢弃升级指定卡没生效」）：图上这一档以前**根本没有**把
