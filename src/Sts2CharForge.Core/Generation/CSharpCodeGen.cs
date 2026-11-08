@@ -5014,7 +5014,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 否则那张牌的 TargetType 不会是 <c>AnyAlly</c>、<c>cardPlay.Target</c> 恒为 null，效果静默不生效。</para>
     /// </summary>
     internal static bool NeedsChosenUnit(EffectSpec e) =>
-        HitsEnemyKind(e) || e.Kind is "Energy" or "Gold";
+        HitsEnemyKind(e) || e.Kind is "Energy" or "Gold"
+        // V0.3.43（插件「碎甲」报「选 Enemy 但卡没有准星」）：插件效果自己声明了 needsTarget 时，
+        // 也要按 TargetSide 把卡推成 AnyEnemy / AnyAlly；否则编辑器只认识内置效果 → 推成 Self，
+        // 卡根本没有敌人目标，插件模板里的 {foe} / {target} 永远是 null。
+        || PluginRegistry.EffectOf(e.Kind) is { NeedsTarget: true };
 
     /// <summary>
     /// 这张牌要不要在本体给出目标之前先 <c>ThrowIfNull(cardPlay.Target)</c>。
