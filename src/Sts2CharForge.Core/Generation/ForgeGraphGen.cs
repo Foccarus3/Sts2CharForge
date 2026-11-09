@@ -1704,15 +1704,17 @@ public static class ForgeGraphGen
             }
             if (starCostIsX)
             {
-                // V0.3.45（用户报「Y 费卡只扣资源、不造成伤害」）：
-                // cardPlay.Resources.StarsSpent 是**这一次打出实际扣掉**的额外资源量，
-                // 比 ResolveStarXValue() 更直接（后者在部分卡 / 某些模组补丁下会读到 0）。
-                // 卡牌链有 cardPlay；嵌进没有 cardPlay 的卡牌钩子时退回本体方法。
-                string starsSpent = string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal)
-                    ? "(decimal)base.ResolveStarXValue()"
-                    : $"(decimal){ctx.CardPlayExpr}.Resources.StarsSpent";
+                // 优先用这次实际扣掉的 StarsSpent；某些联机 / 卡牌复制路径上它可能还是 0，
+                // 再退回本体 LastStarsSpent（SpendStars 一定会写）和 StarValue。
+                string ySpentExpr = string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal)
+                    ? "base.LastStarsSpent"
+                    : $"{ctx.CardPlayExpr}.Resources.StarsSpent > 0 ? {ctx.CardPlayExpr}.Resources.StarsSpent"
+                      + $" : ({ctx.CardPlayExpr}.Resources.StarValue > 0 ? {ctx.CardPlayExpr}.Resources.StarValue"
+                      + $" : (base.LastStarsSpent > 0 ? base.LastStarsSpent : (base.Owner.PlayerCombatState?.Stars ?? 0)))";
                 sb.AppendLine("        // 这张牌的额外资源量费用是 Y → Y = 这一次打出实际消耗掉的额外资源量");
-                sb.AppendLine($"        decimal __Y = base.HasStarCostX ? {starsSpent} : 0m;");
+                sb.AppendLine($"        decimal __Y = base.HasStarCostX ? (decimal)({ySpentExpr}) : 0m;");
+                if (p.DebugLog && !string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal))
+                    sb.AppendLine($"        Godot.GD.Print(\"[Y调试] spent=\" + {ctx.CardPlayExpr}.Resources.StarsSpent + \"/\" + {ctx.CardPlayExpr}.Resources.StarValue + \" last=\" + base.LastStarsSpent + \" stars=\" + (base.Owner.PlayerCombatState?.Stars ?? 0) + \" Y=\" + __Y);   // CET:DebugLog");
             }
             if (!costIsX) sb.AppendLine("        decimal __X = ForgeFormulaRuntime.Energy(__fgPlayer);");
             if (!starCostIsX) sb.AppendLine("        decimal __Y = ForgeFormulaRuntime.Stars(__fgPlayer);");
