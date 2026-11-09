@@ -621,15 +621,19 @@ public static class ExtraResourceCardIconPatch
 }
 
 /// <summary>
-/// V0.3.47：卡面费用图标每帧兜底。
-/// 本体在刷新费用 / 打出 / 升级后会重设 %StarIcon 的贴图，只靠 _Ready + ModelChanged
+/// V0.3.47：卡面费用图标在卡牌刷新后兜底。
+/// 本体更新费用 / 打出 / 升级时会重设 %StarIcon 的贴图，只靠 _Ready + ModelChanged
 /// 会被覆盖回本体星辉（用户实测：锻造卡的额外资源量图标变回星辉）。
+///
+/// ⚠ 不能用 `NCard._Process`：NCard 没有自己的 `_Process`，Harmony 会报
+/// 「Undefined target method」→ PatchAll 失败 → 整个模组加载失败（角色都看不到）。
+/// 用 NCard 自己的 `UpdateVisuals`（本体每次刷新卡面都会走）才是稳定落点。
 /// </summary>
-[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard), "_Process")]
-public static class ExtraResourceCardIconKeepPatch
+[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard), nameof(MegaCrit.Sts2.Core.Nodes.Cards.NCard.UpdateVisuals))]
+public static class ExtraResourceCardIconRefreshPatch
 {
     [HarmonyLib.HarmonyPostfix]
-    private static void AfterProcess(MegaCrit.Sts2.Core.Nodes.Cards.NCard __instance)
+    private static void AfterUpdateVisuals(MegaCrit.Sts2.Core.Nodes.Cards.NCard __instance)
     {
         ExtraResourceCardIconPatch.ApplyCardIcon(__instance);
     }

@@ -18284,9 +18284,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("卡面上的资源费用图标也换成同一张自定义图（卡面和计数器看起来一致）", text25.Contains("typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard)") && text25.Contains("%StarIcon"), text25.Contains("%StarIcon") ? "OK" : "没处理卡面图标");
 		Check("卡面图标只改我们自己卡池的卡（别的角色的星星费用不动）", text25.Contains("is not SevenCardPool"), "按卡池判断");
 		Check("外观补丁出问题不会把战斗搞崩（整体 try/catch）", text25.Contains("catch (Exception e)"), "有 catch");
-		Check("V0.3.47：卡面资源图标有每帧兜底（本体刷新费用后不会变回星辉）",
-			text25.Contains("NCard") && text25.Contains("_Process)") && text25.Contains("ExtraResourceCardIconKeepPatch") && text25.Contains("ApplyCardIcon(__instance)"),
-			text25.Contains("ExtraResourceCardIconKeepPatch") ? "有 _Process 兜底" : "没有");
+		Check("V0.3.47：卡面资源图标在卡牌刷新后兜底（不会变回星辉，也不会用不存在的 _Process 补丁）",
+			text25.Contains("NCard.UpdateVisuals") && text25.Contains("ExtraResourceCardIconRefreshPatch") && text25.Contains("ApplyCardIcon(__instance)"),
+			text25.Contains("ExtraResourceCardIconRefreshPatch") ? "有 UpdateVisuals 兜底" : "没有");
 		CharacterProfile characterProfile13 = ProfileFactory.Sample();
 		characterProfile13.ExtraResource.Enabled = true;
 		characterProfile13.ExtraResource.Name = "血怒";
