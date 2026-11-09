@@ -7246,9 +7246,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					var combo = new ComboBox { Width = 240, IsEditable = false };
 					foreach (string opt in sub.Options) combo.Items.Add(opt);
-					combo.Text = current;
-					if (combo.SelectedIndex < 0 && combo.Items.Count > 0) combo.SelectedItem = combo.Items[0];
-					combo.SelectionChanged += (_, _) => { row[subKey] = combo.Text ?? ""; onChanged(); };
+					// V0.3.50：同上 —— 必须读 SelectedItem，不能读事件里可能还是旧值的 Text。
+					if (sub.Options.Contains(current)) combo.SelectedItem = current;
+					else if (combo.Items.Count > 0) combo.SelectedIndex = 0;
+					combo.SelectionChanged += (_, _) =>
+					{
+						row[subKey] = combo.SelectedItem as string ?? combo.Text ?? "";
+						onChanged();
+					};
 					line.Children.Add(combo);
 					break;
 				}
@@ -7774,11 +7779,18 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					var combo = new ComboBox { Width = 320, IsEditable = false };
 					foreach (string opt in f.Options) combo.Items.Add(opt);
-					combo.Text = current;
-					if (combo.SelectedIndex < 0 && combo.Items.Count > 0) combo.SelectedItem = combo.Items[0];
-					combo.SelectionChanged += (_, _) => { PluginRegistry.SetPageValue(p, page, f, combo.Text); Refresh(); };
+					// V0.3.50：SelectionChanged 里不能读 combo.Text —— WPF 非可编辑 ComboBox
+					// 触发事件时 Text 可能还是**上一个选项**（用户报「选一次性、存成永久」）。
+					// 一律读 SelectedItem。
+					if (f.Options.Contains(current)) combo.SelectedItem = current;
+					else if (combo.Items.Count > 0) combo.SelectedIndex = 0;
+					combo.SelectionChanged += (_, _) =>
+					{
+						PluginRegistry.SetPageValue(p, page, f, combo.SelectedItem as string ?? combo.Text ?? "");
+						Refresh();
+					};
 					row.Children.Add(combo);
-					editors[key] = () => combo.Text;
+					editors[key] = () => combo.SelectedItem as string ?? combo.Text ?? "";
 					break;
 				}
 				case "multiline":
@@ -40599,18 +40611,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					PluginRegistry.ValidatePages(new PluginSpec());
 					object form = BuildPluginPageForm(lp, lpage);
 					var buttons = new List<string>();
+					var pickCombos = new List<ComboBox>();
 					WalkVisual(form as DependencyObject, null);
 					// 用**逻辑树**走（还没量过的面板没有可视子节点，VisualTreeHelper 会一个都走不到）
 					void WalkVisual(DependencyObject? node, object? _)
 					{
 						if (node is null) return;
 						if (node is Button b && b.Content is string s) buttons.Add(s);
+						if (node is ComboBox cb) pickCombos.Add(cb);
 						foreach (object child in LogicalTreeHelper.GetChildren(node))
 							if (child is DependencyObject dep) WalkVisual(dep, null);
 					}
 					Check("V0.2.349：界面上真的画出了「+ 添加一行」和每行的「↑ / ↓ / 删除」",
 						buttons.Contains("+ 添加一行") && buttons.Contains("↑") && buttons.Contains("↓")
 						&& buttons.Count(x => x == "删除") == 2, string.Join(" / ", buttons));
+					// V0.3.50：pick 必须按 SelectedItem 存，不能在 SelectionChanged 里读可能还是旧值的 combo.Text
+					var kindCombo = pickCombos.FirstOrDefault(c => c.Items.Contains("攻击"));
+					if (kindCombo is not null) kindCombo.SelectedIndex = 1;
+					Check("V0.3.50：列表里的 pick 选第二项后，行里存的是第二项（用户报的「选一次性、存成永久」）",
+						rows[0]["kind"] == "防御", rows[0]["kind"]);
 					try { Directory.Delete(lp.Dir, recursive: true); } catch { }
 				}				// ----- V0.2.350：延迟状态「同一个类名写两遍」→ CS0101 + CS0111（用户实测构建失败）-----
 				{
