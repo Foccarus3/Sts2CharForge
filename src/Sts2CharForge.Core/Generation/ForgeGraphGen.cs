@@ -1704,8 +1704,15 @@ public static class ForgeGraphGen
             }
             if (starCostIsX)
             {
-                sb.AppendLine("        // 这张牌的额外资源量费用是 Y → Y = 打出时**消耗掉的**额外资源量");
-                sb.AppendLine("        decimal __Y = base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m;");
+                // V0.3.45（用户报「Y 费卡只扣资源、不造成伤害」）：
+                // cardPlay.Resources.StarsSpent 是**这一次打出实际扣掉**的额外资源量，
+                // 比 ResolveStarXValue() 更直接（后者在部分卡 / 某些模组补丁下会读到 0）。
+                // 卡牌链有 cardPlay；嵌进没有 cardPlay 的卡牌钩子时退回本体方法。
+                string starsSpent = string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal)
+                    ? "(decimal)base.ResolveStarXValue()"
+                    : $"(decimal){ctx.CardPlayExpr}.Resources.StarsSpent";
+                sb.AppendLine("        // 这张牌的额外资源量费用是 Y → Y = 这一次打出实际消耗掉的额外资源量");
+                sb.AppendLine($"        decimal __Y = base.HasStarCostX ? {starsSpent} : 0m;");
             }
             if (!costIsX) sb.AppendLine("        decimal __X = ForgeFormulaRuntime.Energy(__fgPlayer);");
             if (!starCostIsX) sb.AppendLine("        decimal __Y = ForgeFormulaRuntime.Stars(__fgPlayer);");

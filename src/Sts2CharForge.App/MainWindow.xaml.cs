@@ -18252,6 +18252,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				zeroSrc.Contains("CardCmd.Exhaust(choiceContext, this)") && !zeroSrc.Contains("ExhaustSelectionPrompt"),
 				zeroSrc.Split((char)10).FirstOrDefault(l => l.Contains("CardCmd.Exhaust")) ?? "没找到");
 		}
+		// V0.3.45（用户报「Y 费卡只扣额外资源量、不造成伤害」）：Y 要用这次实际消耗量，不能读成 0
+		{
+			var yProf = ProfileFactory.Sample();
+			var yCard = ForgedCardWith("UiCheckYCostDamage", ForgeEffectNode("Damage", "", 1, ""));
+			var yEff = yCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect");
+			yEff.SetField("Times", "Y");
+			var yEnergy = new ForgeNodeSpec { Kind = "Energy" };
+			yEnergy.SetField("ResourceCost", "Y");
+			yCard.ForgeGraph.Nodes.Add(yEnergy);
+			yProf.Cards.Add(yCard);
+			string ySrc = CSharpCodeGen.CardSource(yProf, yCard, yProf.Cards.Count - 1);
+			Check("V0.3.45：Y 费卡的 Y = cardPlay.Resources.StarsSpent（不再读成 0）",
+				ySrc.Contains("cardPlay.Resources.StarsSpent") && ySrc.Contains("Math.Max(0, (int)(__Y))"),
+				ySrc.Split((char)10).FirstOrDefault(l => l.Contains("__Y")) ?? "没找到");
+		}
 		Check("计数器图标有「每帧兜底」（别人把贴图改回本体星星时会再贴一次）",
 			text25.Contains("NStarCounter._Process") && text25.Contains("EnsureIcon"), "有 _Process 兜底");
 		Check("归属判断除了 meta 还会反射读本体的 _player 字段（Initialize 补丁没走到也能认出来）",
