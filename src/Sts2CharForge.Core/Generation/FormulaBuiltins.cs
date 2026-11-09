@@ -247,7 +247,7 @@ public static class FormulaBuiltins
         new FormulaBuiltin("XSpent", "这张牌花掉的能量（X 费牌就是那个 X；不是 X 费 = 0）",
             "(base.EnergyCost.CostsX ? (decimal)base.ResolveEnergyXValue() : 0m)"),
         new FormulaBuiltin("YSpent", "这张牌花掉的额外资源量（Y 费牌就是那个 Y；不是 Y 费 = 0）",
-            "(base.HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)"),
+            "(HasStarCostX ? (decimal)base.ResolveStarXValue() : 0m)"),
         // ===== ⑩ 这张牌**这一次打出**造成的伤害（V0.2.194，用户问的「荒疫打击」）=====
         // 由来：本体 BlightStrike（荒疫打击）是「造成 8 点伤害。给予等量于所造成伤害的灾厄。」，
         // 灾厄层数取的是 `attackCommand.Results.SelectMany(r => r).Sum(r => r.TotalDamage)`

@@ -596,7 +596,7 @@ public static class ExtraResourceCardIconPatch
         }
     }
 
-    private static void ApplyCardIcon(MegaCrit.Sts2.Core.Nodes.Cards.NCard card)
+    internal static void ApplyCardIcon(MegaCrit.Sts2.Core.Nodes.Cards.NCard card)
     {
         try
         {
@@ -617,6 +617,21 @@ public static class ExtraResourceCardIconPatch
         {
             Log.Error("额外资源量：卡面资源图标替换失败（已忽略）：" + e.Message);
         }
+    }
+}
+
+/// <summary>
+/// V0.3.47：卡面费用图标每帧兜底。
+/// 本体在刷新费用 / 打出 / 升级后会重设 %StarIcon 的贴图，只靠 _Ready + ModelChanged
+/// 会被覆盖回本体星辉（用户实测：锻造卡的额外资源量图标变回星辉）。
+/// </summary>
+[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Nodes.Cards.NCard), "_Process")]
+public static class ExtraResourceCardIconKeepPatch
+{
+    [HarmonyLib.HarmonyPostfix]
+    private static void AfterProcess(MegaCrit.Sts2.Core.Nodes.Cards.NCard __instance)
+    {
+        ExtraResourceCardIconPatch.ApplyCardIcon(__instance);
     }
 }
 

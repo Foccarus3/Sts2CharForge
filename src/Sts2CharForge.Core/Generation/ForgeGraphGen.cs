@@ -1712,7 +1712,7 @@ public static class ForgeGraphGen
                       + $" : ({ctx.CardPlayExpr}.Resources.StarValue > 0 ? {ctx.CardPlayExpr}.Resources.StarValue"
                       + $" : (base.LastStarsSpent > 0 ? base.LastStarsSpent : (base.Owner.PlayerCombatState?.Stars ?? 0)))";
                 sb.AppendLine("        // 这张牌的额外资源量费用是 Y → Y = 这一次打出实际消耗掉的额外资源量");
-                sb.AppendLine($"        decimal __Y = base.HasStarCostX ? (decimal)({ySpentExpr}) : 0m;");
+                sb.AppendLine($"        decimal __Y = HasStarCostX ? (decimal)({ySpentExpr}) : 0m;");
                 if (p.DebugLog && !string.Equals(ctx.CardPlayExpr, "null", StringComparison.Ordinal))
                     sb.AppendLine($"        Godot.GD.Print(\"[Y调试] spent=\" + {ctx.CardPlayExpr}.Resources.StarsSpent + \"/\" + {ctx.CardPlayExpr}.Resources.StarValue + \" last=\" + base.LastStarsSpent + \" stars=\" + (base.Owner.PlayerCombatState?.Stars ?? 0) + \" Y=\" + __Y);   // CET:DebugLog");
             }
