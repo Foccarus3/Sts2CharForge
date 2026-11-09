@@ -18258,14 +18258,27 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			var yCard = ForgedCardWith("UiCheckYCostDamage", ForgeEffectNode("Damage", "", 1, ""));
 			var yEff = yCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect");
 			yEff.SetField("Times", "Y");
+			yEff.SetField("Hits", "Y");
 			var yEnergy = new ForgeNodeSpec { Kind = "Energy" };
 			yEnergy.SetField("ResourceCost", "Y");
 			yCard.ForgeGraph.Nodes.Add(yEnergy);
 			yProf.Cards.Add(yCard);
 			string ySrc = CSharpCodeGen.CardSource(yProf, yCard, yProf.Cards.Count - 1);
 			Check("V0.3.45：Y 费卡的 Y = cardPlay.Resources.StarsSpent（不再读成 0）",
-				ySrc.Contains("cardPlay.Resources.StarsSpent") && ySrc.Contains("Math.Max(0, (int)(__Y))"),
+				ySrc.Contains("cardPlay.Resources.StarsSpent") && ySrc.Contains("Math.Max(0, (int)(__Y))")
+				&& ySrc.Contains("【效果】命中次数（公式：Y；0 = 不打）"),
 				ySrc.Split((char)10).FirstOrDefault(l => l.Contains("__Y")) ?? "没找到");
+		}
+		// V0.3.49：命中次数固定填 0 / 公式算出 0 时，不能再夹成 1 下
+		{
+			var zeroHitProf = ProfileFactory.Sample();
+			var zeroHitCard = ForgedCardWith("UiCheckZeroHits", ForgeEffectNode("Damage", "", 1, ""));
+			zeroHitCard.ForgeGraph!.Nodes.First(n => n.Kind == "Effect").SetField("Hits", "0");
+			zeroHitProf.Cards.Add(zeroHitCard);
+			string zeroHitSrc = CSharpCodeGen.CardSource(zeroHitProf, zeroHitCard, zeroHitProf.Cards.Count - 1);
+			Check("V0.3.49：命中次数填 0 = 这条效果不执行（不再固定打 1 下）",
+				zeroHitSrc.Contains("命中次数为 0") && !zeroHitSrc.Contains(".WithHitCount(0)"),
+				zeroHitSrc.Split((char)10).FirstOrDefault(l => l.Contains("命中次数为 0")) ?? "没找到");
 		}
 		Check("计数器图标有「每帧兜底」（别人把贴图改回本体星星时会再贴一次）",
 			text25.Contains("NStarCounter._Process") && text25.Contains("EnsureIcon"), "有 _Process 兜底");

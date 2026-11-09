@@ -3153,7 +3153,14 @@ public static class ForgeGraphGen
         }
 
         var hitsN = ForgeNumbers.Resolve(p, node, "Hits", 1);
-        int hits = hitsN.Runtime ? 1 : Math.Max(1, (int)Math.Round((double)hitsN.Value));
+        int hits = hitsN.Runtime ? 1 : Math.Max(0, (int)Math.Round((double)hitsN.Value));
+        // V0.3.49：公式命中次数算出 0（例如 Y 费卡没有额外资源量）就是**0 段**，不能夹成 1。
+        // 固定值填 0 也直接跳过这条效果，避免“没资源还打一下”。
+        if (!hitsN.Runtime && hits == 0)
+        {
+            sb.AppendLine($"{indent}// fg:{node.Id}【效果】命中次数为 0：这条效果什么都不做");
+            return;
+        }
         // 写了公式的命中次数**一律按多段攻击写**（和卡牌链的 CSharpCodeGen.RepeatIsMulti 同一个道理：
         // 生成期不知道公式算出来是几，不能因为「固定值那条算出来是 1」就省掉 .WithHitCount）；
         // 公式算出 1 时 WithHitCount(1) 与不写它**语义相同**。
@@ -3162,7 +3169,7 @@ public static class ForgeGraphGen
         if (hitsN.Runtime)
         {
             hitsExpr = UniqueVar(node, "__fgHits");
-            sb.AppendLine(indent + $"int {hitsExpr} = Math.Max(1, (int)({hitsN.Expr}));   // fg:{node.Id}【效果】命中次数（公式：{hitsN.Text}）");
+            sb.AppendLine(indent + $"int {hitsExpr} = Math.Max(0, (int)({hitsN.Expr}));   // fg:{node.Id}【效果】命中次数（公式：{hitsN.Text}；0 = 不打）");
         }
 
         // V0.2.194：状态那一档还有「生效次数 / 命中次数 = 本状态层数」两个开关（同 AmountIsStack 的说明）
