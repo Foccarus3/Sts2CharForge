@@ -19326,6 +19326,21 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				ModGenerator.ProjectRootOf(recSrc));
 			Check("构建流程用的目录 == 生成器返回的目录（存档名≠ModId 时也对得上，修过 MSB1009）",
 				ModGenerator.ProjectRootOf(recSrc) != Path.Combine(recSrc.Paths.OutputDir, recSrc.ModId), "两者必须不同（这就是以前踩的坑）");
+			// V0.3.51：不同存档的 ModId / 安装路径必须有后缀区分
+			{
+				var sidA = new CharacterProfile { ModId = "ExampleMod", SaveName = "SparkleMod" };
+				var sidB = new CharacterProfile { ModId = "ExampleMod", SaveName = "SparkleMod2" };
+				var sidCn = new CharacterProfile { ModId = "ExampleMod", SaveName = "星光存档" };
+				string idA = Naming.From(sidA).ModId, idB = Naming.From(sidB).ModId, idCn = Naming.From(sidCn).ModId;
+				Check("V0.3.51：不同存档的 ModId 自动带存档名后缀（路径 / 清单 id 不再相同）",
+					idA != idB && idA.StartsWith("ExampleMod", StringComparison.Ordinal) && idB.StartsWith("ExampleMod", StringComparison.Ordinal)
+					&& Naming.IsValidIdentifier(idA) && Naming.IsValidIdentifier(idB), idA + " / " + idB);
+				Check("V0.3.51：中文存档名的后缀也合法且稳定（不会拼出非法路径）",
+					Naming.IsValidIdentifier(idCn) && idCn == Naming.From(sidCn).ModId, idCn);
+				var sidRecovered = new CharacterProfile { ModId = idA, SaveName = "SparkleMod" };
+				Check("V0.3.51：从工程恢复的 ModId 已经带后缀，再生成不会重复追加",
+					Naming.From(sidRecovered).ModId == idA, Naming.From(sidRecovered).ModId);
+			}
 			var gen2 = ModGenerator.Generate(recSrc);
 			Check("存档名≠ModId 时生成目录 = ProjectRootOf 算出来的目录",
 				gen2.Success && gen2.ProjectRoot == ModGenerator.ProjectRootOf(recSrc), gen2.ProjectRoot);
@@ -23167,7 +23182,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				.Any((string f) => File.ReadAllText(f, Encoding.UTF8).Contains("HarmonyPatch(typeof(MegaCrit.Sts2.Core.Commands.Builders.AttackCommand)")), "没有攻击补丁");
 
 			// ② monsters.json：两只的名字都在
-			string petLocPath = Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "monsters.json");
+			string petLocPath = Path.Combine(petGen.ProjectRoot, Naming.From(petSrc).ModId, "localization", "zhs", "monsters.json");
 			Check("召唤物：生成了 monsters.json", File.Exists(petLocPath), petLocPath);
 			string petLoc = File.Exists(petLocPath) ? File.ReadAllText(petLocPath, Encoding.UTF8) : "";
 			Check("召唤物：monsters.json 里两只的名字都有（本体怪物名字的键格式）",
@@ -23185,7 +23200,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pd.ClassName + " → 我们=" + Naming.Slug(pd.ClassName) + " / 本体=" + VanillaSlugify(pd.ClassName))));
 			// 中英文两份内容相同：模组本地化只合并「当前语言」的同名表（ModManager.cs:966-979 + LocManager.cs:468），
 			// 英文会话下缺 <ENTRY>.name 会让 LocTable 抛 LocException —— 显示中文名总比崩好。
-			string petLocEngPath = Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "eng", "monsters.json");
+			string petLocEngPath = Path.Combine(petGen.ProjectRoot, Naming.From(petSrc).ModId, "localization", "eng", "monsters.json");
 			Check("召唤物：monsters.json 同时写了 eng 一份（内容与 zhs 相同）",
 				File.Exists(petLocEngPath)
 				&& string.Equals(File.ReadAllText(petLocEngPath, Encoding.UTF8), petLoc, StringComparison.Ordinal),
@@ -23201,7 +23216,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				!petSummonSrc.Contains("Creature? __uiCheckPet"), "没有多余局部变量");
 			Check("召唤卡：仍然有「战斗状态不为 null」的守卫（关闭括号要对上，缺一个就编译不过）",
 				petSummonSrc.Contains("if (base.Owner.PlayerCombatState is not null)"), "有守卫");
-			string petSummonLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+			string petSummonLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, Naming.From(petSrc).ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
 			Check("召唤卡：卡面描述里写着那只的名字（召唤小石头。）", petSummonLoc.Contains("召唤小石头。"), "描述里有名字");
 
 			// ④ 伙伴攻击牌（单体：FromCard + Targeting + FromPetAttacker）
@@ -23223,7 +23238,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("bug③攻击：伤害走我们自己的动态变量 PetDamage（不是兜底的 Value）",
 				petAtkSrc.Contains("new DynamicVar(\"PetDamage\", 7m)") && petAtkSrc.Contains("base.DynamicVars[\"PetDamage\"].BaseValue"), "用 PetDamage");
 			Check("伙伴攻击卡：TargetType 是 AnyEnemy（要玩家选目标）", petAtkSrc.Contains("TargetType.AnyEnemy"), "AnyEnemy");
-			string petAtkLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, petSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
+			string petAtkLoc = File.ReadAllText(Path.Combine(petGen.ProjectRoot, Naming.From(petSrc).ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
 			Check("伙伴攻击卡：卡面描述里写着「让小石头…造成伤害」", petAtkLoc.Contains("让小石头"), "描述里有名字");
 
 			// ④-b 第二只的全体攻击卡：换了一只 → 局部变量名也不同、TargetSide 走 TargetingAllOpponents
@@ -43519,6 +43534,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					CharacterProfile animOffLegacy = ProfileFactory.Load(animLegacyPath);
 					// 两份输出一定要落在**不同**的目录里：否则「逐字一样」这条等于自己跟自己比，
 					// 什么都验不出来（第一版就是这么写的，删目录时才发现第二个根根本没建出来）。
+					animOffLegacy.SaveName = animOffModern.SaveName;   // V0.3.51：ModId 后缀按存档名，两份对照必须同名 + 不同 OutputDir
 					animOffLegacy.Paths.OutputDir = animOffLegacyRoot;
 					animOffLegacy.Paths.VanillaProject = Profile.Paths.VanillaProject;
 					animOffLegacy.Paths.GameDataDir = Profile.Paths.GameDataDir;
@@ -44148,6 +44164,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string recPath = Path.Combine(recRoot134, "UiCheckForge134.json");
 					ProfileFactory.Save(frec.Profile, recPath);
 					CharacterProfile refilled = ProfileFactory.Load(recPath);
+					refilled.SaveName = start.SaveName;   // V0.3.51：ModId 后缀按存档名；往返对拍用同一个存档名
 					Check("恢复出来的存档：存一遍再读回来，图的端口版本 / 图本身都不变（不会一 Load 就被再迁一次）",
 						refilled.ForgeGraphPortVersion == ForgeGraphGen.PortVersion
 						&& refilled.Cards.FirstOrDefault(x => x.ClassName == "UiCheckForgedCard")?.ForgeGraph is { IsEmpty: false } rg2
@@ -44805,7 +44822,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					ukwGen.Success ? ukwGen.ProjectRoot : string.Join(" ｜ ", ukwGen.Issues.Where(x => x.IsError).Select(x => x.Message)));
 				if (ukwGen.Success)
 				{
-					string cardsJson = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "UiCheckKw136", "localization", "zhs", "cards.json"));
+					string cardsJson = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, Naming.From(ukwRun).ModId, "localization", "zhs", "cards.json"));
 					string descAdd = LineValue(cardsJson, "\"UI_CHECK_KW_ADD.description\": \"");
 					Check("生成端：描述里两段都用本体的 {IfUpgraded:show:…|…} 包起来（只有一个词在两段之间变也要包）",
 						descAdd.StartsWith("{IfUpgraded:show:", StringComparison.Ordinal), descAdd);
@@ -44883,6 +44900,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string recPath136 = Path.Combine(ukwRoot, "UiCheckKw136rec.json");
 					ProfileFactory.Save(ukwRec.Profile, recPath136);
 					CharacterProfile ukwRe = ProfileFactory.Load(recPath136);
+					ukwRe.SaveName = ukwRun.SaveName;   // V0.3.51：往返对拍用同一个存档名
 					ukwRe.Paths.OutputDir = ukwRoot;
 					ukwRe.Paths.VanillaProject = Profile.Paths.VanillaProject;
 					ukwRe.Paths.GameDataDir = Profile.Paths.GameDataDir;

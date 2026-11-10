@@ -50,6 +50,8 @@ public static class ModGenerator
         // **必须在校验之前**：用户报的那些「引用的召唤物 / 卡牌找不到」是**错误级**的校验项，
         // 先修好引用，校验才不会把这些已经能自动修好的问题当成拦路虎。
         var n = Naming.From(profile);
+        if (!string.Equals(n.ModId, profile.ModId, StringComparison.Ordinal))
+            Log($"  模组 ID：{profile.ModId} → {n.ModId}（按存档名自动加后缀，避免不同存档 / 创意工坊路径互相覆盖）");
         // 遗物的「自动类名跟着序号走」（用户要求，第 11 批 ②）：先把「没填类名」的和
         // 「写着本工具以前自动生成的那个名字」的遗物，按它**现在的位置**重新编号；
         // 用户手填的类名一个字符都不动（判据见 Naming.RenumberRelicClassNames / IsAutoRelicClassName）。
@@ -419,8 +421,8 @@ public static class ModGenerator
             //（ModManager.cs:966-979 + LocManager.cs:468），非中文语言下缺 <ENTRY>.name 会让
             // LocTable 抛 LocException、宠物节点初始化中断 —— 英文会话里显示中文名，总比崩好。
             string petMonsters = PetGen.MonstersJson(profile);
-            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "zhs", "monsters.json"), petMonsters);
-            ProjectFilesGen.WriteText(Path.Combine(root, profile.ModId, "localization", "eng", "monsters.json"), petMonsters);
+            ProjectFilesGen.WriteText(Path.Combine(root, n.ModId, "localization", "zhs", "monsters.json"), petMonsters);
+            ProjectFilesGen.WriteText(Path.Combine(root, n.ModId, "localization", "eng", "monsters.json"), petMonsters);
             // 有「伙伴攻击」卡 → 生成「把攻击者换成宠物」的扩展方法（不需要补丁，见 PetGen.AttackExtensionsSource）
             if (PetGen.UsesAttackExtension(profile))
             {

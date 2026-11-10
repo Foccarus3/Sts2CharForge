@@ -21,10 +21,56 @@ public sealed record Naming(
         string charClass = Pascal(string.IsNullOrWhiteSpace(p.CharacterClass) ? "MyCharacter" : p.CharacterClass);
         string charEntry = Slug(charClass);
         string charSlug = charEntry.ToLowerInvariant();
-        string modId = string.IsNullOrWhiteSpace(p.ModId) ? charClass + "Mod" : p.ModId.Trim();
+        string baseModId = string.IsNullOrWhiteSpace(p.ModId) ? charClass + "Mod" : p.ModId.Trim();
+        // V0.3.51（用户报「不同存档的模组 / 创意工坊上传路径全一样」）：
+        // 生成时把**存档文件名**作为后缀接到 ModId 上（清单 id、dll / pck / json 文件名、
+        // 工程命名空间、安装目录都一起变），这样两个存档的产物不会再落到同一个路径 / 同一个 mod id。
+        // · 存档名和 ModId 相同（最常见）时保持原样，不凭空加重复后缀；
+        // · 从工程恢复时 p.ModId 已经是带后缀的值，这里检测到已带后缀就不重复追加；
+        // · 中文 / 特殊字符存档名转成稳定的 ASCII 短后缀（FNV-1a），不会产生非法文件名。
+        string modId = WithSaveNameSuffix(baseModId, p.SaveName);
         _currentCharClass = charClass;      // 见 CurrentCharClass 的说明
         return new Naming(Pascal(modId), modId, charClass, charEntry, charSlug, charSlug, charSlug,
             charClass + "CardPool", charClass + "RelicPool", charClass + "PotionPool");
+    }
+
+    /// <summary>
+    /// 给 ModId 接上「存档文件名」后缀（V0.3.51）。这是**路径/模组 ID 去重**的唯一口径：
+    /// 画面上的「模组 ID」仍是用户填的基础值，但生成出来的清单 id、dll/pck/json 文件名、
+    /// 命名空间和 mods 安装路径都用带后缀的值。
+    /// </summary>
+    public static string WithSaveNameSuffix(string baseModId, string? saveName)
+    {
+        string suffix = SafeSaveSuffix(saveName);
+        if (suffix.Length == 0) return baseModId;
+        if (string.Equals(baseModId, suffix, StringComparison.OrdinalIgnoreCase)) return baseModId;
+        if (baseModId.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) return baseModId;
+        return baseModId + suffix;
+    }
+
+    /// <summary>存档文件名 → 可安全用于程序集 / 文件名的 ASCII 后缀（空 = 不加）。</summary>
+    private static string SafeSaveSuffix(string? saveName)
+    {
+        string raw = (saveName ?? "").Trim();
+        if (raw.Length == 0) return "";
+        var chars = raw.Where(ch => ch < 128 && char.IsLetterOrDigit(ch)).ToArray();
+        string s = new string(chars);
+        if (s.Length == 0)
+        {
+            // 中文 / 全角等无法直接当程序集名的存档名：用稳定哈希，保证同一存档每次一样、
+            // 不同存档大概率不同，且不会出现路径非法字符。
+            s = HashSuffix(raw);
+        }
+        if (char.IsDigit(s[0])) s = "S" + s;
+        if (s.Length > 32) s = s[..24] + HashSuffix(s);
+        return s;
+    }
+
+    private static string HashSuffix(string text)
+    {
+        uint h = 2166136261;
+        foreach (char ch in text) { h ^= ch; h *= 16777619; }
+        return "S" + h.ToString("X8");
     }
 
     private static string _currentCharClass = "";
