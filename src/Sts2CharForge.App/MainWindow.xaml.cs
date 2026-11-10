@@ -26915,6 +26915,30 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							&& scrySrc.Contains("__inScryDiscard = false;"),
 							scrySrc.Split((char)10).FirstOrDefault(l => l.Contains("__inScryDiscard = true")) ?? "没找到");
 					}
+					// V0.3.54：锻造图的【数值】节点公式要进卡面动态变量（用户「遗恨」括号里只显示 6）
+					{
+						var valueProf = ProfileFactory.Sample();
+						valueProf.Cards.Clear(); valueProf.Curses.Clear(); valueProf.AncientCards.Clear();
+						var valueCard = new CardSpec { Name = "数值图示", ClassName = "UiCheckGraphValue", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+						var vg = new ForgeGraphSpec();
+						var vt = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+						vt.SetField("Timing", ForgeTimings.CardPlayed);
+						var ve = new ForgeNodeSpec { Kind = "Effect", X = 400, Y = 10 };
+						ve.SetField("Effect", "Damage");
+						ve.SetField("Amount", "6");
+						var vv = new ForgeNodeSpec { Kind = "Value", X = 200, Y = 200 };
+						vv.SetField("Formula", "5 + Turn*7");
+						vg.Nodes.AddRange(new[] { vt, ve, vv });
+						vg.Links.Add(new ForgeLinkSpec { From = vt.Id, To = ve.Id, FromPort = 0, ToPort = 0 });
+						vg.Links.Add(new ForgeLinkSpec { From = vv.Id, To = ve.Id, FromPort = 0, ToPort = 1 });
+						valueCard.ForgeGraph = vg;
+						valueProf.Cards.Add(valueCard);
+						string valueSrc = CSharpCodeGen.CardSource(valueProf, valueCard, 0);
+						Check("V0.3.54：锻造图【数值】节点公式进入卡面 ForgeFormulaDamageVar（不再固定写 6）",
+							valueSrc.Contains("ForgeFormulaDamageVar")
+							&& !valueSrc.Contains("new DamageVar(6m)") && !valueSrc.Contains("Attack((6m))"),
+							valueSrc.Split((char)10).FirstOrDefault(l => l.Contains("ForgeFormulaDamageVar")) ?? "没找到");
+					}
 					// V0.3.32：插件条件要进锻造【条件】模块的下拉（ConditionPicks 以前只读内置 Conditions）
 					var v32PluginConds = PluginRegistry.ConditionOptions;
 					Check("V0.3.32：锻造条件下的候选包含全部插件条件（ConditionPicks 每次现取 AllConditions）",

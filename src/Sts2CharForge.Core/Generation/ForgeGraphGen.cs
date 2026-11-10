@@ -731,23 +731,55 @@ public static class ForgeGraphGen
             var u = i < upNodes.Count ? ForgeEffectBridge.Ensure(upNodes[i]) : null;
             var src = b ?? u;
             if (src is null) continue;
-            string baseFormula = (b?.AmountFormula ?? "").Trim();
-            if (baseFormula.Length == 0)
-                baseFormula = (b?.Amount ?? 0m).ToString("0.##", CultureInfo.InvariantCulture);
+            // V0.3.54（用户报「遗恨」括号里只显示 6、实际公式 5+余烬*7 已生效）：
+            // 【数值】模块接在效果左边的「数值」口（port 1）上时，真正打出去的是那个公式；
+            // 但 CardValueEffects 以前只读 EffectSpec.AmountFormula / Amount（= 6），
+            // 于是卡面 {Damage:diff()} 的现算变量变成固定 6。这里把 Value 节点的公式也读进来。
+            string baseGraphFormula = GraphValueFormula(card.ForgeGraph, i < baseNodes.Count ? baseNodes[i] : null);
+            string upGraphFormula = GraphValueFormula(card.UpgradedForgeGraph, i < upNodes.Count ? upNodes[i] : null);
+            string baseFormula = FormulaOrAmount(b, baseGraphFormula);
+            string upFormula = FormulaOrAmount(u, upGraphFormula);
             decimal baseAmount = b?.Amount ?? 0m;
             decimal upAmount = u?.Amount ?? baseAmount;
-            bool sameFormula = u is null || string.Equals((u.AmountFormula ?? "").Trim(), (b?.AmountFormula ?? "").Trim(), StringComparison.Ordinal);
+            // 只有「两边都没写现算公式」时才允许用固定数值的升级增量；
+            // 两边公式不同（5+余烬*7 / 5+余烬*9）时不能用一个数字表示，改成卡面按 IsUpgraded 三元切换。
+            bool noRuntimeFormula =
+                string.IsNullOrWhiteSpace(baseGraphFormula) && string.IsNullOrWhiteSpace(upGraphFormula)
+                && string.IsNullOrWhiteSpace(b?.AmountFormula) && string.IsNullOrWhiteSpace(u?.AmountFormula);
+            bool sameFormula = u is null || noRuntimeFormula
+                || string.Equals(upFormula, baseFormula, StringComparison.Ordinal);
+            string variableFormula = sameFormula
+                ? baseFormula
+                : $"(IsUpgraded ? ({upFormula}) : ({baseFormula}))";
             list.Add(new EffectSpec
             {
                 Kind = src.Kind,
                 PowerId = src.PowerId,
                 Amount = baseAmount,
-                AmountFormula = baseFormula,
+                AmountFormula = variableFormula,
                 UpgradeAmount = sameFormula ? upAmount - baseAmount : 0m,
                 TargetSide = src.TargetSide,
             });
         }
         return list;
+    }
+
+    /// <summary>效果节点左边「数值」口接的【数值】模块公式（没有就返回空）。</summary>
+    private static string GraphValueFormula(ForgeGraphSpec? g, ForgeNodeSpec? effect)
+    {
+        if (g is null || effect is null) return "";
+        var value = IncomingNode(g, effect, 1);
+        return value is not null && string.Equals(value.Kind, "Value", StringComparison.Ordinal)
+            ? value.Get("Formula").Trim()
+            : "";
+    }
+
+    /// <summary>效果自己的公式优先；没有就用【数值】模块的公式；再没有才退回固定数值。</summary>
+    private static string FormulaOrAmount(EffectSpec? e, string graphFormula)
+    {
+        if (!string.IsNullOrWhiteSpace(graphFormula)) return graphFormula.Trim();
+        if (!string.IsNullOrWhiteSpace(e?.AmountFormula)) return e!.AmountFormula.Trim();
+        return (e?.Amount ?? 0m).ToString("0.##", CultureInfo.InvariantCulture);
     }
 
     /// <summary>

@@ -306,6 +306,10 @@ public static class FormulaBuiltins
             "本张牌这一次打出生成的卡牌数（只算「生成卡牌」这条效果；「复制卡牌」不算）",
             "((decimal)this.ForgeThisCardGenerate)",
             CardOnly: true),
+        // V0.3.54：锻造图的数值节点可以用「这张牌是否升级」在卡面上切换公式
+        //（例如基础 5+余烬*7、升级后 5+余烬*9）。
+        new FormulaBuiltin("IsUpgraded", "这张牌是否已升级（真 = 1，假 = 0）",
+            "((base.IsUpgraded) ? 1m : 0m)", CardOnly: true),
     };
 
     /// <summary>按名字找一条内置量（大小写不敏感；<c>M</c>/<c>N</c> 这种单字母参数不会和它们撞）。</summary>
