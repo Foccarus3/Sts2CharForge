@@ -132,7 +132,8 @@ public static class KeywordGen
             if (hit is null) continue;
             string name = DisplayName(hit.Value.Spec, hit.Value.Key);
             if (name.Length == 0) continue;
-            string line = $"[gold]{name}[/gold]。";
+            // V0.3.52（用户要求）：自定义关键词那一行不再自动补句号（本体自带的关键词才用句号）。
+            string line = $"[gold]{name}[/gold]";
             if (!lines.Contains(line)) lines.Add(line);
         }
         return string.Join("\n", lines);

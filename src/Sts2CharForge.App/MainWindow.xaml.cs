@@ -19205,10 +19205,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				kwCardSrc.Contains("LocString(\"card_keywords\", \"FATE.title\")")
 				&& kwCardSrc.Contains("LocString(\"card_keywords\", \"KEYWORD_2.description\")"), "两条都在");
 			string kwCardsLoc = File.ReadAllText(Path.Combine(gen.ProjectRoot, recSrc.ModId, "localization", "zhs", "cards.json"), Encoding.UTF8);
-			Check("自定义关键词：卡面描述最前面是 [gold]命定[/gold]。",
-				kwCardsLoc.Contains("[gold]命定[/gold]。"), "描述里有");
+			Check("自定义关键词：卡面描述最前面是 [gold]命定[/gold]",
+				kwCardsLoc.Contains("[gold]命定[/gold]"), "描述里有");
 			Check("自定义关键词：两条都按引用顺序拼进卡面描述（一行一个）",
-				kwCardsLoc.Contains("[gold]命定[/gold]。\\n[gold]回响[/gold]。"), "命定 → 回响");
+				kwCardsLoc.Contains("[gold]命定[/gold]\\n[gold]回响[/gold]"), "命定 → 回响");
+			Check("V0.3.52：自定义关键词那一行不再自动补句号",
+				!kwCardsLoc.Contains("[gold]命定[/gold]。") && !kwCardsLoc.Contains("[gold]回响[/gold]。"), "没有多余句号");
 			// ===== 本体关键词改名：写进本体 card_keywords 表 + 旧名字全文替换 =====
 			Check("本体关键词改名：EXHAUST.title 写成了新名字（本体卡面上的金色词会跟着变）",
 				kwLoc.Contains("\"EXHAUST.title\": \"献祭\""), "EXHAUST.title = 献祭");
@@ -44827,15 +44829,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("生成端：描述里两段都用本体的 {IfUpgraded:show:…|…} 包起来（只有一个词在两段之间变也要包）",
 						descAdd.StartsWith("{IfUpgraded:show:", StringComparison.Ordinal), descAdd);
 					Check("生成端：**顺序不能反** —— `show:` 后面第一段是「升级后」：普通词 + 升级后获得的都在里面",
-						descAdd.Contains("show:[gold]回声[/gold]。\\n[gold]命定[/gold]。", StringComparison.Ordinal),
+						descAdd.Contains("show:[gold]回声[/gold]\\n[gold]命定[/gold]", StringComparison.Ordinal),
 						descAdd);
 					Check("生成端：`|` 后面那段是「没升级」：普通词 + 升级后失去的都在里面",
-						descAdd.Contains("|[gold]回声[/gold]。\\n[gold]虚空[/gold]。", StringComparison.Ordinal), descAdd);
+						descAdd.Contains("|[gold]回声[/gold]\\n[gold]虚空[/gold]", StringComparison.Ordinal), descAdd);
 					Check("生成端：升级后**获得的**那一行只出现在「升级后」那段（没升级那段里不许有）",
-						descAdd.IndexOf("[gold]命定[/gold]。", StringComparison.Ordinal)
+						descAdd.IndexOf("[gold]命定[/gold]", StringComparison.Ordinal)
 							< descAdd.IndexOf('|'), "命定在 | 之前");
 					Check("生成端：升级后**失去的**那一行只出现在「没升级」那段",
-						descAdd.IndexOf("[gold]虚空[/gold]。", StringComparison.Ordinal)
+						descAdd.IndexOf("[gold]虚空[/gold]", StringComparison.Ordinal)
 							> descAdd.IndexOf('|'), "虚空在 | 之后");
 					string descPlain = LineValue(cardsJson, "\"UI_CHECK_KW_PLAIN.description\": \"");
 					Check("生成端：**没填那两栏的卡**描述里一个 {IfUpgraded 都没有（老形状逐字节不变的口径）",
@@ -44871,7 +44873,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// 卡面那半截对同一条要有一致的行为：升级后那段里也不能有「失去的」那一行
 					int barIdx = descAdd.IndexOf('|');
 					Check("生成端：卡面描述里升级后那段也**没有**「升级后失去的」那一行（描述 ⇄ 悬停说明两处口径一致）",
-						barIdx >= 0 && descAdd.IndexOf("[gold]虚空[/gold]。", StringComparison.Ordinal) > barIdx, "虚空只在 | 之后");
+						barIdx >= 0 && descAdd.IndexOf("[gold]虚空[/gold]", StringComparison.Ordinal) > barIdx, "虚空只在 | 之后");
 					string plainSrc = File.ReadAllText(Path.Combine(ukwGen.ProjectRoot, "cs", "Cards", "UiCheckKwPlain.cs"));
 					Check("生成端：没填这两栏的卡**一个字节都没变** —— ExtraHoverTips 还是老写法（`=> [ … ]`，没有条件展开）",
 						!plainSrc.Contains("base.IsUpgraded ? new MegaCrit.Sts2.Core.HoverTips.IHoverTip[]", StringComparison.Ordinal)
@@ -44947,7 +44949,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				{
 					string oldCards = File.ReadAllText(Path.Combine(oldGen.ProjectRoot, "UiCheckKw136b", "localization", "zhs", "cards.json"));
 					Check("老形状：描述里没有 {IfUpgraded（关键词行照旧拼在最前面）",
-						!oldCards.Contains("{IfUpgraded", StringComparison.Ordinal) && oldCards.Contains("[gold]命定[/gold]。", StringComparison.Ordinal), "老样子");
+						!oldCards.Contains("{IfUpgraded", StringComparison.Ordinal) && oldCards.Contains("[gold]命定[/gold]", StringComparison.Ordinal), "老样子");
 					string oldCard = Path.Combine(oldGen.ProjectRoot, "cs", "Cards", "SevenCrush.cs");
 					string oldSrc = File.Exists(oldCard) ? File.ReadAllText(oldCard) : "";
 					Check("老形状：一个 CET:UpgradeKeyword 标记都不写（老存档产物一个字符都不多）",
