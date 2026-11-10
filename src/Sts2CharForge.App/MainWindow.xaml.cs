@@ -26888,6 +26888,33 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded(")) == 1
 						&& v31BothSrc.Contains("同一个时刻（这张牌因预见被丢弃时）"),
 						$"AfterCardDiscarded={v31BothSrc.Split((char)10).Count(l => l.Contains("AfterCardDiscarded("))}");
+					// V0.3.53：锻造图里的「预见」也必须真正置 __inScryDiscard，否则上面那个守卫永远不成立
+					{
+						var scryProf = ProfileFactory.Sample();
+						scryProf.Cards.Clear(); scryProf.Curses.Clear(); scryProf.AncientCards.Clear();
+						var scryCard = new CardSpec { Name = "预见标记图", ClassName = "UiCheckScryFlagGraph", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true, IsForged = true };
+						var sg = new ForgeGraphSpec();
+						var playTrg = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 10 };
+						playTrg.SetField("Timing", ForgeTimings.CardPlayed);
+						var scryEff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 10 };
+						scryEff.SetField("Effect", "Scry");
+						scryEff.SetField("Amount", "2");
+						var discardTrg = new ForgeNodeSpec { Kind = "Trigger", X = 10, Y = 180 };
+						discardTrg.SetField("Timing", ForgeTimings.CardDiscardedByScry);
+						var blockEff = new ForgeNodeSpec { Kind = "Effect", X = 300, Y = 180 };
+						blockEff.SetField("Effect", "Block");
+						blockEff.SetField("Amount", "5");
+						sg.Nodes.AddRange(new[] { playTrg, scryEff, discardTrg, blockEff });
+						sg.Links.Add(new ForgeLinkSpec { From = playTrg.Id, To = scryEff.Id, FromPort = 0, ToPort = 0 });
+						sg.Links.Add(new ForgeLinkSpec { From = discardTrg.Id, To = blockEff.Id, FromPort = 0, ToPort = 0 });
+						scryCard.ForgeGraph = sg;
+						scryProf.Cards.Add(scryCard);
+						string scrySrc = CSharpCodeGen.CardSource(scryProf, scryCard, 0);
+						Check("V0.3.53：锻造图的「预见」会在 CardCmd.Discard 前后置 __inScryDiscard（否则「因预见被丢弃」永远不触发）",
+							scrySrc.Contains("__inScryDiscard = true;") && scrySrc.Contains("finally")
+							&& scrySrc.Contains("__inScryDiscard = false;"),
+							scrySrc.Split((char)10).FirstOrDefault(l => l.Contains("__inScryDiscard = true")) ?? "没找到");
+					}
 					// V0.3.32：插件条件要进锻造【条件】模块的下拉（ConditionPicks 以前只读内置 Conditions）
 					var v32PluginConds = PluginRegistry.ConditionOptions;
 					Check("V0.3.32：锻造条件下的候选包含全部插件条件（ConditionPicks 每次现取 AllConditions）",

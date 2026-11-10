@@ -3503,7 +3503,30 @@ public static class ForgeGraphGen
                 sb.AppendLine(__ind + $"if ({topVar}.Count > 0)");
                 sb.AppendLine(__ind + "{");
                 sb.AppendLine(__ind + $"    var {dropVar} = (await CardSelectCmd.FromSimpleGrid({ctx.ChoiceVar}, {topVar}, __fgPlayer, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, {topVar}.Count))).ToList();");
-                sb.AppendLine(__ind + $"    if ({dropVar}.Count > 0) await CardCmd.Discard(choiceContext, {dropVar});");
+                // V0.3.53（用户报「借势」的「因预见而被丢弃时」不触发）：
+                // 锻造图的 Scry 以前只调 CardCmd.Discard，**没有打 __inScryDiscard 标记**；
+                // 而 AfterCardDiscarded 的守卫会读这个标记 → 图里的「因预见被丢弃」时机永远不成立。
+                // 和卡牌页 EmitScry 同一套：丢牌那一小段置 true，finally 复位。
+                sb.AppendLine(__ind + $"    if ({dropVar}.Count > 0)");
+                sb.AppendLine(__ind + "    {");
+                if (CSharpCodeGen.UsesScryDiscardCond(p))
+                {
+                    sb.AppendLine(__ind + $"        // 打标记：下面这一小段里的丢弃都算「因预见被丢弃」（锻造图时机靠它分辨）");
+                    sb.AppendLine(__ind + $"        {CSharpCodeGen.ScryDiscardFlag(p)} = true;");
+                    sb.AppendLine(__ind + "        try");
+                    sb.AppendLine(__ind + "        {");
+                    sb.AppendLine(__ind + $"            await CardCmd.Discard(choiceContext, {dropVar});");
+                    sb.AppendLine(__ind + "        }");
+                    sb.AppendLine(__ind + "        finally");
+                    sb.AppendLine(__ind + "        {");
+                    sb.AppendLine(__ind + $"            {CSharpCodeGen.ScryDiscardFlag(p)} = false;");
+                    sb.AppendLine(__ind + "        }");
+                }
+                else
+                {
+                    sb.AppendLine(__ind + $"        await CardCmd.Discard(choiceContext, {dropVar});");
+                }
+                sb.AppendLine(__ind + "    }");
                 sb.AppendLine(__ind + "}");
             });
             return;
