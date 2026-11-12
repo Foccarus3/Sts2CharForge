@@ -26808,6 +26808,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.260：勾了「尘封魔典」→ 生成 DustyTome 前缀，直接把 AncientCard 定成这张卡",
 						aiSrc.Contains("typeof(DustyTome)") && aiSrc.Contains("__instance.AncientCard = ModelDb.Card<UiCheckAiAncient>().Id"),
 						"补丁在");
+					Check("V0.3.55：尘封魔典补丁带 Priority.First 前缀 + Priority.Last Postfix（RitsuLib / BaseLib 同方法补丁不会改掉指定卡）",
+						aiSrc.Contains("HarmonyPriority(HarmonyLib.Priority.First)")
+						&& aiSrc.Contains("[HarmonyLib.HarmonyPostfix]")
+						&& aiSrc.Contains("HarmonyPriority(HarmonyLib.Priority.Last)"),
+						"优先级 + Postfix 都在");
 					Check("V0.2.260：勾了「欧洛巴斯之触」→ 生成 TouchOfOrobas 前缀，初始遗物换成这只",
 						aiSrc.Contains("typeof(TouchOfOrobas)") && aiSrc.Contains("SetupForTests(starter.Id, ModelDb.Relic<UiCheckAiRelic>().Id)"),
 						"补丁在");

@@ -135,10 +135,19 @@ public static class AncientItemPatchGen
              .Line("/// </summary>")
              .Line("[HarmonyLib.HarmonyPatch(typeof(DustyTome), nameof(DustyTome.SetupForPlayer))]")
              .Open($"internal static class {n.CharClass}DustyTomePatch")
+             // V0.3.55：和 RitsuLib / BaseLib 的 DustyTome 补丁撞同一方法时，前缀先后顺序不应决定结果。
+             // 前缀先尽量固定；最后再加一个 Priority.Last 的 Postfix，在所有其他前缀（包括随机选牌）之后强制写回。
+             .Line("[HarmonyLib.HarmonyPriority(HarmonyLib.Priority.First)]")
              .Open("private static bool Prefix(DustyTome __instance, Player player)")
              .Line($"if (player.Character is not {n.CharClass}) return true;")
              .Line($"__instance.AncientCard = ModelDb.Card<{tomeCls}>().Id;")
              .Line("return false;")
+             .Close()
+             .Line("[HarmonyLib.HarmonyPostfix]")
+             .Line("[HarmonyLib.HarmonyPriority(HarmonyLib.Priority.Last)]")
+             .Open("private static void Postfix(DustyTome __instance, Player player)")
+             .Line($"if (player.Character is not {n.CharClass}) return;")
+             .Line($"__instance.AncientCard = ModelDb.Card<{tomeCls}>().Id;")
              .Close()
              .Close()
              .Line();
