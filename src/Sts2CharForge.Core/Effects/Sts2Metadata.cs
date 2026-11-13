@@ -180,7 +180,7 @@ public static class Sts2Metadata
     /// 本工具是照着哪个游戏版本写的（生成端把一些本体方法签名写死了，只在标明过的版本上保证对得上）。
     /// 游戏更新后这个数字要跟着改 —— 改了之后 <see cref="VersionMismatch"/> 才会对旧版游戏报提示。
     /// </summary>
-    public const string SupportedGameVersion = "v0.111.0";
+    public const string SupportedGameVersion = "v0.113.0";
 
     /// <summary>
     /// 读游戏目录里的 <c>release_info.json</c> 拿本体版本（形如 <c>v0.111.0</c>）；读不到返回 null。

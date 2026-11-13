@@ -19567,14 +19567,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						&& Sts2Metadata.HasMethod(realDll, "NoSuchTypeXYZ", "FromCard", 2) == null,
 						"方法不在=false / 类型不在=null");
 
-					// 游戏版本核对：release_info.json → v0.111.0 这种；前两位不同才提示
+					// 游戏版本核对：release_info.json → v0.113.0 这种；前两位不同才提示
 					string? gameDir = Path.GetDirectoryName(Path.GetDirectoryName(realDll));
 					string? gameVer = Sts2Metadata.GameVersion(gameDir);
 					Check("版本核对：能从 release_info.json 读出本体版本",
 						gameVer is not null && gameVer.StartsWith("v0.", StringComparison.OrdinalIgnoreCase), gameVer ?? "读不到");
-					Check("版本核对：只比前两位（0.111.x 之间不打扰；0.112 才算不匹配）",
-						!Sts2Metadata.VersionMismatch("v0.111.9") && Sts2Metadata.VersionMismatch("v0.112.0")
+					Check("版本核对：只比前两位（0.113.x 之间不打扰；0.111 / 0.112 才算不匹配）",
+						Sts2Metadata.VersionMismatch("v0.111.9") && !Sts2Metadata.VersionMismatch("v0.113.9") && Sts2Metadata.VersionMismatch("v0.112.0")
 						&& !Sts2Metadata.VersionMismatch(null), "前两位比");
+					Check("V0.3.56：v0.113 新增的 CardTag（Wah / Cho / Ki / Shoot）进入标签候选和中文说明",
+						EffectCatalog.CardTags.Contains("Wah") && EffectCatalog.CardTags.Contains("Cho")
+						&& EffectCatalog.CardTags.Contains("Ki") && EffectCatalog.CardTags.Contains("Shoot")
+						&& EffectCatalog.CardTagZh("Wah") != "Wah" && EffectCatalog.CardTagZh("Shoot") != "Shoot",
+						string.Join(" / ", EffectCatalog.CardTags));
 
 					// 「这份 dll 是不是这次构建的」——dll 的 ProductVersion 是 `0.1.0+<commit>`，
 					// 游戏目录 release_info.json 里也写着 commit：两边一对就知道有没有指到旧副本 / 解包那份
@@ -23048,12 +23053,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("站位：本体摆位用的那个「主人 X − 20」偏移没有出现在摆位代码里（20 只作为 _dist 查不到时的兜底）",
 				!petCs.Contains("- 20f"), "干净");
 
-			// ①-b bug②：血条（覆写 IsHealthBarVisible + 召唤后 ForgePetLayout.RelayoutAll 重开全体血条）
-			Check("bug②血条：宠物类覆写了 IsHealthBarVisible（照本体 Osty）",
-				petCs.Contains("public override bool IsHealthBarVisible => base.Creature.IsAlive;"), "有覆写");
+			// ①-b bug②：血条（覆写 IsInteractable + 召唤后 ForgePetLayout.RelayoutAll 重开全体血条）
+			Check("bug②血条：宠物类覆写了 IsInteractable（照本体 Osty 的新 API）",
+				petCs.Contains("public override bool IsInteractable => base.Creature.IsAlive;"), "有覆写");
 			Check("bug②血条：召唤后调 ForgePetLayout.RelayoutAll 把**全体**血条重新开回来（本体 AddCreature 会把该玩家所有宠物的交互关掉 → 血条只剩最后一只）",
 				petCs.Contains("internal static class ForgePetLayout")
-				&& petCs.Contains("room.SetCreatureIsInteractable(pet, on: true);"), "有共用助手 + 重开血条");
+				&& petCs.Contains("node.SetIsInteractable(on: true, changeVisibilityImmediately: true);"), "有共用助手 + 重开血条");
 
 			// ①-c 可选④：替主人承伤（共用守卫 Power，照抄 DieForYouPower + 自己仲裁）
 			Check("替主人承伤：勾了几只都只生成**一个共用**的守卫 Power 类（不是每只一个 —— Creature.HasPower<T>() 只认同一类型，仲裁要跨宠物认人）",
@@ -39446,8 +39451,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				ctSrc.Contains("public override async Task AfterFlush(PlayerChoiceContext choiceContext, Player player, IReadOnlyCollection<CardModel> flushedCards, IReadOnlyCollection<CardModel> retainedCards)")
 				&& ctSrc.Contains("if (!retainedCards.Contains(this)) return;")
 				&& ctSrc.Contains("// CET:CardTiming=Retained"), "挂上了");
-			Check("被变化 → 覆写 CardModel.AfterTransformedFrom（本体 Transform 里对「被变成别的牌」那张调的就是它）",
-				ctSrc.Contains("public override void AfterTransformedFrom()")
+			Check("被变化 → 覆写 CardModel.AfterThisWasTransformedIntoInternal（本体 Transform 的新 API）",
+				ctSrc.Contains("protected override void AfterThisWasTransformedIntoInternal(CardModel card)")
 				&& ctSrc.Contains("ForgeOnTransformedFrom(choiceContext)")
 				&& ctSrc.Contains("// CET:CardTiming=Transformed"), "挂上了");
 			Check("被给予自定义关键词 → 生成卡自己的入口方法，由「给予卡牌关键词」那一步直接调",

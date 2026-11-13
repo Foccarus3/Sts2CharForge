@@ -464,7 +464,7 @@ position = Vector2(2, -{spriteH + 60})
          .Line("///（那一句对所有非 Osty 宠物都执行），所以真正让血条出现的是召唤命令里那次")
          .Line("/// NCombatRoom.SetCreatureIsInteractable(pet, on: true)。两边都要有。")
          .Line("/// </summary>")
-         .Line("public override bool IsHealthBarVisible => base.Creature.IsAlive;")
+         .Line("public override bool IsInteractable => base.Creature.IsAlive;")
          .Line()
          .Line("/// <summary>")
          .Line("/// 站位 / 血条：**同一主人的任何伙伴进场** → 把全体重新摆位 + 重新开血条。")
@@ -732,7 +732,7 @@ position = Vector2(2, -{spriteH + 60})
          .Line("// +半个包围盒宽：本体的 Position 是节点原点（贴图底边中点），不加这一半会有一半身子压在主人身上")
          .Line("node.Position = new Vector2(me.Position.X + d + node.Visuals.Bounds.Size.X * 0.5f, me.Position.Y - 25f);")
          .Line("// 血条真正靠这一句回来：本体 AddCreature 会把该玩家所有宠物的交互（= 血条显示）全部关掉")
-         .Line("room.SetCreatureIsInteractable(pet, on: true);")
+         .Line("node.SetIsInteractable(on: true, changeVisibilityImmediately: true);")
          .Close()   // foreach
          .Close()   // RelayoutAll
          .Close()   // class ForgePetLayout

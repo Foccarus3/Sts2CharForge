@@ -2189,7 +2189,7 @@ public static class EffectCatalog
     /// （妮欧的护符 NeowsTalisman、叶敷剂 LeafyPoultice、大胶囊 LargeCapsule、幽灵种子 GhostSeed…）
     /// 都是 <c>card.Tags.Contains(CardTag.Strike)</c> 这种查法，有的还会再加「稀有度 = Basic」。
     /// </summary>
-    public static IReadOnlyList<string> CardTags { get; } = new[] { "Strike", "Defend", "Minion", "OstyAttack", "Shiv" };
+    public static IReadOnlyList<string> CardTags { get; } = new[] { "Strike", "Defend", "Minion", "OstyAttack", "Shiv", "Wah", "Cho", "Ki", "Shoot" };
 
     /// <summary>CardTag 的中文说明（界面上显示用）。措辞来自本体源码里的实际用途。</summary>
     public static string CardTagZh(string tag) => tag switch
@@ -2199,6 +2199,10 @@ public static class EffectCatalog
         "Minion" => "Minion（仆从：本体「仆从俯冲 / 仆从捐躯 / 仆从强击」那类牌。储君的商店遗物「维特鲁威仆从」会给带这个标签的牌双倍伤害与格挡）",
         "OstyAttack" => "OstyAttack（奥斯提的攻击：亡灵契约师那只骷髅随从「奥斯提」的攻击牌，如碎骨 / 戳击 / 重压 / 榨取；本体多张牌按它计数）",
         "Shiv" => "Shiv（小刀：静默猎手的小刀。精准 / 幻影之刃 / 刀刃陷阱 这些按它生效）",
+        "Wah" => "Wah（哇：WahKi / WahCho / WahChoKi 这类「哇」系卡牌的标签）",
+        "Cho" => "Cho（啾：WahCho / WahChoKi 这类「啾」系卡牌的标签）",
+        "Ki" => "Ki（叽：KiHop / WahChoKi 这类「叽」系卡牌的标签）",
+        "Shoot" => "Shoot（射击：FoolishShot / RainShot 这类「射击」系卡牌的标签）",
         _ => tag,
     };
 
@@ -2649,7 +2653,7 @@ public static class EffectCatalog
         new TriggerOption("CardDiscarded",  "弃掉一张牌后",     "AfterCardDiscarded(choiceContext, card)"),
         new TriggerOption("HpLost",         "自己失去生命时（每一下）", "AfterCurrentHpChanged(creature, delta)"),
         new TriggerOption("BlockGained",    "自己获得格挡后",   "AfterBlockGained(creature, amount, props, cardSource)"),
-        new TriggerOption("EnemyDeath",     "一个敌人死亡后",   "AfterDeath(choiceContext, creature, wasRemovalPrevented, deathAnimLength)"),
+        new TriggerOption("EnemyDeath",     "一个敌人死亡后",   "AfterDeath(choiceContext, creature, source, wasRemovalPrevented, deathAnimLength)"),
         new TriggerOption("EnemyTurnStart", "敌人回合开始时",   "AfterSideTurnStart(side, participants, combatState)"),
         new TriggerOption("EnemyTurnEnd",   "敌人回合结束时",   "BeforeSideTurnEnd(choiceContext, side, participants)"),
         new TriggerOption("EnemyDamaged",   "敌人受到伤害后",   "AfterDamageReceived(choiceContext, target, result, props, dealer, cardSource)"),

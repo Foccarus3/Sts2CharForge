@@ -6309,7 +6309,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     w.Line()
                      .Line("// 卡牌时机「被变化」（需求⑩）：本体 CardCmd.Transform 里 original.AfterTransformedFrom() —— 「这张牌被变成了别的牌」")
                      .Line("//（不选 AfterTransformedTo：那是「这张牌是变化出来的那一张」，语义上属于「被生成」。）")
-                     .Open("public override void AfterTransformedFrom()")
+                     .Open("protected override void AfterThisWasTransformedIntoInternal(CardModel card)")
                      .Line("// 本体这个钩子是**同步 void、没有 choiceContext**，没法直接 await 命令，所以另起一个异步方法；")
                      .Line("// 上下文用 HookPlayerChoiceContext（本体分发这类事件时用的就是它，见 Hook.cs）。")
                      .Line("if (base.CombatState is null) return;")
@@ -13556,7 +13556,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "CardDiscarded" => "public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)",
         "HpLost" => "public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)",
         "BlockGained" => "public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)",
-        "EnemyDeath" => "public override async Task AfterDeath(PlayerChoiceContext choiceContext, Creature creature, bool wasRemovalPrevented, float deathAnimLength)",
+        "EnemyDeath" => "public override async Task AfterDeath(PlayerChoiceContext choiceContext, Creature creature, CardModel? source, bool wasRemovalPrevented, float deathAnimLength)",
         "EnemyTurnStart" => "public override async Task AfterSideTurnStart(CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)",
         "EnemyTurnEnd" => "public override async Task BeforeSideTurnEnd(PlayerChoiceContext choiceContext, CombatSide side, IEnumerable<Creature> participants)",
         "EnemyDamaged" => "public override async Task AfterDamageReceived(PlayerChoiceContext choiceContext, Creature target, DamageResult result, ValueProp props, Creature? dealer, CardModel? cardSource)",
