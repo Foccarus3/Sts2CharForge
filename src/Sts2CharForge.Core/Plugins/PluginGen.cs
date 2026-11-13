@@ -158,6 +158,8 @@ public static class PluginGen
             foreach (string rel in p.AssetFiles.Where(x => !string.IsNullOrWhiteSpace(x)))
                 n += CopyOne(p, rel, Path.Combine(projectRoot, "plugin_assets", Safe(p.Id)));
         }
+        // v0.113：旧插件常用的 Rng.Shuffle / CardSelectCmd.PushSelector 需要兼容层（只改生成工程里的副本）
+        if (n > 0) Generation.PluginCompatGen.Apply(projectRoot);
         return n;
 
         static string Safe(string id) => string.Concat(id.Select(c => char.IsLetterOrDigit(c) || c == '_' ? c : '_'));

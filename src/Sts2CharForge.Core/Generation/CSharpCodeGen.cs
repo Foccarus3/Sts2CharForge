@@ -56,6 +56,7 @@ public static class CSharpCodeGen
         .Line("global using MegaCrit.Sts2.Core.MonsterMoves.MonsterMoveStateMachine;")
         .Line("global using MegaCrit.Sts2.Core.Nodes.Combat;")
         .Line("global using MegaCrit.Sts2.Core.Nodes.Vfx;")
+        .Line("global using MegaCrit.Sts2.Core.Random;")
         .Line("global using MegaCrit.Sts2.Core.Rooms;")
         .Line("global using MegaCrit.Sts2.Core.Saves.Managers;")
         .Line("global using MegaCrit.Sts2.Core.Unlocks;")

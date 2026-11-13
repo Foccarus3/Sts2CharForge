@@ -46109,6 +46109,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("V0.2.315：插件自带 .cs 会拷进生成工程（cs/Plugins/<id>/，随 mod 一起编译打包）",
 					PluginGen.CopyInto(projRoot) == 1
 					&& File.Exists(Path.Combine(projRoot, "cs", "Plugins", "uicheck", "UiCheckPluginHelper.cs")), "拷进去了");
+				Check("V0.3.60：旧插件 API 兼容层随工程生成（Rng.Shuffle / CardSelectCmd.PushSelector）",
+					File.Exists(Path.Combine(projRoot, "cs", "Sts2LegacyPluginCompat.cs"))
+					&& PluginCompatGen.Source.Contains("Sts2LegacyRngShuffleExtensions")
+					&& PluginCompatGen.Rewrite("CardSelectCmd.PushSelector(sel);") ==
+						"global::Sts2CharForge.PluginCompat.LegacyPluginCompat.PushSelector(sel);",
+					"兼容文件在");
 				// ===== V0.2.316：触发时机 / 条件 / 锻造模块 接进生成端 =====
 				// 触发时机 = 本体已有钩子的别名 + 一句额外守卫；条件 = 一段布尔表达式；锻造模块 = 一段模板。
 				string good2 = Path.Combine(pluginRoot, "plugins", "uiCheck2");
