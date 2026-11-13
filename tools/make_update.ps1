@@ -148,3 +148,20 @@ if ($bad.Count -gt 0) {
 $size = (Get-Item $Out).Length / 1MB
 Write-Host ("完成：{0}  （{1:N1} MB，{2} 个文件；跳过 {3} 个）" -f $Out, $size, $count, $skipped)
 Write-Host ("  自检：只含「{0}\」+ 启动器；无存档、无本机路径、无游戏文件" -f $progName) -ForegroundColor Green
+
+# ===== 旧更新包自动清理（V0.3.59）=====
+# 只保留刚打出的这一版；同目录下旧版本的「更新包 / Update」zip 自动删掉。
+# 用版本号比，不按时间猜：当前版本的中文包 / 英文发布附件都要保留。
+$outDir = Split-Path -Parent $Out
+$removed = 0
+if (-not [string]::IsNullOrWhiteSpace($outDir) -and (Test-Path $outDir)) {
+    foreach ($f in Get-ChildItem $outDir -File -ErrorAction SilentlyContinue) {
+        if ($f.FullName -eq (Get-Item $Out).FullName) { continue }
+        $m = [regex]::Match($f.Name, '^Sts2CharForge_(?:更新包|Update)_(V[0-9]+(?:\.[0-9]+)*)\.zip$')
+        if (-not $m.Success) { continue }
+        if ($m.Groups[1].Value -eq $Version) { continue }   # 当前版本的中文 / 英文附件都留着
+        Remove-Item $f.FullName -Force -ErrorAction SilentlyContinue
+        $removed++
+    }
+    if ($removed -gt 0) { Write-Host "  已自动删除旧更新包 $removed 个（只保留 $Version）" }
+}

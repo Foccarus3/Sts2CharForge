@@ -33,3 +33,8 @@ if (ScopeKind.Length == 0 && Ids.Length == 0) return true;
 - 部署版 `--uicheck` **4911 PASS / 0 FAIL**。
 
 ⚠ 旧工程需要重新生成；`CostDownPower.cs` 是生成时才写进去的。
+
+## 打包脚本
+
+`tools\make_update.ps1` 现在打完包会自动删除同目录下旧版本的 `Sts2CharForge_更新包_V*.zip` / `Sts2CharForge_Update_V*.zip`，只保留当前版本。
+
