@@ -26255,6 +26255,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& cdPower.Contains("card.Owner?.Creature != base.Owner")
 					&& cdPower.Contains("System.Math.Max(0m, originalCost - Reduce)")
 					&& cdPower.Contains("Reduce <= 0m ? 0m"), "钩子在");
+				Check("V0.3.59：范围选「不限」→ Matches 空范围返回 true（减所有牌，不再是一张不减）",
+					cdPower.Contains("if (ScopeKind.Length == 0 && Ids.Length == 0) return true;"), "不限 = 所有牌");
 
 				// 没选范围 → 校验器警告（不然用户以为整条效果生效了却什么都没减）
 				cdFx.SpawnFilter = "";
