@@ -8037,7 +8037,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///     （FromChooseACardScreen 超过 3 张会直接抛异常），min 0 / max N = 可以一张都不丢；
     ///   · 丢牌走 <c>CardCmd.Discard</c>（派发 AfterCardDiscarded，奇巧照常触发）。
     /// </summary>
-    private static void EmitScry(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null)
+    private static void EmitScry(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX = false, string? countExpr = null, string playerExpr = "base.Owner")
     {
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
         // V0.2.286（用户报「猩红创痕：变化效果数值给 0 会卡死」）：张数是**字面 0** 时整条跳过。
@@ -8051,11 +8051,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // V0.2.225（用户要求：条件「本回合预见过 / 本回合已预见至少 N 次」）：
         // 只有真的用到那两条条件时才写这一句（+1 计数）—— 不用时老存档生成文本逐字不变。
         if (p is not null && UsesScryCounter(p))
-            w.Line($"{CombatCountersClass(p)}.BumpScry(base.Owner);   // 记一次「预见」（条件「本回合预见过 / 预见次数」靠它）");
+            w.Line($"{CombatCountersClass(p)}.BumpScry({playerExpr});   // 记一次「预见」（条件「本回合预见过 / 预见次数」靠它）");
         // 范围界定：先取「抽牌堆顶 N 张」，再在这一小撮里按范围过滤（只丢符合范围的牌；都不符合就相当于没丢）
-        w.Line($"var __scryTop = {CardScopeFiltered(e, p, $"PileType.Draw.GetPile(base.Owner).Cards.Take({n})")}.ToList();");
+        w.Line($"var __scryTop = {CardScopeFiltered(e, p, $"PileType.Draw.GetPile({playerExpr}).Cards.Take({n})")}.ToList();");
         w.Open("if (__scryTop.Count > 0)");
-        w.Line("var __scryDiscard = (await CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, base.Owner, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))).ToList();");
+        w.Line($"var __scryDiscard = (await CardSelectCmd.FromSimpleGrid(choiceContext, __scryTop, {playerExpr}, new CardSelectorPrefs(base.SelectionScreenPrompt, 0, __scryTop.Count))).ToList();");
         w.Open("if (__scryDiscard.Count > 0)");
         if (p is not null && UsesScryDiscardCond(p))
         {
@@ -8109,6 +8109,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 整段写在一个变量上（__scraped），回读时按 <c>CET:Effect=ScrapeDraw</c> 标记收尾、这几行整段跳过
     /// （见 ProjectRecovery 的 skipSelfContainedBody 名单）。
     /// </summary>
+    internal static void EmitScryPublic(CodeWriter w, CharacterProfile? p, EffectSpec e, bool useX, string countExpr, string playerExpr) => EmitScry(w, p, e, useX, countExpr, playerExpr);
+
     private static void EmitScrapeDraw(CodeWriter w, CharacterProfile? p, EffectSpec e, string amount,
         string playerExpr = "base.Owner", string choiceExpr = "choiceContext",
         // V0.2.220：「为抽到的牌加关键词」要用到玩家角色 / 来源模型
@@ -10558,7 +10560,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         bool useX, PetGen.PetDef? petDef = null, string combatStateExpr = "base.CombatState",
         string choiceExpr = "choiceContext", string cardExpr = "this", string cardPlayExpr = "cardPlay",
         string selfExpr = "base.Owner.Creature", string? alliesWhereExpr = null,
-        CardReadings capture = CardReadings.None)
+        CardReadings capture = CardReadings.None, string? targetExpr = null)
     {
         var def = petDef ?? PetGen.Resolve(p, e.PetSummon);
         if (def is null)
@@ -10649,7 +10651,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             default:
                 // 「指定敌人 / 指定队友」：本体这张牌是 AnyEnemy / AnyAlly，会弹选目标（老行为逐字不变）
-                OneTarget($"{cardPlayExpr}.Target");
+                if (targetExpr is not null)
+                {
+                    w.Open($"if ({targetExpr} is {{ }} __petTarget)");
+                    OneTarget("__petTarget");
+                    w.Close();
+                }
+                else OneTarget($"{cardPlayExpr}.Target");
                 break;
         }
     }
@@ -10671,7 +10679,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     internal static void EmitPetCalculatedAttack(CodeWriter w, EffectSpec e, CharacterProfile p, string petVar,
         bool useX, PetGen.PetDef? petDef = null, bool forceInlineDamage = false,
         string combatStateExpr = "base.CombatState", string choiceExpr = "choiceContext",
-        string cardExpr = "this", string cardPlayExpr = "cardPlay", bool bakeUpgrade = false)
+        string cardExpr = "this", string cardPlayExpr = "cardPlay", bool bakeUpgrade = false, string? targetExpr = null)
     {
         var def = petDef ?? PetGen.Resolve(p, e.PetSummon);
         if (def is null)
@@ -10727,14 +10735,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
             default:
+                w.Open($"if ({(targetExpr ?? $"{cardPlayExpr}.Target")} is {{ }} __petCalcTarget)");
                 w.Line($"await DamageCmd.Attack({damage})").Indent();
                 if (calcFromCard.Length > 0) w.Line(calcFromCard);
-                w.Line($".Targeting({cardPlayExpr}.Target)")
+                w.Line(".Targeting(__petCalcTarget)")
                  .Line($".FromPetAttacker({petVar})");
                 if (multi) w.Line($".WithHitCount({hits})");
                 w.Line(".WithAttackerAnim(\"Attack\", 0.3f)")
                  .Line(".WithHitFx(\"vfx/vfx_attack_blunt\", null, \"blunt_attack.mp3\")")
                  .Line($".Execute({choiceExpr});").Dedent().Line();
+                w.Close();
                 break;
         }
     }

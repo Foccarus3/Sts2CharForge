@@ -287,6 +287,15 @@ public static class PowerTriggers
         // 生成端现在复用卡牌那条链的同一批发射器（CustomPowerGen.EmitEffect 里那一段），
         // 只把「施加者 / 主人」换成 base.Owner、「这张牌」换成 null。
         "PetHeal", "PetLoseHp", "PetGainMaxHp", "PetApplyPower", "PetGuardOn", "PetGuardOff",
+        // V0.3.57：状态链补齐一大批发牌 / 目标 / 选牌类效果（用户报「状态页比卡牌页少很多」）。
+        // 这些都不需要「打出这张牌」的 cardPlay：只要 choiceContext + 玩家 / 目标，
+        // 生成端在 CustomPowerGen.EmitEffect 里复用卡牌链的同一套发射器。
+        "DoublePower", "ForbidBlock", "ForbidHeal", "Expose", "InstantKill",
+        "CheapenDraw", "CostDown", "OverdraftEnergy", "RaiseResourceCap", "EndTurn",
+        "Scry", "ScrapeDraw", "FillHand", "TransformCard", "PlaceCard", "GiveKeyword", "TimesUp",
+        "AncientTranscend", "AncientRelicSwap",
+        // 伙伴攻击 / 按生命值算的三档：查得到宠物就能做（和 PetHeal 同一套）
+        "PetAttack", "PetDamageByMaxHp", "PetDamageByCurHp", "PetDamageByMissingHp",
     };
 
     /// <summary>这个效果种类能不能放在状态触发器里。</summary>
@@ -310,6 +319,8 @@ public static class PowerTriggers
         // 「将此牌放回手牌」要的是「刚刚打出的这张牌」本身（打出之后才知道它在不在弃牌堆里），
         // 状态触发器里没有这张牌 —— 报错文案也因此走「需要打出这张牌的上下文」那一档。
         "ReturnSelfToHand",
+        // 「本回合这张牌自己费用变 0」同样只对卡牌自己有意义
+        "CheapenSelf",
         // 「抽到这张牌时它本场战斗费用 -N」同理：这里的「这张牌」是打出它的那张牌自己，
         // 状态触发器里没有这个上下文（想要「抽到就减费（N 回合）」那是另一条效果 CheapenDraw）。
         "CheapenSelfOnDraw",

@@ -1726,7 +1726,12 @@ public static class CustomPowerGen
             or "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust"
             // V0.2.168：「召唤伙伴」—— 生成的 `XxxCmd.Summon(choiceContext, player, hp)` 第一个参数就是它
             //（用户实测报的：状态「生成卡牌时 → 召唤伙伴」生成出来 CS0103 choiceContext）。
-            or "SummonPet";
+            or "SummonPet"
+            // V0.3.57：状态链新补的这批也全都要 choiceContext（ApplyPower / ModifyAmount / 选牌 / 攻击链）
+            or "DoublePower" or "ForbidBlock" or "ForbidHeal" or "Expose"
+            or "CheapenDraw" or "CostDown" or "OverdraftEnergy" or "RaiseResourceCap"
+            or "Scry" or "ScrapeDraw" or "FillHand" or "TransformCard" or "PlaceCard" or "GiveKeyword" or "TimesUp"
+            or "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp";
 
     /// <summary>同 <see cref="NeedsChoiceContext(string)"/>，但能按效果本身细化。</summary>
     public static bool NeedsChoiceContext(EffectSpec e) => e.Kind switch
@@ -1936,6 +1941,106 @@ public static class CustomPowerGen
                 w.Line($"await PowerCmd.Apply<{Naming.AmbientExtraTurnPowerClass}>(choiceContext, base.Owner, 1m, base.Owner, null);");
                 break;
 
+            // ===== V0.3.57：状态链补齐的「目标 / 自增益」类效果 =====
+            // 这些都不需要「打出这张牌」的 cardPlay，只要 base.Owner（Creature）+ choiceContext。
+            case "EndTurn":
+                w.Line("if (base.Owner.Player is not null) PlayerCmd.EndTurn(base.Owner.Player, canBackOut: false);");
+                break;
+
+            case "DoublePower":
+                w.Line(CSharpCodeGen.SelfContainedMarker(e));
+                {
+                    int __dblTimes = Math.Clamp((int)e.Amount, 2, 5);
+                    EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line(
+                        $"{{ PowerModel? __dblPower = {tg}.GetPower<{e.PowerId}>(); if (__dblPower is not null && __dblPower.Amount != 0) await PowerCmd.ModifyAmount(choiceContext, __dblPower, __dblPower.Amount * {__dblTimes - 1}, base.Owner, null); }}   // 翻 {__dblTimes} 倍"));
+                }
+                break;
+
+            case "ForbidBlock":
+                w.Line(CSharpCodeGen.SelfContainedMarker(e));
+                EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line(
+                    CSharpCodeGen.ApplyPowerLine(e, useX: false, "NoBlockPower", tg,
+                        Math.Abs((int)e.Amount).ToString(), "base.Owner", cardSourceExpr: "null") + "   // 禁止获得格挡"));
+                break;
+
+            case "ForbidHeal":
+                w.Line(CSharpCodeGen.SelfContainedMarker(e));
+                EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line(
+                    CSharpCodeGen.ApplyPowerLine(e, useX: false, Naming.From(p!).NoHealPowerClass, tg,
+                        Math.Abs((int)e.Amount).ToString(), "base.Owner", cardSourceExpr: "null") + "   // 禁止生命回复"));
+                break;
+
+            case "Expose":
+                w.Line(CSharpCodeGen.SelfContainedMarker(e));
+                EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line(
+                    $"{{ Creature __expTarget = {tg}; await CreatureCmd.LoseBlock(choiceContext, __expTarget, __expTarget.Block, base.Owner); if (__expTarget.HasPower<ArtifactPower>()) await PowerCmd.Remove<ArtifactPower>(__expTarget); await PowerCmd.Apply<{e.PowerId}>(choiceContext, __expTarget, {Math.Clamp((int)e.Amount, 0, 99)}, base.Owner, null); }}   // 暴露：清格挡 + 去人工制品 + 施加状态"));
+                break;
+
+            case "InstantKill":
+                EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line($"await CreatureCmd.Kill({tg});"));
+                break;
+
+            case "CheapenDraw":
+                w.Line(CSharpCodeGen.SelfContainedMarker(e));
+                w.Line(CSharpCodeGen.ApplyPowerLine(e, useX: false, Naming.From(p!).DrawCostPowerClass,
+                    "base.Owner", Math.Abs((int)e.Amount).ToString(), "base.Owner", cardSourceExpr: "null")
+                    + "   // 抽到就减费");
+                break;
+
+            case "CostDown":
+                CSharpCodeGen.EmitCostDownPublic(w, p!, e, "base.Owner.Player", "null", "choiceContext");
+                break;
+
+            case "OverdraftEnergy":
+                w.Line($"await PowerCmd.Apply<{Naming.From(p!).EnergyDebtPowerClass}>(choiceContext, base.Owner, {amt}, base.Owner, null);"
+                    + "   // 透支：施加时立刻给能量，下回合扣掉");
+                break;
+
+            case "RaiseResourceCap":
+                w.Line($"await PowerCmd.Apply<{CSharpCodeGen.StarCapPowerClass(p!)}>(choiceContext, base.Owner, {amt}, base.Owner, null);"
+                    + "   // 额外资源量上限提高");
+                break;
+
+            // ===== V0.3.57：状态链补齐的「选牌 / 牌堆」类效果 =====
+            case "Scry":
+                CSharpCodeGen.EmitScryPublic(w, p, e, useX: false, countExpr: Math.Max(1, (int)e.Amount).ToString(), playerExpr: "base.Owner.Player");
+                break;
+
+            case "ScrapeDraw":
+                CSharpCodeGen.EmitScrapeDrawPublic(w, p, e, amt, "base.Owner.Player", "choiceContext",
+                    "base.Owner", "null");
+                break;
+
+            case "FillHand":
+                CSharpCodeGen.EmitFillHandPublic(w, e, "base.Owner.Player", "base.Owner.CombatState",
+                    p, "base.Owner", "null");
+                break;
+
+            case "TransformCard":
+                CSharpCodeGen.EmitTransformCardPublic(w, e, p, "null", amt, "base.Owner.Player",
+                    "base.Owner", "null", "base.Owner.CombatState", "choiceContext");
+                break;
+
+            case "PlaceCard":
+                CSharpCodeGen.EmitPlaceCardPublic(w, e, p, useX: false, countExpr: amt,
+                    selfExpr: null, playerExpr: "base.Owner.Player", cardSource: null);
+                break;
+
+            case "TimesUp":
+                EmitPowerTargets(w, e, foeFrom, (x, tg) => x.Line(
+                    $"await DamageCmd.Attack({tg}.GetPowerAmount<DoomPower>() * {amt}).FromCard(null, null).Targeting({tg}).WithHitFx(\"vfx/vfx_attack_slash\").Execute(choiceContext);"
+                    + "   // 大限已至：按目标身上的灾厄层数算伤害"));
+                break;
+
+            case "AncientTranscend":
+                w.Line("var __forgeAncientPreview = new List<CardModel>();");
+                CSharpCodeGen.EmitAncientTranscend(w, p!, e, 0, "base.Owner.Player!", "__forgeAncientPreview");
+                break;
+
+            case "AncientRelicSwap":
+                CSharpCodeGen.EmitAncientRelicSwap(w, p!, e, "base.Owner.Player!");
+                break;
+
             // 播放音效（V0.2.154）：状态触发时也能放（和卡牌 / 遗物 / 药水共用同一个发射器）
             case "PlaySfx":
                 CSharpCodeGen.EmitPlaySfx(w, e);
@@ -2106,6 +2211,10 @@ public static class CustomPowerGen
             case "PetApplyPower":
             case "PetGuardOn":
             case "PetGuardOff":
+            case "PetAttack":
+            case "PetDamageByMaxHp":
+            case "PetDamageByCurHp":
+            case "PetDamageByMissingHp":
             {
                 // 「下回合生效」：**不查宠物**、走卡牌链同一个入口 EmitDelayedPowerApply ——
                 // 它会写 `CET:Effect=… CET:NextTurn=1` 标记行（回读认得出这条是下回合生效），
@@ -2153,6 +2262,18 @@ public static class CustomPowerGen
                             // 施加者 = base.Owner（状态钩子里它就是 Creature）、「这张牌」= null
                             CSharpCodeGen.EmitPetApplyPower(w, p!, e, petVar, amt, map: null, valueExpr: amt,
                                 ownerCreatureExpr: "base.Owner", cardExpr: "null");
+                            break;
+                        case "PetAttack":
+                            CSharpCodeGen.EmitPetAttack(w, e, p!, petVar, amt, useX: false, petDef: petDef,
+                                combatStateExpr: "base.Owner.CombatState", choiceExpr: "choiceContext",
+                                cardExpr: "null", cardPlayExpr: "null", selfExpr: "base.Owner", targetExpr: foeFrom ?? "base.Owner.CombatState.HittableEnemies.FirstOrDefault()");
+                            break;
+                        case "PetDamageByMaxHp":
+                        case "PetDamageByCurHp":
+                        case "PetDamageByMissingHp":
+                            CSharpCodeGen.EmitPetCalculatedAttack(w, e, p!, petVar, useX: false, petDef: petDef,
+                                forceInlineDamage: true, combatStateExpr: "base.Owner.CombatState",
+                                choiceExpr: "choiceContext", cardExpr: "null", cardPlayExpr: "null", bakeUpgrade: true, targetExpr: foeFrom ?? "base.Owner.CombatState.HittableEnemies.FirstOrDefault()");
                             break;
                         case "PetGuardOn":
                             CSharpCodeGen.EmitPetGuard(w, p!, petVar, on: true);

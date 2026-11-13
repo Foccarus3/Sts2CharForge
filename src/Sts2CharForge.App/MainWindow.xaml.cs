@@ -25279,7 +25279,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("能用的效果种类有白名单（选牌类效果现在已经支持，真正要卡牌上下文的仍然被挡住）",
 			PowerTriggers.Supports("Damage") && PowerTriggers.Supports("ApplyPower")
 			&& PowerTriggers.Supports("ExhaustCard") && PowerTriggers.Supports("DiscardCard")
-			&& !PowerTriggers.Supports("CopyCard") && !PowerTriggers.Supports("ReplayCard") && !PowerTriggers.Supports("EndTurn"),
+			&& !PowerTriggers.Supports("CopyCard") && !PowerTriggers.Supports("ReplayCard") && PowerTriggers.Supports("EndTurn"),
+			$"{PowerTriggers.SupportedEffectKinds.Count} 种可用");
+		Check("V0.3.57：状态可用效果补齐到 65 种（只留 6 个真正需要「这张牌」的种类）",
+			PowerTriggers.SupportedEffectKinds.Count == 65
+			&& PowerTriggers.Supports("Scry") && PowerTriggers.Supports("ScrapeDraw")
+			&& PowerTriggers.Supports("TransformCard") && PowerTriggers.Supports("PlaceCard")
+			&& PowerTriggers.Supports("FillHand") && PowerTriggers.Supports("CostDown")
+			&& PowerTriggers.Supports("DoublePower") && PowerTriggers.Supports("Expose")
+			&& PowerTriggers.Supports("InstantKill") && PowerTriggers.Supports("PetAttack")
+			&& !PowerTriggers.Supports("CheapenSelf") && !PowerTriggers.Supports("CopyCard")
+			&& !PowerTriggers.Supports("ReplayCard") && !PowerTriggers.Supports("TurnEndPlay"),
 			$"{PowerTriggers.SupportedEffectKinds.Count} 种可用");
 		CharacterProfile cpProbe = ProfileFactory.Sample();
 		cpProbe.CustomPowers.Clear();
@@ -27969,12 +27979,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			wordingProbe.CustomPowers.Add(new CustomPowerSpec
 			{
 				Name = "文案状态", Enabled = true,
-				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain" } } } },
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "CopyCard", Amount = 1m } } } },
 			});
 			string wording = string.Join(" ｜ ", ProfileValidator.Validate(wordingProbe)
 				.Where((ValidationIssue i) => i.IsError && i.Message.Contains("文案状态")).Select((ValidationIssue i) => i.Message));
 			Check("文案分档：不是「卡牌上下文」的那种，说的是「生成端还没实现这个效果种类」",
-				wording.Contains("还没给") && !wording.Contains("打出这张牌"), wording.Length > 50 ? wording.Substring(0, 50) + "…" : wording);
+				wording.Contains("打出这张牌") && !wording.Contains("给予卡牌关键词"), wording.Length > 50 ? wording.Substring(0, 50) + "…" : wording);
 		}
 
 		// ===== 丢弃卡牌（用户要求的新效果：手牌 / 抽牌堆里丢 N 张进弃牌堆）=====
@@ -40292,14 +40302,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			scopeProbe2.CustomPowers.Add(new CustomPowerSpec
 			{
 				Name = "自检范围状态", Enabled = true,
-				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Retain", SpawnFilter = "Attack" } } } },
+				Triggers = { new PowerTriggerSpec { Kind = "TurnStart", Effects = { new EffectSpec { Kind = "CopyCard", Amount = 1m, SpawnPick = "Random", SpawnFilter = "Attack" } } } },
 			});
 			// ⚠「给予卡牌关键词」不属于「需要打出这张牌的上下文」（它只是状态那条链还没实现），
 			// 所以文案分档之后它走的是「生成端还没实现」那一档 —— 拦是一定要拦住的，断言匹配这一种说法。"
-			Check("但「给予卡牌关键词」（本就不支持放进状态触发器）照样拦住 —— 拦的是效果种类，不是范围",
+			Check("但「复制卡牌」（本就不支持放进状态触发器）照样拦住 —— 拦的是效果种类，不是范围",
 				ProfileValidator.Validate(scopeProbe2).Any((ValidationIssue x) => x.IsError
-					&& x.Message.Contains("给予卡牌关键词")
-					&& (x.Message.Contains("还没给") || x.Message.Contains("卡牌上下文"))), "拦住了");
+					&& x.Message.Contains("复制卡牌")
+					&& x.Message.Contains("打出这张牌")), "拦住了");
 			Check("用了范围界定但那条效果种类不支持（例如「造成伤害」）→ 给一句提示，别让人以为配了会有用",
 				ProfileValidator.Validate(new CharacterProfile
 				{
@@ -43332,8 +43342,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.3.26：自定义状态页的全量「效果种类」比 PowerKinds 多（多出来的正是以前能误选的卡牌/伙伴类效果）",
 						v26Extra is not null && !PowerKinds.Any(p => string.Equals(p.Kind, v26Extra.Kind, StringComparison.Ordinal)),
 						v26Extra is null ? "(两份一样)" : $"多出来：{v26Extra.Kind} / {v26Extra.Display}；PowerKinds={PowerKinds.Count} 全量={Kinds.Count}");
-					Check("V0.3.26：「伙伴攻击」不在 PowerKinds 里（状态钩子没有选牌 / 伙伴上下文）",
-						!PowerKinds.Any(p => p.Kind == "PetAttack") && Kinds.Any(p => p.Kind == "PetAttack"),
+					Check("V0.3.57：「伙伴攻击」现在也在 PowerKinds 里（状态链已接上宠物上下文）",
+						PowerKinds.Any(p => p.Kind == "PetAttack") && Kinds.Any(p => p.Kind == "PetAttack"),
 						$"PowerKinds 有={PowerKinds.Any(p => p.Kind == "PetAttack")} 全量有={Kinds.Any(p => p.Kind == "PetAttack")}");
 
 					// 真的把 EffectCommon 实例化出来看：外层 Tag=Power 时，模板里那份全量下拉必须被藏掉。

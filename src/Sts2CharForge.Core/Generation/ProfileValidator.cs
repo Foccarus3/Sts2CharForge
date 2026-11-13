@@ -2044,6 +2044,9 @@ public static class ProfileValidator
         "AddCardGlobal", "TransformCardGlobal", "RemoveCardGlobal", "UpgradeCardGlobal",
         "UpgradeCard", "ExhaustCard", "DiscardCard", "GiveKeyword",
         "TakeFromDraw", "TakeFromDiscard", "TakeFromExhaust", "CardReward",
+        // V0.3.57：状态链新补的效果里，生成代码会直接读 base.Owner.Player（敌人身上为 null）
+        "CostDown", "EndTurn", "AncientRelicSwap",
+        "TransformCard", "Scry", "ScrapeDraw", "PlaceCard", "FillHand",
     };
 
     private static string SelfScopedPowerTriggerZh(string kind)
