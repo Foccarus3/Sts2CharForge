@@ -10021,7 +10021,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     groupZh: MultiTargetGroupZh(e) ?? "");
                 if (IsNegativeAmount(e, useX))
                     EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
-                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, isFromCard: true);");
+                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, this);");
                 else
                     EmitPerCreature(w, e, useX, "base.Owner.Creature", "cardPlay.Target", "base.CombatState.HittableEnemies",
                         c => $"await CreatureCmd.GainMaxHp({c}, {amt});");
@@ -14076,7 +14076,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 {
                     if (!hasContext) { Warn(w, e); break; }
                     EmitPerCreature(w, e, useX: false, "base.Owner.Creature", null, "base.Owner.Creature.CombatState.HittableEnemies",
-                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, isFromCard: false);");
+                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, null);");
                 }
                 else
                     EmitPerCreature(w, e, useX: false, "base.Owner.Creature", null, "base.Owner.Creature.CombatState.HittableEnemies",
@@ -15568,7 +15568,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     e.Amount < 0 ? Lit.Dec(-e.Amount) : amt, inLoop: potionTarget == "AllEnemies");
                 if (e.Amount < 0)
                     EmitPotionPerCreature(w, potionTarget, allEnemies,
-                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, isFromCard: false);");
+                        c => $"await CreatureCmd.LoseMaxHp(choiceContext, {c}, {-e.Amount}, null);");
                 else
                     EmitPotionPerCreature(w, potionTarget, allEnemies, c => $"await CreatureCmd.GainMaxHp({c}, {amt});");
                 break;

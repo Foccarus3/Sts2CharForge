@@ -1911,7 +1911,7 @@ public static class CustomPowerGen
                 {
                     DebugLogGen.Target(x, e, tg, amt, inLoop: IsMultiTargetSide(e));
                     x.Line(CSharpCodeGen.IsNegativeAmount(e, useX: false)
-                        ? $"await CreatureCmd.LoseMaxHp(choiceContext, {tg}, {CSharpCodeGen.AbsExpr(amt)}, isFromCard: false);"
+                        ? $"await CreatureCmd.LoseMaxHp(choiceContext, {tg}, {CSharpCodeGen.AbsExpr(amt)}, null);"
                         : $"await CreatureCmd.GainMaxHp({tg}, {amt});");
                 });
                 break;

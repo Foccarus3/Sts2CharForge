@@ -25436,7 +25436,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("V0.2.241：格挡 / 失去生命 / 最大生命 也按作用对象展开（同一条洞）",
 				tgtSrc.Contains("await CreatureCmd.GainBlock(other, 3m, ValueProp.Unpowered, null);")
 				&& tgtSrc.Contains("await CreatureCmd.Damage(choiceContext, other, 4m, ValueProp.Unblockable | ValueProp.Unpowered, base.Owner);")
-				&& tgtSrc.Contains("await CreatureCmd.LoseMaxHp(choiceContext, other, System.Math.Abs(-2m), isFromCard: false);"), "三种都对");
+				&& tgtSrc.Contains("await CreatureCmd.LoseMaxHp(choiceContext, other, System.Math.Abs(-2m), null);"), "三种都对");
 			Check("V0.2.241：界面那一栏「作用对象」确实对回复生命值显示 —— 摆了就必须真的被读（以前摆了没人读）",
 				new EffectSpec { Kind = "Heal" }.ShowTargetSideRow, "摆着");
 			// 两个子勾选框（和卡牌 / 遗物链同一份口径）
@@ -29611,7 +29611,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("节点图：回复生命填负数 → 改走失去生命（本体 Heal 对非正数什么都不做）",
 					GraphSrcOf("Heal").Contains("CreatureCmd.Damage(choiceContext, __fgFoe, 6m, ValueProp.Unblockable | ValueProp.Unpowered | ValueProp.Move"), "失去生命");
 				Check("节点图：最大生命填负数 → CreatureCmd.LoseMaxHp",
-					GraphSrcOf("MaxHp").Contains("CreatureCmd.LoseMaxHp(choiceContext, __fgFoe, 6m, isFromCard: true)"), "失去最大生命");
+					GraphSrcOf("MaxHp").Contains("CreatureCmd.LoseMaxHp(choiceContext, __fgFoe, 6m, this)"), "失去最大生命");
 			}
 			// V0.2.192（用户要求「在锻造增加状态列表」）：新模块【状态列表】——
 			// 看「一群状态」：个数 / 层数合计，还能按「只看增益 / 只看减益 / 只看某个状态」筛。

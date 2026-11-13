@@ -3763,7 +3763,7 @@ public static class ForgeGraphGen
                 alwaysBraces: false),
             "MaxHp" when !amountN.Runtime && amountN.Value < 0m => FoeLoop(foes,
                 DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
-                $"await CreatureCmd.LoseMaxHp({ctx.ChoiceVar}, __fgFoe, {Lit(Math.Abs((double)amountN.Value))}m, isFromCard: true);   // 负数 = 失去最大生命",
+                $"await CreatureCmd.LoseMaxHp({ctx.ChoiceVar}, __fgFoe, {Lit(Math.Abs((double)amountN.Value))}m, {ctx.CardSelfExpr});   // 负数 = 失去最大生命",
                 alwaysBraces: false),
             "MaxHp" => FoeLoop(foes,
                 DebugLogGen.TargetInline(ApplyPowerEffectOf(node), "__fgFoe", amount, inLoop: true),
