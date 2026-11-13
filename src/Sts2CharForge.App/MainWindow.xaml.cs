@@ -46115,6 +46115,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& PluginCompatGen.Rewrite("CardSelectCmd.PushSelector(sel);") ==
 						"global::Sts2CharForge.PluginCompat.LegacyPluginCompat.PushSelector(sel);",
 					"兼容文件在");
+				Check("V0.3.61：插件里 PlayerChoiceContext 子类自动补 GameActionType（v0.113 新抽象成员）",
+					PluginCompatGen.Rewrite("public sealed class NullSafe : PlayerChoiceContext { public override ulong? OwnerId => null; }")
+						.Contains("GameActionType? GameActionType => null;"),
+					"补了 GameActionType");
 				// ===== V0.2.316：触发时机 / 条件 / 锻造模块 接进生成端 =====
 				// 触发时机 = 本体已有钩子的别名 + 一句额外守卫；条件 = 一段布尔表达式；锻造模块 = 一段模板。
 				string good2 = Path.Combine(pluginRoot, "plugins", "uiCheck2");

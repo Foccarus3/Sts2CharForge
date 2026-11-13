@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 
 namespace Sts2CharForge.Core.Generation;
 
@@ -56,7 +57,128 @@ public static class PluginCompatGen
             "global::Sts2CharForge.PluginCompat.LegacyPluginCompat.UseSelector(");
         text = text.Replace("CardSelectCmd.SetTestSelector(",
             "global::Sts2CharForge.PluginCompat.LegacyPluginCompat.SetTestSelector(");
+        return EnsurePlayerChoiceContextGameActionType(text);
+    }
+
+    /// <summary>
+    /// v0.113 给 PlayerChoiceContext 加了抽象属性 GameActionType。
+    /// 插件里自己继承 PlayerChoiceContext 的包装器（ShuffleHelper.NullSafeChoiceContext 等）
+    /// 如果没实现它，会 CS0534。这里在**生成工程的插件副本**里补一句 override。
+    /// 只补继承 PlayerChoiceContext 且正文里还没有 GameActionType 的类。
+    /// </summary>
+    public static string EnsurePlayerChoiceContextGameActionType(string text)
+    {
+        if (string.IsNullOrEmpty(text) || !text.Contains("PlayerChoiceContext", StringComparison.Ordinal)) return text;
+
+        var rx = new Regex(@"\bclass\s+[A-Za-z_]\w*\s*(?:<[^>{]*>)?\s*:\s*([^{]+?)\{",
+            RegexOptions.Singleline);
+        MatchCollection matches = rx.Matches(text);
+        for (int i = matches.Count - 1; i >= 0; i--)
+        {
+            Match m = matches[i];
+            if (!Regex.IsMatch(m.Groups[1].Value, @"\bPlayerChoiceContext\b")) continue;
+
+            int open = text.IndexOf('{', m.Index);
+            if (open < 0) continue;
+            int close = FindMatchingBrace(text, open);
+            if (close < 0) continue;
+
+            string body = text.Substring(open + 1, close - open - 1);
+            if (Regex.IsMatch(body, @"\bGameActionType\b")) continue;
+
+            // 类声明所在行的缩进；成员缩进 +4 空格
+            int lineStart = text.LastIndexOf('\n', Math.Max(0, m.Index - 1)) + 1;
+            string line = text.Substring(lineStart, m.Index - lineStart);
+            string indent = new string(line.TakeWhile(ch => ch == ' ' || ch == '\t').ToArray());
+            string memberIndent = indent + "    ";
+            string insert = "\n" + memberIndent
+                + "public override global::MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType? GameActionType => null;"
+                + "   // v0.113 PlayerChoiceContext 新增抽象成员\n" + indent;
+            text = text.Insert(close, insert);
+        }
         return text;
+    }
+
+    /// <summary>从 class 的 { 开始找配对的 }，跳过字符串 / 字符 / 行注释 / 块注释。</summary>
+    private static int FindMatchingBrace(string s, int open)
+    {
+        int depth = 0;
+        for (int i = open; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '/' && i + 1 < s.Length && s[i + 1] == '/')
+            {
+                i = s.IndexOf('\n', i);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '/' && i + 1 < s.Length && s[i + 1] == '*')
+            {
+                i = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (i < 0) return -1;
+                i++;
+                continue;
+            }
+            // 普通 / 逐字 / 插值字符串：整个跳过（插值里的括号不影响类体配对）
+            if (c == '"')
+            {
+                i = SkipString(s, i, verbatim: false);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '@' && i + 1 < s.Length && s[i + 1] == '"')
+            {
+                i = SkipString(s, i + 1, verbatim: true);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '$' && i + 1 < s.Length && s[i + 1] == '"')
+            {
+                i = SkipString(s, i + 1, verbatim: false);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '$' && i + 2 < s.Length && s[i + 1] == '@' && s[i + 2] == '"')
+            {
+                i = SkipString(s, i + 2, verbatim: true);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '\'')
+            {
+                i = SkipChar(s, i);
+                if (i < 0) return -1;
+                continue;
+            }
+            if (c == '{') depth++;
+            else if (c == '}')
+            {
+                depth--;
+                if (depth == 0) return i;
+            }
+        }
+        return -1;
+    }
+
+    private static int SkipString(string s, int quote, bool verbatim)
+    {
+        for (int i = quote + 1; i < s.Length; i++)
+        {
+            if (verbatim && s[i] == '"' && i + 1 < s.Length && s[i + 1] == '"') { i++; continue; }
+            if (!verbatim && s[i] == '\\') { i++; continue; }
+            if (s[i] == '"') return i;
+        }
+        return -1;
+    }
+
+    private static int SkipChar(string s, int quote)
+    {
+        for (int i = quote + 1; i < s.Length; i++)
+        {
+            if (s[i] == '\\') { i++; continue; }
+            if (s[i] == '\'') return i;
+        }
+        return -1;
     }
 
     // v0.113：Rng.Shuffle<T>(IList<T>) 被删了，改成 ListExtensions.UnstableShuffle/StableShuffle。
