@@ -129,6 +129,7 @@ public static class ProfileValidator
         // 打出那张牌的 OnPlay 永远返回不了 → 牌停在出牌位浮空、回合卡住。这里在生成前就提示。
         ValidateTriggerCycles(issues, p);
         ValidateDelayedClassCollisions(issues, p);   // V0.2.351：两条「下回合生效」算出同一个类名（会 CS0101 + CS0111）
+        ValidateCrossModelClassNames(issues, p);   // V0.3.62：卡牌 / 遗物 / 药水 / 召唤物 / 自定义状态之间的类名撞车（CS0101 / CS0263）
 
         // 效果库整体为空（换机器后路径失效）→ 只报一条，说清怎么修
         if (EffectCatalog.Powers.Count == 0)
@@ -2511,6 +2512,58 @@ public static class ProfileValidator
     /// <para>V0.2.342 起生成端给 <c>Hook.AfterPowerAmountChanged</c> 加了 12 层深度闸门兜底，
     /// 但真正该改的是配置：去掉环上的一条边，或者给其中一边加条件。</para>
     /// </summary>
+    /// <summary>
+    /// V0.3.62：卡牌 / 遗物 / 药水 / 召唤物 / 自定义状态之间的**类名撞车**。
+    ///
+    /// <para>生成规则是「一个类名一个 .cs 文件」，但模型库按**类名**算 ID。用户手填同一个英文类名给一张卡和一个
+    /// 自定义状态时，会生成 <c>cs/Cards/X.cs</c> 和 <c>cs/Powers/X.cs</c> 两个 <c>class X</c>：
+    /// <c>CS0101 命名空间已包含 X 的定义</c>，紧接着 <c>CS0263 分部声明必须指定不同的基类</c>。
+    /// 这个错误在旧版只会等 dotnet build 才暴露，报错完全看不出是哪两个条目撞了。</para>
+    ///
+    /// <para>只在**跨类别**时报：同类之内的重名已经有各自的检查（卡牌类名重复 / 遗物类名重复 / 自定义状态类名重复）。
+    /// 留空的自动类名不走这里（NameStabilizer 已经用 Claim 避让）。</para>
+    /// </summary>
+    private static void ValidateCrossModelClassNames(List<ValidationIssue> issues, CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var owners = new Dictionary<string, (string Who, string Kind)>(StringComparer.Ordinal);
+
+        void Add(string? cls, string who, string kind)
+        {
+            if (string.IsNullOrWhiteSpace(cls)) return;
+            cls = cls.Trim();
+            if (!Naming.IsValidIdentifier(cls)) return;   // 非法类名由各自的检查报
+            if (!owners.TryGetValue(cls, out var first))
+            {
+                owners[cls] = (who, kind);
+                return;
+            }
+            // 同类别重名由各自的检查报，别在这里重复刷屏
+            if (string.Equals(first.Kind, kind, StringComparison.Ordinal)) return;
+            issues.Add(new("错误",
+                $"模型类名重复：{cls}（{first.Kind}{first.Who} 和 {kind}{who} 都用了这个英文类名）。"
+                + "生成出来会是两个同名 class（CS0101 / CS0263），整个工程编译不过；"
+                + "请到对应页给其中一个换一个英文类名。"));
+        }
+
+        foreach (var c in p.AllCards)
+            if (c is not null && !c.IsVanillaCard) Add(n.CardClassName(p, c), $"「{c.Name}」", "卡牌");
+        for (int i = 0; i < p.Relics.Count; i++)
+            if (p.Relics[i] is not null) Add(p.Relics[i].ClassName, $"「{p.Relics[i].Name}」", "遗物");
+        for (int i = 0; i < p.Potions.Count; i++)
+            if (p.Potions[i] is not null) Add(p.Potions[i].ClassName, $"「{p.Potions[i].Name}」", "药水");
+        for (int i = 0; i < p.Summons.Count; i++)
+        {
+            var s = p.Summons[i];
+            if (s is not null && s.Enabled) Add(PetGen.ClassNameOf(p, s), $"「{s.Name}」", "召唤物");
+        }
+        for (int i = 0; i < p.CustomPowers.Count; i++)
+        {
+            var cp = p.CustomPowers[i];
+            if (cp is not null && cp.Enabled) Add(CustomPowerGen.ClassNameOf(p, cp, i), $"「{cp.Name}」", "自定义状态");
+        }
+    }
+
     /// <summary>
     /// V0.2.351：**两条「下回合生效」效果算出同一个延迟类名**。
     ///

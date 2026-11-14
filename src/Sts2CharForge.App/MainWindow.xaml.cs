@@ -40808,6 +40808,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					okProf.Cards.Add(okB);
 					Check("V0.2.351：只差「什么时候撤」的两条（V0.2.350 已改成不同类名）→ 不再报撞名",
 						!ProfileValidator.Validate(okProf).Any(i => i.Message.Contains("同一个延迟状态类")), "没报");
+					// V0.3.62：卡牌和自定义状态用了同一个英文类名（用户实测 CS0101 / CS0263）
+					var crossProf = ProfileFactory.Sample();
+					crossProf.Cards.Clear();
+					crossProf.Curses.Clear();
+					crossProf.AncientCards.Clear();
+					crossProf.CustomPowers.Clear();
+					crossProf.Cards.Add(new CardSpec { Name = "撞名卡", ClassName = "RenoWarlock", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true });
+					crossProf.CustomPowers.Add(new CustomPowerSpec { Name = "撞名状态", ClassName = "RenoWarlock", Enabled = true });
+					Check("V0.3.62：卡牌 / 自定义状态跨类别同名 → 生成前就报「模型类名重复」（不再等 CS0101 / CS0263）",
+						ProfileValidator.Validate(crossProf).Any(i => i.Message.Contains("模型类名重复") && i.Message.Contains("RenoWarlock")),
+						string.Join(" / ", ProfileValidator.Validate(crossProf).Where(i => i.Message.Contains("模型类名重复")).Select(i => i.Message).Take(2)));
 				}				// ----- V0.2.352：「转化为先古卡」不生效的真因（组条件拿类名比 Id.Entry，永远不相等）-----
 				{
 					var afProf = ProfileFactory.Sample();
