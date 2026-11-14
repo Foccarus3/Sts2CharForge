@@ -57,7 +57,7 @@
   "id": "myplugin",              // 必填：插件唯一标识（英文/数字/下划线，字母开头）
   "name": "我的插件",             // 显示名
   "version": "1.0",
-  "apiVersion": "1",             // 必填：本编辑器只认 "1"
+  "apiVersion": "2",             // 必填：当前 2；写 "1" 或留空会自动迁移
   "author": "你",
   "description": "一句话说明",
   "readme": "Markdown，编辑器「插件」页里显示",
@@ -178,7 +178,7 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 | `CardDrawn` | 抽一张牌后 | `AfterCardDrawn(choiceContext, card, fromHandDraw)` |
 | `CardDiscarded` | 弃掉一张牌后 | `AfterCardDiscarded(choiceContext, card)` |
 | `CardGenerated` | 生成卡牌时 | `AfterCardGeneratedForCombat(card, creator)` |
-| `EnemyDeath` | 一个敌人死亡后 | `AfterDeath(choiceContext, creature, wasRemovalPrevented, deathAnimLength)` |
+| `EnemyDeath` | 一个敌人死亡后 | `AfterDeath(choiceContext, creature, source, wasRemovalPrevented, deathAnimLength)`（v0.113 新增 `source`） |
 | `GoldGained` | 获得金币时 | `AfterGoldGained(player)` |
 | `CombatVictory` | 战斗胜利后 | `AfterCombatVictory(room)` |
 | `CombatEnd` | 战斗结束时（房间结算之前） | `AfterCombatEnd(room)` |
@@ -270,7 +270,7 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 | 报错原文 | 原因 | 怎么改 |
 |---|---|---|
 | `plugin.json 解析失败：…` | JSON 语法错（多逗号、缺引号、注释写成了 `//` 以外的东西） | 只允许 `//` 行注释和尾随逗号；拿 JSON 校验器过一遍 |
-| `清单版本 apiVersion = 「x」不受支持（本编辑器支持 1）` | `apiVersion` 写错 | 改成 `"1"` |
+| `清单版本 apiVersion = 「x」不受支持（本编辑器支持 2）` | `apiVersion` 写错 | 改成 `"2"`（`"1"` 会自动迁移） |
 | `插件 id「x」和前面某个插件重复` | 两个插件同 id | 换个 id |
 | `有一条效果没填 kind。` | 空 kind | 补上 |
 | `效果 kind「x」不合法` | 不是「字母开头 + 字母数字下划线」 | 改成英文标识 |
@@ -294,7 +294,7 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 
 ## 12. 交付前自检清单（逐条过）
 
-1. `id` / `name` / `apiVersion: "1"` 都有；`kind` / `id` 都是英文标识、不和自带的重名。
+1. `id` / `name` / `apiVersion: "2"` 都有；`kind` / `id` 都是英文标识、不和自带的重名。
 2. 每条效果都有 `emit`；模板里**没有** `using` / `namespace` / `class`。
 3. 占位符和链对得上（第 5 节：状态链别用 `{cardPlay}`；用完 `{power}` / `{card}` 要开 `needsPower` / `needsCard`）。
 4. `triggers[].hook` 是第 8.1 表里的 id；`guard` 只用那个钩子签名里的参数；`hasChoiceContext` 和签名一致。

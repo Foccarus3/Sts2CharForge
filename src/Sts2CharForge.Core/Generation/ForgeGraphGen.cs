@@ -3652,8 +3652,8 @@ public static class ForgeGraphGen
                 + $"await PowerCmd.Apply<{powerId}>({ctx.ChoiceVar}, __fgPet, {amount}, __fgSelf, {ctx.CardSelfExpr});"
                 + DebugLogGen.PowerAfter(ApplyPowerEffectOf(node), "__fgPet", powerId);
             petBody = pick == "AllSummons"
-                ? $"foreach (Creature __fgPet in ForgeFormulaRuntime.SummonList(__fgPlayer)) {{ {call} }}"
-                : $"{{ Creature? __fgPet = {one}; if (__fgPet is not null) {{ {call} }} }}";
+                ? $"foreach (Creature __fgPet in ForgeFormulaRuntime.SummonList(__fgPlayer))\n{{\n {call}\n}}"
+                : $"{{ Creature? __fgPet = {one}; if (__fgPet is not null)\n{{\n {call}\n}}\n}}";
         }
         // 「生成调试日志」（V0.2.142，默认关）：这一段的效果属于「这张布上的这一个【效果】节点」。
         // 关着时这个 using 什么都不做、下面那几个内联日志助手也一律返回空串 —— 生成文本逐字节不变（红线①）。
@@ -3683,10 +3683,12 @@ public static class ForgeGraphGen
                     // 和 CSharpCodeGen.EmitPerPlayer 同一套守卫：不是自己、和我同一边、真的是个玩家
                     return $"if (({ctx.CardPlayExpr})?.Target is {{ }} __fgAllyUnit && __fgAllyUnit != __fgSelf"
                         + " && __fgAllyUnit.Side == __fgSelf.Side && __fgAllyUnit.Player is { } __fgAllyP)"
-                        + $" {{ {With("__fgAllyP")} }}";
+                        + $" {{ {With("__fgAllyP")}\n }}";
                 case "AllAllies":
-                    return $"if (__fgSelf.CombatState is not null) {{ foreach (Creature __fgAllyUnit in __fgSelf.CombatState.Allies.Where({CSharpCodeGen.AllyLoopWhere(pe, "__fgSelf")} && c.IsPlayer).ToList())"
-                        + $" {{ if (__fgAllyUnit.Player is {{ }} __fgAllyP) {{ {With("__fgAllyP")} }} }} }}";
+                    // ⚠ 每个收尾括号都必须**另起一行**：With() 的片段常常以 `// 注释` 结尾，
+                    // 同一行的 ` } }` 会被整段注释掉，生成的文件就少大括号（CS1513）。
+                    return $"if (__fgSelf.CombatState is not null)\n{{ foreach (Creature __fgAllyUnit in __fgSelf.CombatState.Allies.Where({CSharpCodeGen.AllyLoopWhere(pe, "__fgSelf")} && c.IsPlayer).ToList())\n"
+                        + $" {{ if (__fgAllyUnit.Player is {{ }} __fgAllyP)\n {{ {With("__fgAllyP")}\n }}\n }}\n }}";
                 default:
                     return With("__fgPlayer");
             }
@@ -4166,8 +4168,8 @@ public static class ForgeGraphGen
     private static string FoeLoop(string foes, string dbgPrefix, string body, bool alwaysBraces)
     {
         string head = $"foreach (Creature __fgFoe in {foes})";
-        if (dbgPrefix.Length == 0) return alwaysBraces ? $"{head} {{ {body} }}" : $"{head} {body}";
-        return $"{head} {{ {dbgPrefix}{body} }}";
+        if (dbgPrefix.Length == 0) return alwaysBraces ? $"{head}\n{{\n {body}\n}}" : $"{head} {body}";
+        return $"{head}\n{{\n {dbgPrefix}{body}\n}}";
     }
 
     /// <summary>
@@ -4178,7 +4180,7 @@ public static class ForgeGraphGen
     {
         string head = $"foreach (Creature __fgFoe in {foes})";
         if (!DebugLogGen.On) return $"{head} {core}";
-        return $"{head} {{ {DebugLogGen.PowerBefore(e, "__fgFoe", powerType, amount)}{core}{DebugLogGen.PowerAfter(e, "__fgFoe", powerType)} }}";
+        return $"{head}\n{{\n {DebugLogGen.PowerBefore(e, "__fgFoe", powerType, amount)}{core}{DebugLogGen.PowerAfter(e, "__fgFoe", powerType)}\n}}";
     }
 
     /// <summary>
