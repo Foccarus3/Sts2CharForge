@@ -5673,7 +5673,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         // 所有效果都挂在「卡牌时机」/「放回手牌」这类钩子上时，OnPlay 里一句都没有 —— 补一句 await，
         // 免得生成出「async 方法里没有 await」（CS1998）。这是新配置才会走到的分支（老存档不变）。
-        if (c.Effects.Count > 0 && onPlayEffects.Count == 0)
+        if (onPlayEffects.Count == 0)
             w.Line("// 这张牌的效果全都挂在钩子上（打出时不做事），见下面那几个 override")
              .Line("await Task.CompletedTask;");
 

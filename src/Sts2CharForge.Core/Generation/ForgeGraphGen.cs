@@ -2670,7 +2670,7 @@ public static class ForgeGraphGen
         w.Line("// ---- 「数值公式」用到的值：打出这张牌时先算一次（和锻造页【数值】模块同一套语法）----");
         if (needPlayer) w.Line("Player __fgPlayer = base.Owner;");
         if (needSelf) w.Line("Creature __fgSelf = base.Owner.Creature;");
-        if (needTarget) w.Line($"Creature? __fgTarget = {targetExpr};");
+        if (needTarget) w.Line($"Creature? __fgTarget = {targetExpr}; _ = __fgTarget;   // 可能被后续公式引用；避免 CS0219");
         // ⚠ V0.2.168：这张牌自己是**这张资源费的 X 档**（费用框里写 X / Y）时，__X / __Y 直接取
         // **这张牌花掉的那部分**，而不是「当前还剩多少」——
         // 本体是**先扣费、再跑效果**（PlayCardAction：`await _card.SpendResources()` → OnPlay），

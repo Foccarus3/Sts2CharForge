@@ -697,6 +697,8 @@ public static class ModGenerator
             Log($"  插件自带文件：{pluginFiles} 个已拷进工程（cs/Plugins/<插件 id>/ 与 plugin_assets/<插件 id>/）");
         // V0.2.319：插件「自定义页」里填的值按模板渲染成文件写进工程（随 mod 一起编译 / 打包）
         int pluginPages = Plugins.PluginGen.WritePages(root);
+        // 插件自定义页产出的 .cs 也是插件代码：同样包进唯一命名空间（CopyInto 已处理自带 .cs）
+        if (pluginPages > 0) PluginCompatGen.WrapPluginNamespaces(root);
         if (pluginPages > 0)
             Log($"  插件自定义页：{pluginPages} 个文件已按页面里填的值生成进工程");
         ProjectFilesGen.WriteText(Path.Combine(root, "README.md"), Readme(profile, n));
