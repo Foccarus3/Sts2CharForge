@@ -7968,6 +7968,17 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		SetStatus($"插件已重新加载：{PluginRegistry.Plugins.Count} 个（可用 {PluginRegistry.Plugins.Count(x => x.Problems.Count == 0)} 个）");
 	}
 
+	private void OnOpenPluginMarket(object sender, RoutedEventArgs e)
+	{
+		try
+		{
+			var win = new PluginMarketWindow(this, AppContext.BaseDirectory, LoadPlugins);
+			win.ShowDialog();
+			SetStatus("插件市场已关闭；安装 / 卸载后请点「重新加载插件」或重新生成工程。");
+		}
+		catch (Exception ex) { SetStatus("打开插件市场失败：" + ex.Message); }
+	}
+
 	private void OnOpenPluginFolder(object sender, RoutedEventArgs e)
 	{
 		string dir = PluginRegistry.PluginsDirOf(AppContext.BaseDirectory);

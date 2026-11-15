@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "example",
+      "name": "示例插件（可删）",
+      "author": "Sts2CharForge",
+      "description": "演示插件格式：效果种类、触发时机、条件、锻造模块、三种页面，带一个随模组编译的工具类。安装后可当模板改。",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.72",
+      "homepage": "https://github.com/Foccarus3/Sts2CharForge",
+      "versions": [
+        {
+          "version": "1.2.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/example-1.2.0.zip",
+          "sha256": "1243af0f1bb08d2b98e6473f255f862fb50e9150b0dc45dec3e954643c6dc2e3",
+          "notes": "市场 MVP 的示例包；和程序自带的 plugins\\示例插件 内容相同。",
+          "gameVersion": "v0.113.x"
+        }
+      ]
+    }
+  ]
+}

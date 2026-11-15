@@ -3551,6 +3551,7 @@
                         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Foreground="#666" Margin="0,0,0,6"
                                    Text="插件放在程序目录的「plugins」文件夹里（每个插件一个子目录 + plugin.json）。插件自带的效果种类会直接出现在「效果种类」下拉里；自带的 .cs 会一起编进模组。"/>
                         <Button DockPanel.Dock="Top" Content="重新加载插件" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnReloadPlugins"/>
+                        <Button DockPanel.Dock="Top" Content="插件市场（下载 / 安装）" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnOpenPluginMarket"/>
                         <Button DockPanel.Dock="Top" Content="打开插件文件夹" Padding="8,4" Margin="0,0,0,6" HorizontalAlignment="Stretch" Click="OnOpenPluginFolder"/>
                         <TextBox DockPanel.Dock="Bottom" x:Name="PluginStatusText" IsReadOnly="True" TextWrapping="Wrap"
                                  BorderThickness="0" Background="Transparent" Foreground="#0A7" Margin="0,6,0,0"/>
