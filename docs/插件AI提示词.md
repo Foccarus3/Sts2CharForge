@@ -1,4 +1,4 @@
-# 给 AI 用的提示词：给 Sts2CharForge 写插件（V0.2.339）
+# 给 AI 用的提示词：给 Sts2CharForge 写插件（V0.3.74）
 
 > **怎么用**：把 `=== 提示词开始 ===` 到 `=== 提示词结束 ===` 之间的内容整段发给 AI（Claude / GPT / DeepSeek 都行），
 > 在最末尾「我想做的插件」里写上你的需求，它就能按规范写出一个能直接用的插件。
@@ -26,6 +26,7 @@
 |---|---|
 | 插件要放的地方（每个插件一个子文件夹） | `程序目录\plugins\` |
 | **插件开发规范（完整字段 / 逐链占位符 / 页面框架 / 打包规则 / 兼容约定）** | `程序目录\docs\插件开发规范.md` |
+| **插件市场发布指南（市场包 / 分类 / 关键词 / 许可证 / 版本）** | `程序目录\docs\插件市场发布指南.md` |
 | 可以照抄的示例插件（清单 + 自带 cs + 三种页） | `程序目录\plugins\示例插件\` |
 | 生成的模组工程长什么样 | 编辑器「构建 / 日志」页 →「打开输出目录」→ 存档名那个文件夹 |
 | 生成代码里能直接用的 using | 生成工程的 `cs\GlobalUsings.cs` |
@@ -260,6 +261,34 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 * 自带文件只能放在**插件自己的文件夹内**（`..\` 越界会被拒绝），而且必须真的存在；
 * 不要写 DLL、不要反射编辑器内部类型 —— 兼容性靠「只认 JSON + 模板」。
 
+### 10.1 市场兼容要求（V0.3.73+）
+
+如果这个插件准备上架市场，再遵守：
+
+* **不要生成** `.bat / .cmd / .ps1 / .vbs / .scr`；安装步骤写进 `README.md`，不要让用户运行脚本；
+* 不要生成 `.dll / .exe`；
+* 不要把游戏本体资源（卡图、音频、字体、场景）打进插件；
+* 插件包根目录必须有 `plugin.json`，不要套很多层文件夹；
+* `id` 发布后不要改；更新只提升 `version`；
+* `version` 不能覆盖已发布版本；
+* 单包控制在 **5 MB** 以内；超过就让作者走 GitHub Release；
+* 许可证 / 分类 / 关键词写在市场索引，不要往 `plugin.json` 加未知字段；
+* 分类只能从这些 id 选：
+  `effects / conditions / triggers / forge / animation / ui / content / tools / assets / other`；
+* 需要「一键安装」这类能力时，做成编辑器扩展页按钮，不要生成 bat/ps1。
+
+市场包结构：
+
+```text
+<id>-<version>.zip
+  plugin.json
+  README.md
+  cs/...
+  assets/...
+```
+
+完整规则见 `程序目录\docs\插件市场发布指南.md`。
+
 ## 11. 报错对照（编辑器「插件」页 ⚠ 列表里的原文 → 原因 → 怎么改）
 
 先分清两种：
@@ -302,11 +331,34 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
    想让编辑器多一个一级功能页就用 `newTab: true`（和 `tab` 别同时填）。
 6. 自带文件真的存在、真的在插件目录里。
 7. 模板末尾的分号 / 括号别丢（它要直接进 C# 方法体）。
+8. 没有 `.bat / .cmd / .ps1 / .vbs / .scr / .dll / .exe`。
+9. 没有游戏本体资源；图片 / 音频来源合法。
+10. README 写了手动安装步骤，用户不需要运行脚本。
+11. `id` 稳定；更新只提升 `version`；同版本不覆盖。
+12. 包大小 ≤5 MB，或明确说明走 GitHub Release。
 
 ## 13. 交付内容
 
 给出**完整文件内容**（路径 + 内容），至少 `plugins\<插件名>\plugin.json`，需要时加 `cs\*.cs`；
 并告诉我装好之后怎么验证（哪个页、哪个下拉、点哪个按钮）。
+
+如果这个插件准备上架市场，再附一份建议的 `market-entry.json`：
+
+```json
+{
+  "id": "插件 id",
+  "name": "显示名",
+  "author": "作者",
+  "version": "1.0.0",
+  "description": "简介",
+  "license": "MIT",
+  "categories": ["effects"],
+  "keywords": ["关键词1", "关键词2"],
+  "notes": "第一版"
+}
+```
+
+分类只能从 `effects / conditions / triggers / forge / animation / ui / content / tools / assets / other` 里选。
 
 ## 14. 我想做的插件
 
