@@ -25,7 +25,7 @@ CI / 维护者会检查：
 - `apiVersion` 与生成器兼容；
 - `minGeneratorVersion` 合理；
 - zip 内 `plugin.json` 的 id 和索引一致；
-- 不准携带 `.dll` / `.exe` / `.bat` / `.ps1` 等可执行文件；
+- 不准携带 `.dll` / `.exe` / `.bat` / `.ps1` 等可执行文件；\n- **安装辅助脚本**（例如卡牌 GIF 替换的 `安装GIF到用户目录.bat`）不进市场包：市场只装插件主体，脚本放到仓库 / Release 的附加文件里，README 写手动步骤；
 - `sha256` 与实际包一致；
 - 插件有明确许可证；
 - 不包含游戏本体资源或别人的付费素材。
