@@ -53,6 +53,7 @@
     <!-- 插件规范 + AI 提示词也随程序发布（用户 / AI 直接读 程序目录\docs\ 下这两份） -->
     <None Include="..\..\docs\插件开发规范.md" Link="docs\插件开发规范.md" CopyToOutputDirectory="PreserveNewest" />
     <None Include="..\..\docs\插件AI提示词.md" Link="docs\插件AI提示词.md" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\..\docs\插件市场发布指南.md" Link="docs\插件市场发布指南.md" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
