@@ -7179,7 +7179,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 数值 0 = 这张牌自己
         if (!(useX && e.AmountIsXEffective) && e.Amount <= 0m)
         {
-            if (selfExpr is null)
+            if (selfExpr is null || string.Equals(selfExpr.Trim(), "null", StringComparison.Ordinal))
             {
                 Warn(w, e, "（数值 0 = 这张牌自己：只有卡牌上有「这张牌」—— 遗物 / 药水请把数值填 ≥ 1）");
                 return;
@@ -9587,7 +9587,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             string lit = LiteralAmountOf(e, literalAmounts);
             EmitCardEffectSwitch(w, p, e, lit, useX: false, petVar: petVar, petDef: petDef,
-                effectComment: effectComment, petLookup: petLookup, blockAmtOverride: lit, petLitAmount: lit);
+                effectComment: effectComment, petLookup: petLookup, blockAmtOverride: lit, petLitAmount: lit,
+                inDelayedBody: true);
             return;
         }
         // 「数值公式」（需求：「另加一栏『数值公式』」）：写了公式就用公式算出来的那个值，
@@ -9649,7 +9650,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string blockAmt = formula is not null
             ? (e.UpgradeAmount != 0m ? UpgradeAwareAmount(e, formula) : formula)
             : BlockValueAccess(varMap, e);
-        EmitCardEffectSwitch(w, p, e, amt, useX, varMap, petVar, petDef, effectComment, petLookup, captureFatal, blockAmt, capture);
+        EmitCardEffectSwitch(w, p, e, amt, useX, varMap, petVar, petDef, effectComment, petLookup, captureFatal, blockAmt, capture, inDelayedBody: inDelayedBody);
     }
 
     /// <summary>
@@ -9659,7 +9660,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitCardEffectSwitch(CodeWriter w, CharacterProfile p, EffectSpec e, string amt, bool useX = false,
         Dictionary<EffectSpec, string>? varMap = null, string? petVar = null, PetGen.PetDef? petDef = null,
         string? effectComment = null, IReadOnlyDictionary<string, string>? petLookup = null, bool captureFatal = false,
-        string? blockAmtOverride = null, CardReadings capture = CardReadings.None, string? petLitAmount = null)
+        string? blockAmtOverride = null, CardReadings capture = CardReadings.None, string? petLitAmount = null, bool inDelayedBody = false)
     {
         // ⚠ 延迟状态那条路传进来的 blockAmt 是**已经折好的字面量**（那里没有 base.DynamicVars）。
         string blockAmt = blockAmtOverride ?? BlockValueAccess(varMap, e);
@@ -9809,7 +9810,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
             // 放置卡牌（用户要求）：数值 0 = 这张牌自己；≥ 1 = 从某一摞挑 N 张放到「放到哪一摞」
             case "PlaceCard":
-                EmitPlaceCard(w, p, e, useX, CountExprAt(e, varMap, useX), selfExpr: "this");
+                // V0.3.67：延迟状态里没有「这张牌自己」—— selfExpr 传 null，数值 0 时
+                // EmitPlaceCard 会写说明并跳过。以前传 "this" 再被替换成 null，生成
+                // CardPileCmd.Add(null, ...) → 新 API 两个 Add 重载二义（CS0121）。
+                EmitPlaceCard(w, p, e, useX, CountExprAt(e, varMap, useX),
+                    selfExpr: inDelayedBody ? null : "this");
                 break;
 
             // 回合结束时自动打出：数值 0 = 这张牌自己；≥ 1 = 先选好 N 张，回合结束时打出去
