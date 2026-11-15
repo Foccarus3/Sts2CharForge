@@ -1,27 +1,78 @@
-﻿Microsoft Visual Studio Solution File, Format Version 12.00
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.Core", "src\Sts2CharForge.Core\Sts2CharForge.Core.csproj", "{11111111-2222-3333-4444-555555555551}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.Cli", "src\Sts2CharForge.Cli\Sts2CharForge.Cli.csproj", "{11111111-2222-3333-4444-555555555552}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.App", "src\Sts2CharForge.App\Sts2CharForge.App.csproj", "{11111111-2222-3333-4444-555555555553}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{827E0CD3-B72D-47B6-A68D-7590B98EB39B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Sts2CharForge.MarketAdmin", "src\Sts2CharForge.MarketAdmin\Sts2CharForge.MarketAdmin.csproj", "{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Debug|x86 = Debug|x86
 		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.Build.0 = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.ActiveCfg = Release|AnyCPU
-		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.Build.0 = Release|AnyCPU
-		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.Build.0 = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.ActiveCfg = Release|AnyCPU
-		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.Build.0 = Release|AnyCPU
-		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.ActiveCfg = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.Build.0 = Debug|AnyCPU
-		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.ActiveCfg = Release|AnyCPU
-		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.Build.0 = Release|AnyCPU
+		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Debug|x64.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Debug|x86.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|x64.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|x64.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|x86.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555551}.Release|x86.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|x64.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Debug|x86.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|x64.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|x64.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|x86.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555552}.Release|x86.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|x64.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Debug|x86.Build.0 = Debug|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|x64.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|x64.Build.0 = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|x86.ActiveCfg = Release|Any CPU
+		{11111111-2222-3333-4444-555555555553}.Release|x86.Build.0 = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|x64.Build.0 = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Debug|x86.Build.0 = Debug|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|x64.ActiveCfg = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|x64.Build.0 = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|x86.ActiveCfg = Release|Any CPU
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E}.Release|x86.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{2A6DE72C-F455-427E-BD61-D4FF54C99B2E} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 	EndGlobalSection
 EndGlobal

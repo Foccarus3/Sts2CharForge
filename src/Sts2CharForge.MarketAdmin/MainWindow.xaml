@@ -1,0 +1,84 @@
+<Window x:Class="Sts2CharForge.MarketAdmin.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Sts2CharForge 市场发布器" Height="820" Width="980"
+        WindowStartupLocation="CenterScreen">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+            <Button Content="选择插件 ZIP" Padding="12,5" Click="OnBrowseZip"/>
+            <TextBox x:Name="ZipBox" Width="560" Margin="8,0" VerticalContentAlignment="Center" IsReadOnly="True"/>
+            <Button Content="解析 ZIP" Padding="12,5" Click="OnInspect"/>
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock Text="插件信息（id / 版本会写回 plugin.json；分类 / 关键词只写索引）"
+                           Foreground="#666" Margin="0,0,0,8" TextWrapping="Wrap"/>
+
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="110"/><ColumnDefinition Width="*"/><ColumnDefinition Width="110"/><ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <TextBlock Grid.Row="0" Grid.Column="0" Text="插件 id" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="IdBox" Margin="0,3,12,3"/>
+                    <TextBlock Grid.Row="0" Grid.Column="2" Text="版本" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="0" Grid.Column="3" x:Name="VersionBox" Margin="0,3"/>
+
+                    <TextBlock Grid.Row="1" Grid.Column="0" Text="名称" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="NameBox" Margin="0,3,12,3"/>
+                    <TextBlock Grid.Row="1" Grid.Column="2" Text="作者" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="1" Grid.Column="3" x:Name="AuthorBox" Margin="0,3"/>
+
+                    <TextBlock Grid.Row="2" Grid.Column="0" Text="许可证" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="LicenseBox" Margin="0,3,12,3"/>
+                    <TextBlock Grid.Row="2" Grid.Column="2" Text="最低生成器" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="2" Grid.Column="3" x:Name="MinGenBox" Margin="0,3"/>
+
+                    <TextBlock Grid.Row="3" Grid.Column="0" Text="游戏版本" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="GameVersionBox" Margin="0,3,12,3"/>
+                    <TextBlock Grid.Row="3" Grid.Column="2" Text="市场仓库根目录" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="3" Grid.Column="3" x:Name="RepoBox" Margin="0,3"/>
+
+                    <TextBlock Grid.Row="4" Grid.Column="0" Text="下载 URL 前缀" VerticalAlignment="Center"/>
+                    <TextBox Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="3" x:Name="RawBaseBox" Margin="0,3"/>
+                </Grid>
+
+                <TextBlock Text="简介" Margin="0,8,0,2"/>
+                <TextBox x:Name="DescBox" Height="60" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+
+                <TextBlock Text="分类（可多选）" Margin="0,8,0,2"/>
+                <WrapPanel x:Name="CategoryPanel"/>
+
+                <TextBlock Text="关键词（空格分隔，最多 10 个）" Margin="0,8,0,2"/>
+                <TextBox x:Name="KeywordsBox"/>
+
+                <TextBlock Text="更新说明" Margin="0,8,0,2"/>
+                <TextBox x:Name="NotesBox" Height="50" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"/>
+
+                <TextBlock Text="索引预览" Margin="0,10,0,2"/>
+                <TextBox x:Name="PreviewBox" Height="180" IsReadOnly="True" AcceptsReturn="True"
+                         TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
+                         FontFamily="Consolas"/>
+            </StackPanel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
+            <Button Content="生成市场包 + 写索引" Padding="14,6" Click="OnBuild"/>
+            <Button Content="提交并推送 git" Padding="14,6" Margin="8,0,0,0" Click="OnCommit"/>
+            <Button Content="打开市场仓库" Padding="14,6" Margin="8,0,0,0" Click="OnOpenRepo"/>
+            <TextBlock x:Name="StatusText" Margin="16,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                       Foreground="#0A7"/>
+        </StackPanel>
+    </Grid>
+</Window>
