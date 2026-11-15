@@ -19,6 +19,25 @@
           "gameVersion": "v0.113.x"
         }
       ]
+    },
+    {
+      "id": "card_gif_swap",
+      "name": "卡牌 GIF 替换",
+      "author": "Sts2CharForge",
+      "description": "打出指定卡牌 / 某类卡时，把角色当前的逐帧动画换成你指定的 GIF。市场版不含 .bat / .ps1 安装脚本，GIF 目录按 README 手动放置。",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.72",
+      "homepage": "https://github.com/Foccarus3/Sts2CharForge",
+      "versions": [
+        {
+          "version": "1.5.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/card_gif_swap-1.5.0.zip",
+          "sha256": "8af0e2f87be66c34f380168315d7da09b65bef39a28b7e52673efe140233bfdc",
+          "notes": "市场版：去掉安装 .bat / .ps1，GIF 目录手动放置；插件主体与 1.5 相同。",
+          "gameVersion": "v0.113.x"
+        }
+      ]
     }
   ]
 }
