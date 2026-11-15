@@ -10,10 +10,23 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
-            <Button Content="选择插件 ZIP" Padding="12,5" Click="OnBrowseZip"/>
-            <TextBox x:Name="ZipBox" Width="560" Margin="8,0" VerticalContentAlignment="Center" IsReadOnly="True"/>
-            <Button Content="解析 ZIP" Padding="12,5" Click="OnInspect"/>
+        <StackPanel Grid.Row="0">
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <Button Content="选择插件 ZIP" Padding="12,5" Click="OnBrowseZip"/>
+                <TextBox x:Name="ZipBox" Width="560" Margin="8,0" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                <Button Content="解析 ZIP" Padding="12,5" Click="OnInspect"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                <TextBlock Text="已有插件：" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <TextBox x:Name="ExistingSearchBox" Width="180" Margin="0,0,6,0"
+                         ToolTip="按名称 / id / 作者搜索"/>
+                <ComboBox x:Name="ExistingBox" Width="360" Margin="0,0,6,0"
+                          SelectionChanged="OnExistingPluginSelected"/>
+                <TextBlock Text="版本：" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                <ComboBox x:Name="ExistingVersionBox" Width="110" Margin="0,0,6,0"
+                          SelectionChanged="OnExistingVersionSelected"/>
+                <Button Content="刷新已有插件" Padding="12,5" Click="OnRefreshExisting"/>
+            </StackPanel>
         </StackPanel>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">

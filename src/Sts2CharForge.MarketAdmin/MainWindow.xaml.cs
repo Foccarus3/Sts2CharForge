@@ -29,6 +29,18 @@ public partial class MainWindow : Window
 
     private readonly Dictionary<string, CheckBox> _categoryBoxes = new(StringComparer.OrdinalIgnoreCase);
     private MarketPublisher.PublishResult? _last;
+    private List<MarketPlugin> _existing = new();
+    private bool _fillingExisting;
+
+    private sealed class ExistingItem
+    {
+        public required MarketPlugin Plugin { get; init; }
+        public override string ToString()
+        {
+            var v = Plugin.Latest;
+            return $"{Plugin.Name}  ({Plugin.Id})  作者 {Plugin.Author}  最新 {v?.Version ?? "?"}";
+        }
+    }
 
     private sealed class AdminConfig
     {
@@ -50,7 +62,9 @@ public partial class MainWindow : Window
         }
         LoadConfig();
         ZipBox.Text = "";
-        StatusText.Text = "选择第三方插件 ZIP，点「解析 ZIP」。";
+        ExistingSearchBox.TextChanged += (_, _) => FillExistingCombo();
+        StatusText.Text = "选择第三方插件 ZIP，点「解析 ZIP」；或从「已有插件」里选一个删除。";
+        Loaded += (_, _) => RefreshExisting();
     }
 
     private void LoadConfig()
@@ -87,6 +101,105 @@ public partial class MainWindow : Window
             }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch { /* 配置是便利功能，失败不挡发布 */ }
+    }
+
+    private void OnRefreshExisting(object sender, RoutedEventArgs e) => RefreshExisting();
+
+    private void RefreshExisting()
+    {
+        try
+        {
+            string repo = RepoBox.Text.Trim();
+            if (repo.Length == 0 || !Directory.Exists(repo))
+            {
+                _existing = new();
+                FillExistingCombo();
+                StatusText.Text = "填好市场仓库根目录后点「刷新已有插件」。";
+                return;
+            }
+            var index = MarketPublisher.ReadIndex(repo);
+            _existing = (index.Plugins ?? new List<MarketPlugin>())
+                .Where(p => p is not null)
+                .OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            FillExistingCombo();
+            StatusText.Text = _existing.Count == 0
+                ? "市场里还没有插件。"
+                : $"已读取 {_existing.Count} 个已有插件；选择后可以直接删除。";
+        }
+        catch (Exception ex)
+        {
+            _existing = new();
+            FillExistingCombo();
+            StatusText.Text = "读取已有插件失败：" + ex.Message;
+        }
+    }
+
+    private void FillExistingCombo()
+    {
+        if (ExistingBox is null) return;
+        _fillingExisting = true;
+        try
+        {
+            string q = ExistingSearchBox?.Text.Trim() ?? "";
+            var list = _existing.Where(p =>
+                q.Length == 0
+                || p.Id.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || p.Name.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || p.Author.Contains(q, StringComparison.OrdinalIgnoreCase)
+                || (p.Keywords ?? new List<string>()).Any(k => k.Contains(q, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            ExistingBox.Items.Clear();
+            foreach (var p in list) ExistingBox.Items.Add(new ExistingItem { Plugin = p });
+            if (ExistingBox.Items.Count > 0) ExistingBox.SelectedIndex = 0;
+            else
+            {
+                ExistingVersionBox.Items.Clear();
+                ExistingVersionBox.Items.Add("（无）");
+            }
+        }
+        finally { _fillingExisting = false; }
+    }
+
+    private void OnExistingPluginSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_fillingExisting) return;
+        if (ExistingBox.SelectedItem is not ExistingItem item) return;
+        var p = item.Plugin;
+        _fillingExisting = true;
+        try
+        {
+            IdBox.Text = p.Id;
+            NameBox.Text = p.Name;
+            AuthorBox.Text = p.Author;
+            DescBox.Text = p.Description;
+            LicenseBox.Text = p.License;
+            ExistingVersionBox.Items.Clear();
+            foreach (var v in (p.Versions ?? new List<MarketVersion>())
+                         .OrderByDescending(v => v.Version, StringComparer.OrdinalIgnoreCase))
+                ExistingVersionBox.Items.Add(v.Version);
+            if (ExistingVersionBox.Items.Count > 0)
+            {
+                ExistingVersionBox.SelectedIndex = 0;
+                VersionBox.Text = ExistingVersionBox.SelectedItem?.ToString() ?? "";
+            }
+            else
+            {
+                ExistingVersionBox.Items.Add("（无版本）");
+                ExistingVersionBox.SelectedIndex = 0;
+                VersionBox.Text = "";
+            }
+            NotesBox.Text = "";
+            StatusText.Text = $"已选中：{p.Name}（{p.Id}）。可以点「删除当前版本」或「删除整个插件」。";
+        }
+        finally { _fillingExisting = false; }
+    }
+
+    private void OnExistingVersionSelected(object sender, SelectionChangedEventArgs e)
+    {
+        if (_fillingExisting) return;
+        if (ExistingVersionBox.SelectedItem is string v && !v.StartsWith("（", StringComparison.Ordinal))
+            VersionBox.Text = v;
     }
 
     private void OnBrowseZip(object sender, RoutedEventArgs e)
@@ -226,6 +339,7 @@ public partial class MainWindow : Window
                               + (r.PluginRemoved ? "这个插件已经没有版本，条目也一起移除了。\n" : "")
                               + "索引备份：market\\index.json.bak\n"
                               + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+            RefreshExisting();
         }
         catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
     }
@@ -246,6 +360,7 @@ public partial class MainWindow : Window
             _last = null;
             StatusText.Text = $"已删除插件：{r.Id}\n索引备份：market\\index.json.bak\n"
                               + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+            RefreshExisting();
         }
         catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
     }

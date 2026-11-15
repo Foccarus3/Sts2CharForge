@@ -64,6 +64,22 @@ public static class MarketPublisher
     public static string PackagesDirOf(string repo) => Path.Combine(MarketDirOf(repo), "packages");
     public static string IndexPathOf(string repo) => Path.Combine(MarketDirOf(repo), "index.json");
 
+    /// <summary>读取本地市场索引（不联网）。</summary>
+    public static MarketIndex ReadIndex(string repo)
+    {
+        string path = IndexPathOf(repo);
+        if (!File.Exists(path)) throw new MarketPublishException("找不到市场索引：" + path);
+        var index = JsonSerializer.Deserialize<MarketIndex>(File.ReadAllText(path), new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            AllowTrailingCommas = true,
+            ReadCommentHandling = JsonCommentHandling.Skip,
+        }) ?? throw new MarketPublishException("index.json 是空文件。");
+        index.Plugins ??= new List<MarketPlugin>();
+        foreach (var p in index.Plugins) p?.Normalize();
+        return index;
+    }
+
     /// <summary>只读 ZIP 里的 plugin.json 和脚本列表，不改任何文件。</summary>
     public static PackageInfo Inspect(string zipPath)
     {
