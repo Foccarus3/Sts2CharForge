@@ -129,6 +129,37 @@
           "publishedAt": "2026-11-15T14:41:00Z"
         }
       ]
+    },
+    {
+      "id": "CardExchangePanel",
+      "name": "\u5361\u724C\u4EA4\u6362\u9762\u677F(\u5361\u724C\u878D\u5408\uFF09",
+      "author": "\u65E5\u4E43\u82E5\u96EA",
+      "description": "\u53EF\u4EE5\u8BA9\u6307\u5B9A\u5361\u724C\u548C\u6307\u5B9A\u5361\u724C\u878D\u5408\u3002\u6218\u6597\u4E2D\u5728\u6E38\u620F\u5DE6\u4FA7\u6253\u5F00\u300C\u5361\u724C\u4EA4\u6362\u300D\u9762\u677F\uFF1A\u4ED8\u51FA\u3010\u624B\u724C\u3011\u91CC\u7684\u6307\u5B9A\u5361\u6216\u5E26\u6307\u5B9A\u5173\u952E\u8BCD\u7684\u5361\uFF08\u6700\u591A4\u5F20\u4EE3\u4EF7\u4F4D\uFF1B\u6BCF\u4E2A\u4F4D\uFF1A\u6307\u5B9A\u5361\u4E0E\u5173\u952E\u8BCD\u4E8C\u9009\u4E00\u2014\u2014\u9009\u4E86\u5173\u952E\u8BCD\u5219\u6307\u5B9A\u5361\u81EA\u52A8\u88AB\u5C4F\u853D\uFF0C\u518D\u52A0\u6D88\u8017/\u4E22\u5F03\u53BB\u5904\uFF1B\u7559\u7A7A\u4E0D\u542F\u7528\uFF09\uFF0C\u628A\u4E00\u5F20\u4E0D\u5165\u6C60\u7684\u3010\u50A8\u85CF\u5361\u3011\u76F4\u63A5\u751F\u6210\u5230\u3010\u624B\u724C\u3011\u3002\u5173\u952E\u8BCD\u4E3A\u4E0B\u62C9\u9009\u62E9\uFF08\u672C\u4F53\u8BCD\u6761 \u002B \u5B58\u6863\u81EA\u5B9A\u4E49\u8BCD\u6761\uFF0C\u65E0\u9700\u624B\u8F93\uFF09\u3002\u4EA4\u6362\u4E0D\u9650\u6B21\u6570\u3002\u975E\u6218\u6597\u72B6\u6001\u7981\u7528\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "ui",
+        "content"
+      ],
+      "keywords": [
+        "\u5361\u724C\u4EA4\u6362\u9762\u677F",
+        "\u518D\u52A0\u6D88\u8017",
+        "\u4E22\u5F03\u53BB\u5904",
+        "\u7559\u7A7A\u4E0D\u542F\u7528\uFF09",
+        "\u5B58\u6863\u81EA\u5B9A\u4E49\u8BCD\u6761"
+      ],
+      "versions": [
+        {
+          "version": "1.9",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/CardExchangePanel-1.9.zip",
+          "sha256": "36545b66d9ed8c4eb2b695e0619cb4684b18f8264650491ba808d11c99e102cc",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T15:13:58Z"
+        }
+      ]
     }
   ]
 }
