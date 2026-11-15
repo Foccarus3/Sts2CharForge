@@ -91,7 +91,11 @@ internal static class {{ClassName}}
                     .GetMe(MegaCrit.Sts2.Core.Runs.RunManager.Instance.DebugOnlyGetState())?.Character;
         }
         catch { }
-        if (me is not {{n.CharClass}}) return;
+        // 主菜单打开「百科大全」时没有正在进行的局（RunManager.IsInProgress = false），
+        // 以前这里直接 return，导致主菜单图鉴永远看不到模组角色的卡池筛选器。
+        // 没有局内角色时用我们自己的角色补一个；局内玩的是别的角色则仍然不碰。
+        if (me is null) me = ModelDb.Character<{{n.CharClass}}>();
+        else if (me is not {{n.CharClass}}) return;
 
         // ② 本体那张表（两个私有字段）
         Type t = typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary);
