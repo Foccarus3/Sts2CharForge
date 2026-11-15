@@ -7295,7 +7295,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string Cls(string raw) => PercentPowers.IsPercent(raw) ? (PercentPowers.ClassOf(raw, p) ?? raw) : raw;
         string One(string cls) =>
             DebugLogGen.ClearBeforeOne(e, c, cls)
-            + $"{{ PowerModel? __clrPower = {c}.GetPower<{cls}>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower); }}   // 清除指定状态" + "\n"
+            // V0.3.68：改成按类型 Remove<T>(Creature)。以前 GetPower<T>() 找不到实例时（钩子正在
+            // 处理这个状态自己的层数变化 / 同一次 Apply 里）会静默跳过，表现为「状态还在身上」。
+            + $"await PowerCmd.Remove<{cls}>({c});   // 清除指定状态（按类型）" + "\n"
             + DebugLogGen.ClearAfterOne(e, c, cls);
 
         var grp = ResolvePowerGroup(p, e.PowerGroup);

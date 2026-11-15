@@ -2118,7 +2118,7 @@ public static class CustomPowerGen
             case "ClearPowerOne":
                 CSharpCodeGen.EmitPerCreaturePublic(w, e, useX: false, "base.Owner", null,
                     "base.Owner.CombatState.HittableEnemies",
-                    foe => $"{{ PowerModel? __clrPower = {foe}.GetPower<{e.PowerId}>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower); }}   // 清除指定状态");
+                    foe => $"await PowerCmd.Remove<{e.PowerId}>({foe});   // 清除指定状态（按类型）");
                 break;
 
             case "ClearPowerDebuffs":

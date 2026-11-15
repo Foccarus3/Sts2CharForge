@@ -3801,7 +3801,7 @@ public static class ForgeGraphGen
                 : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __dbl = __fgFoe.GetPower<{powerId}>(); if (__dbl is not null) await PowerCmd.ModifyAmount({ctx.ChoiceVar}, __dbl, __dbl.Amount * (({amount}) - 1m), __fgSelf, {ctx.CardSelfExpr}); }}",
             "ClearPowerOne" => powerId.Length == 0
                 ? null
-                : $"foreach (Creature __fgFoe in {foes}) {{ PowerModel? __clr = __fgFoe.GetPower<{powerId}>(); if (__clr is not null) await PowerCmd.Remove(__clr); }}",
+                : $"foreach (Creature __fgFoe in {foes}) await PowerCmd.Remove<{powerId}>(__fgFoe);",
             "ClearPowerDebuffs" => $"foreach (Creature __fgFoe in {foes}) await ForgeFormulaRuntime.ClearDebuffs(__fgFoe);",
             // V0.2.369：以前这里**没有 await**（`CreatureCmd.Stun(...)` 返回 Task，被直接丢掉）——
             // 单体击晕的「真正生效」部分目前是同步的，所以看起来还能用，但它是个随时会咬人的坑

@@ -26700,7 +26700,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pgProf.Cards.Add(pgCard);
 					string pgSrc = CSharpCodeGen.CardSource(pgProf, pgCard, 0);
 					Check("V0.2.255：「清除指定状态」选组 → 把组里每个状态各展开一句清除（本体状态 + 自己的状态都在）",
-						pgSrc.Contains("GetPower<WeakPower>()") && pgSrc.Contains("GetPower<UiCheckPgPower>()")
+						pgSrc.Contains("PowerCmd.Remove<WeakPower>(") && pgSrc.Contains("PowerCmd.Remove<UiCheckPgPower>(")
 						&& pgSrc.Contains("清除组里的所有状态"), "组展开了");
 					Check("V0.2.255：校验器提示「用的是组「减益组」→ 会把这 2 个状态全部清掉」",
 						ProfileValidator.Validate(pgProf).Any((ValidationIssue i) => i.Message.Contains("减益组") && i.Message.Contains("全部")),
@@ -26715,7 +26715,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pgCard.Effects[0].PowerGroup = "";
 					pgCard.Effects[0].PowerId = "WeakPower";
 					Check("V0.2.255：（对照）没选组 → 生成文本和以前一样（只清那一个状态）",
-						CSharpCodeGen.CardSource(pgProf, pgCard, 0).Contains("PowerModel? __clrPower = ")
+						CSharpCodeGen.CardSource(pgProf, pgCard, 0).Contains("PowerCmd.Remove<WeakPower>(")
 						&& !CSharpCodeGen.CardSource(pgProf, pgCard, 0).Contains("清除组里的所有状态"), "照旧");
 				}
 
@@ -27961,8 +27961,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				"校验干净");
 
 			string cpCode = CustomPowerGen.Source(clearProbe, cpSpec, 0);
-			Check("生成端：清除指定状态写成 GetPower<T>() + PowerCmd.Remove（本体原样，不需要选牌上下文）",
-				cpCode.Contains("GetPower<WeakPower>()") && cpCode.Contains("PowerCmd.Remove"), "有");
+			Check("生成端：清除指定状态写成 PowerCmd.Remove<T>(target)（按类型，不依赖 GetPower 实例）",
+				cpCode.Contains("PowerCmd.Remove<WeakPower>(") && cpCode.Contains("PowerCmd.Remove"), "有");
 			Check("生成端：清除所有减益按 PowerType.Debuff 过滤后再 Remove",
 				cpCode.Contains("TypeForCurrentAmount == PowerType.Debuff") && cpCode.Contains("PowerCmd.Remove"), "有");
 			Check("生成端：牺牲伙伴先查宠物（XxxCmd.Get 收 Player）+ 空判守卫",
@@ -39844,8 +39844,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& expSrc.Contains("if (__expTarget.HasPower<ArtifactPower>()) await PowerCmd.Remove<ArtifactPower>(__expTarget)")
 				&& expSrc.Contains("await PowerCmd.Apply<VulnerablePower>(choiceContext, __expTarget, 3, base.Owner.Creature, this)")
 				&& !expSrc.Contains("DynamicVars[\"Value\"]"), "暴露对");
-			Check("清除指定状态：取到那份实例才 Remove（没有这个状态就什么都不做）",
-				expSrc.Contains("PowerModel? __clrPower = cardPlay.Target.GetPower<StrengthPower>(); if (__clrPower is not null) await PowerCmd.Remove(__clrPower);"), "对");
+			Check("清除指定状态：按类型 Remove<T>(target)（不依赖 GetPower 实例）",
+				expSrc.Contains("await PowerCmd.Remove<StrengthPower>(cardPlay.Target);"), "对");
 			Check("清除所有减益：遍历目标身上那份列表（先 ToList）按 TypeForCurrentAmount == Debuff 清",
 				expSrc.Contains("foreach (PowerModel __clrP in cardPlay.Target.Powers.ToList()) { if (__clrP.TypeForCurrentAmount == PowerType.Debuff) await PowerCmd.Remove(__clrP); }"), "对");
 			Check("只带「翻倍敌人状态」的牌也算「要选目标」（不然 cardPlay.Target 是空的）",
@@ -41292,7 +41292,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					pGrp.CardGroups.Add(g);
 					string sGrp = CSharpCodeGen.CardSource(pGrp, cGrp, 0);
 					Check("V0.2.364：组里填的是百分比**别名**时，生成的是类名（GetPower<…PercentVulnPower>，不会 CS0246）",
-						sGrp.Contains("GetPower<") && sGrp.Contains("PercentVulnPower>()") && !sGrp.Contains("GetPower<PercentVuln>()"),
+						sGrp.Contains("Remove<") && sGrp.Contains("PercentVulnPower>(") && !sGrp.Contains("GetPower<PercentVuln>()"),
 						sGrp.Split('\n').FirstOrDefault(l => l.Contains("GetPower<"))?.Trim() ?? "(没有)");
 					// ③ 卡牌时机钩子里 cardPlay 是个 null 占位 → 目标那句必须先判 cardPlay
 					var pHook = mkClearProf(false, "PercentVuln", null, out var cHook, out var eHook);
