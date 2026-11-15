@@ -16,8 +16,23 @@
           "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/example-1.2.0.zip",
           "sha256": "1243af0f1bb08d2b98e6473f255f862fb50e9150b0dc45dec3e954643c6dc2e3",
           "notes": "市场 MVP 的示例包；和程序自带的 plugins\\示例插件 内容相同。",
-          "gameVersion": "v0.113.x"
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T12:00:00Z"
         }
+      ],
+      "categories": [
+        "effects",
+        "triggers",
+        "forge",
+        "ui",
+        "tools"
+      ],
+      "keywords": [
+        "示例",
+        "插件",
+        "效果",
+        "触发",
+        "页面"
       ]
     },
     {
@@ -35,8 +50,20 @@
           "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/card_gif_swap-1.5.0.zip",
           "sha256": "8af0e2f87be66c34f380168315d7da09b65bef39a28b7e52673efe140233bfdc",
           "notes": "市场版：去掉安装 .bat / .ps1，GIF 目录手动放置；插件主体与 1.5 相同。",
-          "gameVersion": "v0.113.x"
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T19:00:00Z"
         }
+      ],
+      "categories": [
+        "animation",
+        "assets"
+      ],
+      "keywords": [
+        "gif",
+        "动画",
+        "逐帧",
+        "卡牌",
+        "替换"
       ]
     }
   ]

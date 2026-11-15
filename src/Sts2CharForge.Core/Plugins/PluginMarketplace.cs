@@ -257,6 +257,8 @@ public sealed class MarketPlugin
     public int ApiVersion { get; set; } = 2;
     public string MinGeneratorVersion { get; set; } = "";
     public string Homepage { get; set; } = "";
+    public List<string>? Categories { get; set; } = new();
+    public List<string>? Keywords { get; set; } = new();
     public List<MarketVersion>? Versions { get; set; } = new();
 
     public MarketVersion? Latest
@@ -280,6 +282,16 @@ public sealed class MarketPlugin
         License = (License ?? "").Trim();
         MinGeneratorVersion = (MinGeneratorVersion ?? "").Trim();
         Homepage = (Homepage ?? "").Trim();
+        Categories = (Categories ?? new List<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        Keywords = (Keywords ?? new List<string>())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Select(x => x.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string VersionKey(string? v)
@@ -299,6 +311,7 @@ public sealed class MarketVersion
     public string Sha256 { get; set; } = "";
     public string Notes { get; set; } = "";
     public string GameVersion { get; set; } = "";
+    public string PublishedAt { get; set; } = "";
 
     public void Normalize()
     {
@@ -307,6 +320,7 @@ public sealed class MarketVersion
         Sha256 = (Sha256 ?? "").Trim();
         Notes = (Notes ?? "").Trim();
         GameVersion = (GameVersion ?? "").Trim();
+        PublishedAt = (PublishedAt ?? "").Trim();
     }
 }
 
