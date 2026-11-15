@@ -1455,6 +1455,44 @@ public static class CustomPowerGen
                 break;
         }
     }
+    /// <summary>
+    /// V0.3.69：同一个触发时机里有多条「清除指定状态」时，按**条件依赖**排序。
+    ///
+    /// <para>用户实测「蓝触发混色」：混色：紫的蓝分支是
+    /// <c>ClearPowerOne ColorRed</c> → <c>ClearPowerOne ColorBlue</c>，两条的条件都是
+    /// 「拥有红色至少 1 层」。先清掉红色后，第二条的条件立刻变 false，蓝色就留下了。
+    /// 这里只调整 ClearPowerOne 在原有槽位里的相对顺序：**被别的清除效果当作条件的那个状态，
+    /// 最后再清**（否则会把自己的条件拆掉）。非清除效果的位置完全不动。</para>
+    /// </summary>
+    private static List<EffectSpec> OrderClearEffects(List<EffectSpec> effects)
+    {
+        var clears = effects.Where(e => e is not null && e.Kind == "ClearPowerOne").ToList();
+        if (clears.Count < 2) return effects;
+
+        static string? CondPower(EffectSpec e) =>
+            e.Condition is { Kind: "HasPowerAtLeast" } c && !string.IsNullOrWhiteSpace(c.PowerId)
+                ? c.PowerId.Trim() : null;
+
+        var remaining = clears.ToList();
+        var ordered = new List<EffectSpec>();
+        while (remaining.Count > 0)
+        {
+            // 如果 remaining 里还有别的清除效果依赖「这条要清的状态」，这条就必须排在它们后面
+            var pick = remaining.FirstOrDefault(c =>
+                !remaining.Any(d => !ReferenceEquals(d, c)
+                    && string.Equals(CondPower(d), (c.PowerId ?? "").Trim(), StringComparison.Ordinal)));
+            if (pick is null) pick = remaining[0];   // 环形依赖：保持原顺序，绝不丢效果
+            ordered.Add(pick);
+            remaining.Remove(pick);
+        }
+
+        int k = 0;
+        for (int i = 0; i < effects.Count; i++)
+            if (effects[i] is not null && effects[i].Kind == "ClearPowerOne")
+                effects[i] = ordered[k++];
+        return effects;
+    }
+
     private static void EmitEffects(CodeWriter w, PowerTriggerSpec t, string? foeFrom = null, string? roomVar = null,
         CharacterProfile? p = null, bool ownScope = false)
     {
@@ -1492,7 +1530,7 @@ public static class CustomPowerGen
         // 状态名字直接取生成期那个「当前状态」（_powerOwner），不额外往二十几个调用点加参数。
         using (DebugLogGen.Begin(p, "自定义状态", _powerOwner is { } dbgPow ? dbgPow.Name : "", DebugLogClassNameOf(p), "base.Owner"))
         {
-            var fx = t.Effects.ToList();
+            var fx = OrderClearEffects(t.Effects.ToList());
 
             // V0.3.22（用户实测「间色：绿」：5 层毒结算成 5+5 再扣 2 层，不是 5+4）：
             // 同一触发时机里**连续几条效果写了同一个「生效次数」公式**时，按次数逐次交替执行
