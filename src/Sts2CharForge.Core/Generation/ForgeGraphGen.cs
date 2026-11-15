@@ -3062,11 +3062,13 @@ public static class ForgeGraphGen
             "Self" => UnitRef.Self,
             // 「指定队友」：锻造图里和【对象】的「指定队友」同一档（那一档也是自己 —— 见 ResolveUnit）
             "Ally" => UnitRef.Self,
-            // 「全部友方」：节点图里的 AllAllies 档 = 自己 + 召唤物；勾了「不包括召唤物」时只剩自己
-            //（V0.2.132 —— 不新增运行时助手，免得动到已生成工程的 ForgeFormulaRuntime 文本）。
-            "AllAllies" => e.AllAlliesExcludePets
-                ? new UnitRef("__fgSelf", "new List<Creature> { __fgSelf }")
-                : new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)"),
+            // 节点图里的「全部友方」= 同一侧所有存活单位（含其他玩家 / 召唤物），默认**不含自己**；
+            // 卡牌链的 AllAlliesIncludeSelf / AllAlliesExcludePets 两个勾选框在这里对齐。
+            "AllAllies" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer).Where("
+                + "c => c.IsAlive"
+                + (e.AllAlliesIncludeSelf ? "" : " && c != __fgSelf")
+                + (e.AllAlliesExcludePets ? " && c.PetOwner is null" : "")
+                + ").ToList()"),
             "AllEnemies" => new UnitRef("ForgeFormulaRuntime.FirstEnemy(__fgPlayer)", "ForgeFormulaRuntime.EnemyList(__fgPlayer)", PerFoe: false),
             "RandomEnemies" => new UnitRef("ForgeFormulaRuntime.RandomEnemy(__fgPlayer, allowDuplicates: " + (dup ? "true" : "false") + ")",
                                           "ForgeFormulaRuntime.EnemyList(__fgPlayer)", RandomEnemy: true, Dup: dup),
@@ -5396,9 +5398,13 @@ public static class ForgeFormulaRuntime
     public static List<Creature> SummonList(Player? player) =>
         player?.PlayerCombatState?.Pets?.Where(c => c is not null && c.IsAlive).ToList() ?? new List<Creature>();
 
-    /// <summary>全部友方（自己 + 召唤物）。</summary>
+    /// <summary>全部友方：同一侧的所有存活单位（含其他玩家、自己、双方召唤物）。</summary>
     public static List<Creature> AllAllies(Player? player)
     {
+        var combat = player?.Creature?.CombatState;
+        if (combat?.Allies is not null)
+            return combat.Allies.Where(c => c is not null && c.IsAlive).ToList();
+        // 不在战斗里时退回「自己 + 自己的召唤物」，保持旧行为
         var list = new List<Creature>();
         if (player?.Creature is not null) list.Add(player.Creature);
         list.AddRange(SummonList(player));
