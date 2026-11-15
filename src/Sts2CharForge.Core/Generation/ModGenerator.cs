@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using Sts2CharForge.Core.Effects;
 using Sts2CharForge.Core.Profile;
@@ -9,10 +10,33 @@ public sealed record GenerationResult(bool Success, string ProjectRoot, List<Val
 /// <summary>把一份 profile 变成完整的、可构建的模组工程。</summary>
 public static class ModGenerator
 {
+    /// <summary>
+    /// 当前生成器版本：优先读程序集 InformationalVersion（App.csproj 的 V0.x.y），
+    /// 单文件发布读不到时退回 exe 的 ProductVersion。构建日志第一行会打出来。
+    /// </summary>
+    public static string BuildVersion()
+    {
+        try
+        {
+            string? info = Assembly.GetEntryAssembly()?
+                .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion;
+            if (!string.IsNullOrWhiteSpace(info)) return info.Trim();
+            string? product = System.Diagnostics.Process.GetCurrentProcess().MainModule?
+                .FileVersionInfo.ProductVersion;
+            if (!string.IsNullOrWhiteSpace(product)) return product.Trim();
+            return Assembly.GetEntryAssembly()?.GetName().Version?.ToString() ?? "未知";
+        }
+        catch { return "未知"; }
+    }
+
     public static GenerationResult Generate(CharacterProfile profile, Action<string>? log = null)
     {
         var lines = new List<string>();
         void Log(string s) { lines.Add(s); log?.Invoke(s); }
+
+        // V0.3.71：构建日志第一行就把生成器版本写出来。
+        // 用户反馈过「日志里只有游戏版本，没有工具版本」，导致拿旧环境包生成还以为是新版。
+        Log($"生成器版本：{BuildVersion()}（支持游戏 {Sts2Metadata.SupportedGameVersion}）");
 
         // 状态改名的「显示名」表：卡面/遗物/药水文字渲染都要用它（必须在校验和生成之前设好）
         EffectCatalog.SetPowerRenames(profile.VanillaPowerOverrides);
