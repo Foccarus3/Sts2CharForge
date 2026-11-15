@@ -56,5 +56,5 @@ https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/index.json
 | 安装 / 卸载 / 重新加载 | 有 |
 | SHA256 / zip 校验 | 有 |
 | 可执行文件 / 路径穿越拦截 | 有 |
-| 开发版 `--uicheck` | （跑完见下） |
-| 部署版 `--uicheck` | （跑完见下） |
+| 开发版 `--uicheck` | **4915 PASS / 0 FAIL** |
+| 部署版 `--uicheck` | **4914 PASS / 0 FAIL** |
