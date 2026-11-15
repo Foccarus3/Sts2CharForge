@@ -76,6 +76,8 @@
         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,8,0,0">
             <Button Content="生成市场包 + 写索引" Padding="14,6" Click="OnBuild"/>
             <Button Content="提交并推送 git" Padding="14,6" Margin="8,0,0,0" Click="OnCommit"/>
+            <Button Content="删除当前版本" Padding="14,6" Margin="8,0,0,0" Click="OnDeleteVersion"/>
+            <Button Content="删除整个插件" Padding="14,6" Margin="8,0,0,0" Click="OnDeletePlugin"/>
             <Button Content="打开市场仓库" Padding="14,6" Margin="8,0,0,0" Click="OnOpenRepo"/>
             <TextBlock x:Name="StatusText" Margin="16,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"
                        Foreground="#0A7"/>

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "plugins": [
+    {
+      "id": "example",
+      "name": "\u793A\u4F8B\u63D2\u4EF6\uFF08\u53EF\u5220\uFF09",
+      "author": "Sts2CharForge",
+      "description": "\u6F14\u793A\u63D2\u4EF6\u683C\u5F0F\uFF1A\u6548\u679C\u79CD\u7C7B\u3001\u89E6\u53D1\u65F6\u673A\u3001\u6761\u4EF6\u3001\u953B\u9020\u6A21\u5757\u3001\u4E09\u79CD\u9875\u9762\uFF0C\u5E26\u4E00\u4E2A\u968F\u6A21\u7EC4\u7F16\u8BD1\u7684\u5DE5\u5177\u7C7B\u3002\u5B89\u88C5\u540E\u53EF\u5F53\u6A21\u677F\u6539\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.72",
+      "homepage": "https://github.com/Foccarus3/Sts2CharForge",
+      "versions": [
+        {
+          "version": "1.2.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/example-1.2.0.zip",
+          "sha256": "1243af0f1bb08d2b98e6473f255f862fb50e9150b0dc45dec3e954643c6dc2e3",
+          "notes": "\u5E02\u573A MVP \u7684\u793A\u4F8B\u5305\uFF1B\u548C\u7A0B\u5E8F\u81EA\u5E26\u7684 plugins\\\u793A\u4F8B\u63D2\u4EF6 \u5185\u5BB9\u76F8\u540C\u3002",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T12:00:00Z"
+        }
+      ],
+      "categories": [
+        "effects",
+        "triggers",
+        "forge",
+        "ui",
+        "tools"
+      ],
+      "keywords": [
+        "\u793A\u4F8B",
+        "\u63D2\u4EF6",
+        "\u6548\u679C",
+        "\u89E6\u53D1",
+        "\u9875\u9762"
+      ]
+    },
+    {
+      "id": "card_gif_swap",
+      "name": "\u5361\u724C GIF \u66FF\u6362",
+      "author": "Sts2CharForge",
+      "description": "\u6253\u51FA\u6307\u5B9A\u5361\u724C / \u67D0\u7C7B\u5361\u65F6\uFF0C\u628A\u89D2\u8272\u5F53\u524D\u7684\u9010\u5E27\u52A8\u753B\u6362\u6210\u4F60\u6307\u5B9A\u7684 GIF\u3002\u5E02\u573A\u7248\u4E0D\u542B .bat / .ps1 \u5B89\u88C5\u811A\u672C\uFF0CGIF \u76EE\u5F55\u6309 README \u624B\u52A8\u653E\u7F6E\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.72",
+      "homepage": "https://github.com/Foccarus3/Sts2CharForge",
+      "versions": [
+        {
+          "version": "1.5.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/card_gif_swap-1.5.0.zip",
+          "sha256": "8af0e2f87be66c34f380168315d7da09b65bef39a28b7e52673efe140233bfdc",
+          "notes": "\u5E02\u573A\u7248\uFF1A\u53BB\u6389\u5B89\u88C5 .bat / .ps1\uFF0CGIF \u76EE\u5F55\u624B\u52A8\u653E\u7F6E\uFF1B\u63D2\u4EF6\u4E3B\u4F53\u4E0E 1.5 \u76F8\u540C\u3002",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T19:00:00Z"
+        }
+      ],
+      "categories": [
+        "animation",
+        "assets"
+      ],
+      "keywords": [
+        "gif",
+        "\u52A8\u753B",
+        "\u9010\u5E27",
+        "\u5361\u724C",
+        "\u66FF\u6362"
+      ]
+    },
+    {
+      "id": "damageperstack",
+      "name": "\u6BCF\u5C42\u589E\u4F24\uFF08\u81EA\u5B9A\u4E49\u72B6\u6001\uFF09",
+      "author": "\u4E0A\u5B66ing",
+      "description": "\u60F3\u8981\u505A\u201C\u6B64\u72B6\u6001\u6BCF\u6709\u4E00\u5C42\uFF0C\u89D2\u8272\u4F24\u5BB3\u589E\u52A0x%\u201D\u5C31\u53EF\u4EE5\u7528\u8FD9\u4E2A\u63D2\u4EF6\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "triggers"
+      ],
+      "keywords": [
+        "\u6BCF\u5C42\u589E\u4F24\uFF08\u81EA\u5B9A\u4E49\u72B6\u6001\uFF09",
+        "\u7ED9\u300C\u81EA\u5B9A\u4E49\u72B6\u6001\u300D\u52A0\u300C\u6BCF\u5C42",
+        "\u002Bx%",
+        "\u5728\u63D2\u4EF6\u9875\u6309\u72B6\u6001\u586B",
+        "Harmony",
+        "\u8865\u4E01\u5728\u4F24\u5BB3\u7ED3\u7B97\u65F6\u751F\u6548\u3002"
+      ],
+      "versions": [
+        {
+          "version": "3.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/damageperstack-3.0.zip",
+          "sha256": "1423a34e0f3eeadca99a1da92f152a450be5f6ceec1a26e008b95bcdb0fc1894",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-15T14:37:31Z"
+        }
+      ]
+    }
+  ]
+}

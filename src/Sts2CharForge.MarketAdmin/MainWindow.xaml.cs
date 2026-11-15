@@ -203,6 +203,53 @@ public partial class MainWindow : Window
         catch (Exception ex) { StatusText.Text = "提交失败：" + ex.Message; }
     }
 
+    private void OnDeleteVersion(object sender, RoutedEventArgs e)
+    {
+        string id = IdBox.Text.Trim();
+        string version = VersionBox.Text.Trim();
+        if (id.Length == 0 || version.Length == 0)
+        {
+            StatusText.Text = "删除指定版本需要先填 id 和版本号。";
+            return;
+        }
+        if (MessageBox.Show(this,
+                $"从市场删除「{id}」的版本 {version}？\n\n"
+                + "会删除 market\\index.json 里这一条，并删除本地 market\\packages 里对应的包。\n"
+                + "不会自动提交 git，也不会删除 GitHub Release 上的附件。",
+                "确认删除版本", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+        try
+        {
+            var r = MarketPublisher.Delete(RepoBox.Text.Trim(), id, version, deleteWholePlugin: false);
+            _last = null;
+            StatusText.Text = $"已删除版本：{r.Id} {r.Version}\n"
+                              + (r.PluginRemoved ? "这个插件已经没有版本，条目也一起移除了。\n" : "")
+                              + "索引备份：market\\index.json.bak\n"
+                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+        }
+        catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
+    }
+
+    private void OnDeletePlugin(object sender, RoutedEventArgs e)
+    {
+        string id = IdBox.Text.Trim();
+        if (id.Length == 0) { StatusText.Text = "删除整个插件需要先填 id。"; return; }
+        if (MessageBox.Show(this,
+                $"从市场彻底删除「{id}」？\n\n"
+                + "会删除整个插件条目和所有本地市场包。\n"
+                + "不会自动提交 git，也不会删除 GitHub Release 上的附件。",
+                "确认删除插件", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+        try
+        {
+            var r = MarketPublisher.Delete(RepoBox.Text.Trim(), id, null, deleteWholePlugin: true);
+            _last = null;
+            StatusText.Text = $"已删除插件：{r.Id}\n索引备份：market\\index.json.bak\n"
+                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+        }
+        catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
+    }
+
     private void OnOpenRepo(object sender, RoutedEventArgs e)
     {
         try

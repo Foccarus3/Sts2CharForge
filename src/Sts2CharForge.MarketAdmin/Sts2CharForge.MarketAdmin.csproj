@@ -13,7 +13,7 @@
     <Product>Sts2CharForge MarketAdmin</Product>
     <FileVersion>1.0.0.0</FileVersion>
     <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <InformationalVersion>V0.3.74</InformationalVersion>
+    <InformationalVersion>V0.3.75</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <CETCompat>false</CETCompat>
   </PropertyGroup>

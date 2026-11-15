@@ -54,6 +54,12 @@ public static class MarketPublisher
 
     public sealed record GitResult(bool Success, string Output);
 
+    public sealed record DeleteResult(
+        string Id,
+        string? Version,
+        bool PluginRemoved,
+        IReadOnlyList<string> DeletedPackages);
+
     public static string MarketDirOf(string repo) => Path.Combine(repo, "market");
     public static string PackagesDirOf(string repo) => Path.Combine(MarketDirOf(repo), "packages");
     public static string IndexPathOf(string repo) => Path.Combine(MarketDirOf(repo), "index.json");
@@ -152,6 +158,96 @@ public static class MarketPublisher
         {
             try { if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true); } catch { }
         }
+    }
+
+    /// <summary>
+    /// 从市场索引删除一个插件或一个版本，并删除本地 market/packages 里对应的包。
+    /// 不会操作 GitHub Release；外部下载地址的包需要另外去 Release 删除。
+    /// </summary>
+    public static DeleteResult Delete(string repo, string id, string? version, bool deleteWholePlugin)
+    {
+        id = (id ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(id) || id.Length > 64
+            || !id.All(ch => char.IsAsciiLetterOrDigit(ch) || ch is '_' or '-'))
+            throw new MarketPublishException("id 只能包含字母 / 数字 / _ / -，最长 64。");
+        string indexPath = IndexPathOf(repo);
+        if (!File.Exists(indexPath)) throw new MarketPublishException("找不到市场索引：" + indexPath);
+        string original = File.ReadAllText(indexPath);
+        var root = JsonNode.Parse(original) as JsonObject
+                   ?? throw new MarketPublishException("index.json 不是 JSON 对象。");
+        var plugins = root["plugins"] as JsonArray
+                      ?? throw new MarketPublishException("index.json 里没有 plugins 数组。");
+        JsonObject? target = null;
+        foreach (var n in plugins)
+            if (n is JsonObject o && string.Equals(Str(o, "id"), id, StringComparison.OrdinalIgnoreCase))
+            { target = o; break; }
+        if (target is null) throw new MarketPublishException($"市场里找不到插件「{id}」。");
+
+        var versions = target["versions"] as JsonArray ?? new JsonArray();
+        var packages = new List<string>();
+        bool pluginRemoved;
+
+        if (deleteWholePlugin)
+        {
+            foreach (var v in versions)
+                if (v is JsonObject vo) CollectPackage(repo, vo, packages);
+            plugins.Remove(target);
+            // 索引里可能已经丢过版本；把 packages 里同 id 的孤儿包也一并清掉
+            string packagesDir = PackagesDirOf(repo);
+            if (Directory.Exists(packagesDir))
+                foreach (string f in Directory.GetFiles(packagesDir, id + "-*.zip"))
+                    packages.Add(f);
+            pluginRemoved = true;
+        }
+        else
+        {
+            version = (version ?? "").Trim().TrimStart('v', 'V');
+            if (version.Length == 0) throw new MarketPublishException("删除指定版本时必须填版本号。");
+            JsonObject? hit = null;
+            foreach (var v in versions)
+                if (v is JsonObject vo && string.Equals(Str(vo, "version"), version, StringComparison.OrdinalIgnoreCase))
+                { hit = vo; break; }
+            if (hit is null) throw new MarketPublishException($"插件「{id}」没有版本「{version}」。");
+            CollectPackage(repo, hit, packages);
+            versions.Remove(hit);
+            if (versions.Count == 0)
+            {
+                plugins.Remove(target);
+                pluginRemoved = true;
+            }
+            else
+            {
+                target["versions"] = versions;
+                pluginRemoved = false;
+            }
+        }
+
+        string json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) + "\n";
+        File.WriteAllText(indexPath + ".bak", original, new UTF8Encoding(false));
+        File.WriteAllText(indexPath, json, new UTF8Encoding(false));
+
+        var deleted = new List<string>();
+        foreach (string p in packages.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            try
+            {
+                if (File.Exists(p)) { File.Delete(p); deleted.Add(p); }
+            }
+            catch { /* 索引已经移除；包删不掉最多留一个无引用文件 */ }
+        }
+        return new DeleteResult(id, deleteWholePlugin ? null : version, pluginRemoved, deleted);
+    }
+
+    private static void CollectPackage(string repo, JsonObject version, List<string> into)
+    {
+        string download = Str(version, "download");
+        if (!Uri.TryCreate(download, UriKind.Absolute, out var uri)) return;
+        string name = Path.GetFileName(Uri.UnescapeDataString(uri.AbsolutePath));
+        if (string.IsNullOrWhiteSpace(name)
+            || !string.Equals(Path.GetExtension(name), ".zip", StringComparison.OrdinalIgnoreCase))
+            return;
+        string path = Path.Combine(PackagesDirOf(repo), name);
+        if (File.Exists(path)) into.Add(path);
     }
 
     /// <summary>只 stage 指定包和索引，不改别的文件。</summary>
