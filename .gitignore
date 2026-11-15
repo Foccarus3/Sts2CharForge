@@ -69,3 +69,4 @@ _art/
 
 # 上传器的原始 ZIP 备份（只在本机，不进仓库）
 market/_inbox/
+market/*.bak
