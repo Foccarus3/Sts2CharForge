@@ -349,6 +349,37 @@
           "publishedAt": "2026-11-16T11:37:55Z"
         }
       ]
+    },
+    {
+      "id": "addmissingpoolcards",
+      "name": "\u968F\u673A\u8865\u724C\uFF08\u5361\u6C60\u8865\u7F3A\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u6548\u679C\u300C\u968F\u673A\u8865\u724C\uFF1A\u7ED9\u724C\u7EC4\u968F\u673A\u6DFB\u52A0 N \u5F20\u724C\u7EC4\u4E2D\u6CA1\u6709\u7684\u724C\u300D\u2014\u2014\u5019\u9009 = \u672C\u89D2\u8272\u5361\u6C60\u91CC\u300C\u5DF2\u5165\u6C60\u300D\u7684\u724C\uFF08\u5956\u52B1 / \u5546\u5E97\u4F1A\u51FA\u7684\u90A3\u4E9B\uFF09\uFF0C\u81EA\u52A8\u6392\u9664\u6CA1\u52FE\u300C\u52A0\u5165\u5361\u6C60\u300D\u7684\u884D\u751F\u5361\u548C\u57FA\u7840\u5361\uFF08\u6253\u51FB / \u9632\u5FA1\u7C7B\uFF09\uFF0C\u4E5F\u6392\u9664\u724C\u7EC4\u91CC\u5DF2\u7ECF\u6709\u7684\u724C\uFF1B\u724C\u7EC4\u5DF2\u96C6\u9F50\u5361\u6C60\u6240\u6709\u724C\u5C31\u4E0D\u751F\u6548\u3002\u52A0\u8FDB\u7684\u662F\u4E3B\u724C\u7EC4\uFF08PileType.Deck\uFF09\uFF0C\u6C38\u4E45\u751F\u6548\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "effects"
+      ],
+      "keywords": [
+        "\u968F\u673A\u8865\u724C\uFF08\u5361\u6C60\u8865\u7F3A\uFF09",
+        "\u5546\u5E97\u4F1A\u51FA\u7684\u90A3\u4E9B\uFF09",
+        "\u9632\u5FA1\u7C7B\uFF09",
+        "\u4E5F\u6392\u9664\u724C\u7EC4\u91CC\u5DF2\u7ECF\u6709\u7684\u724C",
+        "\u6C38\u4E45\u751F\u6548\u3002\u9002\u914D",
+        "2\u3002"
+      ],
+      "versions": [
+        {
+          "version": "1.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/addmissingpoolcards-1.0.zip",
+          "sha256": "debf436a4588d177d7df3454c7dfe56dbe3428b62c16df85aa26d6953621074e",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T11:39:29Z"
+        }
+      ]
     }
   ]
 }
