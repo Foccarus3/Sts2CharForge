@@ -30480,6 +30480,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				CSharpCodeGen.RelicSource(relProbe, relTempRnd, 0).Contains("for (int __relTempIdx = 0;")
 				&& !CSharpCodeGen.RelicSource(relProbe, relTempRnd, 0).Contains("ForgeTempStrengthPower>(choiceContext, base.Owner.Creature.CombatState.HittableEnemies,"),
 				"随机一只");
+			RelicSpec relDmgRnd = new RelicSpec { Name = "自检随机伤害", Trigger = "PlayerTurnStart" };
+			relDmgRnd.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "RandomEnemies", RepeatCount = 1 });
+			relProbe.Relics.Add(relDmgRnd);
+			string relDmgRndSrc = CSharpCodeGen.RelicSource(relProbe, relDmgRnd, 0);
+			Check("V0.3.77：遗物「随机敌人 + 造成伤害」只打随机一只，且用 Unpowered（不被力量/虚弱/易伤改数值）",
+				relDmgRndSrc.Contains("for (int __relDmgIdx = 0;")
+				&& relDmgRndSrc.Contains("await CreatureCmd.Damage(choiceContext, foe,")
+				&& relDmgRndSrc.Contains("ValueProp.Unpowered")
+				&& !relDmgRndSrc.Contains("CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, 3m"),
+				"随机一只 / 固定数值");
 		}
 
 		// ===== 第二批⑤：临时增益（本回合 +X，回合结束撤掉）=====

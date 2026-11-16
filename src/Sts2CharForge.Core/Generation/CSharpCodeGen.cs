@@ -13966,10 +13966,22 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // （以前这里写的是 Unblockable|Unpowered|Move = DamageProps.cardHpLoss，
                     //   和「失去生命」一模一样，于是护盾一格都吃不到 —— 用户报的就是这个。）
                     w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Unpowered, null, null);");
+                else if (e.TargetSide == "RandomEnemies")
+                {
+                    // V0.3.77：遗物上的「随机敌人 + 造成伤害」以前掉进最后的 else，
+                    // 变成对 **所有** HittableEnemies 一次性造成伤害；而且用的是 ValueProp.Move，
+                    // 会被力量 / 虚弱 / 易伤放大。遗物伤害是固定数值，按非卡牌来源走 Unpowered。
+                    w.Line("List<Creature> foes = base.Owner.Creature.CombatState.HittableEnemies.ToList();")
+                     .Open($"for (int __relDmgIdx = 0; __relDmgIdx < {RepeatExpr(e, useX: false)} && foes.Count > 0; __relDmgIdx++)")
+                     .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
+                    if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
+                    w.Line($"await CreatureCmd.Damage(choiceContext, foe, {amt}, ValueProp.Unpowered, base.Owner.Creature);")
+                     .Close();
+                }
                 else if (e.TargetSide == "AllUnits")
                     // 全体单位（V0.2.132）：两边所有存活单位（含自己 / 队友 / 召唤物 / 敌人）
                     w.Open(AllUnitsGuardLine)
-                     .Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList(), {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.Creatures.Where(c => c.IsAlive).ToList(), {amt}, ValueProp.Unpowered, base.Owner.Creature);")
                      .Close();
                 else if (e.TargetSide == "AllAllies")
                 {
@@ -13978,14 +13990,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     // 「全体友方 / 指定友方」掉进了「其余」，变成打全体敌人。现在按友方逐个来。
                     w.Open("if (base.Owner.Creature.CombatState is not null)")
                      .Open("foreach (Creature __allyTarget in base.Owner.Creature.CombatState.Allies.Where(c => c.IsAlive).ToList())")
-                     .Line($"await CreatureCmd.Damage(choiceContext, __allyTarget, {amt}, ValueProp.Move, base.Owner.Creature);")
+                     .Line($"await CreatureCmd.Damage(choiceContext, __allyTarget, {amt}, ValueProp.Unpowered, base.Owner.Creature);")
                      .Close().Close();
                 }
                 else if (e.TargetSide is "AnyAlly" or "Ally")
                     // 「指定友方」在这条链上没有选中目标这一说（诅咒 / 遗物 / 状态触发）→ 落到自己身上
-                    w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Move, null, null);");
+                    w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature, {amt}, ValueProp.Unpowered, null, null);");
                 else
-                    w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, ValueProp.Move, base.Owner.Creature);");
+                    w.Line($"await CreatureCmd.Damage(choiceContext, base.Owner.Creature.CombatState.HittableEnemies, {amt}, ValueProp.Unpowered, base.Owner.Creature);");
                 break;
 
             // 「战斗开始时召唤伙伴」= 本体 Byrdpip 那个遗物的写法（遗物里召唤宠物是官方支持的路子）。

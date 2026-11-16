@@ -2,40 +2,6 @@
   "schemaVersion": 1,
   "plugins": [
     {
-      "id": "example",
-      "name": "\u793A\u4F8B\u63D2\u4EF6\uFF08\u53EF\u5220\uFF09",
-      "author": "Sts2CharForge",
-      "description": "\u6F14\u793A\u63D2\u4EF6\u683C\u5F0F\uFF1A\u6548\u679C\u79CD\u7C7B\u3001\u89E6\u53D1\u65F6\u673A\u3001\u6761\u4EF6\u3001\u953B\u9020\u6A21\u5757\u3001\u4E09\u79CD\u9875\u9762\uFF0C\u5E26\u4E00\u4E2A\u968F\u6A21\u7EC4\u7F16\u8BD1\u7684\u5DE5\u5177\u7C7B\u3002\u5B89\u88C5\u540E\u53EF\u5F53\u6A21\u677F\u6539\u3002",
-      "license": "MIT",
-      "apiVersion": 2,
-      "minGeneratorVersion": "V0.3.72",
-      "homepage": "https://github.com/Foccarus3/Sts2CharForge",
-      "versions": [
-        {
-          "version": "1.2.0",
-          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/example-1.2.0.zip",
-          "sha256": "1243af0f1bb08d2b98e6473f255f862fb50e9150b0dc45dec3e954643c6dc2e3",
-          "notes": "\u5E02\u573A MVP \u7684\u793A\u4F8B\u5305\uFF1B\u548C\u7A0B\u5E8F\u81EA\u5E26\u7684 plugins\\\u793A\u4F8B\u63D2\u4EF6 \u5185\u5BB9\u76F8\u540C\u3002",
-          "gameVersion": "v0.113.x",
-          "publishedAt": "2026-11-15T12:00:00Z"
-        }
-      ],
-      "categories": [
-        "effects",
-        "triggers",
-        "forge",
-        "ui",
-        "tools"
-      ],
-      "keywords": [
-        "\u793A\u4F8B",
-        "\u63D2\u4EF6",
-        "\u6548\u679C",
-        "\u89E6\u53D1",
-        "\u9875\u9762"
-      ]
-    },
-    {
       "id": "card_gif_swap",
       "name": "\u5361\u724C GIF \u66FF\u6362",
       "author": "Sts2CharForge",
