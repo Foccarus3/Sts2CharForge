@@ -160,6 +160,38 @@
           "publishedAt": "2026-11-15T15:13:58Z"
         }
       ]
+    },
+    {
+      "id": "chancecond",
+      "name": "\u6982\u7387\u6761\u4EF6\uFF08N% \u5224\u5B9A\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u589E\u52A0\u6761\u4EF6\u5224\u5B9A\uFF0C\u642D\u914Dif\u6216while\u4F7F\u7528\uFF0C\u5224\u5B9A\u4E2D\u4E86\u5C31\u8D70if\u7684\u662F\u6216\u8005while\u7684\u5FAA\u73AF\uFF0C\u6CA1\u5224\u5B9A\u4E2D\u5C31\u8D70\u5426\u6216\u7ED3\u675F",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "conditions",
+        "forge"
+      ],
+      "keywords": [
+        "\u6982\u7387\u6761\u4EF6\uFF08N%",
+        "\u5224\u5B9A\uFF09",
+        "\u7ED9\u300C\u6761\u4EF6\u300D\u4E0B\u62C9\u52A0\u4E09\u6761",
+        "N%",
+        "\u6982\u7387\u5224\u5B9A",
+        "\u7EE7\u7EED\u5FAA\u73AF"
+      ],
+      "versions": [
+        {
+          "version": "1.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/chancecond-1.0.zip",
+          "sha256": "d23b506280926a61ade485f981b52aac26eddf55c167b469425e7c83957814bb",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T04:58:32Z"
+        }
+      ]
     }
   ]
 }
