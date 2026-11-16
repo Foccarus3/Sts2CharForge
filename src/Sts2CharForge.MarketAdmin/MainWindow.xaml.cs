@@ -202,6 +202,24 @@ public partial class MainWindow : Window
             VersionBox.Text = v;
     }
 
+    private void OnConvertRar(object sender, RoutedEventArgs e)
+    {
+        var dlg = new OpenFileDialog { Filter = "RAR 压缩包 (*.rar)|*.rar", Title = "选择插件 RAR" };
+        if (dlg.ShowDialog(this) != true) return;
+        try
+        {
+            StatusText.Text = "正在解压 RAR 并转换成 ZIP…";
+            string zip = RarConverter.ConvertToZip(dlg.FileName);
+            ZipBox.Text = zip;
+            StatusText.Text = "RAR 已转换成 ZIP：\n" + zip + "\n下面会自动解析，检查名称 / 版本 / 脚本。";
+            OnInspect(sender, e);
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = "RAR 转换失败：" + ex.Message;
+        }
+    }
+
     private void OnBrowseZip(object sender, RoutedEventArgs e)
     {
         var dlg = new OpenFileDialog { Filter = "插件包 (*.zip)|*.zip", Title = "选择第三方插件 ZIP" };

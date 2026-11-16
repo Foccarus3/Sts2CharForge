@@ -19,6 +19,17 @@ public partial class App : Application
     protected override void OnStartup(StartupEventArgs e)
     {
         Log("startup " + e.Args.Length + " arg(s) " + string.Join(" ", e.Args));
+        if (e.Args.Length >= 2 && string.Equals(e.Args[0], "--rar-test", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                string zip = RarConverter.ConvertToZip(e.Args[1]);
+                Log("rar-test ok: " + zip);
+            }
+            catch (Exception ex) { Log("rar-test failed: " + ex); }
+            Environment.Exit(0);
+            return;
+        }
         if (e.Args.Any(a => string.Equals(a, "--selftest", StringComparison.OrdinalIgnoreCase)))
         {
             Log("selftest ok");

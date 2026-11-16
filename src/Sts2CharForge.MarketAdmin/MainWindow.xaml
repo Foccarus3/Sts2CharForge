@@ -13,7 +13,8 @@
         <StackPanel Grid.Row="0">
             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                 <Button Content="选择插件 ZIP" Padding="12,5" Click="OnBrowseZip"/>
-                <TextBox x:Name="ZipBox" Width="560" Margin="8,0" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                <TextBox x:Name="ZipBox" Width="450" Margin="8,0" VerticalContentAlignment="Center" IsReadOnly="True"/>
+                <Button Content="RAR 转 ZIP" Padding="12,5" Margin="0,0,8,0" Click="OnConvertRar"/>
                 <Button Content="解析 ZIP" Padding="12,5" Click="OnInspect"/>
             </StackPanel>
             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
