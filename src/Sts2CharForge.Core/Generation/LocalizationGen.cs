@@ -71,6 +71,10 @@ public static class LocalizationGen
             [$"{n.CharEntry}.eventDeathPrevention"] = string.IsNullOrWhiteSpace(p.DeathText) ? "……还不到时候。" : p.DeathText,
             [$"{n.CharEntry}.bestiaryQuote"] = "……记住这个数字就够了。",
             [$"{n.CharEntry}.goldMonologue"] = "钱？也只是数字。",
+            // V0.3.77：本体事件「混沌芳香」的「保持控制（升级）」分支会读
+            // characters.<角色>.aromaPrinciple；模组角色没有这条时抛 LocException，
+            // 升级选完牌后事件卡住。给每个生成角色补一句默认台词。
+            [$"{n.CharEntry}.aromaPrinciple"] = "……我选择保留这份力量。",
             // V0.2.173：这一句以前**写死**成「……继续。」—— 现在由角色页那栏「多人催促文本」决定。
             // 留空时仍然写「……继续。」：老存档 / --samplegen 生成的结果逐字不变（硬红线）。
             [$"{n.CharEntry}.banter.alive.endTurnPing"] =
