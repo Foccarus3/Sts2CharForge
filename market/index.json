@@ -255,6 +255,38 @@
           "publishedAt": "2026-11-16T11:34:52Z"
         }
       ]
+    },
+    {
+      "id": "maxenergyup",
+      "name": "\u589E\u52A0\u80FD\u91CF\u4E0A\u9650\uFF08\u672C\u573A\u6218\u6597\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u4E24\u4E2A\u6548\u679C\u79CD\u7C7B\uFF1A\u300C\u589E\u52A0/\u51CF\u5C11\u80FD\u91CF\u4E0A\u9650\uFF08\u672C\u573A\u6218\u6597\uFF09\u300D\uFF08\u6B63\u6570 \u002BN\u3001\u8D1F\u6570 -N\u30010 \u4E0D\u505A\uFF0C\u53EF\u53E0\u52A0\uFF09\u548C\u300C\u5C06\u80FD\u91CF\u4E0A\u9650\u8C03\u6574\u81F3\uFF08\u6570\u503C\uFF09\uFF08\u672C\u573A\u6218\u6597\uFF09\u300D\uFF08\u4E0A\u9650\u5E95\u5B50\u76F4\u63A5\u8BBE\u4E3A\u586B\u7684\u503C\uFF0C\u91CD\u590D\u89E6\u53D1\u6309\u4E0A\u6B21\u586B\u7684\u503C\u4E3A\u51C6\u66F4\u65B0\uFF09\uFF0C\u5747\u6218\u6597\u7ED3\u675F\u81EA\u52A8\u8FD8\u539F\u3002\u591A\u89D2\u8272\u540C\u88C5\u4E0D\u51B2\u7A81\uFF08v1.3 \u975E\u6CDB\u578B\u72B6\u6001\u6CE8\u518C\uFF09\u3002\u9002\u914D V0.2.373\uFF1AapiVersion 2 \u002B \u5361\u9762\u6587\u5B57\uFF08v1.3\uFF09\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "effects",
+        "triggers"
+      ],
+      "keywords": [
+        "\u80FD\u91CF\u4E0A\u9650\uFF08\u672C\u573A\u6218\u6597\uFF09",
+        "\u4E24\u4E2A\u6548\u679C\u79CD\u7C7B\uFF1A\u300C\u589E\u52A0",
+        "\u002BN",
+        "\u8D1F\u6570",
+        "-N",
+        "\u4E0D\u505A"
+      ],
+      "versions": [
+        {
+          "version": "1.3",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/maxenergyup-1.3.zip",
+          "sha256": "359eb02872b91c09c6d7b5b52c661a9f5586b8509df93826e598936af869540d",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T11:35:54Z"
+        }
+      ]
     }
   ]
 }
