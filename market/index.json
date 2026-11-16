@@ -287,6 +287,36 @@
           "publishedAt": "2026-11-16T11:35:54Z"
         }
       ]
+    },
+    {
+      "id": "allyunitcond",
+      "name": "\u573A\u4E0A\u53CB\u65B9\u5355\u4F4D\uFF08\u6761\u4EF6\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u7ED9\u300C\u6761\u4EF6\u300D\u4E0B\u62C9\u52A0\u4E24\u6761\uFF1A\u2460 \u573A\u4E0A\u5B58\u5728\u53CB\u65B9\u5355\u4F4D\uFF08\u961F\u53CB\u6216\u53EC\u5524\u7269\uFF09\uFF1B\u2461 \u573A\u4E0A\u6CA1\u6709\u53CB\u65B9\u5355\u4F4D\u3002\u5224\u5B9A\u53E3\u5F84 = \u9664\u81EA\u5DF1\u4EE5\u5916\u3001\u4E0E\u81EA\u5DF1\u540C\u9635\u8425\u3001\u4E14\u5B58\u6D3B\u7684\u5355\u4F4D\uFF08\u5408\u4F5C\u6A21\u5F0F\u7684\u5176\u4ED6\u73A9\u5BB6\u89D2\u8272 \u002B \u81EA\u5DF1\u6216\u961F\u53CB\u7684\u53EC\u5524\u7269\uFF09\u3002\u81EA\u5DF1\u4E0D\u7B97\uFF1B\u6218\u6597\u5916\u4E24\u6761\u90FD\u4E0D\u6210\u7ACB\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "conditions"
+      ],
+      "keywords": [
+        "\u573A\u4E0A\u53CB\u65B9\u5355\u4F4D\uFF08\u6761\u4EF6\uFF09",
+        "\u7ED9\u300C\u6761\u4EF6\u300D\u4E0B\u62C9\u52A0\u4E24\u6761\uFF1A\u2460",
+        "\u9664\u81EA\u5DF1\u4EE5\u5916",
+        "\u4E0E\u81EA\u5DF1\u540C\u9635\u8425",
+        "\u6218\u6597\u5916\u4E24\u6761\u90FD\u4E0D\u6210\u7ACB\u3002"
+      ],
+      "versions": [
+        {
+          "version": "1.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/allyunitcond-1.1.zip",
+          "sha256": "14b35de5a0d7b9fa268ea3849e1c76a3d2b4d2f684805cdf5f0141b01b015721",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T11:37:04Z"
+        }
+      ]
     }
   ]
 }
