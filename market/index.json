@@ -192,6 +192,37 @@
           "publishedAt": "2026-11-16T04:58:32Z"
         }
       ]
+    },
+    {
+      "id": "powerstackeq",
+      "name": "\u72B6\u6001\u5C42\u6570\u6761\u4EF6\uFF08\u7B49\u4E8E/\u4E0D\u7B49\u4E8E\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u65B0\u589E\u4E24\u4E2A\u6761\u4EF6\u6761\u4EF6\uFF1A\u81EA\u5DF1\u8EAB\u4E0A\u7684\u67D0\u4E2A\u72B6\u6001\u5C42\u6570\u6B63\u597D\u7B49\u4E8E N / \u4E0D\u7B49\u4E8E N\u3002\u5728\u300C\u72B6\u6001\uFF08\u589E\u76CA/\u51CF\u76CA\uFF09\u300D\u680F\u91CC\u6311\u4EFB\u610F\u72B6\u6001\uFF0C\u542B\u81EA\u5B9A\u4E49\u72B6\u6001\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "conditions"
+      ],
+      "keywords": [
+        "\u72B6\u6001\u5C42\u6570\u6761\u4EF6\uFF08\u7B49\u4E8E",
+        "\u4E0D\u7B49\u4E8E\uFF09",
+        "\u4E0D\u7B49\u4E8E",
+        "N\u3002\u5728\u300C\u72B6\u6001\uFF08\u589E\u76CA",
+        "\u51CF\u76CA\uFF09\u300D\u680F\u91CC\u6311\u4EFB\u610F\u72B6\u6001",
+        "\u542B\u81EA\u5B9A\u4E49\u72B6\u6001\u3002"
+      ],
+      "versions": [
+        {
+          "version": "1.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/powerstackeq-1.1.zip",
+          "sha256": "78678e7137627713e629bd40eeac963eec1834a2b902511f875d40851c658ee4",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T11:33:22Z"
+        }
+      ]
     }
   ]
 }
