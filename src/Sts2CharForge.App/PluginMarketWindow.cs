@@ -50,10 +50,18 @@ internal sealed class PluginMarketWindow : Window
             string installed = Installed ? "  [已安装]" : "";
             string cats = string.Join(" / ", (Plugin.Categories ?? new List<string>()).Select(CategoryLabel));
             string keys = string.Join(" ", Plugin.Keywords ?? new List<string>());
-            return $"{Plugin.Name}  ({Plugin.Id})  作者 {Plugin.Author}  最新 {v?.Version ?? "?"}{fav}{installed}\n"
+            string uploaded = FormatPublished(v?.PublishedAt);
+            return $"{Plugin.Name}  ({Plugin.Id})  作者 {Plugin.Author}  最新 {v?.Version ?? "?"}（{uploaded}）{fav}{installed}\n"
                  + $"    {Plugin.Description}\n"
                  + $"    分类：{(cats.Length == 0 ? "其他" : cats)}"
                  + (keys.Length == 0 ? "" : $"　关键词：{keys}");
+        }
+
+        private static string FormatPublished(string? publishedAt)
+        {
+            if (DateTimeOffset.TryParse(publishedAt, out var dt))
+                return dt.ToLocalTime().ToString("yyyy-MM-dd");
+            return "日期未标注";
         }
     }
 

@@ -356,7 +356,8 @@ public partial class MainWindow : Window
             StatusText.Text = $"已删除版本：{r.Id} {r.Version}\n"
                               + (r.PluginRemoved ? "这个插件已经没有版本，条目也一起移除了。\n" : "")
                               + "索引备份：market\\index.json.bak\n"
-                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages))
+                              + "\n注意：现在只删了本地；点「提交并推送 git」后，远程市场才会消失。";
             RefreshExisting();
         }
         catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
@@ -377,7 +378,8 @@ public partial class MainWindow : Window
             var r = MarketPublisher.Delete(RepoBox.Text.Trim(), id, null, deleteWholePlugin: true);
             _last = null;
             StatusText.Text = $"已删除插件：{r.Id}\n索引备份：market\\index.json.bak\n"
-                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages));
+                              + (r.DeletedPackages.Count == 0 ? "（没有找到本地包文件）" : "已删除包：\n" + string.Join("\n", r.DeletedPackages))
+                              + "\n注意：现在只删了本地；点「提交并推送 git」后，远程市场才会消失。";
             RefreshExisting();
         }
         catch (Exception ex) { StatusText.Text = "删除失败：" + ex.Message; }
