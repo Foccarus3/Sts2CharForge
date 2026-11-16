@@ -817,6 +817,28 @@ public sealed record Naming(
         return s.All(ch => char.IsLetterOrDigit(ch) && ch < 128);
     }
 
+    /// <summary>
+    /// 给「模组 ID / 角色类名不合法」的报错补上具体是哪个字符。
+    /// 最常见的是从文件名 / 网页复制时带进来的零宽字符（U+200B/U+200C/U+FEFF），
+    /// 肉眼看和大写字母一模一样，只放大写永远过不了校验。
+    /// </summary>
+    public static string InvalidIdentifierReason(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "内容为空";
+        string s = name.Trim();
+        for (int i = 0; i < s.Length; i++)
+        {
+            char ch = s[i];
+            bool ok = i == 0 ? (char.IsLetter(ch) && ch < 128) : (char.IsLetterOrDigit(ch) && ch < 128);
+            if (ok) continue;
+            string kind = char.GetUnicodeCategory(ch) == System.Globalization.UnicodeCategory.Format
+                ? "不可见格式字符"
+                : "非法字符";
+            return $"第 {i + 1} 个字符是{kind} U+{(int)ch:X4}「{ch}」";
+        }
+        return "不合法";
+    }
+
     public static string Pascal(string text)
     {
         var chars = text.Where(ch => char.IsLetterOrDigit(ch) && ch < 128).ToArray();

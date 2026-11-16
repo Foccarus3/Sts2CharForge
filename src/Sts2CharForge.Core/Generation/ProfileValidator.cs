@@ -27,7 +27,8 @@ public static class ProfileValidator
         ProfileFactory.FoldPlainConstantAmountFormulas(p);
 
         if (!Naming.IsValidIdentifier(p.ModId))
-            issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）。"));
+            issues.Add(new("错误", "模组 ID 必须是纯英文/数字且以字母开头（同时作为 pck/dll/json 文件名）："
+                + Naming.InvalidIdentifierReason(p.ModId) + "。"));
 
         // 自定义关键词：名字 / 英文标识（本地化键）合法性、撞本体、重名、被卡牌引用却不存在
         var keywordMap = KeywordGen.All(p);
@@ -1006,7 +1007,8 @@ public static class ProfileValidator
             }
         }
         if (!Naming.IsValidIdentifier(p.CharacterClass))
-            issues.Add(new("错误", "角色英文类名必须是纯英文/数字且以字母开头（决定模型 ID 与所有资源文件名）。"));
+            issues.Add(new("错误", "角色英文类名必须是纯英文/数字且以字母开头（决定模型 ID 与所有资源文件名）："
+                + Naming.InvalidIdentifierReason(p.CharacterClass) + "。"));
         if (string.IsNullOrWhiteSpace(p.DisplayName))
             issues.Add(new("警告", "角色显示名为空，游戏里会显示成键名。"));
         if (p.StartingHp <= 0 || p.StartingHp > 999)
