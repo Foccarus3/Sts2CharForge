@@ -571,6 +571,34 @@
           "publishedAt": "2026-11-16T11:46:36Z"
         }
       ]
+    },
+    {
+      "id": "selfdeath",
+      "name": "\u81EA\u8EAB\u6B7B\u4EA1\u540E\uFF08\u89E6\u53D1\u65F6\u673A\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u7ED9\u300C\u81EA\u5B9A\u4E49\u72B6\u6001\u300D\u9875\u7684\u300C\u89E6\u53D1\u65F6\u673A\u300D\u4E0B\u62C9\u52A0\u4E00\u6761\uFF1A\u63D2\u4EF6\uFF1A\u81EA\u8EAB\u6B7B\u4EA1\u540E\uFF08\u5BBF\u4E3B\u8FD9\u53EA\u654C\u4EBA\u771F\u7684\u6B7B\u4EA1\u65F6\uFF09\u3002\u91C7\u7528\u522B\u540D\u5F0F\uFF08\u6A21\u677F = \u5185\u7F6E\u300C\u4E00\u4E2A\u654C\u4EBA\u6B7B\u4EA1\u540E\u300D\u7684 AfterDeath\uFF09\uFF0C\u6240\u4EE5\u72B6\u6001\u9875\u751F\u6210\u65F6\u4E0D\u4F1A\u88AB\u6821\u9A8C\u5668\u5224\u300C\u4E0D\u8BA4\u8BC6\u300D\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "triggers"
+      ],
+      "keywords": [
+        "\u81EA\u8EAB\u6B7B\u4EA1\u540E\uFF08\u89E6\u53D1\u65F6\u673A\uFF09",
+        "\u5185\u7F6E\u300C\u4E00\u4E2A\u654C\u4EBA\u6B7B\u4EA1\u540E\u300D\u7684",
+        "AfterDeath\uFF09"
+      ],
+      "versions": [
+        {
+          "version": "1.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/selfdeath-1.1.zip",
+          "sha256": "0341acccf778ed61b022720b8d629ea987c289e734dbb360968fac3dc5ad61af",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T11:47:36Z"
+        }
+      ]
     }
   ]
 }
