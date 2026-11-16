@@ -630,6 +630,37 @@
           "publishedAt": "2026-11-16T11:48:52Z"
         }
       ]
+    },
+    {
+      "id": "SlotCardRecorder",
+      "name": "\u8BB0\u5F55\u9762\u677F",
+      "author": "\u600E\u4E48\u9B42",
+      "description": "\u9876\u90E8 UI \u663E\u793A\u8BB0\u5F55\u69FD\uFF1A\u6253\u51FA\u914D\u7F6E\u8868\u91CC\u7684\u724C\u65F6\u5165\u69FD\uFF08\u6EE1\u5458\u9876\u6389\u6700\u65E7\u7684\uFF09\uFF1B\u6309\u300C\u5361\u2192\u72B6\u6001\u300D\u5BF9\u7167\u8868\u7ED9\u72B6\u6001\u3002\u652F\u6301\u81EA\u5B9A\u4E49\u69FD\u4F4D\u6570\u3001UI\u5927\u5C0F\u3001\u6574\u4F53\u8FB9\u6846\uFF08\u7EAF\u8272/\u56FE\u7247\uFF09\u3001\u69FD\u4F4D\u8FB9\u6846\u3001\u62D6\u62FD\u4E0E\u4F4D\u7F6E\u4FDD\u5B58\u3001\u60AC\u505C\u63D0\u793A\u3001\u53F3\u952E\u6E05\u7A7A\u7B49\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "ui"
+      ],
+      "keywords": [
+        "\u8BB0\u5F55\u9762\u677F",
+        "\u9876\u90E8",
+        "UI",
+        "UI\u5927\u5C0F",
+        "\u6574\u4F53\u8FB9\u6846\uFF08\u7EAF\u8272",
+        "\u56FE\u7247\uFF09"
+      ],
+      "versions": [
+        {
+          "version": "2.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/SlotCardRecorder-2.1.zip",
+          "sha256": "3e38a423b94643a3811f67dc6a86449cca8f04b3173e88a9b55a5bc4046637c8",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-16T14:57:17Z"
+        }
+      ]
     }
   ]
 }
