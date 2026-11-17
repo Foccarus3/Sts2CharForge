@@ -1,5 +1,40 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 175 批需求（**本体 v0.113 的「恐惧模式」选人黑屏：角色表缺 `shortTitle`（LocException）**；已发版 V0.3.80）
+
+> 用户贴 godot 日志问「模组角色为什么在恐惧模式选择就会黑屏」：
+> ```
+> ERROR: LocException: Key=YINXUAN.shortTitle not found in table=characters
+>    at LocTable.GetRawText(String key)
+>    at NDreadNameText.SetNameText(CharacterModel)
+>    at NDreadScreen.SetSelectedCharacterVisuals(CharacterModel)
+>    at NDreadScreen.SelectCharacter(NCharacterSelectButton)   ← 点角色那一下
+> ```
+> 游戏版本 v0.113.1。
+>
+> **真因**：本体 v0.113 新增的「恐惧模式（Dread）」选人界面要显示角色**短名**，去 `characters` 表里取
+> `<角色>.shortTitle`。我们生成的角色本地化是按 0.111 那套写的，只有 `title / titleObject / description …`，
+> **没有 `shortTitle`** → 抛 `LocException` → `SelectCharacter` 回调中途中断 → 界面停在那一帧 = 黑屏。
+> 也就是说：**所有用本工具生成的角色**在本体 v0.113 进恐惧模式选人都会黑屏，与具体模组无关。
+>
+> **修法**（两道）：
+> 1. 角色表里补 `<角色>.shortTitle`（值 = 角色名；没有单独的「简称」栏）；
+> 2. 兜底：读**用户自己解包工程**里的 `localization/{zhs,eng}/characters.json`，把本体角色用到的
+>    `*Title` 类键（如 `shortTitle`，以及以后「快速模式」之类新加的标题键）全部镜像补进我们的角色表
+>    （值用角色名兜底，已有键不覆盖；只镜像 `*Title`，不碰 banter / description 这类有具体文案的键）。
+>    读不到解包目录就跳过 —— 老输出一个字符都不变。
+>
+> **关于「快速模式」**：这份日志里没有任何快速模式的记录（他只试了恐惧模式），暂时没有证据说明快速模式
+> 也会缺键；上面的 `*Title` 兜底已经覆盖「新模式的标题键」这一类，真要是快速模式另有 API/资源需求，
+> 需要他**在快速模式里选一次模组角色**之后再给日志。
+>
+> **验收**：
+> * 探针 `_probe/shorttitle` **6/6 PASS**（① 有 shortTitle 且值 = 角色名；② 解包里多出 `fastTitle` 会自动补、
+>   不覆盖已有键、不塞非 `*Title` 键；③ 没配解包目录也能生成且 shortTitle 照样有）
+> * 同一份探针挂到**已发布 V0.3.79 的 Core.dll**：角色表只有 16 条、**4 条 FAIL**（无 shortTitle）—— 正好复现黑屏
+> * `dotnet build` **0 error**；`--uicheck` **4920 PASS / 0 FAIL**（新增 2 条）
+
+
 ## 第 174 批需求（**插件「自定义页」产出的 .cs 漏过旧插件 API 兼容层 → `CS0117 CardSelectCmd 未包含 PushSelector 的定义`**；已发版 V0.3.78）
 
 > 用户转来别人的构建失败截图（`NINEFOREVEN` 模组的插件 `takeover`）：

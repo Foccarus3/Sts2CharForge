@@ -4757,7 +4757,21 @@ public sealed class RelicSpec : SpecBase, IRelicSlotRow
     [JsonIgnore]
     public bool HasCustomDescription => !string.IsNullOrWhiteSpace(_customDescription);
 
-    /// <summary>界面用：左侧列表里那一行最左边的序号（1 起算，就是它当前的位置）。</summary>
+    private string _flavor = "";
+
+    /// <summary>
+    /// 遗物底部那行小字（本地化键 <c>&lt;遗物&gt;.flavor</c>）。
+    /// 留空 = 生成器默认的「由 Sts2CharForge 生成的自定义遗物。」；
+    /// 填了就用你写的这句（支持和自定义描述一样的 <c>{能量图标}</c> 占位符）。
+    /// </summary>
+    public string Flavor
+    {
+        get => _flavor;
+        set { if (Set(ref _flavor, value ?? "")) Raise(nameof(HasFlavor)); }
+    }
+
+    [JsonIgnore]
+    public bool HasFlavor => !string.IsNullOrWhiteSpace(_flavor);
     [JsonIgnore]
     public string OrdinalText => _ordinal >= 1 ? _ordinal + "." : "";
 

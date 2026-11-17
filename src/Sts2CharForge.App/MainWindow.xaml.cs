@@ -12109,6 +12109,28 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					LocalizationGen.DefaultEndTurnPingText == "……继续。"
 					&& ProfileFactory.Sample().EndTurnPingText.Length == 0, "默认值只有一处定义");
 			}
+			// 恐惧模式（Dread，本体 v0.113）选人时读 characters.<角色>.shortTitle —— 缺了就是
+			// LocException + 选人界面中断（黑屏）。用户实测报过（v0.113.1）。
+			{
+				string charsJson = LocalizationGen.CharactersJson(ProfileFactory.Sample());
+				Check("角色本地化里有 shortTitle（恐惧模式选人读这条，缺了黑屏）",
+					charsJson.Contains("\"SEVEN.shortTitle\": \"七\""), "有");
+				// 兜底：本体以后再加「XX 模式」的 *Title 键时，自动按解包工程里本体角色的键集合补齐
+				{
+					string fake = Path.Combine(Path.GetTempPath(), "forge_uicheck_titlekeys");
+					try
+					{
+						Directory.CreateDirectory(Path.Combine(fake, "localization", "zhs"));
+						File.WriteAllText(Path.Combine(fake, "localization", "zhs", "characters.json"),
+							"{\"IRONCLAD.title\":\"铁甲战士\",\"IRONCLAD.shortTitle\":\"铁甲\",\"IRONCLAD.fastTitle\":\"铁甲（快速）\"}");
+						var tp = ProfileFactory.Sample();
+						tp.Paths.VanillaProject = fake;
+						Check("解包里本体角色多出的 *Title 键（如以后快速模式的 fastTitle）会自动补进角色表",
+							LocalizationGen.CharactersJson(tp).Contains("\"SEVEN.fastTitle\": \"七\""), "补上了");
+					}
+					finally { try { Directory.Delete(fake, true); } catch { } }
+				}
+			}
 			// （美术页那个宝箱房框「还在」由上面那条自检管着；V0.2.173 起角色页这一栏改绑 ping 那句，
 			//   两边不再是同一份数据 —— 宝箱房那句只留在美术页）
 			Check("角色页有「角色最大能量」输入框（绑 Profile.MaxEnergy）",
@@ -29220,6 +29242,13 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			cdProbe.Potions.Add(cdPotion);
 			Check("遗物自定义描述：勾「替换」时描述就是你写的那段",
 				LocalizationGen.RelicsJson(cdProbe).Contains("\"UI_CHECK_DESC_RELIC.description\": \"每回合给你一点安全感。\""), "替换");
+			Check("遗物底部小字：不填时仍是生成器默认那句（老存档产物不变）",
+				LocalizationGen.RelicsJson(cdProbe).Contains("\"UI_CHECK_DESC_RELIC.flavor\": \"" + LocalizationGen.DefaultRelicFlavor + "\""), "默认");
+			cdRelic.Flavor = "龙趴趴的旧胶片。";
+			Check("遗物底部小字：填了就用自定义文本",
+				LocalizationGen.RelicsJson(cdProbe).Contains("\"UI_CHECK_DESC_RELIC.flavor\": \"龙趴趴的旧胶片。\"")
+				&& !LocalizationGen.RelicsJson(cdProbe).Contains("\"UI_CHECK_DESC_RELIC.flavor\": \"" + LocalizationGen.DefaultRelicFlavor + "\""), "自定义");
+			cdRelic.Flavor = "";
 			Check("药水自定义描述：不勾「替换」时是「自动描述 + 换行 + 你写的」（不是整段替换）",
 				LocalizationGen.PotionsJson(cdProbe).Contains("喝下去就不疼了。")
 				&& LocalizationGen.PotionsJson(cdProbe).Contains("\\n喝下去就不疼了。")

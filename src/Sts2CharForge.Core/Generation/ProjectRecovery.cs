@@ -3785,6 +3785,7 @@ public static class ProjectRecovery
             relic.CustomDescription = rdText;
             relic.CustomDescriptionReplaces = rdReplace;
         }
+        relic.Flavor = ParseRelicFlavor(text);
         string? comment = Match(text, @"// 条件：(.+)");
         string? expr = Match(text, @"if \(!\((.+)\)\) return;") ?? Match(text, @"if \((_condUsedThisCombat)\)");
         var cond = ConditionFrom(comment, expr, nameToPowerId) ?? ConditionFromExpr(expr, nameToPowerId);
@@ -4087,6 +4088,13 @@ public static class ProjectRecovery
         return m.Success
             ? (CSharpCodeGen.UnescapeMarker(m.Groups[2].Value.TrimEnd()), m.Groups[1].Value == "1")
             : null;
+    }
+
+    /// <summary>认遗物底部小字标记 <c>// CET:RelicFlavor=&lt;转义文本&gt;</c>；没有返回空。</summary>
+    private static string ParseRelicFlavor(string text)
+    {
+        var m = Regex.Match(text, @"CET:RelicFlavor=(.*)$", RegexOptions.Multiline);
+        return m.Success ? CSharpCodeGen.UnescapeMarker(m.Groups[1].Value.TrimEnd()) : "";
     }
 
     /// <summary>

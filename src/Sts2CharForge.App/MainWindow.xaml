@@ -1820,6 +1820,15 @@
                                 </StackPanel>
                             </GroupBox>
 
+                            <GroupBox Header="底部小字 / 风味文本（留空 = 生成器默认那句）" Margin="0,10,0,0">
+                                <StackPanel Margin="4">
+                                    <TextBox x:Name="RelicFlavor" Style="{StaticResource Field}" MinHeight="44" AcceptsReturn="True" TextWrapping="Wrap"
+                                             VerticalScrollBarVisibility="Auto"
+                                             Text="{Binding Flavor, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="遗物卡面最底下那行小字。留空 =「由 Sts2CharForge 生成的自定义遗物。」；填了就用你写的。"/>
+                                </StackPanel>
+                            </GroupBox>
+
                             <!-- 条件选项：整只遗物的触发条件（不满足时整个遗物不触发）；
                                  每条效果自己的条件在**右边效果栏底下**那一块。 -->
                             <GroupBox x:Name="RelicConditionBox" Header="条件选项（整只遗物：不满足时不触发）" Margin="0,10,0,0">

@@ -18,6 +18,9 @@ public static class LocalizationGen
     /// </summary>
     public const string DefaultCharacterDescription = "一个自定义角色。";
 
+    /// <summary>遗物底部小字的默认文案；<see cref="RelicSpec.Flavor"/> 留空时写它。</summary>
+    public const string DefaultRelicFlavor = "由 Sts2CharForge 生成的自定义遗物。";
+
     /// <summary>
     /// 联机 ping（右下角那个 <b>Ping</b> 按钮按下去冒出的那句「催促」台词）的**生成端默认值**。
     /// 这一句从 V0.0.x 起就写死在生成端（V0.2.173 之前没有任何配置项），所以：
@@ -61,6 +64,12 @@ public static class LocalizationGen
         {
             [$"{n.CharEntry}.title"] = p.DisplayName,
             [$"{n.CharEntry}.titleObject"] = p.DisplayName,
+            // V0.3.79：本体 v0.113 的「恐惧模式（Dread）」那套界面在**选人**时会读
+            // characters.<角色>.shortTitle（NDreadNameText.SetNameText ← NDreadScreen.SelectCharacter）。
+            // 模组角色没有这条键 → LocException: Key=<角色>.shortTitle not found in table=characters
+            // → 选人回调中途抛异常，界面停在那一步 = 玩家看到的**黑屏**（用户实测，v0.113.1）。
+            // 没有单独的「简称」栏，就用角色名（和 title 一致，只影响恐惧模式那行名字）。
+            [$"{n.CharEntry}.shortTitle"] = p.DisplayName,
             [$"{n.CharEntry}.description"] = string.IsNullOrWhiteSpace(p.Description) ? DefaultCharacterDescription : p.Description,
             [$"{n.CharEntry}.pronounObject"] = obj,
             [$"{n.CharEntry}.possessiveAdjective"] = poss,
@@ -82,7 +91,52 @@ public static class LocalizationGen
             [$"{n.CharEntry}.banter.dead.endTurnPing"] = string.IsNullOrWhiteSpace(p.DeadBanterText) ? "……" : p.DeadBanterText,
             [$"{n.CharEntry}.unlockText"] = "完成 {Prerequisite} 的条件后解锁。",
         };
+        // V0.3.79：本体以后每加一个「XX 模式」就可能多读一条 characters.<角色>.<…Title> 键
+        //（v0.113 的恐惧模式读 shortTitle 就是这种情况）。这里按**用户自己解包工程里的本体角色表**
+        // 把「*Title」这一类键全部补齐（值用角色名兜底），这样本体再加「快速模式」之类的新标题键
+        // 也不会因为少一条本地化就把选人界面卡死。
+        // 只补 *Title：别的键（banter / description 之类）有具体文案，乱填会出现莫名其妙的台词。
+        foreach (string suffix in VanillaTitleKeySuffixes(p))
+            if (!dict.ContainsKey($"{n.CharEntry}.{suffix}"))
+                dict[$"{n.CharEntry}.{suffix}"] = p.DisplayName;
         return LocJson(dict);
+    }
+
+    /// <summary>
+    /// 从解包工程的本体 <c>localization/{zhs,eng}/characters.json</c> 里，找出本体角色用到的
+    /// <c>*Title</c> 键后缀（如 <c>shortTitle</c>）。读不到（没解包 / 没这文件）就返回空 —— 老输出不变。
+    /// </summary>
+    internal static IEnumerable<string> VanillaTitleKeySuffixes(CharacterProfile p)
+    {
+        string dir = (p.Paths?.VanillaProject ?? "").Trim();
+        if (dir.Length == 0 || !Directory.Exists(dir)) yield break;
+        foreach (string lang in new[] { "zhs", "eng" })
+        {
+            string file = Path.Combine(dir, "localization", lang, "characters.json");
+            if (!File.Exists(file)) continue;
+            var found = new List<string>();
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(System.IO.File.ReadAllText(file));
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        int dot = prop.Name.IndexOf('.');
+                        if (dot <= 0 || dot >= prop.Name.Length - 1) continue;
+                        string suffix = prop.Name.Substring(dot + 1);
+                        if (!suffix.EndsWith("Title", StringComparison.Ordinal)) continue;
+                        if (!found.Contains(suffix)) found.Add(suffix);
+                    }
+                }
+            }
+            catch
+            {
+                // 解包出来的表格式不对就算了：这是兜底，不能挡住生成
+            }
+            foreach (string s in found) yield return s;
+            yield break;   // zhs 读到就不再读 eng（同一个文件结构，没必要重复）
+        }
     }
 
     public static string CardsJson(CharacterProfile p)
@@ -632,7 +686,7 @@ public static class LocalizationGen
                     ? relicCustom
                     : (relicBody.Length == 0 ? relicCustom : relicBody + "\n" + relicCustom);
             dict[$"{entry}.description"] = relicBody;
-            dict[$"{entry}.flavor"] = "由 Sts2CharForge 生成的自定义遗物。";
+            dict[$"{entry}.flavor"] = string.IsNullOrWhiteSpace(r.Flavor) ? DefaultRelicFlavor : ResolveDescTokens(r.Flavor.Trim(), p);
         }
         // 「转化为先古卡」的预览界面顶部那行说明（本体 NSimpleCardsViewScreen 的 infoText）。
         // 所有用到这个效果的遗物共用一条键 —— 文案是固定的，没必要每只遗物各写一份。
