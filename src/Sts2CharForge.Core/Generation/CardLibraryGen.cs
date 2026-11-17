@@ -94,6 +94,7 @@ internal static class {{ClassName}}
         // 主菜单打开「百科大全」时没有正在进行的局（RunManager.IsInProgress = false），
         // 以前这里直接 return，导致主菜单图鉴永远看不到模组角色的卡池筛选器。
         // 没有局内角色时用我们自己的角色补一个；局内玩的是别的角色则仍然不碰。
+        bool mainMenu = me is null;
         if (me is null) me = ModelDb.Character<{{n.CharClass}}>();
         else if (me is not {{n.CharClass}}) return;
 
@@ -175,6 +176,67 @@ internal static class {{ClassName}}
         }
 
         map[me] = filter;
+        // 主菜单「百科大全」：本体只给 5 个官方角色建了筛选器；其他模组角色如果没自己补，
+        // 他们的卡就只能藏在「杂项」里，外面看起来像「别人的模组没加载」。
+        // 这里顺手把 ModelDb.AllCharacters 里还没筛选器的角色也补上（官方 5 个已经存在，自动跳过）。
+        if (mainMenu) AddOtherCustomCharacters(lib, map, pools);
+    }
+
+    /// <summary>
+    /// 给「本模组之外」的 mod 角色补一个卡池筛选器；只补没有的，官方角色 / 已经补过的跳过。
+    /// 任何一只失败都只跳它自己，不影响别的。
+    /// </summary>
+    private static void AddOtherCustomCharacters(
+        MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary lib,
+        Dictionary<CharacterModel, MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter> map,
+        Dictionary<MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter, Func<CardModel, bool>> pools)
+    {
+        try
+        {
+            foreach (CharacterModel ch in ModelDb.AllCharacters)
+            {
+                try
+                {
+                    if (ch is null || map.ContainsKey(ch)) continue;
+                    var pool = ch.CardPool;
+                    if (pool is null) continue;
+
+                    var scene = ResourceLoader.Load<PackedScene>(ToggleScene);
+                    if (scene is null) continue;
+                    var extra = scene.Instantiate<MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter>();
+                    if (extra is null) continue;
+
+                    extra.Name = ch.GetType().Name + "_" + ch.Id.Entry + "Pool";
+                    Texture2D? icon = ResourceLoader.Load<Texture2D>(VanillaIcon);
+                    if (icon is not null)
+                    {
+                        TextureRect? img = extra.GetNodeOrNull<TextureRect>("Image");
+                        if (img is not null)
+                        {
+                            img.Texture = icon;
+                            TextureRect? shadow = img.GetNodeOrNull<TextureRect>("Shadow");
+                            if (shadow is not null) shadow.Texture = icon;
+                        }
+                    }
+                    if (LocString.Exists("characters", ch.Id.Entry + ".title"))
+                        extra.Loc = new LocString("characters", ch.Id.Entry + ".title");
+
+                    Control? container = lib.GetNodeOrNull<Control>("%IroncladPool")?.GetParentOrNull<Control>();
+                    if (container is null) continue;
+                    container.AddChild(extra);
+                    pools[extra] = (CardModel c) => ReferenceEquals(c.Pool, pool);
+                    map[ch] = extra;
+                }
+                catch (Exception e)
+                {
+                    Log.Warn("卡牌图鉴：给别的 mod 角色补筛选器失败（跳过该角色）：" + e.Message);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Log.Warn("卡牌图鉴：枚举 ModelDb.AllCharacters 失败（已忽略）：" + e.Message);
+        }
     }
 }
 """;

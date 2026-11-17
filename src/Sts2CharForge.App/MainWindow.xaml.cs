@@ -29539,6 +29539,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& libSrc.Contains("_cardPoolFilters"), "按钮 + 谓词");
 			Check("卡牌图鉴补丁：任何一步失败都退化成挂到本体「杂项」上（少一个按钮可以，崩不行）",
 				libSrc.Contains("%MiscPool") && libSrc.Contains("catch (Exception e)"), "有退路");
+			Check("卡牌图鉴补丁：主菜单会给其他 mod 角色也补筛选器（不再只显示自己）",
+				libSrc.Contains("ModelDb.AllCharacters") && libSrc.Contains("AddOtherCustomCharacters")
+				&& libSrc.Contains("if (mainMenu)"), "别的角色也补");
 			// V0.2.188：节点图的「目标卡」必须是**本体卡也认得出**。
 			// 用户实测（挖肉补疮 / BugkillerCard56）：两条效果的目标卡选的都是**本体卡**
 			//（「变化为昆虫防御」= MinionSacrifice、「生成 3 张感染」= Infection），
