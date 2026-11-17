@@ -663,7 +663,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	/// 与其让用户选完才挨一句报错，不如一开始就不给选 —— 卡牌 / 遗物 / 药水照旧用全量 <see cref="Kinds"/>。"
 	/// </summary>
 	public IReadOnlyList<EffectKindOption> PowerKinds =>
-		EffectCatalog.EffectKinds.Where(k => PowerTriggers.Supports(k.Kind)).ToList();
+		EffectCatalog.AllEffectKinds
+			.Where(k => PowerTriggers.Supports(k.Kind)
+				|| (PluginRegistry.EffectOf(k.Kind) is { NeedsCard: false }))
+			.ToList();
 
 	public IReadOnlyList<TriggerOption> RelicTriggers => _relicTriggers ??= EffectCatalog.AllRelicTriggers;
 	private IReadOnlyList<TriggerOption>? _relicTriggers;
@@ -46147,6 +46150,26 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& PluginCompatGen.Rewrite("CardSelectCmd.PushSelector(sel);") ==
 						"global::Sts2CharForge.PluginCompat.LegacyPluginCompat.PushSelector(sel);",
 					"兼容文件在");
+				// V0.3.78：插件「自定义页」写出来的 .cs 是在 CopyInto（内含兼容层）**之后**才落盘的，
+				// 于是那批文件漏过兼容层 → 编译期 CS0117「CardSelectCmd 未包含 PushSelector 的定义」
+				//（用户实测：cs\Plugins\takeover\TakeoverPower.cs(142,35)）。修法：写完页面后再扫一遍。
+				{
+					string latePage = Path.Combine(projRoot, "cs", "Plugins", "uicheck", "UiCheckLatePage.cs");
+					Directory.CreateDirectory(Path.GetDirectoryName(latePage)!);
+					File.WriteAllText(latePage,
+						"class UiCheckLatePage { public static System.IDisposable A() => CardSelectCmd.PushSelector(null!); }");
+					string before = File.ReadAllText(latePage);
+					PluginCompatGen.Apply(projRoot);
+					string after = File.ReadAllText(latePage);
+					PluginCompatGen.Apply(projRoot);          // 幂等：再跑一遍不该二次加前缀
+					bool Stable() => File.ReadAllText(latePage) == after;
+					Check("V0.3.78：插件「自定义页」写的 .cs 也会过旧 API 兼容层（CS0117 PushSelector）",
+						before.Contains("CardSelectCmd.PushSelector(", StringComparison.Ordinal)
+						&& !after.Contains("CardSelectCmd.PushSelector(", StringComparison.Ordinal)
+						&& after.Contains("LegacyPluginCompat.PushSelector(", StringComparison.Ordinal)
+						&& Stable(),
+						"已改写且幂等");
+				}
 				Check("V0.3.61：插件里 PlayerChoiceContext 子类自动补 GameActionType（v0.113 新抽象成员）",
 					PluginCompatGen.Rewrite("public sealed class NullSafe : PlayerChoiceContext { public override ulong? OwnerId => null; }")
 						.Contains("GameActionType? GameActionType => null;"),

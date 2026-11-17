@@ -721,6 +721,13 @@ public static class ModGenerator
             Log($"  插件自带文件：{pluginFiles} 个已拷进工程（cs/Plugins/<插件 id>/ 与 plugin_assets/<插件 id>/）");
         // V0.2.319：插件「自定义页」里填的值按模板渲染成文件写进工程（随 mod 一起编译 / 打包）
         int pluginPages = Plugins.PluginGen.WritePages(root);
+        // V0.3.78：自定义页产出的 .cs 里也可能调用旧插件 API（`CardSelectCmd.PushSelector` /
+        // `Rng.Shuffle` 这类本体 v0.113 挪走的静态方法）。`CopyInto` 里的兼容层只处理了它拷进来的
+        // 那些文件，**自定义页写出来的文件是在它之后才写的**，于是漏改 → 编译期
+        // `CS0117 "CardSelectCmd" 未包含 "PushSelector" 的定义`
+        //（用户实测报过：`cs\Plugins\takeover\TakeoverPower.cs(142,35)`，那份文件正是自定义页产出的）。
+        // 这里对写完的工程再扫一遍（Rewrite 是幂等的，重复跑不会改坏）。
+        if (pluginPages > 0) PluginCompatGen.Apply(root);
         // 插件自定义页产出的 .cs 也是插件代码：同样包进唯一命名空间（CopyInto 已处理自带 .cs）
         if (pluginPages > 0) PluginCompatGen.WrapPluginNamespaces(root);
         if (pluginPages > 0)

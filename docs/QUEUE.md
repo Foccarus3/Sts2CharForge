@@ -1,5 +1,37 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 174 批需求（**插件「自定义页」产出的 .cs 漏过旧插件 API 兼容层 → `CS0117 CardSelectCmd 未包含 PushSelector 的定义`**；已发版 V0.3.78）
+
+> 用户转来别人的构建失败截图（`NINEFOREVEN` 模组的插件 `takeover`）：
+> ```
+> cs\Plugins\takeover\TakeoverPower.cs(142,35):
+>   error CS0117: "CardSelectCmd" 未包含 "PushSelector" 的定义
+> ```
+> 用户补充「他是最新版的」——确实，V0.3.60 起就有旧插件 API 兼容层（把 `CardSelectCmd.PushSelector(` /
+> `Rng.Shuffle(` 改写成 `Sts2CharForge.PluginCompat.LegacyPluginCompat.*`，并生成 `cs/Sts2LegacyPluginCompat.cs`），
+> 但对**插件自定义页产出的文件**没生效。
+>
+> **真因（顺序问题）**：`ModGenerator` 里
+> 1. `PluginGen.CopyInto(root)` —— 拷插件自带 `CsFiles`，**内部末尾**才调 `PluginCompatGen.Apply(root)`；
+> 2. `PluginGen.WritePages(root)` —— 插件「自定义页」把模板渲染成文件写进工程，**在兼容层之后**。
+>
+> 于是自定义页产出的 `.cs`（例如 `TakeoverPower.cs`）里那些旧 API 调用一个都没被改写 → 编译期 CS0117；
+> 而且「页面产出、没有自带 CsFiles」的插件 `n == 0`，连 `cs/Sts2LegacyPluginCompat.cs` 都不会生成。
+>
+> **修法**：`WritePages` 之后再跑一次 `PluginCompatGen.Apply(root)`（Rewrite / 补 `GameActionType` 都是幂等的，
+> 重复跑不会改坏）。`--uicheck` 里加了一条断言（含幂等检查）。
+>
+> **验收**：
+> * 探针 `_probe/plugcompat` **6/6 PASS**：
+>   ① 页面产出的 `.cs` 里 `CardSelectCmd.PushSelector(`（含全名写法）被改写、兼容类已生成；
+>   ② 重复跑不会二次加前缀；
+>   ③ 复现「先兼容、后写文件」的旧顺序：不补跑时仍是旧调用，补跑一次即修好。
+> * `dotnet build` 全解决方案 **0 error**；`--uicheck` **4917 PASS / 0 FAIL**（新增 1 条）。
+>
+> **给他的临时绕法**（等不及发版时）：把那个文件从「插件自定义页」改成插件的**自带文件（CsFiles）**，
+> 这样它会走 `CopyInto` → 兼容层就能改写；或者直接用带本次修复的版本重新生成。
+
+
 ## 第 173 批需求（**「额外资源」页的效果没算进「用到才生成」→ `TempUpgradePower.cs` 没生成 → `ExtraResource.cs` 报 CS0246**；已发版 V0.3.44）
 
 > 用户转来别人的构建失败截图（V0.3.43，`NitroMod`）：
