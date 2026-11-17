@@ -202,8 +202,19 @@ public static class ProjectRecovery
         ParseSummon(projectDir, cs, p, result);
 
         // ---- 卡牌 ----
+        var starterCopyExtras = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (string file in Sorted(Directory.GetFiles(Path.Combine(cs, "Cards"), "*.cs")))
         {
+            // V0.3.83：生成器按「初始份数 >1」展开出来的副本类（CET:StarterCopyOf=原类名）。
+            // 恢复时不能把它们当成新卡加进存档，否则 10 张牌会变成 18 张；把份数并回原卡。
+            string rawCardText = File.ReadAllText(file);
+            var copyMarker = Regex.Match(rawCardText, @"CET:StarterCopyOf=(\w+)");
+            if (copyMarker.Success)
+            {
+                string originalClass = copyMarker.Groups[1].Value;
+                starterCopyExtras[originalClass] = starterCopyExtras.GetValueOrDefault(originalClass) + 1;
+                continue;
+            }
             // 卡池 / 初始卡组里写的是**生成时的类名**（打击 / 防御带角色类名前缀：<角色>Strike），
             // 而配置里存的是去掉前缀的 Strike —— 这两处一律按生成时的类名去对。
             string emitted = Path.GetFileNameWithoutExtension(file);
@@ -214,12 +225,23 @@ public static class ProjectRecovery
                 card.InStartingDeck = true;
                 card.StartingCopies = copies;
             }
-            // 诅咒 / 先古卡按**稀有度**回到各自的列表（页面上它们是分开的两栏；
+            // 诅咒 / 先古卡按**稀有度**回到各自的列表（页面上它们是分开的两栏； 
             // 生成 / 卡池 / 素材都按稀有度判断，所以这里也必须按稀有度分回去，
             // 否则回读出来的诅咒会跑到普通卡列表里、界面上看着就不对了）
             if (card.IsCurseCard) p.Curses.Add(card);
             else if (card.IsAncientCard) p.AncientCards.Add(card);
             else p.Cards.Add(card);
+        }
+        if (starterCopyExtras.Count > 0)
+        {
+            var recName = Naming.From(p);
+            foreach (var (originalClass, extra) in starterCopyExtras)
+            {
+                var original = p.AllCards.FirstOrDefault(x => x is not null
+                    && string.Equals(recName.CardClassName(p, x), originalClass, StringComparison.Ordinal));
+                if (original is null) continue;
+                original.StartingCopies = Math.Max(1, original.StartingCopies) + extra;
+            }
         }
 
         // ---- 遗物 ----

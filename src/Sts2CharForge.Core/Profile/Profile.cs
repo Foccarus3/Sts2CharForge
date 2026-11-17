@@ -2940,6 +2940,14 @@ public sealed class CardSpec : SpecBase, ISlotRow
     private bool _xPlusOnUpgrade;
     private int? _upgradeCost;
 
+    /// <summary>
+    /// V0.3.83：生成期临时标记 —— 这张卡是「初始份数 &gt;1」展开出来的副本时，
+    /// 记录它复制自哪个原卡类名（生成代码写 CET:StarterCopyOf；从工程恢复时合并回原卡）。
+    /// 不写进用户存档。
+    /// </summary>
+    [JsonIgnore]
+    public string StarterCopyOf { get; set; } = "";
+
     // ⚠ V0.2.130 按用户要求删掉了 `ShowPileCounts`（「卡面显示牌堆张数（{DrawPile}/{DiscardPile}/{ExhaustPile}）」）。
     //   老存档里那个字段（`"ShowPileCounts": true`）读进来会被 System.Text.Json **直接忽略**
     //   （ProfileFactory.JsonOpts 没有开 UnmappedMemberHandling.Disallow，未知成员一律跳过），

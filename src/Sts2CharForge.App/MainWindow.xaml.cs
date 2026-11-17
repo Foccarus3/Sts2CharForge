@@ -18846,6 +18846,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("初始牌排在列表最上面、顺序是「打击 → 防御」",
 			legacyBasics.Cards[0].ClassName == "Strike" && legacyBasics.Cards[1].ClassName == "Defend",
 			string.Join(" / ", legacyBasics.Cards.Take(2).Select((CardSpec c) => c.Name)));
+		// V0.3.83：一张自定义卡 + StartingCopies > 1 → 生成时展开成独立 CardModel 副本。
+		// 用户实测（SerenMod Strike×4 / Defend×4）：同一 CardModel 重复多份会让多人同步分叉；
+		// 副本只改**本次生成的临时 profile**，原存档的 StartingCopies 不变。
+		{
+			var scp = new CharacterProfile { ModId = "StarterCopyProbe", CharacterClass = "Scp" };
+			var scpCard = new CardSpec
+			{
+				Name = "自检初始复制", ClassName = "ScpStrike", CardType = "Attack", Rarity = "Basic", Cost = 1,
+				InStartingDeck = true, StartingCopies = 3, InCardPool = false,
+			};
+			scp.Cards.Add(scpCard);
+			var scpExpanded = StarterCopyGen.Expand(scp);
+			Check("V0.3.83：一张卡 ×3 初始份数 → 展开成 3 个不同 CardModel（原 profile 仍是一张 ×3）",
+				scp.Cards.Count == 1 && scp.Cards[0].StartingCopies == 3
+				&& scpExpanded.Cards.Count == 3
+				&& scpExpanded.Cards.Select((CardSpec c) => c.ClassName).Distinct().Count() == 3
+				&& scpExpanded.Cards.All((CardSpec c) => c.StartingCopies == 1 && c.InStartingDeck),
+				string.Join(" / ", scpExpanded.Cards.Select((CardSpec c) => $"{c.ClassName}×{c.StartingCopies}")));
+			string scpDeck = CSharpCodeGen.CharacterSource(scpExpanded);
+			Check("V0.3.83：StartingDeck 用上原卡 + 两个副本类（不再重复同一个 ModelDb.Card<T>()）",
+				scpDeck.Contains("ModelDb.Card<ScpStrike>()")
+				&& scpDeck.Contains("ModelDb.Card<ScpStrikeCopy2>()")
+				&& scpDeck.Contains("ModelDb.Card<ScpStrikeCopy3>()")
+				&& scpDeck.Split("ModelDb.Card<ScpStrike>()").Length - 1 == 1, "原卡一次 + 副本两次");
+			Check("V0.3.83：副本也有本地化（同显示名，不会变成缺键）",
+				LocalizationGen.CardsJson(scpExpanded).Contains("SCP_STRIKE_COPY2.title")
+				&& LocalizationGen.CardsJson(scpExpanded).Contains("SCP_STRIKE_COPY3.title"), "有副本键");
+		}
 		// 老存档里这两条可能被追加在末尾、甚至顺序颠倒（早期版本）——读回来也要挪到最前面并纠正顺序
 		CharacterProfile misplaced = ProfileFactory.Sample();
 		var vRows = misplaced.Cards.Where((CardSpec c) => c.ClassName is "Strike" or "Defend").ToList();

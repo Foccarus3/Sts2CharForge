@@ -49,6 +49,9 @@ public static class ModGenerator
         // V0.2.146：「数值公式」框里填了**纯常数**（例：1）的，生成前折进固定数值
         //（校验器那边也折了一遍；这里再兜一次，保证任何入口生成出来的代码都用那个数字 —— 幂等）。
         ProfileFactory.FoldPlainConstantAmountFormulas(profile);
+        // V0.3.83：一张卡 + 多份初始复制 → 展开成独立 CardModel（多人同步；
+        // 只改本次生成的临时 profile，用户存档里的 StartingCopies 不变）。
+        profile = StarterCopyGen.Expand(profile, Log);
         // 「生成调试日志」（V0.2.142）用的临时变量序号：整次生成从头开始
         //（「同一份存档生成两次文本逐字节相同」是既有红线，见 DebugLogGen._seq；各 Source 生成器里还会各自再归零一次）。
         DebugLogGen.Reset();
