@@ -2935,7 +2935,7 @@ public static class ForgeGraphGen
     /// </summary>
     private sealed record UnitRef(string? Single, string Foes, bool PerFoe = true, bool RandomEnemy = false, bool Dup = true)
     {
-        public static readonly UnitRef Self = new("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)");
+        public static readonly UnitRef Self = new("__fgSelf", "new[] { __fgSelf }");
         /// <summary>打出这张牌时玩家选中的那个目标（卡牌上这就是「指定单体敌人」的含义）。</summary>
         public static readonly UnitRef Target = new("__fgTarget", "ForgeFormulaRuntime.TargetOrFirst(__fgTarget, __fgPlayer)");
     }
@@ -2973,7 +2973,9 @@ public static class ForgeGraphGen
         return node.Get("Pick", "Self") switch
         {
             "Self" => UnitRef.Self,
-            "ChosenAlly" => UnitRef.Self,
+            // V0.3.79：指定队友 = 这张牌选中的那个队友；以前错写成 UnitRef.Self，
+            // 而 UnitRef.Self 的 Foes 又是全体友方 → 指定队友会打到自己 + 所有队友。
+            "ChosenAlly" => UnitRef.Target,
             "AllAllies" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer)"),
             "ChosenEnemy" => UnitRef.Target,
             "RandomEnemy" => new UnitRef("ForgeFormulaRuntime.RandomEnemy(__fgPlayer, allowDuplicates: " + (dup ? "true" : "false") + ")",
@@ -3048,8 +3050,9 @@ public static class ForgeGraphGen
         if (!PowerEnemyTargetKinds.Contains(node.Get("Effect", "Damage"))) return PowerSelf;
         var spec = node.EffectSpec ?? ForgeEffectBridge.Ensure(node);
         if (spec is null) return PowerSelf;
+        // 「自己」只给自己；「指定队友」必须用这张牌选中的目标（没有目标时才退回自己）。
+        // 以前两条都映射到 UnitRef.Self，而 Self 的 Foes 是全体友方，导致自己 / 指定队友都打全体。
         var unit = TargetSideUnit(spec);
-        // 「自己 / 指定队友」那一档：状态链上只给自己（TargetSideUnit 给的是「全体友方」= 自己 + 召唤物）
         return ReferenceEquals(unit, UnitRef.Self) ? PowerSelf : unit;
     }
 
@@ -3060,8 +3063,8 @@ public static class ForgeGraphGen
         return e.TargetSide switch
         {
             "Self" => UnitRef.Self,
-            // 「指定队友」：锻造图里和【对象】的「指定队友」同一档（那一档也是自己 —— 见 ResolveUnit）
-            "Ally" => UnitRef.Self,
+            // 「指定队友」= 卡牌选中的目标；没有目标时 TargetOrFirst 会退回自己。
+            "Ally" => UnitRef.Target,
             // 节点图里的「全部友方」= 同一侧所有存活单位（含其他玩家 / 召唤物），默认**不含自己**；
             // 卡牌链的 AllAlliesIncludeSelf / AllAlliesExcludePets 两个勾选框在这里对齐。
             "AllAllies" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllAllies(__fgPlayer).Where("

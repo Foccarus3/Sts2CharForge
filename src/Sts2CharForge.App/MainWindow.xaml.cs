@@ -20307,9 +20307,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					string srcEnemies = ForPick("AllEnemies");
 					string srcAllUnits = ForPick("AllUnits");
 					string srcChosenEnemy = ForPick("ChosenEnemy");
+					string srcChosenAlly = ForPick("ChosenAlly");
 
-					Check("【对象】「自己」→ 只作用在自己身上（AllAllies 那条不含自己以外的）",
-						srcSelf.Contains("AllAllies(__fgPlayer)"), "自己");
+					Check("【对象】「自己」→ 只作用在自己身上（不再遍历 AllAllies）",
+						srcSelf.Contains("new[] { __fgSelf }") && !srcSelf.Contains("AllAllies(__fgPlayer)"), "自己");
+					Check("【对象】「指定队友」→ 用 cardPlay.Target（不再落到自己 / 全体友方）",
+						srcChosenAlly.Contains("TargetOrFirst(__fgTarget") && !srcChosenAlly.Contains("new[] { __fgSelf }"), "指定队友");
 					Check("【对象】「全部友方」= 自己 + 召唤物（AllAllies 助手）",
 						srcAllies.Contains("ForgeFormulaRuntime.AllAllies("), "全部友方");
 					Check("【对象】「全部召唤物」= 只作用于召唤物（SummonList，不含自己）",
