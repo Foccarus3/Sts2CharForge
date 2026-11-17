@@ -224,6 +224,22 @@ internal static class {{ClassName}}
                     Control? container = lib.GetNodeOrNull<Control>("%IroncladPool")?.GetParentOrNull<Control>();
                     if (container is null) continue;
                     container.AddChild(extra);
+                    // 关键：新造的按钮必须和本体那 8 个一样接到 UpdateCardPoolFilter，
+                    // 否则只有头像 / 悬停，点下去不会切卡池（用户实测「能看到头像但是点不进去」）。
+                    try
+                    {
+                        var upd = HarmonyLib.AccessTools.Method(
+                            typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardLibrary), "UpdateCardPoolFilter");
+                        if (upd?.CreateDelegate(
+                                typeof(Action<MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter>), lib)
+                            is Action<MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter> act)
+                            extra.Connect(MegaCrit.Sts2.Core.Nodes.Screens.CardLibrary.NCardPoolFilter.SignalName.Toggled, Callable.From(act));
+                    }
+                    catch (Exception e)
+                    {
+                        Log.Warn("卡牌图鉴：别的 mod 角色筛选器接不上点击事件（按钮在，点了不切池）：" + e.Message);
+                    }
+                    extra.Visible = true;
                     pools[extra] = (CardModel c) => ReferenceEquals(c.Pool, pool);
                     map[ch] = extra;
                 }
