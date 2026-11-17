@@ -563,6 +563,14 @@
       ],
       "versions": [
         {
+          "version": "1.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/relicgrant-1.1.zip",
+          "sha256": "94efecd1da26bead3e2063486d8e44ecf582da7b0806419d0866d48791e57a83",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-17T04:50:18Z"
+        },
+        {
           "version": "1.0",
           "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/relicgrant-1.0.zip",
           "sha256": "65778d0ca77fae14b6a5593547ed29572e7dc9c64620eeabb50f2b3e73a08516",
