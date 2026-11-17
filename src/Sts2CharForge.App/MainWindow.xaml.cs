@@ -18857,6 +18857,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				InStartingDeck = true, StartingCopies = 3, InCardPool = false,
 			};
 			scp.Cards.Add(scpCard);
+			scp.Art.CardPortraits["ScpStrike"] = "F:\\art\\scp_strike.png";
 			var scpExpanded = StarterCopyGen.Expand(scp);
 			Check("V0.3.83：一张卡 ×3 初始份数 → 展开成 3 个不同 CardModel（原 profile 仍是一张 ×3）",
 				scp.Cards.Count == 1 && scp.Cards[0].StartingCopies == 3
@@ -18864,6 +18865,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& scpExpanded.Cards.Select((CardSpec c) => c.ClassName).Distinct().Count() == 3
 				&& scpExpanded.Cards.All((CardSpec c) => c.StartingCopies == 1 && c.InStartingDeck),
 				string.Join(" / ", scpExpanded.Cards.Select((CardSpec c) => $"{c.ClassName}×{c.StartingCopies}")));
+			Check("V0.3.83：副本继承原卡的卡图（不会只有原卡有卡面）",
+				scpExpanded.Art.CardPortraits.TryGetValue("ScpStrikeCopy2", out string? cp2Art)
+				&& cp2Art == "F:\\art\\scp_strike.png"
+				&& scpExpanded.Art.CardPortraits.TryGetValue("ScpStrikeCopy3", out string? cp3Art)
+				&& cp3Art == "F:\\art\\scp_strike.png", "副本卡图已映射");
 			string scpDeck = CSharpCodeGen.CharacterSource(scpExpanded);
 			Check("V0.3.83：StartingDeck 用上原卡 + 两个副本类（不再重复同一个 ModelDb.Card<T>()）",
 				scpDeck.Contains("ModelDb.Card<ScpStrike>()")

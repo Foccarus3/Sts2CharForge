@@ -50,6 +50,11 @@ public static class StarterCopyGen
                     candidate = baseName + "Copy" + i + "_" + suffix++;
                 extra.ClassName = candidate;
                 extra.StarterCopyOf = baseName;
+                // 卡图 / 卡面是**按类名**查的（p.Art.CardPortraits[cls]）：
+                // 副本换了类名，必须继承原卡的这张图，否则只有原卡有卡图。
+                if (copy.Art.CardPortraits.TryGetValue(baseName, out string? portrait)
+                    && !string.IsNullOrWhiteSpace(portrait))
+                    copy.Art.CardPortraits[candidate] = portrait;
                 existing.Add(candidate);
                 // 追加到列表末尾：不能插在原卡后面 —— 那样会改变后面卡牌的列表序号，
                 // 自动类名（<角色>CardN）会整体错位。副本用显式类名，追加不碰已有卡。
