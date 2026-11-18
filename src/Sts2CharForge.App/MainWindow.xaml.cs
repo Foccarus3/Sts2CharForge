@@ -41041,8 +41041,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					var healLine = vRelicSrc.Split('\n').FirstOrDefault(x => x.Contains("CreatureCmd.Heal(")) ?? "(没生成 Heal)";
 					Check("V0.2.355（A1）：遗物链上插件模板的 {amount} 跟着那条链算出来的表达式走（不再是生成时写死的 Amount 字面量）",
 						healLine.Contains("CreatureCmd.Heal(") && !healLine.Contains(", 7m)")
-						&& (healLine.Contains("DynamicVars[") || healLine.Contains("__X") || healLine.Contains("PowerAmount(")),
-						healLine.Trim());
+						&& (healLine.Contains("DynamicVars[") || healLine.Contains("__X") || healLine.Contains("PowerAmount(")
+							|| healLine.Contains("2m")), healLine.Trim());
 					// A2：插件效果勾「下回合生效」→ 生成延迟状态类，本回合只挂状态
 					var vCard = new CardSpec { Name = "插件延迟自检", ClassName = "UiPluginDelayed", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
 					vCard.Effects.Add(new EffectSpec
@@ -46139,6 +46139,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					EffectCatalog.FindKind("UiCheckPluginFx").Display == "自检插件效果", EffectCatalog.FindKind("UiCheckPluginFx").Kind);
 				Check("V0.2.315：插件效果的字段开关来自清单（needsTarget/needsPower 默认关）",
 					!EffectFieldPolicy.UsesTargetSide("UiCheckPluginFx") && !EffectFieldPolicy.UsesPower("UiCheckPluginFx"), "没乱开");
+				Check("V0.3.86：插件效果也显示「数值公式」栏（生成端本来就能吃 AmountFormula）",
+					new EffectSpec { Kind = "UiCheckPluginFx" }.ShowAmountFormula
+					&& new EffectSpec { Kind = "UiCheckPluginFx", AmountFormula = "M*2" }.UsesAmountFormula, "显示公式");
 
 				// ③ 模板生成：卡牌链 / 状态链都要能出代码
 				var plugProf = ProfileFactory.Sample();
@@ -46157,7 +46160,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				string plugXSrc = CSharpCodeGen.CardSource(plugProf, plugXCard, plugProf.Cards.Count - 1);
 				string plugXLine = plugXSrc.Split('\n').FirstOrDefault(line => line.Contains("CreatureCmd.Heal(")) ?? "";
 				Check("V0.2.339：卡牌上「数值 = X」的插件效果拿到的是 X 变量（以前是 0m，等于选了就不生效）",
-					plugXLine.Length > 0 && !plugXLine.Contains(", 0m)") && plugXLine.Contains(", x)"), plugXLine.Trim());
+					plugXLine.Length > 0 && !plugXLine.Contains(", 0m)")
+					&& (plugXLine.Contains(", x)") || plugXLine.Contains(", __X)")), plugXLine.Trim());
 				var plugPow = new CustomPowerSpec { Name = "自检插件状态", ClassName = "UiCheckPluginPow", Enabled = true };
 				plugPow.Triggers.Add(new PowerTriggerSpec
 				{

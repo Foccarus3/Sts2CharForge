@@ -912,6 +912,17 @@ public static class ForgeGraphGen
         // 「当遗物被点击时」：不是本体钩子（是界面补丁转发过来的），**不造 context**（保持原样）
         if (string.Equals(plan.Timing.Hook, "ForgeOnRelicClicked", StringComparison.Ordinal)) return "None";
         if (string.Equals(id, ForgeTimings.HpBelow, StringComparison.Ordinal)) return "Hook";
+        // V0.3.86：插件触发时机自己声明了 HasChoiceContext / 签名。
+        // 以前这里直接落到 None → 「休息时」这种插件时机一放伤害/施加状态就被校验器拦住。
+        if (Plugins.PluginRegistry.TriggerOf(id) is { } plug)
+        {
+            if (!string.IsNullOrWhiteSpace(plug.Signature)
+                && plug.Signature.Contains("PlayerChoiceContext", StringComparison.Ordinal))
+                return "Param";
+            // 插件说它给 context（默认 true）：它多半是局外 / 休息点时机，用阻塞式最稳；
+            // 插件明确说没有 context 才落到 None（校验器继续拦需要 context 的效果）。
+            return plug.HasChoiceContext ? "Blocking" : "None";
+        }
         if (CSharpCodeGen.HasContext(id)) return nested ? "Hook" : "Param";
         if (CSharpCodeGen.CanBootstrapContext(id)) return "Blocking";
         if (CSharpCodeGen.BootstrapInCombat(id)) return "Hook";

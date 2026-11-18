@@ -660,7 +660,10 @@ public sealed class EffectSpec : SpecBase
 
     /// <summary>这个效果种类能不能用「数值公式」（见上面那段注释里为什么只有这 5 种）。</summary>
     public static bool FormulaSupports(string? kind) =>
-        kind is "Damage" or "Block" or "HpLoss" or "Heal" or "ApplyPower"
+        // V0.3.86：插件效果也允许写公式 —— 生成端 PluginGen 的 {amount}
+        // 本来就支持 AmountOverride，只是编辑器以前把插件种类当成「不支持」收起来了。
+        Sts2CharForge.Core.Plugins.PluginRegistry.EffectOf(kind) is not null
+        || kind is "Damage" or "Block" or "HpLoss" or "Heal" or "ApplyPower"
         or "Gold"   // V0.2.281（用户问「金币怎么不能填公式」）：获得金币也支持「数值公式」
         or "VarWrite";   // V0.3.16：变量写操作的值就是公式（+ - = 的右边）
 
