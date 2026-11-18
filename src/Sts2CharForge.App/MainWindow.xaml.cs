@@ -18870,6 +18870,12 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				&& cp2Art == "F:\\art\\scp_strike.png"
 				&& scpExpanded.Art.CardPortraits.TryGetValue("ScpStrikeCopy3", out string? cp3Art)
 				&& cp3Art == "F:\\art\\scp_strike.png", "副本卡图已映射");
+			var scpCopy = scpExpanded.Cards.First((CardSpec c) => c.StarterCopyOf == "ScpStrike");
+			string scpCopySrc = CSharpCodeGen.CardSource(scpExpanded, scpCopy, scpExpanded.Cards.IndexOf(scpCopy));
+			Check("V0.3.85：副本卡构造时 shouldShowInCardLibrary:false（百科不重复显示）",
+				scpCopySrc.Contains("shouldShowInCardLibrary: false")
+				&& !CSharpCodeGen.CardSource(scpExpanded, scpExpanded.Cards[0], 0).Contains("shouldShowInCardLibrary: false"),
+				"副本隐藏 / 原卡显示");
 			string scpDeck = CSharpCodeGen.CharacterSource(scpExpanded);
 			Check("V0.3.83：StartingDeck 用上原卡 + 两个副本类（不再重复同一个 ModelDb.Card<T>()）",
 				scpDeck.Contains("ModelDb.Card<ScpStrike>()")
@@ -21604,6 +21610,36 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						Check("V0.2.170：节点图的「重放卡牌 + 下回合生效」挂的是延迟状态（不是立即重放）",
 							CSharpCodeGen.CardSource(Profile, mgCard, 0).Contains("ForgeDelayed"),
 							"有 ForgeDelayed");
+						// V0.3.85：延迟体里 `cardPlay` 会被替换成 null 字面量 —— 如果哪条发射器写了
+						// `cardPlay is not null && …`，替换完就成了 `null is not null`，C# 直接 CS8117
+						//（用户实测报的：cs\DelayedPowers.cs(68,13)，触发组合是「治疗 / 失去生命 / 提升最大生命」
+						//  + 作用对象「指定敌人」+ 下回合生效）。这里扫几种带目标的延迟效果，确保生成文本里不出现。
+						{
+							var dProf = ProfileFactory.Sample();
+							string[] kinds = { "Heal", "HpLoss", "MaxHp", "Damage" };
+							string[] sides = { "", "Enemy", "Ally" };
+							int bad = 0;
+							string sample = "";
+							foreach (string kind in kinds)
+								foreach (string side in sides)
+								{
+									var dp = ProfileFactory.Sample();
+									var fx = new EffectSpec { Kind = kind, Amount = 5m, NextTurn = true };
+									if (side.Length > 0) fx.TargetSide = side;
+									dp.Relics.Add(new RelicSpec { Name = "自检延迟", ClassName = "UiCheckDelayNull", Rarity = "Common", Effects = { fx } });
+									string dsrc = CSharpCodeGen.DelayedPowersSource(dp);
+									foreach (string line in dsrc.Replace("\r\n", "\n").Split('\n'))
+									{
+										if (System.Text.RegularExpressions.Regex.IsMatch(line, @"\bnull\s+is\b"))
+										{
+											bad++;
+											if (sample.Length == 0) sample = kind + "/" + side + " → " + line.Trim();
+										}
+									}
+								}
+							Check("V0.3.85：带目标的延迟效果生成里没有 `null is …`（不会 CS8117）",
+								bad == 0, bad == 0 ? "干净" : bad + " 处：" + sample);
+						}
 						mgSpec.Kind = "PlaySfx";
 						mgSpec.NextTurn = true;
 						gateIssues = ForgeGraphGen.Issues(mgGraph, Profile, "Card");

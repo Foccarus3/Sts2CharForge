@@ -5669,8 +5669,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (c.MultiplayerOnly)
             w.Line("public override CardMultiplayerConstraint MultiplayerConstraint => CardMultiplayerConstraint.MultiplayerOnly;");
 
+        // V0.3.85：初始份数拆出来的副本只用于初始卡组，不在「百科大全」里重复显示。
+        // 本体 CardModel 构造函数有这个开关（shouldShowInCardLibrary 默认 true）。
+        string ctorLibraryArg = !string.IsNullOrWhiteSpace(c.StarterCopyOf)
+            ? ", shouldShowInCardLibrary: false"
+            : "";
         w.Line()
-         .Line($"public {cls}() : base({(costIsX ? 0 : CardCostOf(p, c))}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}) {{ }}")
+         .Line($"public {cls}() : base({(costIsX ? 0 : CardCostOf(p, c))}, CardType.{c.CardType}, CardRarity.{c.Rarity}, TargetType.{targetType}{ctorLibraryArg}) {{ }}")
 
          .Open("protected override async Task OnPlay(PlayerChoiceContext choiceContext, CardPlay cardPlay)");
 
@@ -11180,6 +11185,16 @@ public static class ExtraResourceEnergyCounterDiagPatch
                    .Replace("cardPlay", "null")
                    .Replace("this", thisToken)
                    .Replace(thisToken, DelayedCardSourceExpr);
+        // 延迟体里 `cardPlay` 一律变成 null 字面量，于是「打出时」那几条守卫
+        //（EmitPerCreature 的 `if (cardPlay is not null && cardPlay.Target is not null)`、
+        //  以及 `!cardPlay.Target.IsDead` 那种）会变成：
+        //     if (null is not null && __fgDelayedTarget is not null) …
+        // 而 C# **不允许** `is` 的左操作数是 null 字面量 → 编译期 `CS8117 用于模式匹配的操作数无效`
+        //（用户实测报的：`cs\DelayedPowers.cs(68,13) error CS8117`，触发组合是「治疗 / 失去生命 /
+        //  提升最大生命」这类带目标的延迟效果）。
+        // 这一段本来就恒假（没有 cardPlay 这件事在延迟体里是确定的），直接摘掉；剩下的
+        // `__fgDelayedTarget is not null` 才是真正要判的东西。
+        body = body.Replace("null is not null && ", "");
         foreach (string line in body.Replace("\r\n", "\n").Split('\n'))
         {
             if (line.Trim().Length == 0) { w.Line(); continue; }
@@ -11187,7 +11202,6 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         if (petVar is not null) w.Close();
     }
-
     // ==================== 「下回合生效」的**通用**延迟分支（V0.2.133）====================
     //
     // V0.2.132 及以前只有 12 种（本体那五个 + 生成类七个）真的有延迟分支。本轮把它扩到

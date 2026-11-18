@@ -1,5 +1,38 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 176 批需求（**带目标的「下回合生效」→ 生成 `null is not null` → `CS8117`**；已发版 V0.3.85）
+
+> 用户贴来构建日志（**V0.3.84**）：
+> ```
+> cs\DelayedPowers.cs(68,13): error CS8117: 用于模式匹配的操作数无效；需要值，但找到的是"<null>"
+> ```
+>
+> **真因**：延迟状态（「下回合生效」）复用卡牌那套发射器，生成完再用字符串替换成延迟版：
+> ```csharp
+> .Replace("cardPlay.Target", "__fgDelayedTarget")
+> .Replace("cardPlay", "null")        // 延迟体里没有 cardPlay
+> ```
+> 而 V0.2.364 给「指定敌人」那一档加过一条防空的守卫
+> （`CSharpCodeGen.cs` ~L4939：`if (cardPlay is not null && cardPlay.Target is not null)`）——
+> 延迟体里 `cardPlay` 被换成 `null`，这句就成了 `if (null is not null && __fgDelayedTarget is not null)`，
+> C# 不允许 `is` 左边是 null 字面量 → **CS8117**。
+>
+> **触发组合**（矩阵扫出来的）：`Heal` / `HpLoss` / `MaxHp`（治疗 / 失去生命 / 提升最大生命）
+> + 作用对象「指定敌人」+ 勾「下回合生效」，卡牌 / 遗物 / 药水 / 自定义状态四条链都会中。
+>
+> **修法**：延迟体替换的最后一步把恒假的那段前缀摘掉：
+> `body = body.Replace("null is not null && ", "")` —— 剩下的 `__fgDelayedTarget is not null`
+> 才是真正要判的东西（语义与「打出时」那条守卫一致）。
+>
+> **验收**：
+> * 探针 `_probe/delayedmatrix`（所有效果种类 × 4 条链 × 8 种作用对象、全勾「下回合生效」）：
+>   修之前 **命中 80 处** `null is …`，修之后 **0 处**；顺带扫 `null.`（`cardPlay.Card` 变 `null.Card`）也是 0 处
+> * `dotnet build` **0 error**；`--uicheck` **4929 PASS / 0 FAIL**（新增 1 条：带目标的延迟效果里不出现 `null is`）
+>
+> （上一批我把路径目录名 `Sts2CharForge_更新包_V0.2.157` 误判成老版本 — 实际日志里写着「生成器版本：V0.3.84」，
+>  这条确实是当时最新版的 bug，已按当前代码修。）
+
+
 ## 第 175 批需求（**本体 v0.113 的「恐惧模式」选人黑屏：角色表缺 `shortTitle`（LocException）**；已发版 V0.3.80）
 
 > 用户贴 godot 日志问「模组角色为什么在恐惧模式选择就会黑屏」：
