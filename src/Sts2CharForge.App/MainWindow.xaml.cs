@@ -897,6 +897,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			hints.RemoveAll(h => h.Token is "{Amount}" or "{=Amount*2}");
 			hints.Add(("{Amount}", "当前层数"));
 			hints.Add(("{=Amount*2}", "当前层数 ×2（可改成 M*3 / cnt+1 等公式）"));
+			// 直接插入自定义参数 / 变量：{C} 会自动按当前值显示，不必自己写 {=C}。
+			foreach (var cp in Profile.CustomParams.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Name)))
+				hints.Add(("{" + cp.Name.Trim() + "}", $"自定义参数 {cp.Name.Trim()}"));
+			foreach (var v in Profile.Variables.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Name)))
+				hints.Add(("{" + v.Name.Trim() + "}", $"变量 {v.Name.Trim()}"));
 		}
 		// ⚠ V0.2.130：原来这里给卡牌多塞三个「牌堆实时张数」占位符
 		//   （{DrawPile} / {DiscardPile} / {ExhaustPile}，配「卡面显示牌堆张数」那个勾选框）。
@@ -26049,12 +26054,16 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("V0.3.87：自定义状态描述不再写只认 Amount 的 smartDescription",
 			!text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".smartDescription\""), "无 smart");
 		// V0.3.88：泛化公式（不再固定 Amount2）
-		cp1.Description = "每层 2 点，当前共 {=Amount*2} 点。";
+		cpProbe.CustomParams.Add(new ParamSpec { Name = "C", Source = ParamSources.Value, Value = 1m });
+		cp1.Description = "每层 2 点，当前共 {=Amount*2}，参数 C={C}。";
 		string genericSrc = CustomPowerGen.Source(cpProbe, cp1, 0);
 		string genericLoc = LocalizationGen.PowersJson(cpProbe);
 		Check("V0.3.88：描述里的 {=Amount*2} 变成运行时表达式变量（支持任意公式，不再只认 Amount2）",
 			genericSrc.Contains("__fgPowerDesc0") && genericSrc.Contains("base.Amount")
 			&& genericLoc.Contains("{__fgPowerDesc0}") && !genericLoc.Contains("{=Amount*2}"), "泛化公式");
+		Check("V0.3.89：描述里直接写 {C}（自定义参数）也能变成运行时变量（不必写 {=C}）",
+			genericLoc.Contains("{__fgPowerDesc1}") && !genericLoc.Contains("{C}")
+			&& genericSrc.Contains("__fgPowerDesc1"), "自定义参数");
 		CustomPowerSpec customPowerSpec3 = new CustomPowerSpec
 		{
 			Name = "带图标",

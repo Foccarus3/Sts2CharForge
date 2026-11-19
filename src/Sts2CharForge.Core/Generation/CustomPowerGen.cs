@@ -66,6 +66,20 @@ public static class CustomPowerGen
     {
         string raw = DescriptionOf(power);
         var vars = new List<(string Name, string Expr)>();
+        // V0.3.89：除了 {=公式}，也支持直接写 {C}（自定义参数）/ {cnt}（变量）。
+        // 用户不必先知道「公式要加 =」——{C} 会被改写成 {=C}，再走下面同一套表达式。
+        foreach (var cp in profile.CustomParams.Where(x => x is not null))
+        {
+            string name = (cp.Name ?? "").Trim();
+            if (name.Length > 0 && !string.Equals(name, "Amount", StringComparison.OrdinalIgnoreCase))
+                raw = raw.Replace("{" + name + "}", "{=" + name + "}", StringComparison.OrdinalIgnoreCase);
+        }
+        foreach (var v in profile.Variables.Where(x => x is not null))
+        {
+            string name = (v.Name ?? "").Trim();
+            if (name.Length > 0)
+                raw = raw.Replace("{" + name + "}", "{=" + name + "}", StringComparison.OrdinalIgnoreCase);
+        }
         if (raw.IndexOf("{=", StringComparison.Ordinal) < 0) return (raw, vars);
 
         var baseResolver = ForgeFormula.InlineResolver(
