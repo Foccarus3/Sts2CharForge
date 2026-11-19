@@ -1303,7 +1303,8 @@ public static class LocalizationGen
             string desc = RenameResource(CustomPowerGen.DescriptionOf(cp), p);
             dict[$"{entry}.title"] = cp.Name.Trim();
             dict[$"{entry}.description"] = desc;
-            dict[$"{entry}.smartDescription"] = desc;   // 战斗里的悬停提示优先用它
+            // V0.3.87：不再写 smartDescription —— 自定义状态的 Description override 里会补
+            // {Amount} / {Amount2}；写了 smartDescription 反而会走只认 Amount 的那条旧路。
             // V0.2.145（用户实测的「自定义状态选生成卡牌会卡死」）：
             // 状态的效果里如果有「要弹选牌界面」的（生成卡牌 + 按范围随机 + 多选1 > 3 / 从范围里自己挑、
             // 从某一摞拿牌到手牌、复制卡牌自己选、重放自己选…），就必须补这一条本地化 ——

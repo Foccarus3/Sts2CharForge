@@ -874,9 +874,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		{
 			"RelicCustomDesc" => (RelicList?.SelectedItem as RelicSpec)?.Effects,
 			"PotionCustomDesc" => (PotionList?.SelectedItem as PotionSpec)?.Effects,
+			"CustomPowerDescription" => (CustomPowerList?.SelectedItem as CustomPowerSpec) is { } cps
+				? cps.Triggers.Where(t => t is not null).SelectMany(t => t.Effects.Where(x => x is not null))
+					.Concat(LocalizationGen.GraphEffects(cps.ForgeGraph).Where(x => x is not null))
+				: null,
 			_ => activeCard?.Effects,
 		};
-		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc");
+		bool isCard = which is not ("RelicCustomDesc" or "PotionCustomDesc" or "CustomPowerDescription");
 		// V0.3.35：锻造卡的效果在节点图里 → 用合成的 EffectSpec 让 ParamHints 给出
 		// {Damage:diff()}（生成端会为它们声明 ForgeFormulaDamageVar，易伤/虚弱会跟着变）。
 		if (isCard && activeCard is { ForgeGraph: not null })
@@ -888,6 +892,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		// 特意加在**界面这一层**：CSharpCodeGen.ParamHints 是「这条效果真的声明过的变量」，
 		// 校验器拿它比对卡面占位符，混进一条非变量会让校验误报。
 		hints.AddRange(ExtraInsertTokens);
+		if (which == "CustomPowerDescription")
+		{
+			hints.RemoveAll(h => h.Token is "{Amount}" or "{Amount2}");
+			hints.Add(("{Amount}", "当前层数"));
+			hints.Add(("{Amount2}", "当前层数 ×2"));
+		}
 		// ⚠ V0.2.130：原来这里给卡牌多塞三个「牌堆实时张数」占位符
 		//   （{DrawPile} / {DiscardPile} / {ExhaustPile}，配「卡面显示牌堆张数」那个勾选框）。
 		//   用户要求整块去掉 → 那三个候选、那句「先去勾它」的提示、以及那个勾选框一起删了。
@@ -26035,7 +26045,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("回合结束触发器 + 回合结束移除合并成一个方法（不再重复定义）", text41.Split("BeforeSideTurnEnd").Length - 1 == 1 && text41.Contains("await PowerCmd.Remove(this);"), $"BeforeSideTurnEnd 出现 {text41.Split("BeforeSideTurnEnd").Length - 1} 次");
 		Check("减益状态写成 PowerType.Debuff", text41.Contains("PowerType.Debuff"), "类型对");
 		string text42 = LocalizationGen.PowersJson(cpProbe);
-		Check("名字和描述写进 powers.json（键 = 本体规则）", text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".title\"") && text42.Contains("自检铁壁") && text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".smartDescription\""), "本地化在");
+		Check("名字和描述写进 powers.json（键 = 本体规则）", text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".title\"") && text42.Contains("自检铁壁") && text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".description\""), "本地化在");
+		Check("V0.3.87：自定义状态描述提供 {Amount2}（层数×2），并且不再写只认 Amount 的 smartDescription",
+			CustomPowerGen.Source(cpProbe, cp1, 0).Contains("Amount2")
+			&& !text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".smartDescription\""), "Amount2");
 		CustomPowerSpec customPowerSpec3 = new CustomPowerSpec
 		{
 			Name = "带图标",

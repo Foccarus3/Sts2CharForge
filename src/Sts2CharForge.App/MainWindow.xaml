@@ -2979,12 +2979,17 @@
                                               Content="只叠一层（重复施加只刷新，不叠加层数）" IsChecked="{Binding Single}"/>
                                 </StackPanel>
 
-                                <TextBlock Margin="0,10,0,4" Text="描述（留空 = 按触发时机自动写一句；{Amount} = 层数）" FontWeight="Bold"/>
-                                <TextBox Style="{StaticResource Field}" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                <TextBlock Margin="0,10,0,4" Text="描述（留空 = 按触发时机自动写一句；{Amount} = 层数，{Amount2} = 层数×2）" FontWeight="Bold"/>
+                                <TextBox x:Name="CustomPowerDescription" Style="{StaticResource Field}" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
                                          Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}"/>
-                                <Button Content="按触发时机重新生成描述" Padding="8,3" Margin="0,4,0,0" HorizontalAlignment="Left"
-                                        Click="OnAutoPowerDescription"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                    <Button Content="填入参数…" Padding="8,3" Click="OnInsertParam"
+                                            Tag="{Binding ElementName=CustomPowerDescription}"
+                                            ToolTip="插入 {Amount}（当前层数）或 {Amount2}（层数×2）。"/>
+                                    <Button Content="按触发时机重新生成描述" Padding="8,3" Margin="6,0,0,0" HorizontalAlignment="Left"
+                                            Click="OnAutoPowerDescription"/>
+                                </StackPanel>
                                 <!-- 描述预览：跟着触发时机 + 触发时做什么实时变（以前改了什么这里都不动） -->
                                 <TextBlock Margin="2,4,0,0" TextWrapping="Wrap" Foreground="#666" FontSize="11"
                                            Text="{Binding CustomPowerDescriptionHint, RelativeSource={RelativeSource AncestorType=Window}}"/>

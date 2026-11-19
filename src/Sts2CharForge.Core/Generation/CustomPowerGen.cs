@@ -127,6 +127,16 @@ public static class CustomPowerGen
         w.Line($"public override PowerType Type => PowerType.{(debuff ? "Debuff" : "Buff")};");
         w.Line();
         w.Line($"public override PowerStackType StackType => PowerStackType.{(power.Single ? "Single" : "Counter")};");
+        // V0.3.87：状态描述里除 {Amount}（层数）外再提供 {Amount2}（层数 ×2）。
+        // PowerModel 默认的 smartDescription 只塞 Amount，不能算表达式；这里改成自己的 Description，
+        // 让「4 层、每层 2 点」直接显示 8。没有 smartDescription 时本体悬停会走 Description。
+        w.Line("public override MegaCrit.Sts2.Core.Localization.LocString Description => __ForgePowerDescription();")
+         .Open("private MegaCrit.Sts2.Core.Localization.LocString __ForgePowerDescription()")
+         .Line($"var __loc = new MegaCrit.Sts2.Core.Localization.LocString(\"powers\", \"{EntryOf(profile, power, index)}.description\");")
+         .Line("__loc.Add(\"Amount\", Amount);")
+         .Line("__loc.Add(\"Amount2\", Amount * 2);")
+         .Line("return __loc;")
+         .Close();
         // V0.2.373（用户实测：「改造现实」悬停不弹它要加的利刃卡面）：状态以前**完全没有** ExtraHoverTips ——
         // 只有卡 / 遗物 / 药水会弹。这里按「这条状态的触发效果 + 锻造图上的效果」生成同一套卡面提示，
         // 于是状态描述里提到的卡（生成 / 加进牌组 / 填满手牌那几种）鼠标移上去也能看到。
