@@ -80,6 +80,17 @@ public static class CustomPowerGen
             if (name.Length > 0)
                 raw = raw.Replace("{" + name + "}", "{=" + name + "}", StringComparison.OrdinalIgnoreCase);
         }
+        // V0.3.90：描述里常见的「{RegenPower}」这类状态名占位符不是 SmartFormat 变量，
+        // 原样留下会让整段格式化直接抛「No source extension could handle selector RegenPower」，
+        // 连后面的 {=Amount*5} 也一起显示不出来。能认出状态类名的就换成中文名。
+        raw = System.Text.RegularExpressions.Regex.Replace(raw, @"\{([A-Za-z_][A-Za-z0-9_]*)\}", m =>
+        {
+            string id = m.Groups[1].Value;
+            if (string.Equals(id, "Amount", StringComparison.OrdinalIgnoreCase)
+                || id.StartsWith("__fg", StringComparison.Ordinal)) return m.Value;
+            string zh = EffectCatalog.PowerName(id, "");
+            return zh.Length > 0 && !string.Equals(zh, id, StringComparison.Ordinal) ? zh : m.Value;
+        });
         if (raw.IndexOf("{=", StringComparison.Ordinal) < 0) return (raw, vars);
 
         var baseResolver = ForgeFormula.InlineResolver(
