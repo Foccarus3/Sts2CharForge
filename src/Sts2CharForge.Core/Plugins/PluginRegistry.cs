@@ -568,6 +568,13 @@ public static class PluginRegistry
     }
     public static string LastScan { get; private set; } = "";
 
+    /// <summary>V0.3.93：清掉页值 / 行数据缓存，下一次读强制从磁盘重新加载。</summary>
+    public static void ClearPageCache()
+    {
+        _pageValues.Clear();
+        _pageRows.Clear();
+    }
+
     /// <summary>
     /// 扫描并重新加载所有插件（幂等）。返回加载到的插件数。
     ///
@@ -583,6 +590,9 @@ public static class PluginRegistry
         _conditionsById.Clear();
         _triggersById.Clear();
         _unitsById.Clear();
+        // V0.3.93：重新加载插件也要重新从磁盘读页值 / 行数据（否则界面仍拿着旧缓存）。
+        _pageValues.Clear();
+        _pageRows.Clear();
         LastScan = DateTime.Now.ToString("HH:mm:ss");
 
         LoadEnabled(appDir);   // V0.2.358：先读启用表（禁用表只记「关掉的」）
@@ -759,10 +769,14 @@ public static class PluginRegistry
 
     public static void ValidatePages(PluginSpec spec)
     {
+        var seenPageIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (PluginPageSpec page in spec.Pages)
         {
             if (page is null) continue;
             string where = "页「" + (string.IsNullOrWhiteSpace(page.Title) ? page.Id : page.Title) + "」";
+            // V0.3.93：同一个插件里页 id 重复 → 存值 / 行数据会互相覆盖，明确报一条。
+            if (!string.IsNullOrWhiteSpace(page.Id) && !seenPageIds.Add(page.Id.Trim()))
+                page.Problems.Add($"{where}：页 id「{page.Id}」在这个插件里重复，存的值会互相覆盖。");
             // V0.2.381：插件自己声明的校验规则（页面级标量栏位）。
             // ⚠ 只在「这页已经有存过的值」时才报 required —— 否则刚建的空页会一进来就一片红。
             if (page.Checks is { Count: > 0 } && HasAnyPageValue(spec, page))
@@ -1089,6 +1103,11 @@ public static class PluginRegistry
     /// <summary>老位置（升级前所有存档共用一份）。只读，用作第一次的初值。</summary>
     private static string LegacyValuesPathOf(PluginSpec p) => Path.Combine(p.Dir, "values.json");
 
+    private static string DefaultValuesPathOf(PluginSpec p) => Path.Combine(p.Dir, "profiles", "default", "values.json");
+
+    private static string GlobalProfileValuesPathOf(PluginSpec p) =>
+        Path.Combine(Path.GetDirectoryName(p.Dir) ?? p.Dir, "profiles", CurrentProfileKey, "values.json");
+
     /// <summary>V0.2.358：按**当前存档**分目录存（<c>plugins/&lt;id&gt;/profiles/&lt;存档 key&gt;/values.json</c>）。</summary>
     private static string ValuesPathOf(PluginSpec p) =>
         Path.Combine(p.Dir, "profiles", CurrentProfileKey, "values.json");
@@ -1101,7 +1120,10 @@ public static class PluginRegistry
         try
         {
             string path = ValuesPathOf(p);
-            if (!File.Exists(path)) path = LegacyValuesPathOf(p);   // V0.2.358：老文件当这个存档的初值
+            // V0.3.93：回退链 当前存档 → 全局 profiles/<存档> → default → 插件根旧文件
+            if (!File.Exists(path)) path = GlobalProfileValuesPathOf(p);
+            if (!File.Exists(path)) path = DefaultValuesPathOf(p);
+            if (!File.Exists(path)) path = LegacyValuesPathOf(p);
             if (File.Exists(path))
             {
                 var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, string>>>(File.ReadAllText(path), JsonOpts);
@@ -1142,7 +1164,10 @@ public static class PluginRegistry
         {
             var values = ValuesOf(p);
             var plain = values.ToDictionary(kv => kv.Key, kv => kv.Value.ToDictionary(x => x.Key, x => x.Value));
-            // V0.2.358：值现在按存档分目录存（profiles/<存档 key>/），目录可能还不存在 —— 先建
+            // V0.3.93：『保存这些值』以前只写 values.json —— 列表行（rows.json）里刚选的 ref 不会落盘，
+            // 重开就变空。两份额数据一起保存。
+            string? rowsError = SaveRows(p);
+            if (rowsError is not null) return rowsError;
             Directory.CreateDirectory(Path.GetDirectoryName(ValuesPathOf(p))!);
             File.WriteAllText(ValuesPathOf(p), JsonSerializer.Serialize(plain, new JsonSerializerOptions { WriteIndented = true }), new System.Text.UTF8Encoding(false));
             return null;
@@ -1166,6 +1191,11 @@ public static class PluginRegistry
 
     private static string LegacyRowsPathOf(PluginSpec p) => Path.Combine(p.Dir, "rows.json");
 
+    private static string DefaultRowsPathOf(PluginSpec p) => Path.Combine(p.Dir, "profiles", "default", "rows.json");
+
+    private static string GlobalProfileRowsPathOf(PluginSpec p) =>
+        Path.Combine(Path.GetDirectoryName(p.Dir) ?? p.Dir, "profiles", CurrentProfileKey, "rows.json");
+
     private static string RowsPathOf(PluginSpec p) =>
         Path.Combine(p.Dir, "profiles", CurrentProfileKey, "rows.json");
 
@@ -1176,7 +1206,10 @@ public static class PluginRegistry
         try
         {
             string path = RowsPathOf(p);
-            if (!File.Exists(path)) path = LegacyRowsPathOf(p);   // V0.2.358：同上
+            // V0.3.93：回退链 当前存档 → 全局 profiles/<存档> → default → 插件根旧文件
+            if (!File.Exists(path)) path = GlobalProfileRowsPathOf(p);
+            if (!File.Exists(path)) path = DefaultRowsPathOf(p);
+            if (!File.Exists(path)) path = LegacyRowsPathOf(p);
             if (File.Exists(path))
             {
                 var loaded = JsonSerializer.Deserialize<Dictionary<string, Dictionary<string, List<Dictionary<string, string>>>>>(File.ReadAllText(path), JsonOpts);

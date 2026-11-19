@@ -6095,6 +6095,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus("新建存档失败：" + ex.Message);
 		}
 		RefreshProfiles();
+		// V0.3.93：新建存档没有路径 → 插件页回到 default key，并重建。
+		SyncPluginProfileKey(reloadPageData: true);
 	}
 
 	private string UniqueProfilePath(string baseName)
@@ -6132,6 +6134,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			RecheckEnvironment();
 			RefreshAll();
 			RefreshProfiles();
+			// V0.3.93：插件页的读写 key 必须跟着当前存档；重开插件页时强制从磁盘重读。
+			SyncPluginProfileKey(reloadPageData: true);
 			SetStatus("已载入存档：" + path);
 			return true;
 		}
@@ -6321,6 +6325,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				ProfileFactory.Save(_profile, target);
 				_currentProfilePath = target;
 				_renameAskKey = RenameAskKey(target, modId);
+				SyncPluginProfileKey(reloadPageData: false);   // V0.3.93：另存后插件页 key 跟着走
 				SetStatus("已保存：" + Path.GetFileName(target));
 				RefreshProfiles();
 				return true;
@@ -6349,6 +6354,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							File.Move(current, renameTo, overwrite: true);
 							savePath = renameTo;
 							_currentProfilePath = renameTo;
+							SyncPluginProfileKey(reloadPageData: false);   // V0.3.93：改名后插件页 key 跟着走
 							AppendLog($"存档已改名：{curName}.json → {Path.GetFileName(renameTo)}");
 						}
 						catch (Exception ex)
@@ -7048,6 +7054,25 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	/// <summary>第一页（插件信息）那个只读文本框 —— 由代码建出来（XAML 里右边改成 TabControl 了）。</summary>
 	private TextBox? _pluginDetailBox;
+
+	/// <summary>
+	/// V0.3.93：存档切换时，插件页的读写 key 必须跟着切；并重建当前插件页，
+	/// 否则页面还拿着 default 的旧 rows / values 快照（用户报的「保存到 default、生成读 IfMod」）。
+	/// </summary>
+	private void SyncPluginProfileKey(bool reloadPageData)
+	{
+		try { PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
+		if (reloadPageData)
+		{
+			try { PluginRegistry.ClearPageCache(); } catch { }
+		}
+		try
+		{
+			if (PluginList?.SelectedItem is PluginListItem item)
+				ShowPluginPages(item.Spec);
+		}
+		catch { }
+	}
 
 	/// <summary>把某个插件的页铺到右边：第 1 页是插件信息，后面是插件自己声明的页。</summary>
 	private void ShowPluginPages(PluginSpec p)
@@ -7857,8 +7882,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		var save = new Button { Content = "保存这些值", Padding = new Thickness(10, 4, 10, 4) };
 		save.Click += (_, _) =>
 		{
+			// V0.3.93：保存前再对一次 key（页面可能是载入存档之前建的）。
+			try { PluginRegistry.SetCurrentProfile(_currentProfilePath); } catch { }
 			string? err = PluginRegistry.SavePageValues(p);
-			SetStatus(err is null ? $"插件「{p.Name}」的「{page.Title}」已保存（plugins\\{p.Id}\\values.json）" : "保存失败：" + err);
+			SetStatus(err is null ? $"插件「{p.Name}」的「{page.Title}」已保存（plugins\\{p.Id}\\profiles\\{PluginRegistry.CurrentProfileKey}\\）" : "保存失败：" + err);
 		};
 		var gen = new Button { Content = "生成到当前工程", Padding = new Thickness(10, 4, 10, 4), Margin = new Thickness(8, 0, 0, 0) };
 		gen.Click += (_, _) =>
@@ -41258,6 +41285,23 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.358：插件页的值按**存档**隔离（A 存档填的值不会出现在 B 存档里，切回来还在）",
 						pvErr is null && inB.Length == 0 && backA == "存档A的值",
 						$"B 里读到「{inB}」/ 切回 A 读到「{backA}」");
+					// V0.3.93：「保存这些值」必须同时把 list 行里的 ref 写进 rows.json
+					var pvList = new PluginFieldSpec { Key = "Cards", Label = "卡", Type = "list" };
+					pvPage.Fields.Add(pvList);
+					PluginRegistry.SetCurrentProfile(pvA);
+					var pvRows = PluginRegistry.PageRowsOf(pv, pvPage, pvList);
+					pvRows.Add(new Dictionary<string, string> { ["Card"] = "IfCard6" });
+					string? pvRowErr = PluginRegistry.SavePageValues(pv);
+					string pvRowPath = Path.Combine(pv.Dir, "profiles", PluginRegistry.CurrentProfileKey, "rows.json");
+					Check("V0.3.93：保存页值时列表行也落盘（rows.json 里 Card=IfCard6，不是空字符串）",
+						pvRowErr is null && File.Exists(pvRowPath)
+						&& File.ReadAllText(pvRowPath).Contains("IfCard6"), pvRowErr ?? "(没写出 rows)");
+					PluginRegistry.ClearPageCache();
+					PluginRegistry.SetCurrentProfile(pvA);
+					var pvRowsBack = PluginRegistry.PageRowsOf(pv, pvPage, pvList);
+					Check("V0.3.93：清缓存后从磁盘读回同一行（选中值不会变成空）",
+						pvRowsBack.Count == 1 && pvRowsBack[0].TryGetValue("Card", out string? pvCardBack) && pvCardBack == "IfCard6",
+						pvRowsBack.Count == 0 ? "(没读回行)" : pvRowsBack[0].GetValueOrDefault("Card") ?? "(空)");
 					PluginRegistry.SetCurrentProfile(null);
 					try { Directory.Delete(pv.Dir, recursive: true); } catch { }
 					try { File.Delete(pvA); File.Delete(pvB); } catch { }
