@@ -1300,7 +1300,7 @@ public static class LocalizationGen
             string entry = CustomPowerGen.EntryOf(p, cp, i);
             // 描述里的「额外资源量」也换成用户自己填的名字（触发时机名里就带着这个词：
             // 「花掉额外资源量后」—— 不换的话状态描述和计数器上是两个名字）
-            string desc = RenameResource(CustomPowerGen.DescriptionOf(cp), p);
+            string desc = RenameResource(CustomPowerGen.DescriptionForLoc(p, cp, i).Text, p);
             dict[$"{entry}.title"] = cp.Name.Trim();
             dict[$"{entry}.description"] = desc;
             // V0.3.87：不再写 smartDescription —— 自定义状态的 Description override 里会补

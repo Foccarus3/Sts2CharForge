@@ -894,9 +894,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		hints.AddRange(ExtraInsertTokens);
 		if (which == "CustomPowerDescription")
 		{
-			hints.RemoveAll(h => h.Token is "{Amount}" or "{Amount2}");
+			hints.RemoveAll(h => h.Token is "{Amount}" or "{=Amount*2}");
 			hints.Add(("{Amount}", "当前层数"));
-			hints.Add(("{Amount2}", "当前层数 ×2"));
+			hints.Add(("{=Amount*2}", "当前层数 ×2（可改成 M*3 / cnt+1 等公式）"));
 		}
 		// ⚠ V0.2.130：原来这里给卡牌多塞三个「牌堆实时张数」占位符
 		//   （{DrawPile} / {DiscardPile} / {ExhaustPile}，配「卡面显示牌堆张数」那个勾选框）。
@@ -26046,9 +26046,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("减益状态写成 PowerType.Debuff", text41.Contains("PowerType.Debuff"), "类型对");
 		string text42 = LocalizationGen.PowersJson(cpProbe);
 		Check("名字和描述写进 powers.json（键 = 本体规则）", text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".title\"") && text42.Contains("自检铁壁") && text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".description\""), "本地化在");
-		Check("V0.3.87：自定义状态描述提供 {Amount2}（层数×2），并且不再写只认 Amount 的 smartDescription",
-			CustomPowerGen.Source(cpProbe, cp1, 0).Contains("Amount2")
-			&& !text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".smartDescription\""), "Amount2");
+		Check("V0.3.87：自定义状态描述不再写只认 Amount 的 smartDescription",
+			!text42.Contains("\"" + CustomPowerGen.EntryOf(cpProbe, cp1, 0) + ".smartDescription\""), "无 smart");
+		// V0.3.88：泛化公式（不再固定 Amount2）
+		cp1.Description = "每层 2 点，当前共 {=Amount*2} 点。";
+		string genericSrc = CustomPowerGen.Source(cpProbe, cp1, 0);
+		string genericLoc = LocalizationGen.PowersJson(cpProbe);
+		Check("V0.3.88：描述里的 {=Amount*2} 变成运行时表达式变量（支持任意公式，不再只认 Amount2）",
+			genericSrc.Contains("__fgPowerDesc0") && genericSrc.Contains("base.Amount")
+			&& genericLoc.Contains("{__fgPowerDesc0}") && !genericLoc.Contains("{=Amount*2}"), "泛化公式");
 		CustomPowerSpec customPowerSpec3 = new CustomPowerSpec
 		{
 			Name = "带图标",
