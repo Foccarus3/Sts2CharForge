@@ -3351,7 +3351,7 @@ public static class ForgeGraphGen
         // 只能内联生成（静态辅助类里没有 base）。这几句自己写进 sb，写完直接收工。
         if (kind is "ExhaustCard" or "DiscardCard" or "UpgradeCard")
         {
-            EmitCardPick(sb, ctx, node, kind, amount, indent, p);
+            EmitCardPick(sb, ctx, node, kind, amount, indent, p, g);
             return;
         }
         if (kind is "TakeFromDraw" or "TakeFromDiscard" or "TakeFromExhaust")
@@ -4464,8 +4464,15 @@ public static class ForgeGraphGen
         s is null || string.IsNullOrWhiteSpace(s.SelectPile) || string.Equals(s.SelectPile, "Hand", StringComparison.OrdinalIgnoreCase);
 
     private static void EmitCardPick(StringBuilder sb, EmitCtx ctx, ForgeNodeSpec node, string kind, string amount, string indent,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, ForgeGraphSpec? g = null)
     {
+        // V0.3.94：锻造图里的「消耗卡牌」以前不记 ForgeThisCardExhaust，
+        // 于是同一张图上用 ThisCardExhaust 的后续效果永远读到 0。
+        // 只在图里真的引用这条读数时才写计数 —— 老图生成文本逐字不变。
+        bool countExhaust = kind == "ExhaustCard"
+            && string.Equals(ctx.Scope, "Card", StringComparison.Ordinal)
+            && GraphMentionsReading(g, CSharpCodeGen.ThisCardExhaustId);
+        string countLine = CSharpCodeGen.ThisCardExhaustField + " += 1m;";
         var spec = GraphSpec(node);
         // V0.3.41（用户报「虚伪王座：消耗卡牌数值填 0 会卡死」）：
         // 锻造图的「消耗 / 丢弃 / 升级」以前在数值 0 时仍然生成 CardSelectorPrefs(prompt, 0)，
@@ -4482,6 +4489,7 @@ public static class ForgeGraphGen
                     : $"await CardCmd.Discard({ctx.ChoiceVar}, {ctx.CardSelfExpr});";
                 sb.AppendLine($"{indent}// fg:{node.Id}【{kind}】数值 0 = 这张牌自己：直接{(kind == "ExhaustCard" ? "消耗" : "丢弃")}自己（不弹 0 张选择框）");
                 sb.AppendLine(indent + selfAct);
+                if (countExhaust) sb.AppendLine(indent + countLine);
             }
             else
             {
@@ -4525,7 +4533,18 @@ public static class ForgeGraphGen
         CountModeMarker(sb, indent, e);
         if (e.CountIsAll)
         {
-            sb.AppendLine(indent + $"foreach (CardModel __fgCard in ({GraphAllPickExpr(spec)}{GraphWhere(pred)}).ToList()) {act}");
+            if (countExhaust)
+            {
+                sb.AppendLine(indent + "{");
+                sb.AppendLine(indent + "    foreach (CardModel __fgCard in (" + GraphAllPickExpr(spec) + GraphWhere(pred) + ").ToList())");
+                sb.AppendLine(indent + "    {");
+                sb.AppendLine(indent + "        " + act);
+                sb.AppendLine(indent + "        " + countLine);
+                sb.AppendLine(indent + "    }");
+                sb.AppendLine(indent + "}");
+            }
+            else
+                sb.AppendLine(indent + $"foreach (CardModel __fgCard in ({GraphAllPickExpr(spec)}{GraphWhere(pred)}).ToList()) {act}");
             return;
         }
         string prefs = CSharpCodeGen.SelectPrefsExpr(e, prompt, $"(int)({amount})");
@@ -4535,7 +4554,16 @@ public static class ForgeGraphGen
                 : $"var {var} = (await CardSelectCmd.FromCombatPile({ctx.ChoiceVar}, {GraphPileExpr(spec)}, __fgPlayer, {prefs}{GraphFilterArg(pred)})).ToList();"));
         else
             sb.AppendLine(indent + $"var {var} = ({ctx.ChoiceVar} is null ? new List<CardModel>() : {GraphRandomPickExpr(spec, CSharpCodeGen.RangeN(e, $"(int)({amount})"), pred)});");
-        sb.AppendLine(indent + $"foreach (CardModel __fgCard in {var}) {act}");
+        if (countExhaust)
+        {
+            sb.AppendLine(indent + $"foreach (CardModel __fgCard in {var})");
+            sb.AppendLine(indent + "{");
+            sb.AppendLine(indent + "    " + act);
+            sb.AppendLine(indent + "    " + countLine);
+            sb.AppendLine(indent + "}");
+        }
+        else
+            sb.AppendLine(indent + $"foreach (CardModel __fgCard in {var}) {act}");
     }
 
     /// <summary>
