@@ -46146,6 +46146,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				    { "kind": "UiCheckPluginTf", "display": "自检插件变化效果", "unit": "点", "min": 0, "max": 99,
 				      "emit": "{transformSelf:UiCheckTfTarget}" }
 				  ],
+				  "units": [
+				    { "id": "UiCheckPluginUnit", "display": "自检对象（除目标外）",
+				      "foes": "{combatState}.HittableEnemies.Where(c => c != {foe})" }
+				  ],
 				  "csFiles": [ "cs/UiCheckPluginHelper.cs" ]
 				}
 				""", new UTF8Encoding(false));
@@ -46170,6 +46174,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				Check("V0.3.86：插件效果也显示「数值公式」栏（生成端本来就能吃 AmountFormula）",
 					new EffectSpec { Kind = "UiCheckPluginFx" }.ShowAmountFormula
 					&& new EffectSpec { Kind = "UiCheckPluginFx", AmountFormula = "M*2" }.UsesAmountFormula, "显示公式");
+				Check("V0.3.92：插件贡献的【对象】进了锻造图的 UnitPicks",
+					PluginRegistry.UnitOf("UiCheckPluginUnit") is not null
+					&& ForgeGraphCatalog.UnitPicks.Any(o => o.Id == "UiCheckPluginUnit" && o.Display.Contains("自检对象")),
+					string.Join("/", ForgeGraphCatalog.UnitPicks.Select(o => o.Id)));
 
 				// ③ 模板生成：卡牌链 / 状态链都要能出代码
 				var plugProf = ProfileFactory.Sample();

@@ -73,6 +73,18 @@ public sealed class PluginEffectSpec
     public string Note { get; set; } = "";
 }
 
+/// <summary>对象插件（V0.3.92）：给锻造图【对象】节点增加一个可选目标。</summary>
+public sealed class PluginUnitSpec
+{
+    public string Id { get; set; } = "";
+    public string Display { get; set; } = "";
+    /// <summary>列表表达式；可用 {self} / {player} / {foe} / {combatState}。</summary>
+    public string Foes { get; set; } = "";
+    /// <summary>单个单位表达式；留空 = Foes.FirstOrDefault()。</summary>
+    public string Single { get; set; } = "";
+    public string Note { get; set; } = "";
+}
+
 /// <summary>触发时机插件（本版**只登记 + 显示**，生成端的接线在下一版；见 <see cref="PluginPlugins"/> 的说明）。</summary>
 public sealed class PluginTriggerSpec
 {
@@ -371,6 +383,7 @@ public sealed class PluginSpec
     public List<PluginEffectSpec> Effects { get; set; } = new();
     public List<PluginTriggerSpec> Triggers { get; set; } = new();
     public List<PluginConditionSpec> Conditions { get; set; } = new();
+    public List<PluginUnitSpec> Units { get; set; } = new();
     public List<PluginForgeModuleSpec> ForgeModules { get; set; } = new();
     public List<PluginPageSpec> Pages { get; set; } = new();
 
@@ -449,6 +462,8 @@ public static class PluginRegistry
     private static readonly Dictionary<string, PluginConditionSpec> _conditionsById = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>插件贡献的触发时机（V0.2.316）：id → 规格（含「挂哪个本体钩子」+ 额外守卫）。</summary>
     private static readonly Dictionary<string, PluginTriggerSpec> _triggersById = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>插件贡献的【对象】候选（V0.3.92）。</summary>
+    private static readonly Dictionary<string, PluginUnitSpec> _unitsById = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>加载到的插件（按目录名排序，结果稳定）。</summary>
     public static IReadOnlyList<PluginSpec> Plugins => _plugins;
@@ -567,6 +582,7 @@ public static class PluginRegistry
         _conditionOptions.Clear();
         _conditionsById.Clear();
         _triggersById.Clear();
+        _unitsById.Clear();
         LastScan = DateTime.Now.ToString("HH:mm:ss");
 
         LoadEnabled(appDir);   // V0.2.358：先读启用表（禁用表只记「关掉的」）
@@ -977,6 +993,20 @@ public static class PluginRegistry
                 Hint: string.IsNullOrWhiteSpace(c.Note) ? "插件条件：" + c.Expr.Trim() : c.Note.Trim(),
                 ForPower: true));
         }
+        foreach (var u in spec.Units.Where(x => x is not null))
+        {
+            if (string.IsNullOrWhiteSpace(u.Id)) { spec.Problems.Add("有一个对象没填 id。"); continue; }
+            if (!IsValidKind(u.Id)) { spec.Problems.Add($"对象 id「{u.Id}」不合法（英文/数字/下划线，字母开头）。"); continue; }
+            if (string.IsNullOrWhiteSpace(u.Foes)) { spec.Problems.Add($"对象「{u.Id}」没写 foes 列表表达式。"); continue; }
+            if (Profile.ForgeGraphCatalog.BuiltinUnitIds.Contains(u.Id.Trim())
+                || _unitsById.ContainsKey(u.Id.Trim()))
+            {
+                spec.Problems.Add($"对象 id「{u.Id}」和内置 / 别的插件重名 —— 跳过这一条。");
+                continue;
+            }
+            _unitsById[u.Id.Trim()] = u;
+        }
+
         foreach (var m in spec.ForgeModules.Where(x => x is not null))
         {
             if (string.IsNullOrWhiteSpace(m.Kind)) { spec.Problems.Add("有一个锻造模块没填 kind。"); continue; }
@@ -1469,6 +1499,14 @@ public static class PluginRegistry
     /// <summary>插件贡献的触发时机规格；不是插件时机返回 null。</summary>
     public static PluginTriggerSpec? TriggerOf(string? id) =>
         id is not null && _triggersById.TryGetValue(id.Trim(), out var t) ? t : null;
+
+    /// <summary>插件贡献的【对象】；不是插件对象返回 null。</summary>
+    public static PluginUnitSpec? UnitOf(string? id) =>
+        id is not null && _unitsById.TryGetValue(id.Trim(), out var u) ? u : null;
+
+    /// <summary>所有插件对象（按 id 排序，界面下拉用）。</summary>
+    public static IReadOnlyList<PluginUnitSpec> Units =>
+        _unitsById.Values.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).ToList();
 
     /// <summary>插件时机的清单（下拉合并用）。</summary>
     public static IReadOnlyDictionary<string, PluginTriggerSpec> Triggers => _triggersById;

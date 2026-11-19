@@ -3003,8 +3003,25 @@ public static class ForgeGraphGen
             // 全体单位 = 自己 + 全部友方 + 全部敌人（本体的攻击链已经会打「可打的敌人」，
             // 所以这条只对「给状态 / 回血」这类按列表逐个动手的效果有意义）
             "AllUnits" => new UnitRef("__fgSelf", "ForgeFormulaRuntime.AllUnits(__fgPlayer)"),
-            _ => fb,
+            _ => Plugins.PluginRegistry.UnitOf(node.Get("Pick", "Self")) is { } pu
+                ? PluginUnitRef(pu)
+                : fb,
         };
+    }
+
+    /// <summary>V0.3.92：插件对象表达式 → 对象引用（占位符换成锻造图的局部变量）。</summary>
+    private static UnitRef PluginUnitRef(PluginUnitSpec u)
+    {
+        string Expand(string s) => (s ?? "")
+            .Replace("{self}", "__fgSelf", StringComparison.Ordinal)
+            .Replace("{player}", "__fgPlayer", StringComparison.Ordinal)
+            .Replace("{foe}", "__fgTarget", StringComparison.Ordinal)
+            .Replace("{combatState}", "__fgSelf.CombatState", StringComparison.Ordinal);
+        string foes = Expand(u.Foes);
+        string single = string.IsNullOrWhiteSpace(u.Single)
+            ? $"({foes}).FirstOrDefault()"
+            : Expand(u.Single);
+        return new UnitRef(single, foes);
     }
 
     /// <summary>[旧签名] 兼容内层调用：只要单个表达式。</summary>

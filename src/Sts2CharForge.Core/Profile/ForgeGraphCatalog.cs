@@ -435,8 +435,8 @@ public static class ForgeGraphCatalog
 
     // ==================== 下拉候选 ====================
 
-    /// <summary>「对象」模块的候选（需求第 3 条）。</summary>
-    public static IReadOnlyList<ForgeFieldOption> UnitPicks { get; } = new[]
+    /// <summary>内置【对象】候选（插件对象在 <see cref="UnitPicks"/> 里追加）。</summary>
+    public static IReadOnlyList<ForgeFieldOption> BuiltinUnitPicks { get; } = new[]
     {
         new ForgeFieldOption("Self", "自己"),
         new ForgeFieldOption("ChosenAlly", "指定队友"),
@@ -450,8 +450,23 @@ public static class ForgeGraphCatalog
         new ForgeFieldOption("AllUnits", "全体单位"),
     };
 
+    public static IReadOnlyCollection<string> BuiltinUnitIds { get; } =
+        BuiltinUnitPicks.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// V0.3.92：内置对象 + 插件贡献的对象。每次读都现算，插件重新加载后新候选立刻出现
+    ///（<see cref="ForgeNodeField.OptionsFactory"/> 会在建节点时调它）。
+    /// </summary>
+    public static IReadOnlyList<ForgeFieldOption> UnitPicks =>
+        BuiltinUnitPicks
+            .Concat(Plugins.PluginRegistry.Units.Select(u =>
+                new ForgeFieldOption(u.Id, string.IsNullOrWhiteSpace(u.Display) ? u.Id : u.Display)))
+            .ToList();
+
     public static string UnitZh(string? id) =>
-        UnitPicks.FirstOrDefault(o => o.Id == (id ?? "Self"))?.Display ?? "自己";
+        UnitPicks.FirstOrDefault(o => string.Equals(o.Id, (id ?? "Self").Trim(), StringComparison.OrdinalIgnoreCase))?.Display
+        ?? BuiltinUnitPicks.FirstOrDefault(o => string.Equals(o.Id, (id ?? "Self").Trim(), StringComparison.OrdinalIgnoreCase))?.Display
+        ?? "自己";
 
     // ---------- 4b.【状态列表】的两栏候选（V0.2.192：用户要求「在锻造增加状态列表」） ----------
 
@@ -570,7 +585,7 @@ public static class ForgeGraphCatalog
         TempPowerReverses.All.Select(o => new ForgeFieldOption(o.Id, o.Display)).ToList();
 
     /// <summary>【对象】模块的候选（需求第 3 条）：值 + 显示 + 「它会作用到几个单位」。</summary>
-    public static IReadOnlyList<ForgeFieldOption> UnitPickList { get; } = UnitPicks;
+    public static IReadOnlyList<ForgeFieldOption> UnitPickList => UnitPicks;
 
     // ==================== 「目标卡 / 目标药水」的候选 ====================
     // 和「自定义关键词」那套一样用一张**静态登记表**：界面在卡牌 / 药水列表变化时灌进来，
@@ -742,7 +757,7 @@ public static class ForgeGraphCatalog
             new[] { new ForgePort("Out", "", "接到状态 / 效果 / 数值", false) },
             new[]
             {
-                new ForgeNodeField("Pick", "对象", ForgeFieldType.Pick, "选「随机敌人」时下面会多一个勾选框；选「指定召唤物」时会多出召唤物名称", UnitPicks, "Self", false, true),
+                new ForgeNodeField("Pick", "对象", ForgeFieldType.Pick, "选「随机敌人」时下面会多一个勾选框；选「指定召唤物」时会多出召唤物名称", null, "Self", false, true, OptionsFactory: () => UnitPicks),
                 // 「召唤物名称」只在 Pick = 指定召唤物 时显示（需求），候选由界面按当前配置的召唤物列表填
                 new ForgeNodeField("SummonId", "召唤物名称（选「指定召唤物」时用）", ForgeFieldType.Pick,
                     "要指定哪一只召唤物（在「召唤物」页配的那些）", null, "", true, true),
@@ -965,7 +980,7 @@ public static class ForgeGraphCatalog
                 new ForgeNodeField("Pick", "选中谁", ForgeFieldType.Pick,
                     "「指定单体敌人」= 打出这张牌时会让玩家选一个敌人（卡牌目标类型 = 单体）；" +
                     "「全部敌人 / 随机敌人」同理；「自己 / 召唤物」= 不需要选目标",
-                    UnitPicks, "Self", false, true),
+                    null, "Self", false, true, OptionsFactory: () => UnitPicks),
                 new ForgeNodeField("SummonId", "召唤物名称（选「指定召唤物」时用）", ForgeFieldType.Pick,
                     "要指定哪一只召唤物（在「召唤物」页配的那些）", null, "", true, true),
                 new ForgeNodeField("AllowDuplicate", "随机目标允许重复选中同一个敌人", ForgeFieldType.Check, "默认勾选；只对「随机敌人」有意义", null, "1"),
