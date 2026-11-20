@@ -3990,7 +3990,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// </summary>
     internal static string FormulaPreviewExpr(CharacterProfile p, EffectSpec e)
     {
-        var resolver = ForgeFormula.ConditionResolver(p, "(target)");
+        var baseResolver = ForgeFormula.ConditionResolver(p, "(target)");
+        // V0.3.95：卡面预览 lambda 的参数是 CardModel，读不到派生卡类上的 this.ForgeThisCard*。
+        // 公式里引用了「本张牌这一次打出…」的读数时，预览按 0 代入（打出时仍用真实值），
+        // 否则会生成 (card).ForgeThisCard… → CS1061，或者退回 0 的普通 DamageVar 让卡面显示假数字。
+        Func<string, string?> resolver = id =>
+            CardReadingsAll.Any(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase))
+                ? "0m"
+                : baseResolver(id);
         string expr = ForgeFormula.Emit(ForgeFormula.TryParse(e.AmountFormula, out _), resolver, out _) ?? "0m";
         return expr.Replace("base.Owner.Creature", "(card.Owner.Creature)", StringComparison.Ordinal)
                    .Replace("base.Owner", "(card.Owner)", StringComparison.Ordinal)
@@ -4534,8 +4541,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         //   V0.2.303：也正因为**不声明预览变量**、打出时是当场取属性（见 FormulaBuiltins 的表达式），
         //   这组读数**可以参与四则运算**（`ThisCardDamage * 0.5` 生成 `((decimal)this.ForgeThisCardDamage) * 0.5m`，
         //   探针 sacprobe tcdmul 真编译通过）；校验器只提示「卡面会印 0 / 排到对应效果之后」。
-        bool thisCardFormula = CardReadingsAll.Any(r => ForgeFormula.MentionsIdentifier(e.AmountFormula, r.Id));
-        if (e.UsesAmountFormula && p is not null && FormulaVarClassOf(e.Kind) is { } fxCls && !thisCardFormula)
+        // V0.3.95：现在**仍然声明公式预览变量**，但 FormulaPreviewExpr 把这组读数按 0 代入 ——
+        // 这样 `8+DiscardCount+ThisCardExhaust*8` 的卡面至少显示 8+弃牌数，不会因为整条公式被退回
+        // 普通 DamageVar(Amount) 而显示 0 / 4。
+        if (e.UsesAmountFormula && p is not null && FormulaVarClassOf(e.Kind) is { } fxCls)
         {
             // 施加状态那个是泛型（变量名就是状态的类名）：ForgeFormulaPowerVar<VulnerablePower>(…)
             string fxOpen = e.Kind == "ApplyPower" ? $"{fxCls}<{e.PowerId}>" : fxCls;

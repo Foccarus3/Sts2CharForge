@@ -37013,9 +37013,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						btSrc.Contains("ForgeThisCardDamage += (decimal)__atk1.Results.SelectMany(hits => hits).Sum(r => r.TotalDamage);"), "有");
 					Check("生成：施加状态那条用的是现算表达式（不是固定数字）",
 						btSrc.Contains("await PowerCmd.Apply<DoomPower>(choiceContext, cardPlay.Target, ((decimal)this.ForgeThisCardDamage)"), "有");
-					Check("生成：**不**为它声明「现算预览值」变量（那个静态 lambda 只拿到 CardModel，读不到派生类的属性 → CS1061）",
-						!btSrc.Contains("ForgeFormulaPowerVar<DoomPower>")
-						&& btSrc.Contains("new PowerVar<DoomPower>(0m)"), "退回普通变量");
+					Check("V0.3.95：仍然声明「现算预览值」变量，但公式里的 ThisCard 读数在预览 lambda 里按 0 代入（不会 CS1061）",
+						btSrc.Contains("ForgeFormulaPowerVar<DoomPower>")
+						&& !btSrc.Contains("(card).ForgeThisCard")
+						&& btSrc.Contains("new PowerVar<DoomPower>") == false, "预览变量");
 					Check("生成：没用这条读数的牌里**一个字符都不多**（老存档红线）",
 						!btPlainSrc.Contains("ForgeThisCardDamage"), "干净");
 					Check("生成：锻造那块布上也记账（同一个属性；临时变量名按模块唯一）",
@@ -37120,8 +37121,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 							&& !btMulSrc.Split('\n').Any(l => l.TrimStart().StartsWith("decimal", StringComparison.Ordinal)
 								&& l.Contains("ForgeThisCardDamage", StringComparison.Ordinal)),
 							"没有快照变量");
-						Check("V0.2.303：卡面预览退回普通变量（静态 lambda 里没有 this，生成 ForgeFormulaPowerVar 会 CS1061）",
-							!btMulSrc.Contains("ForgeFormulaPowerVar", StringComparison.Ordinal), "退回普通变量");
+						Check("V0.3.95：卡面预览用 ForgeFormulaPowerVar，ThisCard 读数按 0 代入（不再 CS1061，也不退回 0 的普通变量）",
+							btMulSrc.Contains("ForgeFormulaPowerVar", StringComparison.Ordinal)
+							&& !btMulSrc.Contains("(card).ForgeThisCard", StringComparison.Ordinal), "预览变量");
 						var btMulBuild = Sts2CharForge.Core.Build.ModBuilder.Build(btMulGen.ProjectRoot, btMulNaming.ModId,
 							null, null, null, btMulProf.Paths.DotnetExe);
 						var btMulDll = btMulBuild.Steps.FirstOrDefault(st => st.Name.Contains("编译 DLL", StringComparison.Ordinal));
