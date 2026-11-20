@@ -669,6 +669,39 @@
           "publishedAt": "2026-11-16T14:57:17Z"
         }
       ]
+    },
+    {
+      "id": "turncond",
+      "name": "\u56DE\u5408\u6570\u6761\u4EF6\uFF08\u2264 / \u2265 / = N\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u7ED9\u300C\u6761\u4EF6\u300D\u4E0B\u62C9\u52A0\u4E09\u6761\uFF1A\u5F53\u524D\u56DE\u5408\u6570\u4E0D\u5927\u4E8E N\uFF08\u2264\uFF09\u3001\u4E0D\u5C0F\u4E8E N\uFF08\u2265\uFF09\u3001\u7B49\u4E8E N\u3002N \u76F4\u63A5\u5728\u6761\u4EF6\u65C1\u7684\u6570\u503C\u680F\u91CC\u586B \u2014\u2014 \u6BCF\u6761\u6548\u679C\u81EA\u5DF1\u7684 N\uFF0C\u4E0D\u540C\u5361\u724C / \u9057\u7269 / \u72B6\u6001\u5404\u7528\u5404\u7684\u3002\u56DE\u5408\u6570 = \u73A9\u5BB6\u5728\u672C\u573A\u6218\u6597\u91CC\u7684\u7B2C\u51E0\u4E2A\u56DE\u5408\uFF08\u7B2C\u4E00\u56DE\u5408 = 1\uFF0CPlayerCombatState.TurnNumber\uFF09\uFF1B\u6218\u6597\u5916\u4E09\u6761\u90FD\u4E0D\u6210\u7ACB\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "effects",
+        "conditions",
+        "content"
+      ],
+      "keywords": [
+        "\u56DE\u5408\u6570\u6761\u4EF6\uFF08\u2264",
+        "N\uFF09",
+        "N\uFF08\u2264\uFF09",
+        "\u4E0D\u5C0F\u4E8E",
+        "N\uFF08\u2265\uFF09",
+        "\u7B49\u4E8E"
+      ],
+      "versions": [
+        {
+          "version": "1.1",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/turncond-1.1.zip",
+          "sha256": "cc255d99eb1867c36ea24bcd74c49d5c9d129c8431b858d061e4870a89fb7e51",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-20T02:56:19Z"
+        }
+      ]
     }
   ]
 }
