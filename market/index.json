@@ -856,6 +856,36 @@
           "publishedAt": "2026-11-21T11:56:42Z"
         }
       ]
+    },
+    {
+      "id": "selectvideo",
+      "name": "\u9009\u4EBA\u754C\u9762\u89C6\u9891\u80CC\u666F",
+      "author": "Meme",
+      "description": "\u628A\u81EA\u5B9A\u4E49\u89D2\u8272\u5728\u9009\u4EBA\u754C\u9762\u7684\u80CC\u666F\u5927\u56FE\u6362\u6210\u5E26\u58F0\u97F3\u7684\u89C6\u9891\uFF1A\u5DF2\u662F Ogg Theora \u76F4\u63A5\u5BFC\u5165\u4E0D\u8F6C\u7801\uFF0C\u5176\u5B83\u683C\u5F0F\u624D\u8F6C\u7801\u5E76\u663E\u793A\u771F\u5B9E\u8FDB\u5EA6\u4E0E\u5269\u4F59\u65F6\u95F4\u3001\u53EF\u53D6\u6D88\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "other"
+      ],
+      "keywords": [
+        "\u9009\u4EBA\u754C\u9762\u89C6\u9891\u80CC\u666F",
+        "Ogg",
+        "Theora",
+        "\u76F4\u63A5\u5BFC\u5165\u4E0D\u8F6C\u7801",
+        "\u53EF\u53D6\u6D88\u3002"
+      ],
+      "versions": [
+        {
+          "version": "1.2.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/selectvideo-1.2.0.zip",
+          "sha256": "088ce755d3f96d109aff2704a4e2d6f3f9805a558c716efada53f18016bdc0a4",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-21T14:08:31Z"
+        }
+      ]
     }
   ]
 }
