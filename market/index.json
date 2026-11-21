@@ -827,6 +827,35 @@
           "publishedAt": "2026-11-21T11:56:02Z"
         }
       ]
+    },
+    {
+      "id": "randomhitlock",
+      "name": "\u968F\u673A\u547D\u4E2D\u9501\uFF08\u968F\u673A\u4F24\u5BB3\u4E0E\u72B6\u6001\u540C\u4E00\u76EE\u6807\uFF09",
+      "author": "\u9B54\u5F39",
+      "description": "\u5148\u968F\u673A\u6253\u4E00\u6BB5\u4F24\u5BB3\uFF0C\u628A\u5B9E\u9645\u547D\u4E2D\u7684\u90A3\u53EA\uFF08\u90A3\u6279\uFF09\u8BB0\u4E0B\u6765\uFF1B\u7D27\u63A5\u7740\u7684\u300C\u65BD\u52A0\u589E\u76CA / \u51CF\u76CA\u300D\u5BF9\u540C\u4E00\u6279\u7ED3\u7B97\uFF0C\u4E0D\u518D\u91CD\u65B0\u968F\u673A\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "other"
+      ],
+      "keywords": [
+        "\u5148\u968F\u673A\u6253\u4E00\u6BB5\u4F24\u5BB3",
+        "\u7D27\u63A5\u7740\u7684\u300C\u65BD\u52A0\u589E\u76CA",
+        "\u51CF\u76CA\u300D\u5BF9\u540C\u4E00\u6279\u7ED3\u7B97",
+        "\u4E0D\u518D\u91CD\u65B0\u968F\u673A\u3002"
+      ],
+      "versions": [
+        {
+          "version": "0.1.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/randomhitlock-0.1.0.zip",
+          "sha256": "bea09fc23dd19a95e5f709b26e5dba08b528c519c9fb9889d018af2b329e7d8a",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-21T11:56:42Z"
+        }
+      ]
     }
   ]
 }
