@@ -735,6 +735,35 @@
           "publishedAt": "2026-11-21T06:25:27Z"
         }
       ]
+    },
+    {
+      "id": "except_target_enemies",
+      "name": "\u5BF9\u8C61\uFF1A\u6307\u5B9A\u654C\u4EBA\u4EE5\u5916\u7684\u654C\u4EBA\u5BF9\u8C61",
+      "author": "Sts2CharForge",
+      "description": "\u7ED9\u300C\u4F5C\u7528\u5BF9\u8C61\u300D\u4E0B\u62C9\u589E\u52A0\u4E00\u6863\u300C\u6307\u5B9A\u654C\u4EBA\u4EE5\u5916\u7684\u6240\u6709\u654C\u4EBA\u300D\uFF1A\u5361\u724C\u6253\u51FA\u65F6\u9009\u4E2D\u7684\u90A3\u4E2A\u654C\u4EBA\u88AB\u6392\u9664\uFF0C\u6548\u679C\u843D\u5728\u5176\u4F59\u654C\u4EBA\u8EAB\u4E0A\u3002\u953B\u9020\u56FE\u7684\u3010\u5BF9\u8C61\u3011\u91CC\u4E5F\u80FD\u7528\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "effects",
+        "forge",
+        "content",
+        "other"
+      ],
+      "keywords": [
+        "\u6307\u5B9A\u654C\u4EBA\u4EE5\u5916\u7684\u654C\u4EBA"
+      ],
+      "versions": [
+        {
+          "version": "1.1.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/except_target_enemies-1.1.0.zip",
+          "sha256": "0f0935692f80c12f35319a0f5b5151ba688d5b3388dbfc32b211a3556f227ee8",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-21T06:39:26Z"
+        }
+      ]
     }
   ]
 }
