@@ -764,6 +764,38 @@
           "publishedAt": "2026-11-21T06:39:26Z"
         }
       ]
+    },
+    {
+      "id": "portraitswap",
+      "name": "\u51FA\u724C\u540E\u5207\u6362\u7ACB\u7ED8",
+      "author": "Meme",
+      "description": "\u6253\u51FA\u6307\u5B9A\u7684\u5361\u724C\u540E\uFF0C\u628A\u6218\u6597\u91CC\u7684\u89D2\u8272\u7ACB\u7ED8\u6362\u6210\u53E6\u4E00\u5F20\u56FE\u3002\u4F55\u65F6\u5207\u6362\u53EF\u914D\uFF1A\u7ACB\u5373 / \u6253\u51FA\u540E N \u79D2 / \u7B49 chargb \u7684 GIF \u52A8\u56FE\u64AD\u5B8C\u540E / GIF \u64AD\u5B8C\u518D\u52A0 N \u79D2\uFF1B\u6362\u5B8C\u53EF\u4FDD\u6301\u5230\u6218\u6597\u7ED3\u675F\uFF0C\u6216\u5EF6\u8FDF\u82E5\u5E72\u79D2\u81EA\u52A8\u5207\u56DE\u3002",
+      "license": "MIT",
+      "apiVersion": 2,
+      "minGeneratorVersion": "V0.3.74",
+      "homepage": "",
+      "categories": [
+        "animation",
+        "content"
+      ],
+      "keywords": [
+        "\u7ACB\u7ED8\u5207\u6362",
+        "\u6253\u51FA\u6307\u5B9A\u7684\u5361\u724C\u540E",
+        "\u6253\u51FA\u540E",
+        "chargb",
+        "GIF",
+        "\u52A8\u56FE\u64AD\u5B8C\u540E"
+      ],
+      "versions": [
+        {
+          "version": "1.0.0",
+          "download": "https://raw.githubusercontent.com/Foccarus3/Sts2CharForge/main/market/packages/portraitswap-1.0.0.zip",
+          "sha256": "7951cd1f2e023d9b732f1d9b6c67668b20b208a06484cd9b6a5cd87d0a77f93f",
+          "notes": "",
+          "gameVersion": "v0.113.x",
+          "publishedAt": "2026-11-21T11:41:55Z"
+        }
+      ]
     }
   ]
 }
