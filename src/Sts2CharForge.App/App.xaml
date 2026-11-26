@@ -11,6 +11,7 @@
         <local:OkToBrushConverter x:Key="OkToBrush"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:TargetSideNameConverter x:Key="TargetSideName"/>
+        <local:ComboDisplayConverter x:Key="ComboDisplay"/>
         <!-- V0.3.132：生成器主题色。代码只改这些 SolidColorBrush 的颜色，
              控件模板 / 样式全部走 DynamicResource，深色时不会出现「白底白字」。
              这几个值同时也是浅色主题的原始值。 -->
@@ -39,10 +40,15 @@
                         </ControlTemplate>
                     </ToggleButton.Template>
                 </ToggleButton>
-                <ContentPresenter Margin="6,3,28,3" VerticalAlignment="Center" IsHitTestVisible="False"
-                                  Content="{TemplateBinding SelectionBoxItem}"
-                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                <TextBlock Margin="6,3,28,3" VerticalAlignment="Center" IsHitTestVisible="False"
+                           Foreground="{DynamicResource UiFieldFg}" TextTrimming="CharacterEllipsis">
+                    <TextBlock.Text>
+                        <MultiBinding Converter="{StaticResource ComboDisplay}">
+                            <Binding Path="SelectedItem" RelativeSource="{RelativeSource TemplatedParent}"/>
+                            <Binding Path="DisplayMemberPath" RelativeSource="{RelativeSource TemplatedParent}"/>
+                        </MultiBinding>
+                    </TextBlock.Text>
+                </TextBlock>
                 <Popup x:Name="PART_Popup" Placement="Bottom" PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"
                        IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False"
                        PopupAnimation="Slide" StaysOpen="False">
