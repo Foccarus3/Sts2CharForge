@@ -227,7 +227,7 @@
         <Border x:Name="UiBackgroundShade" Background="#66FFFFFF" IsHitTestVisible="False"/>
         <DockPanel x:Name="RootPanel">
 
-        <Border x:Name="TopToolbar" DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
+        <Border x:Name="TopToolbar" DockPanel.Dock="Top" Background="{DynamicResource UiChromeBg}" BorderBrush="{DynamicResource UiBorder}" BorderThickness="0,0,0,1" Padding="6">
             <StackPanel Orientation="Horizontal">
                 <Button Content="新建配置" Padding="10,4" Margin="2" Click="OnNewProfile"/>
                 <Button Content="打开配置…" Padding="10,4" Margin="2" Click="OnOpenProfile"/>

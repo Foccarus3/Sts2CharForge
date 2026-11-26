@@ -11,6 +11,88 @@
         <local:OkToBrushConverter x:Key="OkToBrush"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
         <local:TargetSideNameConverter x:Key="TargetSideName"/>
+        <!-- V0.3.132：生成器主题色。代码只改这些 SolidColorBrush 的颜色，
+             控件模板 / 样式全部走 DynamicResource，深色时不会出现「白底白字」。
+             这几个值同时也是浅色主题的原始值。 -->
+        <SolidColorBrush x:Key="UiWindowBg" Color="#F5F5F5"/>
+        <SolidColorBrush x:Key="UiChromeBg" Color="#F3F3F3"/>
+        <SolidColorBrush x:Key="UiFieldBg" Color="#FFFFFF"/>
+        <SolidColorBrush x:Key="UiFieldFg" Color="#222222"/>
+        <SolidColorBrush x:Key="UiBorder" Color="#DDDDDD"/>
+        <SolidColorBrush x:Key="UiText" Color="#222222"/>
+        <SolidColorBrush x:Key="UiMuted" Color="#666666"/>
+        <SolidColorBrush x:Key="UiAccent" Color="#1F4E79"/>
+
+        <!-- 隐式样式：没有显式 Style 的控件也吃主题色（默认 WPF 模板不再固定白底） -->
+        <Style TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource UiFieldFg}"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="{DynamicResource UiChromeBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style TargetType="ListBox">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+        </Style>
+        <Style TargetType="ListBoxItem">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+        </Style>
+        <Style TargetType="TabItem">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+        </Style>
+        <Style TargetType="StatusBar">
+            <Setter Property="Background" Value="{DynamicResource UiChromeBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style TargetType="StatusBarItem">
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+        </Style>
+        <Style x:Key="SelectableText" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="Focusable" Value="True"/>
+            <Setter Property="IsTabStop" Value="True"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+            <Setter Property="CaretBrush" Value="{DynamicResource UiText}"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+        </Style>
+
         <!-- V0.2.144：`BoolToText`（V0.2.137 给效果栏折叠行用）已随折叠行一起删除。 -->
         <!-- 「多选」开关：外观与其他按钮一致，按下（开启）时高亮，一眼能看出开没开 -->
         <Style x:Key="MultiToggle" TargetType="ToggleButton">
@@ -26,11 +108,11 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#EAF3FF"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiFieldBg}"/>
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
-                                <Setter TargetName="Bd" Property="Background" Value="#CFE4FF"/>
-                                <Setter TargetName="Bd" Property="BorderBrush" Value="#2A6FB5"/>
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiFieldBg}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource UiText}"/>
                                 <Setter Property="FontWeight" Value="Bold"/>
                             </Trigger>
                         </ControlTemplate.Triggers>
@@ -41,17 +123,25 @@
         <Style TargetType="TextBlock" x:Key="Label">
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Margin" Value="6,4,6,4"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
         </Style>
         <Style TargetType="TextBox" x:Key="Field">
             <Setter Property="Margin" Value="0,3,8,3"/>
             <Setter Property="Padding" Value="4,3,4,3"/>
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
         </Style>
         <Style TargetType="ComboBox" x:Key="Pick">
             <Setter Property="Margin" Value="0,3,8,3"/>
+            <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+            <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
         </Style>
         <Style TargetType="CheckBox" x:Key="Check">
             <Setter Property="Margin" Value="0,4,12,4"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
         </Style>
 
         <!-- 效果编辑面板的公共部分。

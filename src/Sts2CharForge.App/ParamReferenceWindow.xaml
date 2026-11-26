@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="参数参考（公式 / 参数里能写什么）" Width="980" Height="660"
         Icon="waku.ico"
-        WindowStartupLocation="CenterOwner" ResizeMode="CanResize">
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize" Background="{DynamicResource UiWindowBg}" Foreground="{DynamicResource UiText}">
     <Grid Margin="14">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -14,7 +14,7 @@
         <!-- 抬头 -->
         <StackPanel Grid.Row="0">
             <TextBlock FontSize="16" FontWeight="Bold" Text="参数参考"/>
-            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="#555"
+            <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" Foreground="{DynamicResource UiMuted}"
                        Text="「数值 / 数值（公式） / 次数公式 / 条件数值」这些栏位里能写的东西都在这儿。左边挑一类，右边看这一类的全部条目（含出处）。"/>
         </StackPanel>
 
@@ -30,7 +30,7 @@
                     <DataTemplate>
                         <StackPanel Margin="2,3">
                             <TextBlock Text="{Binding Title}" FontWeight="Bold"/>
-                            <TextBlock Text="{Binding CountText}" Foreground="#777" FontSize="11"/>
+                            <TextBlock Text="{Binding CountText}" Foreground="{DynamicResource UiMuted}" FontSize="11"/>
                         </StackPanel>
                     </DataTemplate>
                 </ListBox.ItemTemplate>
@@ -46,12 +46,12 @@
                     <ItemsControl x:Name="EntryList">
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border BorderBrush="#E3EAF3" BorderThickness="0,0,0,1" Padding="2,5">
+                                <Border BorderBrush="{DynamicResource UiBorder}" BorderThickness="0,0,0,1" Padding="2,5">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="{Binding Id}" FontFamily="Consolas" FontWeight="Bold"
-                                                   Foreground="#1F4E79" MinWidth="240" TextWrapping="Wrap"/>
-                                        <TextBlock Text="{Binding Display}" Foreground="#333" TextWrapping="Wrap"
-                                                   MaxWidth="620" Margin="8,0,0,0"/>
+                                        <TextBox Style="{StaticResource SelectableText}" Text="{Binding Id}" FontFamily="Consolas" FontWeight="Bold"
+                                                 Foreground="{DynamicResource UiAccent}" MinWidth="240" MaxWidth="240"/>
+                                        <TextBox Style="{StaticResource SelectableText}" Text="{Binding Display}" Foreground="{DynamicResource UiText}"
+                                                 MaxWidth="620" Margin="8,0,0,0"/>
                                     </StackPanel>
                                 </Border>
                             </DataTemplate>
@@ -63,7 +63,7 @@
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,12,0,0">
             <Button Content="关闭" Padding="18,6" FontWeight="Bold" Click="OnClose"/>
-            <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Foreground="#777" FontSize="11"
+            <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Foreground="{DynamicResource UiMuted}" FontSize="11"
                        Text="编辑器里不再摆这份清单（V0.2.182 起改到这里）—— 关闭后随时可以从「帮助 / 参数参考」再打开。"/>
         </StackPanel>
     </Grid>

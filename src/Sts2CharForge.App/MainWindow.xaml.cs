@@ -3987,6 +3987,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			if (!_uiDarkMode) RestoreUiThemeValues();
 		ApplyUiBackgroundAndChrome();
+		ApplyUiThemeBrushes();
 		ApplyUiSystemColors();
 		if (_uiDarkMode) ApplyDarkTheme(this);
 			// 参数参考是独立 Window，不在本窗口的可视树里，单独刷一次
@@ -3995,6 +3996,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			ApplyUiBackgroundAndChrome();
 		}
 		finally { _uiThemeApplying = false; }
+	}
+
+	private void ApplyUiThemeBrushes()
+	{
+		var res = Application.Current?.Resources;
+		if (res is null) return;
+		res["UiWindowBg"] = Solid(_uiDarkMode ? "#121212" : "#F5F5F5");
+		res["UiChromeBg"] = Solid(_uiDarkMode ? "#1E1E1E" : "#F3F3F3");
+		res["UiFieldBg"] = Solid(_uiDarkMode ? "#252525" : "#FFFFFF");
+		res["UiFieldFg"] = Solid(_uiDarkMode ? "#E8E8E8" : "#222222");
+		res["UiBorder"] = Solid(_uiDarkMode ? "#3A3A3A" : "#DDDDDD");
+		res["UiText"] = Solid(_uiDarkMode ? "#E8E8E8" : "#222222");
+		res["UiMuted"] = Solid(_uiDarkMode ? "#B0B0B0" : "#666666");
+		res["UiAccent"] = Solid(_uiDarkMode ? "#9CC7F0" : "#1F4E79");
 	}
 
 	private void ApplyUiSystemColors()
@@ -12397,15 +12412,20 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				PngUtil.WriteRgba(probeBg, 4, 4, new byte[4 * 4 * 4]);
 				DarkModeCheck.IsChecked = true;
 				ApplyUiTheme();
+				UpdateLayout();
 				bool darkOk = RootHost.Background is SolidColorBrush rootBrush
 					&& rootBrush.Color.R < 50 && TopToolbar.Background is SolidColorBrush topBrush && topBrush.Color.R < 60;
+				var themeBoxes = new List<TextBox>();
+				CollectTextBoxes(RootPanel, themeBoxes);
+				var visibleBoxes = themeBoxes.Where(b => b.IsVisible && !b.IsReadOnly).ToList();
+				bool fieldsOk = visibleBoxes.Count > 0 && visibleBoxes.All(b => b.Background is SolidColorBrush sb && sb.Color.R < 100);
 				_uiBackgroundPath = probeBg;
 				ApplyUiTheme();
 				bool bgOk = UiBackgroundImage.Visibility == Visibility.Visible
 					&& UiBackgroundImage.Source is not null
 					&& ReferenceEquals(RootPanel.Background, Brushes.Transparent);
-				Check("V0.3.130：深色模式与自定义背景能真实切换（背景图在根节点后面、主内容透明）",
-					darkOk && bgOk, $"深色={(darkOk ? "好" : "坏")} 背景={(bgOk ? "好" : "坏")}");
+				Check("V0.3.132：深色模式与自定义背景能真实切换（输入框也不能白底）",
+					darkOk && fieldsOk && bgOk, $"深色={(darkOk ? "好" : "坏")} 输入框{(fieldsOk ? "好" : "坏")} 背景={(bgOk ? "好" : "坏")}");
 			}
 			finally
 			{
