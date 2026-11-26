@@ -3860,6 +3860,288 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// </summary>
 	public static bool SuppressProfileWrites;
 
+	// ===== 生成器界面主题（只影响本工具，不参与模组生成） =====
+	private bool _uiDarkMode;
+	private string? _uiBackgroundPath;
+	private bool _uiThemeLoading;
+	private bool _uiThemeApplying;
+	private readonly Dictionary<(DependencyObject Owner, DependencyProperty Property), object?> _uiThemeBackups = new();
+
+	private sealed class UiThemeSettings
+	{
+		public bool Dark { get; set; }
+		public string? Background { get; set; }
+	}
+
+	private static string UiThemeSettingsPath
+	{
+		get
+		{
+			string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Sts2CharForge");
+			return Path.Combine(dir, "ui-theme.json");
+		}
+	}
+
+	private void OnUiThemeLoaded(object sender, RoutedEventArgs e)
+	{
+		if (!SuppressProfileWrites) LoadUiTheme();
+		ApplyUiTheme();
+	}
+
+	private void OnUiThemeTabChanged(object sender, SelectionChangedEventArgs e)
+	{
+		if (!_uiDarkMode) return;
+		// 标签页内容是懒加载的：切过去之后再把新长出来的控件刷成深色。
+		Dispatcher.BeginInvoke(new Action(ApplyUiTheme), DispatcherPriority.Background);
+	}
+
+	private void LoadUiTheme()
+	{
+		_uiThemeLoading = true;
+		try
+		{
+			string path = UiThemeSettingsPath;
+			if (File.Exists(path))
+			{
+				var s = JsonSerializer.Deserialize<UiThemeSettings>(File.ReadAllText(path));
+				_uiDarkMode = s?.Dark == true;
+				_uiBackgroundPath = s?.Background;
+				if (!string.IsNullOrWhiteSpace(_uiBackgroundPath) && !File.Exists(_uiBackgroundPath))
+					_uiBackgroundPath = null;
+			}
+			DarkModeCheck.IsChecked = _uiDarkMode;
+		}
+		catch { /* 配置坏了就当默认：浅色、无背景 */ }
+		finally { _uiThemeLoading = false; }
+	}
+
+	private void SaveUiTheme()
+	{
+		if (SuppressProfileWrites) return;
+		try
+		{
+			string path = UiThemeSettingsPath;
+			Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+			File.WriteAllText(path, JsonSerializer.Serialize(new UiThemeSettings
+			{
+				Dark = _uiDarkMode,
+				Background = _uiBackgroundPath,
+			}));
+		}
+		catch { /* 只影响下次启动的默认值，不能挡住当前操作 */ }
+	}
+
+	private void OnDarkModeChanged(object sender, RoutedEventArgs e)
+	{
+		if (_uiThemeLoading) return;
+		_uiDarkMode = DarkModeCheck.IsChecked == true;
+		ApplyUiTheme();
+		SaveUiTheme();
+	}
+
+	private void OnPickUiBackground(object sender, RoutedEventArgs e)
+	{
+		var dlg = new OpenFileDialog
+		{
+			Filter = "图片 (*.png;*.jpg;*.jpeg;*.bmp)|*.png;*.jpg;*.jpeg;*.bmp|所有文件 (*.*)|*.*",
+			Title = "选择生成器背景图",
+		};
+		if (dlg.ShowDialog(this) != true) return;
+		try
+		{
+			string dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Sts2CharForge");
+			Directory.CreateDirectory(dir);
+			string ext = Path.GetExtension(dlg.FileName).ToLowerInvariant();
+			if (ext is not (".png" or ".jpg" or ".jpeg" or ".bmp")) ext = ".png";
+			string dest = Path.Combine(dir, "ui-background" + ext);
+			if (!string.Equals(Path.GetFullPath(dlg.FileName), Path.GetFullPath(dest), StringComparison.OrdinalIgnoreCase))
+				File.Copy(dlg.FileName, dest, overwrite: true);
+			_uiBackgroundPath = dest;
+			ApplyUiTheme();
+			SaveUiTheme();
+			SetStatus("已设置生成器背景图（只影响本工具，不会打进模组）。");
+		}
+		catch (Exception ex)
+		{
+			SetStatus("设置背景图失败：" + ex.Message);
+		}
+	}
+
+	private void OnClearUiBackground(object sender, RoutedEventArgs e)
+	{
+		_uiBackgroundPath = null;
+		ApplyUiTheme();
+		SaveUiTheme();
+		SetStatus("已恢复生成器默认背景（原图文件没有删除）。");
+	}
+
+	private void ApplyUiTheme()
+	{
+		if (_uiThemeApplying) return;
+		_uiThemeApplying = true;
+		try
+		{
+			if (!_uiDarkMode) RestoreUiThemeValues();
+			ApplyUiBackgroundAndChrome();
+			if (_uiDarkMode) ApplyDarkTheme(this);
+			// 深色递归可能碰到顶栏 / 状态栏，最后再压一次主框架颜色
+			ApplyUiBackgroundAndChrome();
+		}
+		finally { _uiThemeApplying = false; }
+	}
+
+	private void ApplyUiBackgroundAndChrome()
+	{
+		Brush pageBg = Solid(_uiDarkMode ? "#121212" : "#F5F5F5");
+		Brush chromeBg = Solid(_uiDarkMode ? "#1E1E1E" : "#F3F3F3");
+		RootHost.Background = pageBg;
+		RootPanel.Background = Brushes.Transparent;
+		MainTabs.Background = Brushes.Transparent;
+		TopToolbar.Background = _uiBackgroundPath is null
+			? chromeBg
+			: Solid(_uiDarkMode ? "#D91E1E1E" : "#D9F3F3F3");
+		MainStatusBar.Background = _uiBackgroundPath is null
+			? chromeBg
+			: Solid(_uiDarkMode ? "#D91E1E1E" : "#D9F3F3F3");
+		UiBackgroundShade.Background = _uiBackgroundPath is null
+			? Brushes.Transparent
+			: Solid(_uiDarkMode ? "#66000000" : "#66FFFFFF");
+
+		if (string.IsNullOrWhiteSpace(_uiBackgroundPath) || !File.Exists(_uiBackgroundPath))
+		{
+			UiBackgroundImage.Source = null;
+			UiBackgroundImage.Visibility = Visibility.Collapsed;
+			return;
+		}
+		try
+		{
+			var bi = new BitmapImage();
+			bi.BeginInit();
+			bi.CacheOption = BitmapCacheOption.OnLoad;
+			bi.UriSource = new Uri(_uiBackgroundPath, UriKind.Absolute);
+			bi.EndInit();
+			bi.Freeze();
+			UiBackgroundImage.Source = bi;
+			UiBackgroundImage.Visibility = Visibility.Visible;
+		}
+		catch
+		{
+			UiBackgroundImage.Source = null;
+			UiBackgroundImage.Visibility = Visibility.Collapsed;
+			_uiBackgroundPath = null;
+		}
+	}
+
+	private static SolidColorBrush Solid(string hex)
+	{
+		var b = new SolidColorBrush((Color)ColorConverter.ConvertFromString(hex));
+		b.Freeze();
+		return b;
+	}
+
+	private static bool TrySolid(Brush? brush, out Color c)
+	{
+		if (brush is SolidColorBrush s)
+		{
+			c = s.Color;
+			return true;
+		}
+		c = default;
+		return false;
+	}
+
+	private static double Lum(Color c) => (0.2126 * c.R + 0.7152 * c.G + 0.0722 * c.B) / 255.0;
+
+	private static Color DarkBackgroundOf(Color c)
+	{
+		double lum = Lum(c);
+		if (c.R > 235 && c.G > 235 && c.B > 235) return (Color)ColorConverter.ConvertFromString("#1E1E1E");
+		if (c.R > 235 && c.G > 225 && c.B < 220) return (Color)ColorConverter.ConvertFromString("#3A3218");
+		if (c.G > 235 && c.R < 230 && c.B < 230) return (Color)ColorConverter.ConvertFromString("#1B2A1B");
+		if (c.B > 235 && c.R < 235 && c.G < 235) return (Color)ColorConverter.ConvertFromString("#1A2A3A");
+		return lum > 0.68 ? (Color)ColorConverter.ConvertFromString("#2B2B2B") : c;
+	}
+
+	private static Color DarkForegroundOf(Color c)
+	{
+		double lum = Lum(c);
+		if (c.R > c.G * 1.35 && c.R > c.B * 1.25 && lum < 0.65) return (Color)ColorConverter.ConvertFromString("#FF8A80");
+		if (c.G > c.R * 1.2 && c.G > c.B * 1.05 && lum < 0.65) return (Color)ColorConverter.ConvertFromString("#7FE0B0");
+		if (c.R > 120 && c.G > 90 && c.B < 90) return (Color)ColorConverter.ConvertFromString("#FFD180");
+		return lum < 0.38 ? (Color)ColorConverter.ConvertFromString("#E8E8E8")
+			: (Color)ColorConverter.ConvertFromString("#B8B8B8");
+	}
+
+	private static bool IsNearGray(Color c)
+	{
+		int max = Math.Max(c.R, Math.Max(c.G, c.B));
+		int min = Math.Min(c.R, Math.Min(c.G, c.B));
+		return max - min <= 24;
+	}
+
+	private static bool IsDarkBrush(Brush? b) => TrySolid(b, out var c) && Lum(c) < 0.55;
+	private static bool IsLightBrush(Brush? b) => TrySolid(b, out var c) && Lum(c) > 0.68;
+
+	private void SetUiThemeValue(DependencyObject owner, DependencyProperty property, object? value)
+	{
+		if (owner.ReadLocalValue(property) is System.Windows.Expression) return;  // 绑定 / 动态资源不要拆
+		if (BindingOperations.GetBinding(owner, property) is not null) return;
+		var key = (owner, property);
+		if (!_uiThemeBackups.ContainsKey(key)) _uiThemeBackups[key] = owner.ReadLocalValue(property);
+		owner.SetCurrentValue(property, value);
+	}
+
+	private void RestoreUiThemeValues()
+	{
+		foreach (var kv in _uiThemeBackups.ToList())
+		{
+			var (owner, property) = kv.Key;
+			object? old = kv.Value;
+			try
+			{
+				if (old == DependencyProperty.UnsetValue) owner.ClearValue(property);
+				else owner.SetCurrentValue(property, old);
+			}
+			catch { }
+		}
+		_uiThemeBackups.Clear();
+	}
+
+	private void ApplyDarkTheme(DependencyObject root)
+	{
+		if (root is TextBlock tb && IsDarkBrush(tb.Foreground))
+			SetUiThemeValue(tb, TextBlock.ForegroundProperty, SolidBrush(DarkForegroundOf(((SolidColorBrush)tb.Foreground).Color)));
+		else if (root is Border border)
+		{
+			if (IsLightBrush(border.Background)) SetUiThemeValue(border, Border.BackgroundProperty, SolidBrush(DarkBackgroundOf(((SolidColorBrush)border.Background).Color)));
+			if (TrySolid(border.BorderBrush, out var bc) && (IsNearGray(bc) || Lum(bc) > 0.7)) SetUiThemeValue(border, Border.BorderBrushProperty, SolidBrush("#3A3A3A"));
+		}
+		else if (root is Panel panel)
+		{
+			if (IsLightBrush(panel.Background)) SetUiThemeValue(panel, Panel.BackgroundProperty, SolidBrush(DarkBackgroundOf(((SolidColorBrush)panel.Background).Color)));
+		}
+		else if (root is Control control)
+		{
+			if (IsLightBrush(control.Background)) SetUiThemeValue(control, Control.BackgroundProperty, SolidBrush(DarkBackgroundOf(((SolidColorBrush)control.Background).Color)));
+			else if (control.Background is null && control is TextBox or ComboBox or ListBox or ListBoxItem or TabItem or GroupBox or StatusBar)
+				SetUiThemeValue(control, Control.BackgroundProperty, Solid("#252525"));
+			if (IsDarkBrush(control.Foreground))
+				SetUiThemeValue(control, Control.ForegroundProperty, SolidBrush(DarkForegroundOf(((SolidColorBrush)control.Foreground).Color)));
+			if (TrySolid(control.BorderBrush, out var cb) && (IsNearGray(cb) || Lum(cb) > 0.7)) SetUiThemeValue(control, Control.BorderBrushProperty, Solid("#3A3A3A"));
+		}
+		int count = VisualTreeHelper.GetChildrenCount(root);
+		for (int i = 0; i < count; i++) ApplyDarkTheme(VisualTreeHelper.GetChild(root, i));
+	}
+
+	private static SolidColorBrush SolidBrush(Color c)
+	{
+		var b = new SolidColorBrush(c);
+		b.Freeze();
+		return b;
+	}
+
+	private static SolidColorBrush SolidBrush(string hex) => Solid(hex);
+
 	public static string RootFolder
 	{
 		get
@@ -3983,6 +4265,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	public MainWindow()
 	{
 		InitializeComponent();
+		Loaded += OnUiThemeLoaded;
+		MainTabs.SelectionChanged += OnUiThemeTabChanged;
 		HookEffectListDrag();
 		// V0.2.240：先把窗口压进屏幕、挑好缩放档（必须在其它初始化之前 —— 后面很多地方按控件实际宽度算排版）
 		try
@@ -12048,6 +12332,34 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			$"镜像 {PotionRows.Count} 行 = 真药水 {Profile.Potions.Count} + 空槽 {PotionRows.Count - Profile.Potions.Count}");
 		Check("关键词列表绑定到 Profile.CustomKeywords", KeywordList.ItemsSource == Profile.CustomKeywords);
 		Check("美术槽位已建立（18 个上传槽位：新增战斗 / 商店 / 篝火 / 死亡 / 美味饼干 + 描边颜色输入）", ArtSlots.Count == 18, $"{ArtSlots.Count} 个");
+		// V0.3.130：生成器自己的深色模式 / 自定义背景（只影响界面，不进模组）
+		{
+			bool oldDark = _uiDarkMode;
+			string? oldBg = _uiBackgroundPath;
+			string probeBg = Path.Combine(Path.GetTempPath(), "forge_uicheck_bg_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".png");
+			try
+			{
+				PngUtil.WriteRgba(probeBg, 4, 4, new byte[4 * 4 * 4]);
+				DarkModeCheck.IsChecked = true;
+				ApplyUiTheme();
+				bool darkOk = RootHost.Background is SolidColorBrush rootBrush
+					&& rootBrush.Color.R < 50 && TopToolbar.Background is SolidColorBrush topBrush && topBrush.Color.R < 60;
+				_uiBackgroundPath = probeBg;
+				ApplyUiTheme();
+				bool bgOk = UiBackgroundImage.Visibility == Visibility.Visible
+					&& UiBackgroundImage.Source is not null
+					&& ReferenceEquals(RootPanel.Background, Brushes.Transparent);
+				Check("V0.3.130：深色模式与自定义背景能真实切换（背景图在根节点后面、主内容透明）",
+					darkOk && bgOk, $"深色={(darkOk ? "好" : "坏")} 背景={(bgOk ? "好" : "坏")}");
+			}
+			finally
+			{
+				_uiBackgroundPath = oldBg;
+				DarkModeCheck.IsChecked = oldDark;
+				ApplyUiTheme();
+				try { File.Delete(probeBg); } catch { }
+			}
+		}
 		// ===== 无色卡（用户要求：进本体无色卡池 + 用本体无色卡框）=====
 		{
 			CharacterProfile clProbe = ProfileFactory.Sample();

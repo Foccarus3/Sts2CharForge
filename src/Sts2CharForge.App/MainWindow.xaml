@@ -221,9 +221,13 @@
          小屏幕（1366×768 / 1280×720）上不再「有地方被窗口边裁掉」。
          ⚠ 必须是 LayoutTransform（不是 RenderTransform）：LayoutTransform 会一起参与布局测量，
          缩放后 WPF 认为内容只需要那么点地方 —— 于是不会被裁、滚动条也不会凭空出现。 -->
-    <DockPanel x:Name="RootPanel">
+    <Grid x:Name="RootHost">
+        <!-- 生成器自己的背景图：只在界面里显示，不参与模组生成 -->
+        <Image x:Name="UiBackgroundImage" Stretch="UniformToFill" Opacity="0.55" IsHitTestVisible="False" Visibility="Collapsed"/>
+        <Border x:Name="UiBackgroundShade" Background="#66FFFFFF" IsHitTestVisible="False"/>
+        <DockPanel x:Name="RootPanel">
 
-        <Border DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
+        <Border x:Name="TopToolbar" DockPanel.Dock="Top" Background="#F3F3F3" BorderBrush="#DDD" BorderThickness="0,0,0,1" Padding="6">
             <StackPanel Orientation="Horizontal">
                 <Button Content="新建配置" Padding="10,4" Margin="2" Click="OnNewProfile"/>
                 <Button Content="打开配置…" Padding="10,4" Margin="2" Click="OnOpenProfile"/>
@@ -257,6 +261,17 @@
             </StatusBarItem>
             <Separator/>
             <StatusBarItem><TextBlock Text="{Binding StatusText}"/></StatusBarItem>
+            <StatusBarItem DockPanel.Dock="Right" HorizontalAlignment="Right">
+                <StackPanel Orientation="Horizontal">
+                    <CheckBox x:Name="DarkModeCheck" Content="深色模式" Style="{StaticResource Check}" Margin="4,0,10,0"
+                              VerticalAlignment="Center" Checked="OnDarkModeChanged" Unchecked="OnDarkModeChanged"
+                              ToolTip="切换生成器界面配色（只影响本工具，不影响生成出来的模组）。"/>
+                    <Button Content="背景…" Padding="8,2" Margin="0,0,4,0" Click="OnPickUiBackground"
+                            ToolTip="上传一张生成器界面背景图（只在本工具里显示，不会打进模组）。"/>
+                    <Button Content="清除背景" Padding="8,2" Click="OnClearUiBackground"
+                            ToolTip="恢复默认纯色背景；不会删除你上传的原图。"/>
+                </StackPanel>
+            </StatusBarItem>
         </StatusBar>
 
         <TabControl x:Name="MainTabs" Margin="6">
@@ -3682,5 +3697,6 @@
                 </Grid>
             </TabItem>
         </TabControl>
-    </DockPanel>
+        </DockPanel>
+    </Grid>
 </Window>
