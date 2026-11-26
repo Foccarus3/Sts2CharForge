@@ -69,7 +69,9 @@ public static class FrameAnimGen
             string tres = $"res://images/characters/anim/{n.CharSlug}/{n.CharSlug}_{one.Anim}_frames.tres";
             lines.Add($"FrameAnimRegistry.Register({Lit.Str(n.CharSlug)}, {Lit.Str(one.Anim)}, {Lit.Str(tres)}, "
                 + $"loop: {(one.Loop ? "true" : "false")}, scale: __animScale, xOffset: __animXOffset, yOffset: __animYOffset, "
-                + $"speedScale: __animSpeed, keepRestShop: __animKeepRestShop{filter});");
+                + $"speedScale: __animSpeed, keepRestShop: __animKeepRestShop{filter}"
+                + (one.HoldAtEnd ? ", holdAtEnd: true" : "")
+                + ");");
         }
         lines.Add("// ==========================================================");
         return lines;
@@ -365,6 +367,9 @@ public sealed partial class FrameAnimPlayer : Node
     public void Trigger(string trigger)
     {
         if (IsBusy && trigger is "Idle") return;   // 受击 / 死亡这类别被 Idle 打断
+        // 死亡播完已经定格；本体随后还会补发一次 Idle（某些死亡 / 结算路径），
+        // 不拦住的话会把倒地帧顶回待机 —— 只有 Revive 才允许解除定格。
+        if (_held && trigger is "Idle" or "Relaxed") return;
         // 篝火 / 商店：本体进场景后会再发一次 Idle，把刚播上的场景动画顶掉
         //（表现是「先动一下，然后变成待机」）。开关要求保持时就不理会它。
         Log.Info($"[@@SLUG@@_anim] 收到触发 '{trigger}'（当前={_current} 场景锁={_sceneLocked}");

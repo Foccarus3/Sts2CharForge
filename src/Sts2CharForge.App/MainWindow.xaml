@@ -2337,9 +2337,33 @@
                                 <TextBlock Text="英文类名（留空 = 自动编号 &lt;角色类名&gt;Curse&lt;诅咒列表第几位&gt;）" Style="{StaticResource Label}" TextWrapping="Wrap"/>
                                 <TextBox Style="{StaticResource Field}" Text="{Binding ClassName, UpdateSourceTrigger=PropertyChanged}"/>
                                 <TextBlock TextWrapping="Wrap" Margin="6,0,0,2" Foreground="#888" FontSize="11" Text="{Binding ClassNameHint}"/>
-                                <TextBlock Text="费用（-1 = 打不出去；≥ 0 = 能打出去）" Style="{StaticResource Label}"/>
-                                <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="本体所有诅咒的费用都是 -1（打不出去）。你想做一张「能打出去的诅咒」（例如 0 费把它自己从手里丢掉）就填 0 或正数 —— 生成时不再强制「不能被打出」。"/>
+                                <TextBlock Text="费用 ／ 额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <TextBlock Text="诅咒默认 -1 费（打不出去）；填 0 / 正数就能打出去。额外资源量费用留空 = 按效果里的负数花费自动算。" Style="{StaticResource Label}" Foreground="#888" FontSize="11" TextWrapping="Wrap"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding CostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="费用（消耗能量）。支持数字、生成期常量式子、X（消耗全部能量）；诅咒默认 -1。"/>
+                                    <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                    <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding StarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="额外资源量费用（要消耗多少额外资源量）。数字 / 生成期常量式子 / Y = 消耗全部额外资源量。"/>
+                                </Grid>
+                                <TextBlock Text="升级后费用 ／ 升级后额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap" Margin="6,6,6,0"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding UpgradeCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="升级后的能量费用：留空 = 不改；数字 = 升级后的绝对费用；X / X+1 = 还是 X 费、升级后 X 多 N。"/>
+                                    <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                    <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding UpgradeStarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="升级后的额外资源量费用：留空 = 不改；数字 = 升级后的绝对费用。"/>
+                                </Grid>
+                                <CheckBox Margin="6,6,0,0" Style="{StaticResource Check}"
+                                          Content="可被升级（诅咒默认不能升级；勾上后可被无限升级，上面的升级后费用 / 描述才会生效）"
+                                          IsChecked="{Binding InfinitelyUpgradable}"
+                                          ToolTip="不勾 = MaxUpgradeLevel => 0（和本体诅咒一样不能升级）。勾上 = 可被无限升级；「升级后费用 / 升级后额外资源量费用 / 升级后的自定义描述」才有意义。"/>
                                 <CheckBox Margin="6,4,0,0" Style="{StaticResource Check}"
                                           Content="不能被打出（费用 -1 时自动加上；费用 ≥ 0 时由你决定）"
                                           IsChecked="{Binding Unplayable}"
@@ -2384,6 +2408,12 @@
                                 <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}"
                                           Content="替换掉自动生成的描述（不勾 = 追加在后面）"
                                           IsChecked="{Binding CustomDescriptionReplaces}"/>
+                                <TextBlock Margin="6,10,0,0" Text="升级后的自定义描述（留空 = 和上面那段一样；先勾「可被升级」才会生效）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                <TextBox x:Name="CurseUpgradedCustomDescBox" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="50" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding UpgradedCustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="诅咒升级后的卡面文字。留空 = 和上面那段一样；填了就生成 {IfUpgraded:show:升级后|没升级}。"/>
+                                <Button Content="自动填入（升级后）" Padding="8,4" Margin="6,2,0,0" HorizontalAlignment="Left" Click="OnAutoFillCardUpgradedDesc" Tag="{Binding ElementName=CurseUpgradedCustomDescBox}"/>
                             </StackPanel>
                         </ScrollViewer>
                         <DockPanel Grid.Column="2">
@@ -2437,8 +2467,29 @@
                                 <ComboBox x:Name="CurseCardTypeCombo" Style="{StaticResource Pick}" ItemsSource="{Binding CardTypeOptions, RelativeSource={RelativeSource AncestorType=Window}}"
                                           DisplayMemberPath="Display" SelectedValuePath="Id" SelectedValue="{Binding CardType}"
                                           ToolTip="本体那些状态牌（伤口 / 灼伤 / 眩晕 / 粘液）的类型都是 Status；先古卡和普通卡一样是 攻击 / 技能 / 能力。"/>
-                                <TextBlock Text="费用" Style="{StaticResource Label}"/>
-                                <TextBox Style="{StaticResource Field}" Text="{Binding Cost, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Text="费用 ／ 额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding CostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="费用（消耗能量）。支持数字、生成期常量式子、X（消耗全部能量）。"/>
+                                    <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                    <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding StarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="额外资源量费用（要消耗多少额外资源量）。数字 / 生成期常量式子 / Y = 消耗全部额外资源量。"/>
+                                </Grid>
+                                <TextBlock Text="升级后费用 ／ 升级后额外资源量费用" Style="{StaticResource Label}" TextWrapping="Wrap" Margin="6,6,6,0"/>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Style="{StaticResource Field}" Text="{Binding UpgradeCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="升级后的能量费用：留空 = 不改；数字 = 升级后的绝对费用；X / X+1 = 还是 X 费、升级后 X 多 N。状态卡要先勾「可被无限升级」才会生效。"/>
+                                    <TextBlock Grid.Column="1" Text="＋" VerticalAlignment="Center" Margin="6,0,6,0" FontWeight="Bold"/>
+                                    <TextBox Grid.Column="2" Style="{StaticResource Field}" Text="{Binding UpgradeStarCostText, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="升级后的额外资源量费用：留空 = 不改；数字 = 升级后的绝对费用。状态卡要先勾「可被无限升级」才会生效。"/>
+                                </Grid>
+                                <TextBlock Margin="6,2,0,0" TextWrapping="Wrap" Foreground="#888" FontSize="11" Text="{Binding CardCostHint}"/>
                                 <TextBlock Text="稀有度固定为「先古」（Ancient），生成时写死" Style="{StaticResource Label}" Foreground="#888" FontSize="11"
                                            Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
                                 <TextBlock Text="稀有度固定为「状态」（Status），生成时写死；默认 MaxUpgradeLevel = 0（和本体「粘液」一样不能升级）—— 想让它局内能被升级（像本体「凋萎」那样）就勾下面那个「可被无限升级」"
@@ -2549,7 +2600,7 @@
                                 <TextBox x:Name="AncientUpgradedCustomDescBox" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="50" AcceptsReturn="True" TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
                                          Text="{Binding UpgradedCustomDescription, UpdateSourceTrigger=PropertyChanged}"
-                                         ToolTip="先古卡升级后的卡面文字。留空 = 和上面那段一样；填了就生成 {IfUpgraded:show:升级后|没升级}。"/>
+                                         ToolTip="先古卡 / 状态卡升级后的卡面文字。留空 = 和上面那段一样；填了就生成 {IfUpgraded:show:升级后|没升级}。状态卡要先勾「可被无限升级」才会生效。"/>
                                 <WrapPanel Margin="6,2,0,0">
                                     <Button Content="自动填入" Padding="8,4" Margin="0,0,6,0" Click="OnAutoFillCardDesc" Tag="{Binding ElementName=AncientCustomDescBox}"/>
                                     <Button Content="自动填入（升级后）" Padding="8,4" Click="OnAutoFillCardUpgradedDesc" Tag="{Binding ElementName=AncientUpgradedCustomDescBox}"/>

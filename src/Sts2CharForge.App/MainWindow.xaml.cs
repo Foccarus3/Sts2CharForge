@@ -44158,6 +44158,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				animGen.Animation.Enabled = true;
 				animGen.Animation.Idle = animIdle;
 				animGen.Animation.Attack = animAttack;
+				animGen.Animation.Die = animAttack;   // 自检用：死亡槽位复用一张合法 GIF，验证 holdAtEnd 注册与定格保护
 				try
 				{
 					AnimFramesGen.Plan animPlan = AnimFramesGen.BuildPlan(animGen, _ => { });
@@ -44212,6 +44213,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						animPlan.Anims.All((AnimFramesGen.AnimPlan o) => animEntry.Contains(
 							$"\"{o.Anim}\", \"res://images/characters/anim/{animSlug}/{animSlug}_{o.Anim}_frames.tres\"")),
 						$"{animPlan.Anims.Count} 个动作");
+					Check("V0.3.129：死亡动画注册时带 holdAtEnd:true（播完定格，不能回待机）",
+						animEntry.Contains("holdAtEnd: true"), "注册行带定格");
+					string animRuntimeSrc = File.ReadAllText(Path.Combine(animCs, "FrameAnimRuntime.cs"));
+					Check("V0.3.129：死亡定格后收到 Idle / Relaxed 不把倒地帧顶掉（只有 Revive 能解除）",
+						animRuntimeSrc.Contains("_held && trigger is \"Idle\" or \"Relaxed\""), "有定格保护");
 					AnimFramesGen.AnimPlan animIdlePlan = animPlan.Anims.First((AnimFramesGen.AnimPlan o) => o.Anim == "idle_loop");
 					string animTres = File.ReadAllText(Path.Combine(animFrameDir, animSlug + "_idle_loop_frames.tres"));
 					Check("SpriteFrames 是「speed 恒为 1.0 + 每帧 duration 写秒数」（Godot 的 speed 是倍率不是 fps）",
