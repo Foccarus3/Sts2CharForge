@@ -568,6 +568,9 @@ public sealed class EffectSpec : SpecBase
                 Raise(nameof(PotionNameZh));
                 // 「数值公式」那一栏的显隐与说明文字都按效果种类走（换种类要立刻跟着变）
                 Raise(nameof(ShowAmountFormula));
+                // V0.3.114：整块编辑区在「卡牌链 / 普通链」之间切换时，DisplayName 也要通知它，
+                // 否则从 Damage 切到 Draw 后「数值（公式）」那一行会按上一档的显隐卡住。
+                Raise(nameof(ShowAmountFormulaNormal));
                 // 固定数值框的显隐也按它走：支持公式的种类把「数值」框收起来（用户要求：只留公式）
                 Raise(nameof(ShowAmountBox));
                 Raise(nameof(AmountFormulaHint));
@@ -731,6 +734,12 @@ public sealed class EffectSpec : SpecBase
             _isCardChain = value;
             Raise(nameof(IsCardChain));
             Raise(nameof(ShowAmountBox));
+            // V0.3.114（用户报的「遗物效果来回点，数值公式那一栏会消失」）：
+            // ShowAmountFormula / ShowAmountFormulaNormal 都带 IsCardChain 判据，只通知 ShowAmountBox
+            // 的话，切到「抽牌」这种本来不该显示公式栏的种类时，XAML 里的 Visibility 会停在上一档。
+            Raise(nameof(ShowAmountFormula));
+            Raise(nameof(ShowAmountFormulaNormal));
+            Raise(nameof(AmountFormulaHint));
             // V0.2.132：卡牌链专用那几行（概率 / 下回合生效 / 命中次数·生效次数公式）也按它显隐 ——
             // 不通知的话「在列表里点一条效果」时那几行不会当场出现（老坑：V0.2.107 的触发时机）。
             RaiseCardChainRows();
@@ -2803,7 +2812,7 @@ public sealed class EffectSpec : SpecBase
                 "AllUnits" => "全体单位",
                 "AllAllies" => AllAlliesIncludeSelf ? "全体友方（含自己）" : "全体友方",
                 "Ally" => "指定队友",
-                _ => "自己",
+                _ => EffectCatalog.TargetSideZh(TargetSide),
             };
             string kind = Kind switch
             {
@@ -6500,6 +6509,16 @@ public sealed class ArtSpec{    public string? Icon { get; set; }
     public string? ModImage { get; set; }
     /// <summary>静态战斗/商店/篝火立绘（替代本体的 Spine 骨骼动画）。留空则用工具自带占位图。</summary>
     public string? CharacterStatic { get; set; }
+    /// <summary>V0.3.127：战斗静态立绘；留空时回退到 <see cref="CharacterStatic"/> / 占位图。</summary>
+    public string? CharacterStaticCombat { get; set; }
+    /// <summary>V0.3.127：商店静态立绘；留空时回退到 <see cref="CharacterStatic"/> / 占位图。</summary>
+    public string? CharacterStaticMerchant { get; set; }
+    /// <summary>V0.3.127：篝火静态立绘；留空时回退到 <see cref="CharacterStatic"/> / 占位图。</summary>
+    public string? CharacterStaticRest { get; set; }
+    /// <summary>V0.3.127：死亡倒地立绘；只在战斗里角色死亡时显示，不用于篝火 / 商店。</summary>
+    public string? CharacterStaticDeath { get; set; }
+    /// <summary>V0.3.127：替换本体遗物「美味饼干」的图标（PNG）。留空 = 不改本体图标。</summary>
+    public string? YummyCookieIcon { get; set; }
     /// <summary>没上传的槽位是否用本体（铁甲战士）素材占位。默认 false = 生成中性占位图，
     /// 这样发布出去的模组不含本体美术；本地随手测试可以勾上。</summary>
     public bool UseVanillaPlaceholders { get; set; }

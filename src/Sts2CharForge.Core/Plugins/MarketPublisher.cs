@@ -36,7 +36,7 @@ public static class MarketPublisher
         public string Description { get; set; } = "";
         public string License { get; set; } = "";
         public string Notes { get; set; } = "";
-        public string GameVersion { get; set; } = "v0.113.x";
+        public string GameVersion { get; set; } = "v0.114.x";
         public string MinGeneratorVersion { get; set; } = "";
         public List<string> Categories { get; set; } = new();
         public List<string> Keywords { get; set; } = new();
@@ -390,7 +390,7 @@ public static class MarketPublisher
         r.Description = (r.Description ?? "").Trim();
         r.License = (r.License ?? "").Trim();
         r.Notes = (r.Notes ?? "").Trim();
-        r.GameVersion = string.IsNullOrWhiteSpace(r.GameVersion) ? "v0.113.x" : r.GameVersion.Trim();
+        r.GameVersion = string.IsNullOrWhiteSpace(r.GameVersion) ? "v0.114.x" : r.GameVersion.Trim();
         r.MinGeneratorVersion = string.IsNullOrWhiteSpace(r.MinGeneratorVersion) ? "V0.3.74" : r.MinGeneratorVersion.Trim();
         r.Categories = (r.Categories ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim().ToLowerInvariant()).Distinct().ToList();
         r.Keywords = (r.Keywords ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct().ToList();

@@ -560,6 +560,11 @@ public static class ProjectRecovery
         }
         p.ExtraResource.Icon = Move(p.ExtraResource.Icon);
         p.Art.CharacterStatic = Move(p.Art.CharacterStatic);
+        p.Art.CharacterStaticCombat = Move(p.Art.CharacterStaticCombat);
+        p.Art.CharacterStaticMerchant = Move(p.Art.CharacterStaticMerchant);
+        p.Art.CharacterStaticRest = Move(p.Art.CharacterStaticRest);
+        p.Art.CharacterStaticDeath = Move(p.Art.CharacterStaticDeath);
+        p.Art.YummyCookieIcon = Move(p.Art.YummyCookieIcon);
         p.Art.Icon = Move(p.Art.Icon);
         p.Art.IconOutline = Move(p.Art.IconOutline);
         p.Art.SelectIcon = Move(p.Art.SelectIcon);
@@ -611,6 +616,11 @@ public static class ProjectRecovery
             Art = new ArtSpec
             {
                 CharacterStatic = t.Art.CharacterStatic,
+                CharacterStaticCombat = t.Art.CharacterStaticCombat,
+                CharacterStaticMerchant = t.Art.CharacterStaticMerchant,
+                CharacterStaticRest = t.Art.CharacterStaticRest,
+                CharacterStaticDeath = t.Art.CharacterStaticDeath,
+                YummyCookieIcon = t.Art.YummyCookieIcon,
                 Icon = t.Art.Icon,
                 IconOutline = t.Art.IconOutline,
                 IconOutlineColor = t.Art.IconOutlineColor,
@@ -854,7 +864,10 @@ public static class ProjectRecovery
         //   · 这张牌**后面**那几个变量在表里的次序全部前移 → 按顺序配的数值会串到别的效果上。
         // 所以这里单独扫一遍公式变量，按出现位置和普通变量合并（顺序 = 声明顺序，红线）。
         var found = new List<(int At, Var V)>();
-        foreach (Match m in Regex.Matches(block, @"new (\w+)Var(?:<(\w+)>)?\((?:""(\w+)"",\s*)?(-?[\d.]+)m?"))
+        // ⚠ V0.3.97：`new ForgeFormula…Var(2m, static (card, target) => …)` 这种带「百科基准值」的写法
+        // 也会被下面这个普通变量正则吃掉（它看到 `new XxxVar(2m` 就当普通变量）→ 回读会多出一个假变量、
+        // 后面所有效果的数值全错位。所以这里先把 ForgeFormula* 排除掉（它们由下面那圈单独处理）。
+        foreach (Match m in Regex.Matches(block, @"new (?!ForgeFormula)(\w+)Var(?:<(\w+)>)?\((?:""(\w+)"",\s*)?(-?[\d.]+)m?"))
         {
             string kind = m.Groups[1].Value;
             string? power = m.Groups[2].Success ? m.Groups[2].Value : null;

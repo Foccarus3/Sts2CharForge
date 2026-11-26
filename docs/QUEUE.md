@@ -1,5 +1,271 @@
 # 待办队列（用户要求「全做完，不用一步步报备」）
 
+## 第 185 批需求（**卡牌时机「被变化」在战斗内也不生效（获得能量没反应）**；已修，待发版）
+
+> 用户报：卡牌效果「条件：卡牌时机 → 被变化」+「获得能量 3」在战斗内变牌后**没反应**，日志无异常。
+>
+> **定位过程（诊断版日志拿到的决定性证据）**：
+> ```
+> [被变化] SparkleCard47 进入 AfterThisWasTransformedIntoInternal（base.CombatState=空、变成的牌.CombatState=有、主人=有）
+> ```
+> → 钩子**进了**，但 `base.CombatState` 是 **null**，被第一句 `if (base.CombatState is null) return;` 丢掉。
+>
+> **真因**：本体 `CardCmd.Transform` 的顺序是
+> `original.RemoveFromCurrentPile()` → … → `original.AfterThisWasTransformedInto(replacement)`，
+> 即**先摘牌、再通知**；`CardModel.CombatState` 由「自己在哪个牌堆 / 战斗玩家」推出来，
+> 这一刻必然是 null。生成端拿它当「有没有在战斗里」的判据 → 战斗内也被误判成战斗外。
+>
+> **修法**：战斗状态按 **变成的那张牌 → 主人的战斗状态 → this** 兜底取：
+> `var __cs = card?.CombatState ?? base.Owner?.Creature?.CombatState ?? base.CombatState;`
+> 另把注释里过时的 `AfterTransformedFrom` 更正为 `AfterThisWasTransformedInto`（反查 dll 确认）。
+>
+> **诊断日志**（只在开「调试日志」时生成，默认档逐字不变）：钩子入口 / 交给暂停机制 / 开始结算 /
+> 抛异常 / 结算结束 五处 `Godot.GD.Print`，异常不再被 fire-and-forget 吞掉。
+>
+> **顺带修**：`MainWindow.xaml` 第 976 行 `ToolTip="…` 少一个收尾引号（整个工程 XAML 编译不过）。
+>
+> **验收**：用户实测 —— 变牌后能量 +3，「进入钩子 → 已交给暂停机制 → 开始结算 → 结算结束」四行齐全；
+> 探针 `_probe/transformcard` 生成源码核对；`dotnet build` / `--uicheck` 见下。
+
+
+## 第 184 批需求（**状态里「只对这张卡」把自己的卡写成本体卡 → CS0246** + **插件模板 `{key:str}` 转义**；已发版 V0.3.115）
+
+> 用户报：`cs\Powers\TheDemonPower1.cs(44,159): error CS0246 命名空间 "MegaCrit.Sts2.Core.Models.Cards"
+> 中不存在类型或命名空间名 "TheDemonStrike"`；以及上一批的插件「卡牌 GIF 替换」填 Windows 路径 → CS1056/CS1003。
+>
+> **病因①**：`CustomPowerGen.cs` 的 `case "GiveKeyword":` 把**当前存档**传成 `null`
+> → `CardTypeExpr(null, 卡名)` 不认识「我们自己的卡」，一律加本体前缀
+> → 「只对这张卡（指定）」指向本 mod 的卡时编不过。卡牌/遗物/药水/节点图链都传了 `p`，只有状态链漏了。
+> 修法：改传 `p`（`ResolveKeyword` / `NotifyGivenKeywordTiming` 同时也终于看得到自定义关键词）。
+>
+> **病因②**：插件模板只有 `{Key}`，值原样塞进 C# 普通字符串字面量 —— 反斜杠被当转义符、
+> 以 `\` 结尾的路径还会把收尾引号吃掉。修法：新增 `{Key:str}`（生成端先做 C# 字符串转义），
+> `{Key}` 行为不变。
+>
+> **配套**：`卡牌GIF替换_插件_v1.6.zip`（模板改用 `:str`、运行时反斜杠归一化）。
+> ⚠ 插件 v1.6 必须搭 V0.3.115+（旧版生成器不认 `:str`，会原样填进去）。
+>
+> **验收**：探针 `_probe/kwscope`（短类名 ✅ / 本体 `Shiv` 仍全名 ✅）、
+> `_probe/gifswap_e2e`（新插件渲染 + 真 `dotnet build`，5 种路径值全编译通过）；
+> `dotnet build` 0 error；`--uicheck` **4961 PASS / 0 FAIL**（新增 5 条）。
+
+
+## 第 183 批需求（**导出 PCK 失败：中文工程路径被 cmd 批处理按 GBK 解码成乱码 → Godot 报 `Invalid project path`**；已发版 V0.3.112）
+
+> 用户贴来构建日志（V0.3.107）：编译、导入都「OK」，卡在导出：
+> ```
+> Invalid project path specified: "E:\Sts2CharForge\Sts2CharForgeV0.3.107\鑷畾涔夎鑹插瓨妗ExampleMod", aborting.
+> --- 导出 PCK 失败 ---   （重试 1/2、2/2 都失败）
+> ```
+> `鑷畾涔夎鑹插瓨妗` 就是 UTF-8 的「自定义角色存档」被按 **GBK** 解码的结果。
+>
+> **真因**：Godot 的命令是**写进 `.cmd` 批处理**交给 `cmd.exe` 执行的（`ModBuilder.Run`），
+> cmd 解析 UTF-8 批处理时按系统 ANSI 码页（中文 Windows = 936/GBK）解码 → 命令行里的**中文绝对路径**变乱码
+> → Godot 认为工程不存在 → 不产出 pck。而**工具默认的存档目录就叫「自定义角色存档」**，用户没法回避。
+> （以前「都没事」= 要么工程目录恰好是英文、要么没走到导出这一步。）
+> 顺带一个坑：「Godot 导入资源 OK」是**误报** —— 那一步只看退出码，而 Godot 对无效路径也返回 0。
+>
+> **修法**：命令行里**不出现中文**
+> 1. 工程根改用 `WorkingDirectory` 传（`CreateProcessW`，UTF-16，不会乱码）；
+> 2. 两条 Godot 命令改成 `--path "."`，导出 pck 用**相对**名 `build/<ModId>.pck`；
+> 3. 「导入资源」的成功判据从**退出码**改成看输出（有 `Invalid project path` / `Failed to load project` 就算失败）。
+>
+> 新增可测的纯函数：`ModBuilder.GodotImportArgs` / `GodotExportPackArgs` / `GodotRelativePckArg` / `ImportLooksOk`。
+>
+> **验收**：
+> * 探针 `_probe/godotargs` **7/7 PASS**：中文工程目录下两条命令**纯 ASCII**、`--path "."`、pck 相对名；
+>   `ImportLooksOk` 对「Invalid project path」判失败、对正常/空输出判成功
+> * `dotnet build` **0 error**；`--uicheck` **4953 PASS / 0 FAIL**（新增 2 条）
+> * 本机没有 Godot，没法端到端真导出；最终判据是那位用户升级后重新构建的日志
+>
+
+
+## 第 182 批需求（**插件「单独页」的列表：加行 / 改选牌后工程不变**；已发版 V0.3.100）
+
+> 用户原话：「这个插件单独页里的列表，里面我添加一行或改选牌，底下工程不会变，是插件的问题还是生成器的问题」
+> （插件：`召唤物布局`，`pages[].fields[].type = list`）
+>
+> **结论：生成器（工具）的锅，插件没问题。** 把他的 `plugin.json` 当插件加载后跑生成，加行 / 改值都能正确反映；
+> 问题在「界面 → 磁盘 → 生成」这条链上，有三个缺陷：
+>
+> 1. **值编辑从不落盘**：`SubRow` 里所有控件（选牌下拉 / 数字框 / 勾选框 / 文本）都只调 `onChanged()`
+>    （= 页面里的 `Refresh()`，只刷新右下角预览），**没有 SaveRows**；只有「+ 添加一行 / 删除 / ↑↓」才存。
+> 2. **`SaveRows` 写的是缓存表，不是界面上那份列表**：`SaveRows` → `RowsOf(p)`（缓存）；
+>    而界面手里的 `rows` 是**建页面那一刻**从 `PageRowsOf` 拿到的对象。中间只要 `ClearPageCache()`
+>    跑过一次（打开存档就会跑），两者就是两个不同对象 → 界面改旧列表、磁盘写新缓存 → **加行也丢**。
+>    他 zip 里的证据正是这个：`profiles/default/rows.json` 有真编辑（3 行，X=-5/Height=5/HideHp=1），
+>    `profiles/IfMod/rows.json` 还是 1 行默认值。
+> 3. **切存档只重建「当前选中的那个插件」的页**（`SyncPluginProfileKey` 只看 `PluginList.SelectedItem`）→
+>    其余页仍绑着旧存档的行列表。
+>
+> **修法**：
+> * 新增 `PluginRegistry.SetRows(p, page, listField, rows)`：落盘前把**界面正在编辑的那份列表**接管进缓存；
+> * 列表编辑器里加 `Persist()`（SetRows + SaveRows），「加 / 删 / ↑↓」都改走它；
+> * 子栏位编辑（下拉 / 数字 / 勾选 / 文本 / 子表）统一走 `Touch()` → 350ms 防抖后 SetRows + SaveRows；
+> * `SyncPluginProfileKey` 记住 `_lastShownPluginSpec`，切存档时**一定**重建那一页（不再依赖当前选中项）。
+>
+> **验收**：
+> * 探针 `_probe/plugrows` **5/5 PASS**：清缓存后 `PageRowsOf` 确实是另一个对象 →（复现）不接管时磁盘里
+>   没有界面新加的行 → SetRows 后磁盘有了 → 生成出来的表也带上那一行
+> * `dotnet build` **0 error**；`--uicheck` **4949 PASS / 0 FAIL**（新增 4 条，含一条“复现”断言）
+
+
+## 第 181 批需求（**遗物「每累计花掉 N 点能量」→ 两个字段被写进 `CanonicalVars` 数组里 → CS1519/CS1031**；已发版 V0.3.100）
+
+> 用户转来别人的构建失败截图 + 一段分析（`cs\Relics\LuoRelic4.cs(16,33)`）：
+> ```
+> error CS1519: 成员声明中的标记"("无效
+> error CS1031: 应输入类型
+> error CS8124: 元组必须包含至少两个元素。
+> error CS1026: 应输入 )
+> ```
+> 生成的代码长这样：
+> ```csharp
+> protected override IEnumerable<DynamicVar> CanonicalVars =>
+> [
+>     private int __spentBaseTurn = -1;    // ← 字段声明落进了数组初始化器
+>     private int __spentBaseCombat = -1;
+>     new PowerVar<VigorPower>(3m),
+> ];
+> ```
+>
+> **真因**：V0.2.336 给遗物链加「每累计花掉 N 点」的计数基准字段时，写在了
+> `w.Line("protected override … CanonicalVars =>").Line("[")` **之后** —— 于是字段声明落在
+> 数组初始化器里（C# 那里只允许表达式，不允许声明）→ 从那一行开始整串报错。
+> 触发条件：遗物用「每累计花掉 N 点能量 / 额外资源量」（`EnergySpent` / `StarsSpent`）
+> **并且**带动态变量的效果（例：`VigorPower`）。用户实测：遗物「事务所多功能电宝」。
+>
+> **修法**：把这两个字段的声明挪到 `CanonicalVars` 属性**之前**（类体里，紧跟 `Rarity` / `HasUponPickupEffect`）。
+>
+> **验收**：
+> * 探针 `_probe/relicspent`：`EnergySpent` 与 `StarsSpent` 两种触发都 **4/4 PASS**
+>   （扫「`[` … `];` 之间没有 `private` 字段」+ 字段确实在类体里），并打印前 22 行人工核对
+> * `dotnet build` **0 error**；`--uicheck` **4945 PASS / 0 FAIL**（新增 1 条）
+
+
+## 第 180 批需求（**斩杀 → 卡牌奖励：状态栏里显示「战斗结束后获得卡牌奖励」的悬赏状态**；已发版 V0.3.99）
+
+> 用户原话：「能不能加一个像"狩猎"在状态显示一个战斗结束后获得卡牌奖励的状态」
+>（接着上一批 V0.3.98 的「斩杀奖励挂进结算奖励」）
+>
+> **做法**：新增一个生成端内置状态 `<角色>PendingCardRewardPower`（「卡牌悬赏」）：
+> * 斩杀触发时 `PowerCmd.Apply<…PendingCardRewardPower>(choiceContext, base.Owner.Creature, 1m, …, this)`
+>   —— 层数 = 还欠几次「选一张卡」的奖励，状态栏里直接看得见（图标用本体「猎杀」的 `the_hunt_power.png`）；
+> * 该状态 `AfterCombatEnd(CombatRoom room)`（房间结算之前）里按层数逐次
+>   `room.AddExtraReward(player, new CardReward(ForRoom(...), 1, player))`，然后 `PowerCmd.Remove(this)`；
+> * 状态栏文案：`卡牌悬赏` / 「战斗结束后，获得 {Amount} 次「选一张卡」的奖励（和本体「猎杀」同一套结算奖励）。」
+>
+> 涉及改动：`Naming.PendingCardRewardPowerClass`、`CSharpCodeGen.UsesPendingCardReward` /
+> `PendingCardRewardPowerSource` / `EmitCardReward`（卡牌链把类名传进去，斩杀那条先挂状态）、
+> `ModGenerator`（用到才写 `cs/PendingCardRewardPower.cs`）、`ArtGenerator`（复制本体 `the_hunt_power.png`
+> 当图标）、`LocalizationGen.PowersJson`（title / description）。
+> V0.3.98 那条「当场取 CombatRoom 直接挂奖励」保留为**兜底**（拿不到状态类名时才会走到）。
+>
+> **验收**：
+> * 探针 `_probe/pendreward` **6/6 PASS**（判定 / 挂状态 / 不再当场选牌 / 状态类里有 AfterCombatEnd +
+>   AddExtraReward / 状态栏文案 / 红线：非斩杀照旧当场选）
+> * `dotnet build` **0 error**；`--uicheck` **4944 PASS / 0 FAIL**（新增 3 条，且把 V0.3.98 那两条
+>   按新行为改写）
+
+
+## 第 179 批需求（**「斩杀 → 获得卡牌奖励」当场弹选牌（顺序不对）→ 改成挂进战斗结算奖励，像本体「猎杀」**；已发版 V0.3.98）
+
+> 用户原话：「斩杀获得卡牌奖励发现是先获得卡牌奖励再造成伤害欸，能不能做的像原版"狩猎"一样，
+> 在战斗结束后获得一个可选择的卡牌奖励」
+>
+> **真因**：卡牌上「获得卡牌奖励」+ 条件「斩杀（Fatal）」时，生成端走的是**当场弹选牌**那条路
+> （`CardSelectCmd.FromChooseACardScreen`）—— 所以斩杀那一刻就跳奖励界面，和伤害结算的先后完全乱。
+> 本体「猎杀」（TheHunt）的做法不是这样：它把奖励**挂进本场战斗的结算奖励**
+> （`room.AddExtraReward(player, new CardReward(...))`），打完在奖励界面里多一条「选一张卡」。
+> 那条 room 路径我们早就实现了，但**只有**「战斗胜利后」这类带 `CombatRoom room` 参数的钩子能走。
+>
+> **修法**：卡牌链里遇到「斩杀 + 获得卡牌奖励」时，运行时现取当前战斗房间：
+> ```csharp
+> MegaCrit.Sts2.Core.Rooms.CombatRoom? __rewardRoom =
+>     MegaCrit.Sts2.Core.Runs.RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.CombatRoom;
+> if (__rewardRoom is not null) { …AddExtraReward… }
+> else { …原来的当场选牌（兜底）… }
+> ```
+> 核过 `sts2.dll`：`RunManager.DebugOnlyGetState()` / `RunState.CurrentRoom` / `CombatRoom.AddExtraReward` 都在。
+> 没勾斩杀条件的卡牌奖励**一个字不变**（红线）。
+>
+> **验收**：
+> * 探针 `_probe/fatalreward` **4/4 PASS**（挂 AddExtraReward / 取的是当前 CombatRoom /
+>   当场选牌只在兜底分支 / 红线：非斩杀照旧当场选）
+> * `dotnet build` **0 error**；`--uicheck` **4943 PASS / 0 FAIL**（新增 2 条）
+
+
+## 第 178 批需求（**百科（卡牌图鉴）里公式卡的数值全是 0**；已发版 V0.3.97）
+
+> 用户问「为什么百科里面卡的数值都是 0」。
+>
+> **真因**：主菜单「百科大全」是在**没有进行中的一局**时打开的，卡片实例的 `Owner` 是 null；
+> 而生成出来的「公式型数值」变量（`ForgeFormulaDamageVar / BlockVar / HpLossVar / HealVar / PowerVar`）
+> 的预览逻辑是：
+> ```csharp
+> if (card.Owner is not null) BaseValue = _formula(card, target) + 升级增量;
+> ```
+> 百科里这个条件不成立 → 公式一次都不跑 → 显示构造函数里那个基准值；而基准值以前**写死 `0m`**
+> → 所以百科里所有公式卡都是 0（战斗内 / 卡组里 Owner 存在，数字是对的）。
+> 固定数值的卡不受影响（`new DamageVar(6m, …)` 本身带值）。
+>
+> **用户定的规则**：公式里所有标识符（自定义参数 / 变量 A、B / 运行时读数 Turn、HandCount、X…）
+> 一律**当 0** 折一遍，作为百科里显示的基准值。
+>
+> **修法**：
+> 1. `ForgeFormula.PreviewBaseOf(formula, p)`：解析公式后用「标识符恒返回 0」的常量求值器折值
+>    （折不出来 = 除零 / 对 0 取余 / 语法错 → 0）；
+> 2. 生成变量时把这个值当**构造基准**：`new ForgeFormulaDamageVar(2m, static (card, target) => …)`；
+>    折出来正好是 0 时**不写这个参数**（那类卡的生成文本与以前逐字一致）；
+> 3. 生成的 `ForgeFormula*Var` 增加带 `previewBase` 的构造函数重载（旧的不用基准的重载保留）；
+> 4. `ProjectRecovery` 里那条「普通变量」正则加 `(?!ForgeFormula)` 前瞻 —— 否则
+>    `new ForgeFormulaDamageVar(2m, …)` 会被当普通变量读进来，回读多一个假变量、后面数值全错位。
+>
+> **效果**：`2+A*2` → **2**、`6*A` → **0**、`A*0+5` → **5**、`2+3*2` → **8**、`6/A` → **0**（除零按 0）。
+> 战斗内不受影响（`UpdateCardPreview` 会用真公式覆盖基准）。
+>
+> **验收**：
+> * 探针 `_probe/prevbase` **10/10 PASS**（求值 + 三条生成文本断言：带 2m / 6*A 不带 / 纯数字带 8m）
+> * `dotnet build` **0 error**；`--uicheck` **4941 PASS / 0 FAIL**（新增 3 条；同时把两条钉旧文本的
+>   断言更新成新写法 `ForgeFormulaDamageVar(14m, static …)` / `(7m, static …)`）
+
+
+## 第 177 批需求（**自定义状态里「随机敌人」→ 生成 `Creature.RunState` → `CS1061`**；已发版 V0.3.96）
+
+> 用户贴来构建日志（V0.3.94）并且把他人的存档 `HusbandMod.json` 发来：
+> ```
+> cs\Powers\HusbandPower9.cs(38,51): error CS1061:
+>   "Creature"未包含"RunState"的定义 …
+> ```
+>
+> **复现**：用那份存档跑生成 → `HusbandPower9`（状态「失神」）里第一条效果是
+> **`PetSacrifice`（牺牲伙伴）+ 作用对象「随机敌人」**，生成出：
+> ```csharp
+> Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);   // CS1061
+> ```
+>
+> **真因**：`EmitPerCreature` 的「随机敌人（RandomEnemies）」分支把玩家表达式**写死**成 `base.Owner.RunState`。
+> 这个方法四条链共用：卡牌 / 遗物 / 药水链里 `base.Owner` 是 `Player`（有 `RunState`），
+> 但**自定义状态**链里 `base.Owner` 是 `Creature` —— 本体里 `Creature` 没有 `RunState`
+>（核过 sts2.dll：`Creature` ❌ / `CombatState` ✅ / `ICombatState` ✅）。
+> 所以「状态里任何效果 + 作用对象 = 随机敌人」都会编译失败：`PetSacrifice`、`ClearPowerOne`、
+> `ClearPowerDebuffs` 这些走 `EmitPerCreature` 的种类都中。
+>
+> **修法**：改从 `selfExpr`（各链都传对了的「那个生物」）取：
+> ```csharp
+> Creature foe = {selfExpr}.CombatState?.RunState?.Rng.CombatTargets.NextItem(foes) ?? foes[0];
+> ```
+> - 状态链：`base.Owner.CombatState?.RunState…` ✅
+> - 卡牌 / 遗物 / 药水链：`base.Owner.Creature.CombatState?.RunState…` ✅
+> - 取不到 RunState 时退第一个目标（循环条件已保证 `foes.Count > 0`）
+>
+> **验收**：
+> * 用他的存档复跑：修之前 `HusbandPower9` 那条是 `base.Owner.RunState…`；修之后
+>   `base.Owner.CombatState?.RunState?.Rng.CombatTargets.NextItem(foes) ?? foes[0]`，9 个状态全扫 0 处非法接收者
+> * 最小复现（`ClearPowerOne` + 随机敌人）同样已变成 `CombatState?.RunState`
+> * `dotnet build` **0 error**；`--uicheck` **4938 PASS / 0 FAIL**（新增 1 条）
+
+
 ## 第 176 批需求（**带目标的「下回合生效」→ 生成 `null is not null` → `CS8117`**；已发版 V0.3.85）
 
 > 用户贴来构建日志（**V0.3.84**）：

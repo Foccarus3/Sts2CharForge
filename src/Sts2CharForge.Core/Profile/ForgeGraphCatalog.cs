@@ -48,6 +48,7 @@ public static class ForgeTimings
     public const string CardGenerated = "CardGenerated";
     public const string PowerReached = "PowerReached";
     public const string HpLost = "HpLost";
+    public const string HpHealed = "HpHealed";
     public const string BlockGained = "BlockGained";
         // V0.2.302（用户要求「突破格挡时」，参考本体遗物「手钻」HandDrill.AfterBlockBroken）
         public const string BlockBroken = "BlockBroken";
@@ -164,6 +165,8 @@ public static class ForgeTimings
             "本体 AfterCardDiscarded：只认自己被弃掉的牌。"),
         new TimingOption(HpLost, "自己失去生命时（每一下）", "Relic", "AfterCurrentHpChanged",
             "本体 AfterCurrentHpChanged：delta 为正是回血，只有掉血那一下才算。"),
+        new TimingOption(HpHealed, "自己回复生命时（每一下）", "Relic", "AfterCurrentHpChanged",
+            "本体 AfterCurrentHpChanged：delta > 0 才是回血；数值 N = 一次至少回复 N 点。"),
         new TimingOption(BlockGained, "自己获得格挡后", "Relic", "AfterBlockGained",
             "本体 AfterBlockGained：只认自己拿到格挡。"),
         // V0.2.302：突破格挡时（本体 AfterBlockBroken(choiceContext, target, breaker)；手钻用的就是这个钩子）

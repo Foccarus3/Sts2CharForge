@@ -168,6 +168,10 @@ public static class LocalizationGen
             // 卡牌自定义描述：默认**追加**在自动描述后面；勾了「替换」就整段换掉（关键词那行仍保留在最前面）
             string customDesc = ResolveDescTokens((c.CustomDescription ?? "").Trim(), p);
             string customUp = ResolveDescTokens((c.UpgradedCustomDescription ?? "").Trim(), p);
+            // V0.3.115：{=表达式} 生成只显示用的变量（见 CSharpCodeGen.CardDescFormulaExprs / ForgeCardDescVar）
+            var descFormulas = CSharpCodeGen.CardDescFormulaExprs(c);
+            customDesc = CSharpCodeGen.RewriteCardDescFormulas(customDesc, descFormulas);
+            customUp = CSharpCodeGen.RewriteCardDescFormulas(customUp, descFormulas);
             // 自动描述：普通卡 = 效果栏自动写的那段；锻造卡 = 从**节点图**写出来的（以前这种卡是空的）。
             // 升级前 / 升级后各算一次：两段不一样（或你给升级后单独写了自定义描述）时，
             // 用本体的 {IfUpgraded:show:升级后|没升级} 包起来，游戏里按有没有升级自动显示对应那一版。
@@ -1186,6 +1190,16 @@ public static class LocalizationGen
             dict[$"{pctEntry}.title"] = pctZh.Split('（')[0];
             dict[$"{pctEntry}.description"] = pctZh + "：层数就是百分比（50 = 50%），只作用于有来源的攻击。";
             dict[$"{pctEntry}.smartDescription"] = pctZh.Replace("N", "{Amount}", StringComparison.Ordinal);
+        }
+
+        // V0.3.99：「斩杀 → 获得卡牌奖励」的悬赏状态（生成端内置写的类，也要补 title / description，
+        // 否则状态栏里标题是一串英文、描述是空的）。
+        if (CSharpCodeGen.UsesPendingCardReward(p))
+        {
+            string pendEntry = Naming.EntryOf(Naming.From(p).PendingCardRewardPowerClass);
+            dict[$"{pendEntry}.title"] = "卡牌悬赏";
+            dict[$"{pendEntry}.description"] = "战斗结束后，获得 {Amount} 次「选一张卡」的奖励（和本体「猎杀」同一套结算奖励）。";
+            dict[$"{pendEntry}.smartDescription"] = dict[$"{pendEntry}.description"];
         }
 
         foreach (var e in CSharpCodeGen.CollectDelayedEffects(p))

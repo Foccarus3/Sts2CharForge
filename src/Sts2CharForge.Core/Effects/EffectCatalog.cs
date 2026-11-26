@@ -2065,6 +2065,7 @@ public static class EffectCatalog
         // 用户要求：再加一个「失去生命时」（这张牌在你手上时你掉血 → 触发）。
         // 挂的钩子是 AbstractModel.AfterCurrentHpChanged(creature, delta)，delta < 0 就是掉了血。
         new CardTimingOption("HpLost", "失去生命时"),
+        new CardTimingOption("HpHealed", "回复生命时"),
     };
 
     /// <summary>存档里 Timing 字段的默认值（= 下拉第一项「被消耗」，也是老存档缺这一项时的退路）。</summary>
@@ -2532,23 +2533,45 @@ public static class EffectCatalog
     /// 默认就是全部七档（老行为）；只有「作用在玩家身上」的那两种收窄成 <see cref="PlayerOnlyTargetSides"/>。
     /// </summary>
     public static IReadOnlyList<string> TargetSidesFor(string? kind) =>
-        kind is "Energy" or "Gold" ? PlayerOnlyTargetSides : TargetSides;
+        BuildTargetSidesFor(kind);
+
+    private static IReadOnlyList<string> BuildTargetSidesFor(string? kind)
+    {
+        var baseList = kind is "Energy" or "Gold" ? PlayerOnlyTargetSides : TargetSides;
+        // V0.3.104：插件 units[].kinds 决定它能不能进这种效果的「作用对象」。
+        // 插件效果自己的 emit 是固定字符串，不适用编辑器的作用对象，保持只给内置档位。
+        if (kind is not null && Plugins.PluginRegistry.EffectOf(kind) is null)
+        {
+            var extra = Plugins.PluginRegistry.Units
+                .Where(u => u.Kinds is not null && u.Kinds.Any(x => string.Equals(x, kind, StringComparison.OrdinalIgnoreCase)))
+                .Select(u => u.Id)
+                .Where(id => !baseList.Contains(id, StringComparer.OrdinalIgnoreCase));
+            if (extra.Any())
+                return baseList.Concat(extra).ToList();
+        }
+        return baseList;
+    }
 
     /// <summary>
     /// 作用对象的**中文名**（界面提示 / 校验消息 / 卡面文案共用一份，免得三处各写一套）。
     /// 认不出来的原样返回（手写 JSON 里可能有别的值）。
     /// </summary>
-    public static string TargetSideZh(string? id) => (id ?? "").Trim() switch
+    public static string TargetSideZh(string? id)
     {
-        "Self" => "自己",
-        "Ally" => "指定队友",
-        "AllAllies" => "全部友方",
-        "Enemy" => "单体敌人",
-        "RandomEnemies" => "随机敌人",
-        "AllEnemies" => "全部敌人",
-        "AllUnits" => "全体单位",
-        var other => other,
-    };
+        if (Plugins.PluginRegistry.UnitOf(id) is { } pu)
+            return string.IsNullOrWhiteSpace(pu.Display) ? pu.Id : pu.Display;
+        return (id ?? "").Trim() switch
+        {
+            "Self" => "自己",
+            "Ally" => "指定队友",
+            "AllAllies" => "全部友方",
+            "Enemy" => "单体敌人",
+            "RandomEnemies" => "随机敌人",
+            "AllEnemies" => "全部敌人",
+            "AllUnits" => "全体单位",
+            var other => other,
+        };
+    }
 
     /// <summary>
     /// 「全体单位」这一档**生成端真的实现了**的效果种类（V0.2.132）。
@@ -2652,6 +2675,7 @@ public static class EffectCatalog
         new TriggerOption("CardDrawn",      "抽一张牌后",       "AfterCardDrawn(choiceContext, card, fromHandDraw)"),
         new TriggerOption("CardDiscarded",  "弃掉一张牌后",     "AfterCardDiscarded(choiceContext, card)"),
         new TriggerOption("HpLost",         "自己失去生命时（每一下）", "AfterCurrentHpChanged(creature, delta)"),
+        new TriggerOption("HpHealed",       "自己回复生命时（每一下）", "AfterCurrentHpChanged(creature, delta)"),
         new TriggerOption("BlockGained",    "自己获得格挡后",   "AfterBlockGained(creature, amount, props, cardSource)"),
         new TriggerOption("EnemyDeath",     "一个敌人死亡后",   "AfterDeath(choiceContext, creature, source, wasRemovalPrevented, deathAnimLength)"),
         new TriggerOption("EnemyTurnStart", "敌人回合开始时",   "AfterSideTurnStart(side, participants, combatState)"),

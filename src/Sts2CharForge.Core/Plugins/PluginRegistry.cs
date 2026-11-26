@@ -50,6 +50,16 @@ public sealed class PluginEffectSpec
     /// </summary>
     public string Var { get; set; } = "";
 
+    /// <summary>
+    /// V0.3.120：这个插件效果要不要显示「升级增量」栏。
+    /// 声明 <c>"upgrade": true</c> 后：
+    ///   · 效果编辑器显示 UpgradeAmount 输入框；
+    ///   · emit 可用 <c>{upgradeAmount}</c> / <c>{upgradedAmount}</c>；
+    ///   · 有 <c>var</c> 时生成 OnUpgrade 的 UpgradeValueBy，卡面 {var:diff()} 跟着变。
+    /// 不声明 = 老行为（不显示、不升级）。
+    /// </summary>
+    public bool Upgrade { get; set; }
+
     /// <summary>数值单位（「点」/「张」/「层」…）。</summary>
     public string Unit { get; set; } = "点";
 
@@ -82,6 +92,12 @@ public sealed class PluginUnitSpec
     public string Foes { get; set; } = "";
     /// <summary>单个单位表达式；留空 = Foes.FirstOrDefault()。</summary>
     public string Single { get; set; } = "";
+    /// <summary>
+    /// V0.3.104：允许出现在哪些效果的「作用对象」下拉里（空 = 只做锻造图对象，老行为）。
+    /// </summary>
+    public List<string> Kinds { get; set; } = new();
+    /// <summary>V0.3.104：true = 卡牌必须先弹选目标（TargetType.AnyEnemy），{foe} 才有意义。</summary>
+    public bool NeedsChosenTarget { get; set; }
     public string Note { get; set; } = "";
 }
 
@@ -1012,6 +1028,23 @@ public static class PluginRegistry
             if (string.IsNullOrWhiteSpace(u.Id)) { spec.Problems.Add("有一个对象没填 id。"); continue; }
             if (!IsValidKind(u.Id)) { spec.Problems.Add($"对象 id「{u.Id}」不合法（英文/数字/下划线，字母开头）。"); continue; }
             if (string.IsNullOrWhiteSpace(u.Foes)) { spec.Problems.Add($"对象「{u.Id}」没写 foes 列表表达式。"); continue; }
+            // V0.3.104：kinds 是「允许进哪些效果的『作用对象』下拉」；空 = 老行为（只做锻造对象）。
+            var kinds = (u.Kinds ?? new()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            string? badKind = kinds.FirstOrDefault(k =>
+                EffectCatalog.AllEffectKinds.All(x => !string.Equals(x.Kind, k, StringComparison.OrdinalIgnoreCase))
+                || !EffectFieldPolicy.UsesTargetSide(k)
+                || PluginRegistry.EffectOf(k) is not null);
+            if (badKind is not null)
+            {
+                spec.Problems.Add($"对象「{u.Id}」的 kinds 里有不支持作用对象的效果「{badKind}」—— 这一条跳过。");
+                continue;
+            }
+            if (kinds.Count > 0 && EffectCatalog.TargetSides.Any(x => string.Equals(x, u.Id.Trim(), StringComparison.OrdinalIgnoreCase)))
+            {
+                spec.Problems.Add($"对象「{u.Id}」和内置作用对象重名 —— 跳过这一条。");
+                continue;
+            }
+            u.Kinds = kinds;
             if (Profile.ForgeGraphCatalog.BuiltinUnitIds.Contains(u.Id.Trim())
                 || _unitsById.ContainsKey(u.Id.Trim()))
             {
@@ -1397,6 +1430,31 @@ public static class PluginRegistry
         string key = (sub.Key ?? "").Trim();
         if (row.TryGetValue(key, out string? v) && v is not null) return v;
         return sub.Default ?? "";
+    }
+
+    /// <summary>
+    /// V0.3.100：把**界面上正在编辑的那份行列表**接管进缓存。
+    ///
+    /// <para>为什么不直接 SaveRows：<see cref="SaveRows"/> 序列化的是缓存表 <see cref="RowsOf"/>，
+    /// 而界面手里的 <c>rows</c> 是**建页面那一刻**从 <see cref="PageRowsOf"/> 拿到的列表对象。
+    /// 中间只要 <see cref="ClearPageCache"/> 跑过一次（打开存档就会跑），两者就是**两个不同对象**，
+    /// 于是「界面上加了行 / 改了值」写进旧列表，SaveRows 却把新缓存（旧内容）写回磁盘 → 生成出来的工程不变。
+    /// 用户实测：插件「召唤物布局」在单独页里加行、改选牌，工程一直不变。</para>
+    /// </summary>
+    public static void SetRows(PluginSpec p, PluginPageSpec page, PluginFieldSpec listField,
+        List<Dictionary<string, string>> rows)
+    {
+        try
+        {
+            var map = RowsOf(p);
+            if (!map.TryGetValue(page.Id, out var pageMap))
+            {
+                pageMap = new Dictionary<string, List<Dictionary<string, string>>>(StringComparer.OrdinalIgnoreCase);
+                map[page.Id] = pageMap;
+            }
+            pageMap[(listField.Key ?? "").Trim()] = rows;
+        }
+        catch { /* 接管失败也不该挡住界面 */ }
     }
 
     /// <summary>把行数据写回 <c>plugins\&lt;id&gt;\rows.json</c>（失败只记一条，不抛）。</summary>

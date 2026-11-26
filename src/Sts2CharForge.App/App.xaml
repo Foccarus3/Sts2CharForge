@@ -10,6 +10,7 @@
         <local:MultiSelectModeConverter x:Key="MultiSelectMode"/>
         <local:OkToBrushConverter x:Key="OkToBrush"/>
         <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <local:TargetSideNameConverter x:Key="TargetSideName"/>
         <!-- V0.2.144：`BoolToText`（V0.2.137 给效果栏折叠行用）已随折叠行一起删除。 -->
         <!-- 「多选」开关：外观与其他按钮一致，按下（开启）时高亮，一眼能看出开没开 -->
         <Style x:Key="MultiToggle" TargetType="ToggleButton">
@@ -165,7 +166,13 @@
                 <ComboBox Grid.Row="2" Grid.Column="1" Style="{StaticResource Pick}"
                           Visibility="{Binding ShowTargetSideRow, Converter={StaticResource BoolToVis}}"
                           ItemsSource="{Binding TargetSideChoices}"
-                          SelectedItem="{Binding TargetSide}"/>
+                          SelectedItem="{Binding TargetSide}">
+                          <ComboBox.ItemTemplate>
+                              <DataTemplate>
+                                  <TextBlock Text="{Binding Converter={StaticResource TargetSideName}}"/>
+                              </DataTemplate>
+                          </ComboBox.ItemTemplate>
+                          </ComboBox>
 
                 <!-- 需求右侧④：「全部友方（可以选择包不包括召唤物）」—— 只有选了「全部友方」才摆这一行。
                      默认（不勾）= 老行为：同一边的玩家单位全算（含召唤物），生成的过滤条件与 V0.2.131 逐字节相同。

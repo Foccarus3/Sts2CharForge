@@ -80,7 +80,8 @@ public static class EffectFieldPolicy
     /// 放回手牌 / 抽到就本场减费 / 结束回合 / 额外回合 / 获得药水 / 回合结束自动打出 / 填满手牌 /
     /// 给予关键词 / 四种全局牌组 / 卡牌奖励 / 伙伴承伤开关。
     /// </summary>
-    public static bool UsesUpgradeAmount(string? kind) => PluginRegistry.EffectOf(kind) is not null ? false : kind is not (
+    public static bool UsesUpgradeAmount(string? kind) =>
+        PluginRegistry.EffectOf(kind) is { } plugin ? plugin.Upgrade : kind is not (
         "Stun" or "DoublePower" or "Expose" or "ClearPowerOne" or "ClearPowerDebuffs"
         or "ForbidBlock" or "ForbidHeal" or "CheapenDraw" or "ReturnSelfToHand" or "CheapenSelfOnDraw"
         or "EndTurn" or "ExtraTurn" or "GainPotion" or "TurnEndPlay" or "FillHand" or "GiveKeyword"

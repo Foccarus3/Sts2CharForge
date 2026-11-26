@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -469,7 +469,7 @@ public static partial class AnimFramesGen
     /// </summary>
     public static int StaticArtHeight(CharacterProfile p)
     {
-        string? path = p.Art.CharacterStatic;
+        string? path = p.Art.CharacterStaticCombat; if (string.IsNullOrWhiteSpace(path)) path = p.Art.CharacterStatic;
         if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
         {
             var img = PngUtil.Decode(path);
@@ -483,7 +483,7 @@ public static partial class AnimFramesGen
     /// </summary>
     public static (int W, int H) StaticArtSize(CharacterProfile p)
     {
-        string? path = p.Art.CharacterStatic;
+        string? path = p.Art.CharacterStaticCombat; if (string.IsNullOrWhiteSpace(path)) path = p.Art.CharacterStatic;
         if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
         {
             var img = PngUtil.Decode(path);

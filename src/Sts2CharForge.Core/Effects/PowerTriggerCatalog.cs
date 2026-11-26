@@ -59,6 +59,7 @@ public static class PowerTriggers
         new PowerTriggerOption("CardExhausted", "消耗一张牌后",       "AfterCardExhausted：本体无痛感（获得格挡）用这个"),
         new PowerTriggerOption("CardDrawn",     "抽一张牌后",         "AfterCardDrawn"),
         new PowerTriggerOption("CardDiscarded", "弃掉一张牌后",       "AfterCardDiscarded"),
+        new PowerTriggerOption("HpHealed", "自己回复生命时（每一下）", "AfterCurrentHpChanged：delta > 0 才算回复；数值 N = 一次至少回复 N 点"),
         // 「自己受到伤害后」= 本体 AfterDamageReceived：**每一下伤害都会触发一次**。
         // 本体的敌人攻击很多是「1 点 × 5 下」这种多次连击（AttackCommand.WithHitCount /
         // MultiAttackIntent），所以一次「5 点伤害」的攻击会触发 5 次（本体的原体黏土 SelfFormingClay

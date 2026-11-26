@@ -345,6 +345,14 @@ public static class ModGenerator
             ProjectFilesGen.WriteText(Path.Combine(cs, "Powers", PercentPowers.ClassOf(pct, profile) + ".cs"),
                 PercentPowers.Source(profile, pct));
 
+        // V0.3.99：「斩杀 → 获得卡牌奖励」用的悬赏状态（状态栏显示「战斗结束后获得卡牌奖励」，
+        // 层数 = 还欠几次；战斗结束时挂进结算奖励）。用户要求像本体「猎杀」那样在状态里显示。
+        if (CSharpCodeGen.UsesPendingCardReward(profile))
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, "PendingCardRewardPower.cs"), CSharpCodeGen.PendingCardRewardPowerSource(profile));
+            Log("  已生成「战斗结束后获得卡牌奖励」的悬赏状态（斩杀时挂在状态栏，打完在结算奖励里选牌）");
+        }
+
         if (CSharpCodeGen.UsesEnergyDebt(profile))
         {
             ProjectFilesGen.WriteText(Path.Combine(cs, "EnergyDebtPower.cs"), CSharpCodeGen.EnergyDebtPowerSource(profile));
@@ -628,8 +636,12 @@ public static class ModGenerator
             powerCount++;
         }
         if (powerCount > 0)
+        {
+            ProjectFilesGen.WriteText(Path.Combine(cs, PowerHoverPatchGen.FileName + ".cs"), PowerHoverPatchGen.Source(n.Namespace));
+            Log("  已生成自定义状态 tooltip 补丁（按当前层数重建描述）");
             Log($"  已生成自定义状态（能力）{powerCount} 个："
                 + string.Join("、", CustomPowerGen.Active(profile).Select((cp, k) => cp.Name)));
+        }
 
         if (VanillaPowerGen.NeedsCosmeticPatch(profile))
         {

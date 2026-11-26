@@ -31,8 +31,18 @@ public static class PluginGen
         if (string.IsNullOrWhiteSpace(body)) return null;
 
         string amount = ctx.AmountOverride ?? Lit.Dec(e.Amount);
+        string upgradeAmount = Lit.Dec(e.UpgradeAmount);
+        // 有 var 时 OnUpgrade 已经 UpgradeValueBy 到变量上，{upgradedAmount} 就是 amount；
+        // 没有 var 时没有变量可升级，这里按 base.IsUpgraded 现算（只影响 emit 的实际效果）。
+        string upgradedAmount = !ctx.CardSelfIsCard
+            ? amount   // 遗物 / 药水 / 状态没有 IsUpgraded，不能生成 base.IsUpgraded
+            : (!string.IsNullOrWhiteSpace(spec.Var)
+                ? amount   // 有 var：OnUpgrade 已经 UpgradeValueBy 到变量上
+                : $"(base.IsUpgraded ? ({amount} + {upgradeAmount}) : {amount})");
         string text = body
             .Replace("{amount}", amount, StringComparison.OrdinalIgnoreCase)
+            .Replace("{upgradeamount}", upgradeAmount, StringComparison.OrdinalIgnoreCase)
+            .Replace("{upgradedamount}", upgradedAmount, StringComparison.OrdinalIgnoreCase)
             .Replace("{self}", ctx.Self, StringComparison.OrdinalIgnoreCase)
             .Replace("{player}", ctx.Player, StringComparison.OrdinalIgnoreCase)
             .Replace("{foe}", ctx.Foe, StringComparison.OrdinalIgnoreCase)
@@ -226,6 +236,43 @@ public static class PluginGen
         return RenderOne(page.Emit ?? "", p, page, null, null, 0).ReplaceLineEndings("\n");
     }
 
+    /// <summary>
+    /// 把一个值转义成能安全放进 C# **普通字符串字面量**（<c>"…"</c>）里的内容（V0.3.113）。
+    ///
+    /// <para>为什么需要：插件模板以前只有 <c>{Key}</c>，值原样塞进去 —— 用户填了个 Windows 路径
+    /// （<c>E:\gif\a.gif</c>、尤其是以 <c>\</c> 结尾的目录）就会把收尾引号转义掉，
+    /// 生成出来的 C# 从那一行开始整串语法错（<c>CS1056 意外的字符"\"</c> + <c>CS1003 应输入","</c>）。
+    /// 模板里写 <c>{Key:str}</c> 就会先转义再填（反斜杠、引号、换行都安全）。</para>
+    /// </summary>
+    internal static string EscapeForCSharpString(string? v)
+    {
+        string s = v ?? "";
+        var sb = new StringBuilder(s.Length + 8);
+        foreach (char ch in s)
+        {
+            switch (ch)
+            {
+                case '\\': sb.Append("\\\\"); break;
+                case '"': sb.Append("\\\""); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\t': sb.Append("\\t"); break;
+                case '\0': sb.Append("\\0"); break;
+                default: sb.Append(ch); break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>把一段文本里的 <c>{Key}</c> / <c>{Key}</c> 都换掉；<c>{Key}</c> 走原样，<c>{Key:str}</c> 先按 C# 字符串转义。</summary>
+    private static string ReplaceFieldValue(string text, string key, string? value)
+    {
+        string k = (key ?? "").Trim();
+        if (k.Length == 0) return text;
+        text = text.Replace("{" + k + ":str}", EscapeForCSharpString(value), StringComparison.OrdinalIgnoreCase);
+        return text.Replace("{" + k + "}", value ?? "", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>渲染一段模板：行内子栏位（按行产出时）→ list 块 → 页面级标量 → 条件宏。</summary>
     private static string RenderOne(string text, PluginSpec p, PluginPageSpec page,
         PluginFieldSpec? rowList, Dictionary<string, string>? row, int rowIndex)
@@ -242,7 +289,7 @@ public static class PluginGen
             foreach (var sub in rowList.Fields.Where(x => x is not null && x.IsList && !string.IsNullOrWhiteSpace(x.Key)))
                 text = ExpandRowListBlock(text, sub, PluginRegistry.RowValueOf(rowList, row, sub));
             foreach (var sub in rowList.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
-                text = text.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(rowList, row, sub), StringComparison.OrdinalIgnoreCase);
+                text = ReplaceFieldValue(text, sub.Key, PluginRegistry.RowValueOf(rowList, row, sub));
         }
         // V0.2.380（缺口文档第 12 节「页面间共享数据」）：跨页取值 {页面id:栏位key}
         // 例：「遭遇页」里写 {enemy:name} 就能取到「敌人页」的 name —— 不必把同一个 ID 在两个页面各填一遍。
@@ -255,7 +302,7 @@ public static class PluginGen
             bool vis = PluginRegistry.FieldVisible(f, k =>
                 page.Fields.FirstOrDefault(x => x is not null && string.Equals((x.Key ?? "").Trim(), k, StringComparison.OrdinalIgnoreCase)) is { } ctl
                     ? PluginRegistry.PageValueOf(p, page, ctl) : null);
-            text = text.Replace("{" + f.Key.Trim() + "}", vis ? PluginRegistry.PageValueOf(p, page, f) : "", StringComparison.OrdinalIgnoreCase);
+            text = ReplaceFieldValue(text, f.Key, vis ? PluginRegistry.PageValueOf(p, page, f) : "");
         }
         return ExpandConditions(text, p, page, rowList, row);
     }
@@ -394,7 +441,7 @@ public static class PluginGen
             string k2 = s2.Key!.Trim();
             // V0.2.378：行内也可以 visibleWhen（条件看同一行的其它子栏位）
             bool vis = PluginRegistry.FieldVisible(s2, k => row.TryGetValue(k, out string? cv) ? cv : null);
-            one = one.Replace("{" + k2 + "}", vis && row.TryGetValue(k2, out string? v2) ? (v2 ?? "") : "", StringComparison.OrdinalIgnoreCase);
+            one = ReplaceFieldValue(one, k2, vis && row.TryGetValue(k2, out string? v2) ? (v2 ?? "") : "");
         }
         return one;
     }
@@ -423,7 +470,7 @@ public static class PluginGen
                 foreach (var sub in listField.Fields.Where(x => x is not null && x.IsList && !string.IsNullOrWhiteSpace(x.Key)))
                     one = ExpandRowListBlock(one, sub, PluginRegistry.RowValueOf(listField, rows[i], sub));
                 foreach (var sub in listField.Fields.Where(x => x is not null && !string.IsNullOrWhiteSpace(x.Key) && !x.IsList))
-                    one = one.Replace("{" + sub.Key.Trim() + "}", PluginRegistry.RowValueOf(listField, rows[i], sub), StringComparison.OrdinalIgnoreCase);
+                    one = ReplaceFieldValue(one, sub.Key, PluginRegistry.RowValueOf(listField, rows[i], sub));
                 sb.Append(one);
             }
             string replaced = sb.ToString();

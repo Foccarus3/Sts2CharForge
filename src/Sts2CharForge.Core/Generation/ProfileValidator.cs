@@ -481,6 +481,7 @@ public static class ProfileValidator
                     // 作用对象 = 「全体单位」（V0.2.132 第 7 档）：状态链也在生成端实现了
                     //（CustomPowerGen.EmitEffect / EmitDamage），但只对那几个种类 —— 其余一律报错拦住。
                     ValidateAllUnitsTarget(issues, $"{who}「{when}」", j + 1, EffectCatalog.FindKind(e.Kind), e, "Power");
+                    ValidatePluginTargetSide(issues, $"{who}「{when}」", j + 1, EffectCatalog.FindKind(e.Kind), e, "Power");
                     // 「目标卡 / 只对这张卡（指定）」存的都是**卡牌类名**，填了就必须认得出。
                     // 以前只查了卡牌 / 遗物 / 药水三条链（见 ValidateEffects），**自定义状态这条链漏了** ——
                     // 于是 `cs\Powers\<角色>Power<xx>.cs` 里会写出
@@ -2936,6 +2937,9 @@ public static class ProfileValidator
     {
         if (p is null || string.IsNullOrWhiteSpace(want)) return null;
         string name = want.Trim();
+        // V0.3.123：初始打击 / 防御在配置里仍叫 Strike / Defend，生成后才带角色前缀；
+        // 「只对这张卡」里存的是生成名（也可能老存档存了配置名）—— 两种都认。
+        if (CSharpCodeGen.StartingBasicTagOf(p, name) is not null) return null;
         var (known, rightCase) = RecognizeCardClass(p, name);
         if (known) return null;
         if (rightCase is not null)
@@ -3259,6 +3263,7 @@ public static class ProfileValidator
             // 作用对象 = 「全体单位」（V0.2.132 新增的第 7 档）：生成端真的实现了的种类有限 ——
             // 其余种类落进各条目标分支的 default 会**静默变成「对自己」**，所以这里直接报错拦住。
             ValidateAllUnitsTarget(issues, owner, index, kind, e, ctx);
+            ValidatePluginTargetSide(issues, owner, index, kind, e, ctx);
             // 数值 0 的效果（用户要求）：游戏里**不显示、也不执行**。
             // 为什么不做成「写个 0 摆着」：本体的伤害 / 格挡会被力量 / 敏捷加成
             //（0 点伤害 + 3 点力量 = 3 点伤害），所以 0 必须真的「不存在」。
@@ -4122,6 +4127,37 @@ public static class ProfileValidator
     /// 所以这里按 <see cref="EffectCatalog.SupportsAllUnits"/>（= 生成端真的写了分支的那几个种类）
     /// 直接报错拦住，并把支持名单写清楚（不静默）。</para>
     /// </summary>
+    /// <summary>V0.3.104：插件「作用对象」的合法性（未加载 / kinds 不含 / 延迟 / 非卡牌链的 {foe}）。</summary>
+    private static void ValidatePluginTargetSide(List<ValidationIssue> issues, string owner, int index,
+        EffectKindOption kind, EffectSpec e, string ctx)
+    {
+        string side = (e.TargetSide ?? "").Trim();
+        if (side.Length == 0) return;
+        Plugins.PluginUnitSpec? u = Plugins.PluginRegistry.UnitOf(side);
+        bool builtin = EffectCatalog.TargetSides.Contains(side, StringComparer.OrdinalIgnoreCase);
+        if (u is null)
+        {
+            if (!builtin)
+                issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」的作用对象「{side}」不是内置档位，"
+                    + "对应插件也没加载 —— 请重新启用插件，或把作用对象改回内置档位。"));
+            return;
+        }
+        if (!u.Kinds.Any(x => string.Equals(x, kind.Kind, StringComparison.OrdinalIgnoreCase)))
+        {
+            issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」用了插件对象「{side}」，"
+                + $"但这个对象没有声明支持「{kind.Display}」—— 它只支持：{string.Join(" / ", u.Kinds)}。"));
+            return;
+        }
+        if (e.NextTurn)
+            issues.Add(new("错误", $"{owner} 第 {index} 条「{kind.Display}」勾了「下回合生效」，"
+                + "不能同时使用插件作用对象（延迟状态的目标解析还没接）。"));
+        if (u.NeedsChosenTarget && ctx != "Card")
+            issues.Add(new("警告", $"{owner} 第 {index} 条「{kind.Display}」的插件对象要「指定目标」，"
+                + "但遗物 / 药水 / 自定义状态没有玩家选中的目标 —— {foe} 会取第一个可打的敌人，不是玩家选的那只。"));
+        if (ctx == "Potion")
+            issues.Add(new("提示", $"{owner} 第 {index} 条「{kind.Display}」在药水上：实际打谁仍由药水自己的「作用目标」决定，"
+                + "插件作用对象只影响卡面文案。"));
+    }
     private static void ValidateAllUnitsTarget(List<ValidationIssue> issues, string owner, int index,
         EffectKindOption kind, EffectSpec e, string ctx)
     {
@@ -4936,6 +4972,12 @@ public static class ProfileValidator
     /// </summary>
     private static void ValidateHighlightVars(List<ValidationIssue> issues, CardSpec c)
     {
+        // V0.3.115：{=表达式} / 裸 {A+2} 必须先能解析，否则生成出来只是 0。
+        foreach (string expr in CSharpCodeGen.CardDescFormulaExprs(c))
+        {
+            if (ForgeFormula.TryParse(expr, out _) is null)
+                issues.Add(new("错误", $"卡牌「{c.Name}」的描述占位符 `{{={expr}}}` 不是合法公式：请检查括号 / 运算符 / 参数名。"));
+        }
         // 这张牌**真的声明过**的动态变量（含重名别名 Cards2；口径见 CSharpCodeGen.DeclaredVarKeysOf）。
         // V0.3.35：锻造卡的效果在节点图里，生成端会用 ForgeGraphGen.CardValueEffects 合成一批
         // 描述变量（Damage / Block…），校验器也要把同一批算进来，否则 {Damage:diff()} 会被误报成

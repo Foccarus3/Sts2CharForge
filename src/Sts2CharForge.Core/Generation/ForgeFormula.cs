@@ -514,8 +514,29 @@ public static class ForgeFormula
             return "= " + v.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
         return "＝出牌时现算（含 X / 状态层数 / 手牌数这类运行时量）";
     }
-    public static bool TryEvalConst(Node? root, Func<string, decimal?> constOf, out decimal value, out string error)
+
+    /// <summary>
+    /// 「百科 / 图鉴」里公式卡显示的那个基准值：把公式里**所有标识符（自定义参数 / 变量 A、B / 运行时读数
+    /// Turn、HandCount、X…）一律当成 0** 折一遍。
+    ///
+    /// <para>为什么这么做（用户定下的规则）：百科是在**没有进行中的一局**时打开的，那时卡片的
+    /// <c>Owner</c> 是 null，公式根本没地方取值 —— 以前生成端就把基准值写成 <c>0m</c>，
+    /// 于是百科里**所有公式卡都显示 0**。现在改成「变量当 0 折出来的那个数」：
+    /// <c>2+A*2</c> → 2、<c>6*A</c> → 0、<c>A*0+5</c> → 5；没变量的纯数字公式照常算（<c>2+3*2</c> → 8）。</para>
+    ///
+    /// <para>折不出来（除以 0 / 对 0 取余 / 认不出的函数 / 语法错）→ 0（不抛异常、也不用随机值）。
+    /// 战斗内不受影响：<c>UpdateCardPreview</c> 会用真公式覆盖这个基准值。</para>
+    /// </summary>
+    public static decimal PreviewBaseOf(string? formula, CharacterProfile? p)
     {
+        string text = EffectSpec.FormulaText(formula);
+        if (text.Length == 0) return 0m;
+        Node? root = TryParse(text, out _);
+        if (root is null) return 0m;
+        return TryEvalConst(root, _ => 0m, out decimal v, out _) ? v : 0m;
+    }
+
+    public static bool TryEvalConst(Node? root, Func<string, decimal?> constOf, out decimal value, out string error)    {
         value = 0m;
         error = "";
         return EvalConst(root, constOf, 0, ref value, ref error);

@@ -1999,7 +1999,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
     /// <summary>把这条效果用到的状态写成 HoverTipFactory.FromPower&lt;X&gt;(N) 调用（没有就返回空）。</summary>
     internal static List<string> HoverTipsOf(IEnumerable<EffectSpec> effects, bool isCard = false,
-        CharacterProfile? owner = null)
+        CharacterProfile? owner = null, bool previewFormulaAmount = false)
     {
         var list = new List<string>();
         var all = effects as IList<EffectSpec> ?? effects.ToList();
@@ -2013,9 +2013,13 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     ? TempPowerClassName(e, owner)
                     : e.NextTurn ? DelayedPowerClassName(e, owner) : e.PowerId!.Trim();
                 // 「数值 = 层数 / X」时数量说不准，就不写数量（本体自己也有不写数量的写法）
-                string amount = (e.AmountIsXEffective || e.AmountIsStack || e.Amount <= 0)
-                    ? ""
-                    : ((int)e.Amount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                string amount = e.UsesAmountFormula && previewFormulaAmount && !e.NextTurn && e.Kind != "TempPower"
+                    ? $"((int)base.DynamicVars[{Lit.Str(type)}].PreviewValue)"
+                    : (e.AmountIsXEffective || e.AmountIsStack || e.Amount <= 0)
+                        ? ""
+                        : ((int)e.Amount).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                // 不要用 ToMutable：第三方 SetAmount 补丁可能对 Owner=null 的副本抛 NRE。
+                // 状态栏图标由 ForgePowerHoverPatch 单独处理（直接用场上实例）。
                 list.Add($"MegaCrit.Sts2.Core.HoverTips.HoverTipFactory.FromPower<{type}>({amount})");
             }
             // 条件里盯的状态：「拥有破绽至少 N 层」鼠标移上去也该有说明
@@ -2122,7 +2126,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         var tips = new List<string>();
         if (extraTips is not null) tips.AddRange(extraTips);
-        tips.AddRange(HoverTipsOf(effects, isCard, owner));
+        tips.AddRange(HoverTipsOf(effects, isCard, owner, previewFormulaAmount: isCard));
         // 用了「斩杀」条件 → 挂上本体那条「斩杀」悬停说明（本体 Feed / HandOfGreed / TheHunt 都是
         // `HoverTipFactory.Static(StaticHoverTip.Fatal)`），不然玩家只看到卡面上一句「斩杀时…」不知道是什么。
         if (effects.Any(x => x.Condition is { Kind: "Fatal" }))
@@ -2643,7 +2647,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///
     /// 没有 CombatRoom 的时候（战斗中打出的牌）保持原来的做法：当场抽 N 张让玩家选一张加进牌组。
     /// </summary>
-    private static void EmitCardReward(CodeWriter w, EffectSpec e, string owner, bool useX = false, string? roomVar = null)
+    private static void EmitCardReward(CodeWriter w, EffectSpec e, string owner, bool useX = false, string? roomVar = null,
+        string? pendingPowerClass = null)
     {
         string n = (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
 
@@ -2652,26 +2657,66 @@ public static class ExtraResourceEnergyCounterDiagPatch
 
         if (roomVar is not null)
         {
-            w.Line("// 卡牌奖励：挂进本场战斗的结算奖励里（本体「王国资产」「猎杀」就是这么加的），打赢后多一条「选一张卡」的奖励");
-            w.Line("// 注意：选项里不能带 CardCreationFlags（比如 ForNonCombatWithDefaultOdds 会带 NoUpgradeRoll）——");
-            w.Line("// 战斗结束存档时 CardReward.ToSerializable 会因此抛 NotImplementedException。ForRoom 不带 flag，是安全的。");
-            w.Line($"MegaCrit.Sts2.Core.Runs.CardCreationOptions __rewardOptions = {roomVar}.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Event");
-            w.Line("    // 事件房本体 ForRoom 会直接抛异常，这里手造一份同样不带 flag 的");
-            w.Line($"    ? new MegaCrit.Sts2.Core.Runs.CardCreationOptions(new CardPoolModel[] {{ {owner}.Character.CardPool }}, MegaCrit.Sts2.Core.Runs.CardCreationSource.Other, MegaCrit.Sts2.Core.Runs.CardRarityOddsType.RegularEncounter)");
-            w.Line($"    : MegaCrit.Sts2.Core.Runs.CardCreationOptions.ForRoom({owner}, {roomVar}.RoomType);");
-            w.Line($"{roomVar}.AddExtraReward({owner}, new MegaCrit.Sts2.Core.Rewards.CardReward(__rewardOptions, {n}, {owner}));");
-            w.Line($"Log.Info({Lit.Str("战斗奖励里已加入卡牌奖励（N 选一）：")} + {n});");
+            RoomRewardBody(roomVar);
             w.Close();
             return;
         }
 
-        w.Line("// 获得卡牌奖励：按本体的奖励卡生成规则抽牌（用你自己角色的卡池），让玩家选一张加进牌组");
-        w.Line($"var __rewardOptions = MegaCrit.Sts2.Core.Runs.CardCreationOptions.ForNonCombatWithDefaultOdds(new CardPoolModel[] {{ {owner}.Character.CardPool }});");
-        w.Line($"List<CardModel> __rewardCards = MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward({owner}, {n}, __rewardOptions).Select(r => r.Card).ToList();");
-        w.Line($"CardModel? __pickedReward = await CardSelectCmd.FromChooseACardScreen(choiceContext, __rewardCards, {owner}, canSkip: true);");
-        w.Line("CardModel __granted = __pickedReward ?? __rewardCards.FirstOrDefault();");
-        w.Line("if (__granted is not null) { await CardPileCmd.Add(__granted, PileType.Deck); Log.Info(" + Lit.Str("卡牌奖励已加入牌组：") + " + __granted.Id.Entry); }");
+        // V0.3.99：斩杀 → 获得卡牌奖励，先挂一个**悬赏状态**（状态栏里看得见「还欠你几张牌」），
+        // 战斗结束（AfterCombatEnd，房间结算之前）再挂进结算奖励 —— 和本体「猎杀」一样。
+        // V0.3.98 的做法是斩杀当场直接 AddExtraReward；用户要求「在状态里显示一个战斗结束后获得卡牌奖励的状态」。
+        if (e.Condition is { Kind: "Fatal" } && pendingPowerClass is { Length: > 0 })
+        {
+            w.Line("// 斩杀：挂上「悬赏」状态（层数 = 还欠几次卡牌奖励），战斗结束时自动挂进结算奖励（像本体「猎杀」）");
+            w.Line($"await PowerCmd.Apply<{pendingPowerClass}>(choiceContext, base.Owner.Creature, 1m, base.Owner.Creature, this);");
+            w.Close();
+            return;
+        }
+
+        // V0.3.98：「斩杀 → 获得卡牌奖励」要像本体「猎杀」（TheHunt）那样**挂进本场战斗的结算奖励**，
+        // 打完之后在奖励界面里选一张 —— 而不是**当场**弹选牌界面（用户实测：斩杀那一刻先跳奖励、
+        // 伤害还没结算完，顺序完全不对）。战斗中打出的卡没有 room 参数，这里现取当前战斗房间。
+        // （V0.3.99 起正常情况下会先走上面那条「悬赏状态」；这段是拿不到状态类名时的兜底。）
+        if (e.Condition is { Kind: "Fatal" })
+        {
+            w.Line("// 斩杀：像本体「猎杀」(TheHunt) 那样把这条卡牌奖励挂进**本场战斗的结算奖励**，打完后在奖励界面选一张");
+            w.Line("MegaCrit.Sts2.Core.Rooms.CombatRoom? __rewardRoom = MegaCrit.Sts2.Core.Runs.RunManager.Instance?.DebugOnlyGetState()?.CurrentRoom as MegaCrit.Sts2.Core.Rooms.CombatRoom;");
+            w.Open("if (__rewardRoom is not null)");
+            RoomRewardBody("__rewardRoom");
+            w.Close();
+            w.Open("else");
+            ImmediateRewardBody();
+            w.Close();
+            w.Close();
+            return;
+        }
+
+        ImmediateRewardBody();
         w.Close();
+
+        // ---- 两个分支都用到的两段实现（局部函数，省得抄两遍）----
+        void RoomRewardBody(string room)
+        {
+            w.Line("// 卡牌奖励：挂进本场战斗的结算奖励里（本体「王国资产」「猎杀」就是这么加的），打赢后多一条「选一张卡」的奖励");
+            w.Line("// 注意：选项里不能带 CardCreationFlags（比如 ForNonCombatWithDefaultOdds 会带 NoUpgradeRoll）——");
+            w.Line("// 战斗结束存档时 CardReward.ToSerializable 会因此抛 NotImplementedException。ForRoom 不带 flag，是安全的。");
+            w.Line($"MegaCrit.Sts2.Core.Runs.CardCreationOptions __rewardOptions = {room}.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Event");
+            w.Line("    // 事件房本体 ForRoom 会直接抛异常，这里手造一份同样不带 flag 的");
+            w.Line($"    ? new MegaCrit.Sts2.Core.Runs.CardCreationOptions(new CardPoolModel[] {{ {owner}.Character.CardPool }}, MegaCrit.Sts2.Core.Runs.CardCreationSource.Other, MegaCrit.Sts2.Core.Runs.CardRarityOddsType.RegularEncounter)");
+            w.Line($"    : MegaCrit.Sts2.Core.Runs.CardCreationOptions.ForRoom({owner}, {room}.RoomType);");
+            w.Line($"{room}.AddExtraReward({owner}, new MegaCrit.Sts2.Core.Rewards.CardReward(__rewardOptions, {n}, {owner}));");
+            w.Line($"Log.Info({Lit.Str("战斗奖励里已加入卡牌奖励（N 选一）：")} + {n});");
+        }
+
+        void ImmediateRewardBody()
+        {
+            w.Line("// 获得卡牌奖励：按本体的奖励卡生成规则抽牌（用你自己角色的卡池），让玩家选一张加进牌组");
+            w.Line($"var __rewardOptions = MegaCrit.Sts2.Core.Runs.CardCreationOptions.ForNonCombatWithDefaultOdds(new CardPoolModel[] {{ {owner}.Character.CardPool }});");
+            w.Line($"List<CardModel> __rewardCards = MegaCrit.Sts2.Core.Factories.CardFactory.CreateForReward({owner}, {n}, __rewardOptions).Select(r => r.Card).ToList();");
+            w.Line($"CardModel? __pickedReward = await CardSelectCmd.FromChooseACardScreen(choiceContext, __rewardCards, {owner}, canSkip: true);");
+            w.Line("CardModel __granted = __pickedReward ?? __rewardCards.FirstOrDefault();");
+            w.Line("if (__granted is not null) { await CardPileCmd.Add(__granted, PileType.Deck); Log.Info(" + Lit.Str("卡牌奖励已加入牌组：") + " + __granted.Id.Entry); }");
+        }
     }
 
     /// <summary>
@@ -3988,20 +4033,121 @@ public static class ExtraResourceEnergyCounterDiagPatch
     ///   —— 只换 <c>base.Owner</c> 换不到它们，于是「伤害填 XSpent」的卡会整个编不过（探针真编译抓出来的）。
     ///   最后那一句把**剩下的所有 `base.`** 也换成 <c>(card).</c>（那四个成员在 CardModel 上都是公开的）。
     /// </summary>
-    internal static string FormulaPreviewExpr(CharacterProfile p, EffectSpec e)
+    internal static string FormulaPreviewExpr(CharacterProfile p, EffectSpec e, CardSpec? card = null)
     {
         var baseResolver = ForgeFormula.ConditionResolver(p, "(target)");
-        // V0.3.95：卡面预览 lambda 的参数是 CardModel，读不到派生卡类上的 this.ForgeThisCard*。
-        // 公式里引用了「本张牌这一次打出…」的读数时，预览按 0 代入（打出时仍用真实值），
-        // 否则会生成 (card).ForgeThisCard… → CS1061，或者退回 0 的普通 DamageVar 让卡面显示假数字。
+        // V0.3.96：卡面预览 lambda 的参数是 CardModel，读不到派生卡类上的 this.ForgeThisCard*。
+        // 能确定的那两条（造成的伤害 / 获得的格挡）按这张牌自己的效果算成常量；
+        // 其余 ThisCard 读数（消耗 / 丢弃 / 变化 / 生成张数）要到打出时才知道，按 0 代入。
+        // 以前整条公式退回 DamageVar(Amount) → 逆乱乾坤显示 0、破解的骇入显示 0。
         Func<string, string?> resolver = id =>
-            CardReadingsAll.Any(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase))
-                ? "0m"
-                : baseResolver(id);
+        {
+            if (card is not null && string.Equals(id, ThisCardBlockId, StringComparison.OrdinalIgnoreCase))
+                return CardReadingPreview(card, "Block");
+            if (card is not null && string.Equals(id, ThisCardDamageId, StringComparison.OrdinalIgnoreCase))
+                return CardReadingPreview(card, "Damage");
+            if (CardReadingsAll.Any(r => string.Equals(r.Id, id, StringComparison.OrdinalIgnoreCase)))
+                return "0m";
+            return baseResolver(id);
+        };
         string expr = ForgeFormula.Emit(ForgeFormula.TryParse(e.AmountFormula, out _), resolver, out _) ?? "0m";
         return expr.Replace("base.Owner.Creature", "(card.Owner.Creature)", StringComparison.Ordinal)
                    .Replace("base.Owner", "(card.Owner)", StringComparison.Ordinal)
                    .Replace("base.", "(card).", StringComparison.Ordinal);   // XSpent / YSpent 那四个成员
+    }
+
+    /// <summary>
+    /// V0.3.115：卡牌自定义描述里的 `{=表达式}`（例：`{=Damage*2}`、`{=A}`、
+    /// `{=ThisCardDamage}`）→ 生成一个只用于显示的动态变量。
+    ///
+    /// <para>为什么不能直接写进描述：SmartFormat 不执行 C# 表达式，只认 `CanonicalVars` 里的变量名。
+    /// 每个 `{=...}` 单独生成 `ForgeCardDescN`，由 <c>ForgeCardDescVar</c> 在预览时求值。</para>
+    ///
+    /// <para>只扫自定义描述 / 升级后的自定义描述；同一个表达式在两段里出现只生成一个变量。
+    /// 顺序固定 = 先升级前、再升级后，重复按第一次出现的位置。</para>
+    /// </summary>
+    public static IReadOnlyList<string> CardDescFormulaExprs(CardSpec c)
+    {
+        var exprs = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string? text in new[] { c.CustomDescription, c.UpgradedCustomDescription })
+        {
+            if (string.IsNullOrWhiteSpace(text)) continue;
+            foreach (Match m in Regex.Matches(text, @"\{=\s*([^{}]+)\}|\{([^{}]+)\}"))
+            {
+                string expr = (m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value).Trim();
+                // 裸 `{A+2}` 也认（用户会自然这么写）；只认「带运算符、且是纯表达式字符」的，
+                // 避免把 {Damage} / {Energy:diff()} / {IfUpgraded:...} 这些本体占位符吃掉。
+                if (!m.Groups[1].Success && !LooksLikeBareDescFormula(expr)) continue;
+                if (expr.Length > 0 && seen.Add(expr)) exprs.Add(expr);
+            }
+        }
+        return exprs;
+    }
+
+    /// <summary>裸 `{A+2}` 是否当成表达式：带运算符、且只含表达式字符（不含冒号 / 方括号 / 中文）。</summary>
+    private static bool LooksLikeBareDescFormula(string expr)
+    {
+        if (expr.Length == 0) return false;
+        if (expr.Contains(":") || expr.Contains("[") || expr.Contains("]") || expr.Contains("|")) return false;
+        if (!Regex.IsMatch(expr, @"^[A-Za-z0-9_\s+\-*/%().]+$")) return false;
+        return Regex.IsMatch(expr, @"[+\-*/%]");
+    }
+
+    /// <summary>V0.3.115：把描述里的 `{=表达式}` 换成生成好的 `ForgeCardDescN` 变量名。</summary>
+    public static string RewriteCardDescFormulas(string? text, IReadOnlyList<string> exprs)
+    {
+        if (string.IsNullOrEmpty(text) || exprs.Count == 0) return text ?? "";
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        for (int i = 0; i < exprs.Count; i++) map[exprs[i]] = "ForgeCardDesc" + i.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        return Regex.Replace(text, @"\{=\s*([^{}]+)\}|\{([^{}]+)\}", m =>
+        {
+            string expr = (m.Groups[1].Success ? m.Groups[1].Value : m.Groups[2].Value).Trim();
+            return map.TryGetValue(expr, out string? name) ? "{" + name + "}" : m.Value;
+        });
+    }
+
+    /// <summary>V0.3.115：`{=表达式}` 在预览变量 lambda 里的 C# 表达式（复用数值公式那套解析 / 替换）。</summary>
+    internal static string FormulaPreviewExprFor(CharacterProfile p, string formula, CardSpec? card)
+        => FormulaPreviewExpr(p, new EffectSpec { Kind = "Damage", AmountFormula = formula }, card);
+    /// <summary>
+    /// V0.3.96：卡面预览里「本张牌这一次打出获得的格挡 / 造成的伤害」的估算值。
+    /// 按这张牌自己的 Block / Damage 效果求和（数值公式按常量算、乘上生效次数 / 重复次数）；
+    /// 只用于卡面显示，不影响实际打出。
+    /// </summary>
+    private static string CardReadingPreview(CardSpec c, string kind)
+    {
+        decimal BaseOf(EffectSpec e)
+        {
+            decimal v = e.Amount;
+            if (e.UsesAmountFormula)
+            {
+                var node = ForgeFormula.TryParse(e.AmountFormula, out _);
+                if (node is not null && ForgeFormula.TryEvalConst(node, _ => null, out decimal cv, out _))
+                    v = cv;
+            }
+            return v;
+        }
+        decimal TimesOf(EffectSpec e)
+        {
+            decimal t = e.Times;
+            if (!string.IsNullOrWhiteSpace(e.TimesFormula))
+            {
+                var tn = ForgeFormula.TryParse(e.TimesFormula, out _);
+                if (tn is not null && ForgeFormula.TryEvalConst(tn, _ => null, out decimal tv, out _))
+                    t = tv;
+            }
+            return Math.Max(1m, t) * Math.Max(1m, e.RepeatCount);
+        }
+        decimal baseSum = 0m, upSum = 0m;
+        foreach (var e in c.Effects.Where(x => x is not null && x.Kind == kind && x.Amount >= 0m))
+        {
+            decimal times = TimesOf(e);
+            baseSum += BaseOf(e) * times;
+            upSum += (BaseOf(e) + e.UpgradeAmount) * times;
+        }
+        if (upSum == baseSum) return Lit.Dec(baseSum);
+        return $"(card.IsUpgraded ? {Lit.Dec(upSum)} : {Lit.Dec(baseSum)})";
     }
 
     /// <summary>
@@ -4016,7 +4162,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // V0.3.35：锻造图的合成变量也走 ForgeFormulaDamageVar 这类
         || p.Cards.Any(c => c is not null && ForgeGraphGen.CardValueEffects(c).Any(HasFormulaVar))
         || p.Relics.Any(r => r is not null && r.Effects.Any(HasFormulaVar))
-        || p.Potions.Any(s => s is not null && s.Effects.Any(HasFormulaVar));
+        || p.Potions.Any(s => s is not null && s.Effects.Any(HasFormulaVar))
+        // V0.3.115：卡牌自定义描述里的 {=表达式} 也生成只用于显示的变量。
+        || p.Cards.Any(c => c is not null && CardDescFormulaExprs(c).Count > 0)
+        || p.Curses.Any(c => c is not null && CardDescFormulaExprs(c).Count > 0);
     // ⚠ 自定义状态**不列进来**：状态类不声明 CanonicalVars（它的数值直接内联进钩子里），
     // 所以那三条链里只有遗物 / 药水会用到这些变量类。
 
@@ -4220,6 +4369,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("private readonly decimal _upgrade;")
          .Line("public ForgeFormulaPowerVar(Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(0m) { _formula = formula; _upgrade = upgrade; }")
          .Line("public ForgeFormulaPowerVar(string name, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, 0m) { _formula = formula; _upgrade = upgrade; }")
+         // V0.3.97：百科基准值（百科里 Owner 为 null → 公式不跑，显示这个数；见 ForgeFormula.PreviewBaseOf）
+         .Line("public ForgeFormulaPowerVar(decimal previewBase, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(previewBase) { _formula = formula; _upgrade = upgrade; }")
+         .Line("public ForgeFormulaPowerVar(string name, decimal previewBase, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, previewBase) { _formula = formula; _upgrade = upgrade; }")
          .Open("public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)")
          .Open("if (card.Owner is not null)")
          // V0.2.168：升级增量按**升级层数**算（用户实测：「无限升级怎么升级后不加数值了」）——
@@ -4230,17 +4382,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
          .Line("base.UpdateCardPreview(card, previewMode, target, runGlobalHooks);")
          .Close()
          .Close();
+        // V0.3.115：卡牌自定义描述里的 {=表达式} —— 只用于显示，不参与实际结算。
+        w.Line()
+         .Line("/// <summary>")
+         .Line("/// 【自定义描述里的 {=表达式}】按卡牌当前状态算出显示值（只读、不结算）。")
+         .Line("/// 例：{=Damage*2} / {=A} / {=ThisCardDamage}。Owner 为空（百科）时保持 0。")
+         .Line("/// </summary>")
+         .Open("internal sealed class ForgeCardDescVar : DynamicVar")
+         .Line("private readonly Func<CardModel, Creature?, decimal> _formula;")
+         .Line("public ForgeCardDescVar(string name, Func<CardModel, Creature?, decimal> formula) : base(name, 0m) { _formula = formula; }")
+         .Open("public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)")
+         .Open("if (card.Owner is not null)")
+         .Line("PreviewValue = _formula(card, target);   // 只显示；不调 base，避免力量 / 敏捷被重复叠一次")
+         .Close()
+         .Close()
+         .Close();
         return w.ToString();
 
         // 每个变量子类长得一模一样（只是基类 / 构造参数不同），抽出来省得抄五遍抄错。
-        void AppendFormulaVar(CodeWriter w2, string cls, string baseCls, string ctorArgs, string nameCtorArgs, string? _)
+        void AppendFormulaVar(CodeWriter w2, string cls, string baseCls, string ctorArgs, string nameCtorArgs, string? props)
         {
+            string previewArgs = string.IsNullOrEmpty(props) ? "previewBase" : $"previewBase, {props}";
+            string previewArgsNamed = string.IsNullOrEmpty(props) ? "previewBase" : $"previewBase, {props}";
             w2.Line($"/// <summary>{baseCls} 的「公式现算」版本（卡面数字 = 公式值 + 升级增量 + 本体那些加成）。</summary>")
               .Open($"internal sealed class {cls} : {baseCls}")
               .Line("private readonly Func<CardModel, Creature?, decimal> _formula;")
               .Line("private readonly decimal _upgrade;")
               .Line($"public {cls}(Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base({ctorArgs}) {{ _formula = formula; _upgrade = upgrade; }}")
               .Line($"public {cls}(string name, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, {nameCtorArgs}) {{ _formula = formula; _upgrade = upgrade; }}")
+              // V0.3.97：带「百科基准值」的重载 —— 百科（主菜单图鉴）打开时卡片 Owner 是 null，
+              // UpdateCardPreview 里 `if (card.Owner is not null)` 不成立、公式不会跑，基准值是多少就显示多少。
+              // 以前基准值写死 0m → 公式卡在百科里全是 0；现在传「公式里所有变量当 0 折出来的数」
+              //（见 ForgeFormula.PreviewBaseOf：2+A*2 → 2、6*A → 0、纯数字 2+3*2 → 8）。
+              .Line($"public {cls}(decimal previewBase, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base({previewArgs}) {{ _formula = formula; _upgrade = upgrade; }}")
+              .Line($"public {cls}(string name, decimal previewBase, Func<CardModel, Creature?, decimal> formula, decimal upgrade = 0m) : base(name, {previewArgsNamed}) {{ _formula = formula; _upgrade = upgrade; }}")
               .Open("public override void UpdateCardPreview(CardModel card, CardPreviewMode previewMode, Creature? target, bool runGlobalHooks)")
               .Open("if (card.Owner is not null)")
               // 同上（见上面那条注释）：可无限升级的牌按层数线性叠加，普通牌照旧只算一次。
@@ -4287,6 +4462,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         "DamageReceived" or "DamageDealt" => "result.UnblockedDamage",
         "HpLost" => "-delta",
+        "HpHealed" => "delta",
         "BlockGained" => "amount",
         _ => null,
     };
@@ -4413,7 +4589,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// <summary>这条触发时机有没有「数值」可填（决定界面上那一栏显不显示）。</summary>
     public static bool TriggerSupportsAmount(string kind) =>
         CountExpr(kind, "Turn", "x", "y", "z").Length > 0
-        || kind is "DamageReceived" or "DamageDealt" or "HpLost" or "BlockGained" or "EnemyDeath"
+        || kind is "DamageReceived" or "DamageDealt" or "HpLost" or "HpHealed" or "BlockGained" or "EnemyDeath"
         // V0.2.152：「某个状态层数到达 N 层时」的 N。
         // 以前这一档**不在名单里 → 界面上根本没有 N 输入框**：于是 N 永远停在默认值 1，
         // 生成出来是「层数跨过 1 那一下触发」（用户想要的是到达他自己填的那一层），
@@ -4509,9 +4685,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 占位符绝不会再进生成代码（这种情况校验器本来就会报错拦住，这只是兜底）。
     /// </summary>
     internal static string VarDeclaration(EffectSpec e, Dictionary<EffectSpec, string>? map = null,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, CardSpec? card = null)
     {
-        string decl = VarDeclarationCore(e, map, p);
+        string decl = VarDeclarationCore(e, map, p, card);
         if (!decl.Contains(PetCmdPlaceholder, StringComparison.Ordinal)) return decl;
         string? petCls = p is null ? null : PetGen.Resolve(p, e.PetSummon)?.ClassName;
         if (petCls is not null) return PatchPetPlaceholder(decl, petCls);
@@ -4523,8 +4699,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
         return block ? $"new BlockVar({prefix}0m, ValueProp.Move)" : $"new DamageVar({prefix}0m, ValueProp.Move)";
     }
 
+    /// <summary>
+    /// V0.3.125：老存档里可能残留「Amount=0，AmountFormula=一个纯常数」的组合（例如
+    /// 抽牌填了 0、公式填了 2）。正常载入 / 生成会先 FoldPlainConstantAmountFormulas 折进 Amount，
+    /// 但手改 JSON / 旧工程回读仍可能绕过那一步 —— 声明动态变量时再兜一次，避免卡面显示 0。
+    /// </summary>
+    private static decimal VarAmount(EffectSpec e, CharacterProfile? p)
+    {
+        if (e.Amount == 0m && !string.IsNullOrWhiteSpace(e.AmountFormula)
+            && ForgeNumbers.TryFormulaConst(p, e.AmountFormula, out decimal folded))
+            return folded;
+        return e.Amount;
+    }
+
     private static string VarDeclarationCore(EffectSpec e, Dictionary<EffectSpec, string>? map = null,
-        CharacterProfile? p = null)
+        CharacterProfile? p = null, CardSpec? card = null)
     {
         string name = VarNameOf(e, map);
         bool named = name != VarNameOf(e);
@@ -4551,13 +4740,18 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 升级增量也交给变量（公式变量每次预览都会用公式覆盖 BaseValue，不把增量带上卡面就永远显示升级前的数字）。
             // 增量为 0 时**一个字符都不加**，让没升级增量的卡保持原来的生成文本。
             string fxUpgrade = e.UpgradeAmount != 0m ? ", " + Lit.Dec(e.UpgradeAmount) : "";
-            return $"new {fxOpen}({prefix}static (card, target) => {FormulaPreviewExpr(p, e)}{fxUpgrade})";
+            // V0.3.97：百科（主菜单图鉴，卡片 Owner 为 null）里公式不会跑 —— 基准值改成
+            // 「把公式里所有变量当 0 折出来的数」（2+A*2 → 2、6*A → 0、2+3*2 → 8）。
+            // 折出来正好是 0 时**不写这个参数**，让那种卡的生成文本和以前逐字一致。
+            decimal previewBase = ForgeFormula.PreviewBaseOf(e.AmountFormula, p);
+            string fxBase = previewBase != 0m ? Lit.Dec(previewBase) + ", " : "";
+            return $"new {fxOpen}({prefix}{fxBase}static (card, target) => {FormulaPreviewExpr(p, e, card)}{fxUpgrade})";
         }
         return e.Kind switch
         {
             "Damage" => $"new DamageVar({prefix}{Lit.Dec(e.Amount)}, ValueProp.Move)",
             "Block" => $"new BlockVar({prefix}{Lit.Dec(e.Amount)}, ValueProp.Move)",
-            "Draw" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
+            "Draw" => $"new CardsVar({prefix}{Lit.Int(VarAmount(e, p))})",
             // 升级卡牌 / 预见：数值也是「几张牌」，共用本体的 CardsVar（键 = Cards，同名时自动起别名）
             "UpgradeCard" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
             "Scry" => $"new CardsVar({prefix}{Lit.Int(e.Amount)})",
@@ -4910,6 +5104,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static void EmitPerCreature(CodeWriter w, EffectSpec e, bool useX,
         string selfExpr, string? cardTargetExpr, string enemiesExpr, Func<string, string> body)
     {
+        // V0.3.104：插件作用对象——四条链共用这一层，覆盖 Block/Heal/HpLoss/MaxHp/Clear*/...
+        string pluginFoe = cardTargetExpr ?? _hookFoe ?? $"({enemiesExpr}).FirstOrDefault()";
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, selfExpr, pluginFoe) is { } plan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {plan.Foes})");
+            w.Line(body("__pluginUnit"));
+            w.Close();
+            return;
+        }
         switch (e.TargetSide)
         {
             case "AllEnemies":
@@ -4934,7 +5137,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Line($"List<Creature> foes = {enemiesExpr}.ToList();")
                  // 循环变量用 __ 前缀：外面可能还套着「生效次数」的 for (int i…)，同名会 CS0136
                  .Open($"for (int __foeIdx = 0; __foeIdx < {RepeatExpr(e, useX)} && foes.Count > 0; __foeIdx++)")
-                 .Line("Creature foe = base.Owner.RunState.Rng.CombatTargets.NextItem(foes);");
+                 // ⚠ 这里**不能**写死 `base.Owner.RunState`：本方法四条链共用，只有卡牌 / 遗物 / 药水链里
+                 // base.Owner 是 Player（有 RunState）；**自定义状态**链里 base.Owner 是 Creature，
+                 // 没有 RunState → CS1061「"Creature"未包含"RunState"的定义」（用户实测：
+                 // `HusbandPower9.cs(38,51)`，触发点是状态里一条「牺牲伙伴 + 作用对象 = 随机敌人」）。
+                 // 改从 selfExpr（各链都传对了的「那个生物」）取 CombatState.RunState；取不到就退第一个目标。
+                 .Line($"Creature foe = {selfExpr}.CombatState?.RunState?.Rng.CombatTargets.NextItem(foes) ?? foes[0];");
                 if (!e.AllowDuplicates) w.Line("foes.Remove(foe);");
                 w.Line(body("foe"));
                 w.Close();
@@ -5040,7 +5248,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
     /// 现在两处共用这一份判据（<see cref="NeedsChosenTarget"/> ⇒ <c>TargetType</c> 一定是 AnyEnemy/AnyAlly）。</para>
     /// </summary>
     public static bool NeedsChosenTarget(EffectSpec e) =>
-        !IsInertZero(e) && e.TargetSide is "Enemy" or "Ally" && NeedsChosenUnit(e);
+        !IsInertZero(e) && (e.TargetSide is "Enemy" or "Ally"
+            || Plugins.PluginRegistry.UnitOf(e.TargetSide) is { NeedsChosenTarget: true, Kinds.Count: > 0 })
+        && NeedsChosenUnit(e);
 
     /// <summary>
     /// 这一种效果在「指定某个单位」那一档上要不要 <c>cardPlay.Target</c>（决定卡牌 TargetType +
@@ -5055,7 +5265,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // V0.3.43（插件「碎甲」报「选 Enemy 但卡没有准星」）：插件效果自己声明了 needsTarget 时，
         // 也要按 TargetSide 把卡推成 AnyEnemy / AnyAlly；否则编辑器只认识内置效果 → 推成 Self，
         // 卡根本没有敌人目标，插件模板里的 {foe} / {target} 永远是 null。
-        || PluginRegistry.EffectOf(e.Kind) is { NeedsTarget: true };
+        || PluginRegistry.EffectOf(e.Kind) is { NeedsTarget: true }
+        // V0.3.104：插件作用对象
+        || Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind);
 
     /// <summary>
     /// 这张牌要不要在本体给出目标之前先 <c>ThrowIfNull(cardPlay.Target)</c>。
@@ -5143,8 +5355,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         w.Line()
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
-        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, curseVars, p)},");
+        foreach (var e in c.Effects.Where(x => !HasNoDynamicVar(x))) w.Line($"    {VarDeclaration(e, curseVars, p, c)},");
         w.Line("];");
+        // V0.3.115：诅咒自定义描述里的 {=表达式} 也生成只显示用的变量。
+        var curseDescFormulas = CardDescFormulaExprs(c);
+        for (int di = 0; di < curseDescFormulas.Count; di++)
+        {
+            string descVar = "ForgeCardDesc" + di.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            w.Line("    new ForgeCardDescVar(\"" + descVar + "\", static (card, target) => (" + FormulaPreviewExprFor(p, curseDescFormulas[di], c) + ")),");
+        }
 
         // 悬停说明（描述里提到的状态 / 自定义关键词）
         w.Raw(HoverTipsOverride(CardHoverEffects(c), isPublic: false, isCard: true,
@@ -5416,7 +5635,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         bool needsPetCmd = varOrder.Any(x => !HasNoDynamicVar(x) && CanonicalVarNeedsPetCmd(x));
         bool anyPetCmdMissing = varOrder.Any(x => CanonicalVarNeedsPetCmd(x) && PetGen.Resolve(p, x.PetSummon) is null);
         foreach (var e in varOrder.Where(x => !HasNoDynamicVar(x)))
-            w.Line($"    {VarDeclaration(e, cardVars, p)},");
+            w.Line($"    {VarDeclaration(e, cardVars, p, c)},");
+        // V0.3.115：自定义描述里的 {=表达式} → 只显示用的变量（不参与结算）。
+        var descFormulas = CardDescFormulaExprs(c);
+        for (int di = 0; di < descFormulas.Count; di++)
+        {
+            string descVar = "ForgeCardDesc" + di.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            w.Line("    new ForgeCardDescVar(\"" + descVar + "\", static (card, target) => (" + FormulaPreviewExprFor(p, descFormulas[di], c) + ")),");
+        }
         // ⚠ V0.2.130：原来这里在 c.ShowPileCounts 为真时声明三个 ForgePileCountVar
         //   （{DrawPile} / {DiscardPile} / {ExhaustPile}）—— 用户要求整块去掉，连变量声明一起删。
         w.Line("];");
@@ -6030,7 +6256,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ⚠ V0.2.167：以前这里漏了 HpLost → 走下面的兜底变成 "AfterCardExhausted"，
         // 而 EmitCardTimingHooks 里 HpLost 明明开的是 AfterCurrentHpChanged（两处口径不一致，
         // 按方法名认时机的代码会认错）。这里补上，和那个 switch 对齐。
-        "HpLost" => "AfterCurrentHpChanged",
+        "HpLost" or "HpHealed" => "AfterCurrentHpChanged",
         _ => "AfterCardExhausted",
     };
 
@@ -6318,29 +6544,68 @@ public static class ExtraResourceEnergyCounterDiagPatch
                     break;
 
                 case "Transformed":
-                    // 本体 CardCmd.Transform 里：`original.AfterTransformedFrom(); replacement2.AfterTransformedTo();`
-                    // 需求里说的「被变化」= **这张牌被变成了别的牌**，所以选 AfterTransformedFrom
-                    //（AfterTransformedTo 是「这张牌是变化出来的那一张」，那更像「被生成」）。
+                    // 本体 CardCmd.Transform 里：`original.AfterThisWasTransformedInto(replacement)`（V0.3.116 更正：
+                    // 以前注释里写的 AfterTransformedFrom 是反查 dll 之前的猜测；实际是 Into → Internal 这一对）。
+                    // 需求里说的「被变化」= **这张牌被变成了别的牌**，所以选 Into 这一支。
                     // 这个钩子是**同步 void、也没有 choiceContext**，效果体只能放进一个 private async Task，
                     // 用本体自己分发事件时用的 HookPlayerChoiceContext 起一个上下文
                     //（Hook.cs 里就是 `new HookPlayerChoiceContext(model, netId, combatState, GameActionType.Combat)`）。
-                    w.Line()
-                     .Line("// 卡牌时机「被变化」（需求⑩）：本体 CardCmd.Transform 里 original.AfterTransformedFrom() —— 「这张牌被变成了别的牌」")
-                     .Line("//（不选 AfterTransformedTo：那是「这张牌是变化出来的那一张」，语义上属于「被生成」。）")
-                     .Open("protected override void AfterThisWasTransformedIntoInternal(CardModel card)")
-                     .Line("// 本体这个钩子是**同步 void、没有 choiceContext**，没法直接 await 命令，所以另起一个异步方法；")
-                     .Line("// 上下文用 HookPlayerChoiceContext（本体分发这类事件时用的就是它，见 Hook.cs）。")
-                     .Line("if (base.CombatState is null) return;")
-                     .Line("var choiceContext = new HookPlayerChoiceContext(this, MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL, base.CombatState, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);")
-                     .Line("_ = choiceContext.AssignTaskAndWaitForPauseOrCompletion(ForgeOnTransformedFrom(choiceContext));")
-                     .Close()
-                     .Line()
-                     .Open("private async Task ForgeOnTransformedFrom(PlayerChoiceContext choiceContext)")
-                     .Line("// CET:CardTiming=Transformed");
-                    if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
-                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
-                    EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
-                    w.Close();
+                    {
+                        string diag = p.DebugLog ? Naming.From(p).CardClassName(p, c) : ""; bool diagOn = p.DebugLog;
+                        w.Line()
+                         .Line("// 卡牌时机「被变化」（需求⑩）：本体 CardCmd.Transform 里 original.AfterThisWasTransformedInto(replacement) —— 「这张牌被变成了别的牌」")
+                         .Line("//（不选 AfterThisWasTransformedFrom：那是「这张牌是变化出来的那一张」，语义上属于「被生成」。）")
+                         .Open("protected override void AfterThisWasTransformedIntoInternal(CardModel card)")
+                         .Line("// 本体这个钩子是**同步 void、没有 choiceContext**，没法直接 await 命令，所以另起一个异步方法；")
+                         .Line("// 上下文用 HookPlayerChoiceContext（本体分发这类事件时用的就是它，见 Hook.cs）。");
+                        // V0.3.116（诊断版）：确认「钩子到底进没进」—— 只有开调试日志才会写这几行，
+                        // 默认档生成出来的文本一个字节都不变（红线）。
+                        if (diagOn)
+                            w.Line($"Godot.GD.Print(\"[被变化] {diag} 进入 AfterThisWasTransformedIntoInternal（base.CombatState=\" + (base.CombatState is null ? \"空\" : \"有\") + \"、变成的牌.CombatState=\" + (card is null ? \"无\" : (card.CombatState is null ? \"空\" : \"有\")) + \"、主人=\" + (base.Owner is null ? \"无\" : \"有\") + \"）\");   // {DebugLogGen.Marker}");
+                        // ⚠ V0.3.116（用户实测日志拿到的一手证据）：钩子**进了**，但 `base.CombatState` 是 **null** ——
+                        // 于是以前那句 `if (base.CombatState is null) return;` 当场把效果丢掉了。
+                        // 为什么是 null：本体 CardCmd.Transform 里先 `original.RemoveFromCurrentPile()`，
+                        // **之后**才调 original.AfterThisWasTransformedInto(...)；这时这张牌已经不在任何牌堆里，
+                        // CardModel.CombatState（由牌堆/战斗玩家推出来）就成了 null。
+                        // 所以战斗状态要按「变成的那张牌 → 主人的战斗状态」这个顺序兜底取，不能只看 this。
+                        w.Line("var __cs = card?.CombatState ?? base.Owner?.Creature?.CombatState ?? base.CombatState;")
+                         .Line("if (__cs is null) return;")
+                         .Line("var choiceContext = new HookPlayerChoiceContext(this, MegaCrit.Sts2.Core.Context.LocalContext.NetId ?? 0UL, __cs, MegaCrit.Sts2.Core.Entities.Multiplayer.GameActionType.Combat);");
+                        if (diagOn)
+                            w.Line($"Godot.GD.Print(\"[被变化] 结算任务已交给暂停机制（AssignTaskAndWaitForPauseOrCompletion）\");   // {DebugLogGen.Marker}");
+                        w.Line("_ = choiceContext.AssignTaskAndWaitForPauseOrCompletion(ForgeOnTransformedFrom(choiceContext, __cs));")
+                         .Close()
+                         .Line()
+                         .Open("private async Task ForgeOnTransformedFrom(PlayerChoiceContext choiceContext, ICombatState __cs)")
+                         .Line("// CET:CardTiming=Transformed");
+                        if (diagOn)
+                        {
+                            // 这三行是这次诊断的关键：只看到「进入钩子」而没有「开始结算」= 暂停机制没执行任务。
+                            // ⚠ CET 标记必须留在方法第一行（「从工程恢复存档」按它认时机），诊断行排在它后面。
+                            w.Line($"Godot.GD.Print(\"[被变化] {diag} 开始结算效果\");   // {DebugLogGen.Marker}")
+                             .Open("try");
+                        }
+                        if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
+                        if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                        // V0.3.122（用户实测「循环被变化时不回能」）：
+                        // 本体 CardCmd.Transform 先 RemoveFromCurrentPile，再调 AfterThisWasTransformedInto。
+                        // 此时 this 已经离开牌堆 → base.CombatState 是 null；上面的 __cs 才是活的战斗状态。
+                        // 效果体里所有 base.CombatState 都要换成 __cs，否则「造成伤害 → 全体敌人」
+                        // 会 TargetingAllOpponents(null) 抛异常，后面的生成卡牌 / 回能也一起丢掉。
+                        var transformedBody = new CodeWriter();
+                        EmitCardTimingBody(transformedBody, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
+                        foreach (string __line in transformedBody.ToString().Replace("base.CombatState", "__cs", StringComparison.Ordinal).Split('\n'))
+                            w.Line(__line.TrimEnd('\r'));
+                        if (diagOn)
+                        {
+                            w.Close()
+                             .Open("catch (System.Exception __ex)")
+                             .Line($"Godot.GD.Print(\"[被变化] {diag} 结算抛异常：\" + __ex);   // {DebugLogGen.Marker}")
+                             .Close()
+                             .Line($"Godot.GD.Print(\"[被变化] {diag} 结算结束\");   // {DebugLogGen.Marker}");
+                        }
+                        w.Close();
+                    }
                     break;
 
                 case "GivenKeyword":
@@ -6376,6 +6641,21 @@ public static class ExtraResourceEnergyCounterDiagPatch
                      .Line("if (base.Pile?.Type != PileType.Hand) return;   // 这张牌得在你手上（打出去了 / 在牌堆里就不触发）")
                      .Line("// CET:CardTiming=HpLost");
                     if (!bodyAwaits) w.Line("await Task.CompletedTask;   // 这几条效果都不 await（补一句，免得 async 方法里没有 await）");
+                    if (needsCardPlay) EmitCardPlayPlaceholder(w);
+                    EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
+                    w.Close();
+                    break;
+
+                case "HpHealed":
+                    // 同一个钩子，只把方向反过来：delta > 0 才是回血。
+                    w.Line()
+                     .Line("// 卡牌时机「回复生命时」：覆写 AbstractModel.AfterCurrentHpChanged（delta > 0 = 回血）")
+                     .Open("public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)")
+                     .Line("if (creature != base.Owner.Creature || delta <= 0m) return;   // 只认「自己回血」")
+                     .Line("if (base.CombatState is null) return;")
+                     .Line("if (base.Pile?.Type != PileType.Hand) return;   // 这张牌得在你手上")
+                     .Line("// CET:CardTiming=HpHealed");
+                    if (!bodyAwaits) w.Line("await Task.CompletedTask;");
                     if (needsCardPlay) EmitCardPlayPlaceholder(w);
                     EmitCardTimingBody(w, p, effects, cardVars, xPlus, timingCostIsX, timingStarCostIsX);
                     w.Close();
@@ -6679,7 +6959,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         bool HitsEnemy(EffectSpec e) => NeedsChosenUnit(e);
 
         // 「数值 0 且升级也不加数值」的效果整条不生成（用户要求），所以它也不该让这张牌变成「要选目标」的
-        bool effectChosenEnemy = c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "Enemy");
+        bool effectChosenEnemy = c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e)
+            && (e.TargetSide == "Enemy" || Plugins.PluginRegistry.UnitOf(e.TargetSide) is { NeedsChosenTarget: true, Kinds.Count: > 0 }));
         bool effectAllEnemies = c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "AllEnemies");
         bool effectRandomEnemy = c.Effects.Any(e => HitsEnemy(e) && !IsInertZero(e) && e.TargetSide == "RandomEnemies");
         // 队友（用户要求）：「指定队友」= 本体 TargetType.AnyAlly（会弹目标选择，选中的队友进 cardPlay.Target），
@@ -7347,6 +7628,40 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// V0.3.123：初始打击 / 防御现在会按份数拆成独立类（<c>&lt;角色&gt;Strike</c>、
+    /// <c>&lt;角色&gt;StrikeCopy2</c>…）。如果效果按「具体某一张初始卡」来找，只写
+    /// <c>ModelDb.Card&lt;X&gt;().Id</c> 会只命中第一份 —— 这里改成按本体的 <c>CardTag</c> +
+    /// <c>Basic</c> 稀有度匹配，所有份数一起命中。
+    /// 只认**原卡**（不算 Copy2…）：用户明确选中某一份副本时仍是精确匹配。
+    /// </summary>
+    internal static string? StartingBasicTagOf(CharacterProfile? p, string? cardClass)
+    {
+        if (p is null || string.IsNullOrWhiteSpace(cardClass)) return null;
+        string want = cardClass.Trim();
+        int dot = want.LastIndexOf('.');
+        if (dot >= 0) want = want[(dot + 1)..];
+        var n = Naming.From(p);
+        foreach (var c in p.Cards)
+        {
+            if (c is null || c.IsVanillaCard || !string.IsNullOrWhiteSpace(c.StarterCopyOf)) continue;
+            if (!Naming.IsBasicCardName(c.ClassName)) continue;
+            string emitted = n.CardClassName(p, c);
+            if (!string.Equals(want, emitted, StringComparison.Ordinal)
+                && !string.Equals(want, (c.ClassName ?? "").Trim(), StringComparison.OrdinalIgnoreCase)) continue;
+            return c.Tags.FirstOrDefault(x => x is "Strike" or "Defend")
+                ?? (string.Equals(c.ClassName, "Strike", StringComparison.OrdinalIgnoreCase) ? "Strike" : "Defend");
+        }
+        return null;
+    }
+
+    /// <summary>初始打击 / 防御的「所有份数」条件（不含 <c>c =&gt; </c>）。</summary>
+    internal static string? StartingBasicCond(CharacterProfile? p, string? cardClass, string var = "c")
+    {
+        string? tag = StartingBasicTagOf(p, cardClass);
+        return tag is null ? null : $"{var}.Rarity == CardRarity.Basic && {var}.Tags.Contains(CardTag.{tag})";
+    }
+
+    /// <summary>
     /// 「只对这张卡」的条件部分（不含 <c>c =&gt; </c>）。返回 null = 没指定。
     ///
     /// <para>V0.2.214（用户报的「丢弃 / 消耗卡牌无法选择目标卡或者组」）：「范围界定」只能按类型 / 组筛，
@@ -7358,7 +7673,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         if (!e.HasScopeCardId) return null;
         string id = (e.ScopeCardId ?? "").Trim();
-        return id.Length == 0 ? null : $"c.Id == ModelDb.Card<{CardTypeExpr(p, id)}>().Id";
+        if (id.Length == 0) return null;
+        // V0.3.123：初始打击 / 防御按 CardTag 命中所有份数（Copy2…）
+        if (StartingBasicCond(p, id, "c") is string starter) return starter;
+        return $"c.Id == ModelDb.Card<{CardTypeExpr(p, id)}>().Id";
     }
 
     /// <summary>
@@ -8507,7 +8825,12 @@ public static class ExtraResourceEnergyCounterDiagPatch
     {
         if (!string.Equals(e.Kind, "TransformCard", StringComparison.Ordinal)) return null;
         string card = (e.ScopeCardId ?? "").Trim();
-        if (card.Length > 0) return $"c => c.Id == ModelDb.Card<{CardTypeExpr(p, card)}>().Id";
+        if (card.Length > 0)
+        {
+            // V0.3.123：初始打击 / 防御按 CardTag 命中所有份数
+            if (StartingBasicCond(p, card, "c") is string starter) return $"c => {starter}";
+            return $"c => c.Id == ModelDb.Card<{CardTypeExpr(p, card)}>().Id";
+        }
         string pick = (e.TransformPick ?? "").Trim();
         if (pick.Length == 0) return null;
         string? cond = ScopeCondForFilter(pick, p);
@@ -9691,6 +10014,24 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 Self: "base.Owner.Creature", Player: "base.Owner", Foe: "cardPlay.Target",
                 Choice: "choiceContext", CardSelf: "this", AmountOverride: PluginAmountExpr(e, amt))))
             return;
+        // V0.3.104：插件档位回读标记（必须在效果前一行；ProjectRecovery 按它认领下一条效果）
+        if (Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind))
+            w.Line($"// CET:TargetSide={e.TargetSide}");
+        // V0.3.104：插件的「作用对象」—— ApplyPower / TempPower 是内联 switch，先按插件档位逐个目标处理。
+        if (e.Kind is "ApplyPower" or "TempPower" && !e.NextTurn
+            && Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner.Creature", "cardPlay.Target") is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})");
+            if (e.Kind == "ApplyPower")
+            {
+                w.Line(ApplyPowerInstr(e, useX, e.PowerId, "__pluginUnit", amt, "base.Owner.Creature", "this", "choiceContext"));
+                EmitSlowPercentFix(w, e, "__pluginUnit");
+            }
+            else
+                w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, __pluginUnit, {amt}, base.Owner.Creature, this);");
+            w.Close();
+            return;
+        }
         switch (e.Kind)
         {
             case "EndTurn":
@@ -9850,7 +10191,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 break;
 
                 case "CardReward":
-                    EmitCardReward(w, e, "base.Owner", useX);
+                    // V0.3.99：卡牌链把「悬赏状态」类名传进去 —— 斩杀条件那条会先挂状态、战斗结束再发奖励
+                    EmitCardReward(w, e, "base.Owner", useX, pendingPowerClass: Naming.From(p).PendingCardRewardPowerClass);
                     break;
 
             case "Damage":
@@ -10291,6 +10633,17 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「生成调试日志」（V0.2.142，默认关）：打出前把「打的是谁、打多少」写进游戏日志。
         // targetSide 与下面各分支的 .Targeting(…) 一一对应（见 AttackTargetExpr）。
         DebugLogGen.Target(w, e, AttackTargetExpr(e), amt, groupZh: MultiTargetGroupZh(e) ?? "");
+        // V0.3.104：插件作用对象（卡牌链）
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner.Creature", "cardPlay.Target") is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})");
+            w.Line($"{pre}await DamageCmd.Attack({amt})")
+             .Indent().Line(".FromCard(this, cardPlay)").Line(".Targeting(__pluginUnit)")
+             .Line(RepeatExpr(e, useX) == "1" ? "" : $".WithHitCount({RepeatExpr(e, useX)})")
+             .Line(".WithHitFx(\"vfx/vfx_attack_slash\")").Line(".Execute(choiceContext);").Dedent().Line();
+            w.Close();
+            return;
+        }
         switch (e.TargetSide)
         {
             case "Self":
@@ -11951,6 +12304,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             // 「目标卡」下拉里存的就是**生成出来的类名**（自己的卡是 CardClassName 算出来的名字，
             // 初始打击 / 防御带角色前缀；本体卡则是本体类名），所以这里直接用，不要再加一次前缀。
             string? card = string.IsNullOrWhiteSpace(e.SpawnCardId) ? null : e.SpawnCardId!.Trim();
+            string? starterTag = StartingBasicTagOf(p, card);
             bool block = e.BoostStat == "Block";
             string what = block ? "格挡" : "伤害";
             string cardZh = card ?? "（未选目标卡）";
@@ -11968,7 +12322,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
             if (block)
             {
                 w.Open("public override decimal ModifyBlockAdditive(Creature target, decimal block, ValueProp props, CardModel? cardSource, CardPlay? cardPlay)");
-                if (card is not null) w.Line($"if (cardSource is not {card}) return 0m;        // 只管这一张卡");
+                if (starterTag is not null)
+                    w.Line($"if (cardSource is null || cardSource.Rarity != CardRarity.Basic || !cardSource.Tags.Contains(CardTag.{starterTag})) return 0m;   // 初始防御的所有份数");
+                else if (card is not null) w.Line($"if (cardSource is not {card}) return 0m;        // 只管这一张卡");
                 w.Line("if (base.Owner != target) return 0m;            // 只加在主人自己身上")
                  .Line("if (!props.IsPoweredCardOrMonsterMoveBlock()) return 0m;")
                  .Line("return base.Amount;                            // 层数 = 加多少格挡")
@@ -11979,7 +12335,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 w.Open("public override decimal ModifyDamageAdditive(Creature? target, decimal amount, ValueProp props, Creature? dealer, CardModel? cardSource, CardPlay? cardPlay)");
                 w.Line("if (base.Owner != dealer) return 0m;           // 只强化自己打出的牌")
                  .Line("if (!props.IsPoweredAttack()) return 0m;       // 只加强「攻击伤害」（本体「精准」的做法）");
-                if (card is not null) w.Line($"if (cardSource is not {card}) return 0m;        // 只管这一张卡");
+                if (starterTag is not null)
+                    w.Line($"if (cardSource is null || cardSource.Rarity != CardRarity.Basic || !cardSource.Tags.Contains(CardTag.{starterTag})) return 0m;   // 初始打击的所有份数");
+                else if (card is not null) w.Line($"if (cardSource is not {card}) return 0m;        // 只管这一张卡");
                 w.Line("return base.Amount;                            // 层数 = 加多少伤害")
                  .Close();
             }
@@ -12293,15 +12651,19 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // （本体 HasUponPickupEffect 的效果之一就是这只遗物不能在商店里被换掉 —— 语义上正是「拿了就生效」）
         if (trigger.Id == "Obtained")
             w.Line("public override bool HasUponPickupEffect => true;");
-        w.Line()
-         .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
-         .Line("[");
         // V0.2.336（用户报「花掉能量后」的计数从战斗开始算）：遗物这条链也记一份基准 ——
         // 第一次看到消耗时把「已花掉多少」记下来，之后只数基准之后的部分。
+        // ⚠ V0.3.100：这两个**字段声明**必须写在类体里，不能落到下面的 `CanonicalVars` 数组初始化器里
+        //（以前写在 `[` 之后 → 生成出来的 `cs/Relics/XxxRelic.cs` 是
+        //  `[ private int __spentBaseTurn = -1; …` → CS1519/CS1031/CS8124/CS1026 一整串；
+        //  用户实测：`LuoRelic4.cs(16,33)`「事务所多功能电宝」= 每累计花掉 N 点能量 + 带动态变量的效果）。
         if (PerPointTrigger(trigger.Id))
             w.Line("private int __spentBaseTurn = -1;   // 「每累计花掉 N 点」的基准（-1 = 还没记过）")
              .Line("private int __spentBaseCombat = -1;")
              .Line();
+        w.Line()
+         .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
+         .Line("[");
         // 第 10 批：动态变量要覆盖**所有触发时机**的效果（只看 r.Effects = 第 1 条时机会漏掉后面的）
         var relicAllEffects = RelicEffects(r).ToList();
         var relicVars = VarNamesOf(relicAllEffects);
@@ -12602,6 +12964,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 // 锻造链的 base.Owner 是 Player → 必须写 base.Owner.Creature。
                 lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
                 break;
+            case "HpHealed":
+                lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己回血");
+                lines.Add("if (delta <= 0m) return;   // delta 为负 / 0 不是回复");
+                break;
             case "BlockGained":
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
                 break;
@@ -12846,6 +13212,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 //「失去生命时回复生命」会在自己死后把血拉回来（多人模式下队友还活着 = 复活）。
                 // ⚠ 遗物链的 base.Owner 是 Player → 必须写 base.Owner.Creature。
                 lines.Add("if (base.Owner.Creature.IsDead) return;   // 自己已经死了：致死那一下不再跑（否则「回复生命」会把人拉回来）");
+                break;
+            case "HpHealed":
+                lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己回血");
+                lines.Add("if (delta <= 0m) return;   // delta 为负 / 0 不是回复");
                 break;
             case "BlockGained":
                 lines.Add("if (creature != base.Owner.Creature) return;   // 只认自己拿到格挡");
@@ -13632,7 +14002,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         "CardExhausted" => "public override async Task AfterCardExhausted(PlayerChoiceContext choiceContext, CardModel card, bool causedByEthereal)",
         "CardDrawn" => "public override async Task AfterCardDrawn(PlayerChoiceContext choiceContext, CardModel card, bool fromHandDraw)",
         "CardDiscarded" => "public override async Task AfterCardDiscarded(PlayerChoiceContext choiceContext, CardModel card)",
-        "HpLost" => "public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)",
+        "HpLost" or "HpHealed" => "public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)",
         "BlockGained" => "public override async Task AfterBlockGained(Creature creature, decimal amount, ValueProp props, CardModel? cardSource)",
         "EnemyDeath" => "public override async Task AfterDeath(PlayerChoiceContext choiceContext, Creature creature, CardModel? source, bool wasRemovalPrevented, float deathAnimLength)",
         "EnemyTurnStart" => "public override async Task AfterSideTurnStart(CombatSide side, IReadOnlyList<Creature> participants, ICombatState combatState)",
@@ -13681,7 +14051,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     public static bool BootstrapInCombat(string triggerId) =>
         triggerId is "EnergySpent" or "StarsSpent" or "CardGenerated"
         // 合并触发时机后补上的这批（本体同样没给 choiceContext）
-        or "HpLost" or "BlockGained" or "EnemyTurnStart" or "EnemyBlockGained"
+        or "HpLost" or "HpHealed" or "BlockGained" or "EnemyTurnStart" or "EnemyBlockGained"
         // V0.2.157：「打出一张牌时」= BeforeCardPlayed(CardPlay)，本体签名里没有 choiceContext
         or "CardPlayed"
         // 「某个状态被移除时」是工具补丁调过来的，也没有 choiceContext（战斗里 → HookPlayerChoiceContext）
@@ -13820,6 +14190,23 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 Choice: hasContext ? "choiceContext" : "null!", AmountOverride: PluginAmountExpr(e, amt),
                 CardSelfIsCard: false)))   // 遗物的 this 不是卡牌：{transformSelf} 只放新牌、不写 this.Pile
             return;
+        if (Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind))
+            w.Line($"// CET:TargetSide={e.TargetSide}");
+        // V0.3.104：插件作用对象（遗物链的 Damage / ApplyPower / TempPower）
+        if (e.Kind is "Damage" or "ApplyPower" or "TempPower" && hasContext && !e.NextTurn
+            && Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner.Creature",
+                "base.Owner.Creature.CombatState.HittableEnemies.FirstOrDefault()") is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})");
+            if (e.Kind == "Damage")
+                w.Line($"await CreatureCmd.Damage(choiceContext, __pluginUnit, {amt}, ValueProp.Unpowered, null, null);");
+            else if (e.Kind == "ApplyPower")
+                w.Line(ApplyPowerInstr(e, useX: false, e.PowerId, "__pluginUnit", amt, "base.Owner.Creature", cardSourceExpr: "null"));
+            else
+                w.Line($"await PowerCmd.Apply<{TempPowerClassName(e, p)}>(choiceContext, __pluginUnit, {amt}, base.Owner.Creature, null);");
+            w.Close();
+            return;
+        }
         switch (e.Kind)
         {
             case "EndTurn":
@@ -14464,6 +14851,15 @@ public static class ExtraResourceEnergyCounterDiagPatch
         string? cardTargetExpr, string enemiesExpr, string playerExpr, string selfExpr)
     {
         string n = RepeatExpr(e, useX);
+        // V0.3.104：插件作用对象
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, selfExpr,
+                cardTargetExpr ?? $"({enemiesExpr}).FirstOrDefault()") is { } plan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {plan.Foes})")
+             .Line("await CreatureCmd.Stun(__pluginUnit);")
+             .Close();
+            return;
+        }
         switch (e.TargetSide)
         {
             case "AllEnemies":
@@ -15297,6 +15693,56 @@ public static class ExtraResourceEnergyCounterDiagPatch
     }
 
     /// <summary>
+    /// 「斩杀 → 获得卡牌奖励」用的**悬赏状态**（V0.3.99，用户要求：像本体「猎杀」那样在状态栏显示
+    /// 「战斗结束后获得卡牌奖励」）。层数 = 还没发的奖励次数；战斗结束（<c>AfterCombatEnd</c>，
+    /// 房间结算之前）把这个次数逐条挂进本场战斗的结算奖励，然后自己消失。
+    ///
+    /// <para>为什么做成状态而不是直接 <c>AddExtraReward</c>：用户要的是「状态栏里能看见还欠几张牌」；
+    /// 顺带把发放时机挪到战斗结束，斩杀那一刻就不会先跳奖励界面。</para>
+    /// </summary>
+    public static bool UsesPendingCardReward(CharacterProfile p) =>
+        AllEffects(p).Any(e => e is { Kind: "CardReward" } && e.Condition is { Kind: "Fatal" });
+
+    /// <summary>「悬赏状态」的源文件（见 <see cref="UsesPendingCardReward"/>）。</summary>
+    public static string PendingCardRewardPowerSource(CharacterProfile p)
+    {
+        var n = Naming.From(p);
+        var w = new CodeWriter();
+        w.Line("// <auto-generated> 「战斗结束后获得卡牌奖励」的悬赏状态（像本体「猎杀」） </auto-generated>")
+         .Line($"namespace {n.Namespace};")
+         .Line()
+         .Line("/// <summary>层数 = 还欠着的「选一张卡」次数；战斗结束（房间结算之前）一次性挂进结算奖励，然后消失。</summary>")
+         .Open($"public sealed class {n.PendingCardRewardPowerClass} : PowerModel")
+         .Line("public override PowerType Type => PowerType.Buff;")
+         .Line()
+         .Line("public override PowerStackType StackType => PowerStackType.Counter;")
+         .Line()
+         .Line("public override bool ShouldPlayVfx => false;")
+         .Line()
+         .Line("public override async Task AfterCombatEnd(MegaCrit.Sts2.Core.Rooms.CombatRoom room)")
+         .Open("")
+         .Line("int __n = (int)System.Math.Max(0m, base.Amount);")
+         .Line("Player? __player = base.Owner.Player;")
+         .Line("if (__n > 0 && __player is not null)")
+         .Open("")
+         .Line("for (int __i = 0; __i < __n; __i++)")
+         .Open("")
+         .Line("// 和本体「猎杀」/「王国资产」同一句：挂进本场战斗的结算奖励（reward 界面多一条「选一张卡」）")
+         .Line("MegaCrit.Sts2.Core.Runs.CardCreationOptions __options = room.RoomType == MegaCrit.Sts2.Core.Rooms.RoomType.Event")
+         .Line("    ? new MegaCrit.Sts2.Core.Runs.CardCreationOptions(new CardPoolModel[] { __player.Character.CardPool }, MegaCrit.Sts2.Core.Runs.CardCreationSource.Other, MegaCrit.Sts2.Core.Runs.CardRarityOddsType.RegularEncounter)")
+         .Line("    : MegaCrit.Sts2.Core.Runs.CardCreationOptions.ForRoom(__player, room.RoomType);")
+         .Line("room.AddExtraReward(__player, new MegaCrit.Sts2.Core.Rewards.CardReward(__options, 1, __player));")
+         .Close()
+         .Line("Log.Info(\"战斗结束后发放待领取的卡牌奖励：\" + __n + \" 次\");")
+         .Close()
+         .Line("await PowerCmd.Remove(this);")
+         .Close()
+         .Close();
+        return w.ToString();
+    }
+
+
+    /// <summary>
     /// 「生成 / 变化出来的卡：仅在本回合升级」用的 Power。
     ///
     /// 为什么必须自己写：本体**没有**「临时升级」这种东西 ——
@@ -15463,6 +15909,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line("// CET:TargetSide=AllAllies CET:AllyNoPets=1" + (e.AllAlliesIncludeSelf ? " CET:AllySelf=1" : ""));
         else if (string.Equals(e.TargetSide, "AllAllies", StringComparison.Ordinal) && e.AllAlliesIncludeSelf)
             w.Line("// CET:TargetSide=AllAllies CET:AllySelf=1");
+        if (Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind))
+            w.Line($"// CET:TargetSide={e.TargetSide}");
         switch (e.Kind)
         {
             case "EndTurn":

@@ -973,7 +973,7 @@
                             <TextBox x:Name="CardCustomDesc" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                      VerticalScrollBarVisibility="Auto" IsEnabled="{Binding ValueEditable}"
                                      Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"
-                                     ToolTip="可以写风味文字，也可以照常写本体占位符：{Damage:diff()} 会显示成升级后的数字，[gold]…[/gold] 是金色富文本。"/>
+                                     ToolTip="可以写风味文字，也可以照常写本体占位符：{Damage:diff()} 会显示成升级后的数字，[gold]…[/gold] 是金色富文本。&#10;也可以写 {=表达式}（例：{=ThisCardDamage} / {=A*2} / {=HandCount+1}）—— 生成一个只用于显示的变量，按当前卡牌状态现算；目标相关 / 本次打出累计只能近似。"/>
                             <StackPanel Orientation="Horizontal" Margin="6,2,0,0">
                                 <Button Content="填入参数…" Padding="8,4" IsEnabled="{Binding ValueEditable}"
                                         Click="OnInsertParam" Tag="{Binding ElementName=CardCustomDesc}"
@@ -1935,7 +1935,7 @@
                                          DisplayMemberPath="DisplayPlain"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          HorizontalContentAlignment="Stretch"
-                                         ToolTip="这只遗物的效果（触发时机满足后跑的就是这一份）。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。">
+                                         ToolTip="这只遗物的效果（触发时机满足后跑的就是这一份）。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。" SelectionChanged="OnPlainEffectSelectionChanged">
                                     <ListBox.Resources>
                                         <!-- DisplayMemberPath 生成的那个 TextBlock 没有显式 Style，所以这条隐式样式管得到它
                                              （长摘要就会在列表宽度里自动换行，而不是撑出一条横向滚动条）。 -->
@@ -2102,7 +2102,7 @@
                                          ItemsSource="{Binding Effects}" DisplayMemberPath="DisplayPlain"
                                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                          HorizontalContentAlignment="Stretch"
-                                         ToolTip="这瓶药水的效果。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。">
+                                         ToolTip="这瓶药水的效果。点一条 → 下面那块编辑区里改它（含这一条自己的条件）。" SelectionChanged="OnPlainEffectSelectionChanged">
                                     <ListBox.Resources>
                                         <!-- DisplayMemberPath 生成的那个 TextBlock 没有显式 Style，所以这条隐式样式管得到它
                                              （长摘要就会在列表宽度里自动换行，而不是撑出一条横向滚动条）。 -->
@@ -2485,6 +2485,7 @@
                                 <WrapPanel Margin="6,0,0,0">
                                     <CheckBox Content="消耗（打出后移除）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Exhausts}"/>
                                     <CheckBox Content="虚无（回合末未打出则消耗）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Ethereal}"/>
+                                    <CheckBox Content="不能被打出" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Unplayable}"/>
                                     <CheckBox Content="固有（开局必在手牌）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Innate}"/>
                                     <CheckBox Content="保留（回合末不弃）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Retain}"/>
                                     <CheckBox Content="奇巧（被弃掉则免费打出）" Style="{StaticResource Check}" Margin="0,2,14,2" IsChecked="{Binding Sly}"/>
@@ -2541,9 +2542,18 @@
                                      Text="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}}"
                                      Visibility="{Binding CardPortraitResolutionNote, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource NotEmptyToVisibility}}"/>
                                 <TextBlock Margin="6,10,0,0" Text="自定义描述（留空 = 只用自动生成的那段）" FontWeight="Bold" TextWrapping="Wrap"/>
-                                <TextBox Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
+                                <TextBox x:Name="AncientCustomDescBox" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="70" AcceptsReturn="True" TextWrapping="Wrap"
                                          VerticalScrollBarVisibility="Auto"
                                          Text="{Binding CustomDescription, UpdateSourceTrigger=PropertyChanged}"/>
+                                <TextBlock Margin="6,10,0,0" Text="升级后的自定义描述（留空 = 和上面那段一样）" FontWeight="Bold" TextWrapping="Wrap"/>
+                                <TextBox x:Name="AncientUpgradedCustomDescBox" Style="{StaticResource Field}" Margin="6,2,0,0" MinHeight="50" AcceptsReturn="True" TextWrapping="Wrap"
+                                         VerticalScrollBarVisibility="Auto"
+                                         Text="{Binding UpgradedCustomDescription, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="先古卡升级后的卡面文字。留空 = 和上面那段一样；填了就生成 {IfUpgraded:show:升级后|没升级}。"/>
+                                <WrapPanel Margin="6,2,0,0">
+                                    <Button Content="自动填入" Padding="8,4" Margin="0,0,6,0" Click="OnAutoFillCardDesc" Tag="{Binding ElementName=AncientCustomDescBox}"/>
+                                    <Button Content="自动填入（升级后）" Padding="8,4" Click="OnAutoFillCardUpgradedDesc" Tag="{Binding ElementName=AncientUpgradedCustomDescBox}"/>
+                                </WrapPanel>
                                 <CheckBox Margin="6,2,0,0" Style="{StaticResource Check}"
                                           Content="替换掉自动生成的描述（不勾 = 追加在后面）"
                                           IsChecked="{Binding CustomDescriptionReplaces}"/>
@@ -3219,7 +3229,7 @@
 
                                             <TextBlock Margin="0,10,0,4" Text="触发时做什么" FontWeight="Bold"/>
                                             <ListBox x:Name="CustomEffectList" Height="110" SelectionMode="Extended" ItemsSource="{Binding Effects}"
-                                                     DisplayMemberPath="Display"/>
+                                                     DisplayMemberPath="Display" SelectionChanged="OnPlainEffectSelectionChanged"/>
                                             <WrapPanel Margin="0,6,0,0">
                                                 <Button Content="添加效果" Padding="8,4" Margin="0,0,6,0" Click="OnAddEffect"
                                                         Tag="{Binding ElementName=CustomEffectList}"/>

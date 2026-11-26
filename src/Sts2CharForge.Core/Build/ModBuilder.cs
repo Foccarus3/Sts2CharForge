@@ -51,17 +51,34 @@ public static class ModBuilder
         }
 
         // Godot 导出时自己会调 dotnet 编译 C#，所以也要让它能找到同一个 dotnet
-        var (_, out2) = Run($"\"{godotExe}\" --headless --path \"{projectRoot}\" --import", projectRoot, log, dotnetRoot);
-        steps.Add(new BuildStepResult("Godot 导入资源", true, Tail(out2, 40)));
+        //
+        // ⚠ V0.3.112（用户实测：导出 PCK 失败 + Godot 报 `Invalid project path specified:
+        //   "…\鑷畾涔夎鑹插瓨妗…"`）：这两条命令以前把**绝对路径**塞进命令行，而命令是写进
+        //   `.cmd` 批处理、由 cmd.exe 执行的 —— cmd 按系统 ANSI 码页（中文 Windows = GBK）解析
+        //   UTF-8 批处理，路径里的「自定义角色存档」就变成乱码交给 Godot，导出必然失败。
+        //   而工具的**默认存档目录就叫「自定义角色存档」**，用户没法回避 ⇒ 谁都可能踩。
+        // 现在改成：工作目录设成工程根（走 CreateProcessW，UTF-16，不会乱码），命令行里
+        //   `--path "."` + pck 用相对文件名 ⇒ **命令行里一个中文字符都没有**。
+        var (_, out2) = Run(GodotImportArgs(godotExe), projectRoot, log, dotnetRoot);
+        bool importOk = ImportLooksOk(out2);
+        steps.Add(new BuildStepResult("Godot 导入资源", importOk, Tail(out2, 40)));
+        if (!importOk)
+        {
+            // 以前这里只看退出码：Godot 遇到无效工程路径也会返回 0，于是「导入成功」是假 OK，
+            // 真正的原因要等到导出那步才露出来（而且看起来像导出坏了）。现在当场说清楚。
+            steps.Add(new BuildStepResult("导出 PCK", false,
+                "Godot 导入资源这一步就失败了（多半是工程路径 / Godot 版本不对）。原始输出见上一步。"));
+            return new BuildResult(false, steps, null);
+        }
 
         string pck = Path.Combine(buildDir, modId + ".pck");
+        string pckArg = GodotRelativePckArg(projectRoot, pck);
         string allOutput = "";
         bool pckExists = false;
         for (int attempt = 1; attempt <= 2 && !pckExists; attempt++)
         {
             FsSafe.DeleteFile(pck);
-            var (_, out3) = Run($"\"{godotExe}\" --headless --path \"{projectRoot}\" --export-pack \"Windows Desktop\" \"{pck}\"",
-                projectRoot, log, dotnetRoot);
+            var (_, out3) = Run(GodotExportPackArgs(godotExe, pckArg), projectRoot, log, dotnetRoot);
             allOutput = out3;
             pckExists = File.Exists(pck);
             if (!pckExists) log?.Invoke($"[重试 {attempt}/2] 没有生成 pck");
@@ -164,6 +181,48 @@ public static class ModBuilder
         if (fs.Read(head, 0, head.Length) < head.Length) return 0;
         if (Encoding.ASCII.GetString(head, 0, 4) != "GDPC") return 0;
         return BitConverter.ToUInt32(head, 4);
+    }
+
+    /// <summary>
+    /// Godot「导入资源」的那条命令行（V0.3.112）。
+    ///
+    /// <para>⚠ 命令行里**不许出现中文绝对路径**：命令是写进 `.cmd` 交给 cmd.exe 执行的，cmd 按系统
+    /// ANSI 码页（中文 Windows = GBK）解析 UTF-8 批处理 → 路径里的中文变成乱码传给 Godot，
+    /// Godot 报 `Invalid project path specified: "…\鑷畾涔夎鑹插瓨妗…"`、导出直接失败。
+    /// 而工具**默认的存档目录就叫「自定义角色存档」**，用户没法回避 ⇒ 必须用相对路径。
+    /// 工程根靠 <c>WorkingDirectory</c> 传（`CreateProcessW`，UTF-16，不会乱码）。</para>
+    /// </summary>
+    public static string GodotImportArgs(string godotExe) =>
+        $"\"{godotExe}\" --headless --path \".\" --import";
+
+    /// <summary>Godot「导出 PCK」的命令行：`--path "."` + **相对** pck 名（同 <see cref="GodotImportArgs"/> 的理由）。</summary>
+    public static string GodotExportPackArgs(string godotExe, string pckArg) =>
+        $"\"{godotExe}\" --headless --path \".\" --export-pack \"Windows Desktop\" \"{pckArg}\"";
+
+    /// <summary>pck 相对工程根的写法（只含 ASCII：<c>build/&lt;ModId&gt;.pck</c>）。</summary>
+    public static string GodotRelativePckArg(string projectRoot, string pck)
+    {
+        try
+        {
+            string rel = Path.GetRelativePath(projectRoot, pck).Replace('\\', '/');
+            return string.IsNullOrWhiteSpace(rel) ? Path.GetFileName(pck) : rel;
+        }
+        catch
+        {
+            return Path.GetFileName(pck);
+        }
+    }
+
+    /// <summary>
+    /// 「导入资源」这一步的输出算不算成功。
+    /// 以前只看退出码 —— 而 Godot 遇到**无效工程路径**也会返回 0，于是坏掉的导入被当成 OK，
+    /// 真正的原因要等到导出那步才露出来（看起来像「导出坏了」）。
+    /// </summary>
+    public static bool ImportLooksOk(string? output)
+    {
+        string o = output ?? "";
+        return !o.Contains("Invalid project path", StringComparison.OrdinalIgnoreCase)
+            && !o.Contains("Failed to load project", StringComparison.OrdinalIgnoreCase);
     }
 
     private static (bool Success, string Output) Run(string command, string workingDir, Action<string>? log,

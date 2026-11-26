@@ -2430,6 +2430,24 @@ public static class ForgeGraphGen
         string hand = $"CardPile.GetCards({player}, PileType.Hand)";
         // 生命区间：下界 / 上界（都按百分比）。M 也是运行时才算时用两个算出来的数比。
         string lo = nExpr, hi = mExpr ?? nExpr;
+        // V0.3.106：插件条件也支持运行时公式。以前 RuntimeCondition 只认 7 个内置 kind，
+        // 插件条件直接返回 null → BoolVar 写死 false（公式被提成局部变量却没人引用）。
+        if (Plugins.PluginRegistry.ConditionOf(kind) is { } pluginCondition)
+        {
+            string foe = ctxKind == CSharpCodeGen.CondCtx.Card
+                ? "cardPlay?.Target"
+                : $"{ownerCreature}.CombatState?.HittableEnemies.FirstOrDefault()";
+            string expr = (pluginCondition.Expr ?? "")
+                .Replace("{amount2}", $"({mExpr ?? nExpr})", StringComparison.OrdinalIgnoreCase)
+                .Replace("{amount}", $"({nExpr})", StringComparison.OrdinalIgnoreCase)
+                .Replace("{self}", ownerCreature, StringComparison.OrdinalIgnoreCase)
+                .Replace("{player}", player, StringComparison.OrdinalIgnoreCase)
+                .Replace("{foe}", foe, StringComparison.OrdinalIgnoreCase)
+                .Replace("{target}", foe, StringComparison.OrdinalIgnoreCase)
+                .Replace("{combatstate}", st, StringComparison.OrdinalIgnoreCase)
+                .Replace("{power}", Sts2CharForge.Core.Generation.Lit.Identifier(node.Get("PowerId"), "VulnerablePower"), StringComparison.OrdinalIgnoreCase);
+            if (!string.IsNullOrWhiteSpace(expr)) return "(" + expr + ")";
+        }
         return kind switch
         {
             "HandAtLeast" => $"{player} is not null && {hand}.Count() >= (int)({nExpr})",
@@ -3088,6 +3106,9 @@ public static class ForgeGraphGen
     private static UnitRef TargetSideUnit(EffectSpec e)
     {
         bool dup = e.AllowDuplicates;
+        // V0.3.104：插件的「作用对象」——和锻造图【对象】共用同一份 units 表达式
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, "__fgSelf", "__fgTarget") is { } pluginPlan)
+            return new UnitRef(pluginPlan.Single, pluginPlan.Foes);
         return e.TargetSide switch
         {
             "Self" => UnitRef.Self,

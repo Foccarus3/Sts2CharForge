@@ -66,6 +66,10 @@ public static class CustomPowerGen
     {
         string raw = DescriptionOf(power);
         var vars = new List<(string Name, string Expr)>();
+        // V0.3.103：本体的 PowerModel.HoverTips 会在最后再 Add("Amount", …)；
+        // 某些路径（如状态图鉴 / 悬停传的是 canonical）会把它写成 1，盖掉我们这里塞的层数，
+        // 表现就是「2 层时描述还写 1 层的数值」。描述文本改用独立的 __fgPowerAmount，
+        // 它不会被本体的 AddDumbVariablesToDescription 覆盖。
         // V0.3.89：除了 {=公式}，也支持直接写 {C}（自定义参数）/ {cnt}（变量）。
         // 用户不必先知道「公式要加 =」——{C} 会被改写成 {=C}，再走下面同一套表达式。
         foreach (var cp in profile.CustomParams.Where(x => x is not null))
@@ -185,7 +189,7 @@ public static class CustomPowerGen
         w.Line($"namespace {n.Namespace};");
         w.Line();
         w.Line($"/// <summary>{OneLine(power.Name)}：{OneLine(descParts.Text)}</summary>");
-        w.Open($"public sealed class {cls} : PowerModel");
+        w.Open($"public sealed class {cls} : PowerModel, IForgePowerHover");
         // V0.2.194：图标记（「从工程恢复」唯一的依据；图空时一个字符都不写 —— 老状态照旧）
         string? graphMarker = ForgeGraphGen.MarkerOf(power.ForgeGraph);
         if (graphMarker is not null) w.Line(graphMarker);
@@ -487,6 +491,23 @@ public static class CustomPowerGen
             }
         }
         return false;
+    }
+    /// <summary>
+    /// 「玩家回合开始时」的归属守卫。
+    ///
+    /// 状态挂在玩家身上：只认这个玩家自己的回合（联机时别人回合不触发）。
+    /// 状态挂在敌人身上：base.Owner.Player 为 null（敌人没有 Player），旧写法
+    /// `if (player != base.Owner.Player) return;` 会永远 return —— 用户的「威力无效」就是这样不触发。
+    /// 这时改判「本地玩家的回合」（LocalContext.IsMe）：单人 = 玩家回合；联机 = 自己这一侧玩家的回合。
+    /// </summary>
+    private static void EmitPlayerTurnStartOwnerGuard(CodeWriter w)
+    {
+        w.Open("if (base.Owner.Player is not null)");
+        w.Line("if (player != base.Owner.Player) return;");
+        w.Close();
+        w.Open("else if (!MegaCrit.Sts2.Core.Context.LocalContext.IsMe(player))");
+        w.Line("return;   // 状态在敌人身上：没有 Owner.Player，按本地玩家回合触发");
+        w.Close();
     }
     private static void EmitItemsWithAmountGate(CodeWriter w, IEnumerable<PowerTriggerSpec> items,
         CharacterProfile p, string? foeFrom = null, string? bodyText = null)
@@ -1154,7 +1175,7 @@ public static class CustomPowerGen
         {
             case "PlayerTurnStart":
                 w.Open("public override async Task AfterPlayerTurnStart(PlayerChoiceContext choiceContext, Player player)");
-                w.Line("if (player != base.Owner.Player) return;");
+                EmitPlayerTurnStartOwnerGuard(w);
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
@@ -1164,14 +1185,14 @@ public static class CustomPowerGen
             // 不会撞签名。归属判据和上面那条一样：只有自己的回合开始了才跑。
             case "PlayerTurnStartEarly":
                 w.Open("public override async Task AfterPlayerTurnStartEarly(PlayerChoiceContext choiceContext, Player player)");
-                w.Line("if (player != base.Owner.Player) return;");
+                EmitPlayerTurnStartOwnerGuard(w);
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
 
             case "PlayerTurnStartLate":
                 w.Open("public override async Task AfterPlayerTurnStartLate(PlayerChoiceContext choiceContext, Player player)");
-                w.Line("if (player != base.Owner.Player) return;");
+                EmitPlayerTurnStartOwnerGuard(w);
                 EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
@@ -1258,6 +1279,14 @@ public static class CustomPowerGen
                 if (hpLossGuard) EmitHpLossGuardOpen(w);
                 EmitItemsWithAmountGate(w, items, p);
                 if (hpLossGuard) EmitHpLossGuardClose(w);
+                w.Close();
+                break;
+            case "HpHealed":
+                w.Open("public override async Task AfterCurrentHpChanged(Creature creature, decimal delta)");
+                EmitChoiceContextBootstrap(w, "HpHealed", items);
+                w.Line("if (creature != base.Owner) return;   // 只认自己回血");
+                w.Line("if (delta <= 0m) return;   // delta 为负 / 0 不是回复");
+                EmitItemsWithAmountGate(w, items, p);
                 w.Close();
                 break;
 
@@ -1728,7 +1757,7 @@ public static class CustomPowerGen
     /// AfterCardGeneratedForCombat(card, creator)。
     /// </summary>
     internal static bool TriggerHasChoiceContext(string? kind) =>
-        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory" or "HpLost" or "CardGenerated" or "GoldGained"
+        kind is not ("EnemyTurnStart" or "EnemyBlockGained" or "BlockGained" or "EnergySpent" or "StarsSpent" or "CombatStart" or "CombatVictory" or "HpLost" or "HpHealed" or "CardGenerated" or "GoldGained"
             // 「某个状态被移除时」不是本体的钩子（是工具补丁调过来的普通方法）→ 同样没有 choiceContext
             or "PowerRemoved"
             // V0.2.157：「打出一张牌时」用的是 BeforeCardPlayed(CardPlay)——签名里**没有** choiceContext
@@ -1913,6 +1942,28 @@ public static class CustomPowerGen
                 //（V0.2.338 的默认值就是那个 → 模板里用 {combatState} 会 CS1061）
                 CombatState: "base.Owner.CombatState", CardSelfIsCard: false)))
             return;
+        if (Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind))
+            w.Line($"// CET:TargetSide={e.TargetSide}");
+        if (Plugins.PluginTargetSide.AllowedFor(e.TargetSide, e.Kind))
+            w.Line($"// CET:TargetSide={e.TargetSide}");
+        // V0.3.104：插件作用对象（状态链的 ApplyPower / TempPower）
+        if (e.Kind is "ApplyPower" or "TempPower" && !e.NextTurn
+            && Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner",
+                foeFrom ?? "base.Owner.CombatState.HittableEnemies.FirstOrDefault()") is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})");
+            if (e.Kind == "ApplyPower")
+            {
+                w.Line(CSharpCodeGen.ApplyPowerInstr(e, useX: false, e.PowerId, "__pluginUnit", amt,
+                    "base.Owner", cardSourceExpr: "null"));
+            }
+            else
+            {
+                w.Line($"await PowerCmd.Apply<{CSharpCodeGen.TempPowerClassName(e, p)}>(choiceContext, __pluginUnit, {amt}, base.Owner, null);");
+            }
+            w.Close();
+            return;
+        }
         // 「直接把缓慢设成 N%」：本体的做法就是只施加 1 层（层数对「缓慢」没有作用），
         // 而且 amount == 0 时 PowerCmd.Apply 直接 return（状态根本挂不上）
         if (CSharpCodeGen.IsSlowPercentEffect(e)) amt = "1m";
@@ -2556,7 +2607,12 @@ public static class CustomPowerGen
 
             // 给予卡牌关键词：状态触发器里也能给（数值 0 = 「这张牌自己」在状态里没有意义）
             case "GiveKeyword":
-                CSharpCodeGen.EmitGiveKeyword(w, null, e, useX: false,
+                // ⚠ V0.3.115（用户实测：`TheDemonPower1.cs(44,159) CS0246 命名空间
+                // MegaCrit.Sts2.Core.Models.Cards 中不存在 TheDemonStrike`）：这里以前把**当前存档**传成
+                // null —— 于是 `CardTypeExpr(null, 卡名)` 不认识「是我们自己的卡」，一律加本体前缀，
+                // 「只对这张卡（指定）」指向自己的卡时就编不过。卡牌链 / 遗物链 / 药水链 / 节点图链都传了 p。
+                // 顺带：ResolveKeyword(kw, p) / NotifyGivenKeywordTiming(p) 也都要靠 p 才认得出自定义关键词。
+                CSharpCodeGen.EmitGiveKeyword(w, p, e, useX: false,
                     playerExpr: "base.Owner.Player", creatureExpr: "base.Owner", sourceExpr: "null", selfAllowed: false);
                 break;
 
@@ -2790,6 +2846,15 @@ public static class CustomPowerGen
     /// </summary>
     private static void EmitPowerTargets(CodeWriter w, EffectSpec e, string? foeFrom, Action<CodeWriter, string> body)
     {
+        // V0.3.104：插件作用对象（状态链）
+        string pluginFoe = foeFrom ?? "base.Owner.CombatState.HittableEnemies.FirstOrDefault()";
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner", pluginFoe) is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})");
+            body(w, "__pluginUnit");
+            w.Close();
+            return;
+        }
         switch (e.TargetSide)
         {
             case "AllEnemies":
@@ -2885,6 +2950,15 @@ public static class CustomPowerGen
     private static void EmitDamage(CodeWriter w, EffectSpec e, string amt, string? foeFrom)
     {
         const string props = "ValueProp.Unpowered";
+        // V0.3.104：插件作用对象（状态链伤害）
+        if (Plugins.PluginTargetSide.Of(e.TargetSide, "base.Owner",
+                foeFrom ?? "base.Owner.CombatState.HittableEnemies.FirstOrDefault()") is { } pluginPlan)
+        {
+            w.Open($"foreach (Creature __pluginUnit in {pluginPlan.Foes})")
+             .Line($"await CreatureCmd.Damage(choiceContext, __pluginUnit, {amt}, {props}, base.Owner, null, null);")
+             .Close();
+            return;
+        }
         switch (e.TargetSide)
         {
             case "Self":
@@ -2896,6 +2970,16 @@ public static class CustomPowerGen
                 w.Open("foreach (Creature other in base.Owner.CombatState.HittableEnemies)");
                 DebugLogGen.Target(w, e, "other", amt, inLoop: true);
                 w.Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);")
+                 .Close();
+                break;
+            case "AllAllies":
+                // 全部友方（V0.3.119）：同一边的存活单位（默认不含自己，含召唤物）。
+                // 以前这里没有这一档，掉进 default 的 EmitFoeBlock → 打全体敌人（用户「大怪兽」）。
+                w.Open("if (base.Owner.CombatState is not null)")
+                 .Open($"foreach (Creature other in base.Owner.CombatState.Allies.Where({PowerAllyWhere(e)}).ToList())");
+                DebugLogGen.Target(w, e, "other", amt, inLoop: true);
+                w.Line($"await CreatureCmd.Damage(choiceContext, other, {amt}, {props}, null, null, null);")
+                 .Close()
                  .Close();
                 break;
             case "AllUnits":

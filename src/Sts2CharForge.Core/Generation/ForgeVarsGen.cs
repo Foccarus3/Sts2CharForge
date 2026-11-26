@@ -56,14 +56,35 @@ public static class ForgeVarsGen
          .Open("public static void ResetCombat()")
          .Line(combat.Count == 0 ? "// 没有「本场战斗」作用域的变量" : string.Join(" ", combat.Select(ResetLine)))
          .Close()
-         .Line()
-         .Line("/// <summary>新开一局时调用：连同全局变量一起复位。</summary>")
-         .Open("public static void ResetRun()")
-         .Line(run.Count == 0
-             ? "ResetCombat();"
-             : string.Join(" ", run.Select(ResetLine)) + (combat.Count == 0 ? "" : " " + string.Join(" ", combat.Select(ResetLine))))
-         .Close()
-         .Close();
+         .Line();
+        if (run.Count > 0)
+        {
+            w.Line("private static string __runKey = \"\";")
+             .Line()
+             .Line("/// <summary>新开一局时调用：连同全局变量一起复位。</summary>")
+             .Open("public static void ResetRun()").Line("ResetRun(\"\");").Close()
+             .Line()
+             .Line("/// <summary>读档时调用：同一局（同一种子）保留全局变量；不同局才复位。</summary>")
+             .Open("public static void EnsureRun(string key)")
+             .Line("if (string.IsNullOrEmpty(key) || !string.Equals(__runKey, key, StringComparison.Ordinal)) ResetRun(key);")
+             .Close()
+             .Line()
+             .Open("public static void ResetRun(string key)")
+             .Line(run.Count == 0
+                 ? "ResetCombat();"
+                 : string.Join(" ", run.Select(ResetLine)) + (combat.Count == 0 ? "" : " " + string.Join(" ", combat.Select(ResetLine))))
+             .Line("__runKey = key;")
+             .Close()
+             .Close();
+        }
+        else
+        {
+            w.Line("/// <summary>新开一局时调用：连同全局变量一起复位。</summary>")
+             .Open("public static void ResetRun()")
+             .Line("ResetCombat();")
+             .Close()
+             .Close();
+        }
 
         return w.ToString();
 
@@ -106,17 +127,18 @@ public static class ForgeVarsGen
             // V0.3.18：重置时机从 `RunManager.Launch` **提前到 SetUp 阶段**。
             // 原因：本体新开一局的顺序是 `SetUpNew*()` → `FinalizeStartingRelics()`（起始遗物的「获得时」）→ `Launch()`；
             // 挂在 Launch 上是**起始遗物效果之后**才复位 —— 起始遗物「获得时 变量 +5」会被当场抹掉。
-            // 现在在四个入口的**最前面**复位：新开一局（单 / 联机）、读档（单 / 联机）。
-            // 读档也复位：变量本来就不进存档（静态字段），不复位会拿到上一次进程里的残值。
-            void ResetPatch(string method, string label)
+            // V0.3.126（用户报「全局变量 SL 后回初始值」）：读档不能再无条件 ResetRun。
+            // 生成端的 EnsureRun 按 RunState.Rng.StringSeed 判断：同一局（同一种子）保留内存里的值；
+            // 只有新开一局 / 读到的不是当前这局时才复位。进程重启后静态值本来就是初值，行为不变。
+            void ResetPatch(string method, string label, bool load)
             {
                 w.Line()
-                 .Line($"/// <summary>{label}：在开局 / 读档的最前面把全局变量复位（早于起始遗物的「获得时」）。</summary>")
+                 .Line($"/// <summary>{label}：在开局 / 读档的最前面处理全局变量（早于起始遗物的「获得时」）。</summary>")
                  .Line($"[HarmonyLib.HarmonyPatch(typeof(MegaCrit.Sts2.Core.Runs.RunManager), nameof(MegaCrit.Sts2.Core.Runs.RunManager.{method}))]")
                  .Open($"public static class {n.CharClass}ForgeVarsReset{method}")
                  .Open("static void Prefix(MegaCrit.Sts2.Core.Runs.RunState state)")
                  .Open("try")
-                 .Line($"if (state is not null && state.Players.Any(p => p.Character is {n.CharClass})) {vars}.ResetRun();")
+                 .Line($"if (state is not null && state.Players.Any(p => p.Character is {n.CharClass})) {vars}.{(load ? "EnsureRun" : "ResetRun")}(state.Rng.StringSeed);")
                  .Close()
                  .Open("catch (Exception e)")
                  .Line($"Log.Warn(\"[变量页] {label}重置变量失败：\" + e.Message);")
@@ -124,10 +146,10 @@ public static class ForgeVarsGen
                  .Close()
                  .Close();
             }
-            ResetPatch("SetUpNewSingleplayer", "新开一局（单机）");
-            ResetPatch("SetUpNewMultiplayer", "新开一局（联机）");
-            ResetPatch("SetUpSavedSingleplayer", "读档（单机）");
-            ResetPatch("SetUpSavedMultiplayer", "读档（联机）");
+            ResetPatch("SetUpNewSingleplayer", "新开一局（单机）", load: false);
+            ResetPatch("SetUpNewMultiplayer", "新开一局（联机）", load: false);
+            ResetPatch("SetUpSavedSingleplayer", "读档（单机）", load: true);
+            ResetPatch("SetUpSavedMultiplayer", "读档（联机）", load: true);
         }
         return w.ToString();
     }

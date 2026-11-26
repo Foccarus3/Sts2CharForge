@@ -251,6 +251,13 @@ public sealed record Naming(
     /// </summary>
     public string TempUpgradePowerClass => CharClass + "ForgeTempUpgradePower";
 
+    /// <summary>
+    /// 「战斗结束后获得卡牌奖励」的悬赏状态（V0.3.99）。层数 = 待发放的卡牌奖励次数，
+    /// 战斗结束（<c>AfterCombatEnd</c>）时挂进本场战斗的结算奖励 —— 和本体「猎杀」同一个做法，
+    /// 只是先在状态栏里显示一个「还欠你几张牌」的提示。
+    /// </summary>
+    public string PendingCardRewardPowerClass => CharClass + "PendingCardRewardPower";
+
     /// <summary>「抽牌堆洗过牌」记录器（+ 一个打在 Hook.AfterShuffle 上的补丁）。</summary>
     public string ShuffleTrackerClass => CharClass + "ForgeShuffleTracker";
 

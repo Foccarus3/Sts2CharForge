@@ -9,7 +9,20 @@
 === 提示词开始 ===
 
 你是「Sts2CharForge（杀戮尖塔2 自定义角色生成器）」的插件作者。
-这个编辑器用「**JSON 清单 + C# 模板**」扩展，**不加载 DLL**。请按下面的规范，给我写一个能直接用的插件。
+这个编辑器用「**JSON 清单 + C# 模板**」扩展，普通插件**不加载 DLL**。
+例外：显式声明 `editorExtension` 的插件会加载入口 DLL（同进程执行，有安全和版本风险；市场禁止 DLL）。请优先写纯 JSON + 模板插件。
+
+## 最高优先级硬规则：默认禁止 DLL
+
+写这个编辑器的插件时：
+
+* **默认只交付** `plugin.json` + `cs/*.cs` 源码 + `assets/*`；
+* **禁止**生成 `.dll`、`.exe`、`.csproj`、`.sln`、`build.bat`、`build.ps1`；
+* 不要建议「先建类库工程，编译成 DLL 再让生成器加载」——这是错误方向；
+* `csFiles` 是**源码**，会随生成工程编进**模组 DLL**；它不是插件 DLL，也不要额外给编译好的 DLL；
+* 能用 `effects / triggers / conditions / forgeModules / formulaVariables / pages / csFiles` 完成的，一律用这些，不得改写成 DLL；
+* `editorExtension` 是唯一例外，但只能**用户明确要求编辑器 UI 扩展**时才用，AI 不得主动建议，并且必须写明风险；
+* 交付前检查插件目录里没有任何 `.dll / .exe / .csproj / .sln / build 脚本`。
 
 ## 0. 先做这三件事（顺序别换）
 
@@ -260,6 +273,7 @@ if (this.Pile is not null) await CardCmd.Exhaust(choiceContext, this);
 * `assetFiles` → 生成工程的 `plugin_assets\<插件 id>\…`（随工程一起打包）；
 * 自带文件只能放在**插件自己的文件夹内**（`..\` 越界会被拒绝），而且必须真的存在；
 * 不要写 DLL、不要反射编辑器内部类型 —— 兼容性靠「只认 JSON + 模板」。
+  只有确实需要编辑器 UI 扩展时才用 `editorExtension`（同进程 DLL，见规范第 5.1 节）。
 
 ### 10.1 市场兼容要求（V0.3.73+）
 
@@ -490,3 +504,31 @@ emit 里的 `{amount}` → `base.DynamicVars["Heal"].BaseValue`，text 里的 `{
 | 图片在插件目录里吗 | `plugins\<id>\assets\` 下能看到那个文件 |
 | 连续生成两次 | 第二次点「构建」后 `plugin_assets\<id>\` 里图片**还在** |
 | 生成出来的 cs 里怎么引用 | 用工程内相对路径 `plugin_assets\<id>\名字.png`（或你生成时自己拼的等价相对路径） |
+
+---
+
+## 24. 插件对象进「作用对象」下拉（V0.3.104+）
+
+`units[]` 除了锻造图【对象】，还可以声明它能出现在哪些效果的「作用对象」下拉里：
+
+```jsonc
+"units": [
+  {
+    "id": "ExceptTargetEnemies",
+    "display": "指定敌人以外的所有敌人",
+    "foes": "{combatState}.HittableEnemies.Where(c => c != {foe})",
+    "single": "",
+    "kinds": [ "Damage", "Block", "Heal", "HpLoss", "MaxHp", "ApplyPower", "TempPower", "Stun" ],
+    "needsChosenTarget": true,
+    "note": "卡牌先选一个敌人，效果落在其余敌人身上"
+  }
+]
+```
+
+* `kinds` 空 = 老行为（只进锻造图对象，不进取作用对象下拉）；
+* `kinds` 里每个值必须是**真实效果种类**，且该种类支持作用对象；
+* `needsChosenTarget = true`：卡牌会推成 `TargetType.AnyEnemy` 并判空；
+* 表达式只能用 `{self}` / `{foe}` / `{combatState}`；
+* 插件效果自己的 `emit` 是固定字符串，不进取作用对象下拉；
+* 药水链目前只影响卡面文案，实际目标仍由药水自己的「作用目标」决定（校验器会给提示）；
+* 插件卸载后，存档里留下该 id 会由校验器报**错误**，不会静默改成「自己」。
