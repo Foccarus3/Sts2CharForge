@@ -17634,8 +17634,15 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 				List<CardSpec> keptCards = Profile.Cards.ToList();     // 这一轮的临时改动最后原样还回去
 				CardSpec? keptCardSel = CardUiSelection;
+				// ⚠ V0.3.136：这一段要「界面真的画出来的行」（序号文字 / 行命中），而列表默认**虚拟化** ——
+				// 自检窗口里只实化视口内的行（实测只出 2 行），于是「看到 2 个序号」和「第 3 行没有容器」
+				// 两条断言白 FAIL（V0.3.130~134 起一直挂着）。照后面 V0.2.140 那段（「每 5 个一块 + 空槽」）
+				// 现成的写法：这一段临时关掉虚拟化，让所有行都实化，跑完在 finally 里原样还原。
+				// 不是放宽断言 —— 样本反而从「视口里那几行」变成「全部行」，见下面第一条 Check。
+				bool cardVirtWas = VirtualizingPanel.GetIsVirtualizing(CardList);
 				try
 				{
+					VirtualizingPanel.SetIsVirtualizing(CardList, false);
 					SelectTabRoot("卡牌");
 					Check("卡牌列表不再用 DisplayMemberPath（改成带序号列的模板）",
 						CardList.DisplayMemberPath is null && CardList.ItemTemplate is not null,
@@ -17656,10 +17663,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						$"共 {Profile.Cards.Count} 张 / 序号 {ordAll}");
 					List<string> visibleOrds = VisibleCardOrdinals();
 					Check("界面上真画出了「N.」序号（序号在卡牌名最左侧一列），而且是从 1 开始连续的下标",
-						visibleOrds.Count >= 3
+						visibleOrds.Count == CardRows.Count
 						&& visibleOrds.SequenceEqual(Enumerable.Range(1, visibleOrds.Count).Select(i => i + ".")),
-						$"看到 {visibleOrds.Count} 个（{string.Join(",", visibleOrds)}）/ 共 {Profile.Cards.Count} 张"
-						+ "（列表虚拟化：只画出可见的那几行，所以看到的不一定等于总张数）");
+						$"看到 {visibleOrds.Count} 个（{string.Join(",", visibleOrds)}）/ 列表 {CardRows.Count} 行 / 真卡 {Profile.Cards.Count} 张"
+						+ "（这一段临时关掉虚拟化：全部行都该实化，所以数量要和行数相等）");
 					Check("打击 / 防御（本体卡）也占号：它们就是第 1、2 行",
 						Profile.Cards.Count >= 2 && Profile.Cards[0].IsStartingBasic && Profile.Cards[0].Ordinal == 1
 						&& Profile.Cards[1].Ordinal == 2,
@@ -17690,7 +17697,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					// 行命中：屏幕上点得到某一行、拿到的是那一行的卡
 					int probeRow = Math.Min(2, Profile.Cards.Count - 1);
 					DependencyObject? rowC = CardList.ItemContainerGenerator.ContainerFromIndex(probeRow) as DependencyObject;
-					string rowDetail = "(没有容器)";
+					string rowDetail = rowC is null
+						? $"(没有容器：这一行没实化 —— 列表 {CardList.ActualWidth:F0}×{CardList.ActualHeight:F0}，共 {CardList.Items.Count} 行)"
+						: "(未点)";
 					bool rowHitOk = false;
 					if (rowC is FrameworkElement rowCFe)
 					{
@@ -17714,6 +17723,8 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				}
 				finally
 				{
+					// 虚拟化还原（这一段为了看实化出来的行临时关掉了它；后面的断言按默认设置跑）
+					VirtualizingPanel.SetIsVirtualizing(CardList, cardVirtWas);
 					// 原样还回去（顺序 + 选中项），免得影响后面的断言
 					Profile.Cards.Clear();
 					foreach (CardSpec c in keptCards) Profile.Cards.Add(c);
