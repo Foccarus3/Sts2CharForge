@@ -19054,6 +19054,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				scpCopySrc.Contains("shouldShowInCardLibrary: false")
 				&& !CSharpCodeGen.CardSource(scpExpanded, scpExpanded.Cards[0], 0).Contains("shouldShowInCardLibrary: false"),
 				"副本隐藏 / 原卡显示");
+			string scpLib = CardLibraryGen.Source(scpExpanded);
+			Check("V0.3.128：百科补丁按副本 ID 再隐藏一次（含已发现卡牌集合过滤）",
+				scpLib.Contains("StarterCopyIds") && scpLib.Contains("SCP_STRIKE_COPY2") && scpLib.Contains("SCP_STRIKE_COPY3")
+				&& scpLib.Contains("ShouldShowInCardLibrary") && scpLib.Contains("ProgressState.DiscoveredCards"),
+				"副本 ID 兜底");
 			string scpDeck = CSharpCodeGen.CharacterSource(scpExpanded);
 			Check("V0.3.83：StartingDeck 用上原卡 + 两个副本类（不再重复同一个 ModelDb.Card<T>()）",
 				scpDeck.Contains("ModelDb.Card<ScpStrike>()")
