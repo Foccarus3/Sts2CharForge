@@ -47,6 +47,8 @@ public partial class ParamReferenceWindow : Window
     public ParamReferenceWindow(CharacterProfile? profile = null)
     {
         InitializeComponent();
+        // 主窗开了深色模式时，这个独立小窗也要跟着深色；Loaded 后内容模板才实例化，所以等 Loaded 再刷。
+        Loaded += (_, _) => MainWindow.ApplyThemeToAuxWindow(this);
         // V0.2.240（用户反馈「屏幕小的时候有些地方被遮挡」）：这个窗也先塞进屏幕可用区域。
         // 它是独立窗口、不跟着主窗的「界面缩放」走 —— 屏比 980×660 还小时会被窗口边裁掉。
         try

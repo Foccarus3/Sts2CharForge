@@ -3867,7 +3867,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private bool _uiThemeApplying;
 	private readonly Dictionary<(DependencyObject Owner, DependencyProperty Property), object?> _uiThemeBackups = new();
 
-	private sealed class UiThemeSettings
+	public sealed class UiThemeSettings
 	{
 		public bool Dark { get; set; }
 		public string? Background { get; set; }
@@ -3886,6 +3886,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		if (!SuppressProfileWrites) LoadUiTheme();
 		ApplyUiTheme();
+		// 首个标签页的内容模板是 Loaded 之后才实例化的；等布局完成再刷一次，
+		// 否则会出现「顶栏深了、输入框还是白的」。
+		Dispatcher.BeginInvoke(new Action(ApplyUiTheme), DispatcherPriority.ApplicationIdle);
 	}
 
 	private void OnUiThemeTabChanged(object sender, SelectionChangedEventArgs e)
@@ -3936,6 +3939,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		if (_uiThemeLoading) return;
 		_uiDarkMode = DarkModeCheck.IsChecked == true;
 		ApplyUiTheme();
+		Dispatcher.BeginInvoke(new Action(ApplyUiTheme), DispatcherPriority.ApplicationIdle);
 		SaveUiTheme();
 	}
 
@@ -3982,17 +3986,66 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		try
 		{
 			if (!_uiDarkMode) RestoreUiThemeValues();
-			ApplyUiBackgroundAndChrome();
-			if (_uiDarkMode) ApplyDarkTheme(this);
+		ApplyUiBackgroundAndChrome();
+		ApplyUiSystemColors();
+		if (_uiDarkMode) ApplyDarkTheme(this);
+			// 参数参考是独立 Window，不在本窗口的可视树里，单独刷一次
+			if (_paramReference is { IsLoaded: true }) ApplyDarkTheme(_paramReference);
 			// 深色递归可能碰到顶栏 / 状态栏，最后再压一次主框架颜色
 			ApplyUiBackgroundAndChrome();
 		}
 		finally { _uiThemeApplying = false; }
 	}
 
-	private void ApplyUiBackgroundAndChrome()
+	private void ApplyUiSystemColors()
 	{
-		Brush pageBg = Solid(_uiDarkMode ? "#121212" : "#F5F5F5");
+		var res = Application.Current?.Resources;
+		if (res is null) return;
+		var keys = new ResourceKey[]
+		{
+			SystemColors.WindowBrushKey, SystemColors.WindowTextBrushKey,
+			SystemColors.ControlBrushKey, SystemColors.ControlTextBrushKey,
+			SystemColors.ControlDarkBrushKey, SystemColors.ControlDarkDarkBrushKey,
+			SystemColors.ControlLightBrushKey, SystemColors.ControlLightLightBrushKey,
+			SystemColors.GrayTextBrushKey, SystemColors.HighlightBrushKey,
+			SystemColors.HighlightTextBrushKey, SystemColors.InactiveSelectionHighlightBrushKey,
+			SystemColors.MenuBrushKey, SystemColors.MenuTextBrushKey,
+		};
+		if (!_uiDarkMode)
+		{
+			// 浅色 = 回到 Windows 自己的系统色（不要留下上一轮的深色资源）
+			foreach (var key in keys) res.Remove(key);
+			return;
+		}
+		var map = new Dictionary<ResourceKey, Brush>
+		{
+			[SystemColors.WindowBrushKey] = Solid("#121212"),
+			[SystemColors.WindowTextBrushKey] = Solid("#E8E8E8"),
+			[SystemColors.ControlBrushKey] = Solid("#252525"),
+			[SystemColors.ControlTextBrushKey] = Solid("#E8E8E8"),
+			[SystemColors.ControlDarkBrushKey] = Solid("#3A3A3A"),
+			[SystemColors.ControlDarkDarkBrushKey] = Solid("#444444"),
+			[SystemColors.ControlLightBrushKey] = Solid("#2B2B2B"),
+			[SystemColors.ControlLightLightBrushKey] = Solid("#333333"),
+			[SystemColors.GrayTextBrushKey] = Solid("#9A9A9A"),
+			[SystemColors.HighlightBrushKey] = Solid("#2A6FB5"),
+			[SystemColors.HighlightTextBrushKey] = Solid("#FFFFFF"),
+			[SystemColors.InactiveSelectionHighlightBrushKey] = Solid("#3A3A3A"),
+			[SystemColors.MenuBrushKey] = Solid("#202020"),
+			[SystemColors.MenuTextBrushKey] = Solid("#E8E8E8"),
+		};
+		foreach (var kv in map) res[kv.Key] = kv.Value;
+	}
+
+	/// <summary>独立窗口（参数参考）也要跟主窗主题；由 ParamReferenceWindow 在 Loaded 时调用。</summary>
+	internal static void ApplyThemeToAuxWindow(Window window)
+	{
+		if (Application.Current?.MainWindow is MainWindow main && main._uiDarkMode)
+			main.ApplyDarkTheme(window);
+	}
+
+	private void ApplyUiBackgroundAndChrome()
+	{		Brush pageBg = Solid(_uiDarkMode ? "#121212" : "#F5F5F5");
 		Brush chromeBg = Solid(_uiDarkMode ? "#1E1E1E" : "#F3F3F3");
 		RootHost.Background = pageBg;
 		RootPanel.Background = Brushes.Transparent;
@@ -4109,7 +4162,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 
 	private void ApplyDarkTheme(DependencyObject root)
 	{
-		if (root is TextBlock tb && IsDarkBrush(tb.Foreground))
+		if (root is Window window && IsLightBrush(window.Background))
+			SetUiThemeValue(window, Window.BackgroundProperty, Solid("#121212"));
+		else if (root is TextBlock tb && IsDarkBrush(tb.Foreground))
 			SetUiThemeValue(tb, TextBlock.ForegroundProperty, SolidBrush(DarkForegroundOf(((SolidColorBrush)tb.Foreground).Color)));
 		else if (root is Border border)
 		{
