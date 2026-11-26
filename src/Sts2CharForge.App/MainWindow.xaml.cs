@@ -536,7 +536,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 		Raise("ParamSummaryRows");
 		Raise("ParamGrantChoices");
 		Raise("ParamNameWarnText");
-		Raise("CardGroupRows");
+		RaiseCardGroupRows();
 		Raise("NoCardGroups");
 		Raise("CardGroupRowHint");
 		Raise("GroupCardRows");
@@ -561,7 +561,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 	private void OnGroupSpecChanged(object? sender, PropertyChangedEventArgs e)
 	{
 		Raise("GroupCardRows");
-		Raise("CardGroupRows");
+		RaiseCardGroupRows();
 		Raise("CardGroupChoices");
 		// 组名改了 → 「组：XXX」那几条候选的显示文字跟着变"
 		Raise("SpawnFilters");
@@ -1433,14 +1433,38 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>
 	/// 卡牌属性栏标题右边那一排「组」勾选框（需求：在卡牌属性名称右侧可以勾选进入组）。"
 	/// </summary>
-	public IReadOnlyList<CardGroupRow> CardGroupRows
+	public IReadOnlyList<CardGroupRow> CardGroupRows => GroupRowsFor(CardUiSelection ?? SpecialCardOf());
+
+	/// <summary>
+	/// 「诅咒属性」标题右边那一排「组」勾选框。
+	///
+	/// <para>V0.3.135（用户要求「诅咒 / 先古 / 状态页的卡牌属性那边像卡牌页一样可以勾选加入组」）：
+	/// 这一页以前只能看到组、不能勾 —— 组勾选框只长在卡牌页。现在诅咒 / 先古卡 / 状态卡三档
+	/// 各自把「当前选中的那张牌 + 每一个组」铺成同一套 <see cref="CardGroupRow"/>，
+	/// 勾选照样写进 <see cref="CardSpec.GroupIds"/>（生成端的按组筛牌读的就是它，见
+	/// <c>EffectCatalog.CardGroupCards</c> —— 那边遍历的是 <c>Profile.AllCards</c>，
+	/// 本来就把诅咒 / 先古卡 / 状态卡算在里面）。</para>
+	/// </summary>
+	public IReadOnlyList<CardGroupRow> CurseGroupRows => GroupRowsFor(CurseUiSelection);
+
+	/// <summary>
+	/// 「先古卡 / 状态卡属性」标题右边那一排「组」勾选框（两块详情共用同一个面板，见 V0.3.135 说明）。
+	/// </summary>
+	public IReadOnlyList<CardGroupRow> SpecialCardGroupRows => GroupRowsFor(SpecialCard);
+
+	/// <summary>给一张牌铺出「这张牌属于哪些组」的勾选行（卡牌页 / 诅咒页 / 先古卡 / 状态卡共用）。</summary>
+	private IReadOnlyList<CardGroupRow> GroupRowsFor(CardSpec? card) =>
+		card is null ? Array.Empty<CardGroupRow>() : _profile.CardGroups.Select(g => new CardGroupRow(card, g)).ToList();
+
+	/// <summary>
+	/// 四块「卡牌属性」上的组勾选框全部重读一遍（卡牌页 / 诅咒 / 先古卡 / 状态卡）。
+	/// 组增删 / 改名、或者这几页切换选中项之后都要调 —— 行的个数、勾选状态都按当前选中的那张牌重算。
+	/// </summary>
+	private void RaiseCardGroupRows()
 	{
-		get
-		{
-			var card = CardUiSelection ?? SpecialCardOf();
-			if (card is null) return Array.Empty<CardGroupRow>();
-			return _profile.CardGroups.Select(g => new CardGroupRow(card, g)).ToList();
-		}
+		Raise("CardGroupRows");
+		Raise("CurseGroupRows");
+		Raise("SpecialCardGroupRows");
 	}
 
 	/// <summary>界面上「还没有定义任何组」那句提示要不要显示。 /summary>
@@ -2483,7 +2507,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		get
 		{
 			if (!(GroupList?.SelectedItem is CardGroupSpec g)) return Array.Empty<CardGroupMemberRow>();
-			return _profile.Cards.Select(c => new CardGroupMemberRow(c, g)).ToList();
+			// V0.3.135：候选改成 AllCards（普通卡 + 诅咒 + 先古卡；状态卡本来就在 Cards 里）——
+			// 诅咒 / 先古页现在也能勾选进组，组页这边要是还只列 Profile.Cards，
+			// 勾好的诅咒 / 先古卡在这里就看不见（用户会以为「勾了没进组」）。
+			return _profile.AllCards.Where(c => c is not null).Select(c => new CardGroupMemberRow(c, g)).ToList();
 		}
 	}
 
@@ -2652,10 +2679,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			SetStatus("请先在左边选中一个组」");
 			return;
 		}
-		foreach (var card in _profile.Cards) SetCardGroupMembership(card, g, member);
+		// V0.3.135：「全选 / 全不选」也按 AllCards 算（和右边那份列表一致：普通卡 + 诅咒 + 先古卡）
+		foreach (var card in _profile.AllCards) SetCardGroupMembership(card, g, member);
 		Raise("GroupCardRows");
 		RaiseCardsGroupChanged();
-		SetStatus(member ? $"已把全部 {_profile.Cards.Count} 张牌加进「{g.Name}」。" : $"已把全部牌移出「{g.Name}」。");
+		SetStatus(member ? $"已把全部 {_profile.AllCards.Count()} 张牌加进「{g.Name}」。" : $"已把全部牌移出「{g.Name}」。");
 	}
 
 	/// <summary>把一张牌加进 / 移出一个组（组存的是 Id，所以改组名不会让已勾的卡掉出去）。 /summary>
@@ -2738,7 +2766,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	{
 		HookParamsAndGroups();
 		Raise("GroupCardRows");
-		Raise("CardGroupRows");
+		RaiseCardGroupRows();
 		Raise("CardGroupChoices");
 		Raise("NoCardGroups");
 		Raise("CardGroupRowHint");
@@ -2759,7 +2787,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			CardDetail.DataContext = null;
 			CardDetail.DataContext = cur;
 		}
-		Raise("CardGroupRows");
+		RaiseCardGroupRows();
 		Raise("SelectedCardGroupRowHint");
 	}
 
@@ -4649,7 +4677,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ParamList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CustomParams"));
 		GroupList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("Profile.CardGroups"));
 		GroupCardList.SetBinding(ItemsControl.ItemsSourceProperty, new Binding("GroupCardRows") { Source = this });
-		Raise("CardGroupRows");
+		RaiseCardGroupRows();
 		Raise("NoCardGroups");
 		Raise("CardGroupRowHint");
 		Raise("ParamChoices");
@@ -9512,6 +9540,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Raise("ShowSpecialCardHint");
 		Raise("SpecialCard");
 		Raise("ShowSpecialCardDetail");
+		// V0.3.135：三栏切换选中项时，诅咒 / 先古卡 / 状态卡那两块「卡牌属性」上的组勾选框
+		// 要换成**当前这张牌**的（行还是那几个组，勾选状态按这张牌的 GroupIds 重算）。
+		Raise("CurseGroupRows");
+		Raise("SpecialCardGroupRows");
 		RaiseCardPortrait();
 	}
 
@@ -31702,6 +31734,99 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Profile.Cards.Remove(wasStatus);
 			RebuildStatusCards();
 			Check("状态卡那一栏的收尾清理（自检）", Profile.Cards.Count(x => x.IsStatusCard) == statusBefore, $"{StatusCards.Count} 张");
+			// ---- V0.3.135（用户要求）：诅咒 / 先古 / 状态页的「卡牌属性」那边也像卡牌页一样能勾选加入组 ----
+			{
+				int groupCountBefore = Profile.CardGroups.Count;
+				CardGroupSpec uiGroup = new CardGroupSpec { Name = "自检特殊卡组" };
+				Profile.CardGroups.Add(uiGroup);
+				RaiseGroupsChanged();
+				UpdateLayout();
+
+				// ① 诅咒页：选中那张诅咒 → 「诅咒属性」右边出现这个组的勾选框
+				CurseList.SelectedItem = added;
+				UpdateLayout();
+				PumpDispatcher(120);
+				FlushBindings(CurseDetail);
+				CardGroupRow? curseGroupRow = CurseGroupRows.FirstOrDefault(r => r.Name == "自检特殊卡组");
+				CheckBox? curseGroupBox = FindCheckBoxByContent("自检特殊卡组", CurseDetail);
+				Check("诅咒页「诅咒属性」右边出现了组的勾选框（和卡牌页同一套 CardGroupRow，而且真的画在屏幕上）",
+					curseGroupRow is not null && curseGroupBox is { IsVisible: true },
+					$"{CurseGroupRows.Count} 行 / 勾选框={(curseGroupBox is null ? "没有" : (curseGroupBox.IsVisible ? "在" : "被藏着"))} / 选中={CurseUiSelection?.Name ?? "(null)"}");
+				Check("诅咒页的勾选框跟数据同源（IsChecked 读的是这张诅咒的 GroupIds）",
+					curseGroupRow is not null && curseGroupBox is not null && curseGroupBox.IsChecked == curseGroupRow.IsChecked,
+					$"勾选框={(curseGroupBox?.IsChecked?.ToString() ?? "(null)")} / 数据={curseGroupRow?.IsChecked.ToString() ?? "(null)"}");
+				if (curseGroupRow is not null)
+				{
+					curseGroupRow.IsChecked = true;
+					Check("在诅咒页勾上之后这张诅咒真的进了组（写进 CardSpec.GroupIds）",
+						added.GroupIdList.Contains(uiGroup.Id), string.Join(",", added.GroupIdList));
+					Check("按组筛牌时这张诅咒也算在里面（AllCards 本来就包含诅咒）",
+						EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Contains(added),
+						$"{EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Count} 张");
+					// 组页右边那份列表的候选必须也是 AllCards —— 只列 Profile.Cards 的话，勾好的诅咒在组页看不见
+					GroupList.SelectedItem = uiGroup;
+					Raise("GroupCardRows");
+					UpdateLayout();
+					Check("组页「这个组里有哪些牌」里也能看到这张诅咒（勾好了却不在组页出现 = 用户会以为没进组）",
+						GroupCardRows.Any(r => r.Display == added.Display && r.IsChecked), $"{GroupCardRows.Count} 行");
+				}
+
+				// ② 先古卡页：勾选框跟着选中的先古卡走，勾上就进组
+				CardSpec uiAncient = Profile.AncientCards[^1];
+				AncientCardList.SelectedItem = uiAncient;
+				UpdateLayout();
+				PumpDispatcher(120);
+				FlushBindings(SpecialCardDetail);
+				CardGroupRow? ancientGroupRow = SpecialCardGroupRows.FirstOrDefault(r => r.Name == "自检特殊卡组");
+				Check("先古卡页的属性栏也有组的勾选框，而且勾选状态按这张先古卡算（还没勾）",
+					ancientGroupRow is not null && !ancientGroupRow.IsChecked
+					&& FindCheckBoxByContent("自检特殊卡组", SpecialCardDetail) is { IsVisible: true },
+					$"{SpecialCardGroupRows.Count} 行 / 选中={SpecialCard?.Name ?? "(null)"}");
+				if (ancientGroupRow is not null)
+				{
+					ancientGroupRow.IsChecked = true;
+					Check("在先古卡页勾上之后这张先古卡进了组", uiAncient.GroupIdList.Contains(uiGroup.Id), string.Join(",", uiAncient.GroupIdList));
+					Check("按组筛牌时这张先古卡也在里面",
+						EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Contains(uiAncient),
+						$"{EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Count} 张");
+				}
+
+				// ③ 状态卡页：先古卡 / 状态卡共用同一块详情，勾选框也得能用
+				CardSpec uiStatus = new CardSpec { Name = "自检组状态卡", ClassName = "UiCheckGrpStatus", CardType = "Status", Rarity = "Status", Cost = 1 };
+				Profile.Cards.Add(uiStatus);
+				RebuildStatusCards();
+				UpdateLayout();
+				StatusCardList.SelectedItem = uiStatus;
+				UpdateLayout();
+				PumpDispatcher(120);
+				FlushBindings(SpecialCardDetail);
+				CardGroupRow? statusGroupRow = SpecialCardGroupRows.FirstOrDefault(r => r.Name == "自检特殊卡组");
+				Check("状态卡页的属性栏也有组的勾选框（和先古卡共用同一块详情，而且真的画在屏幕上）",
+					statusGroupRow is not null && !statusGroupRow.IsChecked
+					&& FindCheckBoxByContent("自检特殊卡组", SpecialCardDetail) is { IsVisible: true },
+					$"{SpecialCardGroupRows.Count} 行 / 选中={SpecialCard?.Name ?? "(null)"}");
+				if (statusGroupRow is not null)
+				{
+					statusGroupRow.IsChecked = true;
+					Check("在状态卡页勾上之后这张状态卡进了组", uiStatus.GroupIdList.Contains(uiGroup.Id), string.Join(",", uiStatus.GroupIdList));
+					Check("按组筛牌时这张状态卡也在里面",
+						EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Contains(uiStatus),
+						$"{EffectCatalog.CardGroupCards(Profile, EffectCatalog.GroupFilterPrefix + uiGroup.Id).Count} 张");
+					statusGroupRow.IsChecked = false;
+					Check("再点一次取消勾选 → 这张状态卡从组里移出去", !uiStatus.GroupIdList.Contains(uiGroup.Id), string.Join(",", uiStatus.GroupIdList));
+				}
+
+				// 收尾：把自检加的组 / 临时状态卡删掉，两张旧牌也取消组归属
+				SetCardGroupMembership(added, uiGroup, false);
+				SetCardGroupMembership(uiAncient, uiGroup, false);
+				Profile.Cards.Remove(uiStatus);
+				RebuildStatusCards();
+				Profile.CardGroups.Remove(uiGroup);
+				RaiseGroupsChanged();
+				UpdateLayout();
+				Check("（自检收尾）自检组和临时状态卡都清理掉",
+					Profile.CardGroups.Count == groupCountBefore && !Profile.Cards.Contains(uiStatus), $"{Profile.CardGroups.Count} 个组");
+			}
 			// ---- 三类都能调费用（用户要求） ---
 			{
 				CharacterProfile costProbe = ProfileFactory.Sample();

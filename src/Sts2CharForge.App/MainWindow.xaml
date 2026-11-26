@@ -2342,7 +2342,28 @@
                         </Grid.ColumnDefinitions>
                         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
                             <StackPanel>
-                                <TextBlock Text="诅咒属性" FontWeight="Bold" Margin="0,0,0,6"/>
+                                <!-- V0.3.135（用户要求）：诅咒页的「诅咒属性」右边也和卡牌页一样，能勾选加入组。
+                                     候选是窗口上的 CurseGroupRows（= 当前选中的这张诅咒 + 每一个组），
+                                     勾选写进 CardSpec.GroupIds —— 和卡牌页共用同一个 CardGroupRow 类。 -->
+                                <WrapPanel Margin="0,0,0,2">
+                                    <TextBlock Text="诅咒属性" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,0,4"/>
+                                    <TextBlock Text="组：" Margin="16,0,4,0" VerticalAlignment="Center" FontWeight="Bold"/>
+                                    <ItemsControl ItemsSource="{Binding CurseGroupRows, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  VerticalAlignment="Center">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Style="{StaticResource Check}" Content="{Binding Name}"
+                                                          ToolTip="{Binding KeyHint}"
+                                                          IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </WrapPanel>
+                                <TextBlock Text="{Binding CardGroupRowHint, RelativeSource={RelativeSource AncestorType=Window}}"
+                                           TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"/>
                                 <Border Background="#FFF8E1" BorderBrush="#F0D48A" BorderThickness="1" Padding="6" Margin="0,0,0,6">
                                     <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontSize="11"
                                                Text="类型 / 稀有度固定 Curse，效果写在右边 —— 触发时机是「在你的回合结束时，如果这张牌还在你的手牌中」（本体受伤 / 疑虑 / 苦恼 / 厄运都是这么做的）。费用默认 -1 = 打不出去（生成时自动加上本体的「不能被打出」）；填 ≥ 0 = 这张牌**能打出去**，这时不再强制「不能被打出」—— 但效果仍然在回合结束时触发，所以打出去本身不做事（只是能把它从手里丢掉）。"/>
@@ -2459,10 +2480,31 @@
                         </Grid.ColumnDefinitions>
                         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="0,0,6,0">
                             <StackPanel>
-                                <TextBlock Text="先古卡属性" FontWeight="Bold" Margin="0,0,0,6"
-                                           Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
-                                <TextBlock Text="状态卡属性" FontWeight="Bold" Margin="0,0,0,6"
-                                           Visibility="{Binding IsStatusCard, Converter={StaticResource BoolToVis}}"/>
+                                <!-- V0.3.135（用户要求）：先古卡 / 状态卡的「卡牌属性」右边也和卡牌页一样能勾选加入组。
+                                     先古卡和状态卡共用这一块详情，所以两边都绑 SpecialCardGroupRows
+                                     （= 当前选中的那张先古卡 / 状态卡 + 每一个组）。 -->
+                                <WrapPanel Margin="0,0,0,2">
+                                    <TextBlock Text="先古卡属性" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,0,4"
+                                               Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}"/>
+                                    <TextBlock Text="状态卡属性" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,0,4"
+                                               Visibility="{Binding IsStatusCard, Converter={StaticResource BoolToVis}}"/>
+                                    <TextBlock Text="组：" Margin="16,0,4,0" VerticalAlignment="Center" FontWeight="Bold"/>
+                                    <ItemsControl ItemsSource="{Binding SpecialCardGroupRows, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                  VerticalAlignment="Center">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <CheckBox Style="{StaticResource Check}" Content="{Binding Name}"
+                                                          ToolTip="{Binding KeyHint}"
+                                                          IsChecked="{Binding IsChecked, Mode=TwoWay}"/>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </WrapPanel>
+                                <TextBlock Text="{Binding CardGroupRowHint, RelativeSource={RelativeSource AncestorType=Window}}"
+                                           TextWrapping="Wrap" Foreground="#888" FontSize="11" Margin="0,0,0,4"/>
                                 <Border Background="#FFF8E1" BorderBrush="#F0D48A" BorderThickness="1" Padding="6" Margin="0,0,0,6"
                                         Visibility="{Binding IsAncientCard, Converter={StaticResource BoolToVis}}">
                                     <TextBlock TextWrapping="Wrap" Foreground="#7A5A00" FontSize="11"
