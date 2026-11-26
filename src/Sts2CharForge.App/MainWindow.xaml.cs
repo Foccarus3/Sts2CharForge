@@ -3991,7 +3991,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		ApplyUiSystemColors();
 		if (_uiDarkMode) ApplyDarkTheme(this);
 			// 参数参考是独立 Window，不在本窗口的可视树里，单独刷一次
-			if (_paramReference is { IsLoaded: true }) ApplyDarkTheme(_paramReference);
+			if (_paramReference is { IsLoaded: true }) ApplyAuxTheme(_paramReference);
 			// 深色递归可能碰到顶栏 / 状态栏，最后再压一次主框架颜色
 			ApplyUiBackgroundAndChrome();
 		}
@@ -4055,8 +4055,22 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// <summary>独立窗口（参数参考）也要跟主窗主题；由 ParamReferenceWindow 在 Loaded 时调用。</summary>
 	internal static void ApplyThemeToAuxWindow(Window window)
 	{
-		if (Application.Current?.MainWindow is MainWindow main && main._uiDarkMode)
-			main.ApplyDarkTheme(window);
+		if (Application.Current?.MainWindow is MainWindow main) main.ApplyAuxTheme(window);
+	}
+
+	private void ApplyAuxTheme(Window window)
+	{
+		if (_uiDarkMode)
+		{
+			ApplyDarkTheme(window);
+		}
+		else
+		{
+			// 从深色切回浅色：先把深色时记下的局部值还原，再让动态资源接管。
+			RestoreUiThemeValues();
+			window.SetResourceReference(Window.BackgroundProperty, "UiWindowBg");
+			window.SetResourceReference(Window.ForegroundProperty, "UiText");
+		}
 	}
 
 	private void ApplyUiBackgroundAndChrome()

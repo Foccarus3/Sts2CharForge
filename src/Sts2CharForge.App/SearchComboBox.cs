@@ -127,7 +127,7 @@ public sealed class SearchComboBox : Grid
         _scroll.IsTabStop = false;
         _panel.Focusable = false;
         _panel.IsHitTestVisible = true;
-        _panel.Background = Brushes.White;
+        _panel.SetResourceReference(Panel.BackgroundProperty, "UiFieldBg");
         _panel.Margin = new Thickness(0);
 
         _popup.Child = _scroll;
@@ -266,7 +266,7 @@ public sealed class SearchComboBox : Grid
 
     private void UpdateHighlightVisual()
     {
-        var hl = new SolidColorBrush(Color.FromRgb(0xCF, 0xE4, 0xFF));
+        var hl = (Application.Current?.TryFindResource("UiBorder") as Brush) ?? new SolidColorBrush(Color.FromRgb(0xCF, 0xE4, 0xFF));
         for (int i = 0; i < _rows.Count; i++)
             _rows[i].Background = i == _highlight ? hl : Brushes.Transparent;
     }

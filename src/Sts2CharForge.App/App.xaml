@@ -23,6 +23,41 @@
         <SolidColorBrush x:Key="UiMuted" Color="#666666"/>
         <SolidColorBrush x:Key="UiAccent" Color="#1F4E79"/>
 
+        <!-- WPF 默认 ComboBox 模板里有自己的白底 ToggleButton；只改 Background 不生效。
+             这里用一套简单的主题模板，保证输入框 / 下拉列表 / 箭头都吃 UiFieldBg / UiBorder。 -->
+        <ControlTemplate x:Key="ThemedComboBoxTemplate" TargetType="ComboBox">
+            <Grid>
+                <ToggleButton x:Name="ToggleButton" Focusable="False" ClickMode="Press"
+                              IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}">
+                    <ToggleButton.Template>
+                        <ControlTemplate TargetType="ToggleButton">
+                            <Border x:Name="Bd" Background="{DynamicResource UiFieldBg}"
+                                    BorderBrush="{DynamicResource UiBorder}" BorderThickness="1" CornerRadius="2">
+                                <Path HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,7,0"
+                                      Data="M 0 0 L 8 0 L 4 5 Z" Fill="{DynamicResource UiMuted}"/>
+                            </Border>
+                        </ControlTemplate>
+                    </ToggleButton.Template>
+                </ToggleButton>
+                <ContentPresenter Margin="6,3,28,3" VerticalAlignment="Center" IsHitTestVisible="False"
+                                  Content="{TemplateBinding SelectionBoxItem}"
+                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"/>
+                <Popup x:Name="PART_Popup" Placement="Bottom" PlacementTarget="{Binding RelativeSource={RelativeSource TemplatedParent}}"
+                       IsOpen="{TemplateBinding IsDropDownOpen}" AllowsTransparency="True" Focusable="False"
+                       PopupAnimation="Slide" StaysOpen="False">
+                    <Border Background="{DynamicResource UiFieldBg}" BorderBrush="{DynamicResource UiBorder}"
+                            BorderThickness="1" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                            MaxHeight="320">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      CanContentScroll="True">
+                            <ItemsPresenter/>
+                        </ScrollViewer>
+                    </Border>
+                </Popup>
+            </Grid>
+        </ControlTemplate>
+
         <!-- 隐式样式：没有显式 Style 的控件也吃主题色（默认 WPF 模板不再固定白底） -->
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
@@ -37,10 +72,29 @@
             <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
             <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+            <Setter Property="Template" Value="{StaticResource ThemedComboBoxTemplate}"/>
         </Style>
         <Style TargetType="ComboBoxItem">
             <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
             <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
+            <Setter Property="Padding" Value="6,3"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiBorder}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiBorder}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="Button">
             <Setter Property="Background" Value="{DynamicResource UiChromeBg}"/>
@@ -66,6 +120,28 @@
         <Style TargetType="TabItem">
             <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
             <Setter Property="Foreground" Value="{DynamicResource UiText}"/>
+            <Setter Property="Padding" Value="10,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd" Background="{TemplateBinding Background}"
+                                BorderBrush="{DynamicResource UiBorder}" BorderThickness="0,0,1,1"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter ContentSource="Header" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiChromeBg}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{DynamicResource UiText}"/>
+                                <Setter Property="FontWeight" Value="Bold"/>
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{DynamicResource UiChromeBg}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
         </Style>
         <Style TargetType="GroupBox">
             <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
@@ -137,6 +213,7 @@
             <Setter Property="Background" Value="{DynamicResource UiFieldBg}"/>
             <Setter Property="Foreground" Value="{DynamicResource UiFieldFg}"/>
             <Setter Property="BorderBrush" Value="{DynamicResource UiBorder}"/>
+            <Setter Property="Template" Value="{StaticResource ThemedComboBoxTemplate}"/>
         </Style>
         <Style TargetType="CheckBox" x:Key="Check">
             <Setter Property="Margin" Value="0,4,12,4"/>
