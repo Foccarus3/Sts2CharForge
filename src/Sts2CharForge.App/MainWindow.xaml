@@ -3536,47 +3536,66 @@
                                     <TextBlock x:Name="AnimOffsetReadout" Margin="0,4,0,0" TextWrapping="Wrap"
                                                FontSize="12" FontWeight="Bold" Foreground="#0A7" Text=""
                                                ToolTip="瞄点 = 静态立绘的 Sprite 原点（立绘中心，蓝点 + 十字）。偏移 0 = 帧动画与立绘完全重合；X 正数往右、Y 正数往下，单位是立绘像素。"/>
+                                    <!-- V0.3.138（用户要求「让动画页的参数调整每一个可以单独设置而不是共享一个设置」）：
+                                         这四项搬到**每个动作自己的详情里** —— 选中哪个动作就是在调哪个动作，互不影响。
+                                         没有单独设过的动作仍用全局默认（老存档一个字节都不变）。
+                                         总开关没勾时整块收起来（和以前「设置区只在启用后显示」一致）。 -->
+                                    <StackPanel Visibility="{Binding Profile.Animation.Enabled, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Margin="0,12,0,4" FontWeight="Bold" Text="这个动作的参数（每个动作单独设置）"/>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="缩放（0 = 按静态立绘高度自动算）" Style="{StaticResource Label}"/>
+                                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                                 Text="{Binding AnimSlotScaleText, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="X 偏移（立绘像素，正数往右；相对瞄点）" Style="{StaticResource Label}"/>
+                                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                                 Text="{Binding AnimSlotXOffsetText, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="Y 偏移（立绘像素；0 = 自动：让帧内内容底边落在立绘底边上）" Style="{StaticResource Label}"/>
+                                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                                 Text="{Binding AnimSlotYOffsetText, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,4">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Grid.Column="0" Text="播放速度系数（1 = 动图原速，2 = 双倍速）" Style="{StaticResource Label}"/>
+                                        <TextBox Grid.Column="1" Style="{StaticResource Field}"
+                                                 Text="{Binding AnimSlotSpeedScaleText, RelativeSource={RelativeSource AncestorType=Window}, UpdateSourceTrigger=PropertyChanged}"/>
+                                    </Grid>
+                                    <WrapPanel Margin="0,4,0,0">
+                                        <Button Content="套到全部动作" Padding="10,4" Margin="0,0,8,0" Click="OnAnimParamsApplyToAll"
+                                                ToolTip="把这一格现在的四项值复制给 7 个动作（以后想统一调整时用）。"/>
+                                        <Button Content="这个动作跟随全局" Padding="10,4" Click="OnAnimParamsFollowGlobal"
+                                                ToolTip="删掉这个动作的单独设置，回到「全局默认」（全局默认就是改之前大家共用的那一套）。"/>
+                                    </WrapPanel>
+                                    <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#666"
+                                               Text="{Binding AnimSlotParamsHint, RelativeSource={RelativeSource AncestorType=Window}}"/>
+                                    </StackPanel>
                                     <TextBlock Margin="0,6,0,0" TextWrapping="Wrap" FontSize="11" Foreground="#B60"
                                                Text="{Binding FrameNote}"/>
                                 </StackPanel>
                             </Border>
-                            <!-- 设置区：没勾总开关时整块不显示（ContentControl 只负责把 DataContext 换成 AnimationSpec，
-                                 这样里面每一行都能直接绑字段名）。 -->
+                            <!-- 计划预览区：没勾总开关时整块不显示（ContentControl 只负责把 DataContext 换成 AnimationSpec）。
+                                 V0.3.138：原来这四行数值框在这里（7 个动作共用一套），现在搬到上面「每个动作自己的详情」里了。 -->
                             <ContentControl Margin="0,10,0,0" DataContext="{Binding Profile.Animation}">
                                 <Border BorderBrush="#DDD" BorderThickness="1" Padding="10"
                                         Visibility="{Binding Enabled, Converter={StaticResource BoolToVis}}">
                                     <StackPanel>
                                         <TextBlock Margin="0,4,0,6" TextWrapping="Wrap" FontSize="11" Foreground="#666"
-                                                   Text="四项直接填数值，小数也行（例：缩放 0.85、X 偏移 -12.5）；改完预览立刻跟着变。预览里半透明的就是静态立绘，蓝点 = 瞄点（立绘中心的 Sprite 原点），偏移 0 = 帧动画与立绘完全重合。"/>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="缩放（0 = 按静态立绘高度自动算）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding ScaleText, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="X 偏移（立绘像素，正数往右；相对瞄点）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding XOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="Y 偏移（立绘像素；0 = 自动：让帧内内容底边落在立绘底边上）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding YOffsetText, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <Grid Margin="0,0,0,4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/><ColumnDefinition Width="90"/><ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Grid.Column="0" Text="播放速度系数（1 = 动图原速，2 = 双倍速）" Style="{StaticResource Label}"/>
-                                            <TextBox Grid.Column="1" Style="{StaticResource Field}" Text="{Binding SpeedScaleText, UpdateSourceTrigger=PropertyChanged}"/>
-                                        </Grid>
-                                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                                   Text="上面每个动作的「缩放 / X / Y / 速度」都是各管各的；没单独设过的动作用全局默认。预览里半透明的就是静态立绘，蓝点 = 瞄点（立绘中心的 Sprite 原点），偏移 0 = 帧动画与立绘完全重合。"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,0">
                                             <Button Content="预览动画计划" Padding="10,4" FontWeight="Bold" Click="OnAnimPlanPreview"
                                                     ToolTip="真的解一遍动图，把裁剪框 / 帧数 / 每帧时长 / 缩放 / 位置 / 提示行列出来。只算不写文件。"/>
                                         </StackPanel>

@@ -106,14 +106,6 @@ public static partial class AnimFramesGen
         int w = x1 - x0;
         int h = y1 - y0;
 
-        foreach (var (anim, path, gif, loop, die) in decoded)
-        {
-            double seconds = a.FrameSeconds > 0 ? a.FrameSeconds : AverageSeconds(gif);
-            string note = gif.Frames.Count + " 帧";
-            if (gif.Frames.Count == 1) note += "（只有 1 帧 = 静止图）";
-            anims.Add(new AnimPlan(anim, path, loop, die, w, h, gif.Frames.Count, seconds, note));
-        }
-
         double scale = a.Scale;
         if (!(scale > 0))
         {
@@ -128,6 +120,28 @@ public static partial class AnimFramesGen
         {
             yOffset = AutoYOffset(idle, 0, y0, y1, scale);
             notes.Add($"yOffset 自动：{yOffset.ToString("0.#", CultureInfo.InvariantCulture)}（让帧内内容底边落在静态立绘底边所在的位置）");
+        }
+
+        // V0.3.138（用户要求「每个动作的参数单独设」）：每个动作各算一套缩放 / X / Y / 速度。
+        // 没单独设过（老存档）就是全局值，生成结果和以前一模一样。
+        foreach (var (anim, path, gif, loop, die) in decoded)
+        {
+            double seconds = a.FrameSeconds > 0 ? a.FrameSeconds : AverageSeconds(gif);
+            string note = gif.Frames.Count + " 帧";
+            if (gif.Frames.Count == 1) note += "（只有 1 帧 = 静止图）";
+
+            double animScale = a.ScaleOf(anim);
+            bool animScaleAuto = !(animScale > 0);
+            if (animScaleAuto) animScale = scale;      // 自动 = 和全局同一个自动值（裁剪框是共用的）
+            double animX = a.XOffsetOf(anim);
+            double animY = a.YOffsetOf(anim);
+            if (Math.Abs(animY) < 1e-9) animY = yOffset;   // 0 = 自动，和全局同口径
+            double animSpeed = a.SpeedScaleOf(anim);
+            if (!(animSpeed > 0)) animSpeed = 1;
+            if (animScaleAuto) note += "（缩放自动）";
+
+            anims.Add(new AnimPlan(anim, path, loop, die, w, h, gif.Frames.Count, seconds, note,
+                animScale, animX, animY, animSpeed));
         }
 
         if (!anims.Any(x => x.Anim == "idle_loop"))
@@ -523,8 +537,10 @@ public static partial class AnimFramesGen
     }
 
     /// <summary>算一份预览几何；没配待机素材（解不开）时返回 null。</summary>
+    /// <param name="anim">V0.3.138：要对哪个动作预览（它的缩放 / 偏移可能单独设过）；null = 用全局值。</param>
     public static PreviewGeometry? PreviewGeometryOf(CharacterProfile p,
-        IReadOnlyList<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)> slots)
+        IReadOnlyList<(string Anim, string Path, GifFrames.Result Gif, bool Loop, bool HoldAtEnd)> slots,
+        string? anim = null)
     {
         var a = p.Animation;
         GifFrames.Result? idle = null;
@@ -532,7 +548,7 @@ public static partial class AnimFramesGen
         if (idle is null || idle.Frames.Count == 0) return null;
 
         (int x0, int y0, int x1, int y1) = AutoCrop(idle, idle.Width, idle.Height, slots.ToList());
-        double planScale = a.Scale;
+        double planScale = anim is null ? a.Scale : a.ScaleOf(anim);
         bool scaleAuto = !(planScale > 0);
         int staticH = StaticArtHeight(p);
         if (scaleAuto)
@@ -540,7 +556,8 @@ public static partial class AnimFramesGen
             int contentH = ContentHeight(idle, 0, x0, y0, x1, y1);
             planScale = contentH <= 0 || staticH <= 0 ? 1 : (double)staticH / contentH;
         }
-        double yOffset = a.YOffset;
+        double xOffset = anim is null ? a.XOffset : a.XOffsetOf(anim);
+        double yOffset = anim is null ? a.YOffset : a.YOffsetOf(anim);
         bool yAuto = Math.Abs(yOffset) < 1e-9;
         if (yAuto) yOffset = AutoYOffset(idle, 0, y0, y1, planScale);
 
@@ -552,8 +569,8 @@ public static partial class AnimFramesGen
         return new PreviewGeometry(
             staticW, staticH2, staticScale, spriteW, spriteH,
             x0, y0, x1, y1, planScale, scaleAuto,
-            a.XOffset, yOffset, yAuto,
-            frameW, frameH, a.XOffset * staticScale, yOffset * staticScale);
+            xOffset, yOffset, yAuto,
+            frameW, frameH, xOffset * staticScale, yOffset * staticScale);
     }
     /// <summary>一帧的平均显示时长（秒）。没有帧时给 1/30 秒，免得除出 0 让游戏里「每帧 0 秒」空转。</summary>
     public static double AverageSeconds(GifFrames.Result gif)

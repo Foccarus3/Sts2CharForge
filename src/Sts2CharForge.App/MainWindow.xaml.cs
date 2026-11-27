@@ -482,7 +482,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 			HookAnimationSpec();
 		// V0.2.333：界面一出来就重建一次预览（以前只有点「预览动画计划」/ 保存时才建 → 看着像「改了没反应」）
 		Loaded += (_, _) => { try { RebuildAnimPreview(); } catch { } };
-		AnimList.SelectionChanged += (_, _) => { try { RebuildAnimPreview(); } catch { } };
+		AnimList.SelectionChanged += (_, _) =>
+		{
+			try { RebuildAnimPreview(); } catch { }
+			// V0.3.138：每个动作的参数是各管各的 —— 换选中项要把那四格文本换成这个动作的值
+			try { RaiseAnimSlotParamTexts(); } catch { }
+		};
 			// 「本体关键词改名」是固定 7 行的表格：换存档时把缺的行补齐并接上事件
 			EnsureKeywordRenameRows();
 			// 「自定义参数 / 组」两页：换存档要重新挂监听（列表里的显示文字是算出来的）
@@ -11171,6 +11176,173 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		{
 			slot.Load(_profile.Animation);
 		}
+		RaiseAnimSlotParamTexts();
+	}
+
+	// ==================== V0.3.138：每个动作自己的四项参数 ====================
+	// 用户原话：「让动画页的参数调整每一个可以单独设置而不是共享一个设置」。
+	// 界面上这四格显示的是**当前选中动作最终生效的值**：单独设过就是它自己的，没设过就是全局默认；
+	// 改任何一格 → 写进 AnimationSpec.SlotParams[这个动作]，只影响这一个动作；
+	// 「这个动作跟随全局」= 删掉这条覆盖（老存档一个字节都不变，生成结果也和以前一样）。
+
+	private enum AnimParamField { Scale, XOffset, YOffset, SpeedScale }
+
+	/// <summary>当前选中的动画槽位（没选中就 null）。</summary>
+	private AnimSlot? SelectedAnimSlot => AnimList?.SelectedItem as AnimSlot;
+
+	public string AnimSlotScaleText
+	{
+		get => AnimSlotValueText(AnimParamField.Scale, _profile.Animation.Scale);
+		set => AnimSlotSetText(AnimParamField.Scale, value);
+	}
+
+	public string AnimSlotXOffsetText
+	{
+		get => AnimSlotValueText(AnimParamField.XOffset, _profile.Animation.XOffset);
+		set => AnimSlotSetText(AnimParamField.XOffset, value);
+	}
+
+	public string AnimSlotYOffsetText
+	{
+		get => AnimSlotValueText(AnimParamField.YOffset, _profile.Animation.YOffset);
+		set => AnimSlotSetText(AnimParamField.YOffset, value);
+	}
+
+	public string AnimSlotSpeedScaleText
+	{
+		get => AnimSlotValueText(AnimParamField.SpeedScale, _profile.Animation.SpeedScale);
+		set => AnimSlotSetText(AnimParamField.SpeedScale, value);
+	}
+
+	/// <summary>这个动作是不是单独设过（决定提示文字）。</summary>
+	public bool AnimSlotHasOwnParams
+	{
+		get
+		{
+			if (SelectedAnimSlot is not { } slot) return false;
+			return _profile.Animation.ParamsOf(slot.AnimName) is { } p && p.HasAny;
+		}
+	}
+
+	/// <summary>参数区下面那句小字：跟随全局时把全局默认值写出来，单独设过就说清怎么恢复。</summary>
+	public string AnimSlotParamsHint
+	{
+		get
+		{
+			var a = _profile.Animation;
+			string global = $"全局默认：缩放 {AnimationSpec.NumText(a.Scale)}、X {AnimationSpec.NumText(a.XOffset)}、"
+				+ $"Y {AnimationSpec.NumText(a.YOffset)}、速度 {AnimationSpec.NumText(a.SpeedScale)}×";
+			return AnimSlotHasOwnParams
+				? "这一格已单独设置（只影响这个动作）。" + global + "；点「这个动作跟随全局」可恢复。"
+				: "这一格跟随全局。" + global + "。";
+		}
+	}
+
+	/// <summary>这一格显示的文本：单独设过 = 它自己的值，没设过 = 全局值（所以框里永远能看到一个数）。</summary>
+	private string AnimSlotValueText(AnimParamField field, double global)
+	{
+		if (SelectedAnimSlot is not { } slot) return "";
+		var p = _profile.Animation.ParamsOf(slot.AnimName);
+		double? v = field switch
+		{
+			AnimParamField.Scale => p?.Scale,
+			AnimParamField.XOffset => p?.XOffset,
+			AnimParamField.YOffset => p?.YOffset,
+			_ => p?.SpeedScale,
+		};
+		return AnimationSpec.NumText(v ?? global);
+	}
+
+	/// <summary>改一格：写进这个动作自己的覆盖里（清空 = 这一项回到跟随全局）。</summary>
+	private void AnimSlotSetText(AnimParamField field, string? text)
+	{
+		if (SelectedAnimSlot is not { } slot) return;
+		var a = _profile.Animation;
+		string t = (text ?? "").Trim();
+		AnimSlotParams p = a.EnsureParams(slot.AnimName);   // 第一次改 → 按当前全局值建一份，其余三项不变
+		bool ok = AnimationSpec.TryNum(t, out double v);
+		// 空串 = 这一项跟随全局；乱写 = 保持原值（别把用户正在输入的中间态清掉）
+		double? next;
+		if (t.Length == 0) next = null;
+		else if (ok) next = v;
+		else return;
+		switch (field)
+		{
+			case AnimParamField.Scale: p.Scale = next; break;
+			case AnimParamField.XOffset: p.XOffset = next; break;
+			case AnimParamField.YOffset: p.YOffset = next; break;
+			case AnimParamField.SpeedScale: p.SpeedScale = next; break;
+		}
+		RaiseAnimSlotParamTexts();
+		OnAnimSlotParamsChanged(slot.AnimName);
+	}
+
+	/// <summary>把四格文本 + 提示重新读一遍（切动作 / 改参数 / 恢复全局之后）。</summary>
+	private void RaiseAnimSlotParamTexts()
+	{
+		Raise(nameof(AnimSlotScaleText));
+		Raise(nameof(AnimSlotXOffsetText));
+		Raise(nameof(AnimSlotYOffsetText));
+		Raise(nameof(AnimSlotSpeedScaleText));
+		Raise(nameof(AnimSlotHasOwnParams));
+		Raise(nameof(AnimSlotParamsHint));
+	}
+
+	/// <summary>动作参数改动后：诊断行 + 让上一份计划过期 + 预览立刻跟着变。</summary>
+	private void OnAnimSlotParamsChanged(string anim)
+	{
+		_animDiagSeq++;
+		_diagSeqStatic++;
+		AnimSettingDiag = $"动画参数改动 #{_animDiagSeq}（本次运行累计 {_diagSeqStatic}）：动作 {anim}"
+			+ (SelectedAnimSlot is { } slot
+				? $"（缩放 {AnimationSpec.NumText(_profile.Animation.ScaleOf(slot.AnimName))}"
+				  + $" / 速度 {AnimationSpec.NumText(_profile.Animation.SpeedScaleOf(slot.AnimName))}）"
+				: "");
+		Raise(nameof(AnimSettingDiag));
+		AnimPlanText = "（设置改过了，点「预览动画计划」重新算一遍）";
+		Raise(nameof(AnimPlanText));
+		try
+		{
+			if (AnimPreviewOverlay is not null)
+			{
+				RefreshAnimPreviewLayout();
+				StartAnimPreviewTimer();
+			}
+		}
+		catch
+		{
+			// 预览只是辅助显示，出问题不能把编辑搞崩
+		}
+	}
+
+	/// <summary>把这一格现在的四项值复制给全部 7 个动作（想统一时用，改完仍可各自动）。</summary>
+	private void OnAnimParamsApplyToAll(object sender, RoutedEventArgs e)
+	{
+		if (SelectedAnimSlot is not { } slot) return;
+		var a = _profile.Animation;
+		double s = a.ScaleOf(slot.AnimName), x = a.XOffsetOf(slot.AnimName);
+		double y = a.YOffsetOf(slot.AnimName), sp = a.SpeedScaleOf(slot.AnimName);
+		foreach (AnimSlot one in AnimSlots)
+		{
+			AnimSlotParams p = a.EnsureParams(one.AnimName);
+			p.Scale = s;
+			p.XOffset = x;
+			p.YOffset = y;
+			p.SpeedScale = sp;
+		}
+		RaiseAnimSlotParamTexts();
+		OnAnimSlotParamsChanged(slot.AnimName);
+		SetStatus($"已把「{slot.Name}」的四项参数套到全部 {AnimSlots.Count} 个动作。");
+	}
+
+	/// <summary>这个动作回到跟随全局（删掉它的单独设置）。</summary>
+	private void OnAnimParamsFollowGlobal(object sender, RoutedEventArgs e)
+	{
+		if (SelectedAnimSlot is not { } slot) return;
+		_profile.Animation.ClearParams(slot.AnimName);
+		RaiseAnimSlotParamTexts();
+		OnAnimSlotParamsChanged(slot.AnimName);
+		SetStatus($"「{slot.Name}」已恢复成跟随全局默认。");
 	}
 
 	/// <summary>把界面上的 7 个动画槽位写回内存配置（生成 / 保存之前都要先做一次）。</summary>
@@ -11227,8 +11399,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	private void RefreshAnimPreviewLayout()
 	{
 		var anim = _profile.Animation;
+		// V0.3.138：预览跟着**当前选中的那个动作**的参数走（每个动作可以单独设置）。
+		string? selAnim = (AnimList?.SelectedItem as AnimSlot)?.AnimName;
 		// V0.2.345：这行读数**不依赖动图**（还没上传素材时也能看到自己填的偏移对不对），所以放在最前面更新。
-		if (AnimOffsetReadout is not null) AnimOffsetReadout.Text = OffsetReadoutText(anim);
+		if (AnimOffsetReadout is not null) AnimOffsetReadout.Text = OffsetReadoutText(anim, selAnim);
 		AnimPreviewOverlay.Children.Clear();
 		AnimPreviewImage.Source = null;      // V0.2.347：立绘 + 帧图都改由 overlay 自己画，这张单图不再用
 		_animPreviewGeo = null;
@@ -11239,7 +11413,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		//   帧动画中心 = 瞄点 + (X 偏移, Y 偏移) × 立绘缩放；帧图尺寸 = 裁剪框 × 自动缩放 × 立绘缩放。
 		// 血条**不再画、也不再当参照**：它由本体按角色视觉场景里的 %Bounds 摆，垂直位置来自战斗场景布局，
 		// 和我们的偏移毫无关系（NHealthBar.UpdateLayoutForCreatureBounds 只改 X / 宽度）。
-		var geo = AnimFramesGen.PreviewGeometryOf(_profile, AnimSlotGifsForPreview());
+		var geo = AnimFramesGen.PreviewGeometryOf(_profile, AnimSlotGifsForPreview(), selAnim);
 		if (geo is null)
 		{
 			AnimPreviewHost.Width = 220;
@@ -11431,12 +11605,14 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// 偏移 0 = 帧动画与立绘**完全重合**。X 正数往右、Y 正数往下，单位是立绘像素（写进游戏再乘立绘缩放）。
 	/// Y 填 0 是「自动」那一档（让帧内内容底边落在立绘底边上），所以 0 要单独说明。
 	/// </summary>
-	internal static string OffsetReadoutText(AnimationSpec anim)
+	internal static string OffsetReadoutText(AnimationSpec anim, string? animName = null)
 	{
-		string x = Math.Abs(anim.XOffset) < 0.005 ? "0（水平居中，和立绘对齐）"
-			: $"{FmtSigned(anim.XOffset)}（{(anim.XOffset > 0 ? "向右" : "向左")}）";
-		string y = Math.Abs(anim.YOffset) < 0.005 ? "0 = 自动（让帧内内容底边落在立绘底边上）"
-			: $"{FmtSigned(anim.YOffset)}（{(anim.YOffset > 0 ? "向下" : "向上")}）";
+		double xOff = animName is null ? anim.XOffset : anim.XOffsetOf(animName);
+		double yOff = animName is null ? anim.YOffset : anim.YOffsetOf(animName);
+		string x = Math.Abs(xOff) < 0.005 ? "0（水平居中，和立绘对齐）"
+			: $"{FmtSigned(xOff)}（{(xOff > 0 ? "向右" : "向左")}）";
+		string y = Math.Abs(yOff) < 0.005 ? "0 = 自动（让帧内内容底边落在立绘底边上）"
+			: $"{FmtSigned(yOff)}（{(yOff > 0 ? "向下" : "向上")}）";
 		return $"相对瞄点：X {x} · Y {y}（立绘像素）   —— 瞄点 = 静态立绘的 Sprite 原点（立绘中心），偏移 0 = 帧动画与立绘完全重合";
 	}
 	/// <summary>预览画布上的一个小数字标签（画在画布的 Canvas 上，跟着缩放走）。</summary>
@@ -11461,7 +11637,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		_animPreviewTimer.Stop();
 		if (!_animPreviewPlaying || _animPreviewFrames.Count < 2) return;
 		int delay = _animPreviewDelays.Count > _animPreviewIndex ? _animPreviewDelays[_animPreviewIndex] : 100;
-		double speed = _profile.Animation.SpeedScale > 0 ? _profile.Animation.SpeedScale : 1;
+		// V0.3.138：预览速度也按当前选中动作自己的速度系数（没单独设过 = 全局值）。
+		string? selAnim = (AnimList?.SelectedItem as AnimSlot)?.AnimName;
+		double speedRaw = selAnim is null ? _profile.Animation.SpeedScale : _profile.Animation.SpeedScaleOf(selAnim);
+		double speed = speedRaw > 0 ? speedRaw : 1;
 		_animPreviewTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(16, delay / speed));
 		_animPreviewTimer.Tick -= OnAnimPreviewTick;
 		_animPreviewTimer.Tick += OnAnimPreviewTick;
@@ -11625,17 +11804,19 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		else
 		{
 			sb2.AppendLine($"裁剪框：{plan.CropX0},{plan.CropY0} .. {plan.CropX1},{plan.CropY1}（x1/y1 是开区间）＝ {plan.Width}×{plan.Height}"
-				+ (string.IsNullOrWhiteSpace(a.ManualCrop) ? "（自动：所有动作所有帧的并集）" : "（界面手动指定）"));
-			sb2.AppendLine("缩放：" + plan.Scale.ToString("0.###", CultureInfo.InvariantCulture)
-				+ "　Y 偏移：" + plan.YOffset.ToString("0.###", CultureInfo.InvariantCulture)
-				+ "　（填了就用填的；0 = 自动让脚落在静态立绘底边）");
+				+ (string.IsNullOrWhiteSpace(a.ManualCrop) ? "（自动：所有动作所有帧的并集；7 个动作共用这一个框）" : "（界面手动指定）"));
+			sb2.AppendLine("V0.3.138：缩放 / X / Y / 速度**每个动作各用各的** —— 下面每个动作那一行写的就是它自己的值。");
 			sb2.AppendLine();
-			sb2.AppendLine("动作（每帧时长是计划值；游戏里实际每帧 = 它 ÷ 速度系数）：");
+			sb2.AppendLine("动作（每帧时长是计划值；游戏里实际每帧 = 它 ÷ 这个动作的速度系数）：");
 			foreach (AnimFramesGen.AnimPlan one in plan.Anims)
 			{
 				string kind = one.HoldAtEnd ? "播完定格" : (one.Loop ? "循环" : "播完回待机");
 				sb2.AppendLine($"  {one.Anim,-16} {one.FrameCount,3} 帧  {one.Width}×{one.Height}  "
-					+ $"每帧 {one.FrameSeconds.ToString("0.#####", CultureInfo.InvariantCulture)} 秒  {kind}  {one.Note}");
+					+ $"每帧 {one.FrameSeconds.ToString("0.#####", CultureInfo.InvariantCulture)} 秒  "
+					+ $"缩放 {one.Scale.ToString("0.###", CultureInfo.InvariantCulture)}"
+					+ $" X {one.XOffset.ToString("0.##", CultureInfo.InvariantCulture)}"
+					+ $" Y {one.YOffset.ToString("0.##", CultureInfo.InvariantCulture)}"
+					+ $" 速度 {one.SpeedScale.ToString("0.###", CultureInfo.InvariantCulture)}×  {kind}  {one.Note}");
 			}
 		}
 		sb2.AppendLine();
@@ -41535,6 +41716,7 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			bool animOldEnabled = Profile.Animation.Enabled;
 			string animOldIdle = Profile.Animation.Idle;
 			string? animOldSlot0Path = AnimSlots[0].Path;
+			string? animOldSlot1Path = AnimSlots[1].Path;   // V0.3.138：这一段也会动「攻击」那一格
 			string animTempProfile = Path.Combine(animGifDir, "anim_selftest.json");
 			ProfileFactory.Save(_profile, animTempProfile);
 			_currentProfilePath = animTempProfile;
@@ -41616,10 +41798,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					keepSpec.XOffsetText = "";      // 清空：同样保持原值
 					Check("V0.2.345：乱写 / 清空不会把数值改坏（保持上一次的合法值）",
 						Math.Abs(keepSpec.Scale - 1.5) < 1e-9 && Math.Abs(keepSpec.XOffset - 7) < 1e-9, $"缩放 {keepSpec.Scale} / X {keepSpec.XOffset}");
-					Check("V0.2.345：四个框绑的是文本属性（ScaleText / XOffsetText / YOffsetText / SpeedScaleText），不是 double 本体",
-						HasBoxBoundTo(animRoot, "ScaleText") && HasBoxBoundTo(animRoot, "XOffsetText")
-						&& HasBoxBoundTo(animRoot, "YOffsetText") && HasBoxBoundTo(animRoot, "SpeedScaleText")
-						&& !HasBoxBoundTo(animRoot, "Scale") && !HasBoxBoundTo(animRoot, "SpeedScale"), "绑对了");
+					Check("V0.3.138：四个框绑的是**当前选中动作**的文本属性（AnimSlotScaleText 等），不是全局四格",
+						HasBoxBoundTo(animRoot, "AnimSlotScaleText") && HasBoxBoundTo(animRoot, "AnimSlotXOffsetText")
+						&& HasBoxBoundTo(animRoot, "AnimSlotYOffsetText") && HasBoxBoundTo(animRoot, "AnimSlotSpeedScaleText")
+						&& !HasBoxBoundTo(animRoot, "ScaleText") && !HasBoxBoundTo(animRoot, "SpeedScaleText"), "绑对了");
 					var rtProfile = ProfileFactory.Sample();
 					rtProfile.Animation.Scale = 0.85;
 					rtProfile.Animation.XOffset = -12.5;
@@ -41639,7 +41821,107 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.2.345：改一下 X 偏移 → 预览那行读数**立刻**跟着变（以前预览根本不动）",
 						(AnimOffsetReadout?.Text ?? "").Contains("X +20.5（向右）"), AnimOffsetReadout?.Text ?? "(空)");
 					Profile.Animation.XOffset = 0;
-				}				// ----- V0.2.347：预览的参照物换成静态立绘（用户指出「蓝点不是血条中心」）-----
+				}
+				// ----- V0.3.138（用户要求「让动画页的参数调整每一个可以单独设置而不是共享一个设置」）-----
+				{
+					Profile.Animation.Enabled = true;
+					AnimSlots[0].Path = animIdle;
+					AnimSlots[0].Save(Profile.Animation);
+					AnimSlots[1].Path = animAttack;
+					AnimSlots[1].Save(Profile.Animation);
+					SyncAnimSlotsFromProfile();
+					Profile.Animation.SlotParams.Clear();
+					Profile.Animation.Scale = 0;
+					Profile.Animation.XOffset = 0;
+					Profile.Animation.YOffset = 0;
+					Profile.Animation.SpeedScale = 1;
+
+					// ① 选中待机：四格显示全局默认；提示说「跟随全局」
+					AnimList.SelectedIndex = 0;
+					UpdateLayout();
+					Check("V0.3.138：选中「待机」时四格显示全局默认（0 / 0 / 0 / 1），不是某个动作自己的值",
+						AnimSlotScaleText == "0" && AnimSlotXOffsetText == "0"
+						&& AnimSlotYOffsetText == "0" && AnimSlotSpeedScaleText == "1",
+						$"{AnimSlotScaleText} / {AnimSlotXOffsetText} / {AnimSlotYOffsetText} / {AnimSlotSpeedScaleText}");
+					Check("V0.3.138：没单独设过时提示写着「跟随全局」+ 全局默认值",
+						!AnimSlotHasOwnParams && AnimSlotParamsHint.Contains("跟随全局") && AnimSlotParamsHint.Contains("全局默认"),
+						AnimSlotParamsHint);
+
+					// ② 给「攻击」单独填四项：只写进攻它自己的 SlotParams，待机一点不动
+					AnimList.SelectedIndex = 1;
+					UpdateLayout();
+					AnimSlotScaleText = "0.8";
+					AnimSlotXOffsetText = "2";
+					AnimSlotYOffsetText = "3";
+					AnimSlotSpeedScaleText = "2";
+					Check("V0.3.138：给「攻击」填的四项写进了它自己的覆盖（0.8 / 2 / 3 / 2×）",
+						Math.Abs(Profile.Animation.ScaleOf("attack") - 0.8) < 1e-9
+						&& Math.Abs(Profile.Animation.XOffsetOf("attack") - 2) < 1e-9
+						&& Math.Abs(Profile.Animation.YOffsetOf("attack") - 3) < 1e-9
+						&& Math.Abs(Profile.Animation.SpeedScaleOf("attack") - 2) < 1e-9,
+						$"{Profile.Animation.ScaleOf("attack")} / {Profile.Animation.XOffsetOf("attack")} / "
+						+ $"{Profile.Animation.YOffsetOf("attack")} / {Profile.Animation.SpeedScaleOf("attack")}");
+					Check("V0.3.138：「待机」不受影响（还是全局值 —— 以前四格是 7 个动作共享的）",
+						Math.Abs(Profile.Animation.ScaleOf("idle_loop")) < 1e-9
+						&& Math.Abs(Profile.Animation.SpeedScaleOf("idle_loop") - 1) < 1e-9,
+						$"{Profile.Animation.ScaleOf("idle_loop")} / {Profile.Animation.SpeedScaleOf("idle_loop")}");
+					Check("V0.3.138：单独设过的动作提示改成「已单独设置」，并且能一键回到跟随全局",
+						AnimSlotHasOwnParams && AnimSlotParamsHint.Contains("已单独设置"), AnimSlotParamsHint);
+
+					// ③ 生成端：每个动作写自己的字面量
+					var slotPlan = AnimFramesGen.BuildPlan(Profile, _ => { });
+					string slotReg = string.Join("\n", FrameAnimGen.RegistrationLines(Profile, slotPlan));
+					Check("V0.3.138：生成的注册行按动作写死自己的参数（攻击 0.8 / X2 / Y3 / 2×），不再共用四个常量",
+						slotReg.Contains("scale: 0.8f, xOffset: 2f, yOffset: 3f, speedScale: 2f")
+						&& !slotReg.Contains("const float __animScale"), slotReg);
+
+					// ④ 跟随全局：覆盖删掉、注册行回到老写法（老存档生成文本逐字不变）
+					OnAnimParamsFollowGlobal(this, new RoutedEventArgs());
+					var legacyPlan = AnimFramesGen.BuildPlan(Profile, _ => { });
+					string legacyReg = string.Join("\n", FrameAnimGen.RegistrationLines(Profile, legacyPlan));
+					Check("V0.3.138：点「这个动作跟随全局」→ 覆盖删掉，注册行回到老写法（四个 const + __animScale）",
+						!Profile.Animation.HasSlotParams
+						&& legacyReg.Contains("const float __animScale")
+						&& legacyReg.Contains("scale: __animScale"), legacyReg);
+
+					// ⑤ 套到全部动作
+					AnimList.SelectedIndex = 0;
+					UpdateLayout();
+					AnimSlotScaleText = "1.5";
+					OnAnimParamsApplyToAll(this, new RoutedEventArgs());
+					Check("V0.3.138：点「套到全部动作」→ 7 个动作都拿到这一套值",
+						AnimSlots.All(s => Math.Abs(Profile.Animation.ScaleOf(s.AnimName) - 1.5) < 1e-9)
+						&& Profile.Animation.SlotParams.Count == 7,
+						string.Join(" / ", AnimSlots.Select(s => s.AnimName + "=" + Profile.Animation.ScaleOf(s.AnimName))));
+
+					// ⑥ 校验器：某个动作单独设的速度 = 0 → 报错（不能悄悄生成一个 0 倍速）
+					var badSlotProf = ProfileFactory.Sample();
+					badSlotProf.Animation.SpeedScale = 1;
+					badSlotProf.Animation.EnsureParams("attack").SpeedScale = 0;
+					Check("V0.3.138：校验器认得「某个动作单独设的速度 = 0」并报错",
+						ProfileValidator.Validate(badSlotProf).Any((ValidationIssue i) => i.IsError && i.Message.Contains("单独设") && i.Message.Contains("速度")),
+						string.Join(" / ", ProfileValidator.Validate(badSlotProf).Select((ValidationIssue i) => i.Level + ":" + i.Message).Take(3)));
+
+					// ⑦ JSON 往返：单独设置存得进、读得回；没有的老存档读进来是空的
+					var rtSlotProf = ProfileFactory.Sample();
+					rtSlotProf.Animation.EnsureParams("attack").Scale = 0.75;
+					var rtSlotBack = JsonSerializer.Deserialize<CharacterProfile>(
+						JsonSerializer.Serialize(rtSlotProf, ProfileFactory.JsonOpts), ProfileFactory.JsonOpts)!;
+					Check("V0.3.138：单独设置能存进存档、读回来还是它（attack 缩放 0.75）",
+						Math.Abs((rtSlotBack.Animation.ParamsOf("attack")?.Scale ?? 0) - 0.75) < 1e-9
+						&& rtSlotBack.Animation.ParamsOf("idle_loop") is null,
+						$"attack={rtSlotBack.Animation.ParamsOf("attack")?.Scale} / 条目数={rtSlotBack.Animation.SlotParams.Count}");
+
+					// 收尾：清掉这一段造出来的东西
+					Profile.Animation.SlotParams.Clear();
+					AnimSlots[1].Path = null;
+					SyncAnimSlotsFromProfile();
+					Profile.Animation.Scale = 0;
+					Profile.Animation.XOffset = 0;
+					Profile.Animation.YOffset = 0;
+					Profile.Animation.SpeedScale = 1;
+				}
+				// ----- V0.2.347：预览的参照物换成静态立绘（用户指出「蓝点不是血条中心」）-----
 				{
 					Check("V0.2.347：读数不再提「血条」，改成「瞄点 = 静态立绘的 Sprite 原点 / 偏移 0 = 与立绘完全重合」",
 						!OffsetReadoutText(new AnimationSpec { XOffset = 5, YOffset = -20 }).Contains("血条")
@@ -44964,9 +45246,10 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					SyncAnimSlotsFromProfile();
 					AnimList.SelectedIndex = 0;
 					OnAnimPlanPreview(this, new RoutedEventArgs());
-					Check("「预览动画计划」把裁剪框 / 帧数 / 每帧时长 / 缩放 / 位置 / 提示行都写进了文本框",
-						AnimPlanText.Contains("裁剪框：") && AnimPlanText.Contains("每帧 ") && AnimPlanText.Contains("缩放：")
-						&& AnimPlanText.Contains("Y 偏移：") && AnimPlanText.Contains("提示 / 警告 / 错误：")
+					Check("「预览动画计划」把裁剪框 / 帧数 / 每帧时长 / 缩放 / X / Y / 速度 / 提示行都写进了文本框（V0.3.138 起按动作各写一套）",
+						AnimPlanText.Contains("裁剪框：") && AnimPlanText.Contains("每帧 ")
+						&& AnimPlanText.Contains("缩放 ") && AnimPlanText.Contains(" X ") && AnimPlanText.Contains(" Y ")
+						&& AnimPlanText.Contains("速度 ") && AnimPlanText.Contains("提示 / 警告 / 错误：")
 						&& AnimPlanText.Contains("idle_loop"),
 						AnimPlanText.Split('\n')[0].Trim());
 					Check("「预览动画计划」一个文件都不写（预览用的输出目录里连 images 都没有）",
@@ -45050,7 +45333,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				_profile.SaveName = animOldSaveName;
 				Profile.Animation.Enabled = animOldEnabled;
 				Profile.Animation.Idle = animOldIdle;
+				Profile.Animation.SlotParams.Clear();   // V0.3.138：自检造的「单独设置」也清掉
 				AnimSlots[0].Path = animOldSlot0Path;
+				AnimSlots[1].Path = animOldSlot1Path;
 				SyncAnimSlotsFromProfile();
 				HookAnimationSpec();
 			}
@@ -48090,24 +48375,11 @@ public sealed record TriggerScopeOption(string Id, string Display);
 	/// </summary>
 	private static string RemoveAnimationSection(string json)
 	{
-		var kept = new List<string>();
-		bool skipping = false;
-		foreach (string line in json.Replace("\r\n", "\n").Split('\n'))
-		{
-			if (skipping)
-			{
-				string trimmed = line.TrimEnd();
-				if (trimmed.EndsWith("},", StringComparison.Ordinal) || trimmed.EndsWith("}", StringComparison.Ordinal)) skipping = false;
-				continue;
-			}
-			if (line.TrimStart().StartsWith("\"Animation\"", StringComparison.Ordinal))
-			{
-				skipping = true;
-				continue;
-			}
-			kept.Add(line);
-		}
-		return string.Join("\n", kept);
+		// V0.3.138：改成用 JsonNode 删，别按行扫 —— 现在 Animation 里带了嵌套对象 SlotParams，
+		// 按行扫会在 `"SlotParams": {},` 那一行就以为「Animation 结束了」，留下半截对象 → 读回来 JSON 坏掉。
+		var node = System.Text.Json.Nodes.JsonNode.Parse(json);
+		node?.AsObject().Remove("Animation");
+		return node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "{}";
 	}
 
 	/// <summary>

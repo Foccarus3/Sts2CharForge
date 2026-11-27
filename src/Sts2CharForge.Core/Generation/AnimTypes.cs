@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace Sts2CharForge.Core.Generation;
@@ -39,8 +39,13 @@ public static partial class AnimFramesGen
     /// <param name="FrameCount">帧数</param>
     /// <param name="FrameSeconds">每帧显示多少秒（已经把「覆盖值 / 平均延时 / 速度系数」算完）</param>
     /// <param name="Note">给用户看的一句（例：<c>3 帧</c>、<c>只有 1 帧 = 静止图</c>）</param>
+    /// <param name="Scale">这个动作最终用的缩放（V0.3.138：可以是它自己单独设的，也可以是全局值）</param>
+    /// <param name="XOffset">这个动作最终用的 X 偏移（同上）</param>
+    /// <param name="YOffset">这个动作最终用的 Y 偏移（同上，0 已经被换成自动算出来的值）</param>
+    /// <param name="SpeedScale">这个动作最终用的播放速度系数（同上）</param>
     public sealed record AnimPlan(string Anim, string SourcePath, bool Loop, bool HoldAtEnd,
-        int Width, int Height, int FrameCount, double FrameSeconds, string Note);
+        int Width, int Height, int FrameCount, double FrameSeconds, string Note,
+        double Scale = 0, double XOffset = 0, double YOffset = 0, double SpeedScale = 1);
 
     /// <summary>整份计划：所有动作共用同一个裁剪框和缩放 / 位置（换动作时角色不跳位置）。</summary>
     /// <param name="Anims">各动作（至少有待机）</param>

@@ -42,40 +42,56 @@ public static class FrameAnimGen
     public static string PatchesSource(CharacterProfile p) => Fill(PatchesTpl, p);
 
     /// <summary>
-    /// 模组入口里那几行：四个常量（缩放 / Y 偏移 / 速度系数 / 篝火商店开关）+ 每个动作注册一次帧资源。
+    /// 模组入口里那几行：常量（缩放 / X / Y / 速度 / 篝火商店开关）+ 每个动作注册一次帧资源。
     /// 注入位置见 <see cref="PatchesGen.ModEntrySource"/>（在 <c>harmony.PatchAll</c> 之后）。
+    ///
+    /// <para>V0.3.138（用户要求「每个动作可以单独设置」）：一个动作都没单独设过时仍然写
+    /// 那四个全局常量（老存档生成文本逐字不变）；只要有一个动作单独设过，就每个动作写自己的字面量。</para>
     /// </summary>
     public static List<string> RegistrationLines(CharacterProfile p, AnimFramesGen.Plan plan)
     {
         var n = Naming.From(p);
         var a = p.Animation;
+        bool legacyShape = plan.Anims.All(one =>
+            SameNum(one.Scale, plan.Scale) && SameNum(one.XOffset, plan.XOffset)
+            && SameNum(one.YOffset, plan.YOffset) && SameNum(one.SpeedScale, a.SpeedScale));
         var lines = new List<string>
         {
             "",
             "// ==================== 逐帧动画（动图拆帧） ====================",
             "// 由工具生成：把本体的动画请求翻译成 AnimatedSprite2D 的逐帧播放。",
             "// 位置 / 缩放 / 速度都来自生成时的计划，和帧资源一致。",
-            $"const float __animScale = {Num(plan.Scale)}f;",
-            $"const float __animXOffset = {Num(plan.XOffset)}f;",
-            $"const float __animYOffset = {Num(plan.YOffset)}f;",
-            $"const float __animSpeed = {Num(a.SpeedScale)}f;",
-            $"const bool __animKeepRestShop = false;   // V0.2.332：这一项已按用户要求去掉（固定不保持）",
         };
+        if (legacyShape)
+        {
+            lines.Add($"const float __animScale = {Num(plan.Scale)}f;");
+            lines.Add($"const float __animXOffset = {Num(plan.XOffset)}f;");
+            lines.Add($"const float __animYOffset = {Num(plan.YOffset)}f;");
+            lines.Add($"const float __animSpeed = {Num(a.SpeedScale)}f;");
+        }
+        lines.Add("const bool __animKeepRestShop = false;   // V0.2.332：这一项已按用户要求去掉（固定不保持）");
         // 纹理过滤：参考实现这一步**漏了**（那个「最近邻」勾选框其实没生效 —— 实测 .import 和注册调用都没变），
         // 我们补上：像素画要用最近邻，线性过滤会在帧图被缩放时混出源里不存在的颜色、边缘发糊。
             string filter = "";   // V0.2.332：最近邻过滤已按用户要求固定开启（像素画必须）
         foreach (var one in plan.Anims)
         {
+            string scaleArg = legacyShape ? "__animScale" : Num(one.Scale) + "f";
+            string xArg = legacyShape ? "__animXOffset" : Num(one.XOffset) + "f";
+            string yArg = legacyShape ? "__animYOffset" : Num(one.YOffset) + "f";
+            string speedArg = legacyShape ? "__animSpeed" : Num(one.SpeedScale) + "f";
             string tres = $"res://images/characters/anim/{n.CharSlug}/{n.CharSlug}_{one.Anim}_frames.tres";
             lines.Add($"FrameAnimRegistry.Register({Lit.Str(n.CharSlug)}, {Lit.Str(one.Anim)}, {Lit.Str(tres)}, "
-                + $"loop: {(one.Loop ? "true" : "false")}, scale: __animScale, xOffset: __animXOffset, yOffset: __animYOffset, "
-                + $"speedScale: __animSpeed, keepRestShop: __animKeepRestShop{filter}"
+                + $"loop: {(one.Loop ? "true" : "false")}, scale: {scaleArg}, xOffset: {xArg}, yOffset: {yArg}, "
+                + $"speedScale: {speedArg}, keepRestShop: __animKeepRestShop{filter}"
                 + (one.HoldAtEnd ? ", holdAtEnd: true" : "")
                 + ");");
         }
         lines.Add("// ==========================================================");
         return lines;
     }
+
+    /// <summary>两个数在生成文本的精度上算不算同一个（0.### 三位小数）。</summary>
+    private static bool SameNum(double a, double b) => Math.Abs(a - b) < 0.0005;
 
     private static string Fill(string template, CharacterProfile p)
     {
@@ -120,7 +136,10 @@ public static class FrameAnimRegistry
         bool keepRestShop = true)
     {
         if (!Defs.TryGetValue(charId, out var def)) Defs[charId] = def = new CharDef(charId);
-        def.Animations[animName] = new AnimDef(animName, tresPath, loop, holdAtEnd);
+        // V0.3.138（用户要求「每个动作可以单独设置」）：这四项也存进这一条动画里 ——
+        // 切动作时播放器按它自己的值摆位置 / 缩放 / 速度；下面的 def.* 仍然是「角色默认」，
+        // 只在第一帧摆上去时用（没有单独设置的动作，两者是同一组数）。
+        def.Animations[animName] = new AnimDef(animName, tresPath, loop, holdAtEnd, scale, xOffset, yOffset, speedScale);
         def.Scale = scale;
         def.XOffset = xOffset;
         def.YOffset = yOffset;
@@ -186,7 +205,12 @@ public static class FrameAnimRegistry
         }
     }
 
-    public sealed record AnimDef(string Name, string Path, bool Loop, bool HoldAtEnd = false);
+    /// <summary>
+    /// 一条动画的定义。V0.3.138：带上它自己的缩放 / X / Y / 速度（每个动作可以单独设）；
+    /// 默认值 = 「没设过」，播放器会回落到角色级的 <see cref="CharDef"/> 上那几个值。
+    /// </summary>
+    public sealed record AnimDef(string Name, string Path, bool Loop, bool HoldAtEnd = false,
+        float Scale = 0f, float XOffset = 0f, float YOffset = 0f, float SpeedScale = 1f);
 }
 
 /// <summary>把 AnimatedSprite2D 挂到角色视觉节点上并驱动它。</summary>
@@ -208,7 +232,6 @@ public sealed partial class FrameAnimPlayer : Node
 
     private static readonly Dictionary<string, SpriteFrames?> Cache = new(StringComparer.Ordinal);
     private static readonly HashSet<string> Normalized = new(StringComparer.Ordinal);
-    private static readonly HashSet<string> SpeedApplied = new(StringComparer.Ordinal);
 
     /// <summary>当前动画一轮多少秒（本体 GetCurrentAnimationLength 会用到）。</summary>
     public double CurrentLoopSeconds { get; private set; }
@@ -346,15 +369,27 @@ public sealed partial class FrameAnimPlayer : Node
         frames.SetAnimationLoop(pick.Name, pick.Loop);
         _sprite.Animation = pick.Name;
         _held = false;
+
+        // V0.3.138（用户要求「每个动作可以单独设置」）：切到这个动作时，把**它自己的**缩放 / 位置 / 速度套上去。
+        // 以前这三项是角色级的常量、只在 Attach 时摆一次，所以 7 个动作只能共用一套。
+        float pickScale = pick.Scale > 0.0001f ? pick.Scale : _def.Scale;
+        if (pickScale > 0.0001f) _sprite.Scale = new Vector2(pickScale, pickScale);
+        _sprite.Position = new Vector2(pick.XOffset, pick.YOffset);
+        float pickSpeed = pick.SpeedScale <= 0.01f ? 1f : pick.SpeedScale;
+        _sprite.SpeedScale = pickSpeed;
+
         _sprite.Play();
         _current = pick.Name;
         _holdAtEnd = pick.HoldAtEnd;
         _sceneLocked = _def.KeepRestShop && pick.Name is "overgrowth_loop" or "hive_loop" or "glory_loop" or "relaxed_loop";
-        Log.Info($"[@@SLUG@@_anim] 播放: 请求={anim} 实际={pick.Name} 定格={pick.HoldAtEnd} 场景锁={_sceneLocked}");
+        Log.Info($"[@@SLUG@@_anim] 播放: 请求={anim} 实际={pick.Name} 定格={pick.HoldAtEnd} 场景锁={_sceneLocked} "
+            + $"缩放={pickScale:0.###} 位置=({pick.XOffset:0.##},{pick.YOffset:0.##}) 速度={pickSpeed:0.###}");
 
         int n = frames.GetFrameCount(pick.Name);
         double total = 0.0;
         for (int i = 0; i < n; i++) total += frames.GetFrameDuration(pick.Name, i);
+        // 速度系数是**倍率**（AnimatedSprite2D.SpeedScale），所以「这一轮实际多久」要除回去。
+        if (pickSpeed > 0.01f) total /= pickSpeed;
         CurrentLoopSeconds = total;
         // 只有「单次」动画才需要计时来决定什么时候回待机。
         // 循环动画（待机 / 篝火 / 商店）交给 SpriteFrames 自己循环，**绝不能**到时切回待机：
@@ -449,63 +484,42 @@ public sealed partial class FrameAnimPlayer : Node
     }
 
     /// <summary>
-    /// 取帧资源，归一化成「每帧秒数、speed=1」，再按 SpeedScale 校正整体速度。
+    /// 取帧资源，归一化成「每帧秒数、speed=1」。
     /// 关键：Godot 的 SpriteFrames.speed **不是 fps 而是倍率**
     ///（实测 60 帧×0.1s：speed=1 周期 6.02s，speed=30 只有 0.215s）。
     /// 早期把它当 fps 填了 30，动画被额外加速 30 倍，怎么调速度系数都不对。
+    ///
+    /// <para>V0.3.138：「每个动作单独设速度」之后，速度**不再**靠改这里的每帧时长实现 ——
+    /// 那份帧资源是缓存共享的，改时长会把同一条路径的别的动作一起改掉。
+    /// 现在速度由播放时的 <c>AnimatedSprite2D.SpeedScale</c> 乘上去（见 Play）。</para>
     /// </summary>
     private SpriteFrames? LoadFramesFor(string path)
     {
         var frames = LoadFrames(path);
         if (frames is null) return null;
-        float speedScale = _def.SpeedScale <= 0.01f ? 1f : _def.SpeedScale;
+        if (!Normalized.Add(path)) return frames;
 
-        if (Normalized.Add(path))
-        {
-            foreach (var anim in frames.GetAnimationNames())
-            {
-                int n = frames.GetFrameCount(anim);
-                if (n <= 0) continue;
-                double curSpeed = frames.GetAnimationSpeed(anim);
-                if (curSpeed <= 0.001) curSpeed = 1.0;
-                var texs = new Texture2D[n];
-                var durs = new double[n];
-                for (int i = 0; i < n; i++)
-                {
-                    texs[i] = frames.GetFrameTexture(anim, i);
-                    durs[i] = frames.GetFrameDuration(anim, i);   // 本来就是秒数，不要再乘 speed
-                }
-                bool loop = frames.GetAnimationLoop(anim);
-                frames.RemoveAnimation(anim);
-                frames.AddAnimation(anim);
-                for (int i = 0; i < n; i++) frames.AddFrame(anim, texs[i], (float)durs[i]);
-                frames.SetAnimationSpeed(anim, 1.0);
-                frames.SetAnimationLoop(anim, loop);
-                Log.Info($"[@@SLUG@@_anim] 归一化 '{anim}': 原 speed={curSpeed:0.###} -> 1，周期 {durs[0] * n:F3}s");
-            }
-        }
-
-        if (Mathf.Abs(speedScale - 1f) < 0.001f) return frames;
-        if (!SpeedApplied.Add(path)) return frames;
         foreach (var anim in frames.GetAnimationNames())
         {
             int n = frames.GetFrameCount(anim);
             if (n <= 0) continue;
+            double curSpeed = frames.GetAnimationSpeed(anim);
+            if (curSpeed <= 0.001) curSpeed = 1.0;
             var texs = new Texture2D[n];
             var durs = new double[n];
             for (int i = 0; i < n; i++)
             {
                 texs[i] = frames.GetFrameTexture(anim, i);
-                durs[i] = frames.GetFrameDuration(anim, i);
+                durs[i] = frames.GetFrameDuration(anim, i);   // 本来就是秒数，不要再乘 speed
             }
             bool loop = frames.GetAnimationLoop(anim);
             frames.RemoveAnimation(anim);
             frames.AddAnimation(anim);
-            for (int i = 0; i < n; i++) frames.AddFrame(anim, texs[i], (float)(durs[i] / speedScale));
+            for (int i = 0; i < n; i++) frames.AddFrame(anim, texs[i], (float)durs[i]);
             frames.SetAnimationSpeed(anim, 1.0);
             frames.SetAnimationLoop(anim, loop);
+            Log.Info($"[@@SLUG@@_anim] 归一化 '{anim}': 原 speed={curSpeed:0.###} -> 1，周期 {durs[0] * n:F3}s");
         }
-        Log.Info($"[@@SLUG@@_anim] 速度系数 {speedScale:0.###} 已应用");
         return frames;
     }
 }

@@ -6834,6 +6834,71 @@ public sealed class AnimationSpec : SpecBase
     /// </summary>
     public double YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
 
+    // ==================== V0.3.138：每个动作的「缩放 / X / Y / 速度」都能单独设 ====================
+    // 用户原话：「让动画页的参数调整每一个可以单独设置而不是共享一个设置」。
+    // 以前这四项是 7 个动作共用的（攻击和待机只能同一套偏移）—— 现在每个动作可以各填一套：
+    //   · SlotParams 里有这个动作 → 用它的值；
+    //   · 没有（老存档 / 没单独设过）→ 沿用上面那四个全局值 —— 于是老存档生成结果不变。
+    private Dictionary<string, AnimSlotParams>? _slotParams;
+
+    /// <summary>
+    /// 每个动作自己的四项设置（key = 本体动画名 <c>idle_loop / attack / cast / hurt / die / overgrowth_loop / relaxed_loop</c>）。
+    /// 空 = 全部沿用全局 <see cref="Scale"/> / <see cref="XOffset"/> / <see cref="YOffset"/> / <see cref="SpeedScale"/>。
+    /// </summary>
+    public Dictionary<string, AnimSlotParams> SlotParams
+    {
+        get => _slotParams ??= new Dictionary<string, AnimSlotParams>(StringComparer.Ordinal);
+        set => _slotParams = value is null
+            ? new Dictionary<string, AnimSlotParams>(StringComparer.Ordinal)
+            : new Dictionary<string, AnimSlotParams>(value, StringComparer.Ordinal);
+    }
+
+    /// <summary>这个动作有没有单独设置（没有 = 跟随全局）。</summary>
+    public AnimSlotParams? ParamsOf(string? anim) =>
+        string.IsNullOrWhiteSpace(anim) ? null
+        : SlotParams.TryGetValue((anim ?? "").Trim(), out AnimSlotParams? v) ? v : null;
+
+    /// <summary>
+    /// 拿这个动作的单独设置；没有就按**当前全局值**建一份并记进存档（界面第一次动某一格时用）。
+    /// </summary>
+    public AnimSlotParams EnsureParams(string anim)
+    {
+        string key = (anim ?? "").Trim();
+        AnimSlotParams p = ParamsOf(key) ?? new AnimSlotParams
+        {
+            Scale = Scale,
+            XOffset = XOffset,
+            YOffset = YOffset,
+            SpeedScale = SpeedScale,
+        };
+        SlotParams[key] = p;
+        Raise(nameof(SlotParams));
+        Raise(nameof(HasSlotParams));
+        return p;
+    }
+
+    /// <summary>去掉这个动作的单独设置（回到跟随全局）。</summary>
+    public void ClearParams(string anim)
+    {
+        if (!string.IsNullOrWhiteSpace(anim) && SlotParams.Remove(anim.Trim()))
+        {
+            Raise(nameof(SlotParams));
+            Raise(nameof(HasSlotParams));
+        }
+    }
+
+    /// <summary>有没有任何一个动作单独设过（界面 / 自检用来判断「和老存档一样」）。</summary>
+    [JsonIgnore] public bool HasSlotParams => SlotParams.Count > 0;
+
+    /// <summary>这个动作最终用的缩放（单独设置优先，没有就用全局）。</summary>
+    public double ScaleOf(string anim) => ParamsOf(anim)?.Scale ?? Scale;
+    /// <summary>这个动作最终用的 X 偏移。</summary>
+    public double XOffsetOf(string anim) => ParamsOf(anim)?.XOffset ?? XOffset;
+    /// <summary>这个动作最终用的 Y 偏移。</summary>
+    public double YOffsetOf(string anim) => ParamsOf(anim)?.YOffset ?? YOffset;
+    /// <summary>这个动作最终用的播放速度系数。</summary>
+    public double SpeedScaleOf(string anim) => ParamsOf(anim)?.SpeedScale ?? SpeedScale;
+
     // ==================== V0.2.345：四个数值框改成「文本 + 解析」（用户报「动画页的缩放等不能填小数」）====================
     // 为什么不再把 TextBox 直接绑 double：打 "0." 这种中间态会解析失败，WPF 判这次改动无效
     //（源不更新、部分输入法下光标还会跳回），小数就常常「填不进去」。
@@ -6867,10 +6932,10 @@ public sealed class AnimationSpec : SpecBase
     }
 
     /// <summary>数值的默认文本（界面初始值用）。4 位小数够用，且不写成一长串。</summary>
-    private static string NumText(double v) => v.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+    public static string NumText(double v) => v.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
 
     /// <summary>「0.85」和「0,85」都认；空串 / 乱写 → false（不写回，保持原值）。</summary>
-    private static bool TryNum(string? text, out double value)
+    public static bool TryNum(string? text, out double value)
     {
         value = 0;
         string s = (text ?? "").Trim().Replace(',', '.');
@@ -6917,7 +6982,39 @@ public sealed class AnimationSpec : SpecBase
         ? "未启用"
         : !HasAny
             ? "已启用但没上传待机"
-            : $"{Slots.Count()} 个动作 · {SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}× · 缩放 {Scale:0.##} · X{XOffset:0.#} Y{YOffset:0.#}";
+            : $"{Slots.Count()} 个动作 · {SpeedScale.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)}× · 缩放 {Scale:0.##} · X{XOffset:0.#} Y{YOffset:0.#}"
+              + (HasSlotParams ? $" · {SlotParams.Count} 个动作单独设过" : "");
+}
+
+/// <summary>
+/// V0.3.138（用户要求「动画页的参数调整每一个可以单独设置」）：**一个动作自己**的缩放 / X / Y / 速度。
+///
+/// <para>四个值都是 <c>double?</c>：<c>null</c> = 这一项跟随全局默认
+/// （<see cref="AnimationSpec.Scale"/> 那一套）；填了数就用这个动作自己的。</para>
+/// </summary>
+public sealed class AnimSlotParams : SpecBase
+{
+    private double? _scale, _xOffset, _yOffset, _speedScale;
+
+    /// <summary>缩放；null = 跟随全局。0 的语义和全局一致（0 = 自动）。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? Scale { get => _scale; set => Set(ref _scale, value); }
+
+    /// <summary>X 偏移（像素，正数往右）；null = 跟随全局。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? XOffset { get => _xOffset; set => Set(ref _xOffset, value); }
+
+    /// <summary>Y 偏移；null = 跟随全局。0 = 自动（和全局同一套口径）。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? YOffset { get => _yOffset; set => Set(ref _yOffset, value); }
+
+    /// <summary>播放速度系数；null = 跟随全局。</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public double? SpeedScale { get => _speedScale; set => Set(ref _speedScale, value); }
+
+    /// <summary>四项是不是全都是「跟随全局」（读老存档 / 手写 JSON 时兜底）。</summary>
+    [JsonIgnore]
+    public bool HasAny => _scale is not null || _xOffset is not null || _yOffset is not null || _speedScale is not null;
 }
 
 public sealed class PathsSpec

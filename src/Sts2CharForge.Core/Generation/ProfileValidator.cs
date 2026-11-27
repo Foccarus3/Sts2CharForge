@@ -1779,6 +1779,17 @@ public static class ProfileValidator
             issues.Add(new("错误", $"逐帧动画：「缩放」只能是 0（按静态立绘高度自动算）或 0.05 ~ 50 之间的数，现在是 {Num(a.Scale)}。"));
         if (a.SpeedScale <= 0 || a.SpeedScale > 20)
             issues.Add(new("错误", $"逐帧动画：「播放速度系数」只能是大于 0 的数（1 = 动图原速，2 = 双倍速，上限 20），" + $"现在是 {Num(a.SpeedScale)}。0 不是原速，原速是 1。"));
+        // V0.3.138（用户要求「每个动作可以单独设置」）：单独设过的那几个动作也按同一套范围查。
+        // 没单独设过（老存档）时 SlotParams 是空的，这里一条都不会多出来。
+        foreach (var pair in a.SlotParams)
+        {
+            if (pair.Value is null || !pair.Value.HasAny) continue;
+            string who = $"逐帧动画：动作「{pair.Key}」单独设的";
+            if (pair.Value.Scale is { } sc && (sc < 0 || sc > 50))
+                issues.Add(new("错误", $"{who}「缩放」只能是 0（自动）或 0.05 ~ 50 之间的数，现在是 {Num(sc)}。"));
+            if (pair.Value.SpeedScale is { } sp && (sp <= 0 || sp > 20))
+                issues.Add(new("错误", $"{who}「播放速度系数」只能是大于 0 的数（1 = 原速，上限 20），现在是 {Num(sp)}。0 不是原速，原速是 1。"));
+        }
         static string Num(double v) => v.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
     }
 
