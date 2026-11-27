@@ -7738,7 +7738,51 @@ public static class ExtraResourceEnergyCounterDiagPatch
         if (id.Length == 0) return null;
         // V0.3.123：初始打击 / 防御按 CardTag 命中所有份数（Copy2…）
         if (StartingBasicCond(p, id, "c") is string starter) return starter;
-        return $"c.Id == ModelDb.Card<{CardTypeExpr(p, id)}>().Id";
+        // V0.3.140：其它卡如果也按份数展开过（StarterCopyGen），同样要把副本一起命中
+        return CardIdentityCond(p, id, "c");
+    }
+
+    /// <summary>
+    /// 「按具体某一张卡」的身份条件（含它的**初始份数副本** <c>Copy2…</c>），不含 <c>c =&gt; </c>。
+    ///
+    /// <para>V0.3.140（用户报「想把所有基础打击 / 防御都变化掉，结果只变了一张」）：初始份数 &gt; 1 的卡
+    /// 会被 <see cref="StarterCopyGen"/> 展开成独立类（<c>AntiheroStrikeCopy2/3/4</c>）—— 它们的
+    /// <c>ModelId</c> 各不相同，只写原卡那一个 Id 就只会命中第一份（游戏日志里那几张就是
+    /// <c>ANTIHERO_STRIKE_COPY3/4</c>）。这里把原卡 + 它的所有副本一起列出来（副本靠
+    /// <see cref="CardSpec.StarterCopyOf"/> 认，那是展开时记下的原卡生成类名）。</para>
+    ///
+    /// <para>⚠ 没有副本时返回的文本和以前**一模一样**（<c>c.Id == ModelDb.Card&lt;X&gt;().Id</c>）——
+    /// 老存档逐字不变。</para>
+    /// </summary>
+    internal static string CardIdentityCond(CharacterProfile? p, string cardClass, string var = "c")
+    {
+        string want = (cardClass ?? "").Trim();
+        string bare = want;
+        int dot = bare.LastIndexOf('.');
+        if (dot >= 0) bare = bare[(dot + 1)..];
+
+        var names = new List<string> { want };
+        if (p is not null)
+        {
+            var n = Naming.From(p);
+            CardSpec? baseCard = p.Cards.FirstOrDefault(c => c is not null
+                && string.IsNullOrWhiteSpace(c.StarterCopyOf)
+                && (string.Equals(n.CardClassName(p, c), bare, StringComparison.Ordinal)
+                    || string.Equals((c.ClassName ?? "").Trim(), bare, StringComparison.OrdinalIgnoreCase)));
+            if (baseCard is not null)
+            {
+                string baseName = n.CardClassName(p, baseCard);
+                foreach (var c in p.Cards)
+                {
+                    if (c is null || string.IsNullOrWhiteSpace(c.StarterCopyOf)) continue;
+                    if (!string.Equals(c.StarterCopyOf, baseName, StringComparison.Ordinal)) continue;
+                    string cn = n.CardClassName(p, c);
+                    if (!names.Contains(cn, StringComparer.Ordinal)) names.Add(cn);
+                }
+            }
+        }
+        if (names.Count == 1) return $"{var}.Id == ModelDb.Card<{CardTypeExpr(p, names[0])}>().Id";
+        return "(" + string.Join(" || ", names.Select(x => $"{var}.Id == ModelDb.Card<{CardTypeExpr(p, x)}>().Id")) + ")";
     }
 
     /// <summary>
@@ -8896,7 +8940,8 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // V0.3.123：初始打击 / 防御按 CardTag 命中所有份数
             if (StartingBasicCond(p, card, "c") is string starter) return $"c => {starter}";
-            return $"c => c.Id == ModelDb.Card<{CardTypeExpr(p, card)}>().Id";
+            // V0.3.140：其它卡按份数展开的副本（Copy2…）也要一起命中
+            return $"c => {CardIdentityCond(p, card, "c")}";
         }
         string pick = (e.TransformPick ?? "").Trim();
         if (pick.Length == 0) return null;

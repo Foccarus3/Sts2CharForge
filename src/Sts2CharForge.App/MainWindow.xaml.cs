@@ -19693,6 +19693,42 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("V0.3.83：副本也有本地化（同显示名，不会变成缺键）",
 				LocalizationGen.CardsJson(scpExpanded).Contains("SCP_STRIKE_COPY2.title")
 				&& LocalizationGen.CardsJson(scpExpanded).Contains("SCP_STRIKE_COPY3.title"), "有副本键");
+
+			// V0.3.140（用户报「想把所有基础打击 / 防御都变化掉，结果只变了一张」）：
+			// 初始份数展开出来的副本是**独立 ModelId**（ScpStrikeCopy2/3），「只变化这张卡」必须把它们一起命中。
+			var scpFx = new CardSpec { Name = "自检变化副本", ClassName = "ScpTransformCopy", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			scpFx.Effects.Add(new EffectSpec
+			{
+				Kind = "TransformCard", Amount = 1m, CardPick = "Random", SelectPile = "All",
+				ScopeCardId = "ScpStrike", SpawnCardId = "ScpStrike",
+			});
+			scpExpanded.Cards.Add(scpFx);
+			string scpFxSrc = CSharpCodeGen.CardSource(scpExpanded, scpFx, scpExpanded.Cards.Count - 1);
+			Check("V0.3.140：「只变化这张卡」把初始份数的副本一起列出来（原卡 + Copy2 + Copy3 都命中）",
+				scpFxSrc.Contains("c.Id == ModelDb.Card<ScpStrike>().Id")
+				&& scpFxSrc.Contains("c.Id == ModelDb.Card<ScpStrikeCopy2>().Id")
+				&& scpFxSrc.Contains("c.Id == ModelDb.Card<ScpStrikeCopy3>().Id"),
+				scpFxSrc.Replace("\r\n", "\n").Split('\n').FirstOrDefault((string l) => l.Contains("NextItem("))?.Trim() ?? "(没找到过滤行)");
+			scpFx.Effects[0].CountMode = "All";
+			string scpFxAllSrc = CSharpCodeGen.CardSource(scpExpanded, scpFx, scpExpanded.Cards.Count - 1);
+			Check("V0.3.140：「取几张 = 全部」时把命中的每一份都变掉（foreach 里是那 3 个 ModelId）",
+				scpFxAllSrc.Contains("foreach (CardModel c in base.Owner.PlayerCombatState.AllCards.Where(c => (c.Id == ModelDb.Card<ScpStrike>().Id")
+				&& scpFxAllSrc.Contains("ScpStrikeCopy2") && scpFxAllSrc.Contains(".ToList())"),
+				"全部命中");
+			// 对照：没有副本的卡，生成文本必须还是老样子（一个字符都不多 —— 老存档红线）
+			var scpPlain = new CardSpec { Name = "自检没副本", ClassName = "ScpPlain", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			scpExpanded.Cards.Add(scpPlain);
+			var scpFxPlain = new CardSpec { Name = "自检变化普通", ClassName = "ScpTransformPlain", CardType = "Skill", Rarity = "Common", Cost = 1 };
+			scpFxPlain.Effects.Add(new EffectSpec
+			{
+				Kind = "TransformCard", Amount = 1m, CardPick = "Random", SelectPile = "All",
+				ScopeCardId = "ScpPlain", SpawnCardId = "ScpPlain",
+			});
+			scpExpanded.Cards.Add(scpFxPlain);
+			string scpFxPlainSrc = CSharpCodeGen.CardSource(scpExpanded, scpFxPlain, scpExpanded.Cards.Count - 1);
+			Check("V0.3.140：（对照）没副本的卡还是老写法（单一个 ModelId，不套括号、不加 Copy）",
+				scpFxPlainSrc.Contains("c.Id == ModelDb.Card<ScpPlain>().Id")
+				&& !scpFxPlainSrc.Contains("ScpPlainCopy"), "老写法");
 		}
 		// 老存档里这两条可能被追加在末尾、甚至顺序颠倒（早期版本）——读回来也要挪到最前面并纠正顺序
 		CharacterProfile misplaced = ProfileFactory.Sample();
