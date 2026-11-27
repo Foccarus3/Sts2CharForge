@@ -1114,7 +1114,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
     private static string CountersClassForConditions() =>
         (_formulaOwner is { } fo ? Naming.From(fo).CharClass : Naming.CurrentCharClass) + "ForgeCombatCounters";
 
-    public static string ConditionExpr(ConditionSpec c, CondCtx ctx, bool inOnPlay = false)
+    public static string ConditionExpr(ConditionSpec c, CondCtx ctx, bool inOnPlay = false, string? fatalExprOverride = null)
     {
         // 「自己」= 哪个生物；战斗状态；玩家（额外资源量在玩家身上）
         string ownerCreature = ctx == CondCtx.Power ? "base.Owner" : "base.Owner.Creature";
@@ -1321,8 +1321,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
             //   AttackCommand? __lastAttack = null;（上一条攻击）
             //   bool __fatalOk = false;（打之前记下的「目标的 Power 允许触发斩杀」——
             //     本体 Feed / HandOfGreed / TheHunt 都是打之前先算 shouldTriggerFatal = target.Powers.All(p => p.ShouldOwnerDeathTriggerFatal())）
+            // V0.3.139：「将此牌放回手牌」跑在 AfterCardPlayedLate（另一个钩子），那里读不到上面两个局部变量 ——
+            // 改成读卡上的字段 __fgFatalThisPlay（OnPlay 末尾写入），见 EmitSelfReturnHook。
             "Fatal" =>
-                "__lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled)",
+                fatalExprOverride ?? "__lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled)",
             "EveryNTurns" =>
                 $"{player}?.PlayerCombatState != null && {player}.PlayerCombatState.TurnNumber % {ni} == 0",
             "OncePerCombat" => "!_condUsedThisCombat",
@@ -1382,11 +1384,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
         $"double __chanceRoll = {ownerExpr}.RunState.Rng.Niche.NextDouble() * 100.0;   // 概率生效：同组效果共用这一次掷骰";
 
     internal static string? EffectConditionGuard(EffectSpec e, CondCtx ctx, bool inOnPlay = false,
-        Dictionary<EffectSpec, (double Start, double End)>? chanceSlices = null)
+        Dictionary<EffectSpec, (double Start, double End)>? chanceSlices = null, string? fatalExprOverride = null)
     {
         string player = ctx == CondCtx.Power ? "base.Owner.Player" : "base.Owner";
         var parts = new List<string>();
-        if (e.Condition is not null && !e.Condition.IsNone) parts.Add(ConditionExpr(e.Condition, ctx, inOnPlay));
+        if (e.Condition is not null && !e.Condition.IsNone) parts.Add(ConditionExpr(e.Condition, ctx, inOnPlay, fatalExprOverride));
         // 概率生效：本体自己也是这么掷的（例：Orobas 的 base.Rng.NextFloat() < 0.333f）。
         // 这里用 run 的通用随机数（Rng.Niche），保证同一局里可复现、也不跟抽牌/选目标抢随机序列。
         // 写了「概率公式」的那条（用户要求⑦ 批次 3）：百分比现算 → **自己独立判一次**
@@ -5661,6 +5663,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 放进弃牌堆，在 OnPlay 里搬会被那一步覆盖掉。它单独生成一个 AfterCardPlayedLate 钩子
         //（本体「回响 MakeItSo」用的就是这个钩子），见 EmitSelfReturnHook。
         bool hasSelfReturn = c.Effects.Any(e => IsSelfReturn(e) && !IsInertZero(e));
+        // V0.3.139：「将此牌放回手牌」勾了「斩杀」条件时，判据要跨钩子传 —— OnPlay 末尾把结果写进卡上的字段，
+        // AfterCardPlayedLate（回手那个钩子）读它。没有这种效果时生成文本一个字都不多写。
+        bool fatalSelfReturn = c.Effects.Any(e => IsSelfReturn(e) && e.Condition is { Kind: "Fatal" });
         // 「抽到这张牌时它本场战斗费用 -N」同理：写在卡自己的 AfterCardDrawn 钩子里（见 EmitSelfDrawHook）
         bool hasSelfDraw = c.Effects.Any(e => IsSelfDrawCost(e) && !IsInertZero(e));
         bool hasCardHooks = hasTiming || hasSelfReturn || hasSelfDraw;
@@ -5691,6 +5696,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // ⚠ V0.2.130：原来这里在 c.ShowPileCounts 为真时声明三个 ForgePileCountVar
         //   （{DrawPile} / {DiscardPile} / {ExhaustPile}）—— 用户要求整块去掉，连变量声明一起删。
         w.Line("];");
+        if (fatalSelfReturn)
+            w.Line()
+             .Line("/// <summary>这次打出有没有「斩杀」：给「将此牌放回手牌」的斩杀条件用（那个钩子读不到 OnPlay 的局部变量）。</summary>")
+             .Line("private bool __fgFatalThisPlay;");
         if (needsPetCmd && anyPetCmdMissing)
             w.Line("// ⚠ 上面这条「按生命值算」的宠物效果没有可用的召唤物：到「召唤物」页添加一只并勾上「启用」"
                 + "（校验器会把这种配置拦住，不会真的生成出来）");
@@ -6021,6 +6030,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
             w.Line("bool __fatalOk = false;");
             w.Line();
         }
+        if (fatalSelfReturn)
+        {
+            w.Line("__fgFatalThisPlay = false;   // 每次打出从头算（「斩杀死 → 回手」那条效果读这个字段）");
+            w.Line();
+        }
         // 「能打出但效果不生效」：老存档的整张牌条件不满足时整段效果都跳过
         bool wrapEffects = c.Condition is not null && !c.Condition.IsNone && !c.Condition.UnplayableWhenUnmet;
         if (wrapEffects)
@@ -6178,6 +6192,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // V0.2.176：「转化为先古卡」的预览（本体潘多拉魔盒那个界面）—— 方法末尾统一弹一次
         //（节点图那张布上的先古转化由 ForgeGraphGen 自己在它的方法末尾弹，见那里）
         if (cardAncientTranscend) EmitAncientPreviewShow(w);
+        if (fatalSelfReturn)
+            w.Line("__fgFatalThisPlay = __lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled);"
+                + "   // 「斩杀死 → 回手」：结果存进字段，AfterCardPlayedLate 里判");
         w.Close();
 
         // 需求⑩：卡牌时机的效果 —— 挂到本体对应钩子的 override 上（不在 OnPlay 里）
@@ -6918,7 +6935,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
             string comment = EffectGuardComment(e);
             if (comment.Length > 0) w.Line("// " + comment);
             w.Line(SelfContainedMarker(e));
-            string? guard = EffectConditionGuard(e, CondCtx.Card, inOnPlay: true);
+            string? guard = EffectConditionGuard(e, CondCtx.Card, inOnPlay: true, fatalExprOverride: "__fgFatalThisPlay");
             if (guard is not null) w.Open(guard);
             w.Open("if (cardPlay is not null && cardPlay.Card == this && base.Pile is not null && base.Pile.Type != PileType.Hand)");
             w.Line("await CardPileCmd.Add(this, PileType.Hand);");

@@ -40588,6 +40588,47 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("斩杀：遗物上用 → 报错（只能用在卡牌上，本体那几个都是攻击牌）",
 				ProfileValidator.Validate(faRelicProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("只能用在**卡牌**上")), "拦住了");
 
+			// V0.3.139（用户实测「剑舞」报错）：把「斩杀」放在「将此牌放回手牌」上。
+			// 那个效果跑在 AfterCardPlayedLate（另一个钩子），读不到 OnPlay 的局部变量 ——
+			// 以前这里直接报错拦住；现在改用卡上的字段 __fgFatalThisPlay 把结果跨钩子传过去。
+			{
+				CharacterProfile fsProbe = ProfileFactory.Sample();
+				CardSpec fsCard = new CardSpec { Name = "自检斩杀回手", ClassName = "UiCheckFatalReturn", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				fsCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 6m, TargetSide = "Enemy" });
+				fsCard.Effects.Add(new EffectSpec
+				{
+					Kind = "ReturnSelfToHand", Amount = 1m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "Fatal", Amount = 1m, Target = "Self" },
+				});
+				fsProbe.Cards.Add(fsCard);
+				string fsSrc = CSharpCodeGen.CardSource(fsProbe, fsCard, 0);
+				Check("V0.3.139：卡上有「斩杀死才回手」→ 卡上声明字段 __fgFatalThisPlay（承接 OnPlay 里的结果）",
+					fsSrc.Contains("private bool __fgFatalThisPlay;"), "有字段");
+				Check("V0.3.139：OnPlay 开头清零、末尾把「这次打出有没有斩杀」写进字段",
+					fsSrc.Contains("__fgFatalThisPlay = false;")
+					&& fsSrc.Contains("__fgFatalThisPlay = __lastAttack is not null && __fatalOk && __lastAttack.Results.SelectMany(hits => hits).Any(r => r.WasTargetKilled);"),
+					"写进去了");
+				// ⚠ 用「方法声明」那一次出现来切：文件里别处（字段写入那一行的注释）也会提到这个钩子名
+				int fsLateAt = fsSrc.LastIndexOf("public override async Task AfterCardPlayedLate", StringComparison.Ordinal);
+				string fsLate = fsLateAt >= 0 ? fsSrc[fsLateAt..] : "";
+				Check("V0.3.139：回手那个钩子里读字段（不再引用 OnPlay 的局部变量 __lastAttack → 不会再 CS0103）",
+					fsLate.Contains("if (__fgFatalThisPlay)") && !fsLate.Contains("__lastAttack"), "读字段");
+				Check("V0.3.139：这种配置不再被校验器拦住（以前报「斩杀只能放在打出时」）",
+					!ProfileValidator.Validate(fsProbe).Any((ValidationIssue i) => i.IsError && i.Message.Contains("AfterCardPlayedLate")), "放行");
+				// 对照：「抽到这张牌时费用 -N」那个钩子上仍然不行（抽牌那一刻没有「这一次打出的攻击」）
+				CharacterProfile fsDraw = ProfileFactory.Sample();
+				CardSpec fsDrawCard = new CardSpec { Name = "自检斩杀抽牌", ClassName = "UiCheckFatalDraw", CardType = "Skill", Rarity = "Common", Cost = 1 };
+				fsDrawCard.Effects.Add(new EffectSpec { Kind = "Damage", Amount = 3m, TargetSide = "Enemy" });
+				fsDrawCard.Effects.Add(new EffectSpec
+				{
+					Kind = "CheapenSelfOnDraw", Amount = 1m, TargetSide = "Self",
+					Condition = new ConditionSpec { Kind = "Fatal", Amount = 1m, Target = "Self" },
+				});
+				fsDraw.Cards.Add(fsDrawCard);
+				Check("V0.3.139：（对照）「抽到这张牌时费用 -N」上用斩杀仍然报错（那个钩子里没有这一次打出的攻击）",
+					ProfileValidator.Validate(fsDraw).Any((ValidationIssue i) => i.IsError && i.Message.Contains("AfterCardDrawn")), "拦住了");
+			}
+
 			// ⑫ V0.2.195（用户要求）：「上一张打出的牌是 攻击/技能/能力/状态/诅咒 牌」。
 			// 数据源 = 本体战斗历史 CardPlaysFinished（最后一张结算完的牌，不限回合）；
 			// 四条链（卡牌 / 遗物 / 药水 / 自定义状态）+ 锻造页【条件】模块都要能选到、生成正确、文案对。
@@ -45985,9 +46026,9 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				var vpReturn = new CharacterProfile { ModId = "UiCheckFatal169b", CharacterClass = "UiCheckFatal169b" };
 				vpReturn.Cards.Add(FatalProbeCard("UiCheckFatalReturn", "ReturnSelfToHand"));
 				var vIssuesReturn = ProfileValidator.Validate(vpReturn);
-				Check("V0.2.169：伤害 + 斩杀挂在「将此牌放回手牌」上 → 校验器报错（实现在 AfterCardPlayedLate 里）",
-					vIssuesReturn.Any(i => i.Level == "错误" && i.Message.Contains("AfterCardPlayedLate")),
-					vIssuesReturn.FirstOrDefault(i => i.Message.Contains("AfterCardPlayedLate"))?.Message ?? "(没报)");
+				Check("V0.3.139：伤害 + 斩杀挂在「将此牌放回手牌」上 → 不再报错（改成用卡上的 __fgFatalThisPlay 跨钩子传结果）",
+					!vIssuesReturn.Any(i => i.Level == "错误" && i.Message.Contains("AfterCardPlayedLate")),
+					vIssuesReturn.FirstOrDefault(i => i.Level == "错误")?.Message ?? "(没报错)");
 				var vpOk = new CharacterProfile { ModId = "UiCheckFatal169c", CharacterClass = "UiCheckFatal169c" };
 				vpOk.Cards.Add(FatalProbeCard("UiCheckFatalOk", "Block"));
 				var vIssuesOk = ProfileValidator.Validate(vpOk);

@@ -953,6 +953,14 @@ public static class ProfileValidator
                 int idx = c.Effects.IndexOf(e);
                 bool hasDamageBefore = c.Effects.Take(idx).Any(x => x.Kind == "Damage"
                     || (x.Kind == "HpLoss" && x.TargetSide is "Enemy" or "AllEnemies" or "RandomEnemies"));
+                // V0.3.139：「将此牌放回手牌」跑在**打完牌之后**，判的是这次打出的最后一条攻击 ——
+                // 所以伤害排在它前面还是后面都可以（生成端在 OnPlay 末尾统一记结果）。
+                // ⚠ 但那条伤害必须真的在 **OnPlay** 里：带「卡牌时机」的伤害跑在别的钩子里，
+                // 根本不会写 __lastAttack（那样条件永远不成立，正是本工具最忌讳的静默不生效）。
+                if (!hasDamageBefore && CSharpCodeGen.IsSelfReturn(e))
+                    hasDamageBefore = c.Effects.Any(x => x.Kind == "Damage" && !CSharpCodeGen.IsCardTiming(x.Condition)
+                        || (x.Kind == "HpLoss" && x.TargetSide is "Enemy" or "AllEnemies" or "RandomEnemies"
+                            && !CSharpCodeGen.IsCardTiming(x.Condition)));
                 if (!hasDamageBefore)
                 {
                     fatalWithoutDamage = true;
@@ -4306,10 +4314,11 @@ public static class ProfileValidator
         foreach (var e in c.Effects)
         {
             if (e.Condition is not { Kind: "Fatal" }) continue;
+            // V0.3.139：「将此牌放回手牌」现在**支持**斩杀条件 —— 它在 AfterCardPlayedLate 里读卡上的
+            // __fgFatalThisPlay（OnPlay 末尾写入），所以不再拦。只剩「抽到这张牌时费用 -N」那一档：
+            // 抽牌那一刻没有「这一次打出的攻击」，语义上不成立。
             string? where = CSharpCodeGen.IsSelfDrawCost(e)
                     ? "「抽到这张牌时它本场战斗的费用 -N」的效果（实现在 AfterCardDrawn 钩子里）"
-                : CSharpCodeGen.IsSelfReturn(e)
-                    ? "「将此牌放回手牌」的效果（实现在 AfterCardPlayedLate 钩子里）"
                 : null;
             if (where is null) continue;
             issues.Add(new("错误", $"卡牌「{c.Name}」这条 {where} 用了「斩杀」条件 —— "
