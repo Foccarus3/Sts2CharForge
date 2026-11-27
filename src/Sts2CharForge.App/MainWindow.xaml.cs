@@ -21142,6 +21142,68 @@ public sealed record TriggerScopeOption(string Id, string Display);
 						"生成在");
 					Check("「变化卡牌」：没选目标卡时生成 TransformToRandom",
 						SrcFor("TransformCard", ("SpawnCardId", ""), ("Pick", "Random")).Contains("TransformToRandom("), "生成在");
+					// V0.3.137（用户报「锻造卡：变化卡牌数值 0 时生成的 cs 少一个 }」）：
+					// 数值 0 = 变化自己；「按范围随机」那一档以前 w.Open 了 `if (__newSelf is not null)` 却没 Close
+					// → 整份 cs 少一个右括号（CS1513「应输入 }」）编译不过。
+					// ⚠ 必须用**新建的**卡 / 节点：上面的 uEff 已经被生成过好几次，ForgeEffectBridge 迁移出来的
+					// EffectSpec 会缓存住第一次的字段（新版 SetField 只改 Fields，不改 spec），复用它根本走不到这条分支。
+					var selfTransformCard = new CardSpec
+					{
+						Name = "自检变化自身", ClassName = "UiCheckSelfTransform", CardType = "Skill", Rarity = "Common", Cost = 1, IsForged = true,
+						ForgeGraph = new ForgeGraphSpec(),
+					};
+					var stTrig = new ForgeNodeSpec { Kind = "Trigger" };
+					stTrig.SetField("Timing", ForgeTimings.CardPlayed);
+					var stUnit = new ForgeNodeSpec { Kind = "Unit" };
+					stUnit.SetField("Pick", "Self");
+					var stEff = new ForgeNodeSpec { Kind = "Effect" };
+					stEff.SetField("Effect", "TransformCard");
+					stEff.SetField("Amount", "0");
+					stEff.SetField("SpawnPick", "Random");
+					stEff.SetField("SpawnFilter", "");
+					stEff.SetField("Pick", "Chosen");
+					stEff.SetField("Pile", "Hand");
+					selfTransformCard.ForgeGraph.Nodes.AddRange(new[] { stTrig, stUnit, stEff });
+					selfTransformCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = stTrig.Id, To = stEff.Id, FromPort = 0, ToPort = 0 });
+					selfTransformCard.ForgeGraph.Links.Add(new ForgeLinkSpec { From = stUnit.Id, To = stEff.Id, FromPort = 0, ToPort = 2 });
+					Profile.Cards.Add(selfTransformCard);
+					string selfTransformSrc = CSharpCodeGen.CardSource(Profile, selfTransformCard, Profile.Cards.Count - 1);
+					Profile.Cards.Remove(selfTransformCard);
+					int selfTransformBrace = selfTransformSrc.Count(c => c == '{') - selfTransformSrc.Count(c => c == '}');
+					Check("V0.3.137：锻造图「变化卡牌」数值 0（变化自己）+ 按范围随机 → 生成的 cs 括号配平（以前少一个 }）",
+						selfTransformBrace == 0, $"{{ 与 }} 相差 {selfTransformBrace}");
+					// 形状：那一块必须把 `if (__newSelf is not null)` 关上（同缩进的 } 出现在 Transform 之后）。
+					// ⚠ 不能用固定缩进的 regex：这里挪一层括号就会误报；按行算缩进稳。
+					string[] selfTransformLines = selfTransformSrc.Replace("\r\n", "\n").Split('\n');
+					int selfIfIdx = Array.FindIndex(selfTransformLines, l => l.Contains("if (__newSelf is not null)"));
+					int selfTransformIdx = Array.FindIndex(selfTransformLines, l => l.Contains("await CardCmd.Transform(this, __madeSelf"));
+					bool selfIfClosed = false;
+					if (selfIfIdx >= 0 && selfTransformIdx > selfIfIdx)
+					{
+						int ifIndent = selfTransformLines[selfIfIdx].Length - selfTransformLines[selfIfIdx].TrimStart().Length;
+						for (int i = selfTransformIdx + 1; i < selfTransformLines.Length; i++)
+						{
+							string ln = selfTransformLines[i];
+							int ind = ln.Length - ln.TrimStart().Length;
+							if (ln.Trim() == "}" && ind == ifIndent) { selfIfClosed = true; break; }
+							if (ln.Trim() == "}" && ind < ifIndent) break;   // 先遇到更外层的 }：说明 if 根本没关
+						}
+					}
+					Check("V0.3.137：那个 if (__newSelf is not null) 真的在 Transform 之后关上了（同缩进的 }）",
+						selfIfClosed, selfIfClosed ? "关上了" : "没关上（少一个 }）");
+					// 对照：卡牌页的普通卡走的是同一个 EmitTransformCard —— 同一条效果也必须配平
+					var plainSelfTransform = new CardSpec { Name = "自检普通变化", ClassName = "UiCheckPlainTransform", CardType = "Skill", Rarity = "Common", Cost = 1 };
+					plainSelfTransform.Effects.Add(new EffectSpec
+					{
+						Kind = "TransformCard", Amount = 0m, SpawnPick = "Random", SpawnFilter = "",
+						CardPick = "Chosen", SelectPile = "Hand", TargetSide = "Self",
+					});
+					Profile.Cards.Add(plainSelfTransform);
+					string plainSelfTransformSrc = CSharpCodeGen.CardSource(Profile, plainSelfTransform, Profile.Cards.Count - 1);
+					Profile.Cards.Remove(plainSelfTransform);
+					int plainSelfTransformBrace = plainSelfTransformSrc.Count(c => c == '{') - plainSelfTransformSrc.Count(c => c == '}');
+					Check("V0.3.137：（对照）卡牌页普通卡的「变化卡牌数值 0 + 按范围随机」也配平（两条链共用同一份实现）",
+						plainSelfTransformBrace == 0, $"{{ 与 }} 相差 {plainSelfTransformBrace}");
 					Check("「复制卡牌」：CreateClone + AddGeneratedCardToCombat（本体二刀流的写法）",
 						SrcFor("CopyCard", ("Pick", "Random")).Contains("CreateClone()"), "生成在");
 					Check("「预见」：看抽牌堆顶 N 张 + FromSimpleGrid 挑要丢的（可以一张都不丢）",

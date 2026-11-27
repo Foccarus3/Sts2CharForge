@@ -8747,6 +8747,11 @@ public static class ExtraResourceEnergyCounterDiagPatch
                 EmitSelfTransformLines(w, sourceExpr, "__madeSelf", p, e, choiceExpr);
             }
             if (countInto is not null) w.Line($"{countInto} += 1;");
+            // V0.3.137（用户报「锻造卡：变化卡牌数值 0 时生成的 cs 少一个 }」）：
+            // 「按范围随机」这一档上面 w.Open 了 `if (__newSelf is not null)`，以前**忘了 Close** ——
+            // 于是生成出来的卡牌文件整份少一个右括号（CS1513「应输入 }」，模组编译不过）。
+            // 关在这一行之后：`${countInto} += 1` 也跟着留在 if 里面（真变出牌了才计数；池子空、__newSelf 为 null 时什么都没发生）。
+            if (selfRandom) w.Close();
             return;
         }
         string n = countExpr ?? (useX && e.AmountIsXEffective ? XVar : Math.Max(1, (int)e.Amount).ToString());
