@@ -5380,6 +5380,9 @@ public sealed class PowerTriggerSpec : SpecBase
             //（不然「到达 N 层」/「每累计几次触发」那栏不会当场出现）。
             Raise(nameof(NeedsAmount));
             Raise(nameof(ShowTriggerAmountField));
+            // V0.3.141：「到达 N 层」只留一个框（数字 / 公式合一）—— 通用那一行在这一档要收起来
+            Raise(nameof(ShowGenericAmountField));
+            Raise(nameof(TriggerAmountText));
             Raise(nameof(ShowTriggerScopeField));
             Raise(nameof(TriggerAmountLabel));
             Raise(nameof(TriggerSpendHint));
@@ -5439,7 +5442,7 @@ public sealed class PowerTriggerSpec : SpecBase
     public decimal TriggerAmount
     {
         get => _triggerAmount;
-        set { if (Set(ref _triggerAmount, value)) { Raise(nameof(Display)); Raise(nameof(Summary)); Raise(nameof(TriggerSpendHint)); } }
+        set { if (Set(ref _triggerAmount, value)) { Raise(nameof(Display)); Raise(nameof(Summary)); Raise(nameof(TriggerSpendHint)); Raise(nameof(TriggerAmountText)); } }
     }
 
     private string _triggerFormula = "";
@@ -5461,12 +5464,44 @@ public sealed class PowerTriggerSpec : SpecBase
                 Raise(nameof(UsesTriggerFormula));
                 Raise(nameof(Display));
                 Raise(nameof(Summary));
+                Raise(nameof(TriggerAmountText));   // V0.3.141：一个框同时显示数字 / 公式
             }
         }
     }
 
     /// <summary>这条触发时机的次数 / 阈值是不是用公式算的。</summary>
     [JsonIgnore] public bool UsesTriggerFormula => !string.IsNullOrWhiteSpace(_triggerFormula);
+
+    /// <summary>
+    /// V0.3.141（用户要求「只保留一个框，数字和公式都填这里」）：**「到达 N 层」那一个输入框**。
+    ///
+    /// <para>读：写了公式就显示公式（例 <c>A+2</c>），否则显示常数。
+    /// 写：纯数字 → 存进 <see cref="TriggerAmount"/>（并清掉公式）；带字母 / 运算符 → 存进
+    /// <see cref="TriggerFormula"/>（运行时算，生成端按公式求值）。</para>
+    /// <para>其它触发时机不用这个属性（它们还是「数值 + 公式」两个框，见 <see cref="ShowGenericAmountField"/>）。</para>
+    /// </summary>
+    [JsonIgnore]
+    public string TriggerAmountText
+    {
+        get => UsesTriggerFormula ? TriggerFormula
+            : _triggerAmount.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
+        set
+        {
+            string s = (value ?? "").Trim();
+            if (s.Length == 0) { TriggerFormula = ""; return; }   // 清空 = 回到默认常数（TriggerAmount 不动）
+            string num = s.Replace(',', '.');
+            if (decimal.TryParse(num, System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out decimal v))
+            {
+                TriggerFormula = "";                                // 纯数字 → 常数（先清公式，再写数值）
+                TriggerAmount = v;
+            }
+            else
+            {
+                TriggerFormula = s;                                 // 带字母 / 运算符 → 公式
+            }
+        }
+    }
 
     // ===== 「花掉 N 点能量 / 额外资源量」+「本回合 / 本场战斗」（用户要求：两边触发时机一致）=====
     private string _triggerScope = "Turn";
@@ -5490,6 +5525,14 @@ public sealed class PowerTriggerSpec : SpecBase
     /// </summary>
     [JsonIgnore]
     public bool ShowTriggerAmountField => ShowTriggerSpendFields || Generation.CSharpCodeGen.TriggerSupportsAmount(Kind);
+
+    /// <summary>
+    /// V0.3.141（用户报「为什么有两个『到达 N 层』」）：通用那一行（「数值 + 公式」两个框）
+    /// 在「到达 N 层」这一档**收起来** —— 那一档只显示下面专属的**一个框**，
+    /// 数字和公式都填在同一个框里（见 <see cref="TriggerAmountText"/>）。
+    /// </summary>
+    [JsonIgnore]
+    public bool ShowGenericAmountField => ShowTriggerAmountField && Kind != "PowerReached";
 
     /// <summary>「本回合 / 本场战斗」那一栏要不要显示（只有计数类用得到：花能量 / 花资源量 / 打牌 / 消耗…）。</summary>
     [JsonIgnore]

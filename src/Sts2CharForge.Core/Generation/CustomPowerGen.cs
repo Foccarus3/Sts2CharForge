@@ -1004,10 +1004,17 @@ public static class CustomPowerGen
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
                     if (t.Kind == "PowerReached")
                     {
-                        string reach = Lit.Dec(Math.Max(0m, t.TriggerAmount));
+                        // V0.3.141（用户报「到达 N 层右边公式填了没用」）：这一档也认「触发数值公式」——
+                        // 填了公式就按公式算出来的层数判，没填还是原来的常数。
+                        string? reachF = CSharpCodeGen.TriggerAmountFormulaExpr(p, t, "base.Owner.Player", "base.Owner");
+                        string reach = reachF is null ? Lit.Dec(Math.Max(0m, t.TriggerAmount)) : $"(decimal)({reachF})";
+                        if (t.UsesTriggerFormula)
+                            w.Line($"// CET:TriggerAmountFormula={CSharpCodeGen.EscapeMarker(t.TriggerFormula)}");
                         w.Open($"if ({ownerGuard}{(want is null ? "" : $" && power is {Lit.Identifier(want, "VulnerablePower")}")}"
                              + $" && power.Amount >= {reach} && power.Amount - amount < {reach})");
-                        w.Line($"// 层数跨过 {Math.Max(0m, t.TriggerAmount):0.##} 那一下才触发");
+                        w.Line(t.UsesTriggerFormula
+                            ? $"// 层数跨过「{t.TriggerFormula}」算出来的数那一下才触发"
+                            : $"// 层数跨过 {Math.Max(0m, t.TriggerAmount):0.##} 那一下才触发");
                         EmitEffects(w, t, p: p);
                         w.Close();
                     }
@@ -1416,10 +1423,16 @@ public static class CustomPowerGen
                 {
                     string ownerGuard = PowerWatchGuard(t, p, excludeSelf: true);
                     string? want = string.IsNullOrWhiteSpace(t.PowerId) ? null : t.PowerId.Trim();
-                    string reach = Lit.Dec(Math.Max(0m, t.TriggerAmount));
+                    // V0.3.141：这一档也认「触发数值公式」（和另一处 PowerReached 一致）
+                    string? reachF = CSharpCodeGen.TriggerAmountFormulaExpr(p, t, "base.Owner.Player", "base.Owner");
+                    string reach = reachF is null ? Lit.Dec(Math.Max(0m, t.TriggerAmount)) : $"(decimal)({reachF})";
+                    if (t.UsesTriggerFormula)
+                        w.Line($"// CET:TriggerAmountFormula={CSharpCodeGen.EscapeMarker(t.TriggerFormula)}");
                     w.Open($"if ({ownerGuard}{(want is null ? "" : $" && power is {Lit.Identifier(want, "VulnerablePower")}")}"
                          + $" && power.Amount >= {reach} && power.Amount - amount < {reach})");
-                    w.Line($"// 层数跨过 {Math.Max(0m, t.TriggerAmount):0.##} 那一下才触发");
+                    w.Line(t.UsesTriggerFormula
+                        ? $"// 层数跨过「{t.TriggerFormula}」算出来的数那一下才触发"
+                        : $"// 层数跨过 {Math.Max(0m, t.TriggerAmount):0.##} 那一下才触发");
                     EmitEffects(w, t, p: p);
                     w.Close();
                 }

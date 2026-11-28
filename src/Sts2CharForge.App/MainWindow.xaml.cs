@@ -35953,6 +35953,50 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					&& new RelicTriggerSpec { Kind = "PowerReached", Amount = 3m }.SpendHint.Contains("跨过"),
 					"两侧都写清了");
 
+				// ===== V0.3.141（用户报「为什么有两个到达 N 层、右边公式填了没用」）=====
+				{
+					var reachUi = new PowerTriggerSpec { Kind = "PowerReached" };
+					Check("V0.3.141：「到达 N 层」只显示**一个**输入框（通用那行在这一档收起，不再有两个「到达 N 层」）",
+						!reachUi.ShowGenericAmountField && reachUi.ShowTriggerAmountField && reachUi.NeedsAmount,
+						$"通用行={reachUi.ShowGenericAmountField} / 专属行={reachUi.NeedsAmount}");
+					reachUi.TriggerAmountText = "5";
+					Check("V0.3.141：那个框填纯数字 → 存成常数（5 层），不算公式",
+						reachUi.TriggerAmount == 5m && !reachUi.UsesTriggerFormula && reachUi.TriggerAmountText == "5",
+						$"{reachUi.TriggerAmount} / 公式=「{reachUi.TriggerFormula}」");
+					reachUi.TriggerAmountText = "A+2";
+					Check("V0.3.141：那个框填公式 / 参数（A+2）→ 存成公式，框里显示的还是 A+2",
+						reachUi.UsesTriggerFormula && reachUi.TriggerFormula == "A+2" && reachUi.TriggerAmountText == "A+2",
+						$"公式=「{reachUi.TriggerFormula}」/ 显示=「{reachUi.TriggerAmountText}」");
+
+					// 生成端：填了公式就按公式判（以前这一档只读常数）
+					var reachProf = ProfileFactory.Sample();
+					reachProf.CustomParams.Add(new ParamSpec { Name = "A", Source = "MaxHp", Target = "Self", Value = 1 });
+					var reachPow = new CustomPowerSpec { Name = "自检公式到达层", ClassName = "UiCheckReachFormula", Enabled = true };
+					var reachFx = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self", TriggerAmount = 3m };
+					reachFx.TriggerAmountText = "A+2";
+					reachFx.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+					reachPow.Triggers.Add(reachFx);
+					reachFx.OwnerPower = reachPow;
+					reachProf.CustomPowers.Add(reachPow);
+					string reachFxSrc = CustomPowerGen.Source(reachProf, reachPow, reachProf.CustomPowers.Count - 1);
+					Check("V0.3.141：生成端真的按公式判层数（power.Amount >= (decimal)(…)，公式写在里面）",
+						reachFxSrc.Contains("power.Amount >= (decimal)(") && !reachFxSrc.Contains("power.Amount >= 3m"),
+						reachFxSrc.Replace("\r\n", "\n").Split('\n').FirstOrDefault((string l) => l.Contains("power.Amount >="))?.Trim() ?? "(没找到判据)");
+					Check("V0.3.141：公式还写了回读标记（CET:TriggerAmountFormula=…），从工程反推不会丢",
+						reachFxSrc.Contains("CET:TriggerAmountFormula="), "标记在");
+					// 对照：没填公式 → 还是老写法（常数），老存档生成文本不变
+					var plainPow = new CustomPowerSpec { Name = "自检常数到达层", ClassName = "UiCheckReachPlain", Enabled = true };
+					var plainFx = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self", TriggerAmount = 3m };
+					plainFx.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+					plainPow.Triggers.Add(plainFx);
+					plainFx.OwnerPower = plainPow;
+					reachProf.CustomPowers.Add(plainPow);
+					string plainFxSrc = CustomPowerGen.Source(reachProf, plainPow, reachProf.CustomPowers.Count - 1);
+					Check("V0.3.141：（对照）没填公式时还是老写法（常数 3，不套 (decimal)）",
+						plainFxSrc.Contains("power.Amount >= 3m && power.Amount - amount < 3m") && !plainFxSrc.Contains("(decimal)("),
+						"老写法");
+				}
+
 				var reachTrigger = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self", TriggerAmount = 5m };
 				reachTrigger.Effects.Add(new EffectSpec { Kind = "GenerateCard", Amount = 2m, SpawnCardId = "Shiv" });
 				string reachText = reachTrigger.Summary;
