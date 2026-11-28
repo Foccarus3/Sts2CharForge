@@ -203,10 +203,35 @@ public static class CustomPowerGen
          .Open("private MegaCrit.Sts2.Core.Localization.LocString __ForgePowerDescription()")
          .Line($"var __loc = new MegaCrit.Sts2.Core.Localization.LocString(\"powers\", \"{EntryOf(profile, power, index)}.description\");")
          .Line("__loc.Add(\"Amount\", Amount);");
-        foreach (var dv in descParts.Vars)
-            w.Line($"__loc.Add(\"{dv.Name}\", {dv.Expr});");
-        w.Line("return __loc;")
-         .Close();
+        if (descParts.Vars.Count == 0)
+        {
+            w.Line("return __loc;")
+             .Close();
+        }
+        else
+        {
+            // V0.3.142（用户实测「遗物点开 / 有关遗物的事件卡死」）：描述里的 {=公式} 以前**无条件**求值，
+            // 而遗物悬停 / 状态图鉴用的是**规范实例**（Owner == null）—— 一个「某某身上的某状态层数」这种
+            // 无主参数会生成 `base.Owner.CombatState…`，在这里直接 NullReferenceException；
+            // 悬停面板一抛异常就反复重试 → 表现就是卡死。
+            // 现在和卡牌描述里的 {=…} 同一个规矩：**没有归属就不算**（保持 0），并且再包一层 try/catch 兜底。
+            w.Line("// 描述里的公式只在**有归属**时算：无主实例（状态图鉴 / 遗物悬停）一律显示 0，绝不抛异常");
+            for (int i = 0; i < descParts.Vars.Count; i++)
+                w.Line($"decimal __fgDescVal{i} = 0m;");
+            w.Open("if (base.Owner is not null)");
+            for (int i = 0; i < descParts.Vars.Count; i++)
+            {
+                w.Open("try");
+                w.Line($"__fgDescVal{i} = (decimal)({descParts.Vars[i].Expr});");
+                w.Close();
+                w.Line($"catch {{ __fgDescVal{i} = 0m; }}   // 算不出来就显示 0，不能因为悬停面板把游戏卡死");
+            }
+            w.Close();
+            for (int i = 0; i < descParts.Vars.Count; i++)
+                w.Line($"__loc.Add(\"{descParts.Vars[i].Name}\", __fgDescVal{i});");
+            w.Line("return __loc;")
+             .Close();
+        }
         // V0.2.373（用户实测：「改造现实」悬停不弹它要加的利刃卡面）：状态以前**完全没有** ExtraHoverTips ——
         // 只有卡 / 遗物 / 药水会弹。这里按「这条状态的触发效果 + 锻造图上的效果」生成同一套卡面提示，
         // 于是状态描述里提到的卡（生成 / 加进牌组 / 填满手牌那几种）鼠标移上去也能看到。

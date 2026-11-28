@@ -2602,7 +2602,33 @@ public static class ForgeGraphGen
     public static bool AnyNonCardFormula(CharacterProfile p) =>
         p.Relics.Any(r => r is not null && r.Effects.Any(IsFormulaEffect))
         || p.Potions.Any(s => s is not null && s.Effects.Any(IsFormulaEffect))
-        || p.CustomPowers.Any(cp => cp is not null && cp.Triggers.Any(t => t is not null && t.Effects.Any(IsFormulaEffect)));
+        || p.CustomPowers.Any(cp => cp is not null
+            && (cp.Triggers.Any(t => t is not null && t.Effects.Any(IsFormulaEffect))
+                // V0.3.142：还有两处以前没算进来 —— 只用了它们、又没配任何「数值公式」的存档
+                // 生成出来会**少一个 ForgeFormulaRuntime.cs**，整个工程 CS0103 编译不过：
+                //   ① 触发时机的「数值公式」（例：到达 N 层填 X / 某个参数 → 内联出 ForgeFormulaRuntime.Energy/PowerAmount…）
+                //   ② 状态**描述**里的 {=公式}（同上，描述里的自定义参数 / X / Y 都走内联求值）
+                || TriggerFormulaNeedsRuntime(p, cp)
+                || DescriptionFormulaNeedsRuntime(p, cp)));
+
+    /// <summary>这个状态的某条触发时机，公式求值会不会内联出 <c>ForgeFormulaRuntime.*</c>。</summary>
+    private static bool TriggerFormulaNeedsRuntime(CharacterProfile p, CustomPowerSpec cp)
+    {
+        foreach (var t in cp.Triggers)
+        {
+            if (t is null || !t.UsesTriggerFormula) continue;
+            string? expr = CSharpCodeGen.TriggerAmountFormulaExpr(p, t, "base.Owner.Player", "base.Owner");
+            if (expr is not null && expr.Contains("ForgeFormulaRuntime.", StringComparison.Ordinal)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>这个状态的描述里 <c>{=公式}</c> 求值会不会内联出 <c>ForgeFormulaRuntime.*</c>。</summary>
+    private static bool DescriptionFormulaNeedsRuntime(CharacterProfile p, CustomPowerSpec cp)
+    {
+        var (_, vars) = CustomPowerGen.DescriptionForLoc(p, cp, 0);
+        return vars.Any(v => v.Expr.Contains("ForgeFormulaRuntime.", StringComparison.Ordinal));
+    }
 
     private static bool IsFormulaEffect(EffectSpec? e) => e is not null && e.UsesAmountFormula;
 

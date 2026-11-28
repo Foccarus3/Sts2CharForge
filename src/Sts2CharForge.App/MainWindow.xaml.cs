@@ -24280,6 +24280,46 @@ public sealed record TriggerScopeOption(string Id, string Display);
 			Check("遗物触发：遗物上的召唤支持自定义血量（PetHp 动态变量）",
 				System.Text.RegularExpressions.Regex.IsMatch(petRelicSrc, @"base\.DynamicVars\[""PetHp""\]\.BaseValue\);"),
 				"12m");
+			// V0.3.142（用户实测：`Patient → PetHp` 被生成后自检拦住 —— 卡上「次数」选了「全部」，
+			// HasNoDynamicVar 里的 CountHasNoNumber 把召回的变量声明一起跳过了，召唤代码却仍按 PetHp 取名取值）
+			{
+				var allProf = ProfileFactory.Sample();
+				var allPet = new SummonSpec { Name = "近卫", ClassName = "UiAllPet", Hp = 9 };
+				allProf.Summons.Add(allPet);
+				var allCard = new CardSpec { Name = "布阵", ClassName = "UiPatient", CardType = "Skill", Rarity = "Common", Cost = 2, InCardPool = true };
+				allCard.Effects.Add(new EffectSpec
+				{
+					Kind = "SummonPet", Amount = 2m, UpgradeAmount = 1m, TargetSide = "Self",
+					PetSummon = "UiAllPet", CountMode = "All",
+				});
+				allCard.Effects.Add(new EffectSpec { Kind = "Block", Amount = 8m, TargetSide = "Self" });
+				allProf.Cards.Add(allCard);
+				string allSrc = CSharpCodeGen.CardSource(allProf, allCard, allProf.Cards.Count - 1);
+				Check("V0.3.142：召唤伙伴把「次数」选成「全部」时，PetHp 变量仍然声明（不再被 CountHasNoNumber 跳过）",
+					allSrc.Contains("new DynamicVar(\"PetHp\"") && CSharpCodeGen.MissingDynamicVars(allSrc).Count == 0,
+					string.Join("、", CSharpCodeGen.MissingDynamicVars(allSrc)));
+
+				var atkCard = new CardSpec { Name = "伙伴突击", ClassName = "UiPetAtk", CardType = "Attack", Rarity = "Common", Cost = 1, InCardPool = true };
+				atkCard.Effects.Add(new EffectSpec
+				{
+					Kind = "PetAttack", Amount = 5m, TargetSide = "AnyEnemy",
+					PetSummon = "UiAllPet", CountMode = "All",
+				});
+				allProf.Cards.Add(atkCard);
+				string atkSrc = CSharpCodeGen.CardSource(allProf, atkCard, allProf.Cards.Count - 1);
+				Check("V0.3.142：伙伴攻击同样不受「次数 = 全部」影响",
+					atkSrc.Contains("new DynamicVar(\"PetDamage\"") && CSharpCodeGen.MissingDynamicVars(atkSrc).Count == 0,
+					string.Join("、", CSharpCodeGen.MissingDynamicVars(atkSrc)));
+
+				// 红线：真正的「数量型」效果在「全部」档下**仍然不声明**变量（不能因为这次修改又把 Cards 放出来）
+				var copyCard = new CardSpec { Name = "复制", ClassName = "UiCopyAll", CardType = "Skill", Rarity = "Common", Cost = 1, InCardPool = true };
+				copyCard.Effects.Add(new EffectSpec { Kind = "CopyCard", Amount = 1m, TargetSide = "Self", CountMode = "All" });
+				allProf.Cards.Add(copyCard);
+				string copySrc = CSharpCodeGen.CardSource(allProf, copyCard, allProf.Cards.Count - 1);
+				Check("V0.3.142（红线）：「取全部」的数量型效果仍然不声明数字变量（不会多出一个鬼变量）",
+					CSharpCodeGen.MissingDynamicVars(copySrc).Count == 0 && !copySrc.Contains("new DynamicVar(\"Cards\""),
+					"没有鬼变量");
+			}
 
 			// ⑥ 药水：两条都不支持 —— 但必须留一行注释，不能静默丢掉
 			PotionSpec petPotion = new PotionSpec { Name = "召唤药水", ClassName = "UiCheckPetPotion", Rarity = "Common" };
@@ -26956,6 +26996,65 @@ public sealed record TriggerScopeOption(string Id, string Display);
 		Check("V0.3.89：描述里直接写 {C}（自定义参数）也能变成运行时变量（不必写 {=C}）",
 			genericLoc.Contains("{__fgPowerDesc1}") && !genericLoc.Contains("{C}")
 			&& genericSrc.Contains("__fgPowerDesc1"), "自定义参数");
+
+		// ===== V0.3.142（用户实测：状态描述引用了「某某身上的某状态层数」这种无主参数 →
+		// 引用了这个状态的遗物，在悬停 / 事件里把游戏卡死）=====
+		{
+			var ownerlessProf = ProfileFactory.Sample();
+			ownerlessProf.CustomParams.Add(new ParamSpec
+			{
+				Name = "P", Source = "Power", Target = "ChosenEnemy", PowerId = "VulnerablePower", Value = 1m,
+			});
+			var ownerlessPow = new CustomPowerSpec { Name = "自检无主描述", ClassName = "UiCheckOwnerlessPower", Description = "当前 {P}。" };
+			var ownerlessTrg = new PowerTriggerSpec { Kind = "TurnStart" };
+			ownerlessTrg.Effects.Add(new EffectSpec { Kind = "Block", Amount = 3m, TargetSide = "Self" });
+			ownerlessPow.Triggers.Add(ownerlessTrg);
+			ownerlessTrg.OwnerPower = ownerlessPow;
+			ownerlessProf.CustomPowers.Add(ownerlessPow);
+			string ownerlessSrc = CustomPowerGen.Source(ownerlessProf, ownerlessPow, 0);
+			Check("V0.3.142：描述里的公式先判「有归属」再求值（图鉴 / 遗物悬停用的是无主实例）",
+				ownerlessSrc.Contains("if (base.Owner is not null)")
+				&& ownerlessSrc.Contains("__fgDescVal0 = (decimal)(")
+				&& !ownerlessSrc.Contains("__loc.Add(\"__fgPowerDesc0\", ForgeFormulaRuntime."),
+				ownerlessSrc.Replace("\r\n", "\n").Split('\n').FirstOrDefault((string l) => l.Contains("__fgDescVal0 ="))?.Trim() ?? "(没找到)");
+			Check("V0.3.142：外面还有一层 try/catch —— 算不出来就显示 0，绝不抛异常把悬停面板卡死",
+				ownerlessSrc.Contains("catch { __fgDescVal0 = 0m; }"), "有兜底");
+			Check("V0.3.142：只用了「描述公式」的存档也要生成 ForgeFormulaRuntime.cs（否则工程 CS0103 编译不过）",
+				ForgeGraphGen.AnyNonCardFormula(ownerlessProf), "要生成");
+			// 对照：描述里没有 {=公式} 的状态，描述方法还是老文本（一个字符都不多）
+			var plainProf = ProfileFactory.Sample();
+			var plainPow = new CustomPowerSpec { Name = "自检普通描述", ClassName = "UiCheckPlainPower", Description = "就是一句普通描述。" };
+			var plainTrg = new PowerTriggerSpec { Kind = "TurnStart" };
+			plainTrg.Effects.Add(new EffectSpec { Kind = "Block", Amount = 1m, TargetSide = "Self" });
+			plainPow.Triggers.Add(plainTrg);
+			plainTrg.OwnerPower = plainPow;
+			plainProf.CustomPowers.Add(plainPow);
+			string plainPowSrc = CustomPowerGen.Source(plainProf, plainPow, 0);
+			Check("V0.3.142：（对照）没有描述公式时，描述方法还是老文本（没有 __fgDescVal / try）",
+				!plainPowSrc.Contains("__fgDescVal") && plainPowSrc.Contains("__loc.Add(\"Amount\", Amount);"),
+				"老文本");
+			// 触发时机的「数值公式」用了 X（内联出 ForgeFormulaRuntime.Energy）时，同样要把那个文件带上
+			var tfProf = ProfileFactory.Sample();
+			var tfPow = new CustomPowerSpec { Name = "自检公式触发", ClassName = "UiCheckFormulaTrigger" };
+			var tfTrg = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self" };
+			tfTrg.TriggerAmountText = "X";
+			tfTrg.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+			tfPow.Triggers.Add(tfTrg);
+			tfTrg.OwnerPower = tfPow;
+			tfProf.CustomPowers.Add(tfPow);
+			Check("V0.3.142：只用了「触发公式（X）」的存档也要生成 ForgeFormulaRuntime.cs",
+				ForgeGraphGen.AnyNonCardFormula(tfProf), "要生成");
+			var constProf = ProfileFactory.Sample();
+			var constPow = new CustomPowerSpec { Name = "自检常数公式", ClassName = "UiCheckConstFormula" };
+			var constTrg = new PowerTriggerSpec { Kind = "PowerReached", PowerTarget = "Self" };
+			constTrg.TriggerAmountText = "2+1";
+			constTrg.Effects.Add(new EffectSpec { Kind = "Draw", Amount = 1m, TargetSide = "Self" });
+			constPow.Triggers.Add(constTrg);
+			constTrg.OwnerPower = constPow;
+			constProf.CustomPowers.Add(constPow);
+			Check("V0.3.142：（对照）纯常数公式 2+1 不需要那个运行时文件（不用就不写）",
+				!ForgeGraphGen.AnyNonCardFormula(constProf), "不该写");
+		}
 		CustomPowerSpec customPowerSpec3 = new CustomPowerSpec
 		{
 			Name = "带图标",

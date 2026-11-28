@@ -9641,10 +9641,26 @@ public static class ExtraResourceEnergyCounterDiagPatch
         || IsAllPetsInlineCalc(e)
         // 「取任意张 / 全部」：没有张数这个数字可显示（卡面写「任意张」「所有」），所以不声明变量。
         // **必须列在这里**：否则 OnUpgrade 会去写一个没声明的 Cards → 本体抛 KeyNotFoundException。
-        || e.CountHasNoNumber
+        //
+        // ⚠ V0.3.142（用户实测：`Patient → PetHp` 被生成后自检拦住）：这一条只对**数量型**效果成立 ——
+        // 「召唤伙伴 / 伙伴攻击 / 按生命值算的伙伴攻击……」的数值是**血量 / 伤害**，跟「取几张」没关系。
+        // 以前没排除它们：卡上只要把「次数 / 取几张」选成「全部」（`CountHasNoNumber`），
+        // 整条效果的变量声明就被跳过（`PetHp` 消失），而召唤那一句仍然写
+        // `base.DynamicVars["PetHp"].BaseValue` → 生成后自检拦截（不拦就是游戏里 KeyNotFoundException）。
+        || (e.CountHasNoNumber && !HasPetValueVar(e.Kind))
         // 「数值 0 = 这张牌自己」（丢弃卡牌）：这一档没有「张数」，不声明 Cards 变量 ——
         // 否则 OnUpgrade / 卡面占位符会去找一个不存在的数字（和「取任意张」同一个坑）。
         || AmountZeroIsSelf(e);
+
+    /// <summary>
+    /// 这条效果的「数值」是不是**伙伴相关的血量 / 伤害**（V0.3.142）。
+    ///
+    /// <para>这类效果的数值和「取几张 / 重放几次」无关，所以 <see cref="HasNoDynamicVar"/> 里那条
+    /// 「数量不是数字 → 不声明变量」不能把它们一起跳过（否则 `PetHp` 没声明、召唤代码却按它取名取值）。</para>
+    /// </summary>
+    internal static bool HasPetValueVar(string? kind) => kind is
+        "SummonPet" or "PetAttack" or "PetDamageByMaxHp" or "PetDamageByCurHp" or "PetDamageByMissingHp"
+        or "PetHeal" or "PetLoseHp" or "PetGainMaxHp" or "PetSacrifice" or "PetApplyPower";
 
     /// <summary>
     /// 额外资源量花费：把负数「获得额外资源量」效果（按生效次数放大）累加成这张牌需要消耗的额外资源量。
