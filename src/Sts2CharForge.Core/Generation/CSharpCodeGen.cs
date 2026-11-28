@@ -7561,7 +7561,9 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 「全部」：把那一摞里符合条件的牌一次全放到目标那一摞（不弹选牌界面）。
             w.Line($"// 全部：把{pileZh}里符合条件的牌**全部**放到{toZh}{ScopeZhSuffix(e)}（不弹选牌界面）");
-            w.Line($"var __place = {CardScopeFiltered(e, p, $"{pileExpr}.Cards")}.ToList();");
+            // V0.3.145：「全部牌堆」也要覆盖四摞（PileExpr 没有这一档，以前会退回手牌）——
+            // 和 GiveKeyword 是同一个坑，一起改成 PileCardsExpr（其它档位文本一字不差）。
+            w.Line($"var __place = {CardScopeFiltered(e, p, PileCardsExpr(e, playerExpr))}.ToList();");
             w.Line($"if (__place.Count > 0) await CardPileCmd.Add(__place, {toPile}, {pos});");
         }
         else if (e.CardPick == "Chosen" && !IsPileTop(e))
@@ -7576,7 +7578,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string scope = CardScopeFiltered(e, p, $"{pileExpr}.Cards");
+            string scope = CardScopeFiltered(e, p, PileCardsExpr(e, playerExpr));   // V0.3.145：全部牌堆同样要覆盖四摞
             w.Line(IsPileTop(e)
                 ? $"// 从牌顶（抽牌堆最上面那张）拿 {nC} 张放到{toZh}（不用挑）{ScopeZhSuffix(e)}"
                 : $"// 随机从{pileZh}拿 {nC} 张放到{toZh}{ScopeZhSuffix(e)}");
@@ -13544,6 +13546,14 @@ public static class ExtraResourceEnergyCounterDiagPatch
         // 「获得时」= 拾取时生效：只要有一条时机是「获得时」就声明（和单条路径同一句）
         if (triggers.Any(t => t.Kind == "Obtained"))
             w.Line("public override bool HasUponPickupEffect => true;");
+        // ⚠ V0.3.144（用户实测：多触发遗物 `Bud.cs(32,38)` / `BlossomofCalamity.cs(82,38)` CS0103
+        //   「当前上下文中不存在名称 __spentBaseCombat」）：只要**任意一条**时机是「每累计花掉 N 点」
+        //（`EnergySpent` / `StarsSpent`），下面按钩子分组生成的代码就会用 `__spentBaseTurn` / `__spentBaseCombat`
+        //   这两个基准字段；但字段以前只在**单触发**那条路径里声明，多触发这条路一个都没有 → CS0103。
+        //   两个字段是**类级共享**的（多个钩子共用同一份基准，正是想要的语义），所以这里声明一次即可。
+        if (triggers.Any(t => t is not null && PerPointTrigger(t.Kind)))
+            w.Line("private int __spentBaseTurn = -1;   // 「每累计花掉 N 点」的基准（-1 = 还没记过）")
+             .Line("private int __spentBaseCombat = -1;");
         w.Line()
          .Line("protected override IEnumerable<DynamicVar> CanonicalVars =>")
          .Line("[");
@@ -15086,7 +15096,10 @@ public static class ExtraResourceEnergyCounterDiagPatch
         {
             // 「全部」：那一摞里符合条件的牌**每一张**都加上关键词（不弹选牌界面）。
             w.Line($"// 全部：给{EffectCatalog.SelectPileZh(e.SelectPile)}里符合条件的牌**全部**加上关键词{ScopeZhSuffix(e)}（不弹选牌界面）");
-            w.Open($"foreach (CardModel __kwCard in {CardScopeFiltered(e, p, $"{pileExpr}.Cards")}.ToList())");
+            // V0.3.145（用户报「『消耗』给牌堆里的牌不生效」）：这里以前用的是 PileExpr(e).Cards ——
+            // PileExpr 没有「全部牌堆」这一档，会**退回手牌**（注释却写着「全部牌堆」）。
+            // 改用 PileCardsExpr：全部牌堆 → PlayerCombatState.AllCards；其它档位的文本和以前一字不差。
+            w.Open($"foreach (CardModel __kwCard in {CardScopeFiltered(e, p, PileCardsExpr(e, playerExpr))}.ToList())");
             EmitGiveKeywordTo(w, e, "__kwCard", creatureExpr, sourceExpr, customKw, kwEnum, customKey, notifyTiming: notifyTiming);
             w.Close();
             return;
@@ -15104,7 +15117,7 @@ public static class ExtraResourceEnergyCounterDiagPatch
         }
         else
         {
-            string kwScope = CardScopeFiltered(e, p, $"{pileExpr}.Cards");
+            string kwScope = CardScopeFiltered(e, p, PileCardsExpr(e, playerExpr));
             w.Line(IsPileTop(e)
                 ? $"// 从牌顶（抽牌堆最上面那张）挑 {n} 张（不用自己选）{ScopeZhSuffix(e)}"
                 : $"// 随机从{PileZh(e.SelectPile)}挑 {n} 张{ScopeZhSuffix(e)}");

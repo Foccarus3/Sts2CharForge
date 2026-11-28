@@ -31541,6 +31541,39 @@ public sealed record TriggerScopeOption(string Id, string Display);
 				gkSelf.Effects[0].Display.Contains("保留") && gkSelf.Effects[0].Display.Contains("临时")
 				&& gkPick.Effects[1].Display.Contains("随机"), gkSelf.Effects[0].Display);
 
+			// ===== V0.3.145（用户报「『消耗』给牌堆里的牌不生效」）=====
+			// 「给予关键词 + 从哪里选牌 = 全部牌堆」以前用的是 PileExpr(e).Cards —— PileExpr 没有「全部」这一档，
+			// 会**退回手牌**（注释却写着「全部牌堆」），于是抽牌堆 / 弃牌堆里的牌一张都没加上关键词。
+			{
+				var gkAll = new CardSpec { Name = "自检给全部牌堆", ClassName = "UiCheckGiveAll", CardType = "Skill", Rarity = "Common", Cost = 1 };
+				gkAll.Effects.Add(new EffectSpec
+				{
+					Kind = "GiveKeyword", Amount = 1m, GivenKeyword = "Exhaust", CountMode = "All",
+					SelectPile = "All", CardPick = "Random", TargetSide = "Self",
+				});
+				gkProbe.Cards.Add(gkAll);
+				string gkAllSrc = CSharpCodeGen.CardSource(gkProbe, gkAll, 0);
+				Check("V0.3.145：「给予关键词 + 全部牌堆 + 全部」真的扫四摞（PlayerCombatState.AllCards），不再退回手牌",
+					gkAllSrc.Contains("foreach (CardModel __kwCard in base.Owner.PlayerCombatState.AllCards.ToList())")
+					&& !gkAllSrc.Contains("__kwCard in PileType.Hand.GetPile"),
+					gkAllSrc.Replace("\r\n", "\n").Split('\n').FirstOrDefault((string l) => l.Contains("__kwCard in"))?.Trim() ?? "(没找到)");
+				Check("V0.3.145：单摞（弃牌堆）那一档的生成文本不变（还是 PileType.Discard.GetPile(...).Cards）",
+					gkPickSrc.Contains("NextItem(PileType.Discard.GetPile(base.Owner).Cards)"), "老写法");
+				// 「放置卡牌」是同一个坑（也是 PileExpr(e).Cards）
+				var placeProbe = ProfileFactory.Sample();
+				var placeCard = new CardSpec { Name = "自检放置全部", ClassName = "UiCheckPlaceAll", CardType = "Skill", Rarity = "Common", Cost = 1 };
+				placeCard.Effects.Add(new EffectSpec
+				{
+					Kind = "PlaceCard", Amount = 1m, SelectPile = "All", PlaceTo = "Hand", CountMode = "All",
+					CardPick = "Random", TargetSide = "Self",
+				});
+				placeProbe.Cards.Add(placeCard);
+				string placeAllSrc = CSharpCodeGen.CardSource(placeProbe, placeCard, 0);
+				Check("V0.3.145：「放置卡牌 + 全部牌堆」也扫四摞（同一个 PileExpr 坑）",
+					placeAllSrc.Contains("var __place = base.Owner.PlayerCombatState.AllCards.ToList();"),
+					placeAllSrc.Replace("\r\n", "\n").Split('\n').FirstOrDefault((string l) => l.Contains("__place ="))?.Trim() ?? "(没找到)");
+			}
+
 			// 临时关键词 Power：回合结束把关键词摘掉
 			Check("勾了临时关键词才生成那个临时 Power", CSharpCodeGen.UsesTempKeywordPower(gkProbe));
 			string gkPowerSrc = CSharpCodeGen.TempKeywordPowerSource(gkProbe);
@@ -37905,6 +37938,49 @@ public sealed record TriggerScopeOption(string Id, string Display);
 					Check("V0.3.100：遗物的「计数基准」字段写在类体里，不会落进 CanonicalVars 的数组初始化器（CS1519/CS1031）",
 						!fieldInArray && arrOpen >= 0 && arrClose > arrOpen
 						&& spSrc.Contains("private int __spentBaseTurn = -1;", StringComparison.Ordinal), "位置对");
+				}
+				// V0.3.144（用户实测：多触发遗物 `Bud.cs(32,38)` / `BlossomofCalamity.cs(82,38)`
+				// CS0103「当前上下文中不存在名称 __spentBaseCombat」）：这两个字段以前只在**单触发**那条生成路径里声明，
+				// 「≥2 条触发时机」走的是另一条路径 —— 引用得到、声明没有 → 编译失败。
+				{
+					RelicSpec MakeSpendRelic(bool withSecondTrigger)
+					{
+						var r = new RelicSpec { Name = "花蕾", ClassName = "UiMultiSpend", Rarity = "Common" };
+						r.Triggers.Add(new RelicTriggerSpec
+						{
+							Kind = "EnergySpent", Amount = 3m, Scope = "Combat",
+							Effects = { new EffectSpec { Kind = "Energy", Amount = 2m, TargetSide = "Self" } },
+						});
+						if (withSecondTrigger)
+							r.Triggers.Add(new RelicTriggerSpec
+							{
+								Kind = "CombatStart",
+								Effects = { new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" } },
+							});
+						return r;
+					}
+					var multiProf = ProfileFactory.Sample();
+					var multiRelic = MakeSpendRelic(true);
+					multiProf.Relics.Add(multiRelic);
+					string multiSrc = CSharpCodeGen.RelicSource(multiProf, multiRelic, 0);
+					bool multiUses = multiSrc.Contains("__spentBaseCombat", StringComparison.Ordinal);
+					Check("V0.3.144：多触发遗物里的「每累计花掉 N 点」也会声明计数基准字段（引用与声明必须成对）",
+						multiUses
+						&& multiSrc.Contains("private int __spentBaseTurn = -1;", StringComparison.Ordinal)
+						&& multiSrc.Contains("private int __spentBaseCombat = -1;", StringComparison.Ordinal),
+						multiUses ? "有引用也有声明" : "没有引用");
+
+					var plainProf = ProfileFactory.Sample();
+					var plainRelic = new RelicSpec { Name = "开战", ClassName = "UiNoSpend", Rarity = "Common" };
+					plainRelic.Triggers.Add(new RelicTriggerSpec
+					{
+						Kind = "CombatStart",
+						Effects = { new EffectSpec { Kind = "Block", Amount = 4m, TargetSide = "Self" } },
+					});
+					plainProf.Relics.Add(plainRelic);
+					string plainSrc = CSharpCodeGen.RelicSource(plainProf, plainRelic, 0);
+					Check("V0.3.144（红线）：没用到「每累计花掉 N 点」的遗物不会多出这两个字段",
+						!plainSrc.Contains("__spentBaseTurn", StringComparison.Ordinal), "干净");
 				}
 				Check("遗物：范围选「本场战斗」时不算 HappenedThisTurn（整场累计）",
 					CSharpCodeGen.SpentSumExpr("StarsSpent", "Combat", "base.Owner.Creature", "base.Owner.Creature.CombatState")
